@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Remove a runtime's pin, so that it belongs to the machine of the machine\nID it reports.",
+  "properties": {
+    "runtime": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime"
+  ],
+  "title": "MachinesUnassignParams",
+  "type": "object"
+}

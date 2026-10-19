@@ -114,6 +114,9 @@ pub enum ClientDelivery {
     BackgroundChanged(crate::BackgroundChangedNotification),
     /// A plugin's status changed; refetch `plugins.list`.
     PluginsChanged(crate::PluginsChangedNotification),
+    /// The machine registry changed, or a runtime joined a new machine;
+    /// refetch `machines.list` and `runtimes.list`.
+    MachinesChanged(crate::MachinesChangedNotification),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -858,6 +861,75 @@ impl Client {
         params: crate::RuntimesReconnectParams,
     ) -> Result<crate::RuntimesReconnectResult, ClientError> {
         self.call(crate::RUNTIMES_RECONNECT_METHOD, &params).await
+    }
+
+    /// Every machine of the daemon's machine registry.
+    pub async fn list_machines(&self) -> Result<crate::MachinesListResult, ClientError> {
+        self.call(crate::MACHINES_LIST_METHOD, &crate::MachinesListParams {})
+            .await
+    }
+
+    /// Renames `machine` to `name`; its memory folder moves with it.
+    pub async fn rename_machine(
+        &self,
+        machine: crate::MachineName,
+        name: crate::MachineName,
+    ) -> Result<crate::MachinesListResult, ClientError> {
+        self.call(
+            crate::MACHINES_RENAME_METHOD,
+            &crate::MachinesRenameParams { machine, name },
+        )
+        .await
+    }
+
+    /// Pins `runtime` to `machine`, created when the name is new.
+    pub async fn assign_machine(
+        &self,
+        runtime: crate::RuntimeId,
+        machine: crate::MachineName,
+    ) -> Result<crate::MachinesListResult, ClientError> {
+        self.call(
+            crate::MACHINES_ASSIGN_METHOD,
+            &crate::MachinesAssignParams { runtime, machine },
+        )
+        .await
+    }
+
+    /// Removes `runtime`'s pin.
+    pub async fn unassign_machine(
+        &self,
+        runtime: crate::RuntimeId,
+    ) -> Result<crate::MachinesListResult, ClientError> {
+        self.call(
+            crate::MACHINES_UNASSIGN_METHOD,
+            &crate::MachinesUnassignParams { runtime },
+        )
+        .await
+    }
+
+    /// Merges `from` into `into`, memories included.
+    pub async fn merge_machines(
+        &self,
+        from: crate::MachineName,
+        into: crate::MachineName,
+    ) -> Result<crate::MachinesListResult, ClientError> {
+        self.call(
+            crate::MACHINES_MERGE_METHOD,
+            &crate::MachinesMergeParams { from, into },
+        )
+        .await
+    }
+
+    /// Removes `machine`, which has no connected runtimes and no memories.
+    pub async fn forget_machine(
+        &self,
+        machine: crate::MachineName,
+    ) -> Result<crate::MachinesListResult, ClientError> {
+        self.call(
+            crate::MACHINES_FORGET_METHOD,
+            &crate::MachinesForgetParams { machine },
+        )
+        .await
     }
 
     /// The configured plugins, in the order their hooks run.
@@ -1762,6 +1834,10 @@ async fn route_notification(
         crate::PLUGINS_CHANGED_METHOD => {
             let changed: crate::PluginsChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::PluginsChanged(changed));
+        }
+        crate::MACHINES_CHANGED_METHOD => {
+            let changed: crate::MachinesChangedNotification = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::MachinesChanged(changed));
         }
         _ => {}
     }

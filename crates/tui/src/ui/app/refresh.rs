@@ -952,7 +952,10 @@ impl App {
             // An open MCP panel refreshes now instead of at its next poll.
             self.poll_mcp();
         }
-        if matches!(delivery, ClientDelivery::RuntimesChanged(_)) {
+        if matches!(
+            delivery,
+            ClientDelivery::RuntimesChanged(_) | ClientDelivery::MachinesChanged(_)
+        ) {
             self.poll_runtimes();
         }
         if matches!(delivery, ClientDelivery::PluginsChanged(_)) {

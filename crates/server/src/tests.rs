@@ -1541,3 +1541,137 @@ async fn media_uploads_and_reads_travel_as_base64_and_end_with_their_connection(
     harness.server.shutdown();
     harness.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn machines_are_listed_changed_and_announced_through_rpc() {
+    let harness = harness_with_mcp(BTreeMap::new());
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let own = cookie_agent_protocol::runtime_protocol::RuntimeMachine::this_machine()
+        .expect("this machine has a machine ID");
+
+    // `global` and `local` share the daemon's machine.
+    let (listed, _) = request(&mut client, 2, "machines.list", json!({})).await;
+    let machines = listed["result"]["machines"].as_array().expect("machines");
+    assert_eq!(machines.len(), 1, "{listed}");
+    let daemon = machines[0]["name"].as_str().unwrap().to_owned();
+    assert_eq!(machines[0]["ids"], json!([own.id]));
+    assert_eq!(
+        machines[0]["connected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|runtime| (
+                runtime["runtime_id"].as_str().unwrap(),
+                runtime["assigned_by"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [("global", "machine_id"), ("local", "machine_id")]
+    );
+    let (runtimes, _) = request(&mut client, 3, "runtimes.list", json!({})).await;
+    assert!(
+        runtimes["result"]["runtimes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|runtime| runtime["machine"] == daemon.as_str()),
+        "{runtimes}"
+    );
+
+    // Pinning `local` elsewhere moves it at once and tells every client.
+    let (assigned, early) = request(
+        &mut client,
+        4,
+        "machines.assign",
+        json!({ "runtime": "local", "machine": "sandbox" }),
+    )
+    .await;
+    let names = |result: &Value| {
+        result["result"]["machines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|machine| machine["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let mut expected = vec![daemon.clone(), "sandbox".to_owned()];
+    expected.sort();
+    assert_eq!(names(&assigned), expected, "{assigned}");
+    if !early
+        .iter()
+        .any(|notification| notification["method"] == "machines.changed")
+    {
+        notification_where(&mut client, "machines.changed", |_| true).await;
+    }
+    assert_eq!(
+        harness.engine.runtime_machine("local").unwrap().as_str(),
+        "sandbox"
+    );
+
+    // Refusals are registry errors that change nothing.
+    let (taken, _) = request(
+        &mut client,
+        5,
+        "machines.rename",
+        json!({ "machine": "sandbox", "name": daemon }),
+    )
+    .await;
+    assert_eq!(
+        taken["error"]["data"]["code"], "machine_name_taken",
+        "{taken}"
+    );
+    let (in_use, _) = request(
+        &mut client,
+        6,
+        "machines.forget",
+        json!({ "machine": "sandbox" }),
+    )
+    .await;
+    assert_eq!(
+        in_use["error"]["data"]["code"], "machine_in_use",
+        "{in_use}"
+    );
+    let (missing, _) = request(
+        &mut client,
+        7,
+        "machines.merge",
+        json!({ "from": "nope", "into": "sandbox" }),
+    )
+    .await;
+    assert_eq!(missing["error"]["data"]["code"], "machine_not_found");
+    let (invalid, _) = request(
+        &mut client,
+        8,
+        "machines.rename",
+        json!({ "machine": "sandbox", "name": "Not Valid" }),
+    )
+    .await;
+    assert_eq!(invalid["error"]["code"], -32602, "{invalid}");
+
+    // Merging the sandbox back leaves one machine that pins `local`.
+    let (merged, _) = request(
+        &mut client,
+        9,
+        "machines.merge",
+        json!({ "from": "sandbox", "into": daemon }),
+    )
+    .await;
+    assert_eq!(names(&merged), std::slice::from_ref(&daemon));
+    assert_eq!(merged["result"]["machines"][0]["pinned"], json!(["local"]));
+    let (unassigned, _) = request(
+        &mut client,
+        10,
+        "machines.unassign",
+        json!({ "runtime": "local" }),
+    )
+    .await;
+    assert_eq!(unassigned["result"]["machines"][0]["pinned"], json!([]));
+    let (again, _) = request(
+        &mut client,
+        11,
+        "machines.unassign",
+        json!({ "runtime": "local" }),
+    )
+    .await;
+    assert_eq!(again["error"]["data"]["code"], "runtime_not_pinned");
+    harness.engine.shutdown().await;
+}

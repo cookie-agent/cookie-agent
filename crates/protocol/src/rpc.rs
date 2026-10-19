@@ -466,6 +466,13 @@ pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
 pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
 pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
 pub const RUNTIMES_RECONNECT_METHOD: &str = "runtimes.reconnect";
+pub const MACHINES_LIST_METHOD: &str = "machines.list";
+pub const MACHINES_RENAME_METHOD: &str = "machines.rename";
+pub const MACHINES_ASSIGN_METHOD: &str = "machines.assign";
+pub const MACHINES_UNASSIGN_METHOD: &str = "machines.unassign";
+pub const MACHINES_MERGE_METHOD: &str = "machines.merge";
+pub const MACHINES_FORGET_METHOD: &str = "machines.forget";
+pub const MACHINES_CHANGED_METHOD: &str = "machines.changed";
 pub const PLUGINS_LIST_METHOD: &str = "plugins.list";
 pub const PLUGINS_RESTART_METHOD: &str = "plugins.restart";
 pub const PLUGINS_CHANGED_METHOD: &str = "plugins.changed";
@@ -632,10 +639,111 @@ pub struct RuntimeListing {
     /// The runtime's operating system, once it has connected and said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+    /// The machine the runtime belongs to: the one it is assigned to while
+    /// it is connected, else the one it is pinned to or last reported.
+    /// Absent while the daemon cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<MachineName>,
     /// Why the last attempt to connect failed, while it is not connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesListParams {}
+
+/// Every machine of the daemon's machine registry, in name order. Each
+/// `machines.*` change answers with the machines afterwards.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MachinesListResult {
+    pub machines: Vec<MachineInfo>,
+}
+
+/// One machine: a computer that runtimes run on.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MachineInfo {
+    pub name: MachineName,
+    /// The opaque machine IDs the machine stands for: a runtime that
+    /// reports one of them belongs to it.
+    pub ids: Vec<String>,
+    /// Runtime IDs pinned to the machine, whatever they report.
+    pub pinned: Vec<RuntimeId>,
+    /// The connected runtimes assigned to the machine, by runtime ID.
+    pub connected: Vec<MachineRuntime>,
+    /// The operating system its connected runtimes report, when they agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// The memory files in the machine's memory folder.
+    pub memories: u64,
+}
+
+/// A connected runtime assigned to a machine.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MachineRuntime {
+    pub runtime_id: RuntimeId,
+    pub assigned_by: MachineAssignment,
+    /// The operating system the runtime reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+}
+
+crate::open_enum! {
+    /// Why a runtime belongs to its machine.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum MachineAssignment {
+        /// The machine pins the runtime ID.
+        Pinned,
+        /// The machine stands for the machine ID the runtime reports.
+        MachineId,
+    }
+}
+
+/// Rename a machine; its memory folder moves with it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesRenameParams {
+    pub machine: MachineName,
+    pub name: MachineName,
+}
+
+/// Pin a runtime ID to a machine, created when the name is new, and remove
+/// its pin from any other machine.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesAssignParams {
+    pub runtime: RuntimeId,
+    pub machine: MachineName,
+}
+
+/// Remove a runtime's pin, so that it belongs to the machine of the machine
+/// ID it reports.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesUnassignParams {
+    pub runtime: RuntimeId,
+}
+
+/// Move one machine's IDs, pins, and memories into another and remove it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesMergeParams {
+    pub from: MachineName,
+    pub into: MachineName,
+}
+
+/// Remove a machine that has no connected runtimes and no memories.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesForgetParams {
+    pub machine: MachineName,
+}
+
+/// The machine registry changed, or a runtime was assigned to a new
+/// machine; refetch `machines.list` and `runtimes.list`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MachinesChangedNotification {}
 
 /// How the daemon reaches a runtime.
 ///

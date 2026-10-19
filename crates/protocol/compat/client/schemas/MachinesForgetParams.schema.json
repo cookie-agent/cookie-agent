@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Remove a machine that has no connected runtimes and no memories.",
+  "properties": {
+    "machine": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "machine"
+  ],
+  "title": "MachinesForgetParams",
+  "type": "object"
+}

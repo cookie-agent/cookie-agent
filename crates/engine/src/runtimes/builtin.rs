@@ -7,7 +7,10 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_config::SkillRegistry;
-use cookie_agent_protocol::{CapabilityName, RuntimeCapabilityInfo, RuntimeKind, RuntimeLifetime};
+use cookie_agent_protocol::{
+    CapabilityName, RuntimeCapabilityInfo, RuntimeKind, RuntimeLifetime,
+    runtime_protocol::RuntimeMachine,
+};
 use cookie_agent_runtime_api::{
     CODING_RUNTIME_KIND, CodingToolsFactory, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID, RuntimeInfo,
     ToolProvider, WorkspaceContext,
@@ -60,6 +63,7 @@ impl RuntimeTemplate for GlobalTemplate {
             connected: true,
             capabilities: vec![global_capability()],
             platform: None,
+            machine: RuntimeMachine::this_machine(),
             message: None,
         }
     }
@@ -138,6 +142,7 @@ impl RuntimeTemplate for LocalTemplate {
             connected: true,
             capabilities: vec![coding_capability()],
             platform: self.workspace.platform().map(str::to_owned),
+            machine: RuntimeMachine::this_machine(),
             message: None,
         }
     }

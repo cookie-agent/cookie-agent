@@ -33,6 +33,8 @@ pub enum IdentityError {
     Attachment,
     #[error("invalid capability name")]
     Capability,
+    #[error("invalid machine name")]
+    Machine,
 }
 
 macro_rules! string_identity {
@@ -298,6 +300,14 @@ impl RuntimeId {
 }
 
 string_identity!(
+    MachineName,
+    Machine,
+    valid_machine_name,
+    32,
+    "^[a-z][a-z0-9_-]{0,31}$"
+);
+
+string_identity!(
     CapabilityName,
     Capability,
     valid_capability_name,
@@ -485,6 +495,16 @@ fn valid_agent_id(value: &str) -> bool {
 
 fn valid_runtime_id(value: &str) -> bool {
     valid_lower_snake(value, 32)
+}
+
+/// A lowercase ASCII letter, then up to 31 lowercase letters, digits, `_`,
+/// or `-`: the runtime ID rule with `-` allowed.
+fn valid_machine_name(value: &str) -> bool {
+    (1..=32).contains(&value.len())
+        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+        })
 }
 
 fn valid_capability_name(value: &str) -> bool {
@@ -760,6 +780,28 @@ variant_reference_schema!(ConfiguredModelDefault);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn machine_names_take_a_letter_then_up_to_31_letters_digits_underscores_or_hyphens() {
+        for valid in ["a", "labpc", "lab-pc_2", &format!("m{}", "-".repeat(31))] {
+            assert!(MachineName::new(valid).is_ok(), "{valid}");
+        }
+        for invalid in [
+            "",
+            "2lab",
+            "-lab",
+            "Lab",
+            "lab.pc",
+            "lab pc",
+            &format!("m{}", "a".repeat(32)),
+        ] {
+            assert_eq!(
+                MachineName::new(invalid),
+                Err(IdentityError::Machine),
+                "{invalid}"
+            );
+        }
+    }
 
     #[test]
     fn identities_are_strict_and_model_keys_split_once() {

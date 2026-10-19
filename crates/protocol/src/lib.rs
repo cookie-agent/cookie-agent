@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.1, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.2, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
@@ -214,8 +214,8 @@ pub use content::*;
 pub use cookie_agent_identity::{
     AdapterId, AgentId, AgentRevision, AttachmentName, AuthFieldName, AuthMethodId,
     AuthParameterId, AuthRecipeId, CacheEntryId, CacheRevision, CanonicalModelId, CapabilityName,
-    CatalogRevision, ConfigRevision, IdentityError, ManifestEntryId, ManifestRevision, ModelKey,
-    ModelRevision, ModelSelection, ModelSnapshotRevision, ProtocolRecipeId, ProviderId,
+    CatalogRevision, ConfigRevision, IdentityError, MachineName, ManifestEntryId, ManifestRevision,
+    ModelKey, ModelRevision, ModelSelection, ModelSnapshotRevision, ProtocolRecipeId, ProviderId,
     ProviderModelId, ProviderRecipeId, ProviderSetupRecipeId, ProviderStateRevision,
     ProviderStoreRevision, RecipeCompilerVersion, RecipeRegistryRevision, RuntimeId,
     RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,

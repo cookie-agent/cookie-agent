@@ -86,6 +86,9 @@ pub struct RuntimeListingState {
     pub connected: bool,
     pub capabilities: Vec<RuntimeCapabilityInfo>,
     pub platform: Option<String>,
+    /// The machine the runtime reported when it last connected; `None`
+    /// when it reported none, or a malformed one.
+    pub machine: Option<cookie_agent_protocol::runtime_protocol::RuntimeMachine>,
     /// Why the last attempt to connect failed, while it is not connected.
     pub message: Option<String>,
 }

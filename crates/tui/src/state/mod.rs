@@ -1386,7 +1386,8 @@ impl StateStore {
             }
             ClientDelivery::RuntimeChanged(_)
             | ClientDelivery::SessionsChanged(_)
-            | ClientDelivery::PluginsChanged(_) => DeliveryOutcome::Applied,
+            | ClientDelivery::PluginsChanged(_)
+            | ClientDelivery::MachinesChanged(_) => DeliveryOutcome::Applied,
         }
     }
 

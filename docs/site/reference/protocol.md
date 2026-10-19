@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.1.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.2.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.1.0",
+    "protocol_version": "1.2.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.1.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.2.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -238,6 +238,12 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Runtime `templates` and live `instances` with status |
 | `runtimes.reconnect` | `runtime_id`, optional `capability`, `workspace` when the capability takes one | The `instance` afterwards, as `runtimes.list` reports it |
+| `machines.list` | Empty object | Every `machines` entry, in name order (see [Machines](#machines)) |
+| `machines.rename` | `machine`, new `name` | The `machines` afterwards; the machine's memory folder moves with it |
+| `machines.assign` | `runtime` ID, `machine` | The `machines` afterwards; the runtime is pinned to the machine, created when the name is new |
+| `machines.unassign` | `runtime` ID | The `machines` afterwards; the runtime's pin is gone |
+| `machines.merge` | `from`, `into` | The `machines` afterwards; `from`'s IDs, pins, and memories moved to `into` |
+| `machines.forget` | `machine` | The `machines` afterwards, without the machine |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -413,8 +419,8 @@ the runtime reported, and two spellings of one workspace share an instance.
 its `lifetime` (`builtin` for `global` and `local`, `spawned` for a
 template, `dial_in` for a runtime that connected on its own); whether the daemon is `connected` to it now; its `capabilities`
 (`name`, `kind`, `takes_workspace`, `description`), empty until it has
-connected once; its `platform`; and a `message` saying why its last attempt
-to connect failed. Each instance has its `runtime_id`, `capability`, reported
+connected once; its `platform`; its `machine` (see [Machines](#machines));
+and a `message` saying why its last attempt to connect failed. Each instance has its `runtime_id`, `capability`, reported
 `attachment_name`, `kind`, `workspace`, and `platform` once started, its
 `status` (`starting`, `ready`, `reconnecting`, `failed`, or `stopped`), and a
 failure `message`.
@@ -426,6 +432,48 @@ running is started; a `ready` or `reconnecting` one is left as it is.
 `workspace` that `runtimes.list` reports. A start that fails is an error with
 the reason, and is also reported in `runtimes.changed`. Retrying `global`
 also retries its failed MCP servers.
+
+### Machines
+
+Every runtime belongs to one **machine**, the computer it runs on (see the
+[memory spec](../specs/memory.md#3-machines)). The daemon keeps its machines
+in a registry, `machines.json` in its data folder, which only the
+`machines.*` methods change. A runtime is assigned when it connects, in this
+order: the machine that pins its runtime ID; the machine that stands for the
+machine ID it reported in the [runtime protocol](runtime-protocol.md#machines);
+a new machine for that ID, named after the runtime's sanitized host name with
+`-2`, `-3`, … added on a clash; and, for a runtime that reported no ID, a new
+machine pinning it, named after its runtime ID. `global` and `local` belong to
+the daemon's own machine. Machine names are a lowercase ASCII letter followed
+by up to 31 lowercase letters, digits, `_`, or `-`. `runtimes.list` gives each
+runtime's `machine`: the one it is assigned to while connected, else the one
+it is pinned to or last reported.
+
+`machines.list` returns each machine as a `MachineInfo`: its `name`; the
+machine `ids` it stands for; the runtime IDs `pinned` to it; the `connected`
+runtimes assigned to it, each with its `runtime_id`, `assigned_by`
+(`pinned` or `machine_id`), and `platform`; the `platform` its connected
+runtimes agree on; and its number of `memories`, the memory files in its
+memory folder.
+
+Each change answers with the machines afterwards, moves the connected
+runtimes it affects at once, and sends `machines.changed`; a session's
+system prompt names the new machine from its next run. A change holds the
+memory lock while it rewrites the registry and moves memory folders, and
+fails, changing nothing, when it cannot:
+
+- `machines.rename` fails with `machine_name_taken` when another machine, or
+  a memory folder that belongs to none, has the name.
+- `machines.assign` removes the runtime's pin from any other machine.
+- `machines.unassign` of a runtime no machine pins is `runtime_not_pinned`.
+- `machines.merge` fails with `machine_memory_conflict` when both memory
+  folders hold a file of one name, and with `machine_merge_self` for one
+  machine.
+- `machines.forget` fails with `machine_in_use` while a connected runtime
+  belongs to the machine or its memory folder holds anything.
+
+An unknown machine is `machine_not_found`; a registry or folder that cannot
+be read or written is `machine_store_failed`.
 
 ### Plugins
 
@@ -660,6 +708,7 @@ the title, and continues with new physical sequences.
 | `runtimes.changed` | A runtime template was registered or an instance's status changed; optional `failures` |
 | `background.changed` | A subscribed session's background calls changed: `session_id` and its current `calls` |
 | `plugins.changed` | A plugin's status changed; an empty object |
+| `machines.changed` | The machine registry changed, or a runtime joined a new machine; an empty object |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
@@ -672,7 +721,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, and `plugins.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, and `machines.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -697,7 +746,8 @@ client that holds a different revision refetches `runtime.snapshot.get` rather
 than trusting either. A status `mcp.changed` is an empty object;
 bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `runtimes.changed` and `plugins.changed` work the same way for
-`runtimes.list` and `plugins.list`.
+`runtimes.list` and `plugins.list`, and `machines.changed` for
+`machines.list` and `runtimes.list`.
 
 ### Connection failures
 

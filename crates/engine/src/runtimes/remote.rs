@@ -196,6 +196,9 @@ impl ProtocolTemplate {
             connected: true,
             capabilities: client.capabilities(),
             platform: result.platform,
+            machine: result
+                .machine
+                .filter(cookie_agent_protocol::runtime_protocol::RuntimeMachine::is_valid),
             message: None,
         };
         *lock(&self.connection) = Some(client.clone());

@@ -319,6 +319,12 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(SESSION_RUNTIME_DETACH_METHOD, ToDaemon, SessionRuntimeDetachParams => SessionRuntimeDetachResult),
         request!(RUNTIMES_LIST_METHOD, ToDaemon, RuntimesListParams => RuntimesListResult),
         request!(RUNTIMES_RECONNECT_METHOD, ToDaemon, RuntimesReconnectParams => RuntimesReconnectResult),
+        request!(MACHINES_LIST_METHOD, ToDaemon, MachinesListParams => MachinesListResult),
+        request!(MACHINES_RENAME_METHOD, ToDaemon, MachinesRenameParams => MachinesListResult),
+        request!(MACHINES_ASSIGN_METHOD, ToDaemon, MachinesAssignParams => MachinesListResult),
+        request!(MACHINES_UNASSIGN_METHOD, ToDaemon, MachinesUnassignParams => MachinesListResult),
+        request!(MACHINES_MERGE_METHOD, ToDaemon, MachinesMergeParams => MachinesListResult),
+        request!(MACHINES_FORGET_METHOD, ToDaemon, MachinesForgetParams => MachinesListResult),
         request!(PLUGINS_LIST_METHOD, ToDaemon, PluginsListParams => PluginsListResult),
         request!(PLUGINS_RESTART_METHOD, ToDaemon, PluginsRestartParams => PluginsRestartResult),
         request!(CONFIG_RELOAD_METHOD, ToDaemon, ConfigReloadParams => ConfigReloadResult),
@@ -369,6 +375,11 @@ fn client_methods() -> Vec<MethodSpec> {
             PLUGINS_CHANGED_METHOD,
             FromDaemon,
             PluginsChangedNotification
+        ),
+        notification!(
+            MACHINES_CHANGED_METHOD,
+            FromDaemon,
+            MachinesChangedNotification
         ),
     ]
 }

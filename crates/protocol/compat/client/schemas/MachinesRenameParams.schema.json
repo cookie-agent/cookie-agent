@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Rename a machine; its memory folder moves with it.",
+  "properties": {
+    "machine": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "machine",
+    "name"
+  ],
+  "title": "MachinesRenameParams",
+  "type": "object"
+}

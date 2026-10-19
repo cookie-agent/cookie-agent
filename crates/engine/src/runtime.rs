@@ -64,6 +64,7 @@ pub(crate) mod handles;
 mod helpers;
 mod internal_agents;
 mod loop_guard;
+mod machine_api;
 mod mailbox;
 pub(crate) mod messaging_api;
 mod model_loop;
@@ -274,6 +275,9 @@ pub enum EngineError {
     /// A runtime could not be attached, detached, or started.
     #[error("runtime error: {0}")]
     Runtime(String),
+    /// A machine registry change was refused or failed.
+    #[error(transparent)]
+    Machine(#[from] crate::MachineError),
     #[error("plugin request rejected: {0}")]
     Plugin(String),
     #[error(transparent)]
@@ -826,6 +830,8 @@ pub(crate) struct Inner {
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     /// The base layer, runtime templates, and running runtime instances.
     pub(crate) runtimes: Arc<crate::runtimes::RuntimeRegistry>,
+    /// The machines runtimes run on.
+    pub(crate) machines: Arc<crate::machines::MachineRegistry>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     /// MCP changes and failures of every runtime.
@@ -955,6 +961,7 @@ impl Engine {
             current_manifest,
         });
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
+        let machines = Arc::new(crate::machines::MachineRegistry::open(&options.data_dir)?);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
         let placement = Arc::clone(&store);
@@ -1033,6 +1040,7 @@ impl Engine {
                 },
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 runtimes,
+                machines,
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 mcp_hub,
@@ -1092,6 +1100,7 @@ impl Engine {
         // producer state arrive with each tree's load (tree-local B1, C1).
         engine.install_tree_load_observer()?;
         engine.install_runtime_producers();
+        engine.install_machine_assignment();
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
             engine.inner.plugins.start_eager(runtime);

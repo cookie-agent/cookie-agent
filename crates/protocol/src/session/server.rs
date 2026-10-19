@@ -492,6 +492,36 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::RuntimesReconnectParams,
     ) -> Result<crate::RuntimesReconnectResult, ServerFault>;
+    /// Lists the machines.
+    async fn list_machines(
+        &self,
+        params: crate::MachinesListParams,
+    ) -> Result<crate::MachinesListResult, ServerFault>;
+    /// Renames a machine and moves its memory folder.
+    async fn rename_machine(
+        &self,
+        params: crate::MachinesRenameParams,
+    ) -> Result<crate::MachinesListResult, ServerFault>;
+    /// Pins a runtime ID to a machine.
+    async fn assign_machine(
+        &self,
+        params: crate::MachinesAssignParams,
+    ) -> Result<crate::MachinesListResult, ServerFault>;
+    /// Removes a runtime's pin.
+    async fn unassign_machine(
+        &self,
+        params: crate::MachinesUnassignParams,
+    ) -> Result<crate::MachinesListResult, ServerFault>;
+    /// Merges one machine into another.
+    async fn merge_machines(
+        &self,
+        params: crate::MachinesMergeParams,
+    ) -> Result<crate::MachinesListResult, ServerFault>;
+    /// Removes an unused machine.
+    async fn forget_machine(
+        &self,
+        params: crate::MachinesForgetParams,
+    ) -> Result<crate::MachinesListResult, ServerFault>;
     /// Lists the configured plugins.
     async fn list_plugins(
         &self,
@@ -984,6 +1014,12 @@ async fn dispatch<S: ServerProtocol>(
         }
         crate::RUNTIMES_LIST_METHOD => value(server.list_runtimes(decode_default(params)?).await?),
         crate::RUNTIMES_RECONNECT_METHOD => value(server.reconnect_runtime(decode(params)?).await?),
+        crate::MACHINES_LIST_METHOD => value(server.list_machines(decode_default(params)?).await?),
+        crate::MACHINES_RENAME_METHOD => value(server.rename_machine(decode(params)?).await?),
+        crate::MACHINES_ASSIGN_METHOD => value(server.assign_machine(decode(params)?).await?),
+        crate::MACHINES_UNASSIGN_METHOD => value(server.unassign_machine(decode(params)?).await?),
+        crate::MACHINES_MERGE_METHOD => value(server.merge_machines(decode(params)?).await?),
+        crate::MACHINES_FORGET_METHOD => value(server.forget_machine(decode(params)?).await?),
         crate::PLUGINS_LIST_METHOD => value(server.list_plugins(decode_default(params)?).await?),
         crate::PLUGINS_RESTART_METHOD => value(server.restart_plugin(decode(params)?).await?),
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),

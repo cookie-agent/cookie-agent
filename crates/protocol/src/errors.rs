@@ -449,6 +449,66 @@ error_codes! {
         hint: None,
         description: "An `mcp.server.*` or `mcp.auth.*` request the daemon could not carry out.",
     }
+    MACHINE_NOT_FOUND {
+        code: "machine_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("machine", "The machine name.")],
+        message: "There is no machine named {machine}.",
+        hint: Some("See `machines.list` for the machines."),
+        description: "A `machines.*` request named a machine the registry does not have.",
+    }
+    MACHINE_NAME_TAKEN {
+        code: "machine_name_taken",
+        rpc: APPLICATION_ERROR,
+        fields: [required("name", "The machine name.")],
+        message: "The machine name {name} is taken.",
+        hint: Some("Choose another name, or merge the two machines."),
+        description: "`machines.rename` to the name of another machine, or of a memory folder that belongs to none.",
+    }
+    MACHINE_IN_USE {
+        code: "machine_in_use",
+        rpc: APPLICATION_ERROR,
+        fields: [required("machine", "The machine name.")],
+        message: "The machine {machine} still has connected runtimes or memories.",
+        hint: Some("Disconnect its runtimes and move or delete its memories first, or merge it into another machine."),
+        description: "`machines.forget` of a machine with connected runtimes or a nonempty memory folder.",
+    }
+    MACHINE_MEMORY_CONFLICT {
+        code: "machine_memory_conflict",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("from", "The machine merged."),
+            required("into", "The machine merged into."),
+            required("name", "A file both memory folders have."),
+        ],
+        message: "Both {from} and {into} have a memory file named {name}.",
+        hint: Some("Rename or delete one of them, then merge again."),
+        description: "`machines.merge` of two machines whose memory folders share a file name; nothing changed.",
+    }
+    MACHINE_MERGE_SELF {
+        code: "machine_merge_self",
+        rpc: APPLICATION_ERROR,
+        fields: [required("machine", "The machine name.")],
+        message: "The machine {machine} cannot be merged into itself.",
+        hint: None,
+        description: "`machines.merge` with the same machine as `from` and `into`.",
+    }
+    RUNTIME_NOT_PINNED {
+        code: "runtime_not_pinned",
+        rpc: APPLICATION_ERROR,
+        fields: [required("runtime", "The runtime ID.")],
+        message: "The runtime {runtime} is not pinned to a machine.",
+        hint: None,
+        description: "`machines.unassign` of a runtime ID no machine pins.",
+    }
+    MACHINE_STORE_FAILED {
+        code: "machine_store_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The machine registry or a machine's memory folder could not be changed.",
+        hint: Some("See the details, then check that the cookie data directory is writable."),
+        description: "Reading or writing `machines.json`, taking the memory lock, or moving a memory folder failed; nothing changed.",
+    }
     CONFIG_APPLY_REFUSED {
         code: "config_apply_refused",
         rpc: APPLICATION_ERROR,

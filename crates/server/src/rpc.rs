@@ -342,6 +342,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Runtime(reason) => errors::RUNTIME_REJECTED
             .error()
             .field("reason", reason_text(reason)),
+        EngineError::Machine(error) => machine_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()
             .field("reason", reason_text(reason)),
@@ -432,6 +433,33 @@ fn code_of(fault: RpcFault) -> &'static errors::ErrorCode {
         .and_then(|data| data["code"].as_str())
         .expect("registry data");
     errors::lookup(code).expect("a registered code")
+}
+
+fn machine_error(error: &cookie_agent_engine::MachineError) -> errors::ErrorBuilder {
+    use cookie_agent_engine::MachineError;
+    match error {
+        MachineError::NotFound(machine) => errors::MACHINE_NOT_FOUND
+            .error()
+            .field("machine", machine.as_str()),
+        MachineError::NameTaken(name) => errors::MACHINE_NAME_TAKEN
+            .error()
+            .field("name", name.as_str()),
+        MachineError::InUse(machine) => errors::MACHINE_IN_USE
+            .error()
+            .field("machine", machine.as_str()),
+        MachineError::MemoryConflict { from, into, name } => errors::MACHINE_MEMORY_CONFLICT
+            .error()
+            .field("from", from.as_str())
+            .field("into", into.as_str())
+            .field("name", name.as_str()),
+        MachineError::MergeSelf(machine) => errors::MACHINE_MERGE_SELF
+            .error()
+            .field("machine", machine.as_str()),
+        MachineError::NotPinned(runtime) => errors::RUNTIME_NOT_PINNED
+            .error()
+            .field("runtime", runtime.as_str()),
+        MachineError::Store(_) => errors::MACHINE_STORE_FAILED.error(),
+    }
 }
 
 #[cfg(test)]

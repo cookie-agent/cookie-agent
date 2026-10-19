@@ -132,6 +132,62 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "machines.assign",
+      "params": "MachinesAssignParams",
+      "params_role": "command",
+      "result": "MachinesListResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "machines.changed",
+      "params": "MachinesChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "machines.forget",
+      "params": "MachinesForgetParams",
+      "params_role": "command",
+      "result": "MachinesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "machines.list",
+      "params": "MachinesListParams",
+      "params_role": "command",
+      "result": "MachinesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "machines.merge",
+      "params": "MachinesMergeParams",
+      "params_role": "command",
+      "result": "MachinesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "machines.rename",
+      "params": "MachinesRenameParams",
+      "params_role": "command",
+      "result": "MachinesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "machines.unassign",
+      "params": "MachinesUnassignParams",
+      "params_role": "command",
+      "result": "MachinesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "mcp.auth.begin",
       "params": "McpAuthBeginParams",
       "params_role": "command",

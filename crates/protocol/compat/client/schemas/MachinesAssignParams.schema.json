@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Pin a runtime ID to a machine, created when the name is new, and remove\nits pin from any other machine.",
+  "properties": {
+    "machine": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": "string"
+    },
+    "runtime": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime",
+    "machine"
+  ],
+  "title": "MachinesAssignParams",
+  "type": "object"
+}

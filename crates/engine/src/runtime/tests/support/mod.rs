@@ -120,6 +120,11 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
                 description: String::new(),
             }],
             platform: None,
+            // Each fake runtime runs on a machine of its own, named after it.
+            machine: Some(cookie_agent_protocol::runtime_protocol::RuntimeMachine {
+                id: format!("fake-machine-{}", self.id),
+                host_name: Some(self.id.to_owned()),
+            }),
             message: None,
         }
     }

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Move one machine's IDs, pins, and memories into another and remove it.",
+  "properties": {
+    "from": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": "string"
+    },
+    "into": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "from",
+    "into"
+  ],
+  "title": "MachinesMergeParams",
+  "type": "object"
+}

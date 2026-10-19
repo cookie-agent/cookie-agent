@@ -1,0 +1,117 @@
+{
+  "$defs": {
+    "MachineAssignment": {
+      "description": "Why a runtime belongs to its machine.",
+      "oneOf": [
+        {
+          "const": "pinned",
+          "description": "The machine pins the runtime ID.",
+          "type": "string"
+        },
+        {
+          "const": "machine_id",
+          "description": "The machine stands for the machine ID the runtime reports.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "MachineInfo": {
+      "description": "One machine: a computer that runtimes run on.",
+      "properties": {
+        "connected": {
+          "description": "The connected runtimes assigned to the machine, by runtime ID.",
+          "items": {
+            "$ref": "#/$defs/MachineRuntime"
+          },
+          "type": "array"
+        },
+        "ids": {
+          "description": "The opaque machine IDs the machine stands for: a runtime that\nreports one of them belongs to it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "memories": {
+          "description": "The memory files in the machine's memory folder.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+          "type": "string"
+        },
+        "pinned": {
+          "description": "Runtime IDs pinned to the machine, whatever they report.",
+          "items": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "platform": {
+          "description": "The operating system its connected runtimes report, when they agree.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "ids",
+        "pinned",
+        "connected",
+        "memories"
+      ],
+      "type": "object"
+    },
+    "MachineRuntime": {
+      "description": "A connected runtime assigned to a machine.",
+      "properties": {
+        "assigned_by": {
+          "$ref": "#/$defs/MachineAssignment"
+        },
+        "platform": {
+          "description": "The operating system the runtime reports.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_id",
+        "assigned_by"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Every machine of the daemon's machine registry, in name order. Each\n`machines.*` change answers with the machines afterwards.",
+  "properties": {
+    "machines": {
+      "items": {
+        "$ref": "#/$defs/MachineInfo"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "machines"
+  ],
+  "title": "MachinesListResult",
+  "type": "object"
+}

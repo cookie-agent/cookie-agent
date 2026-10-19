@@ -146,6 +146,34 @@ impl Server {
         });
     }
 
+    /// Signals machine registry changes to this connection; bursts
+    /// coalesce.
+    pub(super) fn start_machine_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_machine_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                if context
+                    .notify(
+                        cookie_agent_protocol::MACHINES_CHANGED_METHOD,
+                        &cookie_agent_protocol::MachinesChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Signals runtime template and instance status changes to this
     /// connection; bursts coalesce. An instance failure is sent on its own,
     /// naming the subscribed sessions attached to the instance.

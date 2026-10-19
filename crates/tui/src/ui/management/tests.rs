@@ -665,6 +665,7 @@ fn runtime_listing() -> cookie_agent_protocol::RuntimesListResult {
         connected,
         capabilities,
         platform: None,
+        machine: None,
         message: None,
     };
     cookie_agent_protocol::RuntimesListResult {

@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.2.0
+
+- Machines: the computers runtimes run on. `machines.list`,
+  `machines.rename`, `machines.assign`, `machines.unassign`,
+  `machines.merge`, and `machines.forget` read and change the daemon's
+  machine registry (see [Machines](protocol.md#machines)), with the error
+  codes `machine_not_found`, `machine_name_taken`, `machine_in_use`,
+  `machine_memory_conflict`, `machine_merge_self`, `runtime_not_pinned`, and
+  `machine_store_failed`. The `machines.changed` notification reaches every
+  connection when the registry changes, and each `runtimes.list` entry
+  gains `machine`. A 1.1 client sees none of it; a 1.2 client calling a
+  `machines.*` method on a 1.1 daemon gets `method_not_found`.
+
 ## 1.1.0
 
 - A new audit event, `record_omitted { omitted_type }`, stands in for a record

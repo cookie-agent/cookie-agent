@@ -315,6 +315,42 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RuntimesReconnectResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_machines(
+        &self,
+        _: crate::MachinesListParams,
+    ) -> Result<crate::MachinesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn rename_machine(
+        &self,
+        _: crate::MachinesRenameParams,
+    ) -> Result<crate::MachinesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn assign_machine(
+        &self,
+        _: crate::MachinesAssignParams,
+    ) -> Result<crate::MachinesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn unassign_machine(
+        &self,
+        _: crate::MachinesUnassignParams,
+    ) -> Result<crate::MachinesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn merge_machines(
+        &self,
+        _: crate::MachinesMergeParams,
+    ) -> Result<crate::MachinesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn forget_machine(
+        &self,
+        _: crate::MachinesForgetParams,
+    ) -> Result<crate::MachinesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: crate::PluginsListParams,

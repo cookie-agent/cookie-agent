@@ -39,6 +39,7 @@ impl ServerProtocol for Server {
         self.start_mcp_change_notifications(context.clone());
         self.start_runtime_instance_notifications(context.clone());
         self.start_plugin_notifications(context.clone());
+        self.start_machine_notifications(context.clone());
         self.start_background_notifications(context.clone());
         self.start_upload_cleanup(&context);
         self.start_engine_event_notifications(context);
@@ -589,6 +590,68 @@ impl ServerProtocol for Server {
         _params: cookie_agent_protocol::RuntimesListParams,
     ) -> Result<cookie_agent_protocol::RuntimesListResult> {
         Ok(crate::runtimes::runtimes_list(&self.engine))
+    }
+
+    async fn list_machines(
+        &self,
+        _params: cookie_agent_protocol::MachinesListParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult> {
+        Ok(self.machines_list())
+    }
+
+    async fn rename_machine(
+        &self,
+        params: cookie_agent_protocol::MachinesRenameParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult> {
+        self.engine
+            .rename_machine(params.machine, params.name)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(self.machines_list())
+    }
+
+    async fn assign_machine(
+        &self,
+        params: cookie_agent_protocol::MachinesAssignParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult> {
+        self.engine
+            .assign_machine(params.runtime, params.machine)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(self.machines_list())
+    }
+
+    async fn unassign_machine(
+        &self,
+        params: cookie_agent_protocol::MachinesUnassignParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult> {
+        self.engine
+            .unassign_machine(params.runtime)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(self.machines_list())
+    }
+
+    async fn merge_machines(
+        &self,
+        params: cookie_agent_protocol::MachinesMergeParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult> {
+        self.engine
+            .merge_machines(params.from, params.into)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(self.machines_list())
+    }
+
+    async fn forget_machine(
+        &self,
+        params: cookie_agent_protocol::MachinesForgetParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult> {
+        self.engine
+            .forget_machine(params.machine)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(self.machines_list())
     }
 
     async fn list_plugins(

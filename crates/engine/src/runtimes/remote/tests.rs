@@ -1814,3 +1814,64 @@ async fn a_dial_in_runtime_serves_sessions_and_comes_back_after_a_drop() {
     assert!(!instance.connection().unwrap().is_closed());
     fixture.engine.shutdown().await;
 }
+
+/// A runtime that reports the daemon's machine ID joins the daemon's
+/// machine as it connects, and the machine is written at once.
+#[tokio::test]
+async fn a_runtime_joins_the_machine_of_the_id_it_reports() {
+    let (fixture, _) = custom_fixture();
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let daemon = fixture
+        .engine
+        .runtime_machine("local")
+        .expect("the daemon's machine");
+    assert_eq!(fixture.engine.runtime_machine("remote"), None);
+    fixture
+        .engine
+        .inner
+        .runtimes
+        .ensure("remote", None, Some(fixture._directory.path()))
+        .await
+        .unwrap();
+    let listing = fixture
+        .engine
+        .runtime_templates()
+        .into_iter()
+        .find(|template| template.runtime_id == "remote")
+        .unwrap()
+        .listing;
+    assert_eq!(
+        listing.machine,
+        cookie_agent_protocol::runtime_protocol::RuntimeMachine::this_machine()
+    );
+    assert_eq!(
+        fixture.engine.runtime_machine("remote"),
+        Some(daemon.clone())
+    );
+    let machines = fixture.engine.machines();
+    assert_eq!(machines.len(), 1);
+    assert_eq!(
+        machines[0]
+            .connected
+            .iter()
+            .map(|runtime| (runtime.runtime_id.as_str(), runtime.assigned_by))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "global",
+                cookie_agent_protocol::MachineAssignment::MachineId
+            ),
+            ("local", cookie_agent_protocol::MachineAssignment::MachineId),
+            (
+                "remote",
+                cookie_agent_protocol::MachineAssignment::MachineId
+            ),
+        ]
+    );
+    let written =
+        std::fs::read_to_string(fixture._directory.path().join("data").join("machines.json"))
+            .unwrap();
+    assert!(written.contains(&format!("\"{daemon}\"")), "{written}");
+    fixture.engine.shutdown().await;
+}

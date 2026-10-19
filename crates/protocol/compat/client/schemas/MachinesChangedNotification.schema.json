@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The machine registry changed, or a runtime was assigned to a new\nmachine; refetch `machines.list` and `runtimes.list`.",
+  "title": "MachinesChangedNotification",
+  "type": "object"
+}
