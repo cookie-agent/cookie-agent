@@ -136,14 +136,8 @@ mod tests {
             SkillTool::get_permission_name("skill").unwrap(),
             Some("skill")
         );
-        assert_eq!(
-            GoalTools::get_permission_name("goal_get").unwrap(),
-            Some("read")
-        );
-        assert_eq!(
-            GoalTools::get_permission_name("goal_update").unwrap(),
-            Some("write")
-        );
+        assert_eq!(GoalTools::get_permission_name("goal_get").unwrap(), None);
+        assert_eq!(GoalTools::get_permission_name("goal_update").unwrap(), None);
         for name in ["delegate_subagent", "get_subagent_result"] {
             assert_eq!(
                 DelegateToolProvider::get_permission_name(name).unwrap(),

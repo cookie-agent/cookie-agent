@@ -462,13 +462,11 @@ History transforms:
   deadline-free `producer/recovery/start` notification, shared with the
   runtime protocol. The SDK exposes explicit producer handles. See
   [Plugin development](plugins.md#producers) for the public contract.
-- **Permissions**: `goal_get`/`goal_update` follow the existing tool
-  permission model (`crates/engine/src/permissions.rs`); they are root-only
-  by construction, not by permission config, and are not configurable
-  capability surface. `goal_get` matches `read` on `goal:current`;
-  `goal_update` matches `write` on `goal:current`. Explicit activation does
-  not grant a permission exception. The producer capability is off by
-  default for plugins.
+- **Permissions**: `goal_get`/`goal_update` declare no permission. They are
+  root-only by construction and published only while the session has an
+  active or paused goal, which the user set; they act on that goal alone, so
+  setting the goal is the grant. They are not configurable capability
+  surface. The producer capability is off by default for plugins.
 - **Run-freeze integration**: tool set and tool-prompt changes apply only at
   run admission; goal lifecycle events never mutate `history[0]`
   (`AGENTS.md` rules; `crates/engine/src/runtime/tool_prompts.rs`).

@@ -2562,9 +2562,11 @@ corpora, and the compatibility policy.
   covered by the future-data test. The goal tools are not called by the
   model: on the base layer, `goal_get` and `goal_update` declare path actions
   (`read`, `write`) on the relative resource `goal:current`, which no rule can
-  match without a workspace, so policy denies them whatever the agent allows
-  (an open follow-up); the recorder completes the goal through the API. MCP
-  tools are not recorded (their blocks are kinds the plugin tool covers).
+  match without a workspace, so policy denied them whatever the agent allowed;
+  the recorder completes the goal through the API. (Since resolved: the goal
+  tools now declare no permission: they are published only while the
+  user's goal is active or paused, and act on it alone.) MCP tools are not
+  recorded (their blocks are kinds the plugin tool covers).
 - **A fork of a session that delegated is refused** as a corrupt log
   ("delegation reservation ownership is invalid"): the fork copies the
   `delegation_reserved` records, whose `parent_session_id` names the source,

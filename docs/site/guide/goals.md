@@ -44,11 +44,9 @@ configurable capability; they cannot be granted to anything else. The tools
 appear or disappear at the next run start after a lifecycle change, never
 mid-run.
 
-Tool availability does not bypass permission rules. `goal_get` uses the `read`
-action with resource `goal:current`; `goal_update` uses `write` with resource
-`goal:current`. Rules for `goal:*` cover this resource. A workspace-only
-file pattern such as `${workspace_dir}/*` does not cover goal state; normal
-matching, explicit deny/ask rules, and the unmatched default still apply.
+`goal_get` and `goal_update` declare no permission. Setting the goal is what
+makes them available, and they act on that goal alone, so permission rules do
+not govern them and every call is allowed.
 
 Each checklist item contains only a description and a finished flag, with no
 item ID. `goal_update { items }` replaces the entire ordered checklist of the

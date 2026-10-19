@@ -27,8 +27,8 @@ block under the system prompt in the TUI transcript.
 | [`delegate_subagent`](#delegate_subagent) | `delegate` |
 | [`get_subagent_result`](#get_subagent_result) | `delegate` |
 | [`send_message`](#send_message) | `message` |
-| [`goal_get`](#goal_get) | `read` |
-| [`goal_update`](#goal_update) | `write` |
+| [`goal_get`](#goal_get) | *none* |
+| [`goal_update`](#goal_update) | *none* |
 | [`read_artifact`](#read_artifact) | *none* |
 | [`stop_background`](#stop_background) | *none* |
 

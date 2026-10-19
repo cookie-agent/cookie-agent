@@ -46,7 +46,7 @@ output: Default::default(),
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "goal_get".into(),
-            permission_name: Some("read".into()),
+            permission_name: None,
             description: "Read the root session's objective, lifecycle status, revision, and full checklist. The root checklist is authoritative; verify work directly or through subagents before treating an item as finished.".into(),
             parameters: schema::<GoalGetParams>(),
         }
@@ -61,7 +61,7 @@ output: Default::default(),
             concurrency: Default::default(),
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "goal_update".into(),
-            permission_name: Some("write".into()),
+            permission_name: None,
             description: "Replace the current root goal's full checklist. The current active or paused goal is selected when this update executes, even if the goal changed since this run started. The last accepted replacement wins. This cannot change the objective or issue lifecycle commands; a nonempty all-finished checklist completes the goal. Verify evidence directly or through subagents before marking items finished; the root checklist is authoritative over subagent self-reports.".into(),
             parameters: strict_schema::<GoalUpdateParams>(),
         }
@@ -100,10 +100,12 @@ impl ToolProvider for GoalTools {
         Ok(vec![Self::get_spec(), Self::update_spec()])
     }
 
+    /// Goal tools declare no permission: they are published only to a root
+    /// run whose session has an active or paused goal, which the user set,
+    /// and they act on that goal alone.
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "goal_get" => Ok(Some("read")),
-            "goal_update" => Ok(Some("write")),
+            "goal_get" | "goal_update" => Ok(None),
             _ => Err(ToolError::execution("goal provider received another tool")),
         }
     }
@@ -116,11 +118,11 @@ impl ToolProvider for GoalTools {
         match name {
             "goal_get" => {
                 let _: GoalGetParams = parse_args(name, arguments.clone())?;
-                Ok((Some("read"), Some("goal:current".into())))
+                Ok((None, Some("goal:current".into())))
             }
             "goal_update" => {
                 let _: GoalUpdateParams = parse_args_strict(name, arguments.clone())?;
-                Ok((Some("write"), Some("goal:current".into())))
+                Ok((None, Some("goal:current".into())))
             }
             _ => Err(ToolError::execution("goal provider received another tool")),
         }
@@ -399,8 +401,8 @@ mod tests {
     fn goal_specs_use_strict_protocol_schemas_and_root_authority_guidance() {
         let get = GoalTools::get_spec();
         let update = GoalTools::update_spec();
-        assert_eq!(get.permission_name.as_deref(), Some("read"));
-        assert_eq!(update.permission_name.as_deref(), Some("write"));
+        assert_eq!(get.permission_name, None);
+        assert_eq!(update.permission_name, None);
         assert_eq!(
             get.result_truncation,
             cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut

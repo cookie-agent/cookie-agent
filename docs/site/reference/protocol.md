@@ -549,9 +549,9 @@ state and reminder identity. User lifecycle RPC controls retain
 identities and revisions; no
 model tool can set an objective or issue lifecycle commands. Empty lists preserve
 the active/paused lifecycle and can bootstrap an active goal without completion.
-The engine decides existing tool permission mapping: `goal_get` uses `read`,
-and `goal_update` uses `write`, both with resource `goal:current`. Ordinary
-permission rules still apply. There is no new permission action or goal configuration.
+`goal_get` and `goal_update` declare no permission: they are published only to
+a root run whose session has an active or paused goal, and every call is
+allowed. There is no permission action or goal configuration for them.
 
 To preserve strictly increasing event revisions, an all-finished update appends
 checklist revision `r+1`, then completion revision `r+2`, and returns the final

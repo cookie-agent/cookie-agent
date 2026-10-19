@@ -73,7 +73,6 @@ impl ToolProvider for GoalVisibilityProvider {
         Ok([
             (
                 "goal_get",
-                "read",
                 "Read the current goal",
                 serde_json::json!({
                     "type": "object",
@@ -83,7 +82,6 @@ impl ToolProvider for GoalVisibilityProvider {
             ),
             (
                 "goal_update",
-                "write",
                 "Update the current goal",
                 serde_json::json!({
                     "type": "object",
@@ -107,27 +105,25 @@ impl ToolProvider for GoalVisibilityProvider {
             ),
         ]
         .into_iter()
-        .map(
-            |(name, permission_name, description, parameters)| ToolSpec {
-                background: false,
-                background_default: false,
-                collision: Default::default(),
-                output: Default::default(),
-                name: name.into(),
-                permission_name: Some(permission_name.into()),
-                description: description.into(),
-                parameters,
-                concurrency: Default::default(),
-                result_truncation: Default::default(),
-            },
-        )
+        .map(|(name, description, parameters)| ToolSpec {
+            background: false,
+            background_default: false,
+            collision: Default::default(),
+            output: Default::default(),
+            name: name.into(),
+            permission_name: None,
+            description: description.into(),
+            parameters,
+            concurrency: Default::default(),
+            result_truncation: Default::default(),
+        })
         .collect())
     }
 
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "goal_get" => Ok(Some("read")),
-            "goal_update" => Ok(Some("write")),
+            // Like the real goal tools, these declare no permission.
+            "goal_get" | "goal_update" => Ok(None),
             _ => Err(ToolError::execution("unexpected goal visibility tool")),
         }
     }
@@ -137,7 +133,10 @@ impl ToolProvider for GoalVisibilityProvider {
         name: &str,
         _arguments: &serde_json::Value,
     ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
-        Ok((Self::get_permission_name(name)?, Some("goal:test".into())))
+        Ok((
+            Self::get_permission_name(name)?,
+            Some("goal:current".into()),
+        ))
     }
 
     fn get_display_argument(
@@ -2376,7 +2375,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
     let (endpoint, responses, captured) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Goal visibility test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  write: allow\n---\nExercise goal tool visibility.\n",
+        "---\ndescription: Goal visibility test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n  write: deny\n---\nExercise goal tool visibility.\n",
     );
     fixture
         .engine
@@ -2607,6 +2606,137 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
     }
     assert!(!requests[3].contains("cancelled by the user"));
     assert!(requests[4].contains("cancelled by the user"));
+    fixture.engine.shutdown().await;
+}
+
+/// The goal tools declare no permission: once the user set a goal, an agent
+/// whose rules deny or ask for everything still calls them without an
+/// approval, and the checklist follows the calls.
+#[tokio::test]
+async fn goal_tools_run_without_approval_under_an_agent_that_denies_or_asks_everything() {
+    let (endpoint, responses, captured) = scripted_channel_server(4).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Restrictive goal agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n  write: ask\n  bash: ask\n  delegate: deny\n  message: deny\n  skill: deny\n  mcp: deny\n  webfetch: deny\n---\nPursue the goal.\n",
+    );
+    fixture.engine.register_base_layer().expect("base layer");
+    let session_id = fixture
+        .engine
+        .create_session(selection)
+        .expect("restrictive goal session")
+        .session_id;
+    let open_item = |finished| serde_json::json!({"items": [{"description": "Draft the plan", "finished": finished}]});
+    for (matcher, body) in [
+        (
+            "Establish the checklist with goal_update",
+            scripted_tool_body("goal-update-open", "goal_update", open_item(false)),
+        ),
+        (
+            "goal-update-open",
+            scripted_tool_body("goal-get", "goal_get", serde_json::json!({})),
+        ),
+        (
+            "goal-get",
+            scripted_tool_body("goal-update-done", "goal_update", open_item(true)),
+        ),
+        ("goal-update-done", scripted_text_body("goal finished")),
+    ] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                matcher, body,
+            ))
+            .expect("goal tool response");
+    }
+    let goal = fixture
+        .engine
+        .set_session_goal(
+            SessionGoalSetParams {
+                session_id,
+                objective: "Draft the plan".into(),
+                selection: None,
+            },
+            client_origin(),
+        )
+        .await
+        .expect("set the goal")
+        .goal;
+    await_event(&fixture.engine, session_id, "goal completed", |event| {
+        matches!(
+            event.payload,
+            EventPayload::GoalLifecycleChanged {
+                status: GoalStatus::Completed,
+                ..
+            }
+        )
+    })
+    .await;
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+
+    let requests = captured.await.expect("goal tool requests");
+    assert_eq!(requests.len(), 4);
+    let names = request_tool_names(&requests[0]);
+    assert!(names.iter().any(|name| name == "goal_get"));
+    assert!(names.iter().any(|name| name == "goal_update"));
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session_id)
+        .unwrap()
+        .log
+        .events();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ApprovalRequested { .. }))
+    );
+    let terminations = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminations.len(), 3);
+    for termination in &terminations {
+        assert_eq!(
+            termination.outcome,
+            cookie_agent_protocol::ToolTerminationOutcome::Completed,
+            "{termination:?}"
+        );
+    }
+    // `goal_get` read the checklist the first update wrote.
+    assert!(requests[2].contains("Draft the plan"));
+    let goal_get_result =
+        scripted_effective_last_message(requests[2].as_bytes()).expect("the goal_get result");
+    assert_eq!(goal_get_result["tool_call_id"], "goal-get");
+    let parts: serde_json::Value = serde_json::from_str(
+        goal_get_result["content"]
+            .as_str()
+            .expect("goal_get result content"),
+    )
+    .expect("goal_get result parts");
+    let read: serde_json::Value =
+        serde_json::from_str(parts[0]["value"].as_str().expect("goal_get result text"))
+            .expect("goal_get result JSON");
+    assert_eq!(read["goal"]["status"], "active");
+    assert_eq!(read["goal"]["items"], open_item(false)["items"]);
+    let final_goal = fixture
+        .engine
+        .goal_get(session_id)
+        .await
+        .expect("goal after the run")
+        .goal
+        .expect("the completed goal");
+    assert_eq!(final_goal.goal_id, goal.goal_id);
+    assert_eq!(final_goal.status, GoalStatus::Completed);
+    assert_eq!(
+        final_goal.items,
+        [GoalItem {
+            description: "Draft the plan".into(),
+            finished: true,
+        }]
+    );
     fixture.engine.shutdown().await;
 }
 

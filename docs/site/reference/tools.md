@@ -523,9 +523,9 @@ updates.
 The model cannot set an objective, pause, resume, or cancel. Empty checklists
 preserve the active or paused lifecycle; nonempty all-finished checklists complete
 it even while paused. The root must verify evidence before marking items finished. Both tools
-return the full state without display truncation. Their existing permission
-actions are `read` and `write`, respectively, both with resource `goal:current`.
-Ordinary permission matching, deny/ask rules, and the unmatched default still apply.
+return the full state without display truncation. Neither declares a
+permission: setting the goal is what publishes them, and they act on that goal
+alone, so permission rules do not govern them and every call is allowed.
 
 ### Display
 
