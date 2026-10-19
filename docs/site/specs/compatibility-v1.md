@@ -2101,3 +2101,133 @@ is `0.51.0`; the exact numeric `ProtocolVersion`, `PROTOCOL_VERSION`,
   the daemon's minor has nothing to gate until a minor adds a method or
   member; `Client::daemon_version` is there for it. Phase H stamps `1.0.0`;
   `FIRST_STABLE_MINOR` already names minor 0 of that line.
+
+Step 2: user media input (11.1 to 11.5). `CLIENT_PROTOCOL_VERSION` is
+`0.52.0`.
+
+- **Content in the params.** `run.start`, `run.steer`, and
+  `session.submit_input` take `content: UserContent`, and a `recalled`
+  `session.recall_input` returns `content`; `QueuedInput` already carried it.
+  The params stay strict through their parts: a member an `ArtifactRef` does
+  not list is `unknown_field` at its path (`content[1].artifact.width`). The
+  engine keeps content end to end: `user_before_input` transforms it, a skill
+  submission is content of exactly one text part, `RunProjection.input` is the
+  submitted content (compared when a `run.start` is retried), and a producer's
+  start, which takes its input from the message it admits, passes one empty
+  text part. The TUI sends `UserContent::text` and puts back only the text
+  parts of a recalled or voided input (`composer_text`), since its composer
+  holds no attachments yet; restoring file parts is phase G's.
+- **Advertised limits.** Every `AvailableModelDescriptor` carries a required
+  `input_media` (at most 16 entries, one per kind) from
+  `runtime_api::media::user_input_media(family, capabilities)`. It shares one
+  table with `tool_input_media` (`deliverable_media` over `family_delivery`):
+  a kind counts for a user turn whenever the family delivers it at all, in a
+  tool result or a user message. `mime_types` are the model's types (exact, or
+  a prefix ending in `*`, with the video aliases folded) that an upload can be
+  recognized as, so a type the daemon cannot recognize is never offered;
+  Matroska is left out, since telling it from WebM needs a file extension and
+  uploads ignore names. `max_bytes` is the lowest of the model's, the
+  family's, and the attachment cap; images carry `max_dimension` 16384 and
+  `max_pixels` 16 Mi, the validation caps. No family limit below those is
+  modeled (the spec's example shows Anthropic's 8000-pixel side; a larger image
+  is sent and the provider decides). `max_count` is the model's. A kind left
+  with no media type is left out. Variants state no capabilities, so the list
+  is per model.
+- **Uploads.** `artifact.upload.finish` returns `{ artifact: ArtifactRef,
+  image? }` rather than the reference's members with `image` beside them: a
+  client puts `artifact` into a `file` part as it is, where `image` would be a
+  member commands refuse. `UploadId` is `upl_<uuid>`. `begin` publishes a
+  session still buffered in memory, because its tree's store lives in the
+  session directory, which exists only from then; a `byte_length` above 25 MiB
+  is `media_too_large` with `kind: file`. Chunks stream into
+  `.upload-<uuid>.tmp` in the tree's store and are hashed as they arrive;
+  `finish` reads the file once (at most 25 MiB) to validate it with
+  `validate_upload`, which recognizes the type from the content alone, applies
+  the attachment caps and container checks of `validate_attachment`, and
+  reports an image's size; an image over the dimension or pixel caps is
+  `media_too_large` with its `width` and `height`, unrecognized content
+  `media_type_unsupported` with `application/octet-stream`, and a malformed
+  container `media_type_unsupported` with the type it started like. Three codes
+  were added: `upload_offset_mismatch { expected_offset }` (a gap or a repeat),
+  `upload_size_mismatch { byte_length, received }` (a chunk past the end, or a
+  finish before the end), and `too_many_uploads { max_uploads }`. A refused
+  chunk and an early finish keep the upload; a digest or content refusal drops
+  it. A connection has at most 8 uploads in progress
+  (`MAX_UPLOADS_PER_CONNECTION`), each a temporary file and no memory; the
+  server's `connected` hook drops them when the connection's shutdown token
+  fires. Requests run concurrently, so chunks a client pipelines can arrive out
+  of order: the reference says to send each after the previous one's answer.
+  Uploads in progress are in memory, so a restart forgets them and their
+  temporary files stay behind.
+- **Leases, pins, and why a sweep cannot race a submit.** One lock
+  (`UploadState::leases`) holds the leases (tree and digest to expiry), the
+  pins admission takes, and every deletion that could remove an input's
+  artifact. `finish` publishes the blob and leases it for an hour under that
+  lock. Admission pins each artifact an input names and checks that the store
+  holds it, under the lock, then keeps the pins (`PinnedArtifacts`) until the
+  event naming them is written. The lease sweep (each janitor tick, on a
+  blocking thread) takes the lock, picks leases past their expiry with no pin,
+  skips everything while a capture is publishing or a session of the tree is
+  running, and deletes only digests no log of the tree references (D's raw
+  scanner, which counts `ArtifactRef` objects); each such lease ends whether its
+  blob was deleted or is now referenced. A revert's sweep takes the same lock
+  and keeps every leased or pinned digest. So a sweep either ran first, and
+  admission finds the blob gone (`artifact_not_found`), or it runs later and
+  finds it pinned or referenced. Leases are in memory, so a restart forgets
+  them: an upload no event referenced then stays in the store, as an orphan of
+  a failed revert sweep does. A reverted reference leaves the blob to its
+  lease; a fork links it into the new tree like any referenced artifact.
+- **Reading.** `artifact.read` verifies a blob's digest when it first opens it
+  and keeps the handle in its own verified-handle cache, so a large artifact
+  read range by range is hashed once; a removal evicts it. `media_type` is the
+  type recognized from the content, else `text/plain` when the first 16 KiB are
+  UTF-8 (a character cut at the end allowed), else
+  `application/octet-stream`. An offset past the end is `invalid_params`; one
+  at the end returns no data.
+- **Admission.** The model of the run is the frozen chain's first entry: at
+  `run.start` after the fallback continuation is applied, for a steer the
+  running run's (a later fallback gets placeholders), and for a queued input
+  the model of the selection it carries, looked up in the current catalog; the
+  run the queue later starts is admitted again with what it actually runs, and
+  a refusal then voids the queue like any failed start. The accepted media are
+  that model's catalog `input_media`; a model the catalog does not list
+  accepts none. Kind, type, byte, and count checks come first, then the pins,
+  then each blob is read (through the verified attachment cache model history
+  uses next) and validated: content that is not the type its reference states
+  is `artifact_not_found`, content that is no media at all
+  `media_type_unsupported`, and an image over `max_dimension` or `max_pixels`
+  `media_too_large` with its size. A type the model does not list is
+  `media_type_unsupported` (the kind is accepted, so `media_unsupported` would
+  mislead). Admission runs after `user_before_input`, on the content that will
+  be recorded, and before anything of the run is.
+- **Media fit.** `media::fit_media` runs on every model request before both
+  elision passes (and again after `model_before_request`, like elision) and in
+  native compaction's request. A user or emitted user message's file and an
+  assistant file fit when the model's `user_input_media` takes their kind and
+  type within the byte limit; a tool result's file fits only when its
+  `tool_input_media` entry delivers the kind in a tool result, since a family
+  that carries it in user messages cannot carry it there. The placeholder is
+  `[<kind> omitted: <reason> (<filename>, <size>)]` with `<kind>` `image`,
+  `PDF`, `audio`, or `video` and the reason `<model> does not accept <kind
+  plural>`, `<model> does not accept <media type>`, `larger than the <limit>
+  <model> accepts`, or `<model> does not accept <kind plural> in tool results`;
+  a missing filename or size is left out. Files that are no media kind are left
+  alone. The compaction summarizer is an internal agent, whose requests already
+  replace every file with `⟦elided media attachment: <type>⟧`, so it keeps that
+  wording rather than the fit's.
+- **Liveness.** Nothing new was needed: D's scanner already counts every
+  `ArtifactRef` object, the input-lane events' file parts included. The engine
+  test uploads, submits to a fake provider that receives the image, forks (the
+  fork's tree has the blob), reverts past the submit (the lease keeps the blob),
+  and sweeps after the lease (the root's copy goes, the fork's stays).
+- **Docs.** `protocol.md` has sections on user content and media (uploads,
+  leases, admission, reads) and the methods in its table; the catalog view
+  describes `input_media`; `tools.md` describes the placeholders; `events.md`
+  says submitted content is kept alive like attachments; `guide/media.md` is
+  new and in the nav; `errors.md` is regenerated with the three codes.
+- **Left for later.** The TUI's attach UX (`/attach`, pasted paths, chips,
+  attachments in the draft and restored on recall or void, hiding kinds the
+  model does not accept, offering to downscale on `media_too_large`) is phase
+  G's; the `Client` has `begin_upload`, `upload_chunk`, `finish_upload`,
+  `cancel_upload`, and `read_artifact` for it. Phase H's golden logs should
+  include an input with a file part.
