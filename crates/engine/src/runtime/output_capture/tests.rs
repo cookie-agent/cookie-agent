@@ -912,3 +912,67 @@ async fn output_past_the_retain_limit_keeps_its_head_and_last_lines() {
         result.output
     );
 }
+
+#[tokio::test]
+async fn a_cut_terminal_display_names_the_first_retained_stream() {
+    use cookie_agent_protocol::{DisplayBlock, Open, TerminalSegment, TerminalStream};
+
+    let terminal = |omitted_lines| {
+        Open::Known(DisplayBlock::Terminal {
+            segments: vec![TerminalSegment {
+                stream: TerminalStream::Stderr,
+                text: "head\n".into(),
+            }],
+            exit_code: Some(1),
+            omitted_lines,
+            full: None,
+        })
+    };
+    for (omitted, named) in [(Some(3), true), (None, false)] {
+        let root = tempfile::tempdir().unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            ToolOutputDeclaration::Named {
+                streams: vec!["stdout".into(), "stderr".into()],
+            },
+            1,
+            5,
+        )
+        .await
+        .unwrap();
+        // Only stderr outgrows its preview, so only it is kept.
+        append(
+            &capture,
+            &[
+                ToolOutputChunk {
+                    stream: Some("stdout".into()),
+                    text: "ok".into(),
+                },
+                ToolOutputChunk {
+                    stream: Some("stderr".into()),
+                    text: "head\none\ntwo\nthree\n".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let mut streamed = completion(ToolCompletionOutput::Streamed);
+        streamed.result.display = vec![terminal(omitted)];
+        let result = capture.finish(streamed, false).await.unwrap();
+        let stderr = &result.retained_output.as_ref().unwrap().streams[1];
+        let [Open::Known(DisplayBlock::Terminal { full, .. })] = result.display.as_slice() else {
+            panic!("one terminal block");
+        };
+        if named {
+            let full = full.as_ref().expect("a cut block names the output");
+            assert_eq!(full.sha256, stderr.sha256.as_ref().unwrap().as_str());
+            assert_eq!(full.byte_length, 19);
+            assert_eq!(full.media_type, "text/plain");
+            assert_eq!(full.filename.as_deref(), Some("stderr"));
+        } else {
+            assert!(full.is_none(), "a whole block names nothing");
+        }
+    }
+}

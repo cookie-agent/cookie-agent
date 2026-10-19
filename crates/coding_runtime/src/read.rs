@@ -5,21 +5,21 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    PersistedToolResult as ToolResult, ToolEmittedContent, ToolEmittedMessage,
-    ToolEmittedMessageRole,
+    DisplayBlock, Open, PersistedToolResult as ToolResult, PreparedPresentation,
+    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, ToolHint,
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProvider, ToolSpec, media::AttachmentGate,
     media::approved_media_type, media::attachment_gate_error, media::gate_attachment,
-    media::sniff_media_type,
+    media::sniff_media_type, tool_presentation,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use cookie_agent_runtime_api::WorkspaceContext;
 
-use crate::{fs_cap, parse_args, schema};
+use crate::{display, fs_cap, parse_args, schema};
 
 const DEFAULT_LIMIT: usize = 2_000;
 /// Longest line returned in full; the rest of a longer line is replaced by a
@@ -54,6 +54,8 @@ struct ReadExecutor {
     target: fs_cap::PreparedExisting,
     offset: usize,
     limit: usize,
+    /// The path clients see.
+    shown_path: PathBuf,
 }
 
 impl ReadTool {
@@ -64,6 +66,12 @@ impl ReadTool {
         Self {
             workspace: workspace.root().to_owned(),
         }
+    }
+
+    /// The path clients see for `args`.
+    fn shown_path(&self, args: &ReadArgs) -> PathBuf {
+        let path = crate::permission_path_label(&args.file_path, &self.workspace);
+        PathBuf::from(crate::abbreviated_display_path(&path, &self.workspace))
     }
 }
 
@@ -144,6 +152,22 @@ impl ToolProvider for ReadTool {
         Ok(display)
     }
 
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
+        let Ok(primary) = self.get_display_argument(&call.name, &call.arguments) else {
+            return cookie_agent_runtime_api::tool_title_only(&call.name);
+        };
+        let Ok(args) = parse_args::<ReadArgs>("read", call.arguments.clone()) else {
+            return cookie_agent_runtime_api::tool_title_only(&call.name);
+        };
+        let shown = self.shown_path(&args).display().to_string();
+        let mut entries = vec![("path", shown.clone())];
+        entries.extend(args.offset.map(|offset| ("offset", offset.to_string())));
+        entries.extend(args.limit.map(|limit| ("limit", limit.to_string())));
+        tool_presentation(&format!("Read {shown}"), &primary)
+            .with_hint(ToolHint::FILE_READ)
+            .with_arguments([DisplayBlock::key_value(entries)])
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
@@ -161,6 +185,7 @@ impl ToolProvider for ReadTool {
         args.offset = Some(offset);
         args.limit = Some(limit);
         let workspace = self.workspace.clone();
+        let shown_path = self.shown_path(&args);
         crate::blocking(move || {
             let target =
                 fs_cap::prepare_existing(&workspace, std::path::Path::new(&args.file_path))?;
@@ -176,6 +201,7 @@ impl ToolProvider for ReadTool {
                     target,
                     offset,
                     limit,
+                    shown_path,
                 }),
             )
         })
@@ -210,8 +236,21 @@ impl PreparedExecutor for ReadExecutor {
                 output.push('\n');
             }
             output.push_str("</entries>");
+            let table = DisplayBlock::Table {
+                columns: vec!["name".into(), "type".into()],
+                rows: page
+                    .iter()
+                    .map(|(name, directory)| {
+                        vec![
+                            name.clone(),
+                            if *directory { "directory" } else { "file" }.into(),
+                        ]
+                    })
+                    .collect(),
+                omitted_rows: None,
+            };
             return Ok(ToolResult {
-display: Vec::new(),
+display: vec![Open::Known(display::fit_block(table, None)?)],
 background: None,
 retained_output: None,
                 title: crate::safe_title(format!(
@@ -253,7 +292,7 @@ retained_output: None,
         if std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()) {
             return Err(not_text());
         }
-        text_result(path, &mut reader, self.offset, self.limit)
+        text_result(path, &self.shown_path, &mut reader, self.offset, self.limit)
         })
         .await;
         result.map(cookie_agent_runtime_api::ToolCompletion::single)
@@ -282,6 +321,12 @@ fn attachment_result(
         bytes,
     )?;
     let sha256 = attachment.sha256.clone();
+    let media = DisplayBlock::Media {
+        artifact: attachment.artifact_ref(),
+        alt: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+    };
     let (output, attachments, additional_messages) = match gate {
         AttachmentGate::AttachToolResult => (
             format!("Attached {mime} ({} bytes).", bytes.len()),
@@ -309,7 +354,7 @@ fn attachment_result(
         }
     };
     Ok(ToolResult {
-        display: Vec::new(),
+        display: vec![Open::Known(media)],
         background: None,
         retained_output: None,
         title: crate::safe_title(format!("Read attachment {}", path.display())),
@@ -321,9 +366,11 @@ fn attachment_result(
 }
 
 /// One page of numbered lines, read in a single streaming pass that also
-/// counts the file's lines.
+/// counts the file's lines. Clients see the page as an excerpt of
+/// `shown_path`.
 fn text_result(
     path: &Path,
+    shown_path: &Path,
     reader: &mut impl BufRead,
     offset: usize,
     limit: usize,
@@ -336,6 +383,9 @@ fn text_result(
         line: Vec::new(),
         cut: 0,
         stopped_at: None,
+        excerpt: Vec::new(),
+        excerpt_bytes: 0,
+        excerpt_omitted: 0,
     };
     let end = offset.saturating_add(limit);
     // Lines ended so far, and whether bytes follow the last newline.
@@ -383,6 +433,15 @@ fn text_result(
         }
         lines += 1;
     }
+    let excerpt = DisplayBlock::FileExcerpt {
+        path: shown_path.display().to_string(),
+        language: display::language_for_path(shown_path),
+        start_line: (offset as u64).saturating_add(1),
+        lines: page.excerpt,
+        total_lines: Some(lines as u64),
+        omitted_lines: (page.excerpt_omitted > 0).then_some(page.excerpt_omitted),
+        full: None,
+    };
     let mut output = page.output;
     output.push_str("</content>");
     if let Some(next) = page.stopped_at {
@@ -391,7 +450,7 @@ fn text_result(
         ));
     }
     Ok(ToolResult {
-        display: Vec::new(),
+        display: vec![Open::Known(display::fit_block(excerpt, None)?)],
         background: None,
         retained_output: None,
         title: crate::safe_title(format!("Read file {}", path.display())),
@@ -416,6 +475,11 @@ struct TextPage {
     cut: usize,
     /// The first line left out because the page reached [`MAX_PAGE_BYTES`].
     stopped_at: Option<usize>,
+    /// The page's lines as clients see them, up to the display budget.
+    excerpt: Vec<String>,
+    excerpt_bytes: usize,
+    /// Lines of the page past the display budget.
+    excerpt_omitted: u64,
 }
 
 impl TextPage {
@@ -453,6 +517,14 @@ impl TextPage {
             self.stopped_at = Some(index);
         } else {
             self.output.push_str(&rendered);
+            // The excerpt line is the numbered line without its number.
+            let shown = &rendered[rendered.find(": ").map_or(0, |at| at + 2)..rendered.len() - 1];
+            if self.excerpt_bytes + shown.len() <= cookie_agent_protocol::DISPLAY_BUDGET_BYTES {
+                self.excerpt_bytes += shown.len();
+                self.excerpt.push(shown.to_owned());
+            } else {
+                self.excerpt_omitted += 1;
+            }
         }
         self.line.clear();
         self.cut = 0;

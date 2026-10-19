@@ -281,6 +281,75 @@ impl DisplayBlock {
         }
     }
 
+    /// A `markdown` block.
+    #[must_use]
+    pub fn markdown(text: impl Into<String>) -> Self {
+        Self::Markdown {
+            text: text.into(),
+            omitted_lines: None,
+        }
+    }
+
+    /// A `code` block, in `language` when it is known.
+    #[must_use]
+    pub fn code(text: impl Into<String>, language: Option<String>) -> Self {
+        Self::Code {
+            text: text.into(),
+            language,
+            start_line: None,
+            omitted_lines: None,
+        }
+    }
+
+    /// A `key_value` block of `entries`, in order.
+    #[must_use]
+    pub fn key_value<K: Into<String>, V: Into<String>>(
+        entries: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        Self::KeyValue {
+            entries: entries
+                .into_iter()
+                .map(|(key, value)| KeyValueEntry {
+                    key: key.into(),
+                    value: value.into(),
+                })
+                .collect(),
+            omitted_entries: None,
+        }
+    }
+
+    /// Whether a cut left some of the block's units out.
+    #[must_use]
+    pub fn is_cut(&self) -> bool {
+        let some = |omitted: &Option<u64>| omitted.is_some_and(|count| count > 0);
+        match self {
+            Self::Text { omitted_lines, .. }
+            | Self::Markdown { omitted_lines, .. }
+            | Self::Code { omitted_lines, .. }
+            | Self::FileExcerpt { omitted_lines, .. }
+            | Self::Terminal { omitted_lines, .. } => some(omitted_lines),
+            Self::Diff(diff) => diff.omitted.is_some_and(|omitted| omitted.hunks > 0),
+            Self::KeyValue {
+                omitted_entries, ..
+            } => some(omitted_entries),
+            Self::Table { omitted_rows, .. } => some(omitted_rows),
+            Self::Json { .. }
+            | Self::Media { .. }
+            | Self::Link { .. }
+            | Self::SessionRef { .. } => false,
+        }
+    }
+
+    /// Sets `full` on a block that has it (`file_excerpt`, `diff`, and
+    /// `terminal`); other blocks are left as they are.
+    pub fn set_full(&mut self, artifact: ArtifactRef) {
+        match self {
+            Self::FileExcerpt { full, .. } | Self::Terminal { full, .. } => *full = Some(artifact),
+            Self::Diff(diff) => diff.full = Some(artifact),
+            _ => {}
+        }
+    }
+
     /// The client minor that introduced `kind`, if this build knows it.
     #[must_use]
     pub fn since(kind: &str) -> Option<u32> {
@@ -1499,6 +1568,28 @@ impl PreparedPresentation {
             arguments: Vec::new(),
             preview: Vec::new(),
         }
+    }
+
+    /// The presentation with `hint`; a label that is not a valid hint is
+    /// left out.
+    #[must_use]
+    pub fn with_hint(mut self, hint: &str) -> Self {
+        self.hint = ToolHint::new(hint).ok();
+        self
+    }
+
+    /// The presentation with `blocks` added to its arguments.
+    #[must_use]
+    pub fn with_arguments(mut self, blocks: impl IntoIterator<Item = DisplayBlock>) -> Self {
+        self.arguments.extend(blocks.into_iter().map(Open::Known));
+        self
+    }
+
+    /// The presentation with `blocks` added to its preview.
+    #[must_use]
+    pub fn with_preview(mut self, blocks: impl IntoIterator<Item = DisplayBlock>) -> Self {
+        self.preview.extend(blocks.into_iter().map(Open::Known));
+        self
     }
 
     /// Fits its arguments and preview as the daemon fits a result's display

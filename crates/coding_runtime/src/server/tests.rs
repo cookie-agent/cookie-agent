@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use cookie_agent_protocol::{
-    RUNTIME_PROTOCOL_VERSION, RunId, SessionId, ToolCallId, errors, in_process_pair,
+    DiffAsOf, DisplayBlock, Open, RUNTIME_PROTOCOL_VERSION, RunId, SessionId, ToolCallId, errors,
+    in_process_pair,
 };
 use cookie_agent_runtime_api::{
     protocol::{
@@ -421,6 +422,76 @@ async fn context_applies_the_agent_md_lookup_and_names_unreadable_files() {
         assert_eq!(error.data_code(), Some("context_failed"));
         assert!(error.data_member("path").unwrap().ends_with("AGENTS.md"));
     }
+}
+
+#[tokio::test]
+async fn an_edit_carries_its_preview_and_its_cut_diff_names_media_it_sends() {
+    let workspace = tempfile::tempdir().unwrap();
+    let text = (1..=5_000)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(workspace.path().join("big.txt"), text).unwrap();
+    let harness = start(ServeOptions::default());
+    let instance = Some(open(&harness, workspace.path()).await.instance);
+    let (session, run) = (SessionId::new_v7(), RunId::new_v7());
+    let prepared: PrepareResult = harness
+        .daemon
+        .request(
+            method::TOOL_PREPARE,
+            &PrepareParams {
+                instance,
+                session,
+                run,
+                turn: turn(),
+                calls: vec![WireToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "edit".into(),
+                    arguments: json!({
+                        "filePath": "big.txt",
+                        "oldString": "line",
+                        "newString": "LINE",
+                        "replaceAll": true
+                    }),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let [PrepareOutcome::Prepared(edit)] = &prepared.results[..] else {
+        panic!("unexpected outcomes {:?}", prepared.results);
+    };
+    assert_eq!(edit.presentation.title.as_str(), "Edit big.txt");
+    let [Open::Known(DisplayBlock::Diff(preview))] = edit.presentation.preview.as_slice() else {
+        panic!("a diff preview: {:?}", edit.presentation.preview);
+    };
+    assert_eq!(preview.as_of, DiffAsOf::Prepare);
+    let result: ExecuteResult = harness
+        .daemon
+        .request(
+            method::TOOL_EXECUTE,
+            &ExecuteParams {
+                background: false,
+                prepared_id: edit.prepared_id,
+                session,
+                run,
+                turn: turn(),
+            },
+        )
+        .await
+        .unwrap();
+    let ExecuteOutcome::Completed(ToolResult { display, .. }) = &result.outcome else {
+        panic!("the edit completes");
+    };
+    let [Open::Known(DisplayBlock::Diff(applied))] = display.as_slice() else {
+        panic!("a diff result: {display:?}");
+    };
+    assert_eq!(applied.as_of, DiffAsOf::Execute);
+    let full = applied
+        .full
+        .as_ref()
+        .expect("a cut diff names its full content");
+    // Its bytes travel with the reply, so the daemon stores them.
+    assert!(result.media.iter().any(|media| media.sha256 == full.sha256));
 }
 
 #[tokio::test]

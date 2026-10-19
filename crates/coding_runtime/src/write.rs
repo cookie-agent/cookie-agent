@@ -1,17 +1,29 @@
-use std::path::PathBuf;
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
-use cookie_agent_protocol::PersistedToolResult as ToolResult;
+use cookie_agent_protocol::{
+    DiffAsOf, DiffBlock, DiffChange, DisplayBlock, Open, PersistedToolResult as ToolResult,
+    PreparedPresentation, ToolHint,
+};
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    tool_presentation,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use cookie_agent_runtime_api::WorkspaceContext;
 
-use crate::{fs_cap, parse_args, schema};
+use crate::{display, fs_cap, parse_args, schema};
+
+/// A write shows a line diff only when both its sides are UTF-8 text of at
+/// most this many bytes, and otherwise only the line counts.
+const MAX_DIFF_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct WriteTool {
@@ -32,6 +44,112 @@ struct WriteArgs {
 struct WriteExecutor {
     target: fs_cap::PreparedTarget,
     bytes: Vec<u8>,
+    /// The path clients see.
+    shown_path: PathBuf,
+}
+
+/// The file a write replaces, as far as its diff needs it.
+enum Replaced {
+    /// No file: the write creates one.
+    Nothing,
+    /// UTF-8 text of at most [`MAX_DIFF_BYTES`].
+    Text(String),
+    /// Anything else, by its line count.
+    Lines(u64),
+}
+
+impl Replaced {
+    /// What `target` holds now. A file that cannot be read counts no lines.
+    fn of(target: &fs_cap::PreparedTarget) -> Self {
+        match target {
+            fs_cap::PreparedTarget::Existing(existing) => {
+                Self::read(existing).unwrap_or(Self::Lines(0))
+            }
+            fs_cap::PreparedTarget::Absent(_) => Self::Nothing,
+        }
+    }
+
+    fn read(existing: &fs_cap::PreparedExisting) -> Result<Self, ToolError> {
+        let io = |error: std::io::Error| ToolError::execution(error.to_string());
+        let mut file = existing.open_file()?;
+        let mut head = Vec::new();
+        (&mut file)
+            .take(MAX_DIFF_BYTES as u64 + 1)
+            .read_to_end(&mut head)
+            .map_err(io)?;
+        if head.len() <= MAX_DIFF_BYTES {
+            return Ok(match String::from_utf8(head) {
+                Ok(text) => Self::Text(text),
+                Err(error) => Self::Lines(line_count(error.as_bytes())),
+            });
+        }
+        // Count the rest without holding it.
+        let mut newlines = memchr::memchr_iter(b'\n', &head).count() as u64;
+        let mut last = head.last().copied();
+        let mut chunk = vec![0; 64 * 1024];
+        loop {
+            let read = file.read(&mut chunk).map_err(io)?;
+            if read == 0 {
+                break;
+            }
+            newlines += memchr::memchr_iter(b'\n', &chunk[..read]).count() as u64;
+            last = Some(chunk[read - 1]);
+        }
+        Ok(Self::Lines(
+            newlines + u64::from(last.is_some_and(|byte| byte != b'\n')),
+        ))
+    }
+}
+
+/// The lines of `bytes`, a last line without a newline included.
+fn line_count(bytes: &[u8]) -> u64 {
+    memchr::memchr_iter(b'\n', bytes).count() as u64
+        + u64::from(bytes.last().is_some_and(|byte| *byte != b'\n'))
+}
+
+/// The diff of writing `new` over `replaced`, as of `as_of`: a line diff
+/// when both are text within [`MAX_DIFF_BYTES`], else the change and its
+/// line counts.
+fn write_diff(path: &Path, replaced: &Replaced, new: &[u8], as_of: DiffAsOf) -> DisplayBlock {
+    let change = match replaced {
+        Replaced::Nothing => DiffChange::Created,
+        Replaced::Text(_) | Replaced::Lines(_) => DiffChange::Modified,
+    };
+    let old = match replaced {
+        Replaced::Nothing => Some(""),
+        Replaced::Text(text) => Some(text.as_str()),
+        Replaced::Lines(_) => None,
+    };
+    let new_text = (new.len() <= MAX_DIFF_BYTES)
+        .then(|| std::str::from_utf8(new).ok())
+        .flatten();
+    if let (Some(old), Some(new_text)) = (old, new_text) {
+        let changes = display::line_diff_changes(old, new_text);
+        return DisplayBlock::Diff(display::diff_block(
+            path,
+            change,
+            &display::raw_lines(old),
+            &changes,
+            as_of,
+        ));
+    }
+    let removed = match replaced {
+        Replaced::Nothing => 0,
+        Replaced::Text(text) => line_count(text.as_bytes()),
+        Replaced::Lines(lines) => *lines,
+    };
+    DisplayBlock::Diff(DiffBlock {
+        path: path.display().to_string(),
+        old_path: None,
+        language: display::language_for_path(path),
+        change,
+        hunks: Vec::new(),
+        added: line_count(new),
+        removed,
+        omitted: None,
+        as_of,
+        full: None,
+    })
 }
 
 impl WriteTool {
@@ -42,6 +160,20 @@ impl WriteTool {
         Self {
             workspace: workspace.root().to_owned(),
         }
+    }
+
+    /// The path clients see for `args`.
+    fn shown_path(&self, args: &WriteArgs) -> PathBuf {
+        let path = crate::permission_path_label(&args.file_path, &self.workspace);
+        PathBuf::from(crate::abbreviated_display_path(&path, &self.workspace))
+    }
+
+    /// How clients show a call of `args`.
+    fn presentation_of(&self, args: &WriteArgs) -> PreparedPresentation {
+        let shown = self.shown_path(args).display().to_string();
+        tool_presentation(&format!("Write {shown}"), &shown)
+            .with_hint(ToolHint::FILE_WRITE)
+            .with_arguments([DisplayBlock::key_value([("path", shown)])])
     }
 }
 
@@ -104,19 +236,27 @@ impl ToolProvider for WriteTool {
         Ok(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
+        match parse_args::<WriteArgs>("write", call.arguments.clone()) {
+            Ok(args) if !args.file_path.is_empty() => self.presentation_of(&args),
+            _ => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let args: WriteArgs = parse_args("write", call.arguments)?;
-        let workspace = self.workspace.clone();
-        crate::blocking(move || prepare_write(&workspace, args)).await
+        let tool = self.clone();
+        crate::blocking(move || prepare_write(&tool, args)).await
     }
 }
 
-fn prepare_write(workspace: &std::path::Path, args: WriteArgs) -> Result<PreparedTool, ToolError> {
-    let target = fs_cap::prepare_target(workspace, std::path::Path::new(&args.file_path))?;
+/// Prepares a write, with a preview of its diff against the file there now.
+fn prepare_write(tool: &WriteTool, args: WriteArgs) -> Result<PreparedTool, ToolError> {
+    let target = fs_cap::prepare_target(&tool.workspace, std::path::Path::new(&args.file_path))?;
     if matches!(&target, fs_cap::PreparedTarget::Existing(existing) if existing.directory) {
         return Err(ToolError::unsupported_security(
             "write target is a directory",
@@ -126,16 +266,29 @@ fn prepare_write(workspace: &std::path::Path, args: WriteArgs) -> Result<Prepare
         "filePath": target.display_path(),
         "content": args.content,
     });
+    let shown_path = tool.shown_path(&args);
+    let preview = display::fit_block(
+        write_diff(
+            &shown_path,
+            &Replaced::of(&target),
+            args.content.as_bytes(),
+            DiffAsOf::Prepare,
+        ),
+        None,
+    )?;
+    let presentation = tool.presentation_of(&args).with_preview([preview]);
     // Writes to one location run one at a time, in call order.
     let serialization_key = PreparedSerializationKey::new(target.serialization_key());
-    PreparedTool::declared(
+    Ok(PreparedTool::declared(
         normalized_arguments,
         Some(serialization_key),
         Box::new(WriteExecutor {
             target,
             bytes: args.content.into_bytes(),
+            shown_path,
         }),
-    )
+    )?
+    .with_presentation(presentation))
 }
 
 #[async_trait]
@@ -149,15 +302,30 @@ impl PreparedExecutor for WriteExecutor {
                 "prepared write cancelled before commit",
             ));
         }
-        let (path, bytes) = crate::blocking(move || {
+        let artifacts = Arc::clone(&context.artifacts);
+        let session = context.session;
+        let (path, bytes, diff) = crate::blocking(move || {
+            let replaced = Replaced::of(&self.target);
             self.target.write(&self.bytes)?;
-            Ok((self.target.display_path().to_owned(), self.bytes.len()))
+            let diff = display::fit_block(
+                write_diff(&self.shown_path, &replaced, &self.bytes, DiffAsOf::Execute),
+                Some(display::Retain::diff_of(
+                    artifacts.as_ref(),
+                    session,
+                    &self.shown_path,
+                )),
+            )?;
+            Ok((
+                self.target.display_path().to_owned(),
+                self.bytes.len(),
+                diff,
+            ))
         })
         .await?;
         let path = path.display();
         Ok(cookie_agent_runtime_api::ToolCompletion::single(
             ToolResult {
-                display: Vec::new(),
+                display: vec![Open::Known(diff)],
                 background: None,
                 retained_output: None,
                 title: crate::safe_title(format!("Wrote {path}")),
@@ -173,6 +341,7 @@ impl PreparedExecutor for WriteExecutor {
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{
+        DiffAsOf, DiffBlock, DiffChange, DiffLine, DiffLineOp, DisplayBlock, Open,
         OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
     };
     #[cfg(any(unix, windows))]
@@ -513,6 +682,187 @@ mod tests {
             crate::test_turn_context(),
         )
         .expect("execution context")
+    }
+
+    /// The diff a call's blocks hold.
+    #[cfg(any(unix, windows))]
+    fn only_diff(blocks: &[Open<DisplayBlock>]) -> &DiffBlock {
+        match blocks {
+            [Open::Known(DisplayBlock::Diff(diff))] => diff,
+            other => panic!("expected one diff, got {other:?}"),
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn numbers(diff: &DiffBlock) -> Vec<(u64, u64, u64, u64)> {
+        diff.hunks
+            .iter()
+            .map(|hunk| {
+                (
+                    hunk.old_start,
+                    hunk.old_lines,
+                    hunk.new_start,
+                    hunk.new_lines,
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn a_created_file_previews_and_reports_its_lines_as_added() {
+        let root = tempfile::tempdir().expect("root");
+        let tool = WriteTool::new(&crate::test_workspace(root.path()));
+        let prepared = tool
+            .prepare(context(root.path()), write_call("new.rs", "a\nb\n"))
+            .await
+            .expect("prepare");
+        let presentation = prepared.presentation().expect("presentation").clone();
+        assert_eq!(presentation.title.as_str(), "Write new.rs");
+        assert_eq!(
+            presentation.hint.as_ref().map(|hint| hint.as_str()),
+            Some("file_write")
+        );
+        assert_eq!(
+            presentation.arguments,
+            [Open::Known(DisplayBlock::key_value([("path", "new.rs")]))]
+        );
+        let preview = only_diff(&presentation.preview);
+        assert_eq!(
+            (preview.change, preview.as_of),
+            (DiffChange::Created, DiffAsOf::Prepare)
+        );
+        assert_eq!(numbers(preview), [(0, 0, 1, 2)]);
+        let result = prepared
+            .execute_for_test(execution_context(root.path()))
+            .await
+            .expect("write");
+        let written = only_diff(&result.display);
+        assert_eq!(
+            (
+                written.change,
+                written.as_of,
+                written.added,
+                written.removed
+            ),
+            (DiffChange::Created, DiffAsOf::Execute, 2, 0)
+        );
+        assert_eq!(
+            written.hunks[0].lines,
+            [
+                DiffLine {
+                    op: DiffLineOp::Add,
+                    text: "a".into()
+                },
+                DiffLine {
+                    op: DiffLineOp::Add,
+                    text: "b".into()
+                },
+            ]
+        );
+        // The model sees what it always saw.
+        let path = root.path().join("new.rs");
+        assert_eq!(
+            result.output,
+            format!("Wrote 4 bytes to {}", path.display())
+        );
+        assert_eq!(result.metadata, serde_json::json!({"bytes": 4}));
+        assert_eq!(result.title.as_str(), format!("Wrote {}", path.display()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn a_modified_file_shows_a_line_diff_against_the_text_it_replaced() {
+        let root = tempfile::tempdir().expect("root");
+        let old = (1..=20)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        std::fs::write(root.path().join("value.txt"), &old).expect("fixture");
+        let new = old.replace("line 10\n", "ten\n");
+        let prepared = WriteTool::new(&crate::test_workspace(root.path()))
+            .prepare(context(root.path()), write_call("value.txt", &new))
+            .await
+            .expect("prepare");
+        let preview = only_diff(&prepared.presentation().expect("presentation").preview).clone();
+        assert_eq!(preview.change, DiffChange::Modified);
+        assert_eq!(numbers(&preview), [(5, 11, 5, 11)]);
+        // Another change lands first: the result diffs against it.
+        std::fs::write(
+            root.path().join("value.txt"),
+            old.replace("line 1\n", "one\n"),
+        )
+        .expect("change");
+        let result = prepared
+            .execute_for_test(execution_context(root.path()))
+            .await
+            .expect("write");
+        let written = only_diff(&result.display);
+        assert_eq!(written.as_of, DiffAsOf::Execute);
+        assert_eq!(numbers(written), [(1, 15, 1, 15)]);
+        assert_eq!((written.added, written.removed), (2, 2));
+    }
+
+    #[test]
+    fn large_or_binary_sides_show_counts_without_hunks() {
+        let path = std::path::Path::new("data.bin");
+        let large = "x\n".repeat(super::MAX_DIFF_BYTES);
+        let DisplayBlock::Diff(diff) = super::write_diff(
+            path,
+            &super::Replaced::Text("a\nb\nc".into()),
+            large.as_bytes(),
+            DiffAsOf::Prepare,
+        ) else {
+            panic!("a diff");
+        };
+        assert!(diff.hunks.is_empty());
+        assert_eq!(
+            (diff.change, diff.added, diff.removed),
+            (DiffChange::Modified, super::MAX_DIFF_BYTES as u64, 3)
+        );
+        let DisplayBlock::Diff(diff) = super::write_diff(
+            path,
+            &super::Replaced::Lines(7),
+            b"text\n",
+            DiffAsOf::Execute,
+        ) else {
+            panic!("a diff");
+        };
+        assert!(diff.hunks.is_empty());
+        assert_eq!((diff.added, diff.removed), (1, 7));
+        let DisplayBlock::Diff(diff) = super::write_diff(
+            path,
+            &super::Replaced::Nothing,
+            &[0xff, b'\n', 0xfe],
+            DiffAsOf::Execute,
+        ) else {
+            panic!("a diff");
+        };
+        assert!(diff.hunks.is_empty());
+        assert_eq!(
+            (diff.change, diff.added, diff.removed),
+            (DiffChange::Created, 2, 0)
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn a_binary_or_large_file_on_disk_counts_its_lines() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("blob"), [0xff, b'\n', 0xfe, b'\n', 0]).expect("binary");
+        let mut large = "y\n".repeat(super::MAX_DIFF_BYTES / 2);
+        large.push_str("tail");
+        std::fs::write(root.path().join("large"), &large).expect("large");
+        let tool = WriteTool::new(&crate::test_workspace(root.path()));
+        for (name, removed) in [("blob", 3), ("large", super::MAX_DIFF_BYTES as u64 / 2 + 1)] {
+            let prepared = tool
+                .prepare(context(root.path()), write_call(name, "new\n"))
+                .await
+                .expect("prepare");
+            let preview =
+                only_diff(&prepared.presentation().expect("presentation").preview).clone();
+            assert!(preview.hunks.is_empty(), "{name}");
+            assert_eq!((preview.added, preview.removed), (1, removed), "{name}");
+        }
     }
 
     #[cfg(any(unix, windows))]

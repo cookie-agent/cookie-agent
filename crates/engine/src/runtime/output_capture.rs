@@ -633,6 +633,9 @@ impl OutputCapture {
         state.finalized = true;
         let mut streams = Vec::new();
         let mut previews = Vec::new();
+        // The first declared stream kept as an artifact, as a cut terminal
+        // block names its complete output.
+        let mut full = None;
         for channel in &state.channels {
             let truncated = channel.preview.len() as u64 != channel.bytes;
             // Output the preview holds whole is stored nowhere else. A spill
@@ -647,6 +650,14 @@ impl OutputCapture {
                     .map_err(|e| ToolError::execution(e.to_string()))?;
                 let sha256 =
                     Sha256Digest::new(sha256).map_err(|e| ToolError::execution(e.to_string()))?;
+                if full.is_none() {
+                    full = Some(cookie_agent_protocol::ArtifactRef {
+                        sha256: sha256.as_str().to_owned(),
+                        byte_length: channel.written,
+                        media_type: "text/plain".into(),
+                        filename: channel.name.clone(),
+                    });
+                }
                 (Some(reference), Some(sha256))
             } else {
                 (None, None)
@@ -737,6 +748,9 @@ impl OutputCapture {
             ));
         }
         completion.result.output = rendered;
+        if let Some(full) = full {
+            name_full_output(&mut completion.result.display, &full);
+        }
         completion.result.retained_output = Some(RetainedToolOutput {
             reference,
             streams,
@@ -751,6 +765,29 @@ impl OutputCapture {
             pending.guard = Some(publication);
         }
         Ok(completion.result)
+    }
+}
+
+/// Names `full`, the call's retained output, on each cut terminal block of
+/// `display` that names none, as long as the display still fits its budget.
+fn name_full_output(
+    display: &mut Vec<cookie_agent_protocol::Open<cookie_agent_protocol::DisplayBlock>>,
+    full: &cookie_agent_protocol::ArtifactRef,
+) {
+    let mut named = display.clone();
+    let mut changed = false;
+    for block in &mut named {
+        if let cookie_agent_protocol::Open::Known(
+            block @ cookie_agent_protocol::DisplayBlock::Terminal { full: None, .. },
+        ) = block
+            && block.is_cut()
+        {
+            block.set_full(full.clone());
+            changed = true;
+        }
+    }
+    if changed && cookie_agent_protocol::validate_display(&named).is_ok() {
+        *display = named;
     }
 }
 

@@ -3,16 +3,24 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use cookie_agent_engine::events::OutputHub;
 use cookie_agent_engine::permissions::PermissionPipeline;
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, DisplayDelta, OutputStream,
-    PermissionAction, PermissionEffect, PermissionRule, RunId, SafeDisplayText, SessionId,
-    Sha256Digest, ToolCallId, WildcardPattern,
+    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, DisplayBlock, DisplayDelta, Open,
+    OutputStream, PermissionAction, PermissionEffect, PermissionRule, RunId, SessionId,
+    Sha256Digest, TerminalSegment, TerminalStream, ToolCallId, WildcardPattern,
 };
 use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
 use tokio::io::AsyncWriteExt;
 
 use super::{
-    BashArgs, BashExecutor, BashTool, read_output, resolve_executable, resolve_executable_in_path,
+    BashArgs, BashExecutor, BashTool, MergedOutput, read_output, resolve_executable,
+    resolve_executable_in_path, terminal_chunks,
 };
+
+fn segment(stream: TerminalStream, text: &str) -> TerminalSegment {
+    TerminalSegment {
+        stream,
+        text: text.into(),
+    }
+}
 
 #[test]
 fn permission_resource_is_the_command() {
@@ -293,7 +301,10 @@ async fn output_reader_preserves_utf8_across_pipe_reads_and_flushes() {
     writer.write_all(&[0x82, 0xac, b'\n']).await.unwrap();
     writer.shutdown().await.unwrap();
     reading.await.unwrap().unwrap();
-    assert_eq!(merged.lock().await.text, "€\n");
+    assert_eq!(
+        merged.lock().await.segments,
+        [segment(TerminalStream::Stdout, "€\n")]
+    );
     assert_eq!(
         receiver
             .recv()
@@ -354,14 +365,14 @@ async fn output_reader_streams_bounded_display_without_buffering_full_output() {
         chunks.push(progress);
     }
     read.await.expect("reader task").expect("read complete");
-    assert!(merged.lock().await.text.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
+    assert!(merged.lock().await.bytes <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
     assert!(merged.lock().await.truncated);
     assert!(chunks.iter().all(|progress| {
         progress
             .display
             .as_ref()
             .and_then(DisplayDelta::append_text)
-            .is_none_or(|chunk| chunk.len() <= SafeDisplayText::MAX_BYTES)
+            .is_none_or(|chunk| chunk.len() <= DisplayDelta::MAX_APPEND_BYTES)
     }));
     assert!(
         chunks
@@ -413,13 +424,20 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
         assert_eq!(completion.result.metadata["status"], status);
         assert_eq!(completion.result.metadata["success"], status == 0);
         let mut previews = String::new();
+        let mut live = cookie_agent_protocol::LiveDisplay::default();
         while let Some(progress) = receiver.recv().await {
-            if let Some(display) = progress
-                .display
-                .as_ref()
-                .and_then(DisplayDelta::append_text)
-            {
-                previews.push_str(display);
+            if let Some(display) = progress.display {
+                if let DisplayDelta::Append { text, stream, .. } = &display {
+                    // Each append names the stream its text came from.
+                    let expected = if text.starts_with("stderr") {
+                        TerminalStream::Stderr
+                    } else {
+                        TerminalStream::Stdout
+                    };
+                    assert_eq!(*stream, Some(expected));
+                    previews.push_str(text);
+                }
+                live.admit(display).expect("progress applies");
             }
         }
         // Writes arrive less than 50 ms apart, so flush-order capture would group them.
@@ -432,9 +450,25 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
             expected.push_str(&stdout);
             expected.push_str(&stderr);
         }
-        if status != 0 {
-            expected.push_str(&format!("\nExit status: {status}"));
-        }
+        // Progress builds one terminal block, its segments in read order.
+        let [Open::Known(DisplayBlock::Terminal { segments, .. })] = live.blocks() else {
+            panic!("progress shows one terminal block: {:?}", live.blocks());
+        };
+        assert_eq!(segments.len(), 6);
+        let [
+            Open::Known(DisplayBlock::Terminal {
+                segments: final_segments,
+                exit_code,
+                omitted_lines: None,
+                full: None,
+            }),
+        ] = completion.result.display.as_slice()
+        else {
+            panic!("the result is one terminal block");
+        };
+        assert_eq!(final_segments, segments);
+        assert_eq!(*exit_code, Some(status));
+        expected.push_str(&format!("[exit code {status}]"));
         assert_eq!(
             cookie_agent_protocol::display_text(&completion.result.display),
             expected
@@ -444,24 +478,41 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
 
 #[test]
 fn merged_display_bounds_unicode_and_keeps_exit_status() {
-    let mut merged = super::MergedOutput::default();
-    merged.append(&"a".repeat(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - 1));
-    merged.append("é");
-    merged.append("z");
-    assert!(
-        !merged.text.ends_with('z'),
-        "capture remains a prefix after overflow"
+    let mut merged = MergedOutput::default();
+    merged.append(
+        TerminalStream::Stdout,
+        &"a".repeat(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - 1),
     );
-    let display = super::completed_display(merged, Some(1));
-    assert!(display.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
-    assert!(display.ends_with("[display truncated]\nExit status: 1"));
+    merged.append(TerminalStream::Stdout, "é");
+    merged.append(TerminalStream::Stderr, "z\nlast");
+    let DisplayBlock::Terminal {
+        segments,
+        exit_code,
+        omitted_lines,
+        ..
+    } = merged.into_block(Some(1))
+    else {
+        panic!("a terminal block");
+    };
+    assert_eq!(segments.len(), 1, "capture remains a prefix after overflow");
+    assert_eq!(
+        segments[0].text.len(),
+        cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - 1
+    );
+    assert_eq!(exit_code, Some(1));
+    // The dropped `éz` line and the unfinished `last`.
+    assert_eq!(omitted_lines, Some(2));
 }
 
 #[test]
 fn a_merged_display_of_many_lines_fits_the_budget_as_one_block() {
-    let mut merged = super::MergedOutput::default();
-    merged.append(&"\"\n".repeat(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES / 2));
-    let display = cookie_agent_protocol::text_display(super::completed_display(merged, Some(2)));
+    let mut merged = MergedOutput::default();
+    merged.append(
+        TerminalStream::Stdout,
+        &"\"\n".repeat(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES / 2),
+    );
+    let block = crate::display::fit_block(merged.into_block(Some(2)), None).unwrap();
+    let display = vec![Open::Known(block)];
     assert!(
         serde_json::to_vec(&display).unwrap().len() <= cookie_agent_protocol::DISPLAY_BUDGET_BYTES
     );
@@ -469,10 +520,88 @@ fn a_merged_display_of_many_lines_fits_the_budget_as_one_block() {
         cookie_agent_protocol::fit_result_display(display.clone()),
         display
     );
-    assert!(
-        cookie_agent_protocol::display_text(&display)
-            .ends_with("[display truncated]\nExit status: 2")
+    let [
+        Open::Known(DisplayBlock::Terminal {
+            exit_code: Some(2),
+            omitted_lines: Some(omitted),
+            ..
+        }),
+    ] = display.as_slice()
+    else {
+        panic!("a cut terminal block keeps its exit code");
+    };
+    assert!(*omitted > 0);
+}
+
+#[test]
+fn terminal_display_keeps_sgr_colour_and_strips_other_sequences() {
+    let mut merged = MergedOutput::default();
+    merged.append(
+        TerminalStream::Stdout,
+        &cookie_agent_protocol::sanitize_terminal_text(
+            "\u{1b}[31mred\u{1b}[0m \u{1b}]0;title\u{7} \u{1b}[2Jdone\r\n",
+        ),
     );
+    assert_eq!(
+        merged.segments,
+        [segment(
+            TerminalStream::Stdout,
+            "\u{1b}[31mred\u{1b}[0m  done\n"
+        )]
+    );
+    // Appends are cut between sequences, never inside one.
+    let coloured = "\u{1b}[1;31mx\u{1b}[0m".repeat(400);
+    let chunks = terminal_chunks(&coloured);
+    assert!(chunks.len() > 1);
+    assert_eq!(chunks.concat(), coloured);
+    for chunk in &chunks {
+        assert!(chunk.len() <= DisplayDelta::MAX_APPEND_BYTES);
+        assert!(cookie_agent_protocol::is_terminal_safe(chunk));
+        assert!(chunk.starts_with('\u{1b}'));
+    }
+}
+
+#[tokio::test]
+async fn an_escape_split_across_reads_reaches_the_display_whole() {
+    let root = tempfile::tempdir().unwrap();
+    let call_id = ToolCallId::new_v7();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+    let progress = cookie_agent_engine::testing::capturing_progress_sink(
+        sender,
+        OutputHub::new(call_id, 64 * 1024),
+        root.path().join("artifacts"),
+        cookie_agent_protocol::ToolOutputDeclaration::Named {
+            streams: vec!["stdout".into(), "stderr".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let (mut writer, reader) = tokio::io::duplex(64);
+    let merged = std::sync::Arc::new(tokio::sync::Mutex::new(MergedOutput::default()));
+    let reading = tokio::spawn(read_output(
+        reader,
+        OutputStream::Stderr,
+        progress,
+        call_id,
+        Some(merged.clone()),
+    ));
+    writer.write_all(b"\x1b[3").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    writer.write_all(b"1mred\x1b[0m\n").await.unwrap();
+    writer.shutdown().await.unwrap();
+    reading.await.unwrap().unwrap();
+    assert_eq!(
+        merged.lock().await.segments,
+        [segment(TerminalStream::Stderr, "\u{1b}[31mred\u{1b}[0m\n")]
+    );
+    let mut appended = String::new();
+    while let Ok(progress) = receiver.try_recv() {
+        if let Some(DisplayDelta::Append { text, stream, .. }) = progress.display {
+            assert_eq!(stream, Some(TerminalStream::Stderr));
+            appended.push_str(&text);
+        }
+    }
+    assert_eq!(appended, "\u{1b}[31mred\u{1b}[0m\n");
 }
 
 #[tokio::test]

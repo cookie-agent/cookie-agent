@@ -839,7 +839,11 @@ impl Server {
         call: &ToolCall,
         result: Result<cookie_agent_runtime_api::PreparedTool, ToolError>,
     ) -> PrepareOutcome {
-        let presentation = provider.presentation(call);
+        let presentation = match &result {
+            Ok(prepared) => prepared.presentation().cloned(),
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| provider.presentation(call));
         let prepared = result.and_then(|prepared| {
             let (permission_name, resource) =
                 provider.get_permission_resource(&call.name, prepared.normalized_arguments())?;

@@ -595,11 +595,10 @@ impl Engine {
             Err(error) => (Err(error.into()), None),
         };
         // A provider that reports its metadata at preparation (a runtime
-        // behind the runtime protocol) also reports how the call is shown.
+        // behind the runtime protocol), or that shows the call from what it
+        // prepared, reports how the call is shown with it.
         let mut prepared_presentation = match &prepared {
-            Ok(prepared) => prepared
-                .declaration()
-                .map(|declaration| declaration.presentation.clone()),
+            Ok(prepared) => prepared.presentation().cloned(),
             Err(_) => None,
         }
         .unwrap_or_else(|| provider.presentation(&call));

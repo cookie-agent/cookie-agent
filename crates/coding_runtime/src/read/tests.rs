@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
 use cookie_agent_protocol::{
-    AdaptorId, MediaCapability, MediaKind, MimeType, Modality, PermissionAction,
-    PersistedToolResult, RunId, SessionId, ToolCallId, ToolEmittedContent,
+    AdaptorId, DisplayBlock, MediaCapability, MediaKind, MimeType, Modality, Open,
+    PermissionAction, PersistedToolResult, RunId, SessionId, ToolCallId, ToolEmittedContent,
 };
 use cookie_agent_runtime_api::{
     SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
@@ -83,6 +83,7 @@ fn turn_context(
 fn page(text: &str, offset: usize, limit: usize) -> PersistedToolResult {
     text_result(
         Path::new("/file.txt"),
+        Path::new("file.txt"),
         &mut std::io::Cursor::new(text.as_bytes()),
         offset,
         limit,
@@ -198,13 +199,37 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
         name: "read".into(),
         arguments: serde_json::json!({"filePath":workspace.path().join("src/lib.rs")}),
     });
-    assert_eq!(presentation.title.as_str(), "read");
+    assert_eq!(presentation.title.as_str(), "Read src/lib.rs");
     assert_eq!(
         presentation
             .primary_argument
             .as_ref()
             .map(cookie_agent_protocol::BoundedDisplayText::as_str),
         Some("src/lib.rs")
+    );
+    assert_eq!(
+        presentation.hint.as_ref().map(|hint| hint.as_str()),
+        Some("file_read")
+    );
+    assert_eq!(
+        presentation.arguments,
+        [Open::Known(DisplayBlock::key_value([(
+            "path",
+            "src/lib.rs"
+        )]))]
+    );
+    let windowed = tool.presentation(&ToolCall {
+        id: ToolCallId::new_v7(),
+        name: "read".into(),
+        arguments: serde_json::json!({"filePath":"src/lib.rs","offset":10,"limit":5}),
+    });
+    assert_eq!(
+        windowed.arguments,
+        [Open::Known(DisplayBlock::key_value([
+            ("path", "src/lib.rs"),
+            ("offset", "10"),
+            ("limit", "5"),
+        ]))]
     );
 }
 
@@ -257,6 +282,7 @@ fn text_pagination_handles_zero_based_boundaries() {
     assert!(
         text_result(
             Path::new("/file.txt"),
+            Path::new("file.txt"),
             &mut std::io::Cursor::new(b"ok\n\xff\n".as_slice()),
             0,
             2,
@@ -378,6 +404,18 @@ async fn media_reads_follow_capability_family_and_size_gates() {
         .unwrap();
     assert_eq!(image.attachments.len(), 1);
     assert_eq!(image.attachments[0].mime_type.as_str(), "image/png");
+    // Clients see the retained attachment itself.
+    assert_eq!(
+        image.display,
+        [Open::Known(DisplayBlock::Media {
+            artifact: image.attachments[0].artifact_ref(),
+            alt: Some("pixel.png".into()),
+        })]
+    );
+    assert_eq!(
+        image.output,
+        format!("Attached image/png ({} bytes).", PNG.len())
+    );
 
     let image_incapable = execute_media(
         root.path(),
@@ -811,5 +849,108 @@ async fn symlink_routes_to_the_same_read_target_have_distinct_fingerprints() {
     assert_ne!(
         cookie_agent_protocol::OperationFingerprint::from_prepared_operation(left.operation()),
         cookie_agent_protocol::OperationFingerprint::from_prepared_operation(right.operation())
+    );
+}
+
+/// Reads `path` under `root` with `arguments` merged into the call.
+async fn read(root: &Path, arguments: serde_json::Value) -> PersistedToolResult {
+    let tool = ReadTool::new(&crate::test_workspace(root));
+    let prepared = tool
+        .prepare(
+            context(root),
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments,
+            },
+        )
+        .await
+        .expect("prepare read");
+    prepared
+        .execute_for_test(
+            cookie_agent_engine::testing::tool_execution_context(
+                root.join("artifacts"),
+                crate::test_turn_context(),
+            )
+            .expect("execution context"),
+        )
+        .await
+        .expect("read")
+}
+
+#[tokio::test]
+async fn a_text_read_shows_an_excerpt_with_file_line_numbers() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("src")).unwrap();
+    fs::write(root.path().join("src/lib.rs"), "one\ntwo\r\nthree\nfour\n").unwrap();
+    let result = read(
+        root.path(),
+        serde_json::json!({"filePath":"src/lib.rs","offset":1,"limit":2}),
+    )
+    .await;
+    assert_eq!(
+        result.display,
+        [Open::Known(DisplayBlock::FileExcerpt {
+            path: "src/lib.rs".into(),
+            language: Some("rust".into()),
+            start_line: 2,
+            lines: vec!["two".into(), "three".into()],
+            total_lines: Some(4),
+            omitted_lines: None,
+            full: None,
+        })]
+    );
+    // The model's page is unchanged.
+    assert_eq!(
+        result.output,
+        format!(
+            "<path>{}</path>\n<type>file</type>\n<content>\n2: two\n3: three\n</content>",
+            root.path().join("src/lib.rs").display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_long_page_shows_the_excerpt_that_fits_and_counts_the_rest() {
+    let root = tempfile::tempdir().unwrap();
+    let line = "x".repeat(100);
+    fs::write(
+        root.path().join("long.txt"),
+        format!("{line}\n").repeat(2_000),
+    )
+    .unwrap();
+    let result = read(root.path(), serde_json::json!({"filePath":"long.txt"})).await;
+    let [
+        Open::Known(DisplayBlock::FileExcerpt {
+            lines,
+            omitted_lines: Some(omitted),
+            total_lines: Some(2_000),
+            full: None,
+            ..
+        }),
+    ] = result.display.as_slice()
+    else {
+        panic!("a cut excerpt: {:?}", result.display);
+    };
+    assert_eq!(lines.len() as u64 + omitted, 2_000);
+    cookie_agent_protocol::validate_display(&result.display).expect("within the budget");
+}
+
+#[tokio::test]
+async fn a_directory_read_shows_a_table_of_entries() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("tree/src")).unwrap();
+    fs::write(root.path().join("tree/Cargo.toml"), "").unwrap();
+    let result = read(root.path(), serde_json::json!({"filePath":"tree"})).await;
+    assert_eq!(
+        result.display,
+        [Open::Known(DisplayBlock::Table {
+            columns: vec!["name".into(), "type".into()],
+            rows: vec![
+                vec!["Cargo.toml".into(), "file".into()],
+                vec!["src".into(), "directory".into()],
+            ],
+            omitted_rows: None,
+        })]
     );
 }

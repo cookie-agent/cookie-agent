@@ -1,17 +1,24 @@
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
-use cookie_agent_protocol::PersistedToolResult as ToolResult;
+use cookie_agent_protocol::{
+    DiffAsOf, DiffChange, DisplayBlock, Open, PersistedToolResult as ToolResult,
+    PreparedPresentation, ToolHint,
+};
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    tool_presentation,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use cookie_agent_runtime_api::WorkspaceContext;
 
-use crate::{fs_cap, parse_args, schema};
+use crate::{display, fs_cap, parse_args, schema};
 
 #[derive(Clone, Debug)]
 pub struct EditTool {
@@ -37,6 +44,8 @@ struct EditArgs {
 struct EditExecutor {
     target: fs_cap::PreparedExisting,
     args: EditArgs,
+    /// The path clients see.
+    shown_path: PathBuf,
 }
 
 /// Counts `old` in `text`, failing as an edit of `text` would.
@@ -61,6 +70,31 @@ fn apply(text: &str, args: &EditArgs) -> Result<(String, usize), ToolError> {
         text.replacen(&args.old_string, &args.new_string, 1)
     };
     Ok((replaced, count))
+}
+
+/// The byte ranges of `text` an edit replaces, as [`apply`] finds them.
+fn replaced_ranges(text: &str, args: &EditArgs) -> Vec<(usize, usize)> {
+    let ranges = text
+        .match_indices(&args.old_string)
+        .map(|(start, matched)| (start, start + matched.len()));
+    if args.replace_all {
+        ranges.collect()
+    } else {
+        ranges.take(1).collect()
+    }
+}
+
+/// The diff of applying the edit to `text`, as of `as_of`.
+fn edit_diff(text: &str, args: &EditArgs, path: &Path, as_of: DiffAsOf) -> DisplayBlock {
+    let changes =
+        display::replacement_changes(text, &replaced_ranges(text, args), &args.new_string);
+    DisplayBlock::Diff(display::diff_block(
+        path,
+        DiffChange::Modified,
+        &display::raw_lines(text),
+        &changes,
+        as_of,
+    ))
 }
 
 fn read_text(target: &fs_cap::PreparedExisting) -> Result<String, ToolError> {
@@ -99,14 +133,43 @@ impl EditTool {
         Ok((args, target))
     }
 
-    /// Builds the prepared call. The replacement itself is computed at
-    /// execution from the file's content at that moment, so an edit approved
-    /// later never reverts changes made while it waited.
+    /// The path clients see for `args`.
+    fn shown_path(&self, args: &EditArgs) -> PathBuf {
+        let path = crate::permission_path_label(&args.file_path, &self.workspace);
+        PathBuf::from(crate::abbreviated_display_path(&path, &self.workspace))
+    }
+
+    /// How clients show a call of `args`: the path, and the replacement as
+    /// code.
+    fn presentation_of(&self, args: &EditArgs) -> PreparedPresentation {
+        let path = self.shown_path(args);
+        let shown = path.display().to_string();
+        let mut entries = vec![("path", shown.clone())];
+        if args.replace_all {
+            entries.push(("replace all", "yes".to_owned()));
+        }
+        tool_presentation(&format!("Edit {shown}"), &shown)
+            .with_hint(ToolHint::FILE_EDIT)
+            .with_arguments([
+                DisplayBlock::key_value(entries),
+                DisplayBlock::code(args.new_string.clone(), display::language_for_path(&path)),
+            ])
+    }
+
+    /// Builds the prepared call, with a preview of the edit applied to
+    /// `text`, the file as preparation read it. The replacement itself is
+    /// computed at execution from the file's content at that moment, so an
+    /// edit approved later never reverts changes made while it waited.
     fn prepare_edit(
         &self,
         args: EditArgs,
         target: fs_cap::PreparedExisting,
+        text: &str,
     ) -> Result<PreparedTool, ToolError> {
+        let shown_path = self.shown_path(&args);
+        let preview =
+            display::fit_block(edit_diff(text, &args, &shown_path, DiffAsOf::Prepare), None)?;
+        let presentation = self.presentation_of(&args).with_preview([preview]);
         let normalized_arguments = serde_json::json!({
             "filePath": target.display_path,
             "oldString": args.old_string,
@@ -114,11 +177,16 @@ impl EditTool {
             "replaceAll": args.replace_all,
         });
         let serialization_key = PreparedSerializationKey::new(target.serialization_key());
-        PreparedTool::declared(
+        Ok(PreparedTool::declared(
             normalized_arguments,
             Some(serialization_key),
-            Box::new(EditExecutor { target, args }),
-        )
+            Box::new(EditExecutor {
+                target,
+                args,
+                shown_path,
+            }),
+        )?
+        .with_presentation(presentation))
     }
 }
 
@@ -180,6 +248,13 @@ impl ToolProvider for EditTool {
         Ok(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
+        match parse_args::<EditArgs>("edit", call.arguments.clone()) {
+            Ok(args) if !args.file_path.is_empty() => self.presentation_of(&args),
+            _ => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
@@ -189,8 +264,9 @@ impl ToolProvider for EditTool {
         crate::blocking(move || {
             let (args, target) = tool.prepare_target(call)?;
             // Fail fast on an oldString that does not match the current content.
-            match_count(&read_text(&target)?, &args)?;
-            tool.prepare_edit(args, target)
+            let text = read_text(&target)?;
+            match_count(&text, &args)?;
+            tool.prepare_edit(args, target, &text)
         })
         .await
     }
@@ -252,12 +328,15 @@ impl EditTool {
             for index in indexes {
                 let (args, target) = pending[index].take().expect("grouped edit pending");
                 let current = text.get_or_insert_with(|| read_text(&target));
-                let validated = match current {
-                    Ok(current) => apply(current, &args).map(|(next, _)| *current = next),
+                results[index] = Some(match current {
+                    Ok(current) => apply(current, &args).and_then(|(next, _)| {
+                        let prepared = self.prepare_edit(args, target, current);
+                        *current = next;
+                        prepared
+                    }),
                     // Every member of the group reports the shared read failure.
                     Err(error) => Err(ToolError::execution(error.message())),
-                };
-                results[index] = Some(validated.and_then(|()| self.prepare_edit(args, target)));
+                });
             }
         }
         results
@@ -278,16 +357,27 @@ impl PreparedExecutor for EditExecutor {
                 "prepared edit cancelled before commit",
             ));
         }
-        let (path, count) = crate::blocking(move || {
-            let (replaced, count) = apply(&read_text(&self.target)?, &self.args)?;
+        let artifacts = Arc::clone(&context.artifacts);
+        let session = context.session;
+        let (path, count, diff) = crate::blocking(move || {
+            let text = read_text(&self.target)?;
+            let (replaced, count) = apply(&text, &self.args)?;
             self.target.replace(replaced.as_bytes())?;
-            Ok((self.target.display_path.clone(), count))
+            let diff = display::fit_block(
+                edit_diff(&text, &self.args, &self.shown_path, DiffAsOf::Execute),
+                Some(display::Retain::diff_of(
+                    artifacts.as_ref(),
+                    session,
+                    &self.shown_path,
+                )),
+            )?;
+            Ok((self.target.display_path.clone(), count, diff))
         })
         .await?;
         let path = path.display();
         Ok(cookie_agent_runtime_api::ToolCompletion::single(
             ToolResult {
-                display: Vec::new(),
+                display: vec![Open::Known(diff)],
                 background: None,
                 retained_output: None,
                 title: crate::safe_title(format!("Edited {path}")),
@@ -306,7 +396,9 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     use cookie_agent_protocol::OperationFingerprint;
-    use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
+    use cookie_agent_protocol::{
+        DiffAsOf, DiffBlock, DisplayBlock, Open, RunId, SessionId, ToolCallId,
+    };
     #[cfg(any(unix, windows))]
     use cookie_agent_runtime_api::ToolExecutionContext;
     use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
@@ -754,6 +846,131 @@ mod tests {
             fs::read_to_string(root.path().join("value.txt")).unwrap(),
             "alpha BETA"
         );
+    }
+
+    /// The single diff of `blocks`.
+    #[cfg(any(unix, windows))]
+    fn only_diff(blocks: &[Open<DisplayBlock>]) -> &DiffBlock {
+        match blocks {
+            [Open::Known(DisplayBlock::Diff(diff))] => diff,
+            other => panic!("expected one diff, got {other:?}"),
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn an_edit_previews_its_diff_and_reports_the_one_it_applied() {
+        let root = tempfile::tempdir().expect("root");
+        let text = (1..=20)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        fs::write(root.path().join("value.rs"), &text).expect("fixture");
+        let tool = EditTool::new(&crate::test_workspace(root.path()));
+        let prepared = tool
+            .prepare(
+                context(root.path()),
+                edit_call("value.rs", "line 10\n", "ten\n"),
+            )
+            .await
+            .expect("prepare");
+        let presentation = prepared
+            .presentation()
+            .expect("prepared presentation")
+            .clone();
+        assert_eq!(presentation.title.as_str(), "Edit value.rs");
+        assert_eq!(
+            presentation.hint.as_ref().map(|hint| hint.as_str()),
+            Some("file_edit")
+        );
+        assert_eq!(
+            presentation.arguments,
+            [
+                Open::Known(DisplayBlock::key_value([("path", "value.rs")])),
+                Open::Known(DisplayBlock::code("ten\n", Some("rust".into()))),
+            ]
+        );
+        let preview = only_diff(&presentation.preview);
+        assert_eq!(preview.as_of, DiffAsOf::Prepare);
+        assert_eq!(preview.path, "value.rs");
+        assert_eq!(
+            preview
+                .hunks
+                .iter()
+                .map(|hunk| (
+                    hunk.old_start,
+                    hunk.old_lines,
+                    hunk.new_start,
+                    hunk.new_lines
+                ))
+                .collect::<Vec<_>>(),
+            [(5, 11, 5, 11)]
+        );
+
+        // The file changed after preparation: the result shows what the edit
+        // did to it then.
+        fs::write(root.path().join("value.rs"), format!("new first\n{text}")).expect("change");
+        let result = prepared
+            .execute_for_test(execution_context(root.path()))
+            .await
+            .expect("execute");
+        let applied = only_diff(&result.display);
+        assert_eq!(applied.as_of, DiffAsOf::Execute);
+        assert_eq!(
+            applied
+                .hunks
+                .iter()
+                .map(|hunk| (hunk.old_start, hunk.new_start))
+                .collect::<Vec<_>>(),
+            [(6, 6)]
+        );
+        assert_eq!((applied.added, applied.removed), (1, 1));
+        // The model sees what it always saw.
+        assert_eq!(result.output, "Edit applied atomically");
+        assert_eq!(result.metadata, serde_json::json!({"replacements": 1}));
+        assert_eq!(
+            result.title.as_str(),
+            format!("Edited {}", root.path().join("value.rs").display())
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn a_diff_too_large_to_show_names_its_full_content() {
+        let root = tempfile::tempdir().expect("root");
+        let text = (1..=5_000)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        fs::write(root.path().join("big.txt"), &text).expect("fixture");
+        let prepared = EditTool::new(&crate::test_workspace(root.path()))
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "edit".into(),
+                    arguments: serde_json::json!({
+                        "filePath": "big.txt",
+                        "oldString": "line",
+                        "newString": "LINE",
+                        "replaceAll": true
+                    }),
+                },
+            )
+            .await
+            .expect("prepare");
+        let preview = only_diff(&prepared.presentation().expect("presentation").preview).clone();
+        assert!(preview.omitted.is_some_and(|omitted| omitted.hunks == 1));
+        assert!(preview.full.is_none(), "a preview has nowhere to keep it");
+        let result = prepared
+            .execute_for_test(execution_context(root.path()))
+            .await
+            .expect("execute");
+        let applied = only_diff(&result.display);
+        assert_eq!((applied.added, applied.removed), (5_000, 5_000));
+        let full = applied.full.as_ref().expect("full diff");
+        assert_eq!(full.media_type, "text/plain");
+        assert_eq!(full.filename.as_deref(), Some("big.txt.diff"));
+        assert!(full.byte_length > cookie_agent_protocol::DISPLAY_BUDGET_BYTES as u64);
+        cookie_agent_protocol::validate_display(&result.display).expect("within the budget");
     }
 
     #[cfg(any(unix, windows))]

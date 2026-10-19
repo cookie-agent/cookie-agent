@@ -67,6 +67,26 @@ pub fn bounded_tool_display(text: &str) -> Vec<Open<DisplayBlock>> {
     ))
 }
 
+/// The head of `text` a display block shows: its first lines within
+/// `max_bytes` (the start of the first line when even that is longer), and
+/// the count of the lines it leaves out. A display then fits the head
+/// without measuring all of a long text.
+#[must_use]
+pub fn text_head(text: &str, max_bytes: usize) -> (&str, Option<u64>) {
+    if text.len() <= max_bytes {
+        return (text, None);
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = text[..end].rfind('\n').map_or(end, |newline| newline + 1);
+    let rest = &text[end..];
+    let omitted = rest.bytes().filter(|byte| *byte == b'\n').count() as u64
+        + u64::from(!rest.ends_with('\n'));
+    (&text[..end], Some(omitted))
+}
+
 /// `text` with control characters other than newline and tab replaced by
 /// spaces, cut on a character boundary to at most `maximum` bytes.
 #[must_use]
@@ -150,6 +170,7 @@ pub struct PreparedTool {
     serialization_key: Option<PreparedSerializationKey>,
     executor: PreparedExecutorCell,
     declaration: Option<PreparedDeclaration>,
+    presentation: Option<PreparedPresentation>,
 }
 
 impl PreparedTool {
@@ -181,6 +202,7 @@ impl PreparedTool {
             serialization_key,
             executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
             declaration: None,
+            presentation: None,
         })
     }
 
@@ -205,6 +227,7 @@ impl PreparedTool {
             serialization_key,
             executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
             declaration: None,
+            presentation: None,
         })
     }
 
@@ -247,6 +270,25 @@ impl PreparedTool {
     pub fn with_declaration(mut self, declaration: PreparedDeclaration) -> Self {
         self.declaration = Some(declaration);
         self
+    }
+
+    /// Attaches how clients show the call, as the provider knows it only
+    /// once it prepared the call (such as a diff of the file it read). The
+    /// host uses it instead of [`crate::ToolProvider::presentation`].
+    #[must_use]
+    pub fn with_presentation(mut self, presentation: PreparedPresentation) -> Self {
+        self.presentation = Some(presentation);
+        self
+    }
+
+    /// How clients show the call, as the provider prepared it. A
+    /// [`PreparedDeclaration`]'s presentation takes precedence.
+    #[must_use]
+    pub fn presentation(&self) -> Option<&PreparedPresentation> {
+        self.declaration
+            .as_ref()
+            .map(|declaration| &declaration.presentation)
+            .or(self.presentation.as_ref())
     }
 
     /// The permission and presentation reported at preparation, if any.

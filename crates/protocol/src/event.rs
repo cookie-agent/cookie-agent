@@ -456,6 +456,26 @@ pub struct ToolAttachment {
     pub reference: ArtifactReference,
 }
 impl ToolAttachment {
+    /// The attachment as an [`ArtifactRef`](crate::ArtifactRef), such as a
+    /// `media` display block names. A filename an artifact reference cannot
+    /// carry (longer than 255 bytes, or naming a directory) is left out.
+    #[must_use]
+    pub fn artifact_ref(&self) -> crate::ArtifactRef {
+        let filename = self.filename.clone().filter(|name| {
+            !name.is_empty()
+                && name.len() <= crate::ArtifactRef::MAX_FILENAME_BYTES
+                && !name
+                    .chars()
+                    .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+        });
+        crate::ArtifactRef {
+            sha256: self.sha256.as_str().to_owned(),
+            byte_length: self.byte_length,
+            media_type: self.mime_type.as_str().to_ascii_lowercase(),
+            filename,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), EventSchemaError> {
         self.reference.validate()?;
         if self.filename.as_ref().is_some_and(|name| {

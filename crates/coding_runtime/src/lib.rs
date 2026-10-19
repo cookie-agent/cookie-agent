@@ -18,6 +18,7 @@ use cookie_agent_runtime_api::{
 };
 
 pub mod bash;
+mod display;
 pub mod edit;
 pub mod fs_cap;
 mod path_args;

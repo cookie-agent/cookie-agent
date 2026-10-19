@@ -18,7 +18,10 @@ use std::os::unix::fs::MetadataExt;
 
 use async_trait::async_trait;
 use cookie_agent_protocol::PersistedToolResult as ToolResult;
-use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
+use cookie_agent_protocol::{
+    DisplayBlock, DisplayDelta, Open, OutputStream, PreparedPresentation, TerminalSegment,
+    TerminalStream, ToolCallId, ToolHint, sanitize_terminal_text,
+};
 use cookie_agent_runtime_api::ToolProgress;
 use cookie_agent_runtime_api::{
     DetachPoint, PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall,
@@ -69,52 +72,130 @@ pub const OUTPUT_CHUNK_FLUSH_BYTES: usize = 4 * 1024;
 pub const OUTPUT_CHUNK_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 const OUTPUT_READ_BYTES: usize = 64 * 1024;
 
+/// The call's display: its output as terminal segments in the order it was
+/// read, SGR colour kept and every other control sequence removed, up to
+/// the display budget.
 #[derive(Default)]
 struct MergedOutput {
-    text: String,
+    segments: Vec<TerminalSegment>,
+    bytes: usize,
     truncated: bool,
+    /// Lines of output past the budget, a last unfinished one included.
+    dropped_lines: u64,
+    dropped_open: bool,
 }
 
 impl MergedOutput {
-    /// Appends `text` with control characters blanked, up to the display budget.
-    fn append(&mut self, text: &str) {
-        if self.truncated {
-            return;
-        }
-        for character in text.chars().map(display_character) {
-            if self.text.len() + character.len_utf8()
-                > cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES
-            {
-                self.truncated = true;
-                return;
+    /// Appends `text` of `stream`, already sanitized for a terminal block.
+    fn append(&mut self, stream: TerminalStream, text: &str) {
+        let room = cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(self.bytes);
+        let end = if self.truncated {
+            0
+        } else if text.len() <= room {
+            text.len()
+        } else {
+            terminal_cut(text, room)
+        };
+        let (kept, rest) = text.split_at(end);
+        if !kept.is_empty() {
+            self.bytes += kept.len();
+            match self.segments.last_mut() {
+                Some(last) if last.stream == stream => last.text.push_str(kept),
+                _ => self.segments.push(TerminalSegment {
+                    stream,
+                    text: kept.to_owned(),
+                }),
             }
-            self.text.push(character);
+        }
+        if !rest.is_empty() {
+            self.truncated = true;
+            self.dropped_lines += memchr::memchr_iter(b'\n', rest.as_bytes()).count() as u64;
+            self.dropped_open = !rest.ends_with('\n');
+        }
+    }
+
+    /// The terminal block of the output, ending with `exit_code`.
+    fn into_block(self, exit_code: Option<i32>) -> DisplayBlock {
+        let omitted = self.dropped_lines + u64::from(self.truncated && self.dropped_open);
+        DisplayBlock::Terminal {
+            segments: self.segments,
+            exit_code,
+            omitted_lines: (omitted > 0).then_some(omitted),
+            full: None,
         }
     }
 }
 
-fn display_character(character: char) -> char {
-    if character.is_control() && !matches!(character, '\n' | '\t') {
-        ' '
-    } else {
-        character
+/// The largest cut of `text`, sanitized for a terminal block, at most
+/// `limit` bytes long that splits neither a character nor an SGR sequence.
+fn terminal_cut(text: &str, limit: usize) -> usize {
+    let mut end = limit.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Every escape left in sanitized text starts an SGR sequence ending in `m`.
+    match text[..end].rfind('\u{1b}') {
+        Some(start) if !text[start..end].contains('m') => start,
+        _ => end,
     }
 }
 
-/// `text` with control characters blanked, split into display-sized chunks.
-fn sanitized_chunks(text: &str) -> Vec<String> {
+/// `text` for a terminal block, split into appends of at most
+/// [`DisplayDelta::MAX_APPEND_BYTES`] that keep each SGR sequence whole.
+fn terminal_chunks(text: &str) -> Vec<String> {
     let mut chunks = Vec::new();
-    let mut chunk = String::new();
-    for character in text.chars().map(display_character) {
-        if chunk.len() + character.len_utf8() > SafeDisplayText::MAX_BYTES {
-            chunks.push(std::mem::take(&mut chunk));
+    let mut rest = text;
+    while !rest.is_empty() {
+        let mut end = terminal_cut(rest, DisplayDelta::MAX_APPEND_BYTES);
+        if end == 0 {
+            // A sequence longer than an append: let the sink drop it.
+            end = rest.len().min(DisplayDelta::MAX_APPEND_BYTES);
+            while !rest.is_char_boundary(end) {
+                end += 1;
+            }
         }
-        chunk.push(character);
-    }
-    if !chunk.is_empty() {
-        chunks.push(chunk);
+        chunks.push(rest[..end].to_owned());
+        rest = &rest[end..];
     }
     chunks
+}
+
+/// The length of the start of `text` that holds no unfinished escape
+/// sequence at its end, so that one split across two reads reaches the
+/// display whole. A sequence longer than [`MAX_HELD_ESCAPE_BYTES`] is let
+/// through, and the display drops it.
+fn complete_escapes(text: &str) -> usize {
+    let Some(start) = text.rfind('\u{1b}') else {
+        return text.len();
+    };
+    let tail = &text.as_bytes()[start..];
+    let finished = match tail.get(1) {
+        None => false,
+        Some(b'[') => tail[2..].iter().any(|byte| !(0x20..=0x3f).contains(byte)),
+        Some(b']' | b'P' | b'X' | b'^' | b'_') => {
+            tail[2..]
+                .windows(2)
+                .any(|pair| pair[0] == 0x07 || pair == b"\x1b\\")
+                || tail.last() == Some(&0x07)
+        }
+        Some(_) => true,
+    };
+    if finished || tail.len() > MAX_HELD_ESCAPE_BYTES {
+        text.len()
+    } else {
+        start
+    }
+}
+
+/// The longest unfinished escape sequence a reader holds back.
+const MAX_HELD_ESCAPE_BYTES: usize = 256;
+
+/// The terminal stream of bash's `stream`.
+const fn terminal_stream(stream: &OutputStream) -> TerminalStream {
+    match stream {
+        OutputStream::Stderr => TerminalStream::Stderr,
+        _ => TerminalStream::Stdout,
+    }
 }
 
 /// Where one pipe's output goes besides the captured stream.
@@ -134,7 +215,7 @@ impl OutputSinks {
             return Ok(());
         }
         let previews = if self.merged.is_some() {
-            sanitized_chunks(&text)
+            terminal_chunks(&sanitize_terminal_text(&text))
         } else {
             Vec::new()
         };
@@ -156,10 +237,10 @@ impl OutputSinks {
                     output: Vec::new(),
                     tool_call_id: self.tool_call_id,
                     message: format!("bash {name}"),
-                    display: Some(cookie_agent_protocol::DisplayDelta::Append {
+                    display: Some(DisplayDelta::Append {
                         index: 0,
                         text: chunk,
-                        stream: None,
+                        stream: Some(terminal_stream(&self.stream)),
                     }),
                 })
                 .await?;
@@ -186,6 +267,8 @@ where
     };
     let mut pending = String::new();
     let mut undecoded = Vec::new();
+    // An escape sequence the last read ended inside of.
+    let mut held = String::new();
     let mut read_buffer = vec![0_u8; OUTPUT_READ_BYTES];
     let flush = tokio::time::sleep(OUTPUT_CHUNK_FLUSH_INTERVAL);
     tokio::pin!(flush);
@@ -194,11 +277,17 @@ where
             read = reader.read(&mut read_buffer) => {
                 let count = read.map_err(|error| ToolError::execution(error.to_string()))?;
                 undecoded.extend_from_slice(&read_buffer[..count]);
-                let text = decode_output(&mut undecoded, count == 0);
+                held.push_str(&decode_output(&mut undecoded, count == 0));
+                let complete = if count == 0 { held.len() } else { complete_escapes(&held) };
+                let text = held[..complete].to_owned();
+                held.drain(..complete);
                 if let Some(merged) = &sinks.merged {
                     // Record read arrival, independently of the per-pipe preview batches.
                     // Separate pipes cannot reconstruct the process's exact write order.
-                    merged.lock().await.append(&text);
+                    merged
+                        .lock()
+                        .await
+                        .append(terminal_stream(&sinks.stream), &sanitize_terminal_text(&text));
                 }
                 if pending.is_empty() {
                     flush.as_mut().reset(tokio::time::Instant::now() + OUTPUT_CHUNK_FLUSH_INTERVAL);
@@ -396,6 +485,18 @@ impl ToolProvider for BashTool {
         Ok(compact_command_line(&command))
     }
 
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
+        let (Ok(primary), Ok(args)) = (
+            self.get_display_argument(&call.name, &call.arguments),
+            parse_args::<BashArgs>("bash", call.arguments.clone()),
+        ) else {
+            return cookie_agent_runtime_api::tool_title_only(&call.name);
+        };
+        cookie_agent_runtime_api::tool_presentation(&run_title(&primary), &primary)
+            .with_hint(ToolHint::SHELL)
+            .with_arguments([DisplayBlock::code(args.command, Some("sh".into()))])
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
@@ -453,6 +554,21 @@ pub fn bash_tool_description_for(windows: bool) -> &'static str {
     } else {
         "Execute one prepared shell command. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers."
     }
+}
+
+/// Commands longer than this many characters are cut in a call's title.
+const TITLE_COMMAND_CHARS: usize = 60;
+
+/// `Run` and the one-line `command`, cut to [`TITLE_COMMAND_CHARS`].
+fn run_title(command: &str) -> String {
+    let mut shown = command
+        .chars()
+        .take(TITLE_COMMAND_CHARS)
+        .collect::<String>();
+    if command.chars().nth(TITLE_COMMAND_CHARS).is_some() {
+        shown.push('…');
+    }
+    format!("Run `{shown}`")
 }
 
 fn compact_command_line(command: &str) -> String {
@@ -660,11 +776,9 @@ impl BashExecutor {
                 signal_termination(&status)
             )));
         }
+        let terminal = std::mem::take(&mut *merged.lock().await).into_block(status.code());
         Ok(ToolResult {
-            display: cookie_agent_protocol::text_display(completed_display(
-                std::mem::take(&mut *merged.lock().await),
-                status.code(),
-            )),
+            display: vec![Open::Known(crate::display::fit_block(terminal, None)?)],
             background: None,
             retained_output: None,
             title: crate::safe_title("Bash"),
@@ -704,52 +818,6 @@ fn signal_termination(status: &std::process::ExitStatus) -> String {
         || "terminated by a signal".to_owned(),
         |signal| format!("terminated by signal {signal}"),
     )
-}
-
-fn completed_display(merged: MergedOutput, status: Option<i32>) -> String {
-    let mut output = merged.text;
-    let suffix = if status != Some(0) {
-        format!(
-            "\nExit status: {}",
-            status.map_or_else(|| "unknown".into(), |code| code.to_string())
-        )
-    } else {
-        String::new()
-    };
-    const MARKER: &str = "\n[display truncated]";
-    // The display is one text block, which must fit the display budget as
-    // serialized, escapes included.
-    let overhead = serde_json::to_vec(&cookie_agent_protocol::text_display(" "))
-        .map_or(0, |bytes| bytes.len() - 1);
-    let maximum = cookie_agent_protocol::DISPLAY_BUDGET_BYTES - overhead - escaped_len(&suffix);
-    if merged.truncated || escaped_len(&output) > maximum {
-        let room = maximum - escaped_len(MARKER);
-        let mut used = 0;
-        let end = output
-            .char_indices()
-            .find(|(_, character)| {
-                used += escaped_char_len(*character);
-                used > room
-            })
-            .map_or(output.len(), |(end, _)| end);
-        output.truncate(end);
-        output.push_str(MARKER);
-    }
-    output.push_str(&suffix);
-    output
-}
-
-/// The bytes `text` takes inside a JSON string.
-fn escaped_len(text: &str) -> usize {
-    text.chars().map(escaped_char_len).sum()
-}
-
-fn escaped_char_len(character: char) -> usize {
-    match character {
-        '"' | '\\' | '\n' | '\t' | '\r' | '\u{8}' | '\u{c}' => 2,
-        character if u32::from(character) < 0x20 => 6,
-        character => character.len_utf8(),
-    }
 }
 
 #[cfg(unix)]

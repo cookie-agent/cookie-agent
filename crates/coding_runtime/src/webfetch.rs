@@ -1,7 +1,9 @@
 use std::{sync::OnceLock, time::Duration};
 
 use async_trait::async_trait;
-use cookie_agent_protocol::PersistedToolResult;
+use cookie_agent_protocol::{
+    DisplayBlock, Open, PersistedToolResult, PreparedPresentation, ToolHint,
+};
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCollision, ToolError,
     ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
@@ -126,6 +128,25 @@ impl ToolProvider for WebfetchTool {
         Ok(resource.expect("webfetch has a URL resource"))
     }
 
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
+        let Ok(args) = parse_args::<WebfetchArgs>(&call.name, call.arguments.clone()) else {
+            return cookie_agent_runtime_api::tool_title_only(&call.name);
+        };
+        if args.validate().is_err() {
+            return cookie_agent_runtime_api::tool_title_only(&call.name);
+        }
+        let mut arguments = vec![DisplayBlock::Link {
+            url: args.url.clone(),
+            label: None,
+        }];
+        if args.raw {
+            arguments.push(DisplayBlock::key_value([("raw", "yes")]));
+        }
+        cookie_agent_runtime_api::tool_presentation(&format!("Fetch {}", args.url), &args.url)
+            .with_hint(ToolHint::FETCH)
+            .with_arguments(arguments)
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
@@ -217,8 +238,33 @@ impl WebfetchArgs {
             "content_type": content_type,
             "truncated": truncated,
         });
+        let mut response = vec![
+            ("status", status_code.to_string()),
+            ("content type", content_type.clone()),
+            ("final URL", final_url.clone()),
+        ];
+        if truncated {
+            response.push(("truncated", "yes".to_owned()));
+        }
+        let mut display = vec![Open::Known(DisplayBlock::key_value(response))];
+        if !text.is_empty() {
+            let (excerpt, omitted_lines) =
+                cookie_agent_runtime_api::text_head(&text, MAX_EXCERPT_BYTES);
+            let markdown = matches!(mime.as_str(), "text/markdown" | "text/x-markdown");
+            display.push(Open::Known(if markdown {
+                DisplayBlock::Markdown {
+                    text: excerpt.to_owned(),
+                    omitted_lines,
+                }
+            } else {
+                DisplayBlock::Text {
+                    text: excerpt.to_owned(),
+                    omitted_lines,
+                }
+            }));
+        }
         Ok(PersistedToolResult {
-            display: Vec::new(),
+            display: cookie_agent_protocol::fit_result_display(display),
             background: None,
             retained_output: None,
             title: safe_title(&self.url),
@@ -231,6 +277,10 @@ impl WebfetchArgs {
         })
     }
 }
+
+/// The longest body excerpt a result shows; escaped as JSON, even a body of
+/// quotes leaves room for the response block in the display budget.
+const MAX_EXCERPT_BYTES: usize = 24 * 1024;
 
 #[async_trait]
 impl PreparedExecutor for WebfetchArgs {
@@ -469,6 +519,63 @@ mod tests {
                 matches!(fetch(format!("{base}/binary"), raw).await, Err(ToolError::UnsupportedContentType(content_type)) if content_type == "image/png")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn results_show_the_response_and_a_body_excerpt() {
+        let server = HttpFixture::start();
+        let base = server.url();
+        let lines = fetch(format!("{base}/lines"), false).await.unwrap();
+        assert_eq!(
+            lines.display,
+            [
+                Open::Known(DisplayBlock::key_value([
+                    ("status", "200"),
+                    ("content type", "text/plain"),
+                    ("final URL", format!("{base}/lines").as_str()),
+                ])),
+                // Carriage returns are not display text.
+                Open::Known(DisplayBlock::text("first\nsecond\nlast")),
+            ]
+        );
+        let capped = fetch(format!("{base}/cap"), false).await.unwrap();
+        let [
+            Open::Known(DisplayBlock::KeyValue { entries, .. }),
+            Open::Known(DisplayBlock::Text {
+                text,
+                omitted_lines: Some(1),
+            }),
+        ] = capped.display.as_slice()
+        else {
+            panic!("a key-value block and a cut body: {:?}", capped.display);
+        };
+        assert_eq!(entries[3].key, "truncated");
+        assert_eq!(*text, "x".repeat(MAX_EXCERPT_BYTES));
+        cookie_agent_protocol::validate_display(&capped.display).expect("within the budget");
+    }
+
+    #[test]
+    fn the_call_shows_its_link() {
+        let presentation = WebfetchTool::coding().presentation(&ToolCall {
+            id: ToolCallId::new_v7(),
+            name: "webfetch".into(),
+            arguments: serde_json::json!({"url": "https://example.com/a", "raw": true}),
+        });
+        assert_eq!(presentation.title.as_str(), "Fetch https://example.com/a");
+        assert_eq!(
+            presentation.hint.as_ref().map(|hint| hint.as_str()),
+            Some("fetch")
+        );
+        assert_eq!(
+            presentation.arguments,
+            [
+                Open::Known(DisplayBlock::Link {
+                    url: "https://example.com/a".into(),
+                    label: None
+                }),
+                Open::Known(DisplayBlock::key_value([("raw", "yes")])),
+            ]
+        );
     }
 
     #[tokio::test]

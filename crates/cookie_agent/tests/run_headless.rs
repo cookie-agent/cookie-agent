@@ -1907,7 +1907,7 @@ async fn nonzero_bash_exit_returns_output_without_a_tool_error() {
         assert_eq!(output.metadata["status"], 23);
         let display = cookie_agent_protocol::display_text(&output.display);
         assert!(display.contains("Required asset missing"));
-        assert!(display.ends_with("Exit status: 23"));
+        assert!(display.ends_with("[exit code 23]"));
         #[cfg(feature = "tui")]
         {
             let mut store = cookie_agent_tui::state::StateStore::default();
