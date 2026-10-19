@@ -1085,8 +1085,8 @@ pub(super) fn action_label(action: &PermissionAction) -> &str {
 
 mod runtimes;
 pub(super) use runtimes::{
-    AttachStep, DraftRuntime, RuntimePanel, RuntimeRow, draft_runtime_rows, render_runtimes,
-    runtime_rows,
+    AttachStep, DraftRuntime, MachineAction, MachineRequest, RuntimeHits, RuntimePanel, RuntimeRow,
+    RuntimeView, draft_runtime_rows, render_runtimes, runtime_rows,
 };
 
 mod permissions;
@@ -1096,6 +1096,8 @@ pub(super) use permissions::{
 };
 #[cfg(test)]
 pub(super) use permissions::{permission_rows, sample_permissions};
+#[cfg(test)]
+pub(super) use runtimes::{MachineEntry, sample_machines};
 
 #[cfg(test)]
 mod tests;

@@ -392,7 +392,7 @@ impl App {
             }
             Modal::Runtimes => {
                 let rows = self.runtime_rows();
-                crate::ui::management::render_runtimes(
+                self.hit_map.runtimes = crate::ui::management::render_runtimes(
                     frame,
                     centered(frame.area(), 88, 70),
                     &mut self.runtime_panel,

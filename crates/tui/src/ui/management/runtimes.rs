@@ -1,12 +1,13 @@
 //! The `/runtime` panel: the selected session's attachments, or the
 //! runtimes a new-session draft will attach, with their instance status;
 //! attaching a runtime's capability, detaching, and retrying a failed
-//! instance.
+//! instance. Its machines view groups the daemon's runtimes by machine and
+//! renames, merges, and forgets machines and moves runtimes between them.
 
 use cookie_agent_protocol::{
-    AttachmentName, CapabilityName, RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo,
-    RuntimeId, RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind, RuntimeListing,
-    RuntimesListResult,
+    AttachmentName, CapabilityName, MachineAssignment, MachineInfo, MachineName,
+    MachinesListResult, RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId,
+    RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
 };
 use ratatui::{
     Frame,
@@ -160,18 +161,309 @@ pub(in crate::ui) enum AttachStep {
     Attach(RuntimeId, Option<CapabilityName>, Option<String>),
 }
 
+/// The panel's two views.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::ui) enum RuntimeView {
+    /// The session's attachments.
+    #[default]
+    Attachments,
+    /// The daemon's machines and the runtimes on each.
+    Machines,
+}
+
+impl RuntimeView {
+    pub(in crate::ui) const ALL: [Self; 2] = [Self::Attachments, Self::Machines];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Attachments => " Attached runtimes ",
+            Self::Machines => " Machines ",
+        }
+    }
+}
+
+/// A change to the machine registry the machines view offers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum MachineAction {
+    Rename,
+    Move,
+    Unpin,
+    Merge,
+    Forget,
+}
+
+impl MachineAction {
+    pub(in crate::ui) const fn key(self) -> char {
+        match self {
+            Self::Rename => 'n',
+            Self::Move => 'v',
+            Self::Unpin => 'u',
+            Self::Merge => 'g',
+            Self::Forget => 'f',
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Rename => "rename",
+            Self::Move => "move to machine",
+            Self::Unpin => "unpin",
+            Self::Merge => "merge into",
+            Self::Forget => "forget",
+        }
+    }
+
+    /// Whether the action asks for a machine name first.
+    const fn asks_name(self) -> bool {
+        matches!(self, Self::Rename | Self::Move | Self::Merge)
+    }
+
+    /// The action of the key `key`.
+    pub(in crate::ui) fn of_key(key: char) -> Option<Self> {
+        [
+            Self::Rename,
+            Self::Move,
+            Self::Unpin,
+            Self::Merge,
+            Self::Forget,
+        ]
+        .into_iter()
+        .find(|action| action.key() == key)
+    }
+}
+
+/// One row of the machines view: a machine, or a runtime under it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum MachineEntry {
+    Machine(MachineName),
+    Runtime {
+        machine: MachineName,
+        runtime: RuntimeId,
+        /// Why it belongs to the machine while it is connected.
+        assigned_by: Option<MachineAssignment>,
+        pinned: bool,
+    },
+}
+
+impl MachineEntry {
+    /// The actions the entry offers.
+    pub(in crate::ui) fn actions(&self) -> Vec<MachineAction> {
+        match self {
+            Self::Machine(_) => vec![
+                MachineAction::Rename,
+                MachineAction::Merge,
+                MachineAction::Forget,
+            ],
+            Self::Runtime { pinned: true, .. } => vec![MachineAction::Move, MachineAction::Unpin],
+            Self::Runtime { pinned: false, .. } => vec![MachineAction::Move],
+        }
+    }
+}
+
+/// A machine change as the daemon takes it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum MachineRequest {
+    Rename {
+        machine: MachineName,
+        name: MachineName,
+    },
+    Assign {
+        runtime: RuntimeId,
+        machine: MachineName,
+    },
+    Unassign {
+        runtime: RuntimeId,
+    },
+    Merge {
+        from: MachineName,
+        into: MachineName,
+    },
+    Forget {
+        machine: MachineName,
+    },
+}
+
+/// An action waiting for the machine name it needs.
+pub(in crate::ui) struct MachineForm {
+    pub(in crate::ui) action: MachineAction,
+    pub(in crate::ui) entry: MachineEntry,
+    pub(in crate::ui) input: InputState,
+}
+
+/// Where the panel's clickable parts landed this frame.
+#[derive(Clone, Debug, Default)]
+pub(in crate::ui) struct RuntimeHits {
+    pub(in crate::ui) tabs: Vec<(Rect, RuntimeView)>,
+    /// (row rect, machines-view row index).
+    pub(in crate::ui) machine_rows: Vec<(Rect, usize)>,
+    pub(in crate::ui) machine_actions: Vec<(Rect, MachineAction)>,
+}
+
 #[derive(Default)]
 pub(in crate::ui) struct RuntimePanel {
     pub(in crate::ui) listing: Option<RuntimesListResult>,
     pub(in crate::ui) selection: ListState,
     pub(in crate::ui) form: Option<RuntimeAttachForm>,
     pub(in crate::ui) refresh_in_flight: bool,
+    pub(in crate::ui) view: RuntimeView,
+    /// `machines.list`, or why it failed.
+    pub(in crate::ui) machines: Option<Result<MachinesListResult, String>>,
+    pub(in crate::ui) machine_selection: ListState,
+    pub(in crate::ui) machine_form: Option<MachineForm>,
+    pub(in crate::ui) machines_in_flight: bool,
 }
 
 impl RuntimePanel {
     pub(in crate::ui) fn install(&mut self, listing: RuntimesListResult) {
         self.listing = Some(listing);
         self.refresh_in_flight = false;
+    }
+
+    pub(in crate::ui) fn install_machines(&mut self, machines: Result<MachinesListResult, String>) {
+        self.machines = Some(machines);
+        self.machines_in_flight = false;
+        let count = self.machine_entries().len();
+        self.machine_selection.select((count > 0).then(|| {
+            self.machine_selection
+                .selected()
+                .unwrap_or(0)
+                .min(count - 1)
+        }));
+    }
+
+    /// The machine of `runtime_id` as `runtimes.list` reports it.
+    fn machine_of(&self, runtime_id: &RuntimeId) -> Option<&MachineName> {
+        self.runtimes()
+            .iter()
+            .find(|runtime| runtime.runtime_id == *runtime_id)
+            .and_then(|runtime| runtime.machine.as_ref())
+    }
+
+    /// The machines view's rows: each machine, then its connected
+    /// runtimes and the runtimes pinned to it that are not connected.
+    pub(in crate::ui) fn machine_entries(&self) -> Vec<MachineEntry> {
+        let Some(Ok(listing)) = &self.machines else {
+            return Vec::new();
+        };
+        listing
+            .machines
+            .iter()
+            .flat_map(|machine| {
+                let mut entries = vec![MachineEntry::Machine(machine.name.clone())];
+                for runtime in &machine.connected {
+                    entries.push(MachineEntry::Runtime {
+                        machine: machine.name.clone(),
+                        runtime: runtime.runtime_id.clone(),
+                        assigned_by: Some(runtime.assigned_by),
+                        pinned: machine.pinned.contains(&runtime.runtime_id),
+                    });
+                }
+                for runtime in machine.pinned.iter().filter(|pinned| {
+                    !machine
+                        .connected
+                        .iter()
+                        .any(|connected| connected.runtime_id == **pinned)
+                }) {
+                    entries.push(MachineEntry::Runtime {
+                        machine: machine.name.clone(),
+                        runtime: runtime.clone(),
+                        assigned_by: None,
+                        pinned: true,
+                    });
+                }
+                entries
+            })
+            .collect()
+    }
+
+    pub(in crate::ui) fn selected_machine_entry(&self) -> Option<MachineEntry> {
+        let index = self.machine_selection.selected()?;
+        self.machine_entries().into_iter().nth(index)
+    }
+
+    pub(in crate::ui) fn move_machine_selection(&mut self, up: bool) {
+        let count = self.machine_entries().len();
+        if count > 0 {
+            let index = self
+                .machine_selection
+                .selected()
+                .unwrap_or(0)
+                .min(count - 1);
+            self.machine_selection.select(Some(cycle(index, count, up)));
+        }
+    }
+
+    /// Starts `action` on the selected row: a request ready to send, or
+    /// `None` when the form now asks for a machine name.
+    pub(in crate::ui) fn begin_machine_action(
+        &mut self,
+        action: MachineAction,
+    ) -> Result<Option<MachineRequest>, String> {
+        let entry = self
+            .selected_machine_entry()
+            .ok_or("select a machine or a runtime first")?;
+        if !entry.actions().contains(&action) {
+            return Err(match (&entry, action) {
+                (MachineEntry::Machine(_), _) => format!("select a runtime to {}", action.label()),
+                (MachineEntry::Runtime { .. }, MachineAction::Unpin) => {
+                    "only a pinned runtime can be unpinned".to_owned()
+                }
+                (MachineEntry::Runtime { .. }, _) => {
+                    format!("select a machine to {}", action.label())
+                }
+            });
+        }
+        if action.asks_name() {
+            self.machine_form = Some(MachineForm {
+                action,
+                entry,
+                input: InputState::default(),
+            });
+            return Ok(None);
+        }
+        Ok(Some(match (action, entry) {
+            (MachineAction::Forget, MachineEntry::Machine(machine)) => {
+                MachineRequest::Forget { machine }
+            }
+            (MachineAction::Unpin, MachineEntry::Runtime { runtime, .. }) => {
+                MachineRequest::Unassign { runtime }
+            }
+            _ => return Err("nothing to do".into()),
+        }))
+    }
+
+    /// The request the open form describes.
+    pub(in crate::ui) fn submit_machine_form(&mut self) -> Result<MachineRequest, String> {
+        let form = self
+            .machine_form
+            .as_ref()
+            .ok_or("no machine change in progress")?;
+        let typed = form.input.as_str().trim();
+        let name = MachineName::new(typed).map_err(|_| {
+            format!(
+                "`{typed}` is not a machine name: a lowercase letter, then up to 31 lowercase \
+                 letters, digits, `_`, or `-`"
+            )
+        })?;
+        let request = match (&form.action, &form.entry) {
+            (MachineAction::Rename, MachineEntry::Machine(machine)) => MachineRequest::Rename {
+                machine: machine.clone(),
+                name,
+            },
+            (MachineAction::Merge, MachineEntry::Machine(machine)) => MachineRequest::Merge {
+                from: machine.clone(),
+                into: name,
+            },
+            (MachineAction::Move, MachineEntry::Runtime { runtime, .. }) => {
+                MachineRequest::Assign {
+                    runtime: runtime.clone(),
+                    machine: name,
+                }
+            }
+            _ => return Err("nothing to do".into()),
+        };
+        self.machine_form = None;
+        Ok(request)
     }
 
     pub(in crate::ui) fn runtimes(&self) -> &[RuntimeListing] {
@@ -452,12 +744,61 @@ pub(in crate::ui) fn render_runtimes(
     panel: &mut RuntimePanel,
     rows: &[RuntimeRow],
     theme: &Theme,
-) {
+) -> RuntimeHits {
+    let mut hits = RuntimeHits::default();
     paint_panel(frame, area, theme);
     if panel.form.is_some() {
         render_attach_form(frame, area, panel, theme);
-        return;
+        return hits;
     }
+    let [tabs, body] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .areas(area);
+    render_tabs(frame, tabs, panel, theme, &mut hits);
+    match panel.view {
+        RuntimeView::Attachments => render_attachments(frame, body, panel, rows, theme),
+        RuntimeView::Machines => render_machines(frame, body, panel, theme, &mut hits),
+    }
+    hits
+}
+
+/// The view tabs, each a click target while no form is open.
+fn render_tabs(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &RuntimePanel,
+    theme: &Theme,
+    hits: &mut RuntimeHits,
+) {
+    let mut spans = Vec::new();
+    let mut x = area.x;
+    for view in RuntimeView::ALL {
+        let label = view.label();
+        let width = u16::try_from(label.len()).unwrap_or(u16::MAX);
+        let style = if view == panel.view {
+            theme.selected()
+        } else {
+            theme.link()
+        };
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+        if panel.machine_form.is_none() && x.saturating_add(width) <= area.right() {
+            hits.tabs.push((Rect::new(x, area.y, width, 1), view));
+        }
+        x = x.saturating_add(width + 1);
+    }
+    spans.push(Span::styled("m switch", theme.internal()));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_attachments(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &mut RuntimePanel,
+    rows: &[RuntimeRow],
+    theme: &Theme,
+) {
     panel.clamp(rows.len());
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -466,7 +807,7 @@ pub(in crate::ui) fn render_runtimes(
     let items = rows
         .iter()
         .map(|row| {
-            ListItem::new(format!(
+            let mut line = format!(
                 "{}  {}/{}  {}  {}",
                 row.attachment.name,
                 row.attachment.runtime_id,
@@ -476,7 +817,11 @@ pub(in crate::ui) fn render_runtimes(
                     .as_deref()
                     .unwrap_or("(no workspace)"),
                 status_label(row.instance.as_ref().map(|instance| instance.status)),
-            ))
+            );
+            if let Some(machine) = panel.machine_of(&row.attachment.runtime_id) {
+                line.push_str(&format!("  on {machine}"));
+            }
+            ListItem::new(line)
         })
         .collect::<Vec<_>>();
     frame.render_stateful_widget(
@@ -489,7 +834,7 @@ pub(in crate::ui) fn render_runtimes(
                     .title(crate::ui::panel_title("Attached runtimes"))
                     .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
-                            "a attach | d detach | r retry | esc close",
+                            "a attach | d detach | r retry | m machines | esc close",
                             theme.internal(),
                         ))
                         .right_aligned(),
@@ -510,7 +855,7 @@ pub(in crate::ui) fn render_runtimes(
                     "No runtimes attached. Press a to attach one.".to_owned()
                 }
             },
-            row_detail,
+            |row| row_detail(row, panel.machine_of(&row.attachment.runtime_id)),
         );
     frame.render_widget(
         Paragraph::new(detail).wrap(Wrap { trim: false }).block(
@@ -522,7 +867,204 @@ pub(in crate::ui) fn render_runtimes(
     );
 }
 
-fn row_detail(row: &RuntimeRow) -> String {
+/// The machines view: each machine with its runtimes, the selected row's
+/// details, the actions it offers, and the form an action that needs a
+/// machine name opens.
+fn render_machines(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &mut RuntimePanel,
+    theme: &Theme,
+    hits: &mut RuntimeHits,
+) {
+    let entries = panel.machine_entries();
+    let form_height = if panel.machine_form.is_some() { 3 } else { 0 };
+    let [list_area, detail_area, actions_area, form_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Length(form_height),
+        ])
+        .areas(area);
+    let machines = match &panel.machines {
+        Some(Ok(listing)) => listing.machines.as_slice(),
+        _ => &[],
+    };
+    let items = entries
+        .iter()
+        .map(|entry| ListItem::new(machine_entry_line(entry, machines, theme)))
+        .collect::<Vec<_>>();
+    let block = crate::ui::panel_block()
+        .border_style(theme.panel_border())
+        .title(crate::ui::panel_title("Machines"))
+        .title_bottom(crate::ui::panel_title(
+            Line::from(Span::styled(
+                "n rename | v move | u unpin | g merge | f forget | m attachments | esc close",
+                theme.internal(),
+            ))
+            .right_aligned(),
+        ));
+    let inner = block.inner(list_area);
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_symbol("> ")
+            .highlight_style(theme.selected())
+            .block(block),
+        list_area,
+        &mut panel.machine_selection,
+    );
+    if panel.machine_form.is_none() {
+        let offset = panel.machine_selection.offset();
+        for (line, index) in (offset..entries.len())
+            .take(usize::from(inner.height))
+            .enumerate()
+        {
+            let y = inner.y + u16::try_from(line).unwrap_or(u16::MAX);
+            hits.machine_rows
+                .push((Rect::new(inner.x, y, inner.width, 1), index));
+        }
+    }
+    let selected = panel.selected_machine_entry();
+    let detail = match (&panel.machines, &selected) {
+        (None, _) => "Loading machines...".to_owned(),
+        (Some(Err(error)), _) => format!("Machines are unavailable: {error}"),
+        (Some(Ok(_)), None) => "No machines yet.".to_owned(),
+        (Some(Ok(_)), Some(entry)) => machine_entry_detail(entry, machines),
+    };
+    frame.render_widget(
+        Paragraph::new(detail).wrap(Wrap { trim: false }).block(
+            crate::ui::panel_block()
+                .border_style(theme.panel_border())
+                .title(crate::ui::panel_title("Details")),
+        ),
+        detail_area,
+    );
+    let mut spans = Vec::new();
+    let mut x = actions_area.x;
+    for action in selected.iter().flat_map(MachineEntry::actions) {
+        let label = format!(" {} ({}) ", action.label(), action.key());
+        let width = u16::try_from(label.len()).unwrap_or(u16::MAX);
+        if panel.machine_form.is_none() && x.saturating_add(width) <= actions_area.right() {
+            hits.machine_actions
+                .push((Rect::new(x, actions_area.y, width, 1), action));
+        }
+        spans.push(Span::styled(label, theme.link()));
+        spans.push(Span::raw(" "));
+        x = x.saturating_add(width + 1);
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), actions_area);
+    if let Some(form) = panel.machine_form.as_mut() {
+        let title = match (&form.action, &form.entry) {
+            (MachineAction::Rename, MachineEntry::Machine(machine)) => {
+                format!("New name for {machine}")
+            }
+            (MachineAction::Merge, MachineEntry::Machine(machine)) => {
+                format!("Merge {machine} into (its memories move too)")
+            }
+            (MachineAction::Move, MachineEntry::Runtime { runtime, .. }) => {
+                format!("Machine for runtime {runtime} (a new name creates it)")
+            }
+            _ => "Machine name".to_owned(),
+        };
+        crate::ui::input::render(
+            frame,
+            form_area,
+            &mut form.input,
+            true,
+            title,
+            Some("enter apply | esc cancel"),
+            theme,
+        );
+    }
+}
+
+fn machine_entry_line(
+    entry: &MachineEntry,
+    machines: &[MachineInfo],
+    theme: &Theme,
+) -> Line<'static> {
+    match entry {
+        MachineEntry::Machine(name) => {
+            let machine = machines.iter().find(|machine| machine.name == *name);
+            let mut spans = vec![Span::styled(name.to_string(), theme.body())];
+            if let Some(platform) = machine.and_then(|machine| machine.platform.as_deref()) {
+                spans.push(Span::styled(format!(" ({platform})"), theme.muted()));
+            }
+            let memories = machine.map_or(0, |machine| machine.memories);
+            spans.push(Span::styled(
+                match memories {
+                    1 => "  1 memory".to_owned(),
+                    count => format!("  {count} memories"),
+                },
+                theme.muted(),
+            ));
+            Line::from(spans)
+        }
+        MachineEntry::Runtime {
+            runtime,
+            assigned_by,
+            pinned,
+            ..
+        } => Line::from(vec![
+            Span::styled(format!("  {runtime}"), theme.body()),
+            Span::styled(
+                format!("  {}", runtime_placement(*assigned_by, *pinned)),
+                theme.muted(),
+            ),
+        ]),
+    }
+}
+
+/// Why a runtime row sits under its machine.
+fn runtime_placement(assigned_by: Option<MachineAssignment>, pinned: bool) -> &'static str {
+    match (assigned_by, pinned) {
+        (None, _) => "pinned, not connected",
+        (Some(MachineAssignment::Pinned), _) | (Some(_), true) => "pinned",
+        (Some(MachineAssignment::MachineId), false) => "by machine ID",
+        (Some(MachineAssignment::Unknown), false) => "connected",
+    }
+}
+
+fn machine_entry_detail(entry: &MachineEntry, machines: &[MachineInfo]) -> String {
+    match entry {
+        MachineEntry::Machine(name) => {
+            let Some(machine) = machines.iter().find(|machine| machine.name == *name) else {
+                return name.to_string();
+            };
+            let mut text = format!(
+                "{}\nmemories: {}\nconnected runtimes: {}",
+                machine.name,
+                machine.memories,
+                machine.connected.len()
+            );
+            if !machine.pinned.is_empty() {
+                let pinned = machine
+                    .pinned
+                    .iter()
+                    .map(RuntimeId::to_string)
+                    .collect::<Vec<_>>();
+                text.push_str(&format!("\npinned: {}", pinned.join(", ")));
+            }
+            if !machine.ids.is_empty() {
+                text.push_str(&format!("\nmachine IDs: {}", machine.ids.join(", ")));
+            }
+            text
+        }
+        MachineEntry::Runtime {
+            machine,
+            runtime,
+            assigned_by,
+            pinned,
+        } => format!(
+            "runtime {runtime} on machine {machine}: {}",
+            runtime_placement(*assigned_by, *pinned)
+        ),
+    }
+}
+
+fn row_detail(row: &RuntimeRow, machine: Option<&MachineName>) -> String {
     let attachment = &row.attachment;
     let mut text = format!(
         "{}\nruntime: {}\ncapability: {} ({})",
@@ -531,6 +1073,9 @@ fn row_detail(row: &RuntimeRow) -> String {
         attachment.capability,
         attachment.kind.as_str()
     );
+    if let Some(machine) = machine {
+        text.push_str(&format!("\nmachine: {machine}"));
+    }
     if let Some(description) = &row.description {
         text.push_str(&format!("\ndescription: {description}"));
     }
@@ -733,4 +1278,40 @@ fn render_attach_parameters(
         Some("~/project"),
         theme,
     );
+}
+
+/// Two machines: `laptop` with `global` and `local` by machine ID and a
+/// pinned runtime `box` that is not connected, and `labpc` with one pinned
+/// runtime and a memory.
+#[cfg(test)]
+pub(in crate::ui) fn sample_machines() -> MachinesListResult {
+    use cookie_agent_protocol::MachineRuntime;
+    let runtime = |id: &str, assigned_by| MachineRuntime {
+        runtime_id: RuntimeId::new(id).unwrap(),
+        assigned_by,
+        platform: Some("linux".into()),
+    };
+    MachinesListResult {
+        machines: vec![
+            MachineInfo {
+                name: MachineName::new("labpc").unwrap(),
+                ids: vec!["id-labpc".into()],
+                pinned: vec![RuntimeId::new("labpc").unwrap()],
+                connected: vec![runtime("labpc", MachineAssignment::Pinned)],
+                platform: Some("linux".into()),
+                memories: 1,
+            },
+            MachineInfo {
+                name: MachineName::new("laptop").unwrap(),
+                ids: vec!["id-laptop".into()],
+                pinned: vec![RuntimeId::new("box").unwrap()],
+                connected: vec![
+                    runtime("global", MachineAssignment::MachineId),
+                    runtime("local", MachineAssignment::MachineId),
+                ],
+                platform: Some("linux".into()),
+                memories: 0,
+            },
+        ],
+    }
 }

@@ -210,3 +210,152 @@ async fn a_new_session_draft_chooses_its_runtimes_before_the_session_exists() {
         .collect::<Vec<_>>();
     assert_eq!(attached, [names[1].clone()]);
 }
+
+fn machine_names(app: &App) -> Vec<String> {
+    match &app.runtime_panel.machines {
+        Some(Ok(listing)) => listing
+            .machines
+            .iter()
+            .map(|machine| machine.name.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+async fn type_text(app: &mut App, text: &str) {
+    for character in text.chars() {
+        app.handle_key(key(KeyCode::Char(character))).await;
+    }
+}
+
+/// The `/runtime` panel's machines view groups runtimes by machine, moves
+/// a runtime to a new machine, renames and merges machines, and shows the
+/// daemon's refusal.
+#[tokio::test]
+async fn the_machines_view_regroups_runtimes_and_renames_and_merges_machines() {
+    let (_directory, server) = crate::tests::in_process_server();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    let session = client
+        .create_session(cookie_agent_protocol::SessionCreateParams::new(
+            crate::tests::test_run_selection(),
+        ))
+        .await
+        .expect("session")
+        .session
+        .session_id;
+    let mut app = App::new(client.clone()).await.expect("app");
+    let mut deliveries = app.take_deliveries();
+    app.open_session(session).await;
+    app.run_command(SlashCommand::Runtime).await;
+    // The Machines tab opens the view.
+    rendered_frame(&mut app, 120, 40);
+    let (tab, _) = app
+        .hit_map
+        .runtimes
+        .tabs
+        .iter()
+        .copied()
+        .find(|(_, view)| *view == crate::ui::management::RuntimeView::Machines)
+        .expect("machines tab");
+    app.handle_click(tab.x, tab.y).await;
+    assert_eq!(
+        app.runtime_panel.view,
+        crate::ui::management::RuntimeView::Machines
+    );
+    pump_until(&mut app, &mut deliveries, |app| {
+        machine_names(app).len() == 1 && app.runtime_panel.listing.is_some()
+    })
+    .await;
+    let daemon = machine_names(&app)[0].clone();
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains(&daemon), "{rendered}");
+    assert!(rendered.contains("  local  by machine ID"), "{rendered}");
+
+    // Move `local` (the third row: the machine, `global`, `local`) to a new
+    // machine.
+    app.handle_key(key(KeyCode::Down)).await;
+    app.handle_key(key(KeyCode::Down)).await;
+    app.handle_key(key(KeyCode::Char('v'))).await;
+    assert!(app.runtime_panel.machine_form.is_some());
+    type_text(&mut app, "sandbox").await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.status == "pinned runtime local to machine sandbox"
+    })
+    .await;
+    let mut expected = vec![daemon.clone(), "sandbox".to_owned()];
+    expected.sort();
+    assert_eq!(machine_names(&app), expected);
+
+    // The attachments view names the new machine.
+    app.handle_key(key(KeyCode::Char('m'))).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.runtime_panel.listing.as_ref().is_some_and(|listing| {
+            listing.runtimes.iter().any(|runtime| {
+                runtime.runtime_id.as_str() == "local"
+                    && runtime.machine.as_ref().map(|machine| machine.as_str()) == Some("sandbox")
+            })
+        })
+    })
+    .await;
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains("on sandbox"), "{rendered}");
+    app.handle_key(key(KeyCode::Char('m'))).await;
+
+    // A taken name is refused with the daemon's reason.
+    let row = app
+        .runtime_panel
+        .machine_entries()
+        .iter()
+        .position(|entry| {
+            *entry
+                == crate::ui::management::MachineEntry::Machine(
+                    cookie_agent_protocol::MachineName::new("sandbox").unwrap(),
+                )
+        })
+        .expect("sandbox row");
+    app.runtime_panel.machine_selection.select(Some(row));
+    // The rename action is a button too.
+    rendered_frame(&mut app, 120, 40);
+    let (rename, _) = app
+        .hit_map
+        .runtimes
+        .machine_actions
+        .iter()
+        .copied()
+        .find(|(_, action)| *action == crate::ui::management::MachineAction::Rename)
+        .expect("rename button");
+    app.handle_click(rename.x, rename.y).await;
+    assert!(app.runtime_panel.machine_form.is_some());
+    type_text(&mut app, &daemon).await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.status.starts_with("machine change failed")
+    })
+    .await;
+    assert!(app.status.contains("is taken"), "{}", app.status);
+
+    // An invalid name never reaches the daemon.
+    app.handle_key(key(KeyCode::Char('n'))).await;
+    type_text(&mut app, "Not Valid").await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(
+        app.status.contains("is not a machine name"),
+        "{}",
+        app.status
+    );
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert!(app.runtime_panel.machine_form.is_none());
+    assert_eq!(app.modal, Modal::Runtimes);
+
+    // Merging the sandbox back leaves one machine.
+    app.handle_key(key(KeyCode::Char('g'))).await;
+    type_text(&mut app, &daemon).await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.status.starts_with("merged machine sandbox")
+    })
+    .await;
+    assert_eq!(machine_names(&app), [daemon]);
+}

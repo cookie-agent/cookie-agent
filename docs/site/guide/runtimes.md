@@ -256,8 +256,12 @@ are kept in `~/.cookie-agent/machines.json`, which only the daemon writes;
 there is no configuration for them.
 
 Regroup them by hand when the automatic grouping is wrong, for example when
-a container reports its own machine ID, with `cookie machine`, which works
-against a remote daemon like `cookie config`:
+a container reports its own machine ID. In the TUI, the Machines view of
+the `/runtime` panel (press `m`, or click its tab) lists each machine with
+its runtimes; select a machine to rename (`n`), merge (`g`), or forget
+(`f`) it, or a runtime to move it to another machine (`v`) or unpin it
+(`u`). From a terminal, `cookie machine` does the same and works against a
+remote daemon like `cookie config`:
 
 ```sh
 cookie machine list                  # machines, their runtimes, and memories

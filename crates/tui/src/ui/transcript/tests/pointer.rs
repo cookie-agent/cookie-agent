@@ -13,7 +13,7 @@ use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect};
 use crate::state::ToolStatus;
 use crate::theme::{ColorLevel, Theme, ThemeKind};
 use crate::ui::app::*;
-use crate::ui::management::sample_permissions;
+use crate::ui::management::{RuntimeView, sample_machines, sample_permissions};
 use crate::ui::transcript::BlockId;
 
 use super::support::*;
@@ -40,6 +40,9 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::PermissionRow(_) => "permission row",
         PointerTarget::BackgroundRow(_) => "background row",
         PointerTarget::BackgroundStop(_) => "background stop",
+        PointerTarget::RuntimeTab(_) => "runtime tab",
+        PointerTarget::MachineRow(_) => "machine row",
+        PointerTarget::MachineAction(_) => "machine action",
         PointerTarget::ConfirmButton(_) => "confirm button",
         PointerTarget::PickerInput => "picker input",
         PointerTarget::PickerRow(_) => "picker row",
@@ -293,6 +296,18 @@ async fn every_clickable_element_hovers_visibly() {
     app.permission_panel.form = None;
     app.modal = Modal::None;
 
+    app.modal = Modal::Runtimes;
+    seen.extend(sweep(&mut app, "runtime panel"));
+    app.runtime_panel.view = RuntimeView::Machines;
+    app.runtime_panel.install_machines(Ok(sample_machines()));
+    // A pinned runtime offers both of a runtime's actions.
+    app.runtime_panel.machine_selection.select(Some(1));
+    seen.extend(sweep(&mut app, "machines view"));
+    app.runtime_panel.machine_selection.select(Some(0));
+    seen.extend(sweep(&mut app, "machines view, a machine selected"));
+    app.runtime_panel = Default::default();
+    app.modal = Modal::None;
+
     app.begin_provider_form(multi_auth_provider());
     seen.extend(sweep(&mut app, "provider form"));
     app.provider_form = None;
@@ -326,6 +341,9 @@ async fn every_clickable_element_hovers_visibly() {
         "permission row",
         "background row",
         "background stop",
+        "runtime tab",
+        "machine row",
+        "machine action",
         "confirm button",
         "picker input",
         "picker row",

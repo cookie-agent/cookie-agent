@@ -157,6 +157,24 @@ impl App {
                     .find(|(rect, _)| over(*rect))
                     .map(|(_, index)| PointerTarget::PermissionRow(*index));
             }
+            Modal::Runtimes => {
+                let runtimes = &hits.runtimes;
+                if let Some((_, view)) = runtimes.tabs.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::RuntimeTab(*view));
+                }
+                if let Some((_, action)) = runtimes
+                    .machine_actions
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                {
+                    return Some(PointerTarget::MachineAction(*action));
+                }
+                return runtimes
+                    .machine_rows
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, index)| PointerTarget::MachineRow(*index));
+            }
             Modal::Background => {
                 if let Some((_, index)) = hits.background_stops.iter().find(|(rect, _)| over(*rect))
                 {
@@ -284,6 +302,11 @@ impl App {
                 }
             }
             PointerTarget::BackgroundRow(index) => self.background_panel.selected = index,
+            PointerTarget::RuntimeTab(view) => self.show_runtime_view(view),
+            PointerTarget::MachineRow(index) => {
+                self.runtime_panel.machine_selection.select(Some(index));
+            }
+            PointerTarget::MachineAction(action) => self.begin_machine_action(action),
             PointerTarget::BackgroundStop(index) => self.stop_background_call(index),
             PointerTarget::ConfirmButton(button) => {
                 if self.modal == Modal::RevertConfirm {
@@ -521,6 +544,28 @@ impl App {
             PointerTarget::BackgroundStop(index) => {
                 (one(indexed_rect(&hits.background_stops, index)), fill_style)
             }
+            PointerTarget::RuntimeTab(view) => (
+                one(hits
+                    .runtimes
+                    .tabs
+                    .iter()
+                    .find(|(_, candidate)| *candidate == view)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
+            PointerTarget::MachineRow(index) => (
+                one(indexed_rect(&hits.runtimes.machine_rows, index)),
+                text_style,
+            ),
+            PointerTarget::MachineAction(action) => (
+                one(hits
+                    .runtimes
+                    .machine_actions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
             PointerTarget::PickerRow(index) => (
                 one(hits
                     .picker_rows

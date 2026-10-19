@@ -139,6 +139,10 @@ impl App {
     }
 
     pub(super) fn handle_runtime_key(&mut self, key: KeyEvent) {
+        if self.runtime_panel.view == crate::ui::management::RuntimeView::Machines {
+            self.handle_machine_key(key);
+            return;
+        }
         if let Some(choosing) = self
             .runtime_panel
             .form
@@ -178,6 +182,9 @@ impl App {
         let rows = self.runtime_rows();
         match key.code {
             KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Char('m') => {
+                self.show_runtime_view(crate::ui::management::RuntimeView::Machines);
+            }
             KeyCode::Up => {
                 move_picker_selection(&mut self.runtime_panel.selection, rows.len(), true)
             }

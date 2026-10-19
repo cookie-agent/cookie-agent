@@ -9,6 +9,7 @@ mod config_panel;
 mod draw;
 mod emoji_backend;
 mod keys;
+mod machines;
 mod pickers;
 mod plugins;
 mod pointer;
@@ -477,6 +478,11 @@ pub(super) enum PointerTarget {
     /// A background panel row (selects it) and its stop button.
     BackgroundRow(usize),
     BackgroundStop(usize),
+    /// A `/runtime` panel view tab.
+    RuntimeTab(crate::ui::management::RuntimeView),
+    /// A machines-view row (selects it) and an action on the selected row.
+    MachineRow(usize),
+    MachineAction(crate::ui::management::MachineAction),
     ConfirmButton(ConfirmButton),
     /// A picker's search input: a click places its caret.
     PickerInput,
@@ -552,6 +558,9 @@ pub(super) struct UiHitMap {
     pub(super) approval_details: Option<Rect>,
     /// The `/permissions` panel's rows, effect segments, and mode.
     pub(super) permissions: PermissionHits,
+    /// The `/runtime` panel's view tabs and its machines view's rows and
+    /// actions.
+    pub(super) runtimes: crate::ui::management::RuntimeHits,
     pub(super) title_segments: Vec<TitleSegmentHit>,
     /// One clickable row per rendered queue-strip line (entries and the
     /// overflow fold alike): any click recalls the newest pending input.
@@ -592,6 +601,7 @@ impl UiHitMap {
         self.approval = None;
         self.approval_details = None;
         self.permissions = PermissionHits::default();
+        self.runtimes = crate::ui::management::RuntimeHits::default();
         self.title_segments.clear();
         self.queue_entries.clear();
         self.user_messages.clear();
@@ -1012,6 +1022,14 @@ pub(in crate::ui) enum RpcUpdate {
     },
     RuntimesRefreshed {
         result: Result<cookie_agent_protocol::RuntimesListResult, String>,
+    },
+    MachinesRefreshed {
+        result: Result<cookie_agent_protocol::MachinesListResult, String>,
+    },
+    /// A `machines.*` change answered: what it did and the machines
+    /// afterwards, or why it failed.
+    MachineChanged {
+        result: Result<(String, cookie_agent_protocol::MachinesListResult), String>,
     },
     ConfigLoaded {
         result: Result<cookie_agent_protocol::ConfigGetResult, String>,

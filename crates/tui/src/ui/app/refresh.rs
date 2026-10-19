@@ -628,6 +628,8 @@ impl App {
                 outcome,
             } => self.install_config_apply(path, edit, outcome),
             RpcUpdate::ConfigReloaded { status } => self.install_config_reload(status),
+            RpcUpdate::MachinesRefreshed { result } => self.runtime_panel.install_machines(result),
+            RpcUpdate::MachineChanged { result } => self.install_machine_change(result),
             RpcUpdate::RuntimesRefreshed { result } => {
                 self.runtime_panel.refresh_in_flight = false;
                 match result {
@@ -1293,6 +1295,7 @@ impl App {
     }
 
     pub(in crate::ui) fn poll_runtimes(&mut self) {
+        self.poll_machines();
         if self.modal != Modal::Runtimes || self.runtime_panel.refresh_in_flight {
             return;
         }
