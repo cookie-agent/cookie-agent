@@ -100,8 +100,8 @@ use crate::{
 };
 
 use super::events::{
-    RenderScheduler, TerminalRestore, install_terminal_panic_hook, resume_terminal,
-    suspend_terminal,
+    ContinueSignal, JobControl, JobStep, RenderScheduler, TerminalRestore,
+    install_terminal_panic_hook, resume_terminal, suspend_process, suspend_terminal,
 };
 use super::input::{self, InputState};
 use super::management::{
@@ -726,6 +726,8 @@ pub struct App {
     pub(super) config_panel: config_panel::ConfigPanelState,
     /// A configuration document the event loop opens in the editor next.
     pub(super) pending_editor: Option<config_panel::EditorRequest>,
+    /// Ctrl+Z asked the event loop to suspend the TUI (Unix job control).
+    pub(super) pending_suspend: bool,
     pub(super) goal_focus: Option<GoalBarAction>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
@@ -1322,6 +1324,7 @@ impl App {
             plugin_panel: plugins::PluginPanelState::default(),
             config_panel: config_panel::ConfigPanelState::default(),
             pending_editor: None,
+            pending_suspend: false,
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),
@@ -1804,6 +1807,9 @@ async fn event_loop(
     frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut render = RenderScheduler::default();
     let mut drawn_wall_clock_view = app.wall_clock_view();
+    let mut continued = ContinueSignal::new();
+    let mut jobs = JobControl::default();
+    let mut reenter = false;
     loop {
         // A reconnect hands over the new connection's delivery stream.
         if let Some(reconnected) = app.deliveries.take() {
@@ -1823,6 +1829,25 @@ async fn event_loop(
             }
             events = EventStream::new();
             app.finish_config_edit(request, edited);
+            render.mark_immediate();
+        }
+        // Ctrl+Z stops the process until the shell continues it; a SIGCONT
+        // the TUI did not ask for brings the terminal back the same way.
+        let suspend = std::mem::take(&mut app.pending_suspend);
+        if suspend || std::mem::take(&mut reenter) {
+            drop(events);
+            let resumed = if suspend {
+                let stopped = suspend_process().context("suspend the TUI");
+                jobs.resumed_after_suspend();
+                stopped.and_then(|()| resume_terminal().context("resume the terminal"))
+            } else {
+                suspend_terminal();
+                resume_terminal().context("resume the terminal")
+            };
+            if let Err(error) = resumed.and_then(|()| terminal.clear().context("redraw")) {
+                return (Err(error), app.session_errors.clone());
+            }
+            events = EventStream::new();
             render.mark_immediate();
         }
         if render.should_draw(Instant::now()) {
@@ -1847,6 +1872,7 @@ async fn event_loop(
         let frame_due = animating || render.pending();
         tokio::select! {
             () = signals.recv() => return (Ok(()), app.session_errors.clone()),
+            () = continued.recv() => reenter = jobs.continued() == JobStep::Reenter,
             Some(event) = events.next() => match event {
                 Ok(CrosstermEvent::Key(key)) => {
                     app.handle_key(key).await;

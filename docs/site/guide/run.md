@@ -162,6 +162,17 @@ selects the whole draft; typing or pasting over a selection replaces it. The
 composer keeps keyboard focus while you click around the conversation; only a
 panel, the command palette, or an approval on top of it takes focus away.
 
+The agent and model panels include search fields. Agent search matches agent IDs
+and descriptions; model search matches display names and `provider/model_id`.
+Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
+into the matching rows.
+
+On Unix, Ctrl+Z suspends the TUI to the shell as it would any terminal
+program, and `fg` brings it back with its screen redrawn. A TUI stopped some
+other way, such as `kill -STOP` or an editor opened from `/config` being
+suspended along with it, takes its terminal back and redraws when it is
+continued.
+
 ### Attachments
 
 When the selected model accepts files (images, PDFs, audio, or video; see
@@ -178,11 +189,6 @@ bottom border as `📎 name · type · size`; Backspace at the start of the draf
 removes the newest one. A message may be attachments alone. A message taken
 back from the pending strip, or handed back after it failed to send, returns
 its attachments with its text.
-
-The agent and model panels include search fields. Agent search matches agent IDs
-and descriptions; model search matches display names and `provider/model_id`.
-Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
-into the matching rows.
 
 ## Command palette
 

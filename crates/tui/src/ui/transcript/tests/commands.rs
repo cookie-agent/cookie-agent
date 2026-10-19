@@ -892,3 +892,19 @@ async fn new_session_draft_empties_the_conversation_until_cancelled() {
     let back = rendered_frame(&mut app, 80, 24);
     assert!(back.contains("second question"), "{back}");
 }
+
+#[tokio::test]
+async fn ctrl_z_asks_the_event_loop_to_suspend_and_types_nothing() {
+    let mut app = test_app().await;
+    app.selected = Some(SessionId::new_v7());
+    type_input(&mut app, "draft").await;
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL))
+        .await;
+    assert_eq!(app.pending_suspend, cfg!(unix));
+    assert_eq!(app.input.as_str(), "draft");
+    // A plain `z` is text.
+    app.pending_suspend = false;
+    type_input(&mut app, "z").await;
+    assert!(!app.pending_suspend);
+    assert_eq!(app.input.as_str(), "draftz");
+}

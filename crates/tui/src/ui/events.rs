@@ -225,6 +225,94 @@ pub(super) fn resume_terminal() -> io::Result<()> {
     Ok(())
 }
 
+/// What the event loop does when the process is stopped and continued
+/// (Unix job control). A stop the TUI did not ask for (`kill -STOP`, or a
+/// suspended editor stopping the whole process group) leaves the terminal in
+/// whatever state the shell put it in, so a SIGCONT re-enters the TUI's
+/// modes and redraws. Ctrl+Z in the TUI hands the terminal back first and
+/// re-enters it as soon as it is continued, so the SIGCONT that follows
+/// needs nothing more.
+#[derive(Debug, Default)]
+pub(super) struct JobControl {
+    /// The TUI stopped itself and already re-entered its modes; the next
+    /// SIGCONT is that continue.
+    resumed_self: bool,
+}
+
+/// One job-control step for the event loop to take.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum JobStep {
+    /// Re-enter the terminal modes (leaving them first, so nothing is
+    /// pushed twice) and redraw everything.
+    Reenter,
+    /// Nothing to do.
+    Nothing,
+}
+
+impl JobControl {
+    /// The TUI stopped itself (Ctrl+Z) and was continued; it re-entered its
+    /// modes on its own.
+    pub(super) fn resumed_after_suspend(&mut self) {
+        self.resumed_self = true;
+    }
+
+    /// The process was continued (SIGCONT).
+    pub(super) fn continued(&mut self) -> JobStep {
+        if std::mem::take(&mut self.resumed_self) {
+            JobStep::Nothing
+        } else {
+            JobStep::Reenter
+        }
+    }
+}
+
+/// SIGCONT, as a stream the event loop selects on. Elsewhere than Unix it
+/// never fires.
+pub(super) struct ContinueSignal {
+    #[cfg(unix)]
+    signal: Option<tokio::signal::unix::Signal>,
+}
+
+impl ContinueSignal {
+    /// Listens for SIGCONT; a listener that cannot be installed leaves job
+    /// control to the shell. Must be called inside a Tokio runtime.
+    pub(super) fn new() -> Self {
+        #[cfg(unix)]
+        {
+            let kind =
+                tokio::signal::unix::SignalKind::from_raw(rustix::process::Signal::CONT.as_raw());
+            Self {
+                signal: tokio::signal::unix::signal(kind).ok(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
+        }
+    }
+
+    pub(super) async fn recv(&mut self) {
+        #[cfg(unix)]
+        if let Some(signal) = &mut self.signal {
+            signal.recv().await;
+            return;
+        }
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Hands the terminal back and stops the TUI's process group, as Ctrl+Z
+/// does in a program that is not in raw mode; returns once the shell
+/// continues it. A no-op elsewhere than Unix.
+pub(super) fn suspend_process() -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        suspend_terminal();
+        rustix::process::kill_current_process_group(rustix::process::Signal::TSTP)?;
+    }
+    Ok(())
+}
+
 pub(super) fn install_terminal_panic_hook() {
     INSTALL_PANIC_HOOK.call_once(|| {
         let original_hook = panic::take_hook();
@@ -243,6 +331,20 @@ impl Drop for TerminalRestore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_continue_reenters_the_terminal_unless_the_tui_stopped_itself() {
+        let mut jobs = JobControl::default();
+        // Stopped from outside (`kill -STOP`, an editor's Ctrl+Z): every
+        // continue re-enters.
+        assert_eq!(jobs.continued(), JobStep::Reenter);
+        assert_eq!(jobs.continued(), JobStep::Reenter);
+        // Ctrl+Z re-entered on its own once continued; only that one
+        // continue is skipped.
+        jobs.resumed_after_suspend();
+        assert_eq!(jobs.continued(), JobStep::Nothing);
+        assert_eq!(jobs.continued(), JobStep::Reenter);
+    }
 
     #[test]
     fn cleanup_is_idempotent_and_honors_active_flags() {

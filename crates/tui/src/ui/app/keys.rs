@@ -1006,6 +1006,15 @@ impl App {
         if !(key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)) {
             self.last_quit_press = None;
         }
+        // Ctrl+Z suspends the TUI as it would any terminal program; raw
+        // mode means the terminal does not do it for us. Job control is
+        // Unix's only.
+        if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::CONTROL {
+            if cfg!(unix) {
+                self.pending_suspend = true;
+            }
+            return;
+        }
         if self.modal == Modal::None
             && self.current_approval().is_none()
             && !self.command_palette_visible()
