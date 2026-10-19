@@ -7,9 +7,6 @@ expression: rendered
 │
 │  💻 ▾ bash sleep 2 …
 │
-│  model call: call-a
-│
-│
 │  💭 ▾ thought
 │
 │  waiting on both

@@ -6,7 +6,7 @@ use crossterm::event::{MouseButton, MouseEventKind};
 
 use ratatui::text::Line;
 
-use crate::state::{AssistantChild, ToolCallState};
+use crate::state::AssistantChild;
 
 use crate::ui::app::*;
 
@@ -310,10 +310,7 @@ async fn mouse_clicks_toggle_blocks_while_the_composer_keeps_focus() {
 async fn clicking_tool_output_notice_expands_and_collapses_nested_view() {
     let mut app = test_app().await;
     let session = SessionId::new_v7();
-    let rows = (1..=70)
-        .map(|number| (number, "let value = 1;"))
-        .collect::<Vec<_>>();
-    let state = read_tool_state("src/main.rs", ToolStatus::Completed, &read_detail(&rows));
+    let state = excerpt_tool_state("src/main.rs", 1, &["let value = 1;"; 70]);
     let call_id = read_tool_id(&state);
     app.selected = Some(session);
     app.tree_root = Some(session);
@@ -374,20 +371,12 @@ async fn running_tool_display_is_the_only_implicit_output_click_region() {
     let mut state = assistant_state(vec![AssistantChild::Tool { call_id }]);
     state.tools.insert(
         call_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner(1, "call-1"),
-            presentation: presentation("bash", None),
-            arguments: r#"{"command":"build"}"#.into(),
-            status: ToolStatus::Running,
-            detail: text.clone(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
-        },
+        tool_state(
+            call_id,
+            presentation("bash", None),
+            ToolStatus::Running,
+            vec![cookie_agent_protocol::DisplayBlock::text(text)],
+        ),
     );
     app.store.sessions.insert(session, state);
     app.selected = Some(session);
@@ -486,20 +475,12 @@ fn title_hover_starts_on_the_margin_so_the_highlight_covers_the_padding() {
     ]);
     state.tools.insert(
         call_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner(1, "call-1"),
-            presentation: presentation("bash", Some("ls")),
-            arguments: r#"{"command":"ls"}"#.into(),
-            status: ToolStatus::Completed,
-            detail: "a.txt".into(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
-        },
+        tool_state(
+            call_id,
+            presentation("bash", Some("ls")),
+            ToolStatus::Completed,
+            vec![cookie_agent_protocol::DisplayBlock::text("a.txt")],
+        ),
     );
     let expanded = HashSet::from([BlockId::Tool(call_id), BlockId::Thinking(10)]);
     for blocks in [None, Some(&expanded)] {

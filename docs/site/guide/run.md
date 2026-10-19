@@ -296,12 +296,42 @@ Oversized content ends with a truncated-lines indicator while the complete data
 remains in session state.
 
 Expanding a tool row opens its title block: the header, followed by the rest of
-the tool's primary argument (a command or path) when the collapsed header had to
-shorten it. Bash commands keep their own line breaks. The whole title block is
-one click target. Expanded tools use ordinary text colours and end with a blank
-row; bash reads as one grey panel, its title block on a slightly deeper grey
-above its output. Full call arguments appear between the title block and the
-output only when the diagnostic filter is `info` or `debug` (see `/events`).
+the call's title and primary argument when the collapsed header had to shorten
+them. The whole title block is one click target. A row's icon comes from the
+tool's hint (shell, file read, file edit, fetch, search, delegation, and so on;
+any other tool gets the hammer), never from its name, so a plugin or MCP tool
+shows the same way a built-in one does when it describes itself the same way.
+The header shows the call's title, and its primary argument after it unless
+the title already names it. While a call runs, its latest progress message
+follows the title.
+
+Expanded tools use ordinary text colours and end with a blank row: a grey
+title block over a lighter grey panel. The panel shows the call's argument
+blocks (a command, a path) under a muted `arguments` label, then what the
+call shows, drawn by the kind of each block rather than by which tool sent it:
+
+- **Diffs** name how the file changed (`created`, `modified`, `deleted`, or
+  `renamed`), its path, and the lines added and removed, then each hunk with
+  real file line numbers and `+`/`-` markers in a gutter, added and removed
+  rows on the theme's diff tints, highlighted by language. A diff too large to
+  carry its lines shows the counts alone.
+- **Terminal output** draws the program's SGR colours (fitted to the
+  terminal's colour depth, and none under `NO_COLOR`), stderr in the warning
+  tone unless the program coloured it, and the exit code below, red when it
+  is not zero. It grows while the command runs.
+- **File excerpts** and **code** show file line numbers and are highlighted
+  by language; **JSON** is pretty-printed; **markdown** renders like the
+  assistant's text; **tables** and **key/value** lists align their columns.
+- **Media** shows a chip, `📎 name · type · size`; a **link** its label and
+  address; a **session reference** a row you can click to open that session.
+
+A call without argument blocks shows its raw arguments instead, and only when
+the diagnostic filter is `info` or `debug` (see `/events`). Output beyond the
+row budget ends with `… N more lines (click to expand)`. A block the tool had
+to cut says how much is missing, and when it names its complete content (a
+long command's stdout, a large diff), `click to load the full output` reads up
+to 1 MiB of it from the daemon and shows it in place of the cut rows; click the
+row under it to put it away again.
 
 OpenAI Responses turns can retain opaque continuation witnesses for provider
 metadata such as message phase, annotations, and logprobs. Keep these parts
@@ -383,10 +413,11 @@ when logging a TUI session: `RUST_LOG=debug cookie 2>cookie.log`.
 
 ## Live tool output
 
-Expanded bash rows show sanitized stdout and stderr while the command runs.
-The live preview is capped at 1 MiB and reports when that limit is reached. On
-completion, failure, cancellation, or interruption, the same row swaps to the
-committed terminal result. Reopening a session renders only that committed
+Expanded command rows show sanitized stdout and stderr while the command runs,
+with the call's latest progress message above them. The live display is capped
+at 64 KiB. On completion, failure, cancellation, or interruption, the same row
+swaps to the call's result display; a call that ended without one keeps what it
+showed while running. Reopening a session renders only that committed
 content. Assistant text follows the same rule: streamed partials are replaced
 by the committed turn.
 
@@ -416,8 +447,10 @@ sees.
 
 An approval docks above the status bar in place of the composer, leaving the
 conversation visible above it. It shows the call it gates the way you need to
-judge it: a bash call's full command, an edit or write as its diff, and any
-other tool's resources. Below that, `why` says what asked (your permission
+judge it: its icon and title, its argument blocks (such as a command), and its
+preview (such as an edit's or write's diff as of preparing the call), drawn as
+the transcript draws them; a call that describes neither shows the request's
+resources. Below that, `why` says what asked (your permission
 rule and its source, or the model's own reason), and a second row says what the
 focused decision does. A countdown appears in the top border when the request
 expires, and `d` (or clicking `details`) expands the full prepared-operation

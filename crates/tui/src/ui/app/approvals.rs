@@ -2,7 +2,7 @@
 //!
 //! The panel docks above the status bar in place of the composer, leaving
 //! the conversation visible above it. It leads with what the user is
-//! judging: the call itself (its command or diff), why it asks, and what
+//! judging: the call itself (its arguments and preview), why it asks, and what
 //! the focused decision would grant. The full prepared-operation identity
 //! stays one `d` away.
 
@@ -10,7 +10,7 @@ use super::*;
 
 use ratatui::style::Color;
 
-use crate::ui::transcript::{ApprovalPreviewRow, approval_operation_preview, approval_tool_icon};
+use crate::ui::transcript::{ApprovalPreviewRow, approval_presentation_rows, hint_icon};
 
 /// Rows of the conversation the docked panel always leaves visible above it.
 const APPROVAL_MIN_CONVERSATION_ROWS: u16 = 4;
@@ -462,6 +462,7 @@ fn approval_body(
     panel: &ApprovalPanel,
     width: u16,
     theme: &Theme,
+    highlighter: &dyn crate::markdown::Highlighter,
 ) -> (Vec<ApprovalPreviewRow>, usize) {
     let mut rows = Vec::new();
     let first_action = &approval.resources[0].capability;
@@ -469,18 +470,15 @@ fn approval_body(
         || crate::ui::management::action_label(first_action).to_owned(),
         |tool| tool.presentation.title.as_str().to_owned(),
     );
-    let name = tool.map_or(title.as_str(), |tool| tool.presentation.tool.name.as_str());
+    let hint = tool.and_then(|tool| tool.presentation.hint.as_ref().map(|hint| hint.rendered()));
     let mut hero = vec![
-        Span::raw(approval_tool_icon(name)),
+        Span::raw(hint_icon(hint)),
         Span::raw(" "),
         Span::styled(title.clone(), theme.heading()),
     ];
-    // Bash's argument is its command, which the preview shows in full.
-    if name != "bash"
-        && let Some(argument) = tool.and_then(|tool| tool.presentation.primary_argument.as_ref())
-    {
+    if let Some(argument) = tool.and_then(crate::ui::transcript::header_argument) {
         hero.push(Span::raw("  "));
-        hero.push(Span::styled(argument.as_str().to_owned(), theme.user()));
+        hero.push(Span::styled(argument, theme.user()));
     }
     rows.extend(plain_rows(wrapped_line(Line::from(hero), width)));
     rows.push(ApprovalPreviewRow {
@@ -488,7 +486,7 @@ fn approval_body(
         band: None,
     });
 
-    let preview = tool.and_then(|tool| approval_operation_preview(tool, width, theme));
+    let preview = tool.and_then(|tool| approval_presentation_rows(tool, width, theme, highlighter));
     let show_resources = preview.is_none() || approval.resources.len() > 1;
     if let Some(preview) = preview {
         rows.extend(preview);
@@ -1206,6 +1204,7 @@ impl App {
             &self.approval_panel,
             text_width,
             theme,
+            &*self.highlighter,
         );
         // The note field is three rows under a one-row gap.
         let note_height = if self.approval_panel.note.is_some() {

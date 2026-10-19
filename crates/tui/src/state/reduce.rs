@@ -23,35 +23,22 @@ pub(super) fn reduce_transient(
         }
         EventPayload::ToolCallProgress {
             tool_call_id,
-            message: _,
+            message,
             display,
         } => {
             if let Some(tool) = state.tools.get_mut(&tool_call_id)
-                && let Some(cookie_agent_protocol::Open::Known(delta)) = display
-                && let Ok(Some(applied)) = tool.live_display.admit(delta)
+                && tool.status == ToolStatus::Running
             {
-                use cookie_agent_protocol::{DisplayBlock, DisplayDelta, Open};
-                // An append to the last text block extends the shown text;
-                // anything else renders the live display again.
-                let last = tool.live_display.blocks().len().checked_sub(1);
-                match applied {
-                    DisplayDelta::Append { index, text, .. }
-                        if tool.has_output_chunks
-                            && Some(index as usize) == last
-                            && matches!(
-                                tool.live_display.blocks().last(),
-                                Some(Open::Known(DisplayBlock::Text { .. }))
-                            ) =>
-                    {
-                        tool.detail.push_str(&text);
-                    }
-                    _ => {
-                        tool.detail =
-                            cookie_agent_protocol::display_text(tool.live_display.blocks());
-                    }
+                let message = message.as_str().trim();
+                let message = (!message.is_empty()).then(|| message.to_owned());
+                let mut changed = tool.progress != message;
+                tool.progress = message;
+                if let Some(cookie_agent_protocol::Open::Known(delta)) = display {
+                    changed |= matches!(tool.live_display.admit(delta), Ok(Some(_)));
                 }
-                tool.has_output_chunks = true;
-                tool.revision = next_tool_revision();
+                if changed {
+                    tool.revision = next_tool_revision();
+                }
             }
             bump_tool_item(state, tool_call_id);
             return true;
@@ -863,19 +850,13 @@ pub(super) fn reduce_event_from(
         }
         EventPayload::ToolCallStarted { start } => {
             close_open_assistant(state, timestamp);
-            if state
-                .turn_tool_index
-                .get(&(
-                    start.owner.model_turn_seq,
-                    start.owner.model_call_id.as_str().to_owned(),
-                ))
-                .is_some_and(|tool| tool.name.as_str() == "delegate_subagent")
+            if start
+                .presentation
+                .hint
+                .as_ref()
+                .is_some_and(|hint| hint.rendered() == cookie_agent_protocol::ToolHint::DELEGATE)
             {
                 state.last_agent_activity = Some(timestamp);
-            }
-            let mut identities = format!("model call: {}", start.owner.model_call_id);
-            if let Some(provider_item_id) = &start.owner.provider_item_id {
-                identities.push_str(&format!(" · provider item: {provider_item_id}"));
             }
             let arguments = find_tool_call_content(
                 state,
@@ -889,23 +870,14 @@ pub(super) fn reduce_event_from(
                 content_index: start.owner.content_index,
                 call_id: start.tool_call_id,
             });
-            state.tools.insert(
+            let mut tool = ToolCallState::started(
                 start.tool_call_id,
-                ToolCallState {
-                    id: start.tool_call_id,
-                    owner: start.owner.clone(),
-                    presentation: start.presentation.clone(),
-                    arguments,
-                    operation_fingerprint: start.operation_fingerprint.clone(),
-                    status: ToolStatus::Running,
-                    detail: identities,
-                    has_output_chunks: false,
-                    live_display: Default::default(),
-                    backgroundable: start.background,
-                    backgrounded: false,
-                    revision: next_tool_revision(),
-                },
+                start.owner.clone(),
+                start.presentation.clone(),
+                arguments,
             );
+            tool.backgroundable = start.background;
+            state.tools.insert(start.tool_call_id, tool);
             place_tool_rows(state);
         }
         EventPayload::ToolCallTerminated { termination } => {
@@ -926,67 +898,51 @@ pub(super) fn reduce_event_from(
                 ToolTerminationOutcome::Failed | ToolTerminationOutcome::Interrupted
             )
             .then(|| cookie_agent_protocol::diagnostics::tool(&termination));
+            // The final display replaces the live one. A call that did not
+            // complete and has none keeps what it streamed, else shows the
+            // output its result carries.
             let streamed = state
                 .tools
-                .get(&tool_call_id)
-                .filter(|tool| tool.has_output_chunks && !tool.detail.trim().is_empty())
-                .map(|tool| tool.detail.clone());
-            // Named capture can contain just [stdout]/[stderr] headings with no bytes.
-            let partial_output = termination.result.as_ref().is_some_and(|result| {
-                !result.output.trim().is_empty()
-                    && result.retained_output.as_ref().is_none_or(|retained| {
-                        retained.streams.iter().any(|stream| stream.byte_length > 0)
-                    })
-            });
-            // Blocks render generically: text as it is, any other kind as
-            // its text fallback.
-            let display = termination
+                .get_mut(&tool_call_id)
+                .map(|tool| std::mem::take(&mut tool.live_display).into_blocks())
+                .filter(|blocks| !blocks.is_empty());
+            let result_display = termination
                 .result
                 .as_ref()
-                .map(|result| cookie_agent_protocol::display_text(&result.display));
-            let has_output = streamed.is_some()
-                || partial_output
-                || display
-                    .as_ref()
-                    .is_some_and(|display| !display.trim().is_empty());
-            let mut detail = match (termination.result, termination.error) {
-                (Some(result), _) if failed && partial_output => result.output,
-                (Some(_), _)
-                    if failed
-                        && display
-                            .as_ref()
-                            .is_none_or(|display| display.trim().is_empty())
-                        && streamed.is_some() =>
-                {
-                    streamed.unwrap_or_default()
-                }
-                // The final display replaces the live one; a failure without
-                // one shows its error below.
-                (Some(_), _)
-                    if !failed
-                        || display
-                            .as_ref()
-                            .is_some_and(|display| !display.trim().is_empty()) =>
-                {
-                    display.unwrap_or_default()
-                }
-                (_, _) if failed && streamed.is_some() => streamed.unwrap_or_default(),
-                (_, Some(error)) => error.message.to_string(),
-                _ => String::new(),
+                .map(|result| result.display.clone())
+                .filter(|display| !display.is_empty());
+            // Named capture can contain just [stdout]/[stderr] headings with no bytes.
+            let partial_output = termination.result.as_ref().and_then(|result| {
+                (!result.output.trim().is_empty()
+                    && result.retained_output.as_ref().is_none_or(|retained| {
+                        retained.streams.iter().any(|stream| stream.byte_length > 0)
+                    }))
+                .then(|| cookie_agent_protocol::text_display(result.output.clone()))
+            });
+            let display = match result_display {
+                Some(display) => display,
+                None if failed => streamed.or(partial_output).unwrap_or_default(),
+                None => Vec::new(),
             };
-            if failed
-                && has_output
-                && let Some(message) = &failure_message
-                && !detail.starts_with(message)
-            {
-                // The renderer bounds output lines; keep the failure reason ahead of them.
-                detail = format!("{message}\n{detail}");
-            }
+            let failure = if !failed {
+                None
+            } else if display.is_empty() {
+                termination
+                    .error
+                    .as_ref()
+                    .map(|error| error.message.to_string())
+                    .or(failure_message.clone())
+            } else {
+                // The renderer bounds output lines; the failure reason goes
+                // ahead of them.
+                failure_message.clone()
+            };
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
                 tool.status = status;
-                tool.detail = detail;
-                tool.has_output_chunks = false;
-                tool.live_display = Default::default();
+                tool.display = display;
+                tool.failure = failure;
+                tool.progress = None;
+                tool.full.clear();
                 tool.backgrounded = backgrounded;
                 tool.revision = next_tool_revision();
             }
@@ -1853,14 +1809,10 @@ pub(super) fn index_turn_tool_content(
     turn: &PersistedModelTurn,
 ) {
     for part in &turn.content {
-        if let cookie_agent_protocol::PersistedAssistantPart::ToolCall {
-            id, name, input, ..
-        } = part
-        {
+        if let cookie_agent_protocol::PersistedAssistantPart::ToolCall { id, input, .. } = part {
             state.turn_tool_index.insert(
                 (model_turn_seq, id.as_str().to_owned()),
                 IndexedToolCall {
-                    name: name.clone(),
                     arguments: input.to_string(),
                 },
             );

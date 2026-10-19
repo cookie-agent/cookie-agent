@@ -10,7 +10,7 @@ use ratatui::text::Line;
 
 use crate::markdown::{MarkdownDocument, PlainHighlighter};
 
-use crate::state::{AssistantChild, EventLevel, StateStore, ToolCallState};
+use crate::state::{AssistantChild, EventLevel, StateStore};
 
 use crate::ui::app::DescendantEvent;
 
@@ -645,8 +645,7 @@ async fn descendant_warning_never_mutates_the_viewed_projection() {
 
 #[test]
 fn tool_output_expansion_invalidates_the_layout_cache() {
-    let rows = (1..=70).map(|number| (number, "value")).collect::<Vec<_>>();
-    let state = read_tool_state("src/main.rs", ToolStatus::Completed, &read_detail(&rows));
+    let state = excerpt_tool_state("src/main.rs", 1, &["value"; 70]);
     let call_id = read_tool_id(&state);
     let session = SessionId::new_v7();
     let theme = Theme::default();
@@ -1038,20 +1037,12 @@ fn cancelled_and_interrupted_tools_render_distinct_concise_markers() {
     ] {
         state.tools.insert(
             call_id,
-            ToolCallState {
-                backgroundable: false,
-                backgrounded: false,
-                id: call_id,
-                owner: owner(1, "call-1"),
-                presentation: presentation("bash", Some("make")),
-                arguments: "{}".into(),
+            tool_state(
+                call_id,
+                builtin_presentation("bash", Some("make")),
                 status,
-                detail: String::new(),
-                operation_fingerprint: operation_fingerprint(),
-                has_output_chunks: false,
-                live_display: Default::default(),
-                revision: 0,
-            },
+                Vec::new(),
+            ),
         );
     }
     let rendered = snapshot_lines(&transcript_layout(&state, None, 60).lines);

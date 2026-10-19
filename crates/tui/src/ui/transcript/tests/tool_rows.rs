@@ -33,16 +33,19 @@ async fn running_tool_rows_pulse_with_the_clock() {
             Vec::new(),
             None,
         ),
-        tool_started_at(
-            session,
-            4,
-            run,
-            call,
-            1,
-            "call-1",
-            0,
-            "bash",
-            Some("sleep 2"),
+        hinted(
+            tool_started_at(
+                session,
+                4,
+                run,
+                call,
+                1,
+                "call-1",
+                0,
+                "bash",
+                Some("sleep 2"),
+            ),
+            cookie_agent_protocol::ToolHint::SHELL,
         ),
     ] {
         assert!(app.store.apply_event(event));
@@ -108,18 +111,13 @@ fn expandable_rows_render_emoji_before_collapsed_and_expanded_chevrons() {
     state.tools.insert(
         call_id,
         ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner(1, "call-1"),
-            presentation: presentation("bash", Some("true")),
             arguments: r#"{"command":"true"}"#.into(),
-            status: ToolStatus::Completed,
-            detail: String::new(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
+            ..tool_state(
+                call_id,
+                hinted_presentation("bash", cookie_agent_protocol::ToolHint::SHELL, Some("true")),
+                ToolStatus::Completed,
+                Vec::new(),
+            )
         },
     );
 
@@ -172,7 +170,9 @@ fn unstarted_committed_tool_placeholder_renders_pending_row_not_error() {
     }]);
     let layout = transcript_layout(&state, None, 60);
     let text = snapshot_lines(&layout.lines);
-    assert!(text.contains("│  💻 ▸ bash · pending"), "{text}");
+    // Nothing describes the call before it starts, so it gets the generic
+    // icon beside the name the model called.
+    assert!(text.contains("│  🔨 ▸ bash · pending"), "{text}");
     assert!(!text.contains("TOOL RUNNING"), "{text}");
     assert!(!text.contains("unavailable payload"), "{text}");
 }
@@ -240,18 +240,17 @@ fn tool_children_render_compact_titles_with_status_semantics() {
     state.tools.insert(
         call_id,
         ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner(1, "call-1"),
-            presentation: presentation("bash", Some("touch README.md")),
             arguments: r#"{"command": "touch README.md"}"#.into(),
-            status: ToolStatus::Running,
-            detail: String::new(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
+            ..tool_state(
+                call_id,
+                hinted_presentation(
+                    "bash",
+                    cookie_agent_protocol::ToolHint::SHELL,
+                    Some("touch README.md"),
+                ),
+                ToolStatus::Running,
+                Vec::new(),
+            )
         },
     );
     let rendered = transcript_layout(&state, None, 60)
@@ -284,7 +283,15 @@ fn tool_children_render_compact_titles_with_status_semantics() {
     assert!(!rendered.contains("failed"));
 
     // A command's exit code is data on a completed tool.
-    state.tools.get_mut(&call_id).expect("tool").detail = "Exit status: 1".into();
+    state.tools.get_mut(&call_id).expect("tool").display =
+        vec![cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::DisplayBlock::Terminal {
+                segments: Vec::new(),
+                exit_code: Some(1),
+                omitted_lines: None,
+                full: None,
+            },
+        )];
     let expanded = HashSet::from([BlockId::Tool(call_id)]);
     let rendered = transcript_layout(&state, Some(&expanded), 60)
         .lines
@@ -292,7 +299,7 @@ fn tool_children_render_compact_titles_with_status_semantics() {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("Exit status: 1"));
+    assert!(rendered.contains("exit code 1"));
     assert!(!rendered.contains("failed"));
 
     // Genuine execution failures still carry the inline suffix.
@@ -313,18 +320,13 @@ fn wrapped_tool_arguments_keep_the_assistant_gutter() {
     state.tools.insert(
         call_id,
         ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner(1, "call-1"),
-            presentation: presentation("bash", None),
             arguments: r#"{"command":"printf a-very-long-single-line-tool-argument"}"#.into(),
-            status: ToolStatus::Running,
-            detail: String::new(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
+            ..tool_state(
+                call_id,
+                hinted_presentation("bash", cookie_agent_protocol::ToolHint::SHELL, None),
+                ToolStatus::Running,
+                Vec::new(),
+            )
         },
     );
     let width = 18;

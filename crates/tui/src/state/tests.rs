@@ -114,6 +114,7 @@ fn tool_failures_with_output_stay_inline_on_replay() {
         });
         assert!(!has_error_event, "case {case}");
         let tool = &state.tools[&call];
+        let detail = tool.shown_text();
         assert_eq!(
             tool.status,
             if case == 4 {
@@ -123,16 +124,19 @@ fn tool_failures_with_output_stay_inline_on_replay() {
             }
         );
         if case == 4 {
-            assert_eq!(tool.detail, "stdout\nstderr\nExit status: 1");
+            assert_eq!(detail, "stdout\nstderr\nExit status: 1");
         } else {
-            assert!(
-                tool.detail
-                    .contains("Required file /work/Report.md missing")
-            );
+            assert!(detail.contains("Required file /work/Report.md missing"));
             // Case 2's output only streamed as live-only progress, which a
-            // replay never sees.
-            if case != 0 && case != 2 {
-                assert!(tool.detail.contains("File missing"));
+            // replay never sees. A result's display is what the call shows,
+            // ahead of the output the model reads.
+            match case {
+                1 => {
+                    assert!(detail.contains("Finished"), "{detail}");
+                    assert!(!detail.contains("File missing"), "{detail}");
+                }
+                3 => assert!(detail.contains("File missing"), "{detail}"),
+                _ => {}
             }
         }
     }
@@ -2695,7 +2699,7 @@ fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() 
 }
 
 #[test]
-fn tool_termination_clears_streamed_output_and_sets_detail() {
+fn tool_termination_replaces_the_live_display_with_the_result_display() {
     let call_id = ToolCallId::new_v7();
     let owner = AssistantToolCallRef {
         model_turn_seq: 1,
@@ -2706,26 +2710,15 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
     let mut state = SessionState::default();
     state.tools.insert(
         call_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner.clone(),
-            presentation: base_presentation(cookie_agent_protocol::PreparedPresentation::new(
+        ToolCallState::started(
+            call_id,
+            owner.clone(),
+            base_presentation(cookie_agent_protocol::PreparedPresentation::new(
                 cookie_agent_protocol::SafeDisplayText::new("Bash").expect("presentation title"),
                 None,
             )),
-            arguments: "{}".into(),
-            status: ToolStatus::Running,
-            detail: String::new(),
-            operation_fingerprint: serde_json::from_value(
-                serde_json::json!({"digest": "1".repeat(64)}),
-            )
-            .unwrap(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
-        },
+            "{}".into(),
+        ),
     );
 
     reduce_transient(
@@ -2740,8 +2733,11 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
             ),
         },
     );
-    assert_eq!(state.tools[&call_id].detail, "streamed preview");
-    assert!(state.tools[&call_id].has_output_chunks);
+    assert_eq!(state.tools[&call_id].shown_text(), "streamed preview");
+    assert_eq!(
+        state.tools[&call_id].progress.as_deref(),
+        Some("bash stdout")
+    );
 
     reduce_event(
         &mut state,
@@ -2802,8 +2798,9 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
     );
 
     assert_eq!(state.tools[&call_id].status, ToolStatus::Completed);
-    assert!(!state.tools[&call_id].has_output_chunks);
-    assert_eq!(state.tools[&call_id].detail, "stdout:\nonce\n");
+    assert!(state.tools[&call_id].live_display.is_empty());
+    assert_eq!(state.tools[&call_id].progress, None);
+    assert_eq!(state.tools[&call_id].shown_text(), "stdout:\nonce\n");
 }
 
 #[test]
@@ -2872,8 +2869,9 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
             },
         );
     }
-    assert!(live.tools[&call].detail.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
-    assert!(live.tools[&call].detail.len() >= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - 3);
+    let streamed = live.tools[&call].shown_text();
+    assert!(streamed.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
+    assert!(streamed.len() >= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - 3);
     reduce_event(
         &mut live,
         session,
@@ -2892,9 +2890,12 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
         jiff::Timestamp::now(),
         terminal,
     );
-    assert_eq!(live.tools[&call].detail, "final display\nsecond line");
-    assert_eq!(replay.tools[&call].detail, live.tools[&call].detail);
-    assert!(!live.tools[&call].detail.contains("model-only"));
+    assert_eq!(live.tools[&call].shown_text(), "final display\nsecond line");
+    assert_eq!(
+        replay.tools[&call].shown_text(),
+        live.tools[&call].shown_text()
+    );
+    assert!(!live.tools[&call].shown_text().contains("model-only"));
 }
 
 #[test]
@@ -3021,9 +3022,11 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
     ];
 
     let replayed = reduce_session_events(session_id, 0, &events);
-    assert_eq!(replayed.tools[&call_id].detail, "committed replacement");
-    assert!(!replayed.tools[&call_id].detail.contains("historical chunk"));
-    assert!(!replayed.tools[&call_id].has_output_chunks);
+    assert_eq!(
+        replayed.tools[&call_id].shown_text(),
+        "committed replacement"
+    );
+    assert!(replayed.tools[&call_id].live_display.is_empty());
 }
 
 #[test]
@@ -3282,7 +3285,7 @@ fn rewound_cuts_the_projection_and_reused_sequences_follow_on() {
 }
 
 #[test]
-fn delegate_tool_starts_update_agent_activity() {
+fn delegation_hinted_tool_starts_update_agent_activity() {
     let session_id = SessionId::new_v7();
     let mut state = SessionState::default();
     let fingerprint = || {
@@ -3291,7 +3294,7 @@ fn delegate_tool_starts_update_agent_activity() {
         }))
         .expect("operation fingerprint")
     };
-    let start = |model_turn_seq, model_call_id: &str| {
+    let start = |model_turn_seq, model_call_id: &str, hint: &str| {
         let model_call_id =
             cookie_agent_protocol::ModelCallId::new(model_call_id).expect("model call ID");
         cookie_agent_protocol::ToolCallStart {
@@ -3304,28 +3307,18 @@ fn delegate_tool_starts_update_agent_activity() {
                 model_call_id,
                 provider_item_id: None,
             },
-            presentation: base_presentation(cookie_agent_protocol::PreparedPresentation::new(
-                cookie_agent_protocol::SafeDisplayText::new("activity tool").expect("title"),
-                None,
-            )),
+            // The hint decides, not the tool's name.
+            presentation: base_presentation(
+                cookie_agent_protocol::PreparedPresentation::new(
+                    cookie_agent_protocol::SafeDisplayText::new("delegate_subagent")
+                        .expect("title"),
+                    None,
+                )
+                .with_hint(hint),
+            ),
             operation_fingerprint: fingerprint(),
         }
     };
-    state.turn_tool_index.insert(
-        (1, "delegate-call".into()),
-        IndexedToolCall {
-            name: SafeCode::new("delegate_subagent").expect("tool name"),
-            arguments: "{}".into(),
-        },
-    );
-    state.turn_tool_index.insert(
-        (3, "read-call".into()),
-        IndexedToolCall {
-            name: SafeCode::new("read").expect("tool name"),
-            arguments: "{}".into(),
-        },
-    );
-
     let delegated_at = "2026-08-06T11:00:00Z".parse().expect("timestamp");
     reduce_event(
         &mut state,
@@ -3334,7 +3327,11 @@ fn delegate_tool_starts_update_agent_activity() {
         1,
         delegated_at,
         EventPayload::ToolCallStarted {
-            start: start(1, "delegate-call"),
+            start: start(
+                1,
+                "delegate-call",
+                cookie_agent_protocol::ToolHint::DELEGATE,
+            ),
         },
     );
     assert_eq!(state.last_agent_activity, Some(delegated_at));
@@ -3346,7 +3343,7 @@ fn delegate_tool_starts_update_agent_activity() {
         3,
         "2026-08-06T13:00:00Z".parse().expect("timestamp"),
         EventPayload::ToolCallStarted {
-            start: start(3, "read-call"),
+            start: start(3, "read-call", cookie_agent_protocol::ToolHint::FILE_READ),
         },
     );
     assert_eq!(state.last_agent_activity, Some(delegated_at));

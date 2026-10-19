@@ -1,310 +1,311 @@
 use crate::ui::transcript::*;
 
-use cookie_agent_protocol::ToolCallId;
+use cookie_agent_protocol::{
+    DiffAsOf, DiffBlock, DiffChange, DiffHunk, DiffLine, DiffLineOp, DiffOmitted, DisplayBlock,
+    ToolHint,
+};
 
-use crate::state::{AssistantChild, ToolCallState};
 use crate::theme::{ColorLevel, ThemeKind};
 
 use super::support::*;
 
-#[test]
-fn unified_diff_detection_handles_boundaries_without_false_positives() {
-    let text = "@@ -1 +1 @@\n-old\n+new";
-    assert!(is_unified_diff(text));
-    let mut parsed = Vec::new();
-    for_each_diff_row(&ToolDiff::Unified(text), |row| {
-        parsed.push((row.kind, row.text.into_owned()));
-        true
-    });
-    assert!(matches!(parsed[1].0, DiffRowKind::Removed(1)));
-    assert!(matches!(parsed[2].0, DiffRowKind::Added(1)));
-    assert_eq!(parsed[2].1, "new");
+fn line(op: DiffLineOp, text: &str) -> DiffLine {
+    DiffLine {
+        op,
+        text: text.into(),
+    }
+}
 
-    assert!(is_unified_diff(
-        "diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ"
-    ));
+/// A change to `path` with one hunk: line 10 kept, line 11 replaced, and
+/// line 12 kept, numbered as the file numbers them.
+pub(super) fn sample_diff(path: &str) -> DiffBlock {
+    DiffBlock {
+        path: path.into(),
+        old_path: None,
+        language: None,
+        change: DiffChange::Modified,
+        hunks: vec![DiffHunk {
+            old_start: 10,
+            old_lines: 3,
+            new_start: 10,
+            new_lines: 3,
+            lines: vec![
+                line(DiffLineOp::Context, "fn keep() {}"),
+                line(DiffLineOp::Remove, "let old = 1;"),
+                line(DiffLineOp::Add, "let new = 2;"),
+                line(DiffLineOp::Context, "fn after() {}"),
+            ],
+        }],
+        added: 1,
+        removed: 1,
+        omitted: None,
+        as_of: DiffAsOf::Execute,
+        full: None,
+    }
+}
 
-    assert!(!is_unified_diff(
-        "status: +added-looking text\nordinary output"
-    ));
-    assert!(!is_unified_diff("Binary files may differ"));
+fn diff_state(title: &str, hint: &str, diff: DiffBlock) -> SessionState {
+    display_tool_state(
+        hinted_presentation(title, hint, None),
+        ToolStatus::Completed,
+        vec![DisplayBlock::Diff(diff)],
+    )
+}
+
+fn expanded_rows(state: &SessionState, width: u16) -> Vec<String> {
+    let call_id = read_tool_id(state);
+    let expanded = HashSet::from([BlockId::Tool(call_id)]);
+    transcript_layout_with(
+        state,
+        Some(&expanded),
+        width,
+        &Theme::default(),
+        &crate::markdown::PlainHighlighter,
+    )
+    .lines
+    .iter()
+    .map(|line| line.to_string().trim_end().to_owned())
+    .collect()
 }
 
 #[test]
-fn synthetic_diffs_preserve_newline_termination_semantics() {
-    let terminated = ToolDiff::Edit {
-        before: "old\n",
-        after: "new\n",
-        metadata: "",
-    };
-    let mut terminated_rows = Vec::new();
-    for_each_diff_row(&terminated, |row| {
-        terminated_rows.push((row.kind, row.text.into_owned()));
-        true
-    });
-    assert_eq!(terminated_rows[0].1, "@@ -1 +1 @@");
-    assert_eq!(
-        terminated_rows
-            .iter()
-            .filter(|(kind, _)| matches!(kind, DiffRowKind::Added(_) | DiffRowKind::Removed(_)))
-            .count(),
-        2
+fn diff_rows_number_each_line_from_its_hunk_and_mark_changes() {
+    let rows = expanded_rows(
+        &diff_state(
+            "Edit src/main.rs",
+            ToolHint::FILE_EDIT,
+            sample_diff("src/main.rs"),
+        ),
+        80,
     );
+    let text = rows.join("\n");
+    assert!(text.contains("modified src/main.rs · +1 -1"), "{text}");
+    assert!(text.contains("@@ -10,3 +10,3 @@"), "{text}");
+    // Context rows carry the new file's number; a removed row the old
+    // file's, an added row the new file's.
+    for expected in [
+        "10   │ fn keep() {}",
+        "11 - │ let old = 1;",
+        "11 + │ let new = 2;",
+        "12   │ fn after() {}",
+    ] {
+        assert!(
+            rows.iter().any(|row| row.contains(expected)),
+            "{expected}\n{text}"
+        );
+    }
+}
+
+#[test]
+fn diff_gutters_widen_to_the_largest_line_number() {
+    let mut diff = sample_diff("src/main.rs");
+    diff.hunks[0].old_start = 998;
+    diff.hunks[0].new_start = 998;
+    let rows = expanded_rows(&diff_state("Edit", ToolHint::FILE_EDIT, diff), 80);
+    let text = rows.join("\n");
+    for expected in [
+        " 998   │ fn keep() {}",
+        " 999 - │ let old = 1;",
+        " 999 + │ let new = 2;",
+        "1000   │ fn after() {}",
+    ] {
+        assert!(text.contains(expected), "{expected}\n{text}");
+    }
+}
+
+#[test]
+fn diff_headers_name_how_the_file_changed_and_hunkless_diffs_show_counts() {
+    for (change, old_path, expected) in [
+        (DiffChange::Created, None, "created data.bin · +120 -4"),
+        (DiffChange::Deleted, None, "deleted data.bin · +120 -4"),
+        (
+            DiffChange::Renamed,
+            Some("old.bin"),
+            "renamed old.bin → data.bin · +120 -4",
+        ),
+        (DiffChange::Unknown, None, "modified data.bin · +120 -4"),
+    ] {
+        let diff = DiffBlock {
+            old_path: old_path.map(str::to_owned),
+            change,
+            hunks: Vec::new(),
+            added: 120,
+            removed: 4,
+            ..sample_diff("data.bin")
+        };
+        let rows = expanded_rows(&diff_state("Write", ToolHint::FILE_WRITE, diff), 80);
+        let text = rows.join("\n");
+        assert!(text.contains(expected), "{expected}\n{text}");
+        assert!(!text.contains("@@"), "{text}");
+    }
+}
+
+#[test]
+fn a_prepare_diff_says_it_is_a_preview() {
+    let diff = DiffBlock {
+        as_of: DiffAsOf::Prepare,
+        ..sample_diff("src/main.rs")
+    };
+    let text = expanded_rows(&diff_state("Edit", ToolHint::FILE_EDIT, diff), 80).join("\n");
     assert!(
-        !terminated_rows
-            .iter()
-            .any(|(kind, _)| *kind == DiffRowKind::NoNewline)
+        text.contains("modified src/main.rs · +1 -1 · preview"),
+        "{text}"
     );
-
-    let unterminated = ToolDiff::Edit {
-        before: "old",
-        after: "new",
-        metadata: "",
-    };
-    let mut markers = 0;
-    for_each_diff_row(&unterminated, |row| {
-        markers += usize::from(row.kind == DiffRowKind::NoNewline);
-        true
-    });
-    assert_eq!(markers, 2);
-
-    let empty_write = ToolDiff::Write {
-        content: "",
-        metadata: "",
-    };
-    let mut hunk = None;
-    for_each_diff_row(&empty_write, |row| {
-        hunk = Some(row.text.into_owned());
-        false
-    });
-    assert_eq!(hunk.as_deref(), Some("@@ -0,0 +0,0 @@"));
 }
 
 #[test]
-fn edit_arguments_render_added_and_removed_diff_gutters() {
-    let call_id = ToolCallId::new_v7();
-    let mut state = assistant_state(vec![AssistantChild::Tool { call_id }]);
-    state.tools.insert(
-        call_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner(1, "call-1"),
-            presentation: presentation("edit", Some("src/main.rs")),
-            arguments: serde_json::json!({
-                "filePath": "src/main.rs",
-                "oldString": "let old = 1;",
-                "newString": "let new = 2;"
-            })
-            .to_string(),
-            status: ToolStatus::Completed,
-            detail: "Edited src/main.rs\nEdit applied atomically".into(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
+fn omitted_hunks_are_counted_and_a_full_diff_is_offered() {
+    let diff = DiffBlock {
+        omitted: Some(DiffOmitted {
+            hunks: 2,
+            lines: 40,
+        }),
+        ..sample_diff("src/main.rs")
+    };
+    let text = expanded_rows(&diff_state("Edit", ToolHint::FILE_EDIT, diff.clone()), 80).join("\n");
+    assert!(
+        text.contains("… 2 more hunks (40 lines) not shown"),
+        "{text}"
+    );
+    assert!(!text.contains("load the full output"), "{text}");
+
+    let full = cookie_agent_protocol::ArtifactRef {
+        sha256: "ab".repeat(32),
+        byte_length: 2048,
+        media_type: "text/plain".into(),
+        filename: Some("main.rs.diff".into()),
+    };
+    let state = diff_state(
+        "Edit",
+        ToolHint::FILE_EDIT,
+        DiffBlock {
+            full: Some(full),
+            ..diff
         },
     );
+    let call_id = read_tool_id(&state);
+    let expanded = HashSet::from([BlockId::Tool(call_id)]);
+    let layout = transcript_layout(&state, Some(&expanded), 100);
+    let text = snapshot_lines(&layout.lines);
+    assert!(
+        text.contains("… 2 more hunks (40 lines) not shown · click to load the full output (2 KB)"),
+        "{text}"
+    );
+    assert!(
+        layout
+            .regions
+            .iter()
+            .any(|region| region.id == BlockId::ToolFull { call_id, block: 0 }),
+        "{:?}",
+        layout.regions
+    );
+}
+
+#[test]
+fn a_loaded_full_diff_replaces_the_cut_hunks_with_its_unified_text() {
+    let mut state = diff_state(
+        "Edit",
+        ToolHint::FILE_EDIT,
+        DiffBlock {
+            omitted: Some(DiffOmitted { hunks: 1, lines: 2 }),
+            full: Some(cookie_agent_protocol::ArtifactRef {
+                sha256: "ab".repeat(32),
+                byte_length: 64,
+                media_type: "text/plain".into(),
+                filename: None,
+            }),
+            ..sample_diff("src/main.rs")
+        },
+    );
+    let call_id = read_tool_id(&state);
+    state.tools.get_mut(&call_id).unwrap().full = vec![crate::state::FullContent {
+        block: 0,
+        state: crate::state::FullContentState::Loaded {
+            text: "--- src/main.rs\n+++ src/main.rs\n@@ -40 +40 @@\n-gone\n+here\n".into(),
+            truncated: false,
+        },
+    }];
+    let text = expanded_rows(&state, 80).join("\n");
+    assert!(text.contains("modified src/main.rs · +1 -1"), "{text}");
+    assert!(text.contains("40 - │ gone"), "{text}");
+    assert!(text.contains("40 + │ here"), "{text}");
+    assert!(!text.contains("--- src/main.rs"), "{text}");
+    assert!(!text.contains("let old"), "{text}");
+    assert!(
+        text.contains("▴ full output · click to show the cut display"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_diff_renders_as_a_diff_whatever_the_tool_is_called() {
+    // A tool named after no built-in, showing a diff, gets diff rows…
+    let rows = expanded_rows(
+        &diff_state("str_replace", ToolHint::GENERIC, sample_diff("src/main.rs")),
+        80,
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("11 + │ let new = 2;")),
+        "{rows:#?}"
+    );
+    // …and a plugin tool named `edit` whose arguments are not the built-in
+    // edit's shows its own blocks, never a diff built from its arguments.
+    let mut state = display_tool_state(
+        presentation("edit", None),
+        ToolStatus::Completed,
+        vec![DisplayBlock::text("renamed 3 symbols")],
+    );
+    let call_id = read_tool_id(&state);
+    state.tools.get_mut(&call_id).unwrap().arguments = serde_json::json!({
+        "filePath": "src/main.rs",
+        "oldString": "let old = 1;",
+        "newString": "let new = 2;"
+    })
+    .to_string();
+    let text = expanded_rows(&state, 80).join("\n");
+    assert!(text.contains("renamed 3 symbols"), "{text}");
+    assert!(!text.contains(" + │ "), "{text}");
+    assert!(!text.contains(" - │ "), "{text}");
+    // Its raw arguments are what an `info` view shows of them.
+    assert!(text.contains("\"oldString\": \"let old = 1;\""), "{text}");
+}
+
+#[test]
+fn diff_rows_take_the_diff_colours_and_highlight_by_language() {
+    let mut diff = sample_diff("src/main.rs");
+    diff.language = Some("rust".into());
+    let state = diff_state("Edit", ToolHint::FILE_EDIT, diff);
+    let call_id = read_tool_id(&state);
     let expanded = HashSet::from([BlockId::Tool(call_id)]);
     let lines = transcript_layout(&state, Some(&expanded), 80).lines;
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.to_string().contains(" - │ let old"))
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.to_string().contains(" + │ let new"))
-    );
-    assert!(lines.iter().flat_map(|line| line.spans.iter()).any(
+    let spans = lines.iter().flat_map(|line| line.spans.iter());
+    assert!(spans.clone().any(
         |span| span.content.contains('+') && span.style.fg == Theme::default().diff_added().fg
     ));
     assert!(
-        lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .any(|span| span.content.contains('-')
-                && span.style.fg == Theme::default().diff_removed().fg)
+        spans.clone().any(|span| span.content.contains('-')
+            && span.style.fg == Theme::default().diff_removed().fg)
     );
-}
-
-#[test]
-fn tool_output_limits_toggle_and_stay_bounded_at_narrow_widths() {
-    let rows = (1..=1030)
-        .map(|number| (number, "let value = 1;"))
-        .collect::<Vec<_>>();
-    let state = read_tool_state("src/main.rs", ToolStatus::Completed, &read_detail(&rows));
-    let call_id = read_tool_id(&state);
-    let mut expanded = HashSet::from([BlockId::Tool(call_id)]);
-
-    let collapsed = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
-    assert!(collapsed.contains("… 968 more lines (click to expand)"));
-
-    expanded.insert(tool_output_id(call_id, ToolOutputSection::Detail));
-    let fully_expanded = transcript_layout(&state, Some(&expanded), 12);
-    let rendered = snapshot_lines(&fully_expanded.lines);
-    assert!(rendered.contains("… 8 more"));
-    assert!(rendered.contains("maximum"));
-    assert!(
-        fully_expanded
-            .lines
-            .iter()
-            .all(|line| { UnicodeWidthStr::width(line.to_string().as_str()) <= 12 })
-    );
-
-    expanded.remove(&tool_output_id(call_id, ToolOutputSection::Detail));
-    let collapsed_again = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
-    assert!(collapsed_again.contains("… 968 more lines (click to expand)"));
-}
-
-#[test]
-fn byte_limit_counts_a_partially_rendered_line_as_omitted() {
-    let long = "x".repeat(MAX_EXPANDED_BODY_BYTES + 10);
-    let mut budget = RenderBudget::new(COLLAPSED_TOOL_OUTPUT_LIMITS);
-    let mut renderer = SectionRenderer::new(&mut budget, false, 0);
-    let rendered = renderer.take(&long).expect("partial line");
-    assert_eq!(
-        rendered.len(),
-        MAX_EXPANDED_BODY_BYTES - OUTPUT_NOTICE_RESERVE_BYTES
-    );
-    assert_eq!(renderer.fully_rendered, 0);
-}
-
-#[test]
-fn detail_stdout_and_stderr_share_one_aggregate_budget() {
-    let text = (0..100).map(|_| "output").collect::<Vec<_>>().join("\n");
-    let mut budget = RenderBudget::new(COLLAPSED_TOOL_OUTPUT_LIMITS);
-    let detail = generic_output_lines(
-        None,
-        OutputText::complete(&text),
-        ToolOutputSection::Detail,
-        false,
-        &mut budget,
-        2,
-        &Theme::default(),
-    );
-    let stdout = generic_output_lines(
-        Some("STDOUT:"),
-        OutputText::complete(&text),
-        ToolOutputSection::Stdout,
-        false,
-        &mut budget,
-        1,
-        &Theme::default(),
-    );
-    let stderr = generic_output_lines(
-        Some("STDERR:"),
-        OutputText::complete(&text),
-        ToolOutputSection::Stderr,
-        false,
-        &mut budget,
-        0,
-        &Theme::default(),
-    );
-    let lines = detail.len() + stdout.len() + stderr.len();
-    let bytes = detail
+    let colors = lines
         .iter()
-        .chain(&stdout)
-        .chain(&stderr)
-        .map(|line| line.line.to_string().len())
-        .sum::<usize>();
-    assert!(lines <= COLLAPSED_TOOL_OUTPUT_LIMITS.lines, "{lines}");
-    assert!(bytes <= COLLAPSED_TOOL_OUTPUT_LIMITS.bytes, "{bytes}");
-    assert_eq!(
-        detail
-            .iter()
-            .chain(&stdout)
-            .chain(&stderr)
-            .filter(|line| line.output_toggle.is_some())
-            .count(),
-        3
-    );
-}
-
-#[test]
-fn tool_code_views_snapshot() {
-    let read_id = ToolCallId::new_v7();
-    let edit_id = ToolCallId::new_v7();
-    let mut state = assistant_state(vec![
-        AssistantChild::Tool { call_id: read_id },
-        AssistantChild::Tool { call_id: edit_id },
-    ]);
-    state.tools.insert(
-        read_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: read_id,
-            owner: owner(1, "call-read"),
-            presentation: presentation("read", Some("src/main.rs")),
-            arguments: r#"{"filePath":"src/main.rs"}"#.into(),
-            status: ToolStatus::Completed,
-            detail: read_detail(&[(1, "fn main() {"), (1000, "    println!(\"hi\");")]),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
-        },
-    );
-    state.tools.insert(
-        edit_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: edit_id,
-            owner: owner(1, "call-edit"),
-            presentation: presentation("edit", Some("src/main.rs")),
-            arguments: serde_json::json!({
-                "filePath": "src/main.rs",
-                "oldString": "let old = 1;\n",
-                "newString": "let new = 2;"
-            })
-            .to_string(),
-            status: ToolStatus::Completed,
-            detail: "Edit applied atomically".into(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
-        },
-    );
-    let expanded = HashSet::from([BlockId::Tool(read_id), BlockId::Tool(edit_id)]);
-    insta::assert_snapshot!(snapshot_lines(
-        &transcript_layout(&state, Some(&expanded), 60).lines
-    ));
+        .filter(|line| line.to_string().contains("let new"))
+        .flat_map(|line| line.spans.iter())
+        .filter_map(|span| span.style.fg)
+        .collect::<HashSet<_>>();
+    assert!(colors.len() > 2, "{colors:?}");
 }
 
 #[test]
 fn changed_diff_rows_are_tinted_inside_the_band_padding() {
-    let edit_id = ToolCallId::new_v7();
-    let mut state = assistant_state(vec![AssistantChild::Tool { call_id: edit_id }]);
-    state.tools.insert(
-        edit_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: edit_id,
-            owner: owner(1, "call-edit"),
-            presentation: presentation("edit", Some("src/main.rs")),
-            arguments: serde_json::json!({
-                "filePath": "src/main.rs",
-                "oldString": "let old = 1;\n",
-                "newString": "let new = 2;\n"
-            })
-            .to_string(),
-            status: ToolStatus::Completed,
-            detail: "Edit applied atomically".into(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
-        },
+    let state = diff_state(
+        "Edit src/main.rs",
+        ToolHint::FILE_EDIT,
+        sample_diff("src/main.rs"),
     );
+    let call_id = read_tool_id(&state);
     let theme = Theme::default();
     let band = theme.terminal_background().unwrap();
-    let expanded = HashSet::from([BlockId::Tool(edit_id)]);
+    let expanded = HashSet::from([BlockId::Tool(call_id)]);
     let layout = transcript_layout_with(
         &state,
         Some(&expanded),
@@ -339,8 +340,8 @@ fn changed_diff_rows_are_tinted_inside_the_band_padding() {
         assert_eq!(last.style.bg, Some(band), "{line:?}");
         assert_eq!(line.width(), 60, "{line:?}");
     }
-    // Hunk headers and metadata keep the plain band.
-    for text in ["@@ -1 +1 @@", "Edit applied atomically"] {
+    // Hunk headers and context rows keep the plain band.
+    for text in ["@@ -10,3 +10,3 @@", "fn keep"] {
         assert!(
             row(text)
                 .spans
@@ -359,4 +360,49 @@ fn changed_diff_rows_are_tinted_inside_the_band_padding() {
         Theme::new(ThemeKind::Mono, ColorLevel::None).diff_removed_background(),
         None
     );
+}
+
+#[test]
+fn tool_output_limits_toggle_and_stay_bounded_at_narrow_widths() {
+    let lines = vec!["let value = 1;"; 1030];
+    let state = excerpt_tool_state("src/main.rs", 1, &lines);
+    let call_id = read_tool_id(&state);
+    let mut expanded = HashSet::from([BlockId::Tool(call_id)]);
+
+    let collapsed = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
+    // The excerpt's header row and its first 62 lines fit the collapsed
+    // budget; the other 968 lines are counted.
+    assert!(
+        collapsed.contains("… 968 more lines (click to expand)"),
+        "{collapsed}"
+    );
+
+    expanded.insert(tool_output_id(call_id, ToolOutputSection::Detail));
+    let fully_expanded = transcript_layout(&state, Some(&expanded), 12);
+    let rendered = snapshot_lines(&fully_expanded.lines);
+    assert!(rendered.contains("… 8 more"), "{rendered}");
+    assert!(rendered.contains("maximum"));
+    assert!(
+        fully_expanded
+            .lines
+            .iter()
+            .all(|line| { UnicodeWidthStr::width(line.to_string().as_str()) <= 12 })
+    );
+
+    expanded.remove(&tool_output_id(call_id, ToolOutputSection::Detail));
+    let collapsed_again = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
+    assert!(collapsed_again.contains("… 968 more lines (click to expand)"));
+}
+
+#[test]
+fn byte_limit_counts_a_partially_rendered_line_as_omitted() {
+    let long = "x".repeat(MAX_EXPANDED_BODY_BYTES + 10);
+    let mut budget = RenderBudget::new(COLLAPSED_TOOL_OUTPUT_LIMITS);
+    let mut sink = LineSink::new(&mut budget, COLLAPSED_TOOL_OUTPUT_LIMITS);
+    let rendered = sink.line(&long).expect("partial line");
+    assert_eq!(
+        rendered.len(),
+        MAX_EXPANDED_BODY_BYTES - OUTPUT_NOTICE_RESERVE_BYTES
+    );
+    assert_eq!(sink.omitted(), 1);
 }

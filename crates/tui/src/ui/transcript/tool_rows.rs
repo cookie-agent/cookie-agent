@@ -3,41 +3,27 @@
 use super::*;
 use ratatui::style::Color;
 
-pub(super) fn tool_icon(title: &str) -> &'static str {
-    match title {
-        "bash" => "💻",
-        "read" | "read_artifact" => "📖",
-        "write" | "edit" => "📝",
-        "webfetch" => "🌐",
-        "send_message" => "📨",
-        "delegate_subagent" | "get_subagent_result" => "🤖",
-        "skill" => "✨",
-        "goal_get" | "goal_update" => "🎯",
-        _ => external_tool_icon(title),
+/// The icon for a tool hint (spec 12.2). Hints are open labels: one this
+/// build does not document, or none, gets the generic icon.
+pub(in crate::ui) fn hint_icon(hint: Option<&str>) -> &'static str {
+    use cookie_agent_protocol::ToolHint;
+    match hint.unwrap_or(ToolHint::GENERIC) {
+        ToolHint::SHELL => "💻",
+        ToolHint::FILE_READ => "📖",
+        ToolHint::FILE_WRITE | ToolHint::FILE_EDIT => "📝",
+        ToolHint::FETCH => "🌐",
+        ToolHint::SEARCH => "🔍",
+        ToolHint::DELEGATE => "🤖",
+        ToolHint::MESSAGE => "📨",
+        ToolHint::SKILL => "✨",
+        ToolHint::GOAL => "🎯",
+        _ => "🔨",
     }
 }
 
-/// MCP and plugin tools arrive as `{server}_{tool}` with no fixed vocabulary,
-/// so the common web tools are recognised by the words in their name.
-fn external_tool_icon(title: &str) -> &'static str {
-    let lowered = title.to_ascii_lowercase();
-    let words = || {
-        lowered
-            .split(['_', '-', '.'])
-            .filter(|word| !word.is_empty())
-    };
-    if words().any(|word| word.contains("search")) {
-        "🔍"
-    } else if words().any(|word| {
-        matches!(
-            word,
-            "web" | "fetch" | "http" | "https" | "url" | "browse" | "browser" | "scrape"
-        )
-    }) {
-        "🌐"
-    } else {
-        "🔨"
-    }
+/// The icon of a call, from its presentation's hint.
+pub(in crate::ui) fn tool_icon(tool: &crate::state::ToolCallState) -> &'static str {
+    hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered()))
 }
 
 /// The compact role name `tool_block_lines` brackets onto a narrow tool row.
@@ -141,11 +127,7 @@ pub(super) fn tool_header_row(
     suffix: &str,
     width: u16,
 ) -> (String, String) {
-    let chrome = tool_header_chrome(
-        tool_icon(tool.presentation.tool.name.as_str()),
-        chevron,
-        width,
-    );
+    let chrome = tool_header_chrome(tool_icon(tool), chevron, width);
     let content =
         tool_header_content_width(width).saturating_sub(UnicodeWidthStr::width(chrome.as_str()));
     let (budget, suffix) = if UnicodeWidthStr::width(suffix) <= content {
@@ -173,39 +155,37 @@ pub(super) fn header_argument_width(label: &str, budget: usize) -> usize {
     budget.saturating_sub(UnicodeWidthStr::width(label) + 1)
 }
 
-/// Abbreviate a primary argument to at most `cap` display columns. Path-shaped
-/// arguments keep their head and tail; everything else cuts at the right edge.
-pub(super) fn abbreviate_tool_argument(title: &str, argument: &str, cap: usize) -> String {
-    let argument = flatten_header_argument(argument);
-    if UnicodeWidthStr::width(argument.as_str()) <= cap {
-        return argument;
+/// Characters of an argument a title must show before its `…` for the
+/// title to count as naming the argument it cut short.
+const MIN_CUT_ARGUMENT_CHARS: usize = 8;
+
+/// Whether `title` already shows `argument`, whole or cut short before a
+/// `…`, so the header does not repeat it.
+fn title_names_argument(title: &str, argument: &str) -> bool {
+    if argument.is_empty() || title.contains(argument) {
+        return true;
     }
-    if matches!(title, "read" | "write" | "edit") {
-        if let Some((head, _)) = argument.split_once(['/', '\\']) {
-            let tail = argument.rsplit(['/', '\\']).next().unwrap_or_default();
-            let abbreviated = format!("{head}/…/{tail}");
-            if UnicodeWidthStr::width(abbreviated.as_str()) <= cap {
-                return abbreviated;
-            }
-        }
-        let mut used = 1;
-        let suffix = argument
-            .graphemes(true)
-            .rev()
-            .take_while(|grapheme| {
-                used += UnicodeWidthStr::width(*grapheme);
-                used <= cap
-            })
-            .collect::<Vec<_>>();
-        return format!("…{}", suffix.into_iter().rev().collect::<String>());
-    }
-    crate::ui::app::truncate_with_ellipsis(&argument, cap)
+    title.match_indices('…').any(|(end, _)| {
+        let shown = &title[..end];
+        shown.char_indices().any(|(start, _)| {
+            let prefix = &shown[start..];
+            prefix.chars().count() >= MIN_CUT_ARGUMENT_CHARS && argument.starts_with(prefix)
+        })
+    })
+}
+
+/// The primary argument as the header shows it after the title, flattened
+/// to one line; `None` when there is none or the title already names it.
+pub(in crate::ui) fn header_argument(tool: &crate::state::ToolCallState) -> Option<String> {
+    let argument = flatten_header_argument(tool.presentation.primary_argument.as_ref()?.as_str());
+    let title = flatten_header_argument(tool.presentation.title.as_str());
+    (!title_names_argument(&title, &argument)).then_some(argument)
 }
 
 pub(super) fn tool_header_title(tool: &crate::state::ToolCallState, budget: usize) -> String {
     let title = tool.presentation.title.as_str();
     let argument_width = header_argument_width(title, budget);
-    let Some(argument) = tool.presentation.primary_argument.as_ref() else {
+    let Some(argument) = header_argument(tool) else {
         return crate::ui::app::truncate_with_ellipsis(title, budget);
     };
     if argument_width == 0 {
@@ -215,11 +195,7 @@ pub(super) fn tool_header_title(tool: &crate::state::ToolCallState, budget: usiz
     }
     format!(
         "{title} {}",
-        abbreviate_tool_argument(
-            &tool.presentation.tool.name,
-            argument.as_str(),
-            argument_width
-        )
+        crate::ui::app::truncate_with_ellipsis(&argument, argument_width)
     )
 }
 
@@ -260,7 +236,7 @@ pub(super) fn tool_child_layout(
             // its start yet; the placeholder links by content index shortly.
             Some(name) => (
                 Role::ToolRunning,
-                format!("{} ▸ {} · pending", tool_icon(name), name),
+                format!("{} ▸ {} · pending", hint_icon(None), name),
             ),
             None => (Role::Error, "tool: unavailable payload".to_owned()),
         };
@@ -287,9 +263,6 @@ pub(super) fn tool_child_layout(
             user_seq: None,
         };
     };
-    let arguments = is_expanded
-        .then(|| ParsedToolArguments::parse(&tool.arguments))
-        .flatten();
     let (suffix, role) = match tool.status {
         // The running marker breathes with the animation clock: a resting
         // ellipsis, then growing dots. Subtle liveness, never busy.
@@ -310,7 +283,9 @@ pub(super) fn tool_child_layout(
         output_block_id(section)
             .is_some_and(|id| context.expanded.is_some_and(|blocks| blocks.contains(&id)))
     };
-    let section_count = usize::from(!tool.detail.is_empty());
+    let has_body = tool.failure.is_some()
+        || (tool.status == ToolStatus::Running && tool.progress.is_some())
+        || !tool.shown_display().is_empty();
     let any_output_expanded = [
         ToolOutputSection::Detail,
         ToolOutputSection::Stdout,
@@ -324,7 +299,6 @@ pub(super) fn tool_child_layout(
         COLLAPSED_TOOL_OUTPUT_LIMITS
     };
     let mut budget = RenderBudget::new(limits);
-    let mut remaining_sections = section_count;
     let chevron = if is_expanded { '▾' } else { '▸' };
     // A title keeps a margin column on each side where the theme has them.
     let header_width = if panel_margin(context.width) {
@@ -338,6 +312,14 @@ pub(super) fn tool_child_layout(
         format!("{suffix} · background")
     } else {
         suffix
+    };
+    // A running call's latest progress message reads as its status; an
+    // expanded call shows it above its output instead.
+    let suffix = match tool.progress.as_deref() {
+        Some(progress) if tool.status == ToolStatus::Running && !is_expanded => {
+            format!(" · {}{suffix}", flatten_header_argument(progress))
+        }
+        _ => suffix,
     };
     let button_width = UnicodeWidthStr::width(BACKGROUND_BUTTON);
     let content_width = tool_header_content_width(header_width);
@@ -359,7 +341,6 @@ pub(super) fn tool_child_layout(
     if is_expanded {
         body.extend(expanded_title_lines(
             tool,
-            arguments.as_ref(),
             ExpandedHeader {
                 row: header,
                 title: &title,
@@ -371,28 +352,21 @@ pub(super) fn tool_child_layout(
         // The output band keeps a blank row above and below its text so
         // nothing touches the band's edge.
         let padded = panel_margin(context.width);
-        // Everything under the title: full arguments (diagnostic detail,
-        // shown only at the `info` filter and below), then the response.
-        let mut panel = Vec::new();
-        if context.minimum_event_level <= crate::state::EventLevel::Info {
-            panel.extend(argument_section_lines(
-                tool,
-                arguments.as_ref(),
-                context.theme,
-                !padded,
-                !tool.detail.is_empty(),
-            ));
-        }
-        if !tool.detail.is_empty() {
-            remaining_sections -= 1;
+        // Everything under the title: the call's arguments, then what it
+        // shows.
+        let style = BlockStyle {
+            theme: context.theme,
+            highlighter: context.highlighter,
+            width: panel_text_width(context.width),
+        };
+        let mut panel =
+            argument_section_lines(tool, &style, context.minimum_event_level, !padded, has_body);
+        if has_body {
             panel.extend(tool_body_lines(
                 tool,
-                arguments.as_ref(),
-                context,
-                ToolOutputSection::Detail,
+                &style,
                 section_expanded(ToolOutputSection::Detail),
                 &mut budget,
-                remaining_sections,
             ));
         }
         // Every expanded tool is one panel: a grey title block over a lighter
@@ -441,17 +415,20 @@ pub(super) fn tool_child_layout(
     }];
     if let Some(call_id) = call_id {
         let chrome = rendered.chrome;
-        regions.extend(rendered.output_toggles.into_iter().map(
-            |(section, start_line, end_line)| BlockRegion {
-                id: BlockId::ToolOutput { call_id, section },
-                start_line,
-                end_line,
-                header_lines: None,
-                // A notice row hangs behind the same gutter as the rows it
-                // stands in for.
-                header_gutter: chrome.get(start_line).copied(),
-            },
-        ));
+        regions.extend(
+            rendered
+                .actions
+                .into_iter()
+                .map(|(action, start_line, end_line)| BlockRegion {
+                    id: action.block_id(call_id),
+                    start_line,
+                    end_line,
+                    header_lines: None,
+                    // A notice row hangs behind the same gutter as the rows it
+                    // stands in for.
+                    header_gutter: chrome.get(start_line).copied(),
+                }),
+        );
     }
     ItemLayout {
         regions,
@@ -460,111 +437,74 @@ pub(super) fn tool_child_layout(
     }
 }
 
-#[derive(serde::Deserialize)]
-pub(super) struct ParsedToolArguments<'a> {
-    // Deliberately strict: non-string edit/write fields reject the structured
-    // view and fall back to the bounded raw-arguments rendering.
-    #[serde(borrow, rename = "filePath")]
-    pub(super) file_path: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    pub(super) path: Option<Cow<'a, str>>,
-    #[serde(borrow, rename = "oldString")]
-    pub(super) before: Option<Cow<'a, str>>,
-    #[serde(borrow, rename = "newString")]
-    pub(super) after: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    pub(super) content: Option<Cow<'a, str>>,
-    #[serde(borrow)]
-    pub(super) command: Option<Cow<'a, str>>,
-}
+/// Bytes of argument rows the expanded title panel shows before eliding.
+const MAX_ARGUMENT_BYTES: usize = 4 * 1024;
 
-impl<'a> ParsedToolArguments<'a> {
-    pub(super) fn parse(arguments: &'a str) -> Option<Self> {
-        serde_json::from_str(arguments).ok()
-    }
-
-    pub(super) fn file_path(&self) -> Option<&str> {
-        self.file_path.as_deref().or(self.path.as_deref())
-    }
-}
-
-/// Bytes of full arguments the `info`-level section shows before eliding.
-const MAX_ARGUMENT_BYTES: usize = 2 * 1024;
-
-/// Rows of full arguments the `info`-level section shows before eliding.
+/// Rows of arguments the expanded title panel shows before eliding.
 const MAX_ARGUMENT_LINES: usize = 48;
 
-/// The full call arguments for the `info`-level section: pretty-printed JSON,
-/// or the raw text when it does not parse. Edit and write name their file only;
-/// their content is the diff shown below.
-pub(super) fn display_tool_arguments(
-    tool: &crate::state::ToolCallState,
-    arguments: Option<&ParsedToolArguments<'_>>,
-) -> String {
-    if matches!(tool.presentation.tool.name.as_str(), "edit" | "write")
-        && let Some(path) = arguments.and_then(ParsedToolArguments::file_path)
-    {
-        return format!("filePath: {path} (content shown below)");
-    }
-    serde_json::from_str::<serde_json::Value>(&tool.arguments)
-        .ok()
-        .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_else(|| tool.arguments.clone())
+/// Columns a panel row's text gets inside the block's `│ ` gutter and, where
+/// the panel has them, its margins.
+pub(super) fn panel_text_width(width: u16) -> u16 {
+    let margins = if panel_margin(width) { 2 } else { 0 };
+    width.saturating_sub(2 + margins).max(1)
 }
 
-/// Full arguments, set well apart from the response: a blank row, a muted
-/// `arguments` label, the muted body, and a blank row before any output.
+/// The call's arguments, set apart from what it shows: a blank row, a muted
+/// `arguments` label, the presentation's argument blocks, and a blank row
+/// before any output. A call whose presentation has no argument blocks shows
+/// its raw arguments instead, as diagnostic detail at the `info` filter and
+/// below.
 fn argument_section_lines(
     tool: &crate::state::ToolCallState,
-    arguments: Option<&ParsedToolArguments<'_>>,
-    theme: &Theme,
+    style: &BlockStyle<'_>,
+    minimum_event_level: crate::state::EventLevel,
     leading_blank: bool,
     output_follows: bool,
 ) -> Vec<ToolBodyLine> {
+    let theme = style.theme;
     let muted = theme.muted();
+    let limits = RenderLimits {
+        lines: MAX_ARGUMENT_LINES,
+        bytes: MAX_ARGUMENT_BYTES,
+    };
+    let rows = if tool.presentation.arguments.is_empty() {
+        if minimum_event_level > crate::state::EventLevel::Info {
+            return Vec::new();
+        }
+        let raw = serde_json::from_str::<serde_json::Value>(&tool.arguments)
+            .ok()
+            .and_then(|value| serde_json::to_string_pretty(&value).ok())
+            .unwrap_or_else(|| tool.arguments.clone());
+        bounded_safe_display_text(&raw, muted, limits.lines, limits.bytes)
+            .into_iter()
+            .map(ToolBodyLine::wrapped)
+            .collect::<Vec<_>>()
+    } else {
+        let mut budget = RenderBudget::new(limits);
+        let mut sink = LineSink::new(&mut budget, limits);
+        let mut rows = display_rows(&tool.presentation.arguments, &[], style, &mut sink);
+        let omitted = sink.omitted();
+        if omitted > 0 {
+            rows.push(ToolBodyLine::wrapped(Line::styled(
+                format!("… {omitted} more lines not shown"),
+                muted,
+            )));
+        }
+        rows
+    };
+    if rows.is_empty() {
+        return Vec::new();
+    }
     let mut lines = Vec::new();
     // A padded panel already opens on a blank row.
     if leading_blank {
         lines.push(ToolBodyLine::wrapped(Line::default()));
     }
     lines.push(ToolBodyLine::wrapped(Line::styled("arguments", muted)));
-    lines.extend(
-        bounded_safe_display_text(
-            &display_tool_arguments(tool, arguments),
-            muted,
-            MAX_ARGUMENT_LINES,
-            MAX_ARGUMENT_BYTES,
-        )
-        .into_iter()
-        .map(ToolBodyLine::wrapped),
-    );
+    lines.extend(rows);
     if output_follows {
         lines.push(ToolBodyLine::wrapped(Line::default()));
-    }
-    lines
-}
-
-/// Bytes of a bash command the expanded title block shows before eliding.
-const MAX_COMMAND_BYTES: usize = 2 * 1024;
-
-/// A bash command split for the expanded title block: one entry per command
-/// line, so a heredoc or multi-line script keeps its line breaks instead of
-/// showing each newline as a replacement character. The byte budget spans all
-/// lines, and an elided tail is marked on the last line shown.
-fn bash_command_lines(command: &str) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut remaining = MAX_COMMAND_BYTES;
-    let mut source_lines = command.trim_end_matches('\n').split('\n').peekable();
-    while let Some(line) = source_lines.next() {
-        let (text, complete) = sanitized_display_prefix(line, remaining);
-        remaining = remaining.saturating_sub(text.len());
-        let elided = !complete || (remaining == 0 && source_lines.peek().is_some());
-        lines.push(format!("{text}{}", if elided { "…" } else { "" }));
-        if elided {
-            break;
-        }
-        // Count the newline itself so the budget matches the source length.
-        remaining = remaining.saturating_sub(1);
     }
     lines
 }
@@ -577,59 +517,31 @@ pub(super) struct ExpandedHeader<'a> {
     pub(super) suffix: &'a str,
 }
 
-/// An expanded tool's title block: the header row, then — only when the
-/// collapsed header had to shorten the primary argument — the rest of it on
-/// hanging rows aligned under where the argument starts. Bash shows its full
-/// command with its own line breaks. Every row is part of the clickable header.
+/// An expanded tool's title block: the header row, or, when the collapsed
+/// header had to shorten its title or argument, the whole of them on rows
+/// hanging under where the title starts. Every row is part of the clickable
+/// header.
 fn expanded_title_lines(
     tool: &crate::state::ToolCallState,
-    arguments: Option<&ParsedToolArguments<'_>>,
     header: ExpandedHeader<'_>,
     width: u16,
 ) -> Vec<ToolBodyLine> {
-    let name = tool.presentation.title.as_str();
-    let chrome = tool_header_chrome(
-        tool_icon(tool.presentation.tool.name.as_str()),
-        header.chevron,
-        width,
-    );
-    let indent = UnicodeWidthStr::width(chrome.as_str()) + UnicodeWidthStr::width(name) + 1;
-    let full = if tool.presentation.tool.name == "bash" {
-        arguments
-            .and_then(|arguments| arguments.command.as_deref())
-            .map(bash_command_lines)
-    } else {
-        None
-    }
-    .or_else(|| {
-        tool.presentation
-            .primary_argument
-            .as_ref()
-            .map(|argument| vec![flatten_header_argument(argument.as_str())])
-    });
-    let finished = match full.as_deref() {
-        None | Some([]) => true,
-        Some([only]) => header.title == format!("{name} {only}"),
-        Some(_) => false,
+    let name = flatten_header_argument(tool.presentation.title.as_str());
+    let chrome = tool_header_chrome(tool_icon(tool), header.chevron, width);
+    let full = match header_argument(tool) {
+        Some(argument) => format!("{name} {argument}"),
+        None => name.clone(),
     };
-    if finished {
+    if header.title == full {
+        let indent =
+            UnicodeWidthStr::width(chrome.as_str()) + UnicodeWidthStr::width(name.as_str()) + 1;
         return vec![ToolBodyLine::title(Line::from(header.row), indent)];
     }
-    let lines = full.unwrap_or_default();
-    let last = lines.len() - 1;
-    lines
-        .into_iter()
-        .enumerate()
-        .map(|(index, text)| {
-            let lead = if index == 0 {
-                format!("{chrome}{name} ")
-            } else {
-                " ".repeat(indent)
-            };
-            let suffix = if index == last { header.suffix } else { "" };
-            ToolBodyLine::title(Line::from(format!("{lead}{text}{suffix}")), indent)
-        })
-        .collect()
+    let indent = UnicodeWidthStr::width(chrome.as_str());
+    vec![ToolBodyLine::title(
+        Line::from(format!("{chrome}{full}{}", header.suffix)),
+        indent,
+    )]
 }
 
 /// Identity for a tool row: a started call or a committed placeholder index.
@@ -721,10 +633,36 @@ pub(super) enum ToolBand {
     Terminal,
 }
 
+/// What clicking a tool body row does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ToolRowAction {
+    /// Expands or collapses an output section.
+    Toggle(ToolOutputSection),
+    /// Loads, or puts away, the complete content of the cut display block
+    /// at this index.
+    LoadFull(usize),
+    /// Opens a session the display refers to.
+    OpenSession(SessionId),
+}
+
+impl ToolRowAction {
+    /// The clickable region the row becomes in `call_id`'s block.
+    pub(super) fn block_id(self, call_id: cookie_agent_protocol::ToolCallId) -> BlockId {
+        match self {
+            Self::Toggle(section) => BlockId::ToolOutput { call_id, section },
+            Self::LoadFull(block) => BlockId::ToolFull {
+                call_id,
+                block: u32::try_from(block).unwrap_or(u32::MAX),
+            },
+            Self::OpenSession(session) => BlockId::ToolSession { call_id, session },
+        }
+    }
+}
+
 pub(super) struct ToolBodyLine {
     pub(super) line: Line<'static>,
     pub(super) kind: ToolBodyLineKind,
-    pub(super) output_toggle: Option<ToolOutputSection>,
+    pub(super) action: Option<ToolRowAction>,
     pub(super) band: Option<ToolBand>,
     /// Part of the block's clickable header (an expanded title block row).
     pub(super) header: bool,
@@ -738,7 +676,7 @@ impl ToolBodyLine {
         Self {
             line,
             kind: ToolBodyLineKind::Wrapped,
-            output_toggle: None,
+            action: None,
             band: None,
             header: false,
             tint: None,
@@ -750,7 +688,7 @@ impl ToolBodyLine {
         Self {
             line,
             kind: ToolBodyLineKind::Hanging { indent },
-            output_toggle: None,
+            action: None,
             band: None,
             header: true,
             tint: None,
@@ -772,10 +710,18 @@ impl ToolBodyLine {
                 first_gutter,
                 continuation_gutter,
             },
-            output_toggle: None,
+            action: None,
             band: None,
             header: false,
             tint: None,
+        }
+    }
+
+    /// A row whose wrapped rows hang under `indent`.
+    pub(super) fn hanging(line: Line<'static>, indent: usize) -> Self {
+        Self {
+            kind: ToolBodyLineKind::Hanging { indent },
+            ..Self::wrapped(line)
         }
     }
 
@@ -784,15 +730,13 @@ impl ToolBodyLine {
         self
     }
 
+    pub(super) fn with_action(mut self, action: ToolRowAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+
     pub(super) fn toggle(line: Line<'static>, section: ToolOutputSection) -> Self {
-        Self {
-            line,
-            kind: ToolBodyLineKind::Wrapped,
-            output_toggle: Some(section),
-            band: None,
-            header: false,
-            tint: None,
-        }
+        Self::wrapped(line).with_action(ToolRowAction::Toggle(section))
     }
 }
 
@@ -859,38 +803,6 @@ impl RenderBudget {
     }
 }
 
-pub(super) struct SectionRenderer<'a> {
-    pub(super) budget: &'a mut RenderBudget,
-    pub(super) capacity: RenderLimits,
-    pub(super) fully_rendered: usize,
-}
-
-impl<'a> SectionRenderer<'a> {
-    pub(super) fn new(
-        budget: &'a mut RenderBudget,
-        expanded: bool,
-        future_sections: usize,
-    ) -> Self {
-        let limits = output_section_limits(expanded);
-        let capacity = budget.section_capacity(limits, future_sections);
-        Self {
-            budget,
-            capacity,
-            fully_rendered: 0,
-        }
-    }
-
-    pub(super) fn take(&mut self, text: &str) -> Option<String> {
-        let (text, complete) = self.budget.consume(&mut self.capacity, text)?;
-        self.fully_rendered += usize::from(complete);
-        Some(text)
-    }
-
-    pub(super) fn exhausted(&self) -> bool {
-        self.capacity.lines == 0 || self.capacity.bytes == 0
-    }
-}
-
 pub(super) fn output_section_limits(expanded: bool) -> RenderLimits {
     if expanded {
         EXPANDED_TOOL_OUTPUT_LIMITS
@@ -899,57 +811,51 @@ pub(super) fn output_section_limits(expanded: bool) -> RenderLimits {
     }
 }
 
-/// Expanded tool detail lines. File reads use source line numbers carried by
-/// the result. Edit/write arguments and strict unified-diff output use diff
-/// gutters. All sections consume one aggregate per-tool render budget.
+/// What an expanded call shows under its arguments: why it failed, the
+/// running call's progress message, and its display blocks, all from one
+/// render budget, then the row that expands or collapses them.
 pub(super) fn tool_body_lines(
     tool: &crate::state::ToolCallState,
-    arguments: Option<&ParsedToolArguments<'_>>,
-    context: &TranscriptRenderContext<'_>,
-    section: ToolOutputSection,
+    style: &BlockStyle<'_>,
     expanded: bool,
     budget: &mut RenderBudget,
-    future_sections: usize,
 ) -> Vec<ToolBodyLine> {
-    if tool.status == ToolStatus::Completed {
-        let path = arguments.and_then(ParsedToolArguments::file_path);
-        let language = path.and_then(path_extension);
-        if tool.presentation.tool.name.as_str() == "read"
-            && let Some(read) = parse_read_output(&tool.detail)
-        {
-            return render_read_output(
-                read,
-                language,
-                section,
-                expanded,
-                budget,
-                future_sections,
-                context,
-            );
-        }
-        if matches!(tool.presentation.tool.name.as_str(), "edit" | "write")
-            && let Some(diff) = tool_diff(tool, arguments)
-        {
-            return render_diff_output(
-                &diff,
-                language,
-                section,
-                expanded,
-                budget,
-                future_sections,
-                context,
-            );
+    let theme = style.theme;
+    let mut sink = LineSink::new(budget, output_section_limits(expanded));
+    let mut output = Vec::new();
+    if let Some(failure) = &tool.failure {
+        for line in failure.split('\n') {
+            // Expanded text is ordinary text; the header suffix already
+            // names the failure.
+            if let Some(text) = sink.line(line) {
+                output.push(ToolBodyLine::wrapped(Line::from(text)));
+            }
         }
     }
-    generic_output_lines(
-        None,
-        OutputText::complete(&tool.detail),
-        section,
+    if tool.status == ToolStatus::Running
+        && let Some(progress) = &tool.progress
+        && let Some(text) = sink.line(progress)
+    {
+        output.push(ToolBodyLine::wrapped(Line::styled(
+            format!("⋯ {text}"),
+            theme.muted(),
+        )));
+    }
+    let blocks = display_rows(tool.shown_display(), &tool.full, style, &mut sink);
+    if !output.is_empty() && !blocks.is_empty() {
+        output.push(ToolBodyLine::wrapped(Line::default()));
+    }
+    output.extend(blocks);
+    let omitted = sink.omitted();
+    append_output_notice(
+        &mut output,
+        omitted,
         expanded,
-        budget,
-        future_sections,
-        context.theme,
-    )
+        ToolOutputSection::Detail,
+        sink.budget(),
+        theme,
+    );
+    output
 }
 
 /// Tool children render inside the assistant item without a standalone
@@ -957,7 +863,8 @@ pub(super) fn tool_body_lines(
 /// take only their status style.
 pub(super) struct ToolBlockLayout {
     pub(super) lines: Vec<Line<'static>>,
-    pub(super) output_toggles: Vec<(ToolOutputSection, usize, usize)>,
+    /// Rows that act when clicked, by their start and end line.
+    pub(super) actions: Vec<(ToolRowAction, usize, usize)>,
     pub(super) header_lines: usize,
     /// Chrome columns per row, indexed alongside `lines`: the width of the
     /// spans this builder hung in front of each row, counted from what it
@@ -986,7 +893,7 @@ pub(super) fn tool_block_lines_with(
     theme: &Theme,
 ) -> ToolBlockLayout {
     let mut lines = Vec::new();
-    let mut output_toggles = Vec::new();
+    let mut actions = Vec::new();
     let mut banded_rows = Vec::new();
     // Row index → how many of its leading spans are chrome this builder put
     // there: the block's `│ ` gutter, a narrow-mode label, a diff's line
@@ -1000,7 +907,7 @@ pub(super) fn tool_block_lines_with(
         let band = body_line.band;
         let tint = body_line.tint;
         let header = body_line.header;
-        let output_toggle = body_line.output_toggle;
+        let action = body_line.action;
         let line_style = body_line.line.style;
         let spans = body_line
             .line
@@ -1120,8 +1027,8 @@ pub(super) fn tool_block_lines_with(
         if index == 0 || header {
             header_lines = lines.len();
         }
-        if let Some(section) = output_toggle {
-            output_toggles.push((section, start, lines.len()));
+        if let Some(action) = action {
+            actions.push((action, start, lines.len()));
         }
         if band.is_some() {
             banded_rows.extend(
@@ -1173,7 +1080,7 @@ pub(super) fn tool_block_lines_with(
         .collect();
     ToolBlockLayout {
         lines,
-        output_toggles,
+        actions,
         header_lines,
         chrome,
     }

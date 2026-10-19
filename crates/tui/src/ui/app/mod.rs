@@ -839,6 +839,14 @@ pub(in crate::ui) enum RpcUpdate {
     },
     /// An outcome that is not a failure: shown in the status line only.
     Notice(String),
+    /// The complete content of a call's cut display block was read, or
+    /// could not be.
+    FullContentLoaded {
+        session_id: SessionId,
+        call_id: cookie_agent_protocol::ToolCallId,
+        block: usize,
+        state: crate::state::FullContentState,
+    },
     RunStartFinished {
         session_id: SessionId,
         client_run_id: ClientRunId,

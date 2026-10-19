@@ -8,7 +8,7 @@ use cookie_agent_protocol::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 
-use crate::state::{ApprovalState, ToolCallState, ToolStatus};
+use crate::state::{ApprovalState, ToolStatus};
 use crate::ui::app::*;
 
 use super::support::*;
@@ -18,9 +18,12 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 /// Link a running tool call to `approval` the way the engine does: the
-/// approval names the call, whose prepared operation carries its fingerprint.
-fn link_tool(app: &mut App, approval: &ApprovalState, title: &str, arguments: &str) {
-    let primary = (title != "bash").then_some("src/lib.rs");
+/// approval names the call by its id.
+fn link_tool(
+    app: &mut App,
+    approval: &ApprovalState,
+    presentation: cookie_agent_protocol::ToolPresentation,
+) {
     let call_id = approval.tool_call_id;
     app.store
         .sessions
@@ -29,27 +32,27 @@ fn link_tool(app: &mut App, approval: &ApprovalState, title: &str, arguments: &s
         .tools
         .insert(
             call_id,
-            ToolCallState {
-                backgroundable: false,
-                backgrounded: false,
-                id: call_id,
-                owner: owner(1, "call-1"),
-                presentation: presentation(title, primary),
-                arguments: arguments.into(),
-                operation_fingerprint: approval.operation_fingerprint.clone(),
-                status: ToolStatus::Running,
-                detail: String::new(),
-                has_output_chunks: false,
-                live_display: Default::default(),
-                revision: 0,
-            },
+            tool_state(call_id, presentation, ToolStatus::Running, Vec::new()),
         );
+}
+
+/// A bash call's presentation: its command as a `code` block.
+fn bash_presentation(command: &str) -> cookie_agent_protocol::ToolPresentation {
+    let mut presentation = hinted_presentation(
+        &format!("Run `{command}`"),
+        cookie_agent_protocol::ToolHint::SHELL,
+        Some(command),
+    );
+    presentation.arguments = vec![cookie_agent_protocol::Open::Known(
+        cookie_agent_protocol::DisplayBlock::code(command, Some("sh".into())),
+    )];
+    presentation
 }
 
 async fn app_with_linked_bash() -> App {
     let mut app = app_with_approval().await;
     let approval = app.current_approval().cloned().expect("approval");
-    link_tool(&mut app, &approval, "bash", r#"{"command": "git status"}"#);
+    link_tool(&mut app, &approval, bash_presentation("git status"));
     app
 }
 
@@ -171,7 +174,8 @@ async fn panel_leads_with_the_command_why_it_asks_and_what_the_focus_does() {
     let rendered = rendered_frame(&mut app, 120, 40);
     for needle in [
         "⚠ Permission needed",
-        "$ git status",
+        "Run `git status`",
+        " git status",
         "the model asked first: model requested approval",
         "runs this exact call now",
         "▸ details",
@@ -330,18 +334,49 @@ async fn edit_approval_previews_its_diff() {
         .or_default()
         .approvals
         .push(approval.clone());
-    link_tool(
-        &mut app,
-        &approval,
-        "edit",
-        r#"{"filePath": "src/lib.rs", "oldString": "fn old() {}\n", "newString": "fn new() {\n    todo!()\n}\n"}"#,
+    let mut presentation = hinted_presentation(
+        "Edit src/lib.rs",
+        cookie_agent_protocol::ToolHint::FILE_EDIT,
+        Some("src/lib.rs"),
     );
+    presentation.arguments = vec![cookie_agent_protocol::Open::Known(
+        cookie_agent_protocol::DisplayBlock::key_value([("path", "src/lib.rs")]),
+    )];
+    presentation.preview = vec![cookie_agent_protocol::Open::Known(
+        cookie_agent_protocol::DisplayBlock::Diff(cookie_agent_protocol::DiffBlock {
+            as_of: cookie_agent_protocol::DiffAsOf::Prepare,
+            hunks: vec![cookie_agent_protocol::DiffHunk {
+                old_start: 7,
+                old_lines: 1,
+                new_start: 7,
+                new_lines: 3,
+                lines: [
+                    (cookie_agent_protocol::DiffLineOp::Remove, "fn old() {}"),
+                    (cookie_agent_protocol::DiffLineOp::Add, "fn new() {"),
+                    (cookie_agent_protocol::DiffLineOp::Add, "    todo!()"),
+                    (cookie_agent_protocol::DiffLineOp::Add, "}"),
+                ]
+                .into_iter()
+                .map(|(op, text)| cookie_agent_protocol::DiffLine {
+                    op,
+                    text: text.into(),
+                })
+                .collect(),
+            }],
+            added: 3,
+            removed: 1,
+            ..super::diffs::sample_diff("src/lib.rs")
+        }),
+    )];
+    link_tool(&mut app, &approval, presentation);
     let rendered = rendered_frame(&mut app, 120, 40);
     for needle in [
-        "edit  src/lib.rs",
-        "1 - fn old() {}",
-        "1 + fn new() {",
-        "2 +     todo!()",
+        "Edit src/lib.rs",
+        "path  src/lib.rs",
+        "modified src/lib.rs · +3 -1 · preview",
+        "7 - │ fn old() {}",
+        "7 + │ fn new() {",
+        "8 + │     todo!()",
         "your write rule `*` asks first (agent document)",
     ] {
         assert!(rendered.contains(needle), "missing {needle}: {rendered}");
@@ -399,5 +434,5 @@ async fn cramped_panel_keeps_every_button_and_the_command() {
     let rendered = rendered_frame(&mut app, 40, 12);
     assert_eq!(app.hit_map.approval_actions.len(), 3);
     assert!(rendered.contains("✓ Once y"), "{rendered}");
-    assert!(rendered.contains("$ git status"), "{rendered}");
+    assert!(rendered.contains(" git status"), "{rendered}");
 }

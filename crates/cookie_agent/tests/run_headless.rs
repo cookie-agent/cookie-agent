@@ -1927,7 +1927,8 @@ async fn nonzero_bash_exit_returns_output_without_a_tool_error() {
             )));
             let tool = &state.tools[&termination.tool_call_id];
             assert_eq!(tool.status, cookie_agent_tui::state::ToolStatus::Completed);
-            assert_eq!(tool.detail, display);
+            assert_eq!(tool.display, output.display);
+            assert_eq!(tool.failure, None);
         }
         fixture.shutdown().await;
     }

@@ -2,23 +2,25 @@
 
 mod approval_preview;
 mod assistant;
+mod blocks;
 mod diff;
 mod events;
 mod items;
 mod output;
+mod sgr;
 mod tool_rows;
 mod wrap;
 
-pub(super) use approval_preview::{
-    ApprovalPreviewRow, approval_operation_preview, approval_tool_icon,
-};
+pub(super) use approval_preview::{ApprovalPreviewRow, approval_presentation_rows};
 use assistant::*;
+use blocks::*;
 use diff::*;
 pub(super) use events::producer_summary;
 use events::*;
 use items::*;
 use output::*;
 use tool_rows::*;
+pub(super) use tool_rows::{header_argument, hint_icon};
 pub(super) use wrap::extract_selection;
 pub(super) use wrap::leading_gutter_columns;
 pub(super) use wrap::wrapped_line;
@@ -303,6 +305,17 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         section: ToolOutputSection,
     },
+    /// The row that loads, or puts away, the complete content of a call's
+    /// cut display block.
+    ToolFull {
+        call_id: cookie_agent_protocol::ToolCallId,
+        block: u32,
+    },
+    /// A row of a call's display that opens the session it refers to.
+    ToolSession {
+        call_id: cookie_agent_protocol::ToolCallId,
+        session: SessionId,
+    },
     CommittedTool {
         turn_seq: u64,
         content_index: u32,
@@ -553,7 +566,14 @@ impl LayoutCache {
                     .iter()
                     // Output notices move after the newly revealed lines;
                     // anchor their containing tool's content instead.
-                    .filter(|region| !matches!(region.id, BlockId::ToolOutput { .. }))
+                    .filter(|region| {
+                        !matches!(
+                            region.id,
+                            BlockId::ToolOutput { .. }
+                                | BlockId::ToolFull { .. }
+                                | BlockId::ToolSession { .. }
+                        )
+                    })
                     .flat_map(|region| {
                         [
                             (ScrollAnchorPoint::BlockStart(region.id), region.start_line),
@@ -1750,6 +1770,17 @@ impl App {
         let Some(session_id) = self.selected else {
             return;
         };
+        match block_id {
+            BlockId::ToolFull { call_id, block } => {
+                self.toggle_full_content(session_id, call_id, block as usize);
+                return;
+            }
+            BlockId::ToolSession { session, .. } => {
+                self.watch_session(session);
+                return;
+            }
+            _ => {}
+        }
         // An explicit layout change preserves what the user is reading. Only
         // output received while already following should advance to the tail.
         self.conversation_scroll.following = false;
@@ -1757,6 +1788,82 @@ impl App {
         if !expanded.insert(block_id) {
             expanded.remove(&block_id);
         }
+    }
+}
+
+impl App {
+    /// Load the complete content of a call's cut display block with
+    /// `artifact.read`, or put loaded content away again. Loading expands
+    /// the call's output, whose larger budget then shows it.
+    pub(super) fn toggle_full_content(
+        &mut self,
+        session_id: SessionId,
+        call_id: cookie_agent_protocol::ToolCallId,
+        block: usize,
+    ) {
+        use crate::state::{FullContent, FullContentState, MAX_FULL_CONTENT_BYTES};
+        let Some(state) = self.store.sessions.get_mut(&session_id) else {
+            return;
+        };
+        let Some(tool) = state.tools.get(&call_id) else {
+            return;
+        };
+        match tool.full_content(block) {
+            Some(FullContentState::Loading) => return,
+            Some(FullContentState::Loaded { .. }) => {
+                state.update_tool(call_id, |tool| tool.full.retain(|full| full.block != block));
+                return;
+            }
+            Some(FullContentState::Failed(_)) | None => {}
+        }
+        let Some(artifact) = display_full(tool.shown_display(), block).cloned() else {
+            return;
+        };
+        state.update_tool(call_id, |tool| {
+            tool.full.retain(|full| full.block != block);
+            tool.full.push(FullContent {
+                block,
+                state: FullContentState::Loading,
+            });
+        });
+        self.expanded_blocks
+            .entry(session_id)
+            .or_default()
+            .insert(BlockId::ToolOutput {
+                call_id,
+                section: ToolOutputSection::Detail,
+            });
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let length = artifact.byte_length.clamp(1, MAX_FULL_CONTENT_BYTES);
+            let result = client
+                .read_artifact(cookie_agent_protocol::ArtifactReadParams {
+                    session_id,
+                    sha256: artifact.sha256.clone(),
+                    offset: 0,
+                    length,
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|read| {
+                    use base64::Engine as _;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(read.data)
+                        .map_err(|error| format!("the daemon sent malformed data: {error}"))?;
+                    Ok(FullContentState::Loaded {
+                        text: String::from_utf8_lossy(&bytes).into_owned(),
+                        truncated: read.total_bytes > bytes.len() as u64,
+                    })
+                })
+                .unwrap_or_else(FullContentState::Failed);
+            let _ = updates.send(super::app::RpcUpdate::FullContentLoaded {
+                session_id,
+                call_id,
+                block,
+                state: result,
+            });
+        });
     }
 }
 
@@ -2050,8 +2157,11 @@ pub(super) fn block_hit_at<'a>(
             u16::try_from(end - start).unwrap_or(u16::MAX),
         ),
         id: region.id,
-        toggle_rect: if matches!(region.id, BlockId::ToolOutput { .. }) {
-            // Output regions are built solely from append_output_notice rows.
+        toggle_rect: if matches!(
+            region.id,
+            BlockId::ToolOutput { .. } | BlockId::ToolFull { .. } | BlockId::ToolSession { .. }
+        ) {
+            // Action regions are single clickable rows of a tool body.
             (region.start_line >= scroll_offset).then(|| {
                 Rect::new(
                     viewport.x,

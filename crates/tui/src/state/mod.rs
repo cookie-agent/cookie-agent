@@ -59,25 +59,30 @@ pub enum CompactingSource {
 }
 
 /// A tool invocation displayed inside its owning assistant item. The compact
-/// title uses only the persisted `ToolPresentation`; raw arguments appear
-/// only in the expanded detail. The persisted display argument is byte-capped
-/// but may still carry control characters, so render sites flatten it.
+/// title uses only the persisted `ToolPresentation`; its argument blocks, or
+/// the raw arguments when it has none, appear only in the expanded detail.
+/// The persisted display argument is byte-capped but may still carry control
+/// characters, so render sites flatten it.
 #[derive(Clone, Debug)]
 pub struct ToolCallState {
     pub id: ToolCallId,
     pub owner: AssistantToolCallRef,
     pub presentation: cookie_agent_protocol::ToolPresentation,
-    /// Durable tool input from the owning committed turn, shown expanded.
+    /// Durable tool input from the owning committed turn, shown expanded
+    /// when the presentation has no argument blocks.
     pub arguments: String,
-    /// The prepared operation this call runs; an approval request carries
-    /// the same fingerprint, which is how its panel finds the call.
-    pub operation_fingerprint: OperationFingerprint,
     pub status: ToolStatus,
-    pub detail: String,
-    /// Whether `detail` shows the live display of the running call.
-    pub has_output_chunks: bool,
+    /// The result's display once the call ended. While it runs, the call
+    /// shows `live_display` instead.
+    pub display: Vec<cookie_agent_protocol::Open<cookie_agent_protocol::DisplayBlock>>,
+    /// Why a call that did not complete ended, shown above its display.
+    pub failure: Option<String>,
+    /// The running call's latest progress message.
+    pub progress: Option<String>,
     /// The running call's live display, which its progress changes.
     pub live_display: cookie_agent_protocol::LiveDisplay,
+    /// The complete content of cut display blocks, loaded on request.
+    pub full: Vec<FullContent>,
     /// The call's tool supports the background, so a running call can be
     /// moved there.
     pub backgroundable: bool,
@@ -89,6 +94,51 @@ pub struct ToolCallState {
     pub revision: u64,
 }
 
+/// The complete content behind a cut display block (its `full` artifact),
+/// read with `artifact.read` when the user asks for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FullContent {
+    /// The block's index in the call's display.
+    pub block: usize,
+    pub state: FullContentState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FullContentState {
+    Loading,
+    /// The first [`MAX_FULL_CONTENT_BYTES`] of the artifact as text, and
+    /// whether the artifact is longer.
+    Loaded {
+        text: String,
+        truncated: bool,
+    },
+    Failed(String),
+}
+
+/// The most of a cut block's complete content the TUI reads and keeps: one
+/// `artifact.read` chunk.
+pub const MAX_FULL_CONTENT_BYTES: u64 = cookie_agent_protocol::ARTIFACT_CHUNK_BYTES;
+
+/// Applies one live progress update to a running call, as a
+/// `tool_call_progress` transient does.
+#[cfg(test)]
+pub(crate) fn reduce_live_progress_for_test(
+    state: &mut SessionState,
+    tool_call_id: ToolCallId,
+    message: &str,
+    delta: cookie_agent_protocol::DisplayDelta,
+) {
+    reduce_transient(
+        state,
+        jiff::Timestamp::now(),
+        EventPayload::ToolCallProgress {
+            tool_call_id,
+            message: cookie_agent_protocol::SafeDisplayText::new(message).expect("message"),
+            display: Some(delta.into()),
+        },
+    );
+}
+
 /// A fresh tool revision: process-wide, so a projection rebuilt from history
 /// never reuses one a cached row was keyed by.
 pub(crate) fn next_tool_revision() -> u64 {
@@ -97,6 +147,30 @@ pub(crate) fn next_tool_revision() -> u64 {
 }
 
 impl ToolCallState {
+    /// A call that just started, with nothing shown yet.
+    pub fn started(
+        id: ToolCallId,
+        owner: AssistantToolCallRef,
+        presentation: cookie_agent_protocol::ToolPresentation,
+        arguments: String,
+    ) -> Self {
+        Self {
+            id,
+            owner,
+            presentation,
+            arguments,
+            status: ToolStatus::Running,
+            display: Vec::new(),
+            failure: None,
+            progress: None,
+            live_display: Default::default(),
+            full: Vec::new(),
+            backgroundable: false,
+            backgrounded: false,
+            revision: next_tool_revision(),
+        }
+    }
+
     /// The exact compact title: the persisted sanitized tool title plus its
     /// persisted display argument, never reparsed from raw input. The argument is
     /// byte-capped but not flattened, so a render site must sanitize it and
@@ -105,6 +179,37 @@ impl ToolCallState {
         match &self.presentation.primary_argument {
             Some(argument) => format!("{} {argument}", self.presentation.title),
             None => self.presentation.title.to_string(),
+        }
+    }
+
+    /// The blocks the call shows now: the live display while it runs, then
+    /// its result's.
+    pub fn shown_display(
+        &self,
+    ) -> &[cookie_agent_protocol::Open<cookie_agent_protocol::DisplayBlock>] {
+        if self.status == ToolStatus::Running {
+            self.live_display.blocks()
+        } else {
+            &self.display
+        }
+    }
+
+    /// The loaded complete content of display block `block`, if any.
+    pub fn full_content(&self, block: usize) -> Option<&FullContentState> {
+        self.full
+            .iter()
+            .find(|full| full.block == block)
+            .map(|full| &full.state)
+    }
+
+    /// The failure and the shown display as text, for tests.
+    #[cfg(test)]
+    pub fn shown_text(&self) -> String {
+        let display = cookie_agent_protocol::display_text(self.shown_display());
+        match &self.failure {
+            Some(failure) if display.is_empty() => failure.clone(),
+            Some(failure) => format!("{failure}\n{display}"),
+            None => display,
         }
     }
 }
@@ -640,7 +745,6 @@ pub(crate) struct PendingToolRow {
 
 #[derive(Clone, Debug)]
 pub(crate) struct IndexedToolCall {
-    name: SafeCode,
     arguments: String,
 }
 
@@ -812,6 +916,23 @@ pub(crate) type AgentMdByAttachment =
     std::collections::BTreeMap<String, Vec<cookie_agent_protocol::AgentMdEntry>>;
 
 impl SessionState {
+    /// Changes a call's view state outside any event, such as content loaded
+    /// on request, and has its row drawn again. Returns whether the call is
+    /// known.
+    pub fn update_tool(
+        &mut self,
+        call_id: ToolCallId,
+        update: impl FnOnce(&mut ToolCallState),
+    ) -> bool {
+        let Some(tool) = self.tools.get_mut(&call_id) else {
+            return false;
+        };
+        update(tool);
+        tool.revision = next_tool_revision();
+        bump_tool_item(self, call_id);
+        true
+    }
+
     pub fn is_open_assistant_part(&self, item_id: u64, part_id: u64) -> bool {
         self.open_assistant
             .is_some_and(|open| open.item_id == item_id && open.part_id == part_id)

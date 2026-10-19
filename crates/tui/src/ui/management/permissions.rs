@@ -19,7 +19,7 @@ use crate::theme::{DecisionTone, Theme};
 use super::super::{
     app::{paint_panel, permission_mode_label, truncate_with_ellipsis},
     input::InputState,
-    transcript::{approval_tool_icon, wrapped_line},
+    transcript::{hint_icon, wrapped_line},
 };
 use super::action_label;
 
@@ -289,15 +289,23 @@ fn source_style(source: PermissionRuleSource, theme: &Theme) -> Style {
     }
 }
 
-/// The transcript's tool icon for the tools an action gates.
+/// The icon of the hint the built-in tools an action gates carry, as the
+/// transcript shows them; any other action gets the generic icon.
 fn action_icon(action: &PermissionAction) -> &'static str {
-    approval_tool_icon(if *action == PermissionAction::DELEGATE {
-        "delegate_subagent"
-    } else if *action == PermissionAction::MESSAGE {
-        "send_message"
-    } else {
-        action_label(action)
-    })
+    use cookie_agent_protocol::ToolHint;
+    let hint = [
+        (PermissionAction::READ, ToolHint::FILE_READ),
+        (PermissionAction::WRITE, ToolHint::FILE_WRITE),
+        (PermissionAction::BASH, ToolHint::SHELL),
+        (PermissionAction::DELEGATE, ToolHint::DELEGATE),
+        (PermissionAction::MESSAGE, ToolHint::MESSAGE),
+        (PermissionAction::SKILL, ToolHint::SKILL),
+        (PermissionAction::WEBFETCH, ToolHint::FETCH),
+    ]
+    .into_iter()
+    .find(|(known, _)| known == action)
+    .map(|(_, hint)| hint);
+    hint_icon(hint)
 }
 
 /// What an action's resource pattern matches, for the explanation line.

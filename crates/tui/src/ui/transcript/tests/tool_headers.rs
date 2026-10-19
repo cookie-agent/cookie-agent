@@ -13,36 +13,11 @@ use crate::ui::app::*;
 use super::support::*;
 
 #[test]
-fn tool_icons_map_core_tools_and_keep_hammer_for_plugins() {
-    for (name, icon) in [
-        ("bash", "💻"),
-        ("read", "📖"),
-        ("read_artifact", "📖"),
-        ("write", "📝"),
-        ("edit", "📝"),
-        ("delegate_subagent", "🤖"),
-        ("get_subagent_result", "🤖"),
-        ("skill", "✨"),
-        ("goal_get", "🎯"),
-        ("goal_update", "🎯"),
-        ("webfetch", "🌐"),
-        ("send_message", "📨"),
-        ("brave_web_search", "🔍"),
-        ("tavily_websearch", "🔍"),
-        ("docs-Search", "🔍"),
-        ("browser_fetch_url", "🌐"),
-        ("web_Browse", "🌐"),
-        ("curl_tool", "🔨"),
-        ("plugin.build", "🔨"),
-        ("mcp__server__read", "🔨"),
-        ("unknown", "🔨"),
-    ] {
-        assert_eq!(tool_icon(name), icon, "{name}");
-    }
+fn goal_hinted_rows_show_the_goal_icon_collapsed_and_expanded() {
     for name in ["goal_get", "goal_update"] {
         let mut state = read_tool_state("unused", ToolStatus::Completed, "goal result");
         let call_id = read_tool_id(&state);
-        state.tools.get_mut(&call_id).unwrap().presentation = presentation(name, None);
+        state.tools.get_mut(&call_id).unwrap().presentation = builtin_presentation(name, None);
         let expanded = HashSet::from([BlockId::Tool(call_id)]);
         for (blocks, chevron) in [(None, '▸'), (Some(&expanded), '▾')] {
             assert!(
@@ -54,7 +29,7 @@ fn tool_icons_map_core_tools_and_keep_hammer_for_plugins() {
 }
 
 #[test]
-fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
+fn tool_headers_cut_arguments_without_losing_expanded_content() {
     let path = "src/very/deeply/nested/module/transcript.rs";
     let long_command = format!("command {} done", "long-argument ".repeat(12));
     // A 40-column row keeps 38 columns of content behind its 2-column
@@ -65,31 +40,20 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
         UnicodeWidthStr::width(tool_header_chrome("📖", '▸', 40).as_str()),
         5
     );
-    let read_budget = header_argument_width("read", 33);
-    assert_eq!(read_budget, 28);
-    assert_eq!(
-        abbreviate_tool_argument("read", path, read_budget),
-        "src/…/transcript.rs"
-    );
-    // Paths keep both ends while the budget covers the tail, otherwise the
-    // row truncates at the right edge.
-    assert_eq!(abbreviate_tool_argument("edit", path, 14), "…transcript.rs");
-    assert_eq!(abbreviate_tool_argument("read", path, 43), path);
-    // A `running` suffix costs two columns, and the argument fills exactly
-    // what the row leaves over rather than wrapping onto a second line.
-    let bash_budget = header_argument_width("bash", tool_header_content_width(80) - 5 - 2);
-    assert_eq!(bash_budget, 66);
-    let abbreviated = abbreviate_tool_argument("bash", &long_command, bash_budget);
-    assert_eq!(UnicodeWidthStr::width(abbreviated.as_str()), bash_budget);
-    assert!(abbreviated.ends_with('…'));
+    assert_eq!(header_argument_width("read", 33), 28);
+    // Every argument cuts at the right edge; no argument is read as a path.
+    let mut state = read_tool_state(path, ToolStatus::Completed, "result");
+    let id = read_tool_id(&state);
+    state.tools.get_mut(&id).unwrap().presentation = builtin_presentation("read", Some(path));
+    let title = tool_header_title(&state.tools[&id], 33);
+    assert_eq!(title, "read src/very/deeply/nested/modu…");
+    assert_eq!(UnicodeWidthStr::width(title.as_str()), 33);
     // On-wire arguments may carry controls; the header flattens them.
+    state.tools.get_mut(&id).unwrap().presentation =
+        builtin_presentation("bash", Some("printf \u{1b}[31mred\u{0}\nsecond\tline"));
     assert_eq!(
-        abbreviate_tool_argument("bash", "printf hello\n  && true", 80),
-        "printf hello && true"
-    );
-    assert_eq!(
-        abbreviate_tool_argument("bash", "printf \u{1b}[31mred\u{0}\nsecond\tline", 80),
-        "printf [31mred second line"
+        tool_header_title(&state.tools[&id], 80),
+        "bash printf [31mred second line"
     );
     for name in [
         "bash",
@@ -110,24 +74,10 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
         let mut state = read_tool_state(path, ToolStatus::Completed, "result");
         let id = read_tool_id(&state);
         let tool = state.tools.get_mut(&id).unwrap();
-        tool.presentation = presentation(name, Some(&argument));
+        tool.presentation = builtin_presentation(name, Some(&argument));
         tool.arguments = serde_json::json!({"command": argument, "filePath": path}).to_string();
         let expanded = HashSet::from([BlockId::Tool(id)]);
         for width in [8, 12, 20, 40, 80, 160] {
-            // A zero budget means the label alone fills the row and the
-            // header drops the argument entirely; `.max(1)` keeps the
-            // abbreviation helper comparable here.
-            let budget = header_argument_width(
-                name,
-                tool_header_content_width(width)
-                    - UnicodeWidthStr::width(
-                        tool_header_chrome(tool_icon(name), '▸', width).as_str(),
-                    ),
-            )
-            .max(1);
-            let abbreviated = abbreviate_tool_argument(name, &argument, budget);
-            assert!(UnicodeWidthStr::width(abbreviated.as_str()) <= budget);
-            assert!(!abbreviated.contains(['\n', '\r', '\t']));
             for blocks in [None, Some(&expanded)] {
                 let layout = transcript_layout_with(
                     &state,
@@ -174,20 +124,19 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
         }
     }
     let unicode = "src/目录/文件/文件👩‍💻.rs";
-    for width in [8, 16, 24, 40] {
-        let budget = header_argument_width("read", tool_header_content_width(width) - 5).max(1);
-        let short = abbreviate_tool_argument("read", unicode, budget);
-        assert!(UnicodeWidthStr::width(short.as_str()) <= budget);
-        assert!(!short.starts_with("…\u{200d}"));
+    state.tools.get_mut(&id).unwrap().presentation = builtin_presentation("read", Some(unicode));
+    for budget in [6, 14, 22, 38] {
+        let short = tool_header_title(&state.tools[&id], budget);
+        assert!(UnicodeWidthStr::width(short.as_str()) <= budget, "{short}");
     }
     let mut plugin = read_tool_state(path, ToolStatus::Completed, "result");
     let id = read_tool_id(&plugin);
     let tool = plugin.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("plugin.tool", Some(path));
+    tool.presentation = builtin_presentation("plugin.tool", Some(path));
     // The plugin header owns the full row: a wide row keeps its compact
     // title, whose label width (not a fixed five-column budget) is spent.
     assert_eq!(tool_header_row(tool, '▸', "", 80).1, tool.compact_title());
-    tool.presentation = presentation("plugin.tool", Some("run\u{1b} echo"));
+    tool.presentation = builtin_presentation("plugin.tool", Some("run\u{1b} echo"));
     assert_eq!(tool_header_row(tool, '▸', "", 40).1, "plugin.tool run echo");
 }
 
@@ -207,7 +156,7 @@ fn builtin_tool_headers_stay_inside_every_width_and_status() {
         let mut state = read_tool_state("src/lib.rs", ToolStatus::Completed, "partial");
         let id = read_tool_id(&state);
         let tool = state.tools.get_mut(&id).unwrap();
-        tool.presentation = presentation(name, Some(argument));
+        tool.presentation = builtin_presentation(name, Some(argument));
         tool.arguments = serde_json::json!({"command": argument}).to_string();
         let expanded = HashSet::from([BlockId::Tool(id)]);
         // `tool_block_lines` fronts a narrow row with its `"[T…] "` role
@@ -286,7 +235,7 @@ fn tool_header_surrenders_suffix_argument_and_label_by_turn_on_narrow_rows() {
     let mut state = read_tool_state("src/lib.rs", ToolStatus::Interrupted, "partial");
     let id = read_tool_id(&state);
     let tool = state.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("bash", Some("printf hello"));
+    tool.presentation = builtin_presentation("bash", Some("printf hello"));
     let header = |width| {
         let layout = tool_layout_at_clock(&state, None, width, 0);
         let region = layout
@@ -330,7 +279,7 @@ fn expanded_read_path_renders_embedded_tabs_as_spaces() {
     let path = "src/my\tfile.rs";
     let mut state = read_tool_state(path, ToolStatus::Completed, "result");
     let id = read_tool_id(&state);
-    state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some(path));
+    state.tools.get_mut(&id).unwrap().presentation = builtin_presentation("read", Some(path));
     let expanded = HashSet::from([BlockId::Tool(id)]);
     let rows = render_to_buffer(
         &transcript_layout_with_level(
@@ -363,7 +312,7 @@ fn builtin_tool_headers_flatten_control_bearing_arguments() {
     let argument = "printf \u{1b}[31mred\u{1b}[0m\nsecond\tline";
     let mut bash = read_tool_state("unused", ToolStatus::Completed, "result");
     let id = read_tool_id(&bash);
-    bash.tools.get_mut(&id).unwrap().presentation = presentation("bash", Some(argument));
+    bash.tools.get_mut(&id).unwrap().presentation = builtin_presentation("bash", Some(argument));
     for blocks in [None, Some(&HashSet::from([BlockId::Tool(id)]))] {
         let rendered = snapshot_lines(&transcript_layout(&bash, blocks, 80).lines);
         assert!(
@@ -374,7 +323,8 @@ fn builtin_tool_headers_flatten_control_bearing_arguments() {
     }
     let mut read = read_tool_state("unused", ToolStatus::Completed, "result");
     let id = read_tool_id(&read);
-    read.tools.get_mut(&id).unwrap().presentation = presentation("read", Some("src/lib\u{1b}.rs"));
+    read.tools.get_mut(&id).unwrap().presentation =
+        builtin_presentation("read", Some("src/lib\u{1b}.rs"));
     let rendered = snapshot_lines(&transcript_layout(&read, None, 80).lines);
     assert!(rendered.contains("📖 ▸ read src/lib .rs"), "{rendered:?}");
     assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
@@ -387,88 +337,79 @@ fn builtin_tool_headers_flatten_control_bearing_arguments() {
 }
 
 #[test]
-fn bash_expanded_command_keeps_its_line_breaks() {
+fn an_argument_code_block_keeps_its_line_breaks() {
     let mut state = read_tool_state("unused", ToolStatus::Completed, "ok\n");
     let id = read_tool_id(&state);
-    let tool = state.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("bash", Some("python3 - <<'PY'"));
-    tool.arguments = serde_json::json!({
-        "command": "python3 - <<'PY'\nimport re\nprint(\"hi\u{1b}\")\nPY\ncat /proc/meminfo"
-    })
-    .to_string();
-    let expanded = HashSet::from([BlockId::Tool(id)]);
-    let layout = transcript_layout_with_level(
-        &state,
-        Some(&expanded),
-        80,
-        &Theme::default(),
-        &PlainHighlighter,
-        crate::state::EventLevel::Warning,
-    );
-    let region = layout
-        .regions
-        .iter()
-        .find(|region| region.id == BlockId::Tool(id))
-        .unwrap();
-    let rows: Vec<String> = layout.lines[region.start_line..region.end_line]
-        .iter()
-        .map(|line| line.to_string().trim_end().to_owned())
-        .collect();
-    // The title band keeps one padding column inside its left edge.
-    assert_eq!(rows[0], "│  💻 ▾ bash python3 - <<'PY'", "{rows:?}");
-    // Each further command line hangs under where the command starts.
-    let column = |row: &str, text: &str| {
-        UnicodeWidthStr::width(&row[..row.find(text).expect("text on row")])
+    let script = "python3 - <<'PY'\nimport re\nprint(\"hi\")\nPY\ncat /proc/meminfo";
+    let set_script = |state: &mut SessionState, script: &str| {
+        let tool = state.tools.get_mut(&id).unwrap();
+        tool.presentation = builtin_presentation("bash", Some("python3 - <<'PY'"));
+        tool.presentation.arguments = vec![cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::DisplayBlock::code(script, Some("sh".into())),
+        )];
     };
-    let start = column(&rows[0], "python3");
-    for (row, text) in [
-        (1, "import re"),
-        // Other control characters still flatten to the replacement character.
-        (2, "print(\"hi\u{fffd}\")"),
-        (3, "PY"),
-        (4, "cat /proc/meminfo"),
-    ] {
-        assert!(rows[row].ends_with(text), "{rows:?}");
-        assert_eq!(column(&rows[row], text), start, "{rows:?}");
+    set_script(&mut state, script);
+    let expanded = HashSet::from([BlockId::Tool(id)]);
+    let rows_of = |state: &SessionState| {
+        let layout = transcript_layout_with_level(
+            state,
+            Some(&expanded),
+            80,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Warning,
+        );
+        let region = *layout
+            .regions
+            .iter()
+            .find(|region| region.id == BlockId::Tool(id))
+            .unwrap();
+        let rows: Vec<String> = layout.lines[region.start_line..region.end_line]
+            .iter()
+            .map(|line| line.to_string().trim_end().to_owned())
+            .collect();
+        (rows, region)
+    };
+    let (rows, region) = rows_of(&state);
+    // The title band keeps one padding column inside its left edge and holds
+    // only the title; the command is the call's argument block below it.
+    assert_eq!(rows[0], "│  💻 ▾ bash python3 - <<'PY'", "{rows:?}");
+    assert_eq!(region.header_lines, Some(1));
+    let label = rows
+        .iter()
+        .position(|row| row == "│  arguments")
+        .expect("arguments label");
+    for (offset, text) in [
+        "python3 - <<'PY'",
+        "import re",
+        "print(\"hi\")",
+        "PY",
+        "cat /proc/meminfo",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(rows[label + 1 + offset], format!("│  {text}"), "{rows:?}");
     }
-    // The whole command is the clickable title block; output follows it
-    // behind a blank padding row.
-    assert_eq!(region.header_lines, Some(5));
-    assert_eq!(rows[5], "│", "{rows:?}");
-    assert_eq!(rows[6], "│  ok", "{rows:?}");
-    let rendered = snapshot_lines(&layout.lines[region.start_line..region.end_line]);
-    assert!(!rendered.contains("<<'PY'\u{fffd}"), "{rendered}");
+    assert_eq!(rows[label + 6], "│", "{rows:?}");
+    assert_eq!(rows[label + 7], "│  ok", "{rows:?}");
 
-    // A long script is elided at the command byte budget, on the last line
-    // shown, and the lines past it are dropped rather than flattened.
+    // A long script stops at the argument budget and counts the rest.
     let script = (0..400)
         .map(|index| format!("echo line {index:03}\n"))
         .collect::<String>();
-    let tool = state.tools.get_mut(&id).unwrap();
-    tool.arguments = serde_json::json!({ "command": script }).to_string();
-    let layout = transcript_layout_with_level(
-        &state,
-        Some(&expanded),
-        80,
-        &Theme::default(),
-        &PlainHighlighter,
-        crate::state::EventLevel::Warning,
-    );
-    let region = layout
-        .regions
-        .iter()
-        .find(|region| region.id == BlockId::Tool(id))
-        .unwrap();
-    let rows: Vec<String> = layout.lines[region.start_line..region.end_line]
-        .iter()
-        .map(|line| line.to_string().trim_end().to_owned())
-        .collect();
+    set_script(&mut state, &script);
+    let (rows, _) = rows_of(&state);
     let command_rows: Vec<&String> = rows.iter().filter(|row| row.contains("echo")).collect();
-    assert!(command_rows.len() > 100, "{}", command_rows.len());
+    assert!(command_rows.len() > 40, "{}", command_rows.len());
     assert!(command_rows.len() < 400, "{}", command_rows.len());
-    assert!(command_rows.last().unwrap().ends_with('…'), "{rows:?}");
-    let rendered = snapshot_lines(&layout.lines[region.start_line..region.end_line]);
-    assert!(!rendered.contains('\u{fffd}'), "{rendered}");
+    assert!(
+        rows.iter().any(|row| row.contains(&format!(
+            "… {} more lines not shown",
+            400 - command_rows.len()
+        ))),
+        "{rows:?}"
+    );
 }
 
 #[test]
@@ -483,7 +424,7 @@ fn expanded_tool_rows_form_a_title_and_output_panel() {
     let id = read_tool_id(&state);
     let tool = state.tools.get_mut(&id).unwrap();
     let command = format!("printf {}", "long-argument ".repeat(8));
-    tool.presentation = presentation("bash", Some(command.trim_end()));
+    tool.presentation = builtin_presentation("bash", Some(command.trim_end()));
     tool.arguments = serde_json::json!({ "command": command.trim_end() }).to_string();
     let expanded = HashSet::from([BlockId::Tool(id)]);
     for theme in [
@@ -604,7 +545,7 @@ fn the_band_covers_tree_shaped_output_and_spares_the_block_gutter() {
     );
     let id = read_tool_id(&state);
     let tool = state.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("bash", Some("tree"));
+    tool.presentation = builtin_presentation("bash", Some("tree"));
     tool.arguments = r#"{"command":"tree"}"#.into();
     let layout = transcript_layout_with(
         &state,
@@ -704,7 +645,7 @@ fn expanded_bash_body_yields_its_hanging_indent_to_wide_graphemes() {
     let mut state = read_tool_state("unused", ToolStatus::Completed, "partial");
     let id = read_tool_id(&state);
     let tool = state.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("bash", Some(command));
+    tool.presentation = builtin_presentation("bash", Some(command));
     tool.arguments = serde_json::json!({"command": command}).to_string();
     let expanded = HashSet::from([BlockId::Tool(id)]);
     let compact = |text: String| -> String {
@@ -847,16 +788,11 @@ fn expanded_bash_body_yields_its_hanging_indent_to_wide_graphemes() {
 }
 
 #[test]
-fn read_rows_render_book_header_and_hide_duplicate_argument_lines() {
-    let mut state = read_tool_state(
-        "src/main.rs",
-        ToolStatus::Completed,
-        &read_detail(&[(1, "fn main() {}")]),
-    );
-    let id = read_tool_id(&state);
-    state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some("src/main.rs"));
+fn excerpt_rows_follow_the_read_header() {
+    let state = excerpt_tool_state("src/main.rs", 1, &["fn main() {}"]);
     let collapsed = transcript_layout(&state, None, 80);
-    assert!(snapshot_lines(&collapsed.lines).contains("📖 ▸ read src/main.rs"));
+    assert!(snapshot_lines(&collapsed.lines).contains("📖 ▸ Read src/main.rs"));
+    let id = read_tool_id(&state);
     let expanded = HashSet::from([BlockId::Tool(id)]);
     let layout = transcript_layout_with_level(
         &state,
@@ -867,25 +803,19 @@ fn read_rows_render_book_header_and_hide_duplicate_argument_lines() {
         crate::state::EventLevel::Warning,
     );
     let text = snapshot_lines(&layout.lines);
-    assert!(text.contains("📖 ▾ read src/main.rs"));
-    assert!(!text.contains("arguments"));
-    assert!(!text.contains("Read file src/main.rs"));
-    assert_eq!(text.matches("src/main.rs").count(), 1);
-    assert!(text.contains("fn main() {}"));
-    assert!(
-        !layout
-            .lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .any(|span| span.content == "> ")
-    );
+    assert!(text.contains("📖 ▾ Read src/main.rs"), "{text}");
+    // The title names the path, so the header does not repeat it.
+    assert!(!text.contains("Read src/main.rs src/main.rs"), "{text}");
+    assert!(!text.contains("arguments"), "{text}");
+    assert!(text.contains("src/main.rs · line 1"), "{text}");
+    assert!(text.contains("1 │ fn main() {}"), "{text}");
     let copied = extract_selection(
         &layout.lines,
         (0, 0),
         (layout.lines.len(), 0),
         &Theme::default(),
     );
-    assert!(copied.contains("📖 ▾ read src/main.rs"));
+    assert!(copied.contains("📖 ▾ Read src/main.rs"));
 }
 
 #[tokio::test]
@@ -898,7 +828,7 @@ async fn bash_header_hover_covers_visible_header_only() {
     let mut state = read_tool_state("unused", ToolStatus::Completed, &"output\n".repeat(40));
     let id = read_tool_id(&state);
     let tool = state.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("bash", Some("printf a-very-long-command"));
+    tool.presentation = builtin_presentation("bash", Some("printf a-very-long-command"));
     tool.arguments = r#"{"command":"printf a-very-long-command"}"#.into();
     app.store.sessions.insert(session, state);
     app.expanded_blocks
@@ -1012,7 +942,7 @@ async fn tool_rows_never_underline_across_themes_and_hover() {
             for name in ["bash", "read", "write", "edit", "plugin.build"] {
                 let state = app.store.sessions.get_mut(&session).unwrap();
                 state.tools.get_mut(&id).unwrap().presentation =
-                    presentation(name, Some("src/main.rs"));
+                    builtin_presentation(name, Some("src/main.rs"));
                 // The fixture changes persisted presentation directly, so rebuild its cache.
                 app.layout_cache = LayoutCache::default();
                 let layout = transcript_layout_with(
@@ -1121,7 +1051,7 @@ fn tabbed_bash_output_expands_to_tab_stops_and_fills_the_band() {
     );
     let id = read_tool_id(&state);
     let tool = state.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("bash", Some("git status"));
+    tool.presentation = builtin_presentation("bash", Some("git status"));
     tool.arguments = r#"{"command":"git status"}"#.into();
     let expanded = HashSet::from([BlockId::Tool(id)]);
     let layout = transcript_layout_with(&state, Some(&expanded), 60, &theme, &PlainHighlighter);
@@ -1153,7 +1083,7 @@ fn every_expanded_tool_paints_a_padded_panel() {
     let path = "src/very/deeply/nested/module/with/a/long/path/transcript.rs";
     let mut state = read_tool_state(path, ToolStatus::Completed, "result");
     let id = read_tool_id(&state);
-    state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some(path));
+    state.tools.get_mut(&id).unwrap().presentation = builtin_presentation("read", Some(path));
     let expanded = HashSet::from([BlockId::Tool(id)]);
     let layout = transcript_layout_with_level(
         &state,
@@ -1215,7 +1145,8 @@ fn collapsed_tool_rows_are_muted_and_only_a_failure_suffix_keeps_its_colour() {
     assert_ne!(muted, theme.tool_success().fg);
     let mut state = read_tool_state("unused", ToolStatus::Completed, "result");
     let id = read_tool_id(&state);
-    state.tools.get_mut(&id).unwrap().presentation = presentation("bash", Some("make test"));
+    state.tools.get_mut(&id).unwrap().presentation =
+        builtin_presentation("bash", Some("make test"));
     for status in [
         ToolStatus::Running,
         ToolStatus::Completed,

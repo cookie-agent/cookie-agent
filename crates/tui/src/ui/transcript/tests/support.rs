@@ -876,6 +876,14 @@ pub(crate) fn tool_started_at(
     )
 }
 
+/// `event`, a `tool_call_started`, with its presentation carrying `hint`.
+pub(crate) fn hinted(mut event: StoredEvent, hint: &str) -> StoredEvent {
+    if let EventPayload::ToolCallStarted { start } = &mut event.payload {
+        start.presentation.hint = Some(cookie_agent_protocol::ToolHint::new(hint).expect("hint"));
+    }
+    event
+}
+
 pub(crate) fn tool_started(
     session_id: SessionId,
     seq: u64,
@@ -2435,38 +2443,127 @@ pub(crate) async fn wait_for_method(recorded: &Arc<Mutex<Vec<Value>>>, method: &
     assert_eq!(recorded_method_count(recorded, method), count, "{method}");
 }
 
-pub(crate) fn read_tool_state(path: &str, status: ToolStatus, detail: &str) -> SessionState {
+/// One call titled `read` whose result shows `detail` as text. `_path` is
+/// what a read would name; the call's rows never depend on it.
+pub(crate) fn read_tool_state(_path: &str, status: ToolStatus, detail: &str) -> SessionState {
+    display_tool_state(
+        presentation("read", None),
+        status,
+        if detail.is_empty() {
+            Vec::new()
+        } else {
+            vec![cookie_agent_protocol::DisplayBlock::text(detail)]
+        },
+    )
+}
+
+/// One call with `presentation`, in `status`, whose result (or, while it
+/// runs, live display) is `display`.
+pub(crate) fn display_tool_state(
+    presentation: cookie_agent_protocol::ToolPresentation,
+    status: ToolStatus,
+    display: Vec<cookie_agent_protocol::DisplayBlock>,
+) -> SessionState {
     let call_id = ToolCallId::new_v7();
     let mut state = assistant_state(vec![AssistantChild::Tool { call_id }]);
-    state.tools.insert(
-        call_id,
-        ToolCallState {
-            backgroundable: false,
-            backgrounded: false,
-            id: call_id,
-            owner: owner(1, "call-1"),
-            presentation: presentation("read", None),
-            arguments: format!(r#"{{"path": "{path}"}}"#),
-            status,
-            detail: detail.into(),
-            operation_fingerprint: operation_fingerprint(),
-            has_output_chunks: false,
-            live_display: Default::default(),
-            revision: 0,
-        },
-    );
+    state
+        .tools
+        .insert(call_id, tool_state(call_id, presentation, status, display));
     state
 }
 
-pub(crate) fn read_detail(rows: &[(usize, &str)]) -> String {
-    let mut detail =
-        "Read file src/main.rs\n<path>src/main.rs</path>\n<type>file</type>\n<content>\n"
-            .to_owned();
-    for (number, text) in rows {
-        detail.push_str(&format!("{number}: {text}\n"));
+/// A call with `presentation`, in `status`, showing `display`.
+pub(crate) fn tool_state(
+    call_id: ToolCallId,
+    presentation: cookie_agent_protocol::ToolPresentation,
+    status: ToolStatus,
+    display: Vec<cookie_agent_protocol::DisplayBlock>,
+) -> ToolCallState {
+    let mut tool = ToolCallState::started(call_id, owner(1, "call-1"), presentation, "{}".into());
+    let display = display
+        .into_iter()
+        .map(cookie_agent_protocol::Open::Known)
+        .collect::<Vec<_>>();
+    if status == ToolStatus::Running {
+        if !display.is_empty() {
+            tool.live_display
+                .admit(cookie_agent_protocol::DisplayDelta::Replace { blocks: display })
+                .expect("live display");
+        }
+    } else {
+        tool.display = display;
     }
-    detail.push_str("</content>\nmetadata: {\"kind\":\"text\"}");
-    detail
+    tool.status = status;
+    tool.revision = 0;
+    tool
+}
+
+/// `presentation` with the hint the built-in tool named `name` sends, so a
+/// fixture reads like that tool's call. The TUI never sees the name's
+/// meaning: only the hint.
+pub(crate) fn builtin_presentation(
+    name: &str,
+    primary: Option<&str>,
+) -> cookie_agent_protocol::ToolPresentation {
+    use cookie_agent_protocol::ToolHint;
+    let hint = match name {
+        "bash" => ToolHint::SHELL,
+        "read" | "read_artifact" => ToolHint::FILE_READ,
+        "write" => ToolHint::FILE_WRITE,
+        "edit" => ToolHint::FILE_EDIT,
+        "webfetch" => ToolHint::FETCH,
+        "delegate_subagent" | "get_subagent_result" => ToolHint::DELEGATE,
+        "send_message" => ToolHint::MESSAGE,
+        "skill" => ToolHint::SKILL,
+        "goal_get" | "goal_update" => ToolHint::GOAL,
+        _ => ToolHint::GENERIC,
+    };
+    hinted_presentation(name, hint, primary)
+}
+
+/// `presentation` with `hint`.
+pub(crate) fn hinted_presentation(
+    title: &str,
+    hint: &str,
+    primary: Option<&str>,
+) -> cookie_agent_protocol::ToolPresentation {
+    base_presentation(
+        cookie_agent_protocol::PreparedPresentation::new(
+            SafeDisplayText::new(title).expect("presentation title"),
+            primary.map(|argument| BoundedDisplayText::new(argument).expect("primary argument")),
+        )
+        .with_hint(hint),
+    )
+}
+
+/// A `file_excerpt` of `path` whose `lines` start at `start_line`.
+pub(crate) fn excerpt(
+    path: &str,
+    start_line: u64,
+    lines: &[&str],
+) -> cookie_agent_protocol::DisplayBlock {
+    cookie_agent_protocol::DisplayBlock::FileExcerpt {
+        path: path.into(),
+        language: None,
+        start_line,
+        lines: lines.iter().map(|line| (*line).to_owned()).collect(),
+        total_lines: None,
+        omitted_lines: None,
+        full: None,
+    }
+}
+
+/// One finished read of `path` showing `lines` from line `start_line`.
+pub(crate) fn excerpt_tool_state(path: &str, start_line: u64, lines: &[&str]) -> SessionState {
+    display_tool_state(
+        hinted_presentation(
+            &format!("Read {path}"),
+            cookie_agent_protocol::ToolHint::FILE_READ,
+            Some(path),
+        ),
+        ToolStatus::Completed,
+        vec![excerpt(path, start_line, lines)],
+    )
 }
 
 pub(crate) fn expanded_read_layout(state: &SessionState, theme: &Theme) -> Vec<Line<'static>> {
@@ -2612,16 +2709,19 @@ pub(crate) fn parallel_tools_state() -> (StateStore, SessionId, ToolCallId, Tool
         ),
         // Out-of-order: call-b starts first and completes before call-a
         // even starts.
-        tool_started_at(
-            session,
-            5,
-            run,
-            second,
-            5,
-            "call-b",
-            3,
-            "read",
-            Some("src/lib.rs"),
+        hinted(
+            tool_started_at(
+                session,
+                5,
+                run,
+                second,
+                5,
+                "call-b",
+                3,
+                "read",
+                Some("src/lib.rs"),
+            ),
+            cookie_agent_protocol::ToolHint::FILE_READ,
         ),
         tool_terminated(
             session,
@@ -2632,16 +2732,19 @@ pub(crate) fn parallel_tools_state() -> (StateStore, SessionId, ToolCallId, Tool
             "call-b",
             cookie_agent_protocol::ToolTerminationOutcome::Completed,
         ),
-        tool_started_at(
-            session,
-            7,
-            run,
-            first,
-            5,
-            "call-a",
-            1,
-            "bash",
-            Some("sleep 2"),
+        hinted(
+            tool_started_at(
+                session,
+                7,
+                run,
+                first,
+                5,
+                "call-a",
+                1,
+                "bash",
+                Some("sleep 2"),
+            ),
+            cookie_agent_protocol::ToolHint::SHELL,
         ),
     ];
     for event in events {
