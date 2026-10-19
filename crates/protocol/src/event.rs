@@ -591,12 +591,11 @@ impl<'de> Deserialize<'de> for ToolEmittedMessage {
 }
 /// A tool result as sessions store it and clients receive it. `display` is
 /// what clients show, a list of display blocks sharing one 64 KiB budget;
-/// empty means nothing to show. When it is a single `text` block whose text
-/// occurs verbatim in `output`, which is the common case (a single-output
-/// tool shows its output, a shell its only stream), it is written as the byte
-/// range `display_span` into `output` instead of a second copy.
+/// empty means nothing to show. A session log stores the display's text that
+/// repeats `output` as byte ranges of `output` instead of a second copy
+/// (`crate::stored_display`); decoding expands them, so nothing outside the
+/// engine meets them.
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
-#[schemars(transform = display_span_schema)]
 pub struct PersistedToolResult {
     pub title: SafeDisplayText,
     pub output: String,
@@ -696,26 +695,6 @@ impl PersistedToolResult {
         Ok(())
     }
 }
-/// Documents the `display_span` field the serializer writes in place of
-/// `display`, which is then absent.
-fn display_span_schema(schema: &mut Schema) {
-    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
-        required.retain(|field| field != "display");
-    }
-    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        properties.insert(
-            "display_span".into(),
-            serde_json::json!({
-                "description": "Byte range [start, end) of `output` that is the text of the display's only block, a `text` block. Present instead of `display` when that text occurs verbatim in `output`.",
-                "type": "array",
-                "items": {"type": "integer", "format": "uint64", "minimum": 0},
-                "minItems": 2,
-                "maxItems": 2,
-            }),
-        );
-    }
-}
-
 impl Serialize for PersistedToolResult {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -726,7 +705,7 @@ impl Serialize for PersistedToolResult {
             title: &'a SafeDisplayText,
             output: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
-            display: Option<&'a [Open<DisplayBlock>]>,
+            display: Option<DisplayWire<'a>>,
             #[serde(skip_serializing_if = "Option::is_none")]
             display_span: Option<[usize; 2]>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -738,22 +717,37 @@ impl Serialize for PersistedToolResult {
             #[serde(skip_serializing_if = "<[_]>::is_empty")]
             additional_messages: &'a [ToolEmittedMessage],
         }
+        #[derive(Serialize)]
+        #[serde(untagged)]
+        enum DisplayWire<'a> {
+            Blocks(&'a [Open<DisplayBlock>]),
+            Stored(Vec<Value>),
+        }
+        let stored = storage_encoding();
         let display_span = match self.display.as_slice() {
             [
                 Open::Known(DisplayBlock::Text {
                     text,
                     omitted_lines: None,
                 }),
-            ] if !text.is_empty() => self
+            ] if stored && !text.is_empty() => self
                 .output
                 .find(text.as_str())
                 .map(|start| [start, start + text.len()]),
             _ => None,
         };
+        let display = match display_span {
+            Some(_) => None,
+            None if stored => Some(DisplayWire::Stored(
+                crate::stored_display::encode(&self.output, &self.display)
+                    .map_err(serde::ser::Error::custom)?,
+            )),
+            None => Some(DisplayWire::Blocks(&self.display)),
+        };
         Wire {
             title: &self.title,
             output: &self.output,
-            display: display_span.is_none().then_some(self.display.as_slice()),
+            display,
             display_span,
             background: self.background.as_ref(),
             retained_output: self.retained_output.as_ref(),
@@ -775,9 +769,9 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             title: SafeDisplayText,
             output: String,
             #[serde(default)]
-            display: Option<Vec<Open<DisplayBlock>>>,
+            display: Option<Vec<Value>>,
             #[serde(default)]
-            display_span: Option<[usize; 2]>,
+            display_span: Option<Value>,
             #[serde(default)]
             background: Option<ToolBackground>,
             #[serde(default)]
@@ -789,11 +783,17 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
         }
         let w = Wire::deserialize(d)?;
         let display = match (w.display, w.display_span) {
-            (Some(display), None) => display,
-            (None, Some([start, end])) => vec![Open::Known(DisplayBlock::text(
-                w.output.get(start..end).ok_or_else(|| {
-                    serde::de::Error::custom("display_span is not a range of output")
-                })?,
+            (Some(mut display), None) => {
+                crate::stored_display::decode(&w.output, &mut display)
+                    .map_err(serde::de::Error::custom)?;
+                display
+                    .into_iter()
+                    .map(serde_json::from_value)
+                    .collect::<Result<Vec<Open<DisplayBlock>>, _>>()
+                    .map_err(serde::de::Error::custom)?
+            }
+            (None, Some(span)) => vec![Open::Known(DisplayBlock::text(
+                crate::stored_display::slice(&w.output, &span).map_err(serde::de::Error::custom)?,
             ))],
             (None, None) => return Err(serde::de::Error::missing_field("display")),
             (Some(_), Some(_)) => {
@@ -1238,6 +1238,32 @@ pub fn read_stored_history<T>(read: impl FnOnce() -> T) -> T {
     }
     let _restore = Restore(READING_HISTORY.with(|reading| reading.replace(true)));
     read()
+}
+
+thread_local! {
+    static WRITING_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `write` as the writer of a session log: values serialize in the
+/// log's storage encoding, which only the log holds. A tool result stores the
+/// display text that repeats its output as ranges of it
+/// (`docs/site/specs/compatibility-v1.md` section 12.3); every other value
+/// serializes as it does anywhere else, and decoding reads either form.
+pub fn write_stored_history<T>(write: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WRITING_HISTORY.with(|writing| writing.set(self.0));
+        }
+    }
+    let _restore = Restore(WRITING_HISTORY.with(|writing| writing.replace(true)));
+    write()
+}
+
+/// Whether values serialize in the session log's storage encoding: only
+/// inside [`write_stored_history`].
+pub(crate) fn storage_encoding() -> bool {
+    WRITING_HISTORY.with(std::cell::Cell::get)
 }
 
 /// Whether the writer-only size caps apply: everywhere but inside

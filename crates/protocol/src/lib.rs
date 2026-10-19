@@ -199,6 +199,7 @@ mod session;
 mod session_model;
 mod setup_value;
 mod stop;
+mod stored_display;
 pub mod strict;
 mod uploads;
 

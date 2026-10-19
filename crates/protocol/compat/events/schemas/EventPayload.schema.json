@@ -3269,7 +3269,7 @@
       ]
     },
     "PersistedToolResult": {
-      "description": "A tool result as sessions store it and clients receive it. `display` is\nwhat clients show, a list of display blocks sharing one 64 KiB budget;\nempty means nothing to show. When it is a single `text` block whose text\noccurs verbatim in `output`, which is the common case (a single-output\ntool shows its output, a shell its only stream), it is written as the byte\nrange `display_span` into `output` instead of a second copy.",
+      "description": "A tool result as sessions store it and clients receive it. `display` is\nwhat clients show, a list of display blocks sharing one 64 KiB budget;\nempty means nothing to show. A session log stores the display's text that\nrepeats `output` as byte ranges of `output` instead of a second copy\n(`crate::stored_display`); decoding expands them, so nothing outside the\nengine meets them.",
       "properties": {
         "additional_messages": {
           "description": "Emitted model-history messages. Their files share the 256-file limit with attachments.",
@@ -3304,17 +3304,6 @@
           },
           "type": "array"
         },
-        "display_span": {
-          "description": "Byte range [start, end) of `output` that is the text of the display's only block, a `text` block. Present instead of `display` when that text occurs verbatim in `output`.",
-          "items": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxItems": 2,
-          "minItems": 2,
-          "type": "array"
-        },
         "metadata": true,
         "output": {
           "type": "string"
@@ -3340,6 +3329,7 @@
       "required": [
         "title",
         "output",
+        "display",
         "metadata",
         "attachments"
       ],

@@ -871,10 +871,11 @@ impl EventLog {
             path: self.path.clone(),
             message: error.to_string(),
         })?;
-        let mut record = serde_json::to_vec(&event).map_err(|source| EventLogError::Json {
-            path: self.path.clone(),
-            source,
-        })?;
+        let mut record = cookie_agent_protocol::write_stored_history(|| serde_json::to_vec(&event))
+            .map_err(|source| EventLogError::Json {
+                path: self.path.clone(),
+                source,
+            })?;
         record.push(b'\n');
         let mut validation = self
             .validation
@@ -3890,7 +3891,10 @@ fn write_event_jsonl_in_place(
             events.next_if(|event| event.seq == seq);
         } else {
             let event = events.next().expect("peeked event");
-            serde_json::to_writer(&mut record, event.as_ref()).map_err(json_error)?;
+            cookie_agent_protocol::write_stored_history(|| {
+                serde_json::to_writer(&mut record, event.as_ref())
+            })
+            .map_err(json_error)?;
         }
         record.push(b'\n');
         writer.write_all(&record).map_err(io_error)?;

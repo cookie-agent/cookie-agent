@@ -782,9 +782,9 @@ Tool output that fits its preview is stored only in the result's output:
 `RetainedToolStream.reference` and `sha256` are absent for such a stream, and
 `RetainedToolOutput.reference` is absent when no stream needed an artifact.
 `RetainedToolStream.dropped_bytes` is present when output past the 128 MiB
-capture limit was not retained. When a result's `display` is one text block
-that occurs verbatim in `output`, `PersistedToolResult` carries
-`display_span`, the `[start, end)` byte range of `output`, in its place.
+capture limit was not retained. A result always carries its whole
+`display`: the ranges of `output` a session log stores display text as
+([Events](events.md)) never reach clients.
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

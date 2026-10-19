@@ -723,7 +723,8 @@ fn tool_result_display_found_in_output_is_stored_as_a_span() {
             text("merged"),
             json!({"display": [{"type": "text", "text": "merged"}]}),
         ),
-        // Only a whole single text block is a span.
+        // Only a whole single text block is a span; short texts in a list
+        // stay inline.
         (
             "same text",
             cut.clone(),
@@ -743,13 +744,133 @@ fn tool_result_display_found_in_output_is_stored_as_a_span() {
     ];
     for (output, display, expected) in cases {
         let result = display_result(output, display);
-        let value = serde_json::to_value(&result).unwrap();
+        let value = write_stored_history(|| serde_json::to_value(&result)).unwrap();
         for field in ["display", "display_span"] {
             assert_eq!(value.get(field), expected.get(field), "{output:?} {field}");
         }
         assert_eq!(
             serde_json::from_value::<PersistedToolResult>(value).unwrap(),
             result
+        );
+        // Anywhere but the session log, the display is whole.
+        let wire = serde_json::to_value(&result).unwrap();
+        assert!(wire.get("display_span").is_none());
+        assert_eq!(
+            wire["display"],
+            serde_json::to_value(&result.display).unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_stored_display_keeps_text_that_repeats_the_output_as_ranges_of_it() {
+    let stdout =
+        "compiling cookie-agent v0.5.0 (crates/agent)\nfinished in 3.2 seconds, all good\n";
+    let first = stdout.find('\n').unwrap() + 1;
+    let stderr = "warning: \u{1b}[33munused variable\u{1b}[0m in two places\n";
+    let lines = [
+        "fn main() {",
+        "    println!(\"a line long enough to be a span\");",
+        "}",
+    ];
+    let output = format!(
+        "[stdout]\n{stdout}\n[stderr]\n{stderr}\n41: {}\n42: {}\n43: {}\n",
+        lines[0], lines[1], lines[2]
+    );
+    let summary = "a summary that the output repeats verbatim";
+    let output = format!("{output}{summary}");
+    let segment = |stream, text: &str| TerminalSegment {
+        stream,
+        text: text.into(),
+    };
+    let display = vec![
+        Open::Known(DisplayBlock::Terminal {
+            segments: vec![
+                segment(TerminalStream::Stdout, &stdout[..first]),
+                segment(TerminalStream::Stderr, stderr),
+                segment(TerminalStream::Stdout, &stdout[first..]),
+                segment(TerminalStream::Stdout, "short"),
+                segment(TerminalStream::Stdout, "a segment the output does not hold"),
+            ],
+            exit_code: Some(0),
+            omitted_lines: None,
+            full: None,
+        }),
+        Open::Known(DisplayBlock::FileExcerpt {
+            path: "src/main.rs".into(),
+            language: Some("rust".into()),
+            start_line: 41,
+            lines: lines.map(str::to_owned).to_vec(),
+            total_lines: Some(43),
+            omitted_lines: None,
+            full: None,
+        }),
+        // Numbered from another line, the lines are not in the output.
+        Open::Known(DisplayBlock::FileExcerpt {
+            path: "src/main.rs".into(),
+            language: None,
+            start_line: 40,
+            lines: lines.map(str::to_owned).to_vec(),
+            total_lines: None,
+            omitted_lines: None,
+            full: None,
+        }),
+        Open::Known(DisplayBlock::markdown(summary)),
+        Open::Known(DisplayBlock::code(summary, Some("text".into()))),
+        Open::Unknown {
+            tag: "chart".into(),
+            raw: json!({"type": "chart", "text": summary}),
+        },
+    ];
+    let result = display_result(&output, display);
+    let stored = write_stored_history(|| serde_json::to_value(&result)).unwrap();
+    let span = |text: &str| {
+        let start = output.find(text).unwrap();
+        json!([start, start + text.len()])
+    };
+    let blocks = &stored["display"];
+    let segments = &blocks[0]["segments"];
+    assert_eq!(
+        segments[0],
+        json!({"stream": "stdout", "text_span": span(&stdout[..first])})
+    );
+    assert_eq!(
+        segments[1],
+        json!({"stream": "stderr", "text_span": span(stderr)})
+    );
+    let rest = output.find(&stdout[first..]).unwrap();
+    assert_eq!(
+        segments[2],
+        json!({"stream": "stdout", "text_span": [rest, rest + stdout.len() - first]})
+    );
+    assert_eq!(segments[3]["text"], "short");
+    assert_eq!(segments[4]["text"], "a segment the output does not hold");
+    assert_eq!(blocks[0]["exit_code"], 0);
+    let numbered = format!("41: {}\n42: {}\n43: {}", lines[0], lines[1], lines[2]);
+    assert_eq!(blocks[1]["lines_span"], span(&numbered));
+    assert!(blocks[1].get("lines").is_none());
+    assert!(blocks[2].get("lines_span").is_none());
+    assert_eq!(blocks[3]["text_span"], span(summary));
+    assert_eq!(blocks[4]["text_span"], span(summary));
+    assert_eq!(blocks[4]["language"], "text");
+    assert_eq!(blocks[5], json!({"type": "chart", "text": summary}));
+    assert_eq!(
+        serde_json::from_value::<PersistedToolResult>(stored.clone()).unwrap(),
+        result
+    );
+
+    for (path, member, broken) in [
+        ("/display/0/segments/0", "text_span", json!([0, 100_000])),
+        ("/display/0/segments/1", "text", json!("both")),
+        ("/display/1", "lines_span", span(summary)),
+        ("/display/1", "start_line", json!(40)),
+        ("/display/3", "text_span", json!([1])),
+    ] {
+        let mut stored = stored.clone();
+        stored.pointer_mut(path).unwrap()[member] = broken;
+        assert!(
+            serde_json::from_value::<PersistedToolResult>(stored).is_err(),
+            "{path} {member}"
         );
     }
 }

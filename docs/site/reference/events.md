@@ -588,12 +588,24 @@ bounded and never reconstructs display by merging authoritative streams.
 A result's `display` is a list of display blocks (see the [compatibility
 spec](../specs/compatibility-v1.md#121-display-blocks)), sanitized by the
 daemon and fit to 64 KiB serialized; blocks of a kind the daemon does not know
-are dropped. An empty list shows nothing. Today every tool's display is one
-`text` block. When the display is a single `text` block whose text occurs
-verbatim in the result `output` (a single-output tool's whole output, or a
-shell's only stream), the result carries `display_span`, a `[start, end)`
-byte range of `output`, instead of `display`; decoding restores the block
-from it.
+are dropped. An empty list shows nothing.
+
+`events.jsonl` stores display text that repeats the result's `output` as
+`[start, end)` byte ranges of `output` instead of a second copy, and the
+daemon expands them when it reads the log, so clients and plugins always
+receive whole blocks:
+
+- a display that is a single whole `text` block found in `output` (a
+  single-output tool's whole output) is stored as the result's
+  `display_span` in place of `display`;
+- otherwise a `text`, `markdown`, or `code` block's `text`, and a `terminal`
+  segment's `text` (a shell's streams), may be stored as `text_span`, and a
+  `file_excerpt`'s `lines` as `lines_span`: a range of `output` holding the
+  lines one per line, each after its file line number and `: `, as `read`
+  numbers them.
+
+The writer uses a range only when expanding it gives back the same text, and
+never inside a block of a kind it does not know.
 
 The result a call commits when it moves to the background carries
 `background { state, by, job? }`: `state` is `job` (the call runs as
