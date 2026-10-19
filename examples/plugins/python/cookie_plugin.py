@@ -18,9 +18,8 @@ import json
 import sys
 
 # The plugin protocol version this module speaks. A daemon is compatible when
-# its major is the same and, before the protocol freezes at 1.0.0, its minor
-# is too.
-PROTOCOL_VERSION = "0.5.0"
+# its major is the same; the two use what the lower minor includes.
+PROTOCOL_VERSION = "1.0.0"
 
 # JSON-RPC error codes the protocol uses (docs/site/specs/compatibility-v1.md
 # section 6).
@@ -71,12 +70,10 @@ def _version(text):
 
 
 def compatible(ours, theirs):
-    """Whether two protocol versions can talk: the same major and, while the
-    major is 0, the same minor. The patch never matters."""
+    """Whether two protocol versions can talk: the same major. The minor
+    and the patch never refuse a connection."""
     ours, theirs = _version(ours), _version(theirs)
-    if ours is None or theirs is None or ours[0] != theirs[0]:
-        return False
-    return ours[0] > 0 or ours[1] == theirs[1]
+    return ours is not None and theirs is not None and ours[0] == theirs[0]
 
 
 class ToolCall:

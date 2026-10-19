@@ -14,19 +14,18 @@ such as its tool list, is information though it goes to the daemon), and
 results and the listed information roots are information. A type reached in
 both roles is checked under both, so the stricter rule wins.
 
-Pre-freeze mode: while a surface's version major is 0 (in the baseline and
-the generated set), the baseline must
-equal the generated set exactly (regenerate it with
-`update-compat-baseline.sh`), and rule violations are printed but do not
-fail. From major 1 every rule is enforced: the version must carry at least
-the bump the changes require, and `additionalProperties: false` on an
-information type fails outright.
+Every rule is enforced: the version must carry at least the bump the changes
+require against the baseline's `version`, `additionalProperties: false` on an
+information type fails outright, and a new event tag waits for the update.
+The protocols froze at 1.0.0; a surface at 0.x is a build from before the
+freeze, whose version cannot go up to a baseline at 1.x.
 
 Usage:
   check-compat.py --baseline DIR --generated DIR [--update] [--verbose]
 
-`--update` replaces the baseline with the generated set after the checks,
-refusing an insufficient bump from major 1.
+`--update` replaces each surface's baseline directory with the generated one
+after the checks, refusing an insufficient bump. It touches nothing else in
+DIR, such as the frozen corpora in `corpus/`.
 """
 
 import argparse
@@ -440,50 +439,11 @@ def version_text(version):
     return ".".join(str(part) for part in version)
 
 
-def identical(old, new):
-    return (
-        old["version"] == new["version"]
-        and old["methods"] == new["methods"]
-        and old["schemas"] == new["schemas"]
-    )
-
-
-def differences(old, new):
-    lines = []
-    if old["version"] != new["version"]:
-        lines.append(f"version {version_text(old['version'])} -> {version_text(new['version'])}")
-    if old["methods"] != new["methods"]:
-        lines.append("methods.json differs")
-    for root in sorted(old["schemas"].keys() | new["schemas"].keys()):
-        if old["schemas"].get(root) != new["schemas"].get(root):
-            state = (
-                "added"
-                if root not in old["schemas"]
-                else "removed" if root not in new["schemas"] else "changed"
-            )
-            lines.append(f"schemas/{root}.schema.json {state}")
-    return lines
-
-
 def evaluate(name, old, new):
-    """The outcome of one surface's check: `errors` fail it; `stale` (a
-    pre-freeze baseline that differs) fails it unless it is being updated."""
-    outcome = {"errors": [], "stale": [], "notes": [], "findings": compare_surface(name, old, new)}
+    """The outcome of one surface's check: `errors` fail it; `stale` (new
+    event tags not yet recorded) fails it unless it is being updated."""
+    outcome = {"errors": [], "stale": [], "findings": compare_surface(name, old, new)}
     findings = outcome["findings"]
-    if new["version"][0] == 0 and old["version"][0] == 0:
-        if not identical(old, new):
-            outcome["stale"].append(
-                f"{name}: the baseline is not current; run crates/protocol/scripts/update-compat-baseline.sh"
-            )
-            outcome["stale"].extend(f"  {line}" for line in differences(old, new))
-        if findings:
-            rejected = sum(1 for finding in findings if finding.rejected)
-            outcome["notes"].append(
-                f"{name}: pre-freeze ({version_text(new['version'])}), rules not enforced: "
-                f"{rejected} information types reject unknown fields, "
-                f"{len(findings) - rejected} other findings"
-            )
-        return outcome
     errors = outcome["errors"]
     errors.extend(f"{name}: {finding}" for finding in findings if finding.rejected)
     level = required_level(findings)
@@ -537,8 +497,6 @@ def run(baseline_root, generated_root, update=False, verbose=False, out=sys.stdo
         outcome = evaluate(name, old, new)
         # The update itself makes a stale baseline current.
         errors = outcome["errors"] + ([] if update else outcome["stale"])
-        for line in outcome["notes"]:
-            print(line, file=out)
         if verbose:
             for finding in outcome["findings"]:
                 print(f"  {finding}", file=out)

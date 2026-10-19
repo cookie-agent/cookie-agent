@@ -1,10 +1,49 @@
 # Client Protocol Changelog
 
 The client protocol's version is `MAJOR.MINOR.PATCH`
-(`cookie_agent_protocol::CLIENT_PROTOCOL_VERSION`). Before the 1.0 freeze
-every minor version may break the wire; from 1.0 a minor only adds and a
-major breaks (see the [compatibility spec](../specs/compatibility-v1.md)
-section 3).
+(`cookie_agent_protocol::CLIENT_PROTOCOL_VERSION`). From 1.0.0 a minor only
+adds and a major breaks; before it, every minor could break the wire (see the
+[compatibility spec](../specs/compatibility-v1.md) section 3).
+
+## 1.0.0
+
+The client protocol is frozen: every later 1.x version reads and is read by
+this one. A `0.x` build never interoperates with a 1.x one: the handshake
+refuses another major with `-32002` `unsupported_protocol`, so a client and a
+daemon from before the freeze must be upgraded together. The plugin and
+runtime protocols froze at `1.0.0` too, and session history is history
+format 1.
+
+What 1.x keeps:
+
+- **Versions.** The handshake carries `"MAJOR.MINOR.PATCH"` strings and
+  connects equal majors; each side sends a method, a member, or a display
+  block kind only when the other's minor includes it, and the patch never
+  matters.
+- **Information is tolerant, commands are strict.** Results, notifications,
+  events, and the JSON-RPC envelope ignore members a reader does not know,
+  and their enums are open, read as a documented fallback or as `unknown`;
+  an event a client cannot read arrives as an unknown event, and a
+  notification that does not decode fails no call. Params refuse an unknown
+  member (`unknown_field`) or value (`unknown_variant`) with its JSON path.
+- **Errors.** Every application error is `-32000` with a registry `data.code`,
+  a readable `message`, an optional `hint`, and `detail` on request (see
+  [Errors](errors.md)); clients branch only on `data.code`.
+- **User content and media.** Inputs are `content`: text and file parts
+  naming artifacts uploaded with `artifact.upload.*`, admitted against the
+  `input_media` each model of the catalog view advertises, and read back with
+  `artifact.read`.
+- **Tool display.** Tool calls carry presentation v2 (title, hint, tool
+  identity, argument and preview blocks), progress display deltas, and result
+  display blocks of twelve kinds with a canonical text rendering; a connection
+  receives only the kinds its version includes. A result always carries its
+  whole `display`.
+- **The catalog view.** `runtime.snapshot.get` and `runtime.changed` carry a
+  `ModelCatalogView` with one opaque revision.
+
+Changed since 0.52.0: a tool result's `display` is always whole and
+required; `display_span` belonged to the session log's storage encoding and
+no longer reaches clients.
 
 ## 0.52.0
 

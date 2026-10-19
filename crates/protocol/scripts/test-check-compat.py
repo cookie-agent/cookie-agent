@@ -4,11 +4,11 @@
 
 Usage: test-check-compat.py GENERATED_DIR
 
-Each case mutates a copy of the generated compatibility set. The baseline
-and the candidate are stamped `1.x` so that every rule is enforced, and
-`additionalProperties: false` is stripped from both first, since today's
-information types still reject unknown fields. A case passes when the
-checker requires exactly its level, rejects one level less, and accepts it.
+Each case mutates a copy of the generated compatibility set, stamped `1.0.0`.
+`additionalProperties: false` is stripped from both sides first, since
+command types reject unknown fields and the cases close types themselves. A
+case passes when the checker requires exactly its level, rejects one level
+less, and accepts it.
 """
 
 import copy
@@ -296,56 +296,51 @@ def write(root, surfaces):
             (directory / "schemas" / f"{root_name}.schema.json").write_text(checker.json.dumps(document))
 
 
+CORPUS_FILE = pathlib.Path("corpus") / "client" / "1.0.0" / "session.jsonl"
+
+
 def run_cli(baseline, candidate, update=False):
+    """The checker's exit code, the baselines after it ran, and whether the
+    frozen corpus beside them is untouched."""
     with tempfile.TemporaryDirectory() as temporary:
         base_root = pathlib.Path(temporary) / "baseline"
         new_root = pathlib.Path(temporary) / "generated"
         write(base_root, baseline)
         write(new_root, candidate)
+        corpus = base_root / CORPUS_FILE
+        corpus.parent.mkdir(parents=True)
+        corpus.write_text("recorded\n")
         code = checker.run(base_root, new_root, update=update, out=io.StringIO())
         after = {name: checker.load_surface(base_root, name) for name in checker.SURFACES}
-    return code, after
+        kept = corpus.read_text() == "recorded\n"
+    return code, after, kept
 
 
 def version_cases(base):
     failures = []
     candidate = copy.deepcopy(base)
-    candidate["client"]["version"] = (0, 9, 0)
+    # A build from before the freeze is lower than a frozen baseline.
+    candidate["client"]["version"] = (0, 52, 0)
     errors, _ = outcome_errors("client", base["client"], candidate["client"])
     if not any("went down" in error for error in errors):
         failures.append(f"a lower version was accepted: {errors}")
-
-    # Pre-freeze: rule violations are not enforced, but the baseline must be
-    # current.
-    old = copy.deepcopy(base)
-    for surface in old.values():
-        surface["version"] = (0, 4, 0)
-    new = copy.deepcopy(old)
-    remove_method(new)
-    errors, findings = outcome_errors("runtime", old["runtime"], new["runtime"])
-    if checker.required_level(findings) != MAJOR or not errors or not all(
-        "baseline" in error or error.startswith("  ") for error in errors
-    ):
-        failures.append(f"pre-freeze: expected only a stale-baseline error: {errors}")
-    closed = copy.deepcopy(old)
-    close_information(closed)
-    if outcome_errors("runtime", closed["runtime"], copy.deepcopy(closed["runtime"]))[0]:
-        failures.append("pre-freeze: a closed information type failed a current baseline")
 
     # The CLI: the update refuses an insufficient bump and leaves the
     # baseline alone; a sufficient one replaces it.
     insufficient = copy.deepcopy(base)
     remove_method(insufficient)
     insufficient["runtime"]["version"] = bumped(base["runtime"]["version"], MINOR)
-    code, after = run_cli(base, insufficient, update=True)
+    code, after, _ = run_cli(base, insufficient, update=True)
     if code == 0 or after["runtime"]["methods"] != base["runtime"]["methods"]:
         failures.append("update accepted an insufficient bump or changed the baseline")
     sufficient = copy.deepcopy(insufficient)
     sufficient["runtime"]["version"] = bumped(base["runtime"]["version"], MAJOR)
-    code, after = run_cli(base, sufficient, update=True)
+    code, after, kept = run_cli(base, sufficient, update=True)
     if code != 0 or after["runtime"]["methods"] != sufficient["runtime"]["methods"]:
         failures.append("update refused a sufficient bump or did not record it")
-    code, _ = run_cli(base, copy.deepcopy(base))
+    if not kept:
+        failures.append("update changed the frozen corpus")
+    code, _, _ = run_cli(base, copy.deepcopy(base))
     if code != 0:
         failures.append("an unchanged set failed the check")
     return failures

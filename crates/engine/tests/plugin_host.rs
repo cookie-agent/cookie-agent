@@ -265,11 +265,11 @@ async fn plugin_environment_inherits_the_engine_and_adds_configured_values() {
 #[tokio::test]
 async fn a_plugin_of_another_version_fails_with_unsupported_protocol() {
     let daemon = cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION;
-    let next_minor = cookie_agent_protocol::SemVer::new(daemon.major(), daemon.minor() + 1, 0);
     let next_major = cookie_agent_protocol::SemVer::new(daemon.major() + 1, 0, 0);
     for peer in [
-        format!("\"{next_minor}\""),
         format!("\"{next_major}\""),
+        // A build from before the freeze.
+        "\"0.5.0\"".to_owned(),
         // A build from before semver versions.
         "2".to_owned(),
     ] {
@@ -299,15 +299,15 @@ async fn a_plugin_of_another_version_fails_with_unsupported_protocol() {
 }
 
 #[tokio::test]
-async fn a_plugin_of_another_patch_connects_and_unknown_features_are_noted() {
+async fn a_plugin_of_another_minor_connects_and_unknown_features_are_noted() {
     let daemon = cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION;
-    let patch =
-        cookie_agent_protocol::SemVer::new(daemon.major(), daemon.minor(), daemon.patch() + 3);
+    let newer =
+        cookie_agent_protocol::SemVer::new(daemon.major(), daemon.minor() + 1, daemon.patch() + 3);
     let config = plugin_table(
         "fixture",
         &[
             ("FIXTURE_NAME", "fixture".into()),
-            ("FIXTURE_PROTOCOL_VERSION", format!("\"{patch}\"")),
+            ("FIXTURE_PROTOCOL_VERSION", format!("\"{newer}\"")),
             ("FIXTURE_FEATURES", r#"["time_travel"]"#.into()),
             ("FIXTURE_TOOLS", tools("fixture_tool")),
         ],

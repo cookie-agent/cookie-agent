@@ -545,9 +545,9 @@ pub struct DaemonInfo {
 }
 
 impl DaemonInfo {
-    /// The daemon's plugin protocol version. Its major (and, before 1.0,
-    /// its minor) equals [`PLUGIN_PROTOCOL_VERSION`]'s; a plugin uses
-    /// what the lower minor includes.
+    /// The daemon's plugin protocol version. Its major equals
+    /// [`PLUGIN_PROTOCOL_VERSION`]'s; a plugin uses what the lower minor
+    /// includes.
     #[must_use]
     pub const fn protocol_version(&self) -> SemVer {
         self.protocol_version

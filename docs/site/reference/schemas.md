@@ -10,9 +10,9 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 0.52.0 | 0.52.x |
-| Plugin protocol | 0.5.0 | 0.5.x |
-| Runtime protocol | 0.8.0 | 0.8.x |
+| Client protocol | 1.0.0 | 1.x |
+| Plugin protocol | 1.0.0 | 1.x |
+| Runtime protocol | 1.0.0 | 1.x |
 | Session history (events JSONL) | history format 1 | format 1; older formats are converted |
 | Session metadata | unversioned | unversioned current shape |
 | Catalog cache | 2 | 2 |
@@ -22,13 +22,14 @@ emit only their current version and reject unsupported versions.
 
 The three protocols have semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes: the
-client protocol `CLIENT_PROTOCOL_VERSION` (`0.52.0`), the plugin protocol
-`PLUGIN_PROTOCOL_VERSION` (`0.5.0`), and the runtime protocol
-`RUNTIME_PROTOCOL_VERSION` (`0.8.0`), all in `cookie_agent_protocol`. Each
-handshake sends its side's version and accepts a peer of the same major and,
-before `1.0.0`, the same minor; the patch never matters. The versions stay
-`0.x` until the protocols freeze at `1.0.0`. The client protocol's versions
-are listed in its [changelog](protocol-changelog.md).
+client protocol `CLIENT_PROTOCOL_VERSION` (`1.0.0`), the plugin protocol
+`PLUGIN_PROTOCOL_VERSION` (`1.0.0`), and the runtime protocol
+`RUNTIME_PROTOCOL_VERSION` (`1.0.0`), all in `cookie_agent_protocol`. All
+three froze at `1.0.0`. Each handshake sends its side's version and accepts a
+peer of the same major; the two use what the lower minor includes, and the
+patch never matters. No `0.x` build from before the freeze connects to a 1.x
+one. The client protocol's versions are listed in its
+[changelog](protocol-changelog.md).
 
 Session history is versioned apart from the protocols, by the
 `history_format` that `session_created` records (format 1 in this build). It
@@ -90,15 +91,14 @@ every result are information. It walks nested definitions and
 computes the version bump each change requires under the rules of section 7.1
 of the specification; open enums are marked `"x-open": true`.
 
-- **Before the freeze** (a `0.x` version), the baselines must equal the
-  generated set exactly, and rule findings are reported without failing.
-  After any change to a wire type, method, or version constant, run
-  `crates/protocol/scripts/update-compat-baseline.sh` and commit the result.
-- **From `1.0.0`**, every rule is enforced: the version constant must carry at
-  least the required bump against the baseline's `version`, an information
-  type with `additionalProperties: false` fails outright, and new event tags
-  are recorded only through the update script, which refuses an insufficient
-  bump.
+Every rule is enforced: the version constant must carry at least the
+required bump against the baseline's `version`, an information type with
+`additionalProperties: false` fails outright, and new event tags are recorded
+only through the update script. After a change to a wire type, a method, or a
+version constant, run `crates/protocol/scripts/update-compat-baseline.sh`,
+which refuses an insufficient bump, and commit the result. The update
+replaces only the surface directories; the frozen corpora in
+`crates/protocol/compat/corpus/` are never regenerated.
 
 The [Rust API documentation](api.md) describes the public Rust types; the
 [protocol reference](protocol.md) summarizes the active method surface.

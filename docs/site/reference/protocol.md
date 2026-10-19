@@ -1,10 +1,10 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `0.52.0`; the [changelog](protocol-changelog.md) lists what
-each version changed. Until the 1.0 freeze every minor version may break the
-wire, so a client and a daemon connect only when their major and minor
-versions are equal; the patch never matters.
+client protocol `1.0.0`; the [changelog](protocol-changelog.md) lists what
+each version changed. A client and a daemon connect when their majors are
+equal: a minor only adds, so the two use what the lower minor includes, and
+the patch never matters.
 
 ## Handshake and authentication
 
@@ -12,7 +12,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "0.52.0",
+    "protocol_version": "1.0.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -21,14 +21,15 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "0.52.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.0.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
 - **`protocol_version`** is the sender's semver version, a
   `"MAJOR.MINOR.PATCH"` string. The daemon reads it from the raw params before
-  anything else: a client of another major (or, before 1.0, another minor),
-  or a build from before semver versions that sends an integer, is answered
+  anything else: a client of another major (a `0.x` build from before the
+  freeze included), or a build from before semver versions that sends an
+  integer, is answered
   with `-32002` `unsupported_protocol`, whose data names both
   `supported_version` and `peer_version`. A client only sends a method or a
   member the daemon's version includes.

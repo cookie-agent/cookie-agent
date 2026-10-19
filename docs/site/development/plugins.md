@@ -167,19 +167,20 @@ version, its features, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":"0.5.0","name":"issues","version":"1.2.0","features":[],
+  "protocol_version":"1.0.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":["run_*","tool_call_*"],
     "subscribe_bus":false,"publish_bus":false,
     "intercept":[{"hook":"tool_before_call","on_error":"block"}]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is a semver string, currently `0.5.0`
+The protocol version is a semver string, currently `1.0.0`
 (`PLUGIN_PROTOCOL_VERSION`, which the SDK re-exports). Each end reads the
 other's `protocol_version` from the raw JSON before anything else, and refuses
 an incompatible one with `unsupported_protocol` naming both versions: the
-majors must be equal and, until the protocol freezes at `1.0.0`, so must the
-minors. A different name also fails the start. No plugin feature is defined
+majors must be equal, so no `0.x` build from before the freeze connects. A
+minor only adds, so the two ends use what the lower minor includes and the
+patch never matters. A different name also fails the start. No plugin feature is defined
 yet; the daemon ignores one it does not know and shows it in the plugin's
 status. Capabilities are fixed for the connection; `tools` is the runtime
 protocol's `RuntimeTools`. The SDK exposes what the handshake said about the

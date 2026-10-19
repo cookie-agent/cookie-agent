@@ -1331,16 +1331,16 @@ async fn a_runtime_of_any_kind_declares_its_own_permission_actions() {
     assert_eq!(tools[0].permission_name.as_deref(), Some("browse"));
 }
 
-/// A runtime of another version is refused from its reply's version alone,
-/// with both versions named; one of another patch connects.
+/// A runtime of another major is refused from its reply's version alone,
+/// with both versions named; one of another minor or patch connects.
 #[tokio::test]
 async fn a_runtime_of_another_version_is_refused_with_unsupported_protocol() {
     let daemon = cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION;
-    let next_minor = cookie_agent_protocol::SemVer::new(daemon.major(), daemon.minor() + 1, 0);
     let next_major = cookie_agent_protocol::SemVer::new(daemon.major() + 1, 0, 0);
     for (version, named) in [
-        (serde_json::json!(next_minor), next_minor.to_string()),
         (serde_json::json!(next_major), next_major.to_string()),
+        // A build from before the freeze.
+        (serde_json::json!("0.8.0"), "0.8.0".to_owned()),
         (serde_json::json!(6), "6".to_owned()),
     ] {
         // The rest of the reply is a shape this build does not share.
@@ -1355,15 +1355,17 @@ async fn a_runtime_of_another_version_is_refused_with_unsupported_protocol() {
             "{error}"
         );
     }
-    let mut hello = fake_hello();
-    hello["protocol_version"] = serde_json::json!(cookie_agent_protocol::SemVer::new(
-        daemon.major(),
-        daemon.minor(),
-        daemon.patch() + 1
-    ));
-    initialize_fake_with(hello, fake_result(serde_json::json!([])))
-        .await
-        .expect("another patch connects");
+    for (minor, patch) in [(0, 1), (2, 0), (5, 3)] {
+        let mut hello = fake_hello();
+        hello["protocol_version"] = serde_json::json!(cookie_agent_protocol::SemVer::new(
+            daemon.major(),
+            daemon.minor() + minor,
+            daemon.patch() + patch
+        ));
+        initialize_fake_with(hello, fake_result(serde_json::json!([])))
+            .await
+            .expect("another minor or patch connects");
+    }
 }
 
 /// A runtime may declare a tool that needs no permission by leaving out its

@@ -948,11 +948,11 @@ async fn catalog_shape_is_compiled_without_provider_quarantine() {
     assert!(response.get("result").is_some(), "{response}");
 }
 
-/// A client of another major, of another minor before 1.0, or of a build
-/// from before semver versions is refused with `unsupported_protocol`
-/// naming both versions; another patch connects.
+/// A client of another major, of a build from before the freeze, or of a
+/// build from before semver versions is refused with `unsupported_protocol`
+/// naming both versions; another minor or patch of the same major connects.
 #[tokio::test]
-async fn version_skew_is_refused_with_both_versions_and_another_patch_connects() {
+async fn version_skew_is_refused_with_both_versions_and_another_minor_connects() {
     let harness = harness();
     let (mut client, service) = in_process_pair(8);
     let server = Arc::clone(&harness.server);
@@ -968,11 +968,7 @@ async fn version_skew_is_refused_with_both_versions_and_another_patch_connects()
         "instance_id": "0192f3a4-5b6c-7d8e-9f00-112233445566",
     });
     for (id, version, named) in [
-        (
-            1,
-            json!(format!("{}.{}.0", current.major(), current.minor() + 1)),
-            format!("{}.{}.0", current.major(), current.minor() + 1),
-        ),
+        (1, json!("0.52.0"), "0.52.0".to_owned()),
         (
             2,
             json!(format!("{}.{}.0", current.major() + 1, current.minor())),
@@ -1014,7 +1010,7 @@ async fn version_skew_is_refused_with_both_versions_and_another_patch_connects()
         5,
         "handshake",
         json!({
-            "protocol_version": format!("{}.{}.{}", current.major(), current.minor(), current.patch() + 7),
+            "protocol_version": format!("{}.{}.{}", current.major(), current.minor() + 3, current.patch() + 7),
             "client": client_identity,
             "features": ["from_the_future"],
         }),

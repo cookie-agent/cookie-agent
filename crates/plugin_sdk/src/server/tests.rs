@@ -926,12 +926,7 @@ async fn a_daemon_of_another_version_is_refused_before_the_rest_is_read() {
         .await
         .expect_err("not initialized");
     assert_eq!(early.data_code(), Some("not_initialized"));
-    let next_minor = SemVer::new(
-        PLUGIN_PROTOCOL_VERSION.major(),
-        PLUGIN_PROTOCOL_VERSION.minor() + 1,
-        0,
-    );
-    for version in [json!(next_minor.to_string()), json!("9.0.0"), json!(2)] {
+    for version in [json!("0.5.0"), json!("9.0.0"), json!(2)] {
         // The rest of the params is a shape this build does not share.
         let error = peer
             .request::<_, ExtensionInitializeResult>(
@@ -951,12 +946,12 @@ async fn a_daemon_of_another_version_is_refused_before_the_rest_is_read() {
         .await
         .expect_err("no version");
     assert_eq!(malformed.data_code(), Some("invalid_params"));
-    // A patch of the same minor connects.
+    // Another minor and patch of the same major connects.
     let mut params = serde_json::to_value(initialize_params(false)).unwrap();
     params["protocol_version"] = json!(
         SemVer::new(
             PLUGIN_PROTOCOL_VERSION.major(),
-            PLUGIN_PROTOCOL_VERSION.minor(),
+            PLUGIN_PROTOCOL_VERSION.minor() + 2,
             PLUGIN_PROTOCOL_VERSION.patch() + 1
         )
         .to_string()
@@ -964,7 +959,7 @@ async fn a_daemon_of_another_version_is_refused_before_the_rest_is_read() {
     let initialized: ExtensionInitializeResult = peer
         .request(PLUGIN_INITIALIZE_METHOD, &params)
         .await
-        .expect("a patch connects");
+        .expect("another minor connects");
     assert_eq!(initialized.protocol_version, PLUGIN_PROTOCOL_VERSION);
     let again = peer
         .request::<_, ExtensionInitializeResult>(PLUGIN_INITIALIZE_METHOD, &params)

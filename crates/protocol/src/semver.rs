@@ -4,14 +4,15 @@
 //! Each surface's version is the string `"MAJOR.MINOR.PATCH"`: three decimal
 //! integers without leading zeros, and no pre-release or build suffix. Peers
 //! with different majors do not connect; peers with the same major share the
-//! lower of their two minors. Before the freeze (major 0) every minor may
-//! break the wire, as semver's `0.x` convention allows, so peers must also
-//! agree on the minor.
+//! lower of their two minors, and the patch never matters. The pre-1.0
+//! versions, whose every minor could break the wire, never connect to a 1.x
+//! peer.
 //!
 //! The client, plugin, and runtime handshakes send
 //! [`CLIENT_PROTOCOL_VERSION`], [`PLUGIN_PROTOCOL_VERSION`], and
 //! [`RUNTIME_PROTOCOL_VERSION`] and read the peer's with
-//! [`negotiate_version`]. The constants stay `0.x` until the freeze.
+//! [`negotiate_version`]. All three froze at `1.0.0`; from there a minor only
+//! adds and a major breaks.
 
 use std::{borrow::Cow, fmt, str::FromStr};
 
@@ -20,11 +21,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The client protocol version this build speaks.
-pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(0, 52, 0);
+pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(1, 0, 0);
 /// The plugin protocol version this build speaks.
-pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(0, 5, 0);
+pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(1, 0, 0);
 /// The runtime protocol version this build speaks.
-pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(0, 8, 0);
+pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(1, 0, 0);
 
 /// The handshake member that carries a peer's version.
 pub const PROTOCOL_VERSION_MEMBER: &str = "protocol_version";
@@ -73,11 +74,10 @@ impl SemVer {
         self.patch
     }
 
-    /// Whether a peer at `other` may connect: the majors are equal and,
-    /// while the major is 0, so are the minors.
+    /// Whether a peer at `other` may connect: the majors are equal.
     #[must_use]
     pub const fn is_compatible_with(self, other: Self) -> bool {
-        self.major == other.major && (self.major != 0 || self.minor == other.minor)
+        self.major == other.major
     }
 
     /// The minor two compatible peers share: the lower of the two. `None`
@@ -186,8 +186,8 @@ pub fn peer_protocol_version(params: &Value) -> Result<SemVer, PeerVersionError>
 /// Why a handshake's peer version is refused.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VersionRefusal {
-    /// A version this build cannot speak with: another major, another minor
-    /// before 1.0, or the integer version of a build from before semver.
+    /// A version this build cannot speak with: another major, or the
+    /// integer version of a build from before semver.
     Unsupported { supported: SemVer, peer: String },
     /// The handshake carries no readable version.
     Malformed(PeerVersionError),
@@ -306,26 +306,31 @@ mod tests {
     }
 
     #[test]
-    fn before_the_freeze_peers_must_also_agree_on_the_minor() {
-        let daemon = SemVer::new(0, 7, 0);
-        assert!(daemon.is_compatible_with(SemVer::new(0, 7, 3)));
-        assert_eq!(daemon.shared_minor(SemVer::new(0, 7, 3)), Some(7));
-        assert!(!daemon.is_compatible_with(SemVer::new(0, 6, 0)));
-        assert!(!daemon.is_compatible_with(SemVer::new(0, 8, 0)));
-        assert_eq!(daemon.shared_minor(SemVer::new(0, 8, 0)), None);
-        assert!(!daemon.is_compatible_with(SemVer::new(1, 7, 0)));
+    fn a_pre_1_0_peer_never_connects_to_a_1_x_one() {
+        let daemon = SemVer::new(1, 0, 0);
+        for peer in [
+            SemVer::new(0, 52, 0),
+            SemVer::new(0, 0, 1),
+            SemVer::new(0, 1, 0),
+        ] {
+            assert!(!daemon.is_compatible_with(peer), "{peer}");
+            assert!(!peer.is_compatible_with(daemon), "{peer}");
+            assert_eq!(daemon.shared_minor(peer), None);
+        }
     }
 
     #[test]
     fn a_handshake_of_another_version_is_refused_with_both_versions() {
-        let supported = SemVer::new(0, 3, 0);
-        assert_eq!(
-            negotiate_version(supported, &json!({"protocol_version": "0.3.9", "x": 1})),
-            Ok(SemVer::new(0, 3, 9))
-        );
+        let supported = SemVer::new(1, 3, 0);
+        for peer in ["1.3.9", "1.0.0", "1.7.2"] {
+            assert_eq!(
+                negotiate_version(supported, &json!({"protocol_version": peer, "x": 1})),
+                Ok(SemVer::parse(peer).unwrap())
+            );
+        }
         for (peer, named) in [
-            (json!("0.4.0"), "0.4.0"),
-            (json!("1.3.0"), "1.3.0"),
+            (json!("0.52.0"), "0.52.0"),
+            (json!("2.3.0"), "2.3.0"),
             (json!(2), "2"),
         ] {
             let refusal =
@@ -334,12 +339,12 @@ mod tests {
             assert_eq!(error.code, crate::errors::UNSUPPORTED_PROTOCOL);
             let data = error.data.unwrap();
             assert_eq!(data["code"], "unsupported_protocol");
-            assert_eq!(data["supported_version"], "0.3.0");
+            assert_eq!(data["supported_version"], "1.3.0");
             assert_eq!(data["peer_version"], named);
             assert!(
                 refusal
                     .to_string()
-                    .contains(&format!("0.3.0 here and {named}"))
+                    .contains(&format!("1.3.0 here and {named}"))
             );
         }
         for malformed in [json!({}), json!({"protocol_version": "3"})] {

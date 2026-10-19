@@ -121,15 +121,11 @@ fn turn() -> ToolTurn {
 
 #[tokio::test]
 async fn a_daemon_of_another_version_fails_initialize_with_both_versions() {
-    let next_minor = cookie_agent_protocol::SemVer::new(
-        RUNTIME_PROTOCOL_VERSION.major(),
-        RUNTIME_PROTOCOL_VERSION.minor() + 1,
-        0,
-    );
     let next_major = cookie_agent_protocol::SemVer::new(RUNTIME_PROTOCOL_VERSION.major() + 1, 0, 0);
     for (version, named) in [
-        (json!(next_minor), next_minor.to_string()),
         (json!(next_major), next_major.to_string()),
+        // A build from before the freeze.
+        (json!("0.8.0"), "0.8.0".to_owned()),
         // A build from before semver versions.
         (json!(6), "6".to_owned()),
     ] {
@@ -150,20 +146,22 @@ async fn a_daemon_of_another_version_fails_initialize_with_both_versions() {
             "{message}"
         );
     }
-    // Another patch of the same minor connects.
-    let harness = start(ServeOptions::default());
-    let mut params = initialize_params();
-    params.protocol_version = cookie_agent_protocol::SemVer::new(
-        RUNTIME_PROTOCOL_VERSION.major(),
-        RUNTIME_PROTOCOL_VERSION.minor(),
-        RUNTIME_PROTOCOL_VERSION.patch() + 1,
-    );
-    let initialized: InitializeResult = harness
-        .daemon
-        .request(method::INITIALIZE, &params)
-        .await
-        .unwrap();
-    assert_eq!(initialized.protocol_version, RUNTIME_PROTOCOL_VERSION);
+    // Another minor or patch of the same major connects.
+    for (minor, patch) in [(0, 1), (1, 0), (4, 2)] {
+        let harness = start(ServeOptions::default());
+        let mut params = initialize_params();
+        params.protocol_version = cookie_agent_protocol::SemVer::new(
+            RUNTIME_PROTOCOL_VERSION.major(),
+            RUNTIME_PROTOCOL_VERSION.minor() + minor,
+            RUNTIME_PROTOCOL_VERSION.patch() + patch,
+        );
+        let initialized: InitializeResult = harness
+            .daemon
+            .request(method::INITIALIZE, &params)
+            .await
+            .unwrap();
+        assert_eq!(initialized.protocol_version, RUNTIME_PROTOCOL_VERSION);
+    }
 }
 
 #[tokio::test]

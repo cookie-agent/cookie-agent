@@ -95,7 +95,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **0.8.0**
+The protocol version is a semver string, currently **1.0.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -103,9 +103,10 @@ anything else, so a peer of another version is answered with
 `unsupported_protocol`, naming both versions, rather than with a decoding
 error of a shape the two do not share; a hello without a readable version
 fails as `invalid_params`. Two versions are compatible when their majors are
-equal and, while the major is 0 (before the protocol freezes at `1.0.0`),
-their minors are too; the patch never matters. A build from before semver
-versions sends an integer and is refused the same way.
+equal: a minor only adds, so the two ends use what the lower minor includes,
+and the patch never matters. A `0.x`
+build from before the freeze, and a build from before semver versions, which
+sends an integer, are refused the same way.
 
 Both ends also send `features`: what their configuration enables, never what
 a version already implies. None are defined yet for runtimes; an end ignores
@@ -130,7 +131,8 @@ retained output is `retained_output`. 0.7.0 made the version a semver string,
 added `engine_version` and `features` to the handshake, and moved errors to
 the registry's codes (see [Errors](#errors)). 0.8.0 replaced the turn's
 adapter family and model capabilities with `turn.model` (see
-[`tool/prepare`](#toolprepare)).
+[`tool/prepare`](#toolprepare)). 1.0.0 froze the protocol: no `0.x` build
+connects to a 1.x one.
 
 ## Capabilities and instances
 
