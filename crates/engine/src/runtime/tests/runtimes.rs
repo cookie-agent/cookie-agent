@@ -307,8 +307,8 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
             .expect("published tool")
             .description
     };
-    // One runtime besides `global`: its tools say nothing about it.
-    assert!(!description("write").contains("Runs on runtime"));
+    // One attachment besides `global`: its tools say nothing about it.
+    assert!(!description("write").contains("Belongs to attachment"));
 
     let api = workspace_dir(root, "api");
     let attached = fixture
@@ -328,29 +328,65 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
     let mut expected = vec![format!("{local_name}_write"), "labpc_api_write".to_owned()];
     expected.sort();
     assert_eq!(published_names(&fixture, session, &policy), expected);
-    // Several: each runtime's tools say where they run.
+    // Several: each attachment's tools say where they run. The fake labpc
+    // runtime reports a machine of its own, named after it.
+    let daemon = fixture.engine.runtime_machine("local").expect("machine");
     let labpc_description = description("labpc_api_write");
     assert!(
-        labpc_description.ends_with("\n\nRuns on runtime `labpc_api`."),
+        labpc_description.ends_with(
+            "\n\nBelongs to attachment `labpc_api` (runtime `labpc` on machine `labpc`)."
+        ),
         "{labpc_description}"
     );
     assert!(
-        description(&format!("{local_name}_write"))
-            .ends_with(&format!("Runs on runtime `{local_name}`.")),
+        description(&format!("{local_name}_write")).ends_with(&format!(
+            "Belongs to attachment `{local_name}` (runtime `local` on machine `{daemon}`)."
+        )),
     );
-    // And the system prompt lists both, without `global`.
+    // And the system prompt lists both by machine, without `global`.
     let mut composed = policy.clone();
     fixture
         .engine
         .compose_runtimes_prompt(&mut composed, session);
     let prompt = &composed.agent.composed_prompt;
     assert!(
-        prompt.contains("This session has several runtimes attached."),
+        prompt.contains("This session has several attachments."),
         "{prompt}"
     );
-    assert!(prompt.contains(&format!("<runtime name=\"{local_name}\" kind=\"coding\"")));
-    assert!(prompt.contains("<runtime name=\"labpc_api\" kind=\"coding\""));
+    assert!(prompt.contains(&format!(
+        "<machine name=\"{daemon}\" platform=\"{}\">\n<runtime name=\"local\">\n\
+         <attachment name=\"{local_name}\" kind=\"coding\"",
+        std::env::consts::OS
+    )));
+    assert!(
+        prompt.contains(&format!(
+            "<machine name=\"labpc\" platform=\"{}\">\n<runtime name=\"labpc\">\n\
+             <attachment name=\"labpc_api\" kind=\"coding\"",
+            std::env::consts::OS
+        )),
+        "{prompt}"
+    );
     assert!(!prompt.contains("name=\"global\""));
+    // Renaming the machine renames it in the next composition.
+    fixture
+        .engine
+        .rename_machine(
+            cookie_agent_protocol::MachineName::new("labpc").unwrap(),
+            cookie_agent_protocol::MachineName::new("lab-pc").unwrap(),
+        )
+        .await
+        .expect("rename labpc");
+    let mut renamed = policy.clone();
+    fixture
+        .engine
+        .compose_runtimes_prompt(&mut renamed, session);
+    assert!(
+        renamed
+            .agent
+            .composed_prompt
+            .contains("<machine name=\"lab-pc\"")
+    );
+    assert!(description("labpc_api_write").ends_with("(runtime `labpc` on machine `lab-pc`)."));
 
     // A prefixed call runs on its own runtime under the name it knows.
     let published = fixture

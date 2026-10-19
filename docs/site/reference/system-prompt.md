@@ -86,34 +86,59 @@ and no configuration switch enables that path.
 ## Runtimes
 
 `global` (MCP servers, plugins, the fallback `webfetch`) is available to every
-session and is never mentioned. What the model is told about the other
-runtimes depends on how many the session attaches:
+session and is never mentioned. The model is told about the session's other
+**attachments**, nested in the **runtime** that serves them and the
+**machine** that runtime runs on (see [machines](protocol.md#machines)), so
+that it knows which tools share files. What it is told depends on how many
+attachments the session has besides `global`:
 
 - **One** (the usual case): the prompt gains only where it works, and tool
   descriptions are left as the runtime wrote them:
 
   ```text
   Working directory: /home/me/web
-  Platform: linux
+  Machine: laptop (linux)
   ```
 
-  A runtime without a workspace adds nothing.
-- **Several:** the prompt says so and lists them, and the description of each
-  of their tools ends with `Runs on runtime `<name>`.`:
+  The machine line is left out when the daemon cannot name the machine, and
+  the platform in parentheses when the runtime reports none. An attachment
+  without a workspace adds nothing.
+- **Several:** the prompt says so and lists them by machine and runtime, and
+  the description of each of their tools ends with
+  ``Belongs to attachment `<attachment>` (runtime `<runtime>` on machine `<machine>`).``
+  (without ``on machine `<machine>` `` when the daemon cannot name it):
 
   ```text
-  This session has several runtimes attached. Each tool's description names the runtime it runs on, and file tools and bash resolve relative paths against that runtime's workspace. A tool several runtimes offer is named `<runtime>_<tool>`.
-  <runtimes>
-  <runtime name="local_web" kind="coding" workspace="/home/me/web" platform="linux"/>
-  <runtime name="labpc_api" kind="coding" workspace="/home/me/api" platform="linux"/>
-  </runtimes>
+  This session has several attachments. An attachment is a set of tools bound to a workspace, served by a runtime running on a machine. Each tool's description names the attachment it belongs to, and file tools and bash resolve relative paths against that attachment's workspace. Attachments on the same machine share its files; a path on one machine means nothing on another. A tool several attachments offer is named `<attachment>_<tool>`.
+  <machines>
+  <machine name="laptop" platform="linux">
+  <runtime name="local">
+  <attachment name="local_web" kind="coding" workspace="/home/me/web"/>
+  <attachment name="local_api" kind="coding" workspace="/home/me/api"/>
+  </runtime>
+  </machine>
+  <machine name="labpc" platform="linux">
+  <runtime name="labpc">
+  <attachment name="labpc_api" kind="coding" workspace="/srv/api"/>
+  </runtime>
+  </machine>
+  </machines>
   ```
 
+  Machines come in the order the session's attachments first name them, and
+  runtimes within a machine and attachments within a runtime in the same
+  order. A `<runtime>` is named by its runtime ID, an `<attachment>` by its
+  attachment name, and carries its capability's `kind` and its `workspace`.
+  The platform belongs to the machine; when the runtimes of one machine
+  report different platforms (a container, WSL), each `<runtime>` carries its
+  own instead. An attachment whose machine the daemon cannot name gets a
+  `<machine>` of its own without a name.
+
 Attribute values are XML-escaped. The block is frozen with the prompt: an
-attachment added or removed after admission changes the next run's block,
-while the tool descriptions follow the attachments at once. The block is
-skipped rather than truncated if the composed prompt is already at its byte
-limit.
+attachment added or removed, or a machine renamed, regrouped, or merged after
+admission changes the next run's block, while the tool descriptions follow
+at once. The block is skipped rather than truncated if the composed prompt is
+already at its byte limit.
 
 ## AGENTS.md context turn
 

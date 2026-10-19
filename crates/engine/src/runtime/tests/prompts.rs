@@ -289,9 +289,13 @@ async fn one_runtime_gives_the_prompt_its_working_directory() {
         .local_workspace_root()
         .display()
         .to_string();
+    let machine = fixture
+        .engine
+        .runtime_machine("local")
+        .expect("the daemon's machine");
     assert!(
         run.agent.composed_prompt.ends_with(&format!(
-            "---\n\nWorking directory: {cwd}\nPlatform: {}",
+            "---\n\nWorking directory: {cwd}\nMachine: {machine} ({})",
             std::env::consts::OS
         )),
         "{}",
