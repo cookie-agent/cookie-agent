@@ -341,18 +341,23 @@ impl App {
         });
     }
 
-    /// The `coding` capability a new session attaches by default: the
-    /// runtime this client offers, else `local`, at the client's directory.
-    pub(super) fn default_coding_runtime(
+    /// The workspace capability a new session attaches by default, at the
+    /// client's directory: the runtime the binary chose with its
+    /// capability, else `local`'s `coding`.
+    pub(in crate::ui) fn default_coding_runtime(
         &self,
     ) -> Option<cookie_agent_protocol::RuntimeAttachRequest> {
         let runtime = self
             .client_runtime
             .as_deref()
             .unwrap_or(cookie_agent_protocol::RuntimeId::LOCAL);
+        let capability = match (&self.client_runtime, &self.client_capability) {
+            (Some(_), Some(capability)) => capability.clone(),
+            _ => cookie_agent_protocol::CapabilityName::coding(),
+        };
         Some(cookie_agent_protocol::RuntimeAttachRequest {
             runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).ok()?,
-            capability: Some(cookie_agent_protocol::CapabilityName::coding()),
+            capability: Some(capability),
             workspace: self.cwd.clone(),
         })
     }

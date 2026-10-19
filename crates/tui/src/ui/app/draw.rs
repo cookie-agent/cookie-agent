@@ -462,6 +462,11 @@ impl App {
             };
             format!("{glyph} {label}")
         });
+        // Where the daemon runs leads: its address, or `standalone`.
+        let cwd = match &self.connection_label {
+            Some(connection) => format!("{connection} · {cwd}"),
+            None => cwd,
+        };
 
         let state = self
             .viewed_session()

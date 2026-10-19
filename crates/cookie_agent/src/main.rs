@@ -89,6 +89,10 @@ struct Cli {
     /// its error, such as the upstream cause or a path.
     #[arg(long, global = true)]
     error_details: bool,
+    /// Run the daemon inside this process even when one is already running
+    /// on this machine, without looking for it. Plain `cookie` only.
+    #[arg(long)]
+    standalone: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -415,7 +419,18 @@ fn init_logging() {
 
 async fn main_result(cli: Cli) -> anyhow::Result<()> {
     init_logging();
-    let Cli { command, .. } = cli;
+    let Cli {
+        command,
+        standalone,
+        ..
+    } = cli;
+    if standalone && command.is_some() {
+        clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--standalone applies to plain `cookie` only, not to a subcommand\n",
+        )
+        .exit();
+    }
     if let Some(Command::Run { args }) = &command
         && let Err(message) = args.validate_cli()
     {
@@ -561,7 +576,31 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             // Syntax highlighting assets load while the runtime composes.
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
-            run_local_frontend(compose(workspace.as_deref().expect("local workspace")).await?).await
+            let workspace = workspace.expect("local workspace");
+            if standalone {
+                return run_local_frontend(compose(&workspace).await?, Vec::new()).await;
+            }
+            let configuration = cookie_agent_config::load()
+                .context("load user configuration, agents, and skills")?;
+            // One identity for the whole session, as `cookie attach` keeps.
+            let identity = client_identity("tui");
+            match local_daemon::probe(&configuration.runtime.server, identity.clone()).await {
+                local_daemon::Probe::Connected(daemon) => {
+                    drop(configuration);
+                    run_daemon_tui(
+                        daemon.client,
+                        &daemon.hello,
+                        identity,
+                        &daemon.url,
+                        &daemon.token,
+                    )
+                    .await
+                }
+                probe => {
+                    let runtime = compose_loaded(&workspace, configuration).await?;
+                    run_local_frontend(runtime, probe.notice().into_iter().collect()).await
+                }
+            }
         }
     }
 }
@@ -723,6 +762,22 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
 async fn compose(workspace: &Path) -> anyhow::Result<Runtime> {
     compose_with(
         workspace,
+        || HttpCatalogTransport::new().context("construct fixed catalog transport"),
+        CatalogManager::standard,
+        ProviderStore::standard,
+        data_dir,
+    )
+    .await
+}
+
+/// [`compose`] with the configuration already loaded.
+async fn compose_loaded(
+    workspace: &Path,
+    configuration: cookie_agent_config::LoadedConfiguration,
+) -> anyhow::Result<Runtime> {
+    compose_with_configuration(
+        workspace,
+        configuration,
         || HttpCatalogTransport::new().context("construct fixed catalog transport"),
         CatalogManager::standard,
         ProviderStore::standard,
@@ -931,8 +986,10 @@ fn client_directory() -> Option<String> {
     Some(cwd.to_string_lossy().into_owned())
 }
 
+/// Runs the TUI against the daemon `runtime` composes in this process,
+/// showing `notices` from the start.
 #[cfg(feature = "tui")]
-async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
+async fn run_local_frontend(mut runtime: Runtime, notices: Vec<String>) -> anyhow::Result<()> {
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(128);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
@@ -948,7 +1005,11 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
             client,
             cookie_agent_tui::SessionPlacement {
                 cwd: client_directory(),
-                runtime: None,
+                ..Default::default()
+            },
+            cookie_agent_tui::ConnectionView {
+                label: Some("standalone".into()),
+                notices,
             },
         )
         .await
@@ -965,7 +1026,7 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
 }
 
 #[cfg(not(feature = "tui"))]
-async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
+async fn run_local_frontend(mut runtime: Runtime, _notices: Vec<String>) -> anyhow::Result<()> {
     runtime.server.shutdown();
     runtime.stop_catalog_refresh().await;
     runtime.engine.shutdown().await;
@@ -974,6 +1035,8 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
     )
 }
 
+/// `cookie attach`: connects to the daemon at `url`, failing rather than
+/// running one in this process, and runs the TUI against it.
 #[cfg(feature = "tui")]
 async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
     validate_websocket_url(url)?;
@@ -987,26 +1050,46 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
         .handshake_as(identity.clone())
         .await
         .context("handshake with daemon")?;
+    run_daemon_tui(client, &hello, identity, url, token).await
+}
+
+/// Runs the TUI against the daemon `client` reaches at `url`, connected and
+/// handshaken as `identity`, as `cookie attach` and plain `cookie` with a
+/// running daemon both do: sessions use the runtime
+/// [`local_daemon::runtime_for`] chooses, a dropped connection is redialed,
+/// and quitting leaves the daemon running.
+#[cfg(feature = "tui")]
+async fn run_daemon_tui(
+    client: Client,
+    hello: &cookie_agent_protocol::ServerHello,
+    identity: cookie_agent_protocol::ClientIdentity,
+    url: &str,
+    token: &str,
+) -> anyhow::Result<()> {
     let cwd = client_directory();
-    // A daemon on another machine cannot see this one: offer it this
-    // machine's directory as a runtime that lives as long as the TUI.
-    let runtime = match (
-        &hello.machine_id,
-        cookie_agent_protocol::paths::machine_id(),
-    ) {
-        (Some(daemon), Some(local)) if *daemon != local => {
-            let id = client_runtime_id(&host_name());
-            let options = cookie_agent_coding_runtime::server::ServeOptions {
-                roots: cwd.iter().map(PathBuf::from).collect(),
-                mcp_servers: local_runtime_mcp_servers()?,
-                ..Default::default()
-            };
-            let (url, token, dial_id) = (url.to_owned(), token.to_owned(), id.clone());
-            tokio::spawn(async move { dial_in(&url, &token, &dial_id, options).await });
-            Some(id)
+    let own_runtime = client_runtime_id(&host_name());
+    let choice = local_daemon::runtime_for(
+        &client,
+        hello,
+        cookie_agent_protocol::paths::machine_id().as_deref(),
+        &own_runtime,
+    )
+    .await;
+    let (runtime, capability) = match choice {
+        local_daemon::RuntimeChoice::Local => (None, None),
+        local_daemon::RuntimeChoice::Existing {
+            runtime_id,
+            capability,
+        } => (Some(runtime_id.into_string()), Some(capability)),
+        local_daemon::RuntimeChoice::DialIn => {
+            start_dial_in(url, token, &own_runtime, cwd.as_deref())?;
+            (Some(own_runtime), None)
         }
-        _ => None,
     };
+    let notices = local_daemon::version_notice(&hello.engine_version, env!("CARGO_PKG_VERSION"))
+        .into_iter()
+        .collect();
+    let address = local_daemon::daemon_address(url);
     let (url, token) = (url.to_owned(), token.to_owned());
     let reconnector: cookie_agent_tui::Reconnector = std::sync::Arc::new(move || {
         let (url, token, identity) = (url.clone(), token.clone(), identity.clone());
@@ -1024,14 +1107,48 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
     cookie_agent_tui::run_attached(
         client,
         reconnector,
-        cookie_agent_tui::SessionPlacement { cwd, runtime },
+        cookie_agent_tui::SessionPlacement {
+            cwd,
+            runtime,
+            capability,
+        },
+        cookie_agent_tui::ConnectionView {
+            label: Some(address),
+            notices,
+        },
     )
     .await
+}
+
+/// Offers the daemon at `url` this machine's directory `cwd` as runtime
+/// `id`, dialed in for as long as this process runs: a daemon on another
+/// machine cannot see this one.
+#[cfg(feature = "tui")]
+fn start_dial_in(url: &str, token: &str, id: &str, cwd: Option<&str>) -> anyhow::Result<()> {
+    let options = cookie_agent_coding_runtime::server::ServeOptions {
+        roots: cwd.iter().map(PathBuf::from).collect(),
+        mcp_servers: local_runtime_mcp_servers()?,
+        ..Default::default()
+    };
+    let (url, token, id) = (url.to_owned(), token.to_owned(), id.to_owned());
+    tokio::spawn(async move { dial_in(&url, &token, &id, options).await });
+    Ok(())
 }
 
 #[cfg(not(feature = "tui"))]
 async fn run_attached_tui(url: &str, _token: &str) -> anyhow::Result<()> {
     validate_websocket_url(url)?;
+    anyhow::bail!("cookie was built without TUI support")
+}
+
+#[cfg(not(feature = "tui"))]
+async fn run_daemon_tui(
+    _client: Client,
+    _hello: &cookie_agent_protocol::ServerHello,
+    _identity: cookie_agent_protocol::ClientIdentity,
+    _url: &str,
+    _token: &str,
+) -> anyhow::Result<()> {
     anyhow::bail!("cookie was built without TUI support")
 }
 
@@ -1827,6 +1944,7 @@ fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
 }
 
 mod config_command;
+mod local_daemon;
 mod machine_command;
 mod memory_command;
 

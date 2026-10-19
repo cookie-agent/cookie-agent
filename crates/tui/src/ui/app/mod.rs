@@ -666,9 +666,15 @@ pub struct App {
     /// The client's directory, when the binary gave one: sessions it
     /// creates record it, and the session list shows its sessions only.
     pub(in crate::ui) cwd: Option<String>,
-    /// The runtime this client offers the daemon, when it offers one: new
-    /// sessions work with its `coding` capability at `cwd`.
+    /// The runtime new sessions work with at `cwd` instead of the daemon's
+    /// `local`, when the binary chose one: one this client offers, or one
+    /// already running on this machine.
     pub(in crate::ui) client_runtime: Option<String>,
+    /// The capability of `client_runtime` new sessions attach; `coding`
+    /// when `None`.
+    pub(in crate::ui) client_capability: Option<cookie_agent_protocol::CapabilityName>,
+    /// The bottom bar's leading label: where the daemon runs.
+    pub(in crate::ui) connection_label: Option<String>,
     pub(super) client: Client,
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
@@ -1336,6 +1342,8 @@ impl App {
             client,
             cwd: placement.cwd,
             client_runtime: placement.runtime,
+            client_capability: placement.capability,
+            connection_label: None,
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,
@@ -1781,6 +1789,15 @@ impl Drop for App {
     }
 }
 
+impl App {
+    /// Shows where the daemon runs: its label leads the bottom bar, and its
+    /// notices stay below the transcript.
+    pub(in crate::ui) fn show_connection(&mut self, connection: ConnectionView) {
+        self.connection_label = connection.label;
+        self.transient_notices.extend(connection.notices);
+    }
+}
+
 /// Redials the daemon after a dropped connection and handshakes as the same
 /// client identity, so the new connection's events keep this client's
 /// origin.
@@ -1792,7 +1809,14 @@ pub type Reconnector = std::sync::Arc<
 
 /// Run the terminal UI against a connected client.
 pub async fn run_with_client(client: Client) -> anyhow::Result<()> {
-    run_terminal(client, false, None, SessionPlacement::default()).await
+    run_terminal(
+        client,
+        false,
+        None,
+        SessionPlacement::default(),
+        ConnectionView::default(),
+    )
+    .await
 }
 
 /// Where the TUI's new sessions work.
@@ -1801,30 +1825,46 @@ pub struct SessionPlacement {
     /// The client's directory: new sessions record it and work in it, and
     /// the session list shows its sessions.
     pub cwd: Option<String>,
-    /// A runtime this client offers the daemon, such as one it runs for its
-    /// own machine when the daemon is on another: new sessions attach its
-    /// `coding` capability at `cwd` instead of the daemon's `local`.
+    /// A runtime on this client's machine other than the daemon's `local`,
+    /// such as one this client runs for its own machine when the daemon is
+    /// on another: new sessions attach its `capability` at `cwd` instead.
     pub runtime: Option<String>,
+    /// The capability of `runtime` new sessions attach; `coding` when
+    /// omitted.
+    pub capability: Option<cookie_agent_protocol::CapabilityName>,
+}
+
+/// Where the TUI's daemon runs, as the TUI shows it.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionView {
+    /// The bottom bar's leading label: the daemon's address, or
+    /// `standalone` for a daemon inside this process. Nothing when `None`.
+    pub label: Option<String>,
+    /// Notices shown below the transcript from the start, such as why a
+    /// daemon could not be used.
+    pub notices: Vec<String>,
 }
 
 /// Run the terminal UI against a daemon it reconnects to with
 /// `reconnector` whenever the connection drops; new sessions follow
-/// `placement`.
+/// `placement`, and `connection` says where the daemon runs.
 pub async fn run_attached(
     client: Client,
     reconnector: Reconnector,
     placement: SessionPlacement,
+    connection: ConnectionView,
 ) -> anyhow::Result<()> {
-    run_terminal(client, false, Some(reconnector), placement).await
+    run_terminal(client, false, Some(reconnector), placement, connection).await
 }
 
 /// Run the terminal UI with a newly created root session; see
-/// [`run_attached`] for `placement`.
+/// [`run_attached`] for `placement` and `connection`.
 pub async fn run_with_new_session(
     client: Client,
     placement: SessionPlacement,
+    connection: ConnectionView,
 ) -> anyhow::Result<()> {
-    run_terminal(client, true, None, placement).await
+    run_terminal(client, true, None, placement, connection).await
 }
 
 async fn run_terminal(
@@ -1832,6 +1872,7 @@ async fn run_terminal(
     create_new_session: bool,
     reconnector: Option<Reconnector>,
     placement: SessionPlacement,
+    connection: ConnectionView,
 ) -> anyhow::Result<()> {
     crate::markdown::warm_up_syntax_assets();
     install_terminal_panic_hook();
@@ -1848,6 +1889,7 @@ async fn run_terminal(
         .await
         .context("initialize TUI")?;
     app.reconnector = reconnector;
+    app.show_connection(connection);
     // A stop signal quits like `/quit`, so the terminal is restored and an
     // in-process daemon shuts down.
     let signals = cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;

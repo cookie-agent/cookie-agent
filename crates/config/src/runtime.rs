@@ -422,9 +422,14 @@ impl ServerConfig {
     /// this configuration describes, `ws://<host>:<port>/ws`.
     #[must_use]
     pub fn client_url(&self) -> String {
-        self.url
-            .clone()
-            .unwrap_or_else(|| format!("ws://{}:{}/ws", self.host, self.port))
+        self.url.clone().unwrap_or_else(|| self.local_url())
+    }
+
+    /// The daemon this configuration describes on this machine,
+    /// `ws://<host>:<port>/ws`, whatever `url` names.
+    #[must_use]
+    pub fn local_url(&self) -> String {
+        format!("ws://{}:{}/ws", self.host, self.port)
     }
 }
 
