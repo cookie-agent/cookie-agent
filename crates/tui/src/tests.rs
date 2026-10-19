@@ -344,6 +344,7 @@ fn build_in_process_server(
             delegation: cookie_agent_config::DelegationConfig::default(),
             messaging: cookie_agent_config::MessagingConfig::default(),
             producers: cookie_agent_config::ProducersConfig::default(),
+            memory: cookie_agent_config::MemoryConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers,

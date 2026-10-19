@@ -292,6 +292,8 @@ pub struct EngineConfig {
     pub messaging: MessagingConfig,
     #[serde(default)]
     pub producers: ProducersConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -315,6 +317,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) delegation: Option<DelegationConfig>,
     pub(crate) messaging: Option<MessagingConfig>,
     pub(crate) producers: Option<ProducersConfig>,
+    pub(crate) memory: Option<MemoryConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -736,6 +739,75 @@ const fn default_producer_max_body_bytes() -> usize {
 /// message travels in.
 pub const PRODUCER_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// `[memory]`: size limits of memory files and of the memory snapshot
+/// (`docs/site/specs/memory.md` section 11).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// Largest memory file, frontmatter included, in bytes. A larger file
+    /// is invalid and a write that would produce one fails.
+    #[serde(default = "default_memory_max_file_bytes")]
+    pub max_file_bytes: usize,
+    /// Room for the user categories in a snapshot, in bytes of rendered
+    /// text.
+    #[serde(default = "default_memory_snapshot_user_bytes")]
+    pub snapshot_user_bytes: usize,
+    /// Room for the machine memory index in a snapshot, in bytes of
+    /// rendered text, summed over all machines.
+    #[serde(default = "default_memory_snapshot_index_bytes")]
+    pub snapshot_index_bytes: usize,
+}
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: default_memory_max_file_bytes(),
+            snapshot_user_bytes: default_memory_snapshot_user_bytes(),
+            snapshot_index_bytes: default_memory_snapshot_index_bytes(),
+        }
+    }
+}
+impl MemoryConfig {
+    /// The bound a whole memory snapshot event stays under.
+    pub const EVENT_MAX_BYTES: usize = 64 * 1024;
+    /// What a snapshot's fixed text, headings, element tags, and escaping
+    /// may add to the three limits. The limits are validated so that
+    /// `max_file_bytes + snapshot_user_bytes + snapshot_index_bytes +
+    /// RENDER_OVERHEAD_BYTES <= EVENT_MAX_BYTES`.
+    pub const RENDER_OVERHEAD_BYTES: usize = 8 * 1024;
+    /// The largest sum of the three limits.
+    pub const MAX_LIMITS_SUM: usize = Self::EVENT_MAX_BYTES - Self::RENDER_OVERHEAD_BYTES;
+
+    fn invalid_reason(&self) -> Option<&'static str> {
+        if self.max_file_bytes == 0
+            || self.snapshot_user_bytes == 0
+            || self.snapshot_index_bytes == 0
+        {
+            return Some(
+                "memory.max_file_bytes, snapshot_user_bytes, and snapshot_index_bytes must be positive",
+            );
+        }
+        let sum = self
+            .max_file_bytes
+            .checked_add(self.snapshot_user_bytes)
+            .and_then(|sum| sum.checked_add(self.snapshot_index_bytes));
+        if sum.is_none_or(|sum| sum > Self::MAX_LIMITS_SUM) {
+            return Some(
+                "memory.max_file_bytes plus snapshot_user_bytes plus snapshot_index_bytes must not exceed 57344",
+            );
+        }
+        None
+    }
+}
+const fn default_memory_max_file_bytes() -> usize {
+    4096
+}
+const fn default_memory_snapshot_user_bytes() -> usize {
+    12 * 1024
+}
+const fn default_memory_snapshot_index_bytes() -> usize {
+    4096
+}
+
 const fn default_messaging_enabled() -> bool {
     true
 }
@@ -927,6 +999,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.producers {
         runtime.producers = value.clone();
     }
+    if let Some(value) = &layer.memory {
+        runtime.memory = value.clone();
+    }
     if let Some(values) = &layer.headers {
         for (name, value) in values {
             if value.as_str().is_empty() {
@@ -1056,6 +1131,9 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         return Err(ConfigError::InvalidRuntime(
             "context_compaction.trigger requires percent 1..99 or positive buffer_tokens; max_summary_bytes must be 1..2097152",
         ));
+    }
+    if let Some(reason) = runtime.memory.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
     }
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {
         return Err(ConfigError::InvalidRuntime(
