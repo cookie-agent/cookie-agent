@@ -2231,3 +2231,112 @@ Step 2: user media input (11.1 to 11.5). `CLIENT_PROTOCOL_VERSION` is
   G's; the `Client` has `begin_upload`, `upload_chunk`, `finish_upload`,
   `cancel_upload`, and `read_artifact` for it. Phase H's golden logs should
   include an input with a file part.
+
+### Phase G
+
+Step 1: every built-in tool emits typed presentation and display (12.5). No
+wire shape changed, so no protocol version moved; no block kind was added.
+
+- **Prepare-time presentation.** A provider that knows how to show a call only
+  once it prepared it (a diff of the file it read) attaches the presentation
+  to the call (`PreparedTool::with_presentation`). The host takes a
+  `PreparedDeclaration`'s presentation first, then the prepared one, then
+  `ToolProvider::presentation`; the coding runtime's server sends the
+  prepared one as `PreparedCall.presentation`. A call that fails to prepare
+  is shown by `ToolProvider::presentation`, which every built-in tool now
+  overrides with its hint, human title, and arguments. Helpers:
+  `DisplayBlock::{markdown, code, key_value, is_cut, set_full}`,
+  `PreparedPresentation::{with_hint, with_arguments, with_preview}`,
+  `ToolAttachment::artifact_ref`, and `runtime_api::text_head` (the first
+  lines of a long text within a byte bound, so a fit measures little).
+- **Titles.** Presentation titles are human (`Edit <path>`, `Write <path>`,
+  `Read <path>`, ``Run `<command>` `` cut to 60 characters, `Fetch <url>`,
+  `Delegate to <agent>`, `Read subagent <session>`, `Load skill <name>`,
+  `Read goal`, `Update goal checklist`, `Message <to>`,
+  `Read artifact <12 hex>`, `Stop <job>`; an MCP tool keeps its published
+  name). `primary_argument` is unchanged. Result titles are not: the model
+  reads them with the metadata, so they, the output, and the metadata are
+  exactly what they were.
+- **`edit`'s diff** is built from the replaced byte ranges at prepare (on the
+  text preparation read, which in a same-file batch is the text the previous
+  edit leaves) and again at execute. Each range is widened to the whole lines
+  from the line holding its start to the end of the line holding its end
+  (so an `oldString` ending in a newline also takes the next line, and
+  removing a line break shows the two joined lines); ranges whose widened
+  lines overlap are one change, and lines the old and new text share at
+  either end become context. `write` diffs its own line slices with
+  `similar::capture_diff_slices_deadline` (Myers, one-second deadline),
+  since `similar`'s line tokenizer also splits on a lone `\r`. Both feed one
+  hunk builder: five lines of context, and two changes share a hunk when at
+  most ten unchanged lines separate them (their context overlaps or
+  touches, so no line between two hunks is skipped). A side with no lines in
+  a hunk starts at the line before it, `0` at the top of the file (a created
+  file's hunk is `-0,0 +1,N`), as unified diffs number it. `similar` 2.7.0
+  was already locked through `insta`; the coding runtime takes it without
+  default features.
+- **`write`'s sides.** Preparation now reads the file there (a file it
+  cannot read counts no lines), and execution reads it again right before
+  writing, so the result diffs against what the write replaced. A target
+  that was absent at preparation is `created` at execution too; a file that
+  appeared there in between is replaced without a diff of it. A side over
+  1 MiB or not UTF-8 gives a `diff` without hunks whose counts are each
+  side's newline-separated lines (a large old file is counted while streamed,
+  not held).
+- **`full`.** A block is cut to the budget less 1 KiB, the room its `full`
+  needs. An executed `edit` or `write` whose diff was cut retains the uncut
+  diff's `to_text` (unified-diff text) as `text/plain` named `<file>.diff`;
+  the coding runtime sends its bytes with the reply like an attachment's. A
+  preview has no store to retain it in, so a cut preview carries only
+  `omitted`. A cut `terminal` block gets `full` from the daemon when it
+  commits the call's retained output: the first declared stream kept as an
+  artifact (`stdout`, then `stderr`), `text/plain`, named after the stream,
+  and only when the display still fits its budget with it. There is no
+  merged artifact to name, and when no stream outgrew its preview the
+  model's output holds everything, so `full` is absent. A `read` excerpt has
+  no `full`: its page is not retained (`read` opts out of retention) and the
+  file itself is the complete content.
+- **`bash`.** The display is one `terminal` block of segments in read order
+  with `exit_code`, replacing the `text` block with its `Exit status: N` line
+  and `[display truncated]` marker. Output is sanitized with
+  `sanitize_terminal_text` as it is read; an escape sequence a read ends
+  inside of (at most 256 bytes) is held for the next read, for the output as
+  well as the display, so a colour split across two reads reaches both whole.
+  Progress appends each chunk to block `0` with its stream, cut between SGR
+  sequences. The block keeps at most 64 KiB of output, counting the lines
+  after it in `omitted_lines` (a line the cap splits counts once), and the
+  budget fit cuts by whole lines from there, keeping the head.
+- **`read`.** The excerpt holds the page's lines as the output numbers them,
+  without the numbers, up to 64 KiB of text; a directory page is a `table`
+  of `name` and `type` (`file` or `directory`); a media read shows `media`
+  with the file name as `alt`, whether the attachment rides on the result or
+  in the following user message.
+- **`webfetch`.** The body excerpt is its first lines within 24 KiB (the
+  start of the first line when it is longer), so even a body of quotes fits
+  beside the response block once escaped; `text/markdown` bodies are
+  `markdown`. The response block also says `truncated: yes` for an over-cap
+  body.
+- **MCP.** `structured_content` the text does not already hold is shown as
+  `json` and also stays in `metadata.mcp.structured_content`: the model reads
+  metadata, so moving it out would change what the model sees.
+  `metadata.mcp.is_error` stays too (the executor reads it). Consecutive text
+  parts are one `text` block joined as the output joins them, so a text-only
+  result is still stored as a `display_span`.
+- **Base tools.** Arguments are `key_value` blocks. `delegate_subagent`'s
+  include the `prompt` as an entry (a multi-line value). A delegation's
+  `markdown` is the subagent's whole final message (up to 48 KiB, then the
+  budget), not the model's bounded preview; a cancelled or failed delegation
+  shows its `session_ref`, when it has a session, and its output as `text`;
+  the immediate result of a delegation moved to the background shows its
+  output as before. `skill` shows the loaded skill and the goal tools a
+  checklist as `markdown`; `send_message`, `read_artifact`, and
+  `stop_background` keep their output as `text`. `read_artifact`'s hint is
+  `file_read` and `stop_background`'s `generic`.
+- **Disk encoding.** `display_span` still covers a whole single `text` block
+  and was not extended to `terminal` blocks: the span would need the
+  segment's stream and the exit code beside it in the stored result, a
+  shape change of `PersistedToolResult` on the client surface for a saving
+  limited to a `bash` call with output on one stream. Results whose display
+  is no longer their output's text (`bash`, `read`, `webfetch`, `edit`,
+  `write`, `skill`, the goal and delegation tools) now store it beside the
+  output, at most 64 KiB each. Phase H can revisit a terminal span before the
+  freeze.
