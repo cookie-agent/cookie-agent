@@ -1,9 +1,10 @@
 # Compatibility v1: Stable Protocols, Session History, Media Input, and Tool Display
 
-Status: **draft** (decisions of 2026-10-17 below). When implemented, this
-spec governs compatibility for the client protocol, the plugin protocol, the
-runtime protocol, and session history. Where earlier specs or references
-disagree, this one wins.
+Status: **implemented** (decisions of 2026-10-17 below; phases A to H landed
+by 2026-10-19, see section 15). This spec governs compatibility for the
+client protocol, the plugin protocol, the runtime protocol, and session
+history, all frozen at `1.0.0` and history format 1. Where earlier specs or
+references disagree, this one wins.
 
 ## 1. Goal and scope
 
@@ -2457,3 +2458,168 @@ Step 2: the TUI renders by block kind and hint (12.6) and attaches files
   scripts the daemon's answers); their request and event JSON could seed the
   client corpus. The golden logs should include a `terminal` block with SGR,
   a cut block with `full`, a `session_ref`, and a user input with a file part.
+
+### Phase H
+
+The freeze: storage encoding, `1.0.0`, the enforced checker, golden logs,
+corpora, and the compatibility policy.
+
+- **Storage before the freeze.** A session of eight tool calls against the
+  coding runtime (four reads, one a 2000-line page of a 3630-line file, and
+  five `bash` calls) stored 258,745 bytes of `events.jsonl`, 85,803 of them
+  (33.2%) display that repeated the results' output: since phase G, `read`
+  and `bash` display blocks are no longer single `text` blocks, which were
+  the only ones `display_span` covered. The encoding is extended, and it is
+  now what 12.3 says it is, a pure disk encoding: values serialize in it only
+  inside `cookie_agent_protocol::write_stored_history`, which the event log's
+  append and whole-file writes use, and decoding expands it, so clients,
+  plugins, and runtimes always receive whole blocks (`display` is required
+  on the wire, and `display_span` is gone from the client, plugin, and events
+  schemas; until then the client received spans too). Besides the single
+  whole `text` block's `display_span`, a block of `display` may store the
+  `text` of a `text`, `markdown`, or `code` block, or of a `terminal`
+  segment, as `text_span: [start, end)`, and a `file_excerpt`'s `lines` as
+  `lines_span`: a range of `output` holding the lines one per line, each
+  after its file line number and `": "`, as `read` numbers them. The writer
+  uses a span only for a text of at least 32 bytes found verbatim in the
+  output (a terminal stream searches on from its previous segment), never
+  inside a block of an unknown kind, and never for excerpt lines holding a
+  newline, so expanding always gives the same text back. The same session
+  then stored 173,810 bytes (33% less); its display took 862 (0.5%). A
+  `bash` display cut to its budget is not in the output preview and stays
+  inline. `crate::stored_display` holds the encoding; converters read logs
+  with it (`events::convert` says so).
+- **Versions.** `CLIENT_PROTOCOL_VERSION`, `PLUGIN_PROTOCOL_VERSION`, and
+  `RUNTIME_PROTOCOL_VERSION` are `1.0.0`; `HISTORY_FORMAT` stays 1.
+  `SemVer::is_compatible_with` compares majors only: the `0.x` same-minor
+  rule of E1 is gone, since no `0.x` peer connects to a 1.x one anyway. The
+  handshake tests of the server, the coding runtime, the remote runtime
+  client, the plugin SDK, and the plugin host now connect peers of a newer
+  minor and patch and refuse the next major, a `0.x` build, and an integer
+  version. The Python reference plugin speaks `1.0.0` with the same rule; the
+  fake plugin echoes the daemon's version. The changelog's `1.0.0` entry
+  summarizes the frozen contract and says that `0.x` builds never
+  interoperate with 1.x ones.
+- **Checker.** With the generated set at `1.0.0` against the `0.52.0`
+  baselines, every rule enforced, the check found nothing to reject: no
+  information type is closed any more, and a major bump covers every change.
+  The regenerated baselines changed only their `version` files. The
+  pre-freeze mode (exact-equality baselines, unenforced findings) is removed
+  from `check-compat.py`, whose every surface is 1.x now; the mutation test's
+  pre-freeze case became a check that a `0.x` set is refused against a 1.x
+  baseline, and the update is checked to leave a `corpus/` directory beside
+  the surfaces alone. The named fixture roots were unchanged. Experiments
+  (reverted): an optional member added to `ContextResult` without a bump
+  fails (`runtime: the changes need a minor bump from 1.0.0`); with
+  `RUNTIME_PROTOCOL_VERSION` at `1.1.0` it passes; `ContextResult.skipped`
+  removed with only that minor bump fails (`needs a major bump ... field
+  'skipped' removed or renamed`).
+- **Golden logs.** `crates/engine/tests/fixtures/history/1/` holds six
+  scenarios (about 800 KB), recorded by the ignored test
+  `record_golden_history` (`COOKIE_GOLDEN_HISTORY_OUT=<new dir>`; it refuses
+  a directory that exists) against fake OpenAI-compatible, Anthropic, and
+  OpenAI Responses endpoints, the in-process coding runtime over the runtime
+  protocol, the fake plugin, and the Python reference plugin:
+  `coding` (reads of a file, a directory, an image, and a missing file;
+  `bash` with SGR on both streams, a non-zero exit, a background job and its
+  report, and output cut to the budget with `full`; a plugin tool's `json`,
+  `link`, `code`, and `key_value` blocks; an `edit` approved once, a `write`
+  rejected, a `webfetch` granted for the tree and then allowed by the grant,
+  a skill; user input with an image and a video upload; the approval
+  reviewer; a summary compaction and a run after it), `delegation`
+  (foreground, background, and resumed delegation, `get_subagent_result`,
+  `send_message` queued and steered, subagent reports, a goal whose pending
+  reminder is discarded when the checklist completes, the reference
+  plugin's tool, a call its hook blocks, its queued producer message, and
+  user input steered into a running run and queued behind it), `replay`
+  (signed Anthropic thinking replayed natively), `native-compaction` and
+  `native-compaction-fallback` (OpenAI's compaction window, and the summary
+  when it fails), and `revert-fork` (a fork, then a revert of the source).
+  Every display-block kind occurs in a stored result. Each scenario is the
+  session store's root directories as written (artifacts, children, caches;
+  no lock files) and `snapshot.json`: per session the metadata, usage, model
+  history (full and assembled), and the events as a client of this version
+  receives them, recorded only where they differ from the stored record (a
+  stored display range), so the snapshot does not repeat the log. Indented
+  down to the sessions' members, one line per event. `golden_history_reads_as_recorded`
+  opens a copy of every scenario of every format directory read-only (the
+  tree's lock held elsewhere; the copy must stay byte-identical) and owned
+  (`Engine::resume`), and compares: every member the snapshot records must
+  read the same, members a newer build adds are allowed, and arrays keep
+  their lengths. It writes nothing; a failure names the JSON paths and says
+  the logs are frozen. `golden_history_tolerates_what_a_newer_build_adds`
+  rewrites copies of `coding` and `delegation` as a newer build of format 1
+  could have written them (unknown envelope, payload, and result members, a
+  display block of an unknown kind, and a final record of an unknown type):
+  they read as recorded, the unknown block is not sent to clients, a
+  skippable unknown record is skipped, a fork copies every unknown member and
+  the unknown record, and an unknown state record opens the logs render-only
+  (`run.start` refused) with one skipped event reported. The recorder's
+  `COOKIE_GOLDEN_HISTORY_ONLY` names one scenario while a recorder is being
+  written.
+- **Not covered by the golden logs.** Quarantine needs records a writer never
+  produces, so phase D's synthetic tests keep covering it; raw preservation is
+  covered by the future-data test. The goal tools are not called by the
+  model: on the base layer, `goal_get` and `goal_update` declare path actions
+  (`read`, `write`) on the relative resource `goal:current`, which no rule can
+  match without a workspace, so policy denies them whatever the agent allows
+  (an open follow-up); the recorder completes the goal through the API. MCP
+  tools are not recorded (their blocks are kinds the plugin tool covers).
+- **A fork of a session that delegated is refused** as a corrupt log
+  ("delegation reservation ownership is invalid"): the fork copies the
+  `delegation_reserved` records, whose `parent_session_id` names the source,
+  and validates them against the fork's own ID. This predates the
+  compatibility work (the delegation journal moved into parent events
+  earlier) and is left as an open follow-up, since what a fork should make of
+  its source's children is a design question; the future-data test forks
+  `coding`, which has no delegations.
+- **Corpora.** `crates/protocol/compat/corpus/{client,runtime}/1.0.0/`
+  were recorded in one TUI-like session against an in-process daemon with a
+  scripted OpenAI-compatible model and the local coding runtime behind the
+  runtime protocol (the ignored server test
+  `record_the_client_and_runtime_corpora`, `COOKIE_RECORD_CORPUS=<root>`):
+  the handshake, the catalog, session creation and listing, a subscription,
+  an image upload, `run.start` with a text and a file part, a `bash` call
+  held for approval while `session.submit_input` and `run.steer` arrive,
+  `approval.list` and `approval.respond`, `artifact.read`, and every reply
+  and notification; on the runtime side `runtime/initialize`,
+  `capability/open`, `runtime/context`, `tool/prepare`, `tool/revalidate`,
+  `tool/execute` with `tool/detachable` and `tool/progress`, and
+  `runtime/shutdown`. `plugin/1.0.0/` is the reference plugin's conversation,
+  recorded with `check_reference_plugin.py --record` (whose scripted
+  `tool_call_terminated` now carries a real result: a completed outcome
+  with a null result passes the schema but is nothing a daemon sends). Every
+  line is `{from, message}`, and each version directory's SHA-256 is pinned
+  in `cookie_agent_protocol::corpus::FROZEN` (behind `test-support`), so a
+  rewrite fails every replay; a new minor records its own directory. The
+  replays run where the readers live: requests against a fresh daemon (the
+  server, with IDs taken from the replay's own replies; unix only, as the
+  recorded call runs `printf`), replies and notifications through their
+  types and a real `Client` (protocol), the daemon's messages through an SDK
+  plugin and the coding runtime (`corpus::play`), and peer messages through
+  `RuntimeClient`'s handshakes and readers (engine). Each also re-reads the
+  recorded information with an unknown member in every object. Hand-written
+  newer-peer messages live in `corpus/future/{client,plugin,runtime,daemon}.json`
+  with a test beside each reader; the SDK's inline newer-daemon test moved
+  there. `tool/release` and `tool/cancel` are covered only by the future
+  runtime messages, since the recorded execution consumes its prepared call.
+- **Approval records read tolerantly.** The corpora found that
+  `ApprovalRecord`, `ApprovalInternalDecision`, and `ApprovalFinalDecision`
+  checked the coherence of status, decision, source, and reason when read, so
+  a value a newer build added (a status `deferred`, read as `cancelled`
+  without a final decision) failed an older client's whole `approval.list`
+  and the history records holding them. Their readers now check coherence
+  only when every one of those values reads as itself; the writers still
+  validate, and known values that contradict each other are still refused.
+- **Converters.** `events/convert/mod.rs` describes adding `v1_to_v2.rs`: bump
+  `HISTORY_FORMAT`, write the step over format-1 JSON lines (storage
+  encodings included), register it in `CONVERTERS` for good, record
+  `history/2/`, and keep `history/1/` read through the converter.
+- **Policy and docs.** `AGENTS.md` has a Compatibility section (the four
+  surfaces follow this spec, every wire change passes the checker with the
+  right bump, the frozen corpora and golden logs are never regenerated,
+  converters are the only migrations) beside the unchanged strict
+  configuration rule. `reference/compatibility.md` states sections 3 to 8 as
+  contributor rules and is in the nav; `protocol.md`, `runtime-protocol.md`,
+  `development/plugins.md`, `schemas.md`, `architecture.md`, and `events.md`
+  describe the frozen versions, the storage encoding, and the golden logs.
