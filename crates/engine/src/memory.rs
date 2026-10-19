@@ -1,10 +1,23 @@
 //! The memory folder, `<data_root>/memory` (`docs/site/specs/memory.md`
-//! section 4): its advisory lock and the machine memory folders that
-//! renaming and merging machines move.
+//! section 4): its advisory lock, its first-start defaults, the machine
+//! memory folders that renaming and merging machines move, and the memory
+//! store: URLs ([`url`]), the file format and revisions ([`file`]), reads,
+//! listings, and changes ([`store`]), and search ([`search`]).
 //!
 //! Every change to memory or to the machine registry holds [`MemoryLock`],
 //! because two plain `cookie` processes are two daemons sharing one data
 //! root. Functions that change folders take the held lock as proof.
+
+// The model and client surfaces of later phases call the store; until then
+// only its tests and the first start do.
+#[allow(dead_code)]
+pub(crate) mod file;
+#[allow(dead_code)]
+pub(crate) mod search;
+#[allow(dead_code)]
+pub(crate) mod store;
+#[allow(dead_code)]
+pub(crate) mod url;
 
 use std::{
     fs, io,
@@ -18,8 +31,14 @@ use cookie_agent_protocol::MachineName;
 pub(crate) const MEMORY_DIR: &str = "memory";
 /// The lock file inside the memory folder.
 pub(crate) const LOCK_FILE: &str = ".lock";
+/// The folder of user categories inside the memory folder.
+pub(crate) const USER_DIR: &str = "user";
+/// The folder of agent memories inside the memory folder.
+pub(crate) const AGENTS_DIR: &str = "agents";
 /// The folder of machine memories inside the memory folder.
 pub(crate) const MACHINES_DIR: &str = "machines";
+/// The folder of projects inside the memory folder.
+pub(crate) const PROJECTS_DIR: &str = "projects";
 /// A memory file's extension.
 pub(crate) const MEMORY_EXTENSION: &str = "md";
 
@@ -98,12 +117,90 @@ impl FolderMoves {
     }
 }
 
+/// The user categories a first start creates (section 4.5): file name,
+/// description, and keywords; their bodies are empty.
+const DEFAULT_CATEGORIES: [(&str, &str, &[&str]); 4] = [
+    (
+        "profile",
+        "Who the user is: role, expertise, languages, and the machines and accounts they use",
+        &["user", "role", "background", "expertise"],
+    ),
+    (
+        "preferences",
+        "How the user wants work done: style, tools, formats, tone, and things to always or never do",
+        &["prefer", "style", "always", "never", "format"],
+    ),
+    (
+        "feedback",
+        "Corrections and confirmed approaches from the user, each with why it matters",
+        &["feedback", "correction", "mistake", "approach"],
+    ),
+    (
+        "references",
+        "Where to find things: URLs, dashboards, documentation, related repositories",
+        &["link", "url", "docs", "dashboard", "repo"],
+    ),
+];
+
 impl MemoryRoot {
     /// The memory folder of the data root `data_dir`.
     pub(crate) fn new(data_dir: &Path) -> Self {
         Self {
             root: data_dir.join(MEMORY_DIR),
         }
+    }
+
+    /// The first start of section 4.5: when the memory folder does not
+    /// exist, creates it with the four layer folders and the default user
+    /// categories, and returns true. A memory folder that exists, whatever
+    /// it holds, is never touched.
+    ///
+    /// The folder is built under a temporary name in the data root and
+    /// renamed into place, so a crash leaves no half-made memory folder
+    /// that later starts would take as the user's, and a second daemon
+    /// starting at the same moment keeps the first one's folder.
+    pub(crate) fn create_defaults_if_absent(&self) -> Result<bool, MemoryError> {
+        if fs::symlink_metadata(&self.root).is_ok() {
+            return Ok(false);
+        }
+        let data_dir = self.root.parent().expect("the memory folder has a parent");
+        fs::create_dir_all(data_dir).map_err(io_error(data_dir))?;
+        let staging = data_dir.join(format!(".{MEMORY_DIR}.{}.tmp", uuid::Uuid::now_v7()));
+        let built = (|| {
+            for layer in [USER_DIR, AGENTS_DIR, MACHINES_DIR, PROJECTS_DIR] {
+                let path = staging.join(layer);
+                fs::create_dir_all(&path).map_err(io_error(&path))?;
+            }
+            for (category, description, keywords) in DEFAULT_CATEGORIES {
+                let document = file::MemoryDocument::new(
+                    description,
+                    keywords
+                        .iter()
+                        .map(|keyword| (*keyword).to_owned())
+                        .collect(),
+                    "",
+                )
+                .expect("the default categories are valid");
+                let path = staging
+                    .join(USER_DIR)
+                    .join(format!("{category}.{MEMORY_EXTENSION}"));
+                fs::write(&path, document.render()).map_err(io_error(&path))?;
+            }
+            Ok(())
+        })();
+        let placed = built.and_then(|()| match fs::rename(&staging, &self.root) {
+            Ok(()) => Ok(true),
+            // Another daemon created the folder first.
+            Err(_) if fs::symlink_metadata(&self.root).is_ok() => Ok(false),
+            Err(source) => Err(MemoryError::Io {
+                path: self.root.clone(),
+                source,
+            }),
+        });
+        if !matches!(placed, Ok(true)) {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        placed
     }
 
     #[cfg(test)]

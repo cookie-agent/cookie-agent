@@ -278,6 +278,9 @@ pub enum EngineError {
     /// A machine registry change was refused or failed.
     #[error(transparent)]
     Machine(#[from] crate::MachineError),
+    /// The memory folder could not be read or changed.
+    #[error("memory: {0}")]
+    Memory(String),
     #[error("plugin request rejected: {0}")]
     Plugin(String),
     #[error(transparent)]
@@ -961,6 +964,11 @@ impl Engine {
             current_manifest,
         });
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
+        // The first start keys off the memory folder's absence, so it runs
+        // before anything can take the memory lock or move machine folders.
+        crate::memory::MemoryRoot::new(&options.data_dir)
+            .create_defaults_if_absent()
+            .map_err(|error| EngineError::Memory(error.to_string()))?;
         let machines = Arc::new(crate::machines::MachineRegistry::open(&options.data_dir)?);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
