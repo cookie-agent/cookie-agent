@@ -912,3 +912,111 @@ Deviations and readings of the spec:
   not exercise the new methods, and its runtime handshake would record the
   recording machine's host name. The future-data fixture
   `corpus/future/runtime.json` expects this build's version, 1.1.0.
+
+### 16.2 Phase 2: store
+
+Landed 2026-10-19: memory URLs, the file format and revisions, the store's
+reads, listings, writes, edits, and deletes, search, the first start, and
+`[memory]` with its configuration reference page
+([Memory](../engine/memory.md)). Nothing calls the store yet besides the
+first start; no protocol changed.
+
+Where things are, for the later phases (all in `crate::memory`,
+`crates/engine/src/memory.rs` and `memory/`):
+
+- **URLs** (`memory/url.rs`): `MemoryUrl::parse(&str)` and its `Display`;
+  `MemoryLayer` (`parse`, `as_str`), `MemoryName`, `url.layer()`,
+  `url.name()`, `url.group()` (the machine or project), and
+  `relative_path()`.
+- **Files** (`memory/file.rs`): `MemoryDocument::new(description, keywords,
+  body)` validates a tool write's arguments, `MemoryDocument::parse(bytes,
+  max_file_bytes)` a file or a client's whole text, and `render()` gives
+  the file text. Failures are `InvalidMemory(reason)`. `MemoryRevision::of`
+  hashes bytes; `MemoryRevision::parse` checks a revision a caller sent.
+- **Store** (`memory/store.rs`, methods of `MemoryRoot`):
+  `read(url, max_file_bytes)`, `list(&ListScope, max_file_bytes)` (scopes
+  `All`, `Layer`, `Agent`, `Machine`, `Project`; entries carry URL,
+  revision, size, modification time, and the parsed memory or why it is
+  invalid; `ignored` lists what breaks the layout), `write(url, text,
+  expected_revision, origin, agent_exists, max_file_bytes)`, `edit(url,
+  old, new, revision, max_file_bytes)`, and `delete(url, revision,
+  origin)`. `Origin::Model` or `Origin::User` carries who asks; the caller
+  passes `agent_exists`, a predicate over the agent registry. Errors are
+  `StoreError`: `NotFound`, `Exists` and `RevisionMismatch` (both with the
+  current revision), `Invalid`, `Refused`, `NoOccurrence`,
+  `SeveralOccurrences`, and `Memory` for lock and I/O failures.
+- **Search** (`memory/search.rs`): `MemoryRoot::search(query, layer, limit,
+  max_file_bytes, visibility)`, where `visibility` maps each candidate's URL
+  to `Visibility::Full`, `Summary`, or `Hidden` from the `memory` rules.
+  Hits are `SearchHit { url, description, detail }`, with `detail`
+  (keywords and matching lines) only for `Full`.
+- **Limits** are read per call, never cached: callers pass
+  `engine.inner.config.load().runtime.memory.max_file_bytes` (and the two
+  snapshot limits in phase 3), so `config.apply` and `config.reload` take
+  effect at the next operation. `MemoryConfig::EVENT_MAX_BYTES` and
+  `RENDER_OVERHEAD_BYTES` in `cookie_agent_config` are the bound phase 3's
+  `memory_loaded` validation uses.
+- **Blocking.** Every store call is synchronous file I/O, and changes wait
+  up to 5 s for the memory lock, so async callers run them on a blocking
+  thread.
+
+Deviations and readings of the spec:
+
+- **Segment rules.** The machine segment of `machine://` follows the
+  machine name rule of section 3.2 (a letter first, `_` allowed, at most 32
+  bytes), not section 4.2, because machine folders carry machine names.
+  The agent segment of `agent://` follows the agent ID rule, slightly
+  stricter than section 4.2 (no trailing or doubled `-`), and `self` is
+  refused.
+- **Parsing.** The frontmatter is parsed with `serde_yaml`, as agent
+  documents are, into a strict struct, so a duplicate key is also invalid.
+  Lengths are counted in Unicode characters. `\r\n` reads as `\n`; any
+  other control character but newline and tab makes a file on disk
+  invalid, not only a write, so the snapshot never carries one. A file
+  that is not UTF-8, or a path that is not a regular file (a symbolic link
+  included), is invalid.
+- **Rendering.** A tool write's file is rendered as `description: …`, then
+  `keywords: [a, b]` (left out when empty), then the body unchanged.
+  Each value is written plain when it reads back the same, double-quoted
+  otherwise. A write from whole text (the client's `memory.write`) keeps
+  the text as given once it validates. An edit re-renders the file, so
+  YAML comments or quoting the user wrote in the frontmatter do not
+  survive an edit; an empty `old` counts as not occurring.
+- **Who may create.** The `user://` creation refusal applies to
+  `Origin::Model` only, since the user adds categories (section 4.1). The
+  agent registry check for a new `agent://` file applies to both origins.
+- **Folders.** A write creates any missing folder on its way, the memory
+  folder included if the user removed it. Deleting a project's last memory
+  removes its folder only when nothing else is left in it; a machine's
+  folder stays, since it belongs to the machine registry and
+  `machines.forget` removes an empty one.
+- **Listing.** Ignored entries carry a reason: not a `.md` file, a name
+  that breaks the rule, a name that is not an agent ID (`self.md`
+  included), a folder name that is not a machine name, nested deeper than
+  the layout, a file where a folder belongs, not a regular file, or
+  something in the memory folder outside the four layers (`.lock`
+  excepted). A file over `max_file_bytes` is not read whole by a listing
+  or search; its revision is hashed while streaming it.
+- **Search.** Scores compare by keyword hits, then name and description
+  hits, then body hits, each count beating any amount of the next, rather
+  than adding weighted counts. A keyword hits when it occurs anywhere in
+  the lower-cased query, each distinct keyword once; repeated query terms
+  count once. Matching lines are body lines holding any query term,
+  trailing whitespace trimmed. Ties go to the newer file, then to the URL.
+  `visibility` is asked in rank order and only until `limit` hits are
+  found; a `Summary` hit keeps the rank its full score gives it. Checking
+  the query (1 to 200 characters) and `limit` (1 to 25) is left to the
+  tool.
+- **First start.** `Engine` open runs it right after the session store
+  opens and before the machine registry, so nothing has taken the memory
+  lock or moved a machine folder first; phase 1's lock and folder moves
+  create no memory folder. The folder is built as
+  `<data_root>/.memory.<id>.tmp` and renamed into place, so a crash leaves
+  no half-made folder that later starts would keep, and a second daemon
+  starting at once keeps the first one's. A failure fails the start with
+  `EngineError::Memory`.
+- **`[memory]` bound.** Each limit must be positive, and their sum at most
+  57344 bytes: the 64 KiB event bound less an 8 KiB reserve for the fixed
+  text, headings, tags, and escaping. Escaping can lengthen a body
+  (`<memory` becomes `&lt;memory`), so phase 3 must measure the agent
+  section, too, on its rendered text and keep the reserve's promise.
