@@ -662,3 +662,74 @@ None. Every choice was settled on 2026-10-19:
 ## 16. Implementation notes
 
 Filled in as phases land.
+
+### Phase L (2026-10-19)
+
+Landed as specified, with no wire change and no configuration key.
+
+- **Where it lives.** `crates/cookie_agent/src/local_daemon.rs` holds the
+  probe and the runtime choice; `main.rs` keeps the wiring thin.
+  `cookie attach` and plain `cookie` with a found daemon share one
+  function, `run_daemon_tui`, after their different connects.
+- **Probe.** The TCP connect runs on its own under the 500 ms deadline, so
+  "nothing listens" is told apart from "answered but unusable". The
+  WebSocket upgrade then runs over that same connection through a new
+  Rust API, `Client::connect_websocket_over` in the protocol crate, and it
+  shares the 2 s deadline with the handshake. The configuration is loaded
+  once: the in-process daemon composes from the same load, so a broken
+  configuration still fails before the probe, as it did before.
+- **Decision as pure functions.** The decision is two pure functions, one
+  per section, rather than one:
+  - `Probe` and its `notice()` cover the rows of 13.1;
+  - `choose_runtime` covers the steps of 13.2.
+
+  `runtime_for` reads `runtimes.list` and `machines.list` only when the
+  machine IDs differ. A daemon that cannot list them gets a dial-in.
+- **Step 2 details.**
+  - **Own ID excluded.** Step 2 never picks the runtime ID this client
+    dials in as (`client_<host>`). That runtime belongs to another TUI on
+    this machine, which limits it to that TUI's directory, and it goes away
+    when that TUI quits. Dialing in again under the same ID retries until
+    that TUI leaves.
+  - **Facts only.** The exclusion is by runtime ID, a reported fact, not
+    by kind.
+  - **Several workspace capabilities.** A runtime that offers more than one
+    capability taking a workspace uses the first in `runtimes.list` order.
+  - **Not only `coding`.** `SessionPlacement` gained a `capability`, so a
+    chosen runtime's workspace capability need not be named `coding`.
+- **Notices (deviation).** The notices render as `NOTICE` rows below the
+  transcript, not in the one-line status row:
+  - the status row truncates the address and the suggestions at narrow
+    widths;
+  - the first action overwrites it.
+
+  They stay for the TUI's lifetime, like goal notices. The connection
+  label leads the bottom bar: the daemon's address (`127.0.0.1:7419`, with
+  `wss://` kept), or `standalone`. `cookie attach` shows it too.
+- **Version notice.** It compares the daemon's `engine_version` (the
+  server crate's version) with this binary's package version, not with
+  `cookie --version`, whose git hash would always differ. `cookie attach`
+  shows it too.
+- **`--standalone`.**
+  - Before a subcommand, `main_result` refuses it with a clap usage error
+    (exit code 2).
+  - After a subcommand's name, clap rejects it as an unknown argument.
+- **Tests.**
+  - **Unit.** The pure functions are tested over every row and step.
+  - **Against a real daemon.** `crates/cookie_agent/src/tests.rs` runs a
+    listening daemon, with a scratch `[server]` pointing at it. It covers:
+    connect and create a session through it; no token; nothing listening;
+    a wrong token; a listener that closes; a silent listener and the
+    handshake deadline; and a dial-in for another machine ID, whose
+    session attaches `client_<host>` at the directory.
+  - **Binary.** `crates/cookie_agent/tests/local_daemon.rs` runs the real
+    binary against a listener at the scratch home's `[server] port` that
+    counts connections. Plain `cookie` dials once. Without a token, and
+    for `--standalone` and `cookie run`, nothing dials.
+- **Not tested end to end.**
+  - **The TUI over a pty.** "Plain `cookie` creates its session through
+    the daemon" is covered by `session.create` over the probed connection,
+    not by driving a TUI over a pty.
+  - **Step 2 against a real daemon.** A test daemon reports the test
+    process's own machine ID, so it cannot place a runtime on another
+    machine. The pure function covers step 2.
