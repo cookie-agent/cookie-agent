@@ -1677,3 +1677,210 @@ async fn machines_are_listed_changed_and_announced_through_rpc() {
     assert_eq!(again["error"]["data"]["code"], "runtime_not_pinned");
     harness.engine.shutdown().await;
 }
+
+/// `memory.*` act on the store for the user: whole-file writes with
+/// revisions, refusals as registry errors, filtered listings that report
+/// invalid files, ignored entries, and agent files of no current agent, and
+/// `memory.changed` after each change.
+#[tokio::test]
+async fn memory_is_listed_read_written_and_deleted_through_rpc() {
+    let harness = harness_with_mcp(BTreeMap::new());
+    let memory = harness._directory.path().join("data/memory");
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let code = |reply: &Value| {
+        reply["error"]["data"]["code"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    };
+
+    // The first start made the four default categories.
+    let (listed, _) = request(&mut client, 2, "memory.list", json!({})).await;
+    let urls = |reply: &Value| {
+        reply["result"]["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|memory| memory["url"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        urls(&listed),
+        [
+            "user://feedback",
+            "user://preferences",
+            "user://profile",
+            "user://references"
+        ],
+        "{listed}"
+    );
+
+    // Creating a project memory, then reading it back whole.
+    let text = "---\ndescription: Build conventions\nkeywords: [cargo]\n---\nRun the gates.\n";
+    let (written, early) = request(
+        &mut client,
+        3,
+        "memory.write",
+        json!({ "url": "project://web/build", "text": text }),
+    )
+    .await;
+    let revision = written["result"]["revision"].as_str().unwrap().to_owned();
+    assert_eq!(revision.len(), 16, "{written}");
+    if !early
+        .iter()
+        .any(|notification| notification["method"] == "memory.changed")
+    {
+        notification_where(&mut client, "memory.changed", |_| true).await;
+    }
+    let (read, _) = request(
+        &mut client,
+        4,
+        "memory.read",
+        json!({ "url": "project://web/build" }),
+    )
+    .await;
+    assert_eq!(read["result"]["text"], text);
+    assert_eq!(read["result"]["revision"], revision.as_str());
+    assert!(read["result"].get("invalid").is_none(), "{read}");
+
+    // Without a revision an existing memory is not replaced; with a stale
+    // one it is not either, and both errors carry the current revision.
+    let (exists, _) = request(
+        &mut client,
+        5,
+        "memory.write",
+        json!({ "url": "project://web/build", "text": text }),
+    )
+    .await;
+    assert_eq!(code(&exists), "memory_exists");
+    assert_eq!(exists["error"]["data"]["revision"], revision.as_str());
+    let (stale, _) = request(
+        &mut client,
+        6,
+        "memory.write",
+        json!({ "url": "project://web/build", "text": text, "revision": "0000000000000000" }),
+    )
+    .await;
+    assert_eq!(code(&stale), "memory_revision_mismatch");
+    assert_eq!(stale["error"]["data"]["revision"], revision.as_str());
+
+    // Invalid text, a bad URL, a bad revision, and an agent the registry
+    // does not have are refused, changing nothing.
+    let (invalid, _) = request(
+        &mut client,
+        7,
+        "memory.write",
+        json!({ "url": "project://web/build", "text": "no frontmatter\n", "revision": revision }),
+    )
+    .await;
+    assert_eq!(code(&invalid), "memory_invalid", "{invalid}");
+    let (bad_url, _) = request(
+        &mut client,
+        8,
+        "memory.read",
+        json!({ "url": "project://Web/build" }),
+    )
+    .await;
+    assert_eq!(code(&bad_url), "memory_url_invalid", "{bad_url}");
+    let (bad_revision, _) = request(
+        &mut client,
+        9,
+        "memory.delete",
+        json!({ "url": "project://web/build", "revision": "nope" }),
+    )
+    .await;
+    assert_eq!(bad_revision["error"]["code"], -32602, "{bad_revision}");
+    assert_eq!(bad_revision["error"]["data"]["field"], "revision");
+    let (refused, _) = request(
+        &mut client,
+        10,
+        "memory.write",
+        json!({ "url": "agent://ghost", "text": "---\ndescription: Lessons\n---\n" }),
+    )
+    .await;
+    assert_eq!(code(&refused), "memory_refused", "{refused}");
+    assert_eq!(
+        std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap(),
+        text
+    );
+
+    // The user adds a category, which a model may not.
+    let (category, _) = request(
+        &mut client,
+        11,
+        "memory.write",
+        json!({ "url": "user://hardware", "text": "---\ndescription: The user's hardware\n---\n" }),
+    )
+    .await;
+    assert!(category["result"]["revision"].is_string(), "{category}");
+
+    // Files written by hand: an agent file of no current agent, an invalid
+    // machine memory, and a stray file.
+    std::fs::write(
+        memory.join("agents/ghost.md"),
+        "---\ndescription: Old lessons\n---\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(memory.join("machines/labpc")).unwrap();
+    std::fs::write(memory.join("machines/labpc/gpu.md"), "no frontmatter\n").unwrap();
+    std::fs::write(memory.join("projects/web/notes.txt"), "stray").unwrap();
+    let (agents, _) = request(&mut client, 12, "memory.list", json!({ "layer": "agent" })).await;
+    let ghost = &agents["result"]["memories"][0];
+    assert_eq!(ghost["url"], "agent://ghost", "{agents}");
+    assert_eq!(ghost["orphaned"], true);
+    assert_eq!(ghost["description"], "Old lessons");
+    let (machine, _) = request(
+        &mut client,
+        13,
+        "memory.list",
+        json!({ "machine": "labpc" }),
+    )
+    .await;
+    let gpu = &machine["result"]["memories"][0];
+    assert_eq!(gpu["url"], "machine://labpc/gpu", "{machine}");
+    assert!(gpu["invalid"].is_string(), "{machine}");
+    assert!(gpu.get("description").is_none());
+    let (project, _) = request(&mut client, 14, "memory.list", json!({ "project": "web" })).await;
+    assert_eq!(urls(&project), ["project://web/build"]);
+    assert_eq!(project["result"]["memories"][0]["group"], "web");
+    assert_eq!(project["result"]["memories"][0]["size"], text.len());
+    assert_eq!(
+        project["result"]["ignored"],
+        json!([{ "path": "projects/web/notes.txt", "reason": "not a `.md` file" }])
+    );
+    let (two, _) = request(
+        &mut client,
+        15,
+        "memory.list",
+        json!({ "agent": "default", "project": "web" }),
+    )
+    .await;
+    assert_eq!(two["error"]["code"], -32602, "{two}");
+
+    // The user deletes an agent file and a category, which a model may not.
+    let (deleted, _) = request(
+        &mut client,
+        16,
+        "memory.delete",
+        json!({ "url": "agent://ghost", "revision": ghost["revision"] }),
+    )
+    .await;
+    assert_eq!(deleted["result"], json!({}), "{deleted}");
+    let (deleted, _) = request(
+        &mut client,
+        17,
+        "memory.delete",
+        json!({ "url": "user://hardware", "revision": category["result"]["revision"] }),
+    )
+    .await;
+    assert_eq!(deleted["result"], json!({}), "{deleted}");
+    let (gone, _) = request(
+        &mut client,
+        18,
+        "memory.read",
+        json!({ "url": "agent://ghost" }),
+    )
+    .await;
+    assert_eq!(code(&gone), "memory_not_found");
+    harness.engine.shutdown().await;
+}

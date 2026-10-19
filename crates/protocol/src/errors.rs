@@ -509,6 +509,85 @@ error_codes! {
         hint: Some("See the details, then check that the cookie data directory is writable."),
         description: "Reading or writing `machines.json`, taking the memory lock, or moving a memory folder failed; nothing changed.",
     }
+    MEMORY_URL_INVALID {
+        code: "memory_url_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("url", "The URL as sent."),
+            required("reason", "Why it is not a memory URL."),
+        ],
+        message: "That is not a memory URL: {reason}.",
+        hint: Some("Memory URLs are user://<category>, agent://<agent>, machine://<machine>/<name>, and project://<project>/<name>, in lowercase."),
+        description: "A `memory.*` request named something that is not a memory URL.",
+    }
+    MEMORY_NOT_FOUND {
+        code: "memory_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("url", "The memory URL.")],
+        message: "There is no memory at {url}.",
+        hint: Some("See `memory.list` for the memories."),
+        description: "`memory.read` or `memory.delete` of a memory that does not exist, or a `memory.write` with a revision for one that does not.",
+    }
+    MEMORY_EXISTS {
+        code: "memory_exists",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("url", "The memory URL."),
+            required("revision", "The memory's current revision."),
+        ],
+        message: "The memory {url} already exists.",
+        hint: Some("Read it and send its revision to replace it."),
+        description: "`memory.write` without a revision for a memory that exists; nothing changed.",
+    }
+    MEMORY_REVISION_MISMATCH {
+        code: "memory_revision_mismatch",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("url", "The memory URL."),
+            required("revision", "The memory's current revision."),
+        ],
+        message: "The memory {url} changed since it was read.",
+        hint: Some("Read it again, then repeat the change on the current text."),
+        description: "`memory.write` or `memory.delete` with a revision other than the file's current one; nothing changed.",
+    }
+    MEMORY_INVALID {
+        code: "memory_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("url", "The memory URL."),
+            required("reason", "What is wrong with the text."),
+        ],
+        message: "The text is not a valid memory: {reason}.",
+        hint: Some("A memory starts with frontmatter that holds a one-line description and optional keywords, then its Markdown body."),
+        description: "`memory.write` text that does not parse, breaks a rule of the file format, or is longer than `[memory] max_file_bytes`; nothing changed.",
+    }
+    MEMORY_REFUSED {
+        code: "memory_refused",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("url", "The memory URL."),
+            required("reason", "Why, in the daemon's words."),
+        ],
+        message: "The memory change was refused: {reason}.",
+        hint: None,
+        description: "A `memory.*` change the memory rules do not allow, such as creating an `agent://` memory for an agent the agent registry does not have.",
+    }
+    MEMORY_BUSY {
+        code: "memory_busy",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "Another cookie process is changing memory.",
+        hint: Some("Try again in a moment."),
+        description: "The memory lock could not be taken in time; nothing changed.",
+    }
+    MEMORY_STORE_FAILED {
+        code: "memory_store_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The memory folder could not be read or changed.",
+        hint: Some("See the details, then check that the cookie data directory is readable and writable."),
+        description: "Reading or writing a file in the memory folder failed.",
+    }
     CONFIG_APPLY_REFUSED {
         code: "config_apply_refused",
         rpc: APPLICATION_ERROR,

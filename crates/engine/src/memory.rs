@@ -68,10 +68,12 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> MemoryError + '_ {
     }
 }
 
-/// The memory folder of one data root.
+/// The memory folder of one data root. Clones share one change signal.
 #[derive(Clone, Debug)]
 pub(crate) struct MemoryRoot {
     root: PathBuf,
+    /// Bumped after each write, edit, or delete through this root.
+    changes: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 /// The held memory lock; dropping it releases the lock.
@@ -144,7 +146,20 @@ impl MemoryRoot {
     pub(crate) fn new(data_dir: &Path) -> Self {
         Self {
             root: data_dir.join(MEMORY_DIR),
+            changes: std::sync::Arc::new(tokio::sync::watch::channel(0).0),
         }
+    }
+
+    /// Signals every memory file this root writes, edits, or deletes;
+    /// changes other processes make are not seen.
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    /// Tells subscribers a memory file changed.
+    fn changed(&self) {
+        self.changes
+            .send_modify(|count| *count = count.wrapping_add(1));
     }
 
     /// The first start of section 4.5: when the memory folder does not

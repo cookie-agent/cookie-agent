@@ -522,6 +522,26 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::MachinesForgetParams,
     ) -> Result<crate::MachinesListResult, ServerFault>;
+    /// Lists memory files.
+    async fn list_memory(
+        &self,
+        params: crate::MemoryListParams,
+    ) -> Result<crate::MemoryListResult, ServerFault>;
+    /// Reads one memory whole.
+    async fn read_memory(
+        &self,
+        params: crate::MemoryReadParams,
+    ) -> Result<crate::MemoryReadResult, ServerFault>;
+    /// Creates or replaces one memory from its whole text.
+    async fn write_memory(
+        &self,
+        params: crate::MemoryWriteParams,
+    ) -> Result<crate::MemoryWriteResult, ServerFault>;
+    /// Deletes one memory.
+    async fn delete_memory(
+        &self,
+        params: crate::MemoryDeleteParams,
+    ) -> Result<crate::MemoryDeleteResult, ServerFault>;
     /// Lists the configured plugins.
     async fn list_plugins(
         &self,
@@ -1020,6 +1040,10 @@ async fn dispatch<S: ServerProtocol>(
         crate::MACHINES_UNASSIGN_METHOD => value(server.unassign_machine(decode(params)?).await?),
         crate::MACHINES_MERGE_METHOD => value(server.merge_machines(decode(params)?).await?),
         crate::MACHINES_FORGET_METHOD => value(server.forget_machine(decode(params)?).await?),
+        crate::MEMORY_LIST_METHOD => value(server.list_memory(decode_default(params)?).await?),
+        crate::MEMORY_READ_METHOD => value(server.read_memory(decode(params)?).await?),
+        crate::MEMORY_WRITE_METHOD => value(server.write_memory(decode(params)?).await?),
+        crate::MEMORY_DELETE_METHOD => value(server.delete_memory(decode(params)?).await?),
         crate::PLUGINS_LIST_METHOD => value(server.list_plugins(decode_default(params)?).await?),
         crate::PLUGINS_RESTART_METHOD => value(server.restart_plugin(decode(params)?).await?),
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),

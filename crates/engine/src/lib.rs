@@ -47,6 +47,7 @@ pub use runtime::configuration::{
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).
 pub use runtime::handles::SubagentScope;
+pub use runtime::memory_api::MemoryRequestError;
 pub use runtime::messaging_api::{
     MESSAGE_DISABLED, MESSAGE_ENGINE_SHUTDOWN, MESSAGE_INBOX_FULL, MESSAGE_INFLIGHT_FULL,
     MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED,

@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.3.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.4.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.3.0",
+    "protocol_version": "1.4.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.3.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.4.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -244,6 +244,10 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `machines.unassign` | `runtime` ID | The `machines` afterwards; the runtime's pin is gone |
 | `machines.merge` | `from`, `into` | The `machines` afterwards; `from`'s IDs, pins, and memories moved to `into` |
 | `machines.forget` | `machine` | The `machines` afterwards, without the machine |
+| `memory.list` | Optional `layer`, and at most one of `agent`, `machine`, and `project` | The `memories`, valid or not, and the `ignored` entries of the memory folder (see [Memory](#memory)) |
+| `memory.read` | Memory `url` | The file's whole `text`, its `revision`, and why it is `invalid` when it is |
+| `memory.write` | Memory `url`, whole-file `text`, `revision` of the file it replaces | The new `revision`; without `revision` the memory must not exist |
+| `memory.delete` | Memory `url`, `revision` | Empty object |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -474,6 +478,49 @@ fails, changing nothing, when it cannot:
 
 An unknown machine is `machine_not_found`; a registry or folder that cannot
 be read or written is `machine_store_failed`.
+
+### Memory
+
+The daemon's memory is Markdown files with `description` and `keywords`
+frontmatter, in four layers, each file addressed by a memory URL:
+`user://<category>`, `agent://<agent>`, `machine://<machine>/<name>`, and
+`project://<project>/<name>` (see the [memory guide](../guide/memory.md)
+and the [memory spec](../specs/memory.md#5-memory-urls)). The `memory.*`
+methods act on the files for the user, with no session; a change never
+refreshes the memory snapshot of an open session, which a later run takes
+when it would anyway.
+
+`memory.list` returns each file as a `MemoryInfo`: its `url`, `layer`
+(`user`, `agent`, `machine`, or `project`), `group` (the machine or project
+of a `machine://` or `project://` memory), `revision`, `size` in bytes, and
+either its `description` and `keywords` or the reason it is `invalid`. An
+`agent://` file whose agent the agent registry no longer has is
+`orphaned`. `ignored` lists, by path in the memory folder, what is not a
+memory file of the layout (a file without `.md`, a name that breaks the
+naming rules, something nested too deep) with the reason. `layer` keeps one
+layer; `agent`, `machine`, or `project` keeps one agent's file, one
+machine's memories, or one project's, and only one of the three may be
+given. A filter that contradicts `layer` or another filter is `-32602`.
+
+A **revision** is the first 16 hex digits of the SHA-256 of the file's
+bytes. `memory.write` takes the whole file text, frontmatter included, and
+checks it like the model's `memory_write`: it must parse, follow the file
+format, and fit `[memory] max_file_bytes`. Without `revision` it creates the
+memory, and fails with `memory_exists` when it exists; with `revision` it
+replaces the memory at that revision, and fails with
+`memory_revision_mismatch` when the file changed since, or
+`memory_not_found` when it is gone. Both errors carry the file's current
+`revision`. `memory.delete` needs the revision as well. Unlike the model,
+the user may create and delete `user://` categories and delete `agent://`
+files; an `agent://` file is created only for an agent the agent registry
+has (`memory_refused`).
+
+A URL that is not a memory URL is `memory_url_invalid`; text that is not a
+valid memory is `memory_invalid` with the reason; a malformed `revision` is
+`-32602`. Another process holding the memory lock is `memory_busy`, and a
+file that cannot be read or written is `memory_store_failed`. Each change
+sends `memory.changed` to every connection; changes another daemon sharing
+the data folder makes are not announced.
 
 ### Plugins
 
@@ -709,6 +756,7 @@ the title, and continues with new physical sequences.
 | `background.changed` | A subscribed session's background calls changed: `session_id` and its current `calls` |
 | `plugins.changed` | A plugin's status changed; an empty object |
 | `machines.changed` | The machine registry changed, or a runtime joined a new machine; an empty object |
+| `memory.changed` | A memory file changed through the daemon; an empty object |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
@@ -721,7 +769,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, and `machines.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, and `memory.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -746,8 +794,9 @@ client that holds a different revision refetches `runtime.snapshot.get` rather
 than trusting either. A status `mcp.changed` is an empty object;
 bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `runtimes.changed` and `plugins.changed` work the same way for
-`runtimes.list` and `plugins.list`, and `machines.changed` for
-`machines.list` and `runtimes.list`.
+`runtimes.list` and `plugins.list`, `machines.changed` for
+`machines.list` and `runtimes.list`, and `memory.changed` for
+`memory.list`.
 
 ### Connection failures
 

@@ -28,8 +28,7 @@ use super::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Origin {
     Model,
-    // The client surface (`memory.*`) asks for the user.
-    #[allow(dead_code)]
+    /// The client surface (`memory.*`).
     User,
 }
 
@@ -75,7 +74,6 @@ pub(crate) struct MemoryEntry {
     pub(crate) url: MemoryUrl,
     pub(crate) revision: MemoryRevision,
     /// The file's size in bytes, which `memory.list` reports.
-    #[allow(dead_code)]
     pub(crate) size: u64,
     pub(crate) modified: SystemTime,
     /// The parsed memory, or why the file is invalid.
@@ -105,12 +103,8 @@ pub(crate) struct IgnoredEntry {
 pub(crate) enum ListScope {
     All,
     Layer(MemoryLayer),
-    // `memory.list { agent }` lists one agent's file.
-    #[allow(dead_code)]
     Agent(AgentId),
     Machine(MachineName),
-    // `memory.list { project }` lists one project.
-    #[allow(dead_code)]
     Project(MemoryName),
 }
 
@@ -490,6 +484,7 @@ impl MemoryRoot {
         }
         let revision = write_file(&path, text.as_bytes())?;
         drop(lock);
+        self.changed();
         Ok(revision)
     }
 
@@ -551,6 +546,7 @@ impl MemoryRoot {
         }
         let revision = write_file(&path, text.as_bytes())?;
         drop(lock);
+        self.changed();
         Ok(revision)
     }
 
@@ -587,6 +583,7 @@ impl MemoryRoot {
             let _ = fs::remove_dir(&folder);
         }
         drop(lock);
+        self.changed();
         Ok(())
     }
 }

@@ -235,8 +235,7 @@ impl MemoryRevision {
         .then(|| Self(value.to_owned()))
     }
 
-    // The client surface (`memory.*`) sends revisions as text.
-    #[allow(dead_code)]
+    /// The revision as text, as `memory.*` sends it.
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }

@@ -117,6 +117,8 @@ pub enum ClientDelivery {
     /// The machine registry changed, or a runtime joined a new machine;
     /// refetch `machines.list` and `runtimes.list`.
     MachinesChanged(crate::MachinesChangedNotification),
+    /// A memory file changed through the daemon; refetch `memory.list`.
+    MemoryChanged(crate::MemoryChangedNotification),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -928,6 +930,61 @@ impl Client {
         self.call(
             crate::MACHINES_FORGET_METHOD,
             &crate::MachinesForgetParams { machine },
+        )
+        .await
+    }
+
+    /// The memory files `params` asks for, valid or not.
+    pub async fn list_memory(
+        &self,
+        params: crate::MemoryListParams,
+    ) -> Result<crate::MemoryListResult, ClientError> {
+        self.call(crate::MEMORY_LIST_METHOD, &params).await
+    }
+
+    /// One memory's whole text and revision.
+    pub async fn read_memory(
+        &self,
+        url: impl Into<String>,
+    ) -> Result<crate::MemoryReadResult, ClientError> {
+        self.call(
+            crate::MEMORY_READ_METHOD,
+            &crate::MemoryReadParams { url: url.into() },
+        )
+        .await
+    }
+
+    /// Creates the memory `url` from `text` (`revision` absent), or replaces
+    /// it at `revision`.
+    pub async fn write_memory(
+        &self,
+        url: impl Into<String>,
+        text: impl Into<String>,
+        revision: Option<String>,
+    ) -> Result<crate::MemoryWriteResult, ClientError> {
+        self.call(
+            crate::MEMORY_WRITE_METHOD,
+            &crate::MemoryWriteParams {
+                url: url.into(),
+                text: text.into(),
+                revision,
+            },
+        )
+        .await
+    }
+
+    /// Deletes the memory `url` at `revision`.
+    pub async fn delete_memory(
+        &self,
+        url: impl Into<String>,
+        revision: impl Into<String>,
+    ) -> Result<crate::MemoryDeleteResult, ClientError> {
+        self.call(
+            crate::MEMORY_DELETE_METHOD,
+            &crate::MemoryDeleteParams {
+                url: url.into(),
+                revision: revision.into(),
+            },
         )
         .await
     }
@@ -1838,6 +1895,10 @@ async fn route_notification(
         crate::MACHINES_CHANGED_METHOD => {
             let changed: crate::MachinesChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::MachinesChanged(changed));
+        }
+        crate::MEMORY_CHANGED_METHOD => {
+            let changed: crate::MemoryChangedNotification = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::MemoryChanged(changed));
         }
         _ => {}
     }

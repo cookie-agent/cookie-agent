@@ -164,3 +164,160 @@ impl MemorySnapshot {
         Ok(())
     }
 }
+
+crate::open_enum! {
+    /// What a memory is about (`docs/site/specs/memory.md` section 4).
+    #[derive(
+        Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+    )]
+    #[serde(rename_all = "snake_case")]
+    pub enum MemoryLayer {
+        /// `user://<category>`: the user, in every task.
+        User,
+        /// `agent://<agent>`: one agent's way of doing its job.
+        Agent,
+        /// `machine://<machine>/<name>`: one machine.
+        Machine,
+        /// `project://<project>/<name>`: one body of work.
+        Project,
+    }
+}
+
+impl MemoryLayer {
+    /// The four layers, in the order listings give them.
+    pub const ALL: [Self; 4] = [Self::User, Self::Agent, Self::Machine, Self::Project];
+
+    /// The layer's name, which is also its URL scheme; `unknown` for a
+    /// layer this build does not know.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::Machine => "machine",
+            Self::Project => "project",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// List memory files. With no member, everything; `layer` keeps one layer,
+/// and at most one of `agent`, `machine`, and `project` keeps one agent's
+/// file, one machine's memories, or one project's (`layer`, when also
+/// given, must be that one's layer).
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<MemoryLayer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<MachineName>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+/// The memory files asked for, valid or not, and what else lies in their
+/// folders.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryListResult {
+    /// Memory files in layer order (`user`, `agent`, `machine`, `project`),
+    /// then by URL.
+    pub memories: Vec<MemoryInfo>,
+    /// Entries of the memory folder that are not memory files of its
+    /// layout, by path; search and the snapshot never read them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored: Vec<MemoryIgnoredEntry>,
+}
+
+/// One memory file.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryInfo {
+    /// The memory URL.
+    pub url: String,
+    pub layer: MemoryLayer,
+    /// The machine of a `machine://` memory or the project of a
+    /// `project://` one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The first 16 hex digits of the SHA-256 of the file's bytes; a write
+    /// or delete sends it back.
+    pub revision: String,
+    /// The file's size in bytes.
+    pub size: u64,
+    /// The memory's description; absent for an invalid file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// Why the file is not a valid memory; search and the snapshot skip it
+    /// until it is fixed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid: Option<String>,
+    /// An `agent://` file whose agent the agent registry no longer has.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub orphaned: bool,
+}
+
+/// Something in the memory folder that is not a memory file of its layout.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryIgnoredEntry {
+    /// The path relative to the memory folder, with `/` separators.
+    pub path: String,
+    /// Why it is not a memory file.
+    pub reason: String,
+}
+
+/// Read one memory whole.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryReadParams {
+    pub url: String,
+}
+
+/// A memory file's whole text, frontmatter included, and its revision.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryReadResult {
+    pub url: String,
+    pub text: String,
+    pub revision: String,
+    /// Why the file is not a valid memory, when it is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid: Option<String>,
+}
+
+/// Create or replace one memory from its whole text, frontmatter included.
+/// Without `revision` the memory must not exist; with it, it must exist at
+/// that revision.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryWriteParams {
+    pub url: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+/// The memory's new revision.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryWriteResult {
+    pub url: String,
+    pub revision: String,
+}
+
+/// Delete one memory at the revision last read.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryDeleteParams {
+    pub url: String,
+    pub revision: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryDeleteResult {}
+
+/// A memory file was created, changed, or deleted through this daemon;
+/// refetch `memory.list`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryChangedNotification {}

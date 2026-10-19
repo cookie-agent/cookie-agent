@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A memory file's whole text, frontmatter included, and its revision.",
+  "properties": {
+    "invalid": {
+      "description": "Why the file is not a valid memory, when it is not.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "revision": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "url",
+    "text",
+    "revision"
+  ],
+  "title": "MemoryReadResult",
+  "type": "object"
+}

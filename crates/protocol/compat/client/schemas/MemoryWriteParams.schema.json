@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Create or replace one memory from its whole text, frontmatter included.\nWithout `revision` the memory must not exist; with it, it must exist at\nthat revision.",
+  "properties": {
+    "revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "text": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "url",
+    "text"
+  ],
+  "title": "MemoryWriteParams",
+  "type": "object"
+}

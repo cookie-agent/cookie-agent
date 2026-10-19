@@ -276,6 +276,46 @@
     {
       "direction": "from_daemon",
       "kind": "notification",
+      "method": "memory.changed",
+      "params": "MemoryChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "memory.delete",
+      "params": "MemoryDeleteParams",
+      "params_role": "command",
+      "result": "MemoryDeleteResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "memory.list",
+      "params": "MemoryListParams",
+      "params_role": "command",
+      "result": "MemoryListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "memory.read",
+      "params": "MemoryReadParams",
+      "params_role": "command",
+      "result": "MemoryReadResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "memory.write",
+      "params": "MemoryWriteParams",
+      "params_role": "command",
+      "result": "MemoryWriteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
       "method": "plugins.changed",
       "params": "PluginsChangedNotification",
       "params_role": "information",

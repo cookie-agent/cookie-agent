@@ -66,6 +66,7 @@ mod internal_agents;
 mod loop_guard;
 mod machine_api;
 mod mailbox;
+pub(crate) mod memory_api;
 mod memory_runs;
 pub(crate) mod messaging_api;
 mod model_loop;
@@ -282,6 +283,9 @@ pub enum EngineError {
     /// The memory folder could not be read or changed.
     #[error("memory: {0}")]
     Memory(String),
+    /// A `memory.*` request was refused or failed.
+    #[error(transparent)]
+    MemoryRequest(#[from] memory_api::MemoryRequestError),
     #[error("plugin request rejected: {0}")]
     Plugin(String),
     #[error(transparent)]

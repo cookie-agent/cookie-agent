@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "MemoryLayer": {
+      "description": "What a memory is about (`docs/site/specs/memory.md` section 4).",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "`user://<category>`: the user, in every task.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "`agent://<agent>`: one agent's way of doing its job.",
+          "type": "string"
+        },
+        {
+          "const": "machine",
+          "description": "`machine://<machine>/<name>`: one machine.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "`project://<project>/<name>`: one body of work.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "List memory files. With no member, everything; `layer` keeps one layer,\nand at most one of `agent`, `machine`, and `project` keeps one agent's\nfile, one machine's memories, or one project's (`layer`, when also\ngiven, must be that one's layer).",
+  "properties": {
+    "agent": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "layer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemoryLayer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "machine": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "project": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "MemoryListParams",
+  "type": "object"
+}

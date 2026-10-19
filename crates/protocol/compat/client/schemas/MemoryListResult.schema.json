@@ -1,0 +1,131 @@
+{
+  "$defs": {
+    "MemoryIgnoredEntry": {
+      "description": "Something in the memory folder that is not a memory file of its layout.",
+      "properties": {
+        "path": {
+          "description": "The path relative to the memory folder, with `/` separators.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why it is not a memory file.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "MemoryInfo": {
+      "description": "One memory file.",
+      "properties": {
+        "description": {
+          "description": "The memory's description; absent for an invalid file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "group": {
+          "description": "The machine of a `machine://` memory or the project of a\n`project://` one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "invalid": {
+          "description": "Why the file is not a valid memory; search and the snapshot skip it\nuntil it is fixed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keywords": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "layer": {
+          "$ref": "#/$defs/MemoryLayer"
+        },
+        "orphaned": {
+          "description": "An `agent://` file whose agent the agent registry no longer has.",
+          "type": "boolean"
+        },
+        "revision": {
+          "description": "The first 16 hex digits of the SHA-256 of the file's bytes; a write\nor delete sends it back.",
+          "type": "string"
+        },
+        "size": {
+          "description": "The file's size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "layer",
+        "revision",
+        "size"
+      ],
+      "type": "object"
+    },
+    "MemoryLayer": {
+      "description": "What a memory is about (`docs/site/specs/memory.md` section 4).",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "`user://<category>`: the user, in every task.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "`agent://<agent>`: one agent's way of doing its job.",
+          "type": "string"
+        },
+        {
+          "const": "machine",
+          "description": "`machine://<machine>/<name>`: one machine.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "`project://<project>/<name>`: one body of work.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The memory files asked for, valid or not, and what else lies in their\nfolders.",
+  "properties": {
+    "ignored": {
+      "description": "Entries of the memory folder that are not memory files of its\nlayout, by path; search and the snapshot never read them.",
+      "items": {
+        "$ref": "#/$defs/MemoryIgnoredEntry"
+      },
+      "type": "array"
+    },
+    "memories": {
+      "description": "Memory files in layer order (`user`, `agent`, `machine`, `project`),\nthen by URL.",
+      "items": {
+        "$ref": "#/$defs/MemoryInfo"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "memories"
+  ],
+  "title": "MemoryListResult",
+  "type": "object"
+}

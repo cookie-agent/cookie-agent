@@ -5,6 +5,18 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.4.0
+
+- Memory for clients: `memory.list`, `memory.read`, `memory.write`, and
+  `memory.delete` list, read, and change the daemon's memory files for the
+  user, with no session (see [Memory](protocol.md#memory)). They come with
+  the error codes `memory_url_invalid`, `memory_not_found`, `memory_exists`,
+  `memory_revision_mismatch`, `memory_invalid`, `memory_refused`,
+  `memory_busy`, and `memory_store_failed`. The `memory.changed`
+  notification reaches every connection when a memory file changes through
+  the daemon. A 1.3 client sees none of it; a 1.4 client calling a
+  `memory.*` method on a 1.3 daemon gets `method_not_found`.
+
 ## 1.3.0
 
 - A new state event, `memory_loaded`, records the memory snapshot a

@@ -343,6 +343,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             .error()
             .field("reason", reason_text(reason)),
         EngineError::Machine(error) => machine_error(error),
+        EngineError::MemoryRequest(error) => memory_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()
             .field("reason", reason_text(reason)),
@@ -433,6 +434,38 @@ fn code_of(fault: RpcFault) -> &'static errors::ErrorCode {
         .and_then(|data| data["code"].as_str())
         .expect("registry data");
     errors::lookup(code).expect("a registered code")
+}
+
+fn memory_error(error: &cookie_agent_engine::MemoryRequestError) -> errors::ErrorBuilder {
+    use cookie_agent_engine::MemoryRequestError;
+    match error {
+        MemoryRequestError::InvalidUrl { url, reason } => errors::MEMORY_URL_INVALID
+            .error()
+            .field("url", url)
+            .field("reason", reason_text(reason)),
+        MemoryRequestError::InvalidParams { field, .. } => {
+            errors::BAD_PARAMS.error().field("field", field)
+        }
+        MemoryRequestError::NotFound { url } => errors::MEMORY_NOT_FOUND.error().field("url", url),
+        MemoryRequestError::Exists { url, revision } => errors::MEMORY_EXISTS
+            .error()
+            .field("url", url)
+            .field("revision", revision),
+        MemoryRequestError::RevisionMismatch { url, revision } => errors::MEMORY_REVISION_MISMATCH
+            .error()
+            .field("url", url)
+            .field("revision", revision),
+        MemoryRequestError::Invalid { url, reason } => errors::MEMORY_INVALID
+            .error()
+            .field("url", url)
+            .field("reason", reason_text(reason)),
+        MemoryRequestError::Refused { url, reason } => errors::MEMORY_REFUSED
+            .error()
+            .field("url", url)
+            .field("reason", reason_text(reason)),
+        MemoryRequestError::Busy(_) => errors::MEMORY_BUSY.error(),
+        MemoryRequestError::Store(_) => errors::MEMORY_STORE_FAILED.error(),
+    }
 }
 
 fn machine_error(error: &cookie_agent_engine::MachineError) -> errors::ErrorBuilder {

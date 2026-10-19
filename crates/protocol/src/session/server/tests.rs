@@ -351,6 +351,30 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_memory(
+        &self,
+        _: crate::MemoryListParams,
+    ) -> Result<crate::MemoryListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn read_memory(
+        &self,
+        _: crate::MemoryReadParams,
+    ) -> Result<crate::MemoryReadResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn write_memory(
+        &self,
+        _: crate::MemoryWriteParams,
+    ) -> Result<crate::MemoryWriteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn delete_memory(
+        &self,
+        _: crate::MemoryDeleteParams,
+    ) -> Result<crate::MemoryDeleteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: crate::PluginsListParams,

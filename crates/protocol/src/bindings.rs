@@ -325,6 +325,10 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(MACHINES_UNASSIGN_METHOD, ToDaemon, MachinesUnassignParams => MachinesListResult),
         request!(MACHINES_MERGE_METHOD, ToDaemon, MachinesMergeParams => MachinesListResult),
         request!(MACHINES_FORGET_METHOD, ToDaemon, MachinesForgetParams => MachinesListResult),
+        request!(MEMORY_LIST_METHOD, ToDaemon, MemoryListParams => MemoryListResult),
+        request!(MEMORY_READ_METHOD, ToDaemon, MemoryReadParams => MemoryReadResult),
+        request!(MEMORY_WRITE_METHOD, ToDaemon, MemoryWriteParams => MemoryWriteResult),
+        request!(MEMORY_DELETE_METHOD, ToDaemon, MemoryDeleteParams => MemoryDeleteResult),
         request!(PLUGINS_LIST_METHOD, ToDaemon, PluginsListParams => PluginsListResult),
         request!(PLUGINS_RESTART_METHOD, ToDaemon, PluginsRestartParams => PluginsRestartResult),
         request!(CONFIG_RELOAD_METHOD, ToDaemon, ConfigReloadParams => ConfigReloadResult),
@@ -381,6 +385,7 @@ fn client_methods() -> Vec<MethodSpec> {
             FromDaemon,
             MachinesChangedNotification
         ),
+        notification!(MEMORY_CHANGED_METHOD, FromDaemon, MemoryChangedNotification),
     ]
 }
 

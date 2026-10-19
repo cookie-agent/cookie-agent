@@ -40,6 +40,7 @@ impl ServerProtocol for Server {
         self.start_runtime_instance_notifications(context.clone());
         self.start_plugin_notifications(context.clone());
         self.start_machine_notifications(context.clone());
+        self.start_memory_notifications(context.clone());
         self.start_background_notifications(context.clone());
         self.start_upload_cleanup(&context);
         self.start_engine_event_notifications(context);
@@ -652,6 +653,47 @@ impl ServerProtocol for Server {
             .await
             .map_err(protocol_fault)?;
         Ok(self.machines_list())
+    }
+
+    async fn list_memory(
+        &self,
+        params: cookie_agent_protocol::MemoryListParams,
+    ) -> Result<cookie_agent_protocol::MemoryListResult> {
+        self.engine
+            .list_memory(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn read_memory(
+        &self,
+        params: cookie_agent_protocol::MemoryReadParams,
+    ) -> Result<cookie_agent_protocol::MemoryReadResult> {
+        self.engine
+            .read_memory(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn write_memory(
+        &self,
+        params: cookie_agent_protocol::MemoryWriteParams,
+    ) -> Result<cookie_agent_protocol::MemoryWriteResult> {
+        self.engine
+            .write_memory(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn delete_memory(
+        &self,
+        params: cookie_agent_protocol::MemoryDeleteParams,
+    ) -> Result<cookie_agent_protocol::MemoryDeleteResult> {
+        self.engine
+            .delete_memory(params)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::MemoryDeleteResult {})
     }
 
     async fn list_plugins(
