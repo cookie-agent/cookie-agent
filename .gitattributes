@@ -2,3 +2,6 @@
 
 # Generated protocol snapshots may contain serializer-preserved trailing spaces.
 crates/protocol/src/snapshots/*.snap -whitespace
+
+# Golden session logs and their artifacts are compared byte for byte.
+crates/engine/tests/fixtures/history/** -text

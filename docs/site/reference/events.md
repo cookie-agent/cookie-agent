@@ -131,6 +131,13 @@ each a function from the old log's JSON lines to the new one's:
 Backups are kept until you delete them. The format bumps only for a change
 that cannot follow the additive rules below.
 
+`crates/engine/tests/fixtures/history/<format>/` holds session trees recorded
+from scripted runs against fake model providers, with snapshots of what the
+recording build read from them: every session's metadata, usage, events as
+clients receive them, and model history. Every later build must open them,
+read-only and owned, and read the same; they are never regenerated, and a
+build that bumps the format records its own directory beside them.
+
 CI compares the generated `EventPayload` schema with the committed baseline in
 `crates/protocol/compat/events/` (see [Schemas](schemas.md)). A new optional
 field must be safe to ignore, since its absence means the old behaviour; a

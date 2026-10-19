@@ -1,0 +1,145 @@
+{
+  "history_format": 1,
+  "trees": [
+    {
+      "root": "01a152fa-6218-7691-aa4b-b406b1dd003d",
+      "sessions": [
+        {
+          "events": {
+            "count": 24,
+            "unlike_log": []
+          },
+          "history": {
+            "assembled": [{"type":"system","value":{"content":[{"type":"text","value":{"metadata":null,"text":"Work in the repository.\n\n\n---\n\nWorking directory: /tmp/.tmpPVSJDa\nPlatform: linux\n\n---\n\n<tool_instructions provider=\"builtin.delegate\">\nAvailable subagents:\n- worker: Worker test agent\n\nDelegation behavior:\n- Foreground delegation waits for the child's first turn and returns its result.\n- background=true returns the child's handle immediately.\n- Every turn of a child that is not returned as a tool result arrives as a <subagent_report> that wakes this session; to wait for one, tell the user that you are waiting and end your turn.\n- stop_background with the child's handle stops its current turn.\n- Use get_subagent_result to read a child's full output; it does not wait.\n</tool_instructions>\n\n---\n\n<available_skills><skill><name>release-notes</name><description>Write release notes</description><location>/tmp/.tmpPVSJDa/.agents/skills/release-notes/SKILL.md</location></skill></available_skills>"}}],"provider_options":{}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:one Answer once."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The first answer."}}],"provider_options":{}}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:three Answer again."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The answer after the revert."}}],"provider_options":{}}}}],
+            "full": [{"type":"system","value":{"content":[{"type":"text","value":{"metadata":null,"text":"Work in the repository.\n\n\n---\n\nWorking directory: /tmp/.tmpPVSJDa\nPlatform: linux\n\n---\n\n<tool_instructions provider=\"builtin.delegate\">\nAvailable subagents:\n- worker: Worker test agent\n\nDelegation behavior:\n- Foreground delegation waits for the child's first turn and returns its result.\n- background=true returns the child's handle immediately.\n- Every turn of a child that is not returned as a tool result arrives as a <subagent_report> that wakes this session; to wait for one, tell the user that you are waiting and end your turn.\n- stop_background with the child's handle stops its current turn.\n- Use get_subagent_result to read a child's full output; it does not wait.\n</tool_instructions>\n\n---\n\n<available_skills><skill><name>release-notes</name><description>Write release notes</description><location>/tmp/.tmpPVSJDa/.agents/skills/release-notes/SKILL.md</location></skill></available_skills>"}}],"provider_options":{}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:one Answer once."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The first answer."}}],"provider_options":{}}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:three Answer again."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The answer after the revert."}}],"provider_options":{}}}}]
+          },
+          "meta": {
+            "agent_revision": "sha256:0e89cbf317cf5968c502848b721d864225cfa210d20aae99283a79ca125bc0ed",
+            "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "creation_selection": {"agent":"primary","model":{"model":"custom.test/group/model","variant":null}},
+            "cwd_identity": "/tmp/.tmpPVSJDa",
+            "last_activity": "2026-10-19T07:05:06.57741854Z",
+            "last_agent_activity": "2026-10-19T07:05:06.560367744Z",
+            "last_event_seq": 24,
+            "manifest_revision": "sha256:8d623101e65265ed93d2349d00ffd9220ea12a16a09251c2b0169501fe9f508c",
+            "model_revision": "sha256:b3d2a7a52aefafd1c57002597975ab8ef42d028e0622714838d8a8a43d3188df",
+            "origin": {"type":"root"},
+            "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+            "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+            "runtime_revision": "sha256:ac7c332cd0a15f8b9fda1d0123210a9bbd87fcaeefafd3dac66250f74ebc79b1",
+            "session_id": "01a152fa-6218-7691-aa4b-b406b1dd003d",
+            "short_id": "primary_0e6c5aab",
+            "skipped_events": [],
+            "status": "completed",
+            "title": null,
+            "title_updated_seq": 0
+          },
+          "session_id": "01a152fa-6218-7691-aa4b-b406b1dd003d",
+          "usage": {
+            "session_id": "01a152fa-6218-7691-aa4b-b406b1dd003d",
+            "usage": {"by_model":{"custom.test/group/model":{"cache_hit_rate":null,"cache_read_tokens":0,"cache_write_tokens":0,"estimated_cost_usd":null,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"request_count":2}},"cache_hit_rate":null,"cache_read_tokens":0,"cache_write_tokens":0,"estimated_cost_usd":null,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"request_count":2}
+          }
+        }
+      ],
+      "tree": {
+        "children": [],
+        "session": {
+          "agent_revision": "sha256:0e89cbf317cf5968c502848b721d864225cfa210d20aae99283a79ca125bc0ed",
+          "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "creation_selection": {
+            "agent": "primary",
+            "model": {"model":"custom.test/group/model","variant":null}
+          },
+          "cwd_identity": "/tmp/.tmpPVSJDa",
+          "last_activity": "2026-10-19T07:05:06.57741854Z",
+          "last_agent_activity": "2026-10-19T07:05:06.560367744Z",
+          "last_event_seq": 24,
+          "manifest_revision": "sha256:8d623101e65265ed93d2349d00ffd9220ea12a16a09251c2b0169501fe9f508c",
+          "model_revision": "sha256:b3d2a7a52aefafd1c57002597975ab8ef42d028e0622714838d8a8a43d3188df",
+          "origin": {
+            "type": "root"
+          },
+          "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+          "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+          "runtime_revision": "sha256:ac7c332cd0a15f8b9fda1d0123210a9bbd87fcaeefafd3dac66250f74ebc79b1",
+          "session_id": "01a152fa-6218-7691-aa4b-b406b1dd003d",
+          "short_id": "primary_0e6c5aab",
+          "skipped_events": [],
+          "status": "completed",
+          "title": null,
+          "title_updated_seq": 0
+        }
+      }
+    },
+    {
+      "root": "01a152fa-6aa4-7d93-a025-8bfc1f369131",
+      "sessions": [
+        {
+          "events": {
+            "count": 25,
+            "unlike_log": []
+          },
+          "history": {
+            "assembled": [{"type":"system","value":{"content":[{"type":"text","value":{"metadata":null,"text":"Work in the repository.\n\n\n---\n\nWorking directory: /tmp/.tmpPVSJDa\nPlatform: linux\n\n---\n\n<tool_instructions provider=\"builtin.delegate\">\nAvailable subagents:\n- worker: Worker test agent\n\nDelegation behavior:\n- Foreground delegation waits for the child's first turn and returns its result.\n- background=true returns the child's handle immediately.\n- Every turn of a child that is not returned as a tool result arrives as a <subagent_report> that wakes this session; to wait for one, tell the user that you are waiting and end your turn.\n- stop_background with the child's handle stops its current turn.\n- Use get_subagent_result to read a child's full output; it does not wait.\n</tool_instructions>\n\n---\n\n<available_skills><skill><name>release-notes</name><description>Write release notes</description><location>/tmp/.tmpPVSJDa/.agents/skills/release-notes/SKILL.md</location></skill></available_skills>"}}],"provider_options":{}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:one Answer once."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The first answer."}}],"provider_options":{}}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:forked Go on in the fork."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The answer in the fork."}}],"provider_options":{}}}}],
+            "full": [{"type":"system","value":{"content":[{"type":"text","value":{"metadata":null,"text":"Work in the repository.\n\n\n---\n\nWorking directory: /tmp/.tmpPVSJDa\nPlatform: linux\n\n---\n\n<tool_instructions provider=\"builtin.delegate\">\nAvailable subagents:\n- worker: Worker test agent\n\nDelegation behavior:\n- Foreground delegation waits for the child's first turn and returns its result.\n- background=true returns the child's handle immediately.\n- Every turn of a child that is not returned as a tool result arrives as a <subagent_report> that wakes this session; to wait for one, tell the user that you are waiting and end your turn.\n- stop_background with the child's handle stops its current turn.\n- Use get_subagent_result to read a child's full output; it does not wait.\n</tool_instructions>\n\n---\n\n<available_skills><skill><name>release-notes</name><description>Write release notes</description><location>/tmp/.tmpPVSJDa/.agents/skills/release-notes/SKILL.md</location></skill></available_skills>"}}],"provider_options":{}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:one Answer once."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The first answer."}}],"provider_options":{}}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"#k:forked Go on in the fork."}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":null,"provider_metadata":{},"response_metadata":{"oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"The answer in the fork."}}],"provider_options":{}}}}]
+          },
+          "meta": {
+            "agent_revision": "sha256:0e89cbf317cf5968c502848b721d864225cfa210d20aae99283a79ca125bc0ed",
+            "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "creation_selection": {"agent":"primary","model":{"model":"custom.test/group/model","variant":null}},
+            "cwd_identity": "/tmp/.tmpPVSJDa",
+            "last_activity": "2026-10-19T07:05:05.47500257Z",
+            "last_agent_activity": "2026-10-19T07:05:05.45836205Z",
+            "last_event_seq": 25,
+            "manifest_revision": "sha256:8d623101e65265ed93d2349d00ffd9220ea12a16a09251c2b0169501fe9f508c",
+            "model_revision": "sha256:b3d2a7a52aefafd1c57002597975ab8ef42d028e0622714838d8a8a43d3188df",
+            "origin": {"type":"root"},
+            "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+            "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+            "runtime_revision": "sha256:ac7c332cd0a15f8b9fda1d0123210a9bbd87fcaeefafd3dac66250f74ebc79b1",
+            "session_id": "01a152fa-6aa4-7d93-a025-8bfc1f369131",
+            "short_id": "primary_0e6c5aab",
+            "skipped_events": [],
+            "status": "completed",
+            "title": "Untitled (fork)",
+            "title_updated_seq": 15
+          },
+          "session_id": "01a152fa-6aa4-7d93-a025-8bfc1f369131",
+          "usage": {
+            "session_id": "01a152fa-6aa4-7d93-a025-8bfc1f369131",
+            "usage": {"by_model":{"custom.test/group/model":{"cache_hit_rate":null,"cache_read_tokens":0,"cache_write_tokens":0,"estimated_cost_usd":null,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"request_count":2}},"cache_hit_rate":null,"cache_read_tokens":0,"cache_write_tokens":0,"estimated_cost_usd":null,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"request_count":2}
+          }
+        }
+      ],
+      "tree": {
+        "children": [],
+        "session": {
+          "agent_revision": "sha256:0e89cbf317cf5968c502848b721d864225cfa210d20aae99283a79ca125bc0ed",
+          "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "creation_selection": {
+            "agent": "primary",
+            "model": {"model":"custom.test/group/model","variant":null}
+          },
+          "cwd_identity": "/tmp/.tmpPVSJDa",
+          "last_activity": "2026-10-19T07:05:05.47500257Z",
+          "last_agent_activity": "2026-10-19T07:05:05.45836205Z",
+          "last_event_seq": 25,
+          "manifest_revision": "sha256:8d623101e65265ed93d2349d00ffd9220ea12a16a09251c2b0169501fe9f508c",
+          "model_revision": "sha256:b3d2a7a52aefafd1c57002597975ab8ef42d028e0622714838d8a8a43d3188df",
+          "origin": {
+            "type": "root"
+          },
+          "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+          "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+          "runtime_revision": "sha256:ac7c332cd0a15f8b9fda1d0123210a9bbd87fcaeefafd3dac66250f74ebc79b1",
+          "session_id": "01a152fa-6aa4-7d93-a025-8bfc1f369131",
+          "short_id": "primary_0e6c5aab",
+          "skipped_events": [],
+          "status": "completed",
+          "title": "Untitled (fork)",
+          "title_updated_seq": 15
+        }
+      }
+    }
+  ]
+}

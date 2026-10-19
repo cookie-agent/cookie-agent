@@ -447,8 +447,35 @@ pub(crate) fn fixture() -> Fixture {
     create_private_test_dir(&project);
     let provider_store = directory.path().join("provider-store");
     create_private_test_dir(&provider_store);
+    let manager = Arc::new(
+        ModelManager::new(
+            BTreeMap::new(),
+            empty_catalog(),
+            ProviderStore::open(provider_store).expect("provider store"),
+        )
+        .expect("empty manager"),
+    );
+    let config = empty_configuration();
+    let engine = Engine::open(EngineOptions {
+        data_dir: directory.path().join("data"),
+        cwd: directory.path().to_owned(),
+        config: config.clone(),
+        model_manager: Arc::clone(&manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
+    })
+    .expect("empty engine");
+    Fixture {
+        _directory: directory,
+        engine,
+        config,
+        manager,
+    }
+}
+
+/// A bootstrap catalog without providers.
+pub(crate) fn empty_catalog() -> Arc<CatalogSnapshot> {
     let now = Timestamp::now();
-    let catalog = Arc::new(CatalogSnapshot {
+    Arc::new(CatalogSnapshot {
         revision: CatalogRevision::new(format!("sha256:{}", "0".repeat(64)))
             .expect("catalog revision"),
         source: CatalogSource::Bootstrap,
@@ -463,16 +490,12 @@ pub(crate) fn fixture() -> Fixture {
         providers: Arc::new(BTreeMap::new()),
         canonical_models: Arc::new(BTreeMap::new()),
         quarantine: Arc::new(Vec::new()),
-    });
-    let manager = Arc::new(
-        ModelManager::new(
-            BTreeMap::new(),
-            catalog,
-            ProviderStore::open(provider_store).expect("provider store"),
-        )
-        .expect("empty manager"),
-    );
-    let config = LoadedConfiguration {
+    })
+}
+
+/// A configuration without providers, agents, or extensions.
+pub(crate) fn empty_configuration() -> LoadedConfiguration {
+    LoadedConfiguration {
         runtime: EngineConfig {
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
@@ -500,20 +523,6 @@ pub(crate) fn fixture() -> Fixture {
         revision: cookie_agent_protocol::ConfigRevision::new(format!("sha256:{}", "0".repeat(64)))
             .unwrap(),
         skills: cookie_agent_config::SkillRegistry::default(),
-    };
-    let engine = Engine::open(EngineOptions {
-        data_dir: directory.path().join("data"),
-        cwd: directory.path().to_owned(),
-        config: config.clone(),
-        model_manager: Arc::clone(&manager),
-        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
-    })
-    .expect("empty engine");
-    Fixture {
-        _directory: directory,
-        engine,
-        config,
-        manager,
     }
 }
 

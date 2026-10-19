@@ -1,0 +1,29 @@
+{
+  "agent_revision": "sha256:0e89cbf317cf5968c502848b721d864225cfa210d20aae99283a79ca125bc0ed",
+  "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "creation_selection": {
+    "agent": "primary",
+    "model": {
+      "model": "custom.test/group/model",
+      "variant": null
+    }
+  },
+  "cwd_identity": "/tmp/.tmpPVSJDa",
+  "last_activity": "2026-10-19T07:05:06.57741854Z",
+  "last_agent_activity": "2026-10-19T07:05:06.560367744Z",
+  "last_event_seq": 24,
+  "manifest_revision": "sha256:8d623101e65265ed93d2349d00ffd9220ea12a16a09251c2b0169501fe9f508c",
+  "model_revision": "sha256:b3d2a7a52aefafd1c57002597975ab8ef42d028e0622714838d8a8a43d3188df",
+  "origin": {
+    "type": "root"
+  },
+  "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+  "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+  "runtime_revision": "sha256:ac7c332cd0a15f8b9fda1d0123210a9bbd87fcaeefafd3dac66250f74ebc79b1",
+  "session_id": "01a152fa-6218-7691-aa4b-b406b1dd003d",
+  "short_id": "primary_0e6c5aab",
+  "skipped_events": [],
+  "status": "completed",
+  "title": null,
+  "title_updated_seq": 0
+}

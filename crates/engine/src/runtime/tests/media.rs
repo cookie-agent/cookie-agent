@@ -61,7 +61,7 @@ fn png_chunk(bytes: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 
 /// A structurally complete PNG whose image data is `data_bytes` long; the
 /// daemon never decodes pixels.
-fn png(width: u32, height: u32, data_bytes: usize) -> Vec<u8> {
+pub(super) fn png(width: u32, height: u32, data_bytes: usize) -> Vec<u8> {
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
     let mut header = width.to_be_bytes().to_vec();
     header.extend_from_slice(&height.to_be_bytes());

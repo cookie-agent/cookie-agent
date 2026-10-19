@@ -1,0 +1,35 @@
+{
+  "agent_revision": "sha256:caed71823bb4e5b9ab3e46c6fb9b6f1557727593cb6dfa09f23b3aaa832be8f2",
+  "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "creation_selection": {
+    "agent": "worker",
+    "model": {
+      "model": "custom.test/group/model",
+      "variant": null
+    }
+  },
+  "cwd_identity": "/tmp/.tmpUPSp9s",
+  "last_activity": "2026-10-19T07:04:56.016374864Z",
+  "last_agent_activity": "2026-10-19T07:04:55.911369866Z",
+  "last_event_seq": 38,
+  "manifest_revision": "sha256:c6cf22bc843c296c720c39fc8084b13022cb78b451e54ef548366d1a63239963",
+  "model_revision": "sha256:91d91ba6d143a583afbcc3536e2008d037844de8def2629cc06ee97fe22badcb",
+  "origin": {
+    "depth": 1,
+    "invocation_id": "fbe588c1-d64b-43f5-296d-47c2dd6479e0",
+    "parent_run_id": "01a152fa-3f67-7bb2-bb8b-eeaf9f004dcf",
+    "parent_session_id": "01a152fa-3f63-7442-8dfc-045922599ed0",
+    "parent_tool_call_id": "01a152fa-3f7d-7ac1-a502-96a426424e10",
+    "root_session_id": "01a152fa-3f63-7442-8dfc-045922599ed0",
+    "type": "delegated"
+  },
+  "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+  "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+  "runtime_revision": "sha256:0111088356e0d5ef50452606b5fd2e5174d2944c3d44702d433bd15042bbffe6",
+  "session_id": "01a152fa-3f82-72a2-b98e-d67c83ce0a32",
+  "short_id": "worker_f69f82da",
+  "skipped_events": [],
+  "status": "completed",
+  "title": "Survey the module",
+  "title_updated_seq": 4
+}

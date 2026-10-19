@@ -13,6 +13,7 @@ mod delegation_queue;
 mod delegation_revert;
 mod goal_reminders;
 mod goal_selection;
+mod golden_history;
 mod guards;
 mod hook_failures;
 mod interception;

@@ -1,0 +1,29 @@
+{
+  "agent_revision": "sha256:8ff1a62bc31977c59ba717cf12aaed443037cb0d7894baf97f81eccc98731b0c",
+  "catalog_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "creation_selection": {
+    "agent": "primary",
+    "model": {
+      "model": "openai/gpt-test",
+      "variant": null
+    }
+  },
+  "cwd_identity": "/tmp/.tmpnw6ubQ",
+  "last_activity": "2026-10-19T07:05:08.79792789Z",
+  "last_agent_activity": "2026-10-19T07:05:07.706754164Z",
+  "last_event_seq": 15,
+  "manifest_revision": "sha256:4ee1e34da620e422827870a6de4154c7c2040df3f729b1d2d19c64a577f2bee9",
+  "model_revision": "sha256:3f9d6cc426048fa1275d2087f4c702deefd16181801f48c8c95653ba550c491e",
+  "origin": {
+    "type": "root"
+  },
+  "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+  "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+  "runtime_revision": "sha256:92e8d4d35bb23f0ff4b4e7994b4e99c66831a0143b9f4e19ddf65dbf3ccbacdf",
+  "session_id": "01a152fa-7378-7941-8d7b-52396ad88f8e",
+  "short_id": "primary_c03c2c37",
+  "skipped_events": [],
+  "status": "completed",
+  "title": null,
+  "title_updated_seq": 0
+}

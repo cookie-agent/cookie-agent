@@ -1,0 +1,75 @@
+{
+  "history_format": 1,
+  "trees": [
+    {
+      "root": "01a152fa-7bec-7cd0-ac0e-84b23de3e730",
+      "sessions": [
+        {
+          "events": {
+            "count": 18,
+            "unlike_log": []
+          },
+          "history": {
+            "assembled": [{"type":"system","value":{"content":[{"type":"text","value":{"metadata":null,"text":"Test native compaction.\n\n\n---\n\nWorking directory: /tmp/.tmpb9BWT2\nPlatform: linux"}}],"provider_options":{}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\nfallback summary\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions."}}],"provider_options":{}}}],
+            "full": [{"type":"system","value":{"content":[{"type":"text","value":{"metadata":null,"text":"Test native compaction.\n\n\n---\n\nWorking directory: /tmp/.tmpb9BWT2\nPlatform: linux"}}],"provider_options":{}}},{"type":"user","value":{"content":[{"type":"text","value":{"metadata":null,"text":"compact this context"}}],"provider_options":{}}},{"type":"assistant","value":{"finish":{"finish_reason":"stop","native_replay":{"adapter_id":"oven.openai.responses","payload":{"format":"oven.openai.responses.output.v1","incomplete_details":null,"items":[{"content":[{"text":"initial complete","type":"output_text"}],"id":"msg_1","role":"assistant","type":"message"}],"status":"completed","store":false},"scope":{"model_id":"gpt-test","provider_id":"openai","resource_id":"openai-scope-v1-sha256-8662fd76626ac7b6aa0698960bda952dd79d14f5b7ab876e11fc5a56f8ff27b3"},"source_wire_model_id":"wire-native"},"provider_metadata":{"cookie_agent.replay_source_wire_model_id":"wire-native"},"response_metadata":{"openai.model":"gpt-test","openai.response_id":"resp_1","oven.http_status":200},"usage":{"input_tokens":null,"input_tokens_cache_read":null,"input_tokens_cache_write":null,"input_tokens_no_cache":null,"output_tokens":null,"output_tokens_reasoning":null,"output_tokens_text":null,"raw":null}},"message":{"content":[{"type":"text","value":{"metadata":null,"text":"initial complete"}}],"provider_options":{}}}}]
+          },
+          "meta": {
+            "agent_revision": "sha256:8ff1a62bc31977c59ba717cf12aaed443037cb0d7894baf97f81eccc98731b0c",
+            "catalog_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "creation_selection": {"agent":"primary","model":{"model":"openai/gpt-test","variant":null}},
+            "cwd_identity": "/tmp/.tmpb9BWT2",
+            "last_activity": "2026-10-19T07:05:10.97123952Z",
+            "last_agent_activity": "2026-10-19T07:05:09.870603417Z",
+            "last_event_seq": 18,
+            "manifest_revision": "sha256:06dd50b8df66fe3a03c8b6acc30aa0f8d02a996a855c87a523c3b231d3c24eb3",
+            "model_revision": "sha256:9fbe82234f4d5a6e5b1390eb2990f0d914c00a865b3b6501bf2018792f9837dc",
+            "origin": {"type":"root"},
+            "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+            "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+            "runtime_revision": "sha256:d4a72cc54a8f3a0efd1326d068c03446794b4353e0847f2e276979f1e1cd080c",
+            "session_id": "01a152fa-7bec-7cd0-ac0e-84b23de3e730",
+            "short_id": "primary_7ce6b32c",
+            "skipped_events": [],
+            "status": "completed",
+            "title": null,
+            "title_updated_seq": 0
+          },
+          "session_id": "01a152fa-7bec-7cd0-ac0e-84b23de3e730",
+          "usage": {
+            "session_id": "01a152fa-7bec-7cd0-ac0e-84b23de3e730",
+            "usage": {"by_model":{"openai/gpt-test":{"cache_hit_rate":null,"cache_read_tokens":0,"cache_write_tokens":0,"estimated_cost_usd":null,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"request_count":2}},"cache_hit_rate":null,"cache_read_tokens":0,"cache_write_tokens":0,"estimated_cost_usd":null,"input_tokens":0,"output_tokens":0,"reasoning_tokens":0,"request_count":2}
+          }
+        }
+      ],
+      "tree": {
+        "children": [],
+        "session": {
+          "agent_revision": "sha256:8ff1a62bc31977c59ba717cf12aaed443037cb0d7894baf97f81eccc98731b0c",
+          "catalog_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "creation_selection": {
+            "agent": "primary",
+            "model": {"model":"openai/gpt-test","variant":null}
+          },
+          "cwd_identity": "/tmp/.tmpb9BWT2",
+          "last_activity": "2026-10-19T07:05:10.97123952Z",
+          "last_agent_activity": "2026-10-19T07:05:09.870603417Z",
+          "last_event_seq": 18,
+          "manifest_revision": "sha256:06dd50b8df66fe3a03c8b6acc30aa0f8d02a996a855c87a523c3b231d3c24eb3",
+          "model_revision": "sha256:9fbe82234f4d5a6e5b1390eb2990f0d914c00a865b3b6501bf2018792f9837dc",
+          "origin": {
+            "type": "root"
+          },
+          "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+          "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+          "runtime_revision": "sha256:d4a72cc54a8f3a0efd1326d068c03446794b4353e0847f2e276979f1e1cd080c",
+          "session_id": "01a152fa-7bec-7cd0-ac0e-84b23de3e730",
+          "short_id": "primary_7ce6b32c",
+          "skipped_events": [],
+          "status": "completed",
+          "title": null,
+          "title_updated_seq": 0
+        }
+      }
+    }
+  ]
+}
