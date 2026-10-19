@@ -111,6 +111,7 @@ nav:
       - Rust API: reference/api.md
   - Specs:
       - Status and scope: specs/index.md
+      - Web client and local daemon use: specs/web-client.md
       - Memory: specs/memory.md
       - Runtimes: specs/runtimes.md
       - Background tool calls: specs/background-tools.md

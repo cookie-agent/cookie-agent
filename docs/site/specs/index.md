@@ -6,6 +6,7 @@ configuration reference.
 
 | Specification | Status |
 |---|---|
+| [Web client and local daemon use](web-client.md) | Approved (2026-10-19), being implemented; Leptos/WebAssembly client styled with Tailwind, sharing the protocol client and reducer with the TUI, served by `cookie daemon` or any static host, full TUI parity in phases W0 to W5; plain `cookie` connects to a running local daemon (phase L) |
 | [Memory](memory.md) | Implemented; `user`, `agent`, `machine`, and `project` memory layers as Markdown files in the `global` runtime, machines as a daemon concept, the memory tools and snapshot, `memory.*` (client protocol 1.4.0), TUI `/memory`, and `cookie memory` |
 | [Runtimes](runtimes.md) | Implemented; daemon as gateway with global and coding runtimes, attachments, the runtime protocol, remote runtimes from `[runtimes.<id>]` templates, and template MCP servers; the manual labpc check is pending the author |
 | [Persistent daemon, dial-in runtimes, and runtime capabilities](runtime-capabilities.md) | Implemented; capability attachments, dial-in runtimes (the TUI embeds one when remote), listening daemon with TLS, directory-independent daemon; client protocol 45, runtime protocol 5 |
