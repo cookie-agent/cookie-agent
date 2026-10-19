@@ -44,7 +44,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("titled-delegation").expect("run ID"),
                 selection,
-                input: "delegate a titled child".into(),
+                content: "delegate a titled child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -267,7 +267,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("background-delegation").expect("run ID"),
                 selection: selection.clone(),
-                input: "delegate in the background".into(),
+                content: "delegate in the background".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -410,7 +410,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("automatic-subagent-paging").expect("run ID"),
                 selection,
-                input: "delegate in the background".into(),
+                content: "delegate in the background".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -539,7 +539,7 @@ async fn delegated_restart_after_agent_removal_falls_back_to_the_default_agent()
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("create-capped-child").expect("run ID"),
                 selection,
-                input: "create capped child".into(),
+                content: "create capped child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -578,7 +578,7 @@ async fn delegated_restart_after_agent_removal_falls_back_to_the_default_agent()
                 session_id: child,
                 client_run_id: ClientRunId::new("resume-capped-child").expect("run ID"),
                 selection: child_selection,
-                input: "second capped child task".into(),
+                content: "second capped child task".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -664,7 +664,7 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("inherit-context-history").expect("run ID"),
                 selection: selection.clone(),
-                input: "parent history input".into(),
+                content: "parent history input".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -708,7 +708,7 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("inherit-context-delegate").expect("run ID"),
                 selection,
-                input: "delegate using assembled history".into(),
+                content: "delegate using assembled history".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -822,7 +822,7 @@ async fn background_delegate_permission_approval_gates_child_admission() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("approval-gated-background").expect("run ID"),
                 selection,
-                input: "delegate only after approval".into(),
+                content: "delegate only after approval".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -942,7 +942,7 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("tree-mode-delegation").expect("run ID"),
                 selection,
-                input: "delegate under tree mode".into(),
+                content: "delegate under tree mode".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

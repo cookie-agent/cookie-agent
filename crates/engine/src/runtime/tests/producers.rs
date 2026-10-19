@@ -879,7 +879,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
                 session_id,
                 client_run_id: ClientRunId::new("producer-active-run").expect("client run ID"),
                 selection: selection.clone(),
-                input: "initial producer request".into(),
+                content: "initial producer request".into(),
             },
             client_origin(),
         )
@@ -1683,7 +1683,7 @@ async fn active_goal_cancel_notifies_once_and_preserves_other_producer_work() {
                 session_id,
                 client_run_id: ClientRunId::new("active-goal-cancel").expect("cancel run ID"),
                 selection,
-                input: "begin signed candidate work".into(),
+                content: "begin signed candidate work".into(),
             },
             client_origin(),
         )
@@ -2253,7 +2253,7 @@ async fn accepted_pause_control_survives_cancelled_run_and_wakes_without_registr
                 session_id,
                 client_run_id: ClientRunId::new("pause-old-run").expect("old run ID"),
                 selection,
-                input: "hold the old run in flight".into(),
+                content: "hold the old run in flight".into(),
             },
             client_origin(),
         )
@@ -2401,7 +2401,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
                 session_id,
                 client_run_id: ClientRunId::new("goal-tools-none").expect("no-goal run ID"),
                 selection: selection.clone(),
-                input: "request before goal activation".into(),
+                content: "request before goal activation".into(),
             },
             client_origin(),
         )
@@ -2447,7 +2447,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
                 session_id,
                 client_run_id: ClientRunId::new("goal-tools-active").expect("active run ID"),
                 selection: selection.clone(),
-                input: "request admitted with active goal".into(),
+                content: "request admitted with active goal".into(),
             },
             client_origin(),
         )
@@ -2507,7 +2507,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
             session_id,
             client_run_id: ClientRunId::new("goal-tools-paused").expect("paused run ID"),
             selection,
-            input: "request admitted with paused goal".into(),
+            content: "request admitted with paused goal".into(),
         },
         client_origin(),
     )
@@ -2677,7 +2677,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
                 client_run_id: ClientRunId::new("paused-goal-fork-boundary")
                     .expect("fork boundary run ID"),
                 selection,
-                input: "commit paused goal fork boundary".into(),
+                content: "commit paused goal fork boundary".into(),
             },
             client_origin(),
         )
@@ -2876,7 +2876,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
                 client_run_id: ClientRunId::new("delegated-goal-boundary")
                     .expect("delegation run ID"),
                 selection,
-                input: "delegate a child for goal boundary coverage".into(),
+                content: "delegate a child for goal boundary coverage".into(),
             },
             client_origin(),
         )

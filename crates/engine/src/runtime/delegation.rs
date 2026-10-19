@@ -1463,7 +1463,7 @@ impl Engine {
                             session_id: entry.reservation.child_session_id,
                             client_run_id: client_run_id.clone(),
                             selection: child.meta.creation_selection.clone(),
-                            input: render_delegate_input(&entry.request),
+                            content: render_delegate_input(&entry.request).into(),
                         },
                         origin: super::event_origin("engine:delegation"),
                         admission,

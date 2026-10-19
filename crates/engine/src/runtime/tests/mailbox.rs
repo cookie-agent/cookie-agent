@@ -49,7 +49,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
                 client_run_id: cookie_agent_protocol::ClientRunId::new("steering-compaction")
                     .expect("run ID"),
                 selection,
-                input: initial_input.clone(),
+                content: initial_input.clone().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -84,7 +84,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
             .await
             .expect("recall pending input"),
         cookie_agent_protocol::SessionRecallInputResult::Recalled {
-            input: "recall me".into()
+            content: "recall me".into()
         }
     );
     assert_eq!(
@@ -114,7 +114,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
             .await
             .expect("targeted recall"),
         cookie_agent_protocol::SessionRecallInputResult::Recalled {
-            input: "third pending".into()
+            content: "third pending".into()
         }
     );
     assert!(
@@ -332,7 +332,7 @@ async fn cancelling_a_stream_drains_chunks_before_tool_termination() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("stream-cancel").expect("client run id"),
                 selection,
-                input: "start stream".into(),
+                content: "start stream".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -658,7 +658,7 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("user-transform-{name}")).unwrap(),
                     selection,
-                    input: "original".into(),
+                    content: "original".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -734,7 +734,7 @@ async fn active_run_steering_uses_user_input_interception_and_audit() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("intercepted-steer").unwrap(),
                 selection,
-                input: "initial prompt".into(),
+                content: "initial prompt".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

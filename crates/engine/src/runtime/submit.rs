@@ -7,7 +7,6 @@ use std::time::Duration;
 use cookie_agent_protocol::{
     EventOrigin, InputDelivery, QueuedInputs, RunId, RunSelection, RunStartParams, SessionId,
     SessionRecallInputResult, SessionStatus, SessionSubmitInputParams, SessionSubmitInputResult,
-    UserContent,
 };
 
 use super::{Engine, EngineError, Event, mailbox::pending_inputs};
@@ -40,7 +39,7 @@ impl Engine {
                 match params.delivery {
                     InputDelivery::Steer => {
                         let steered = self
-                            .steer(run_id, params.input.clone(), origin.clone())
+                            .steer(run_id, params.content.clone(), origin.clone())
                             .await?;
                         if let Some(reason) = steered.handled_reason {
                             return Ok(SessionSubmitInputResult::Handled { reason });
@@ -71,7 +70,7 @@ impl Engine {
                         session_id: session,
                         client_run_id: params.client_run_id.clone(),
                         selection,
-                        input: params.input.clone(),
+                        content: params.content.clone(),
                     },
                     origin.clone(),
                 )
@@ -169,7 +168,7 @@ impl Engine {
                     },
                 )?;
                 return Ok(SessionRecallInputResult::Recalled {
-                    input: pending.content.as_plain_text().into_owned(),
+                    content: pending.content,
                 });
             }
             let queue = QueuedInputs::from_events(&events);
@@ -179,14 +178,14 @@ impl Engine {
             if entry.origin.as_ref() != Some(&origin) {
                 return Ok(SessionRecallInputResult::NotOwner);
             }
-            let input = entry.content.as_plain_text().into_owned();
+            let content = entry.content.clone();
             engine.append_direct(
                 session,
                 None,
                 origin,
                 Event::UserInputQueueRecalled { queued_seq: seq },
             )?;
-            Ok(SessionRecallInputResult::Recalled { input })
+            Ok(SessionRecallInputResult::Recalled { content })
         })
         .await
     }
@@ -217,7 +216,7 @@ impl Engine {
                         session_id: session,
                         client_run_id: head.client_run_id,
                         selection: head.selection,
-                        input: head.content.as_plain_text().into_owned(),
+                        content: head.content,
                     },
                     origin,
                 )
@@ -276,7 +275,7 @@ impl Engine {
             Some(selection) => selection.clone(),
             None => self.current_selection(session)?,
         };
-        let content = UserContent::text(params.input.clone());
+        let content = params.content.clone();
         let client_run_id = params.client_run_id.clone();
         self.on_actor(session, move |engine| {
             let projection = engine.inner.store.get(session)?;

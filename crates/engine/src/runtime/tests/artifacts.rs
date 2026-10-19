@@ -79,7 +79,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("webfetch-result-readback").unwrap(),
                 selection: selection.clone(),
-                input: "prepare webfetch result history".into(),
+                content: "prepare webfetch result history".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -251,7 +251,7 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("tool-result-readback").unwrap(),
                 selection: selection.clone(),
-                input: "prepare tool result history".into(),
+                content: "prepare tool result history".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -603,7 +603,7 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("fork-artifacts").unwrap(),
                 selection: selection.clone(),
-                input: "prepare tool result history".into(),
+                content: "prepare tool result history".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -690,7 +690,7 @@ async fn a_fork_keeps_what_a_newer_build_wrote_and_the_artifacts_it_names() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("future-history").unwrap(),
                 selection,
-                input: "a run before the newer build".into(),
+                content: "a run before the newer build".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -838,7 +838,7 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
                         session_id: root,
                         client_run_id: ClientRunId::new(input).unwrap(),
                         selection,
-                        input: input.into(),
+                        content: input.into(),
                     },
                     cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
                 )

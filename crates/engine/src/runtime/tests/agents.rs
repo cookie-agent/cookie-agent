@@ -526,7 +526,7 @@ async fn agent_presets_materialize_effective_registries_and_persist_selection() 
                     preset: Some("no-root".into()),
                     ..preset_selection.clone()
                 },
-                input: "agent is absent in this preset".into(),
+                content: "agent is absent in this preset".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -600,7 +600,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("shared-before-preset").expect("run ID"),
                 selection: shared_selection.clone(),
-                input: "complete the shared run".into(),
+                content: "complete the shared run".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -620,7 +620,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("preset-delegation-run").expect("run ID"),
                 selection: preset_selection,
-                input: "delegate after switching presets".into(),
+                content: "delegate after switching presets".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -822,7 +822,7 @@ async fn history_selections_fall_back_best_effort_and_explicit_ones_stay_strict(
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("explicit-missing-agent").expect("run ID"),
                 selection: gone_agent,
-                input: "explicit".into(),
+                content: "explicit".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

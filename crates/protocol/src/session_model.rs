@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn reset_flag_is_optional_and_round_trips_without_changing_events() {
-        let wire = serde_json::json!({"session_id":crate::SessionId::new_v7(),"client_run_id":"test","selection":selection("a"),"input":"hello"});
+        let wire = serde_json::json!({"session_id":crate::SessionId::new_v7(),"client_run_id":"test","selection":selection("a"),"content":[{"type":"text","text":"hello"}]});
         let mut params: crate::RunStartParams = serde_json::from_value(wire.clone()).unwrap();
         assert!(!params.reset_fallback);
         assert_eq!(serde_json::to_value(&params).unwrap(), wire);

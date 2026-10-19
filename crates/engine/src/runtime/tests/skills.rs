@@ -31,7 +31,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("staged-restart-parent").expect("run ID"),
                 selection,
-                input: "delegate staged restart".into(),
+                content: "delegate staged restart".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

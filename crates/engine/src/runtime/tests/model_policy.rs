@@ -306,7 +306,7 @@ async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy
                 )
                 .unwrap(),
                 selection,
-                input: "delegate this task".into(),
+                content: "delegate this task".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -543,7 +543,7 @@ async fn mixed_binding_fallback_preserves_configured_provider_order() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("fallback").unwrap(),
                 selection: selection.clone(),
-                input: "prime".into(),
+                content: "prime".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -676,7 +676,7 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("intercepted-cache").unwrap(),
                 selection,
-                input: "original user".into(),
+                content: "original user".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -742,7 +742,7 @@ async fn primary_agent_max_output_tokens_caps_model_requests() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("primary-output-cap").expect("run ID"),
                 selection,
-                input: "respond briefly".into(),
+                content: "respond briefly".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

@@ -11,6 +11,9 @@ section 3).
 - Every model of the catalog view states `input_media`: the kinds it accepts
   in user input, with their media types and effective byte, dimension, pixel,
   and count limits.
+- `run.start`, `run.steer`, and `session.submit_input` take `content` (text
+  and file parts) in place of `input`, and a `recalled` outcome of
+  `session.recall_input` returns `content`.
 
 ## 0.51.0
 

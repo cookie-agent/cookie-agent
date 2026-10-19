@@ -47,7 +47,7 @@ async fn normalized_tool_call_name_is_refused_before_execution() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("normalized-alias").expect("client run id"),
                 selection,
-                input: "call the aliased tool".into(),
+                content: "call the aliased tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -169,7 +169,7 @@ async fn parallel_tools_start_in_model_order_and_terminate_in_completion_order()
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("parallel-order").expect("client run ID"),
                 selection,
-                input: "run the batch".into(),
+                content: "run the batch".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -335,7 +335,7 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("no-capture-page").unwrap(),
                 selection,
-                input: "read the page".into(),
+                content: "read the page".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -439,7 +439,7 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("commit-race").unwrap(),
                 selection: selection.clone(),
-                input: "finish then cancel".into(),
+                content: "finish then cancel".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -613,7 +613,7 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("plugin-named-output").unwrap(),
                 selection,
-                input: "produce named output".into(),
+                content: "produce named output".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -743,7 +743,7 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("parallel-cancellation").expect("client run ID"),
                 selection: selection.clone(),
-                input: "start cancellable tools".into(),
+                content: "start cancellable tools".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -909,7 +909,7 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
                     client_run_id: ClientRunId::new(format!("mutation-{suffix}"))
                         .expect("client run ID"),
                     selection,
-                    input: "mutate files".into(),
+                    content: "mutate files".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -981,7 +981,7 @@ async fn same_key_parallel_calls_prepare_as_batch_and_execute_in_call_order() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("batch-ordering").expect("client run ID"),
                 selection,
-                input: "run ordered batch".into(),
+                content: "run ordered batch".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1043,7 +1043,7 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new("named-output").unwrap(),
                     selection,
-                    input: "produce output".into(),
+                    content: "produce output".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -1244,7 +1244,7 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
                 session_id: denied_session.session_id,
                 client_run_id: ClientRunId::new("denied-hook").expect("run ID"),
                 selection: denied_selection,
-                input: "try denied write".into(),
+                content: "try denied write".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1290,7 +1290,7 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("{marker_name}-hook")).expect("run ID"),
                     selection,
-                    input: "try approved write".into(),
+                    content: "try approved write".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -1362,7 +1362,7 @@ async fn validated_tool_modification_reprepares_before_the_next_hook() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("validated-hook-chain").expect("run ID"),
                 selection,
-                input: "run write".into(),
+                content: "run write".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1407,7 +1407,7 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("zero-resource-run").expect("run ID"),
                 selection,
-                input: "attempt the write tool".into(),
+                content: "attempt the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1475,7 +1475,7 @@ async fn unconditional_tools_are_published_and_run_under_a_denying_agent() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("unconditional-run").expect("run ID"),
                 selection,
-                input: "call the unconditional tool".into(),
+                content: "call the unconditional tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

@@ -643,7 +643,7 @@ env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("plugin-tool").expect("run ID"),
                 selection,
-                input: "use the plugin".into(),
+                content: "use the plugin".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -803,7 +803,7 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("immediate-mcp-run").expect("run ID"),
                 selection,
-                input: "use the available tools".into(),
+                content: "use the available tools".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -840,7 +840,7 @@ async fn immediate_first_run_waits_for_mcp_listing_without_separate_approval() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("project-mcp-run").expect("run ID"),
                 selection,
-                input: "use the project tools".into(),
+                content: "use the project tools".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -930,7 +930,7 @@ producer_messaging = true
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("reference-plugin").expect("run ID"),
                 selection,
-                input: "count the words".into(),
+                content: "count the words".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

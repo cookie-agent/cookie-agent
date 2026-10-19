@@ -122,7 +122,7 @@ async fn start_held_background_delegation(
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("held-background-parent").expect("run ID"),
                 selection,
-                input: "start held background child".into(),
+                content: "start held background child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

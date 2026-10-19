@@ -672,7 +672,7 @@ async fn params_refuse_unknown_members_inside_types_history_reads_tolerantly() {
                 "session_id": session_id,
                 "client_run_id": "run-1",
                 "selection": {"agent": "build", "model": selection["model"], "extra": 1},
-                "input": "hi",
+                "content": [{"type": "text", "text": "hi"}],
             }),
             "selection.extra",
         ),
@@ -700,6 +700,23 @@ async fn params_refuse_unknown_members_inside_types_history_reads_tolerantly() {
                 "decision": "reject",
             }),
             "operation_fingerprint.extra",
+        ),
+        (
+            5,
+            "session.submit_input",
+            json!({
+                "session_id": session_id,
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "file", "artifact": {
+                        "sha256": "a".repeat(64), "byte_length": 3,
+                        "media_type": "image/png", "width": 2,
+                    }},
+                ],
+                "delivery": "steer",
+                "client_run_id": "run-2",
+            }),
+            "content[1].artifact.width",
         ),
     ] {
         connection.send(id, method, params);

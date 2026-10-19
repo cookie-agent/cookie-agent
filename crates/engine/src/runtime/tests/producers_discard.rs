@@ -222,7 +222,7 @@ async fn queued_message_can_be_discarded_after_unregister_by_its_stable_owner() 
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-queued").unwrap(),
                 selection,
-                input: "hold the first user request".into(),
+                content: "hold the first user request".into(),
             },
             discard_origin(),
         )
@@ -323,7 +323,7 @@ async fn admitted_message_added_after_request_snapshot_can_still_be_discarded() 
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-admitted").unwrap(),
                 selection,
-                input: "snapshot before trusted admission".into(),
+                content: "snapshot before trusted admission".into(),
             },
             discard_origin(),
         )
@@ -393,7 +393,7 @@ async fn inflight_steer_is_too_late_once_claimed_and_after_commit() {
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-claimed").unwrap(),
                 selection,
-                input: "hold before claimed steer".into(),
+                content: "hold before claimed steer".into(),
             },
             discard_origin(),
         )
@@ -652,7 +652,7 @@ async fn recovery_releases_stale_claim_before_owner_discard() {
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-recovery").unwrap(),
                 selection,
-                input: "hold stale claim run".into(),
+                content: "hold stale claim run".into(),
             },
             discard_origin(),
         )
@@ -825,7 +825,7 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
                 session_id,
                 client_run_id: ClientRunId::new("plugin-discard-callback").unwrap(),
                 selection,
-                input: "ordinary user request held at the model".into(),
+                content: "ordinary user request held at the model".into(),
             },
             discard_origin(),
         )

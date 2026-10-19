@@ -582,9 +582,9 @@ fn pending_input_events_and_recall_rpc_round_trip() {
     for (result, wire) in [
         (
             SessionRecallInputResult::Recalled {
-                input: "pending".into(),
+                content: "pending".into(),
             },
-            json!({"outcome": "recalled", "input": "pending"}),
+            json!({"outcome": "recalled", "content": [{"type": "text", "text": "pending"}]}),
         ),
         (SessionRecallInputResult::Gone, json!({"outcome": "gone"})),
         (
@@ -600,7 +600,7 @@ fn pending_input_events_and_recall_rpc_round_trip() {
     }
     let submit = json!({
         "session_id": session_id,
-        "input": "after this",
+        "content": [{"type": "text", "text": "after this"}],
         "delivery": "queue",
         "client_run_id": "queued-1",
     });

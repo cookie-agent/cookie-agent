@@ -705,7 +705,7 @@ async fn events_carry_the_origin_of_the_connection_that_caused_them() {
             client_run_id: cookie_agent_protocol::ClientRunId::new("origin-run")
                 .expect("client run ID"),
             selection: test_run_selection(),
-            input: "hello from the runner".into(),
+            content: "hello from the runner".into(),
         })
         .await
         .expect("start run");
@@ -831,7 +831,7 @@ async fn an_unsubscribed_session_sends_this_connection_nothing_more() {
             session_id: session.session_id,
             client_run_id: cookie_agent_protocol::ClientRunId::new("unwatched").unwrap(),
             selection: test_run_selection(),
-            input: "nobody is watching".into(),
+            content: "nobody is watching".into(),
         })
         .await
         .expect("start run");
@@ -894,7 +894,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
             ))
             .expect("client run ID"),
             selection: test_run_selection(),
-            input: cookie_agent_protocol::encode_skill_submission("fresh-skill", "value"),
+            content: cookie_agent_protocol::encode_skill_submission("fresh-skill", "value").into(),
         })
         .await
     {

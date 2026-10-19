@@ -366,7 +366,7 @@ impl ServerProtocol for Server {
         context: &ServerContext,
     ) -> Result<RunSteerResult> {
         self.engine
-            .steer(params.run_id, params.input, context.client_origin())
+            .steer(params.run_id, params.content, context.client_origin())
             .await
             .map_err(protocol_fault)
     }

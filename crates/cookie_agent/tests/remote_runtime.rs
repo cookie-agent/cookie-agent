@@ -368,7 +368,7 @@ shutdown_grace_ms = 2000
                     client_run_id: ClientRunId::new(uuid::Uuid::now_v7().to_string())
                         .expect("client run ID"),
                     selection: Self::selection(),
-                    input: prompt.into(),
+                    content: prompt.into(),
                     reset_fallback: false,
                 },
                 EventOrigin::new("client:test").expect("origin"),

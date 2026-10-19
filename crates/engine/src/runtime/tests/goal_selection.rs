@@ -393,7 +393,7 @@ async fn assert_active_run_keeps_selection(change: SelectionChange) {
                 })
                 .expect("active run client ID"),
                 selection: selection_a.clone(),
-                input: "hold selection A while changing the goal".into(),
+                content: "hold selection A while changing the goal".into(),
             },
             origin(),
         )

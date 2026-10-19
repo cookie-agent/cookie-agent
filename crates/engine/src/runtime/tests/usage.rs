@@ -47,7 +47,7 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("anthropic-cache-{index}")).unwrap(),
                     selection: selection.clone(),
-                    input: format!("turn {index}"),
+                    content: format!("turn {index}").into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -138,7 +138,7 @@ async fn openai_adapter_cache_write_usage_reaches_events_and_rollup() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("openai-cache-write-usage").unwrap(),
                 selection,
-                input: "exercise cache accounting".into(),
+                content: "exercise cache accounting".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -194,7 +194,7 @@ async fn openai_chat_qwen_usage_reaches_events_and_rollup() {
                 session_id: cached_session.session_id,
                 client_run_id: ClientRunId::new("qwen-cached-usage").unwrap(),
                 selection: selection.clone(),
-                input: "cached usage".into(),
+                content: "cached usage".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -235,7 +235,7 @@ async fn openai_chat_qwen_usage_reaches_events_and_rollup() {
                 session_id: uncached_session.session_id,
                 client_run_id: ClientRunId::new("qwen-uncached-usage").unwrap(),
                 selection,
-                input: "uncached usage".into(),
+                content: "uncached usage".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -304,7 +304,7 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("anthropic-before-checkpoint").unwrap(),
                 selection: selection.clone(),
-                input: "old context ".repeat(300),
+                content: "old context ".repeat(300).into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -357,7 +357,7 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("anthropic-after-checkpoint").unwrap(),
                 selection,
-                input: "new live turn".into(),
+                content: "new live turn".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -424,7 +424,7 @@ async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("anthropic-cache-disabled").unwrap(),
                 selection,
-                input: "baseline".into(),
+                content: "baseline".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -532,7 +532,7 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
                 session_id: root.session_id,
                 client_run_id: ClientRunId::new("tree-usage-root").unwrap(),
                 selection: selection.clone(),
-                input: "build nested tree".into(),
+                content: "build nested tree".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -554,7 +554,7 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
                 session_id: unrelated.session_id,
                 client_run_id: ClientRunId::new("tree-usage-unrelated").unwrap(),
                 selection,
-                input: "not part of the tree".into(),
+                content: "not part of the tree".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

@@ -671,7 +671,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new("opt-out-cancel").unwrap(),
                     selection,
-                    input: "read one page".into(),
+                    content: "read one page".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -1359,11 +1359,12 @@ async fn skill_grant_allows_explicit_ask_bash_for_one_turn_only() {
                     },
                     preset: None,
                 },
-                input: cookie_agent_protocol::encode_skill_submission_with_prompt(
+                content: cookie_agent_protocol::encode_skill_submission_with_prompt(
                     "release-check",
                     "failed",
                     Some("must not install"),
-                ),
+                )
+                .into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:headless").unwrap(),
         )
@@ -1677,7 +1678,7 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
         session_id: session,
         client_run_id: ClientRunId::new("sticky-second").unwrap(),
         selection: original.clone(),
-        input: "second turn".into(),
+        content: "second turn".into(),
     };
     fixture
         .server
@@ -1712,7 +1713,7 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
         &fixture.engine,
         RunStartParams {
             client_run_id: ClientRunId::new("sticky-third").unwrap(),
-            input: "third turn".into(),
+            content: "third turn".into(),
             ..second_params.clone()
         },
     )
@@ -2595,7 +2596,7 @@ async fn start_run_admission_failures_map_to_one() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("already-running").expect("client run ID"),
                 selection: session.creation_selection,
-                input: "keep running".into(),
+                content: "keep running".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:headless").unwrap(),
         )

@@ -567,7 +567,9 @@ impl Engine {
                 ))
                 .expect("producer run ID"),
                 selection,
-                input: String::new(),
+                // A producer's start takes its input from the message it
+                // admits, never from these params.
+                content: cookie_agent_protocol::UserContent::text(""),
             };
             let result = engine
                 .start_run_direct(params, event_origin("engine:producer"), None, true)

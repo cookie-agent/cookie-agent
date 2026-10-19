@@ -28,7 +28,7 @@ async fn running_subagent_result_is_empty_waits_and_stop_background_stops_its_tu
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancellable-delegation").expect("run ID"),
                 selection,
-                input: "start a cancellable child".into(),
+                content: "start a cancellable child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -149,7 +149,7 @@ async fn running_subagent_results_are_scoped_to_the_callers_tree() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("running-subagent-steer").expect("run ID"),
                 selection,
-                input: "start a child to steer".into(),
+                content: "start a child to steer".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -245,7 +245,7 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("finished-wake").expect("run ID"),
                 selection,
-                input: "start a child that finishes".into(),
+                content: "start a child that finishes".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -399,7 +399,7 @@ async fn resume_settles_recovered_background_delegations_before_returning() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("recovery-settle").expect("run ID"),
                 selection,
-                input: "start a background child".into(),
+                content: "start a background child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -524,7 +524,7 @@ async fn the_user_moves_a_foreground_delegation_to_the_background() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("detach-delegate").expect("run ID"),
                 selection,
-                input: "delegate and wait".into(),
+                content: "delegate and wait".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

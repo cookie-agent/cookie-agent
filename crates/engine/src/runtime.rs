@@ -379,8 +379,9 @@ struct DelegatedResumeAdmission {
 
 pub(super) enum UserInputInterception {
     Accepted {
-        input: String,
-        original_input: Option<String>,
+        content: cookie_agent_protocol::UserContent,
+        /// The content before a plugin transformed it, when one did.
+        original: Option<cookie_agent_protocol::UserContent>,
     },
     Handled {
         reason: String,

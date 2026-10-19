@@ -2058,7 +2058,7 @@ pub(crate) async fn start_streaming_bash_test_run(
                 client_run_id: ClientRunId::new(format!("streaming-{command}"))
                     .expect("client run id"),
                 selection,
-                input: "start streaming test".into(),
+                content: "start streaming test".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -2110,7 +2110,7 @@ pub(crate) async fn run_replay_test_turn(
                 session_id,
                 client_run_id: ClientRunId::new(id).unwrap(),
                 selection: selection.clone(),
-                input: id.into(),
+                content: id.into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

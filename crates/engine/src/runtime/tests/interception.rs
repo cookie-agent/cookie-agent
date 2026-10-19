@@ -61,7 +61,7 @@ async fn start(fixture: &Fixture, selection: RunSelection, client_run_id: &str) 
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new(client_run_id).expect("run ID"),
                 selection,
-                input: "run the chain".into(),
+                content: "run the chain".into(),
             },
             EventOrigin::new("client:test").expect("origin"),
         )

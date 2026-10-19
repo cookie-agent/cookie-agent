@@ -60,7 +60,7 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("tool-prompt-{index}")).unwrap(),
                     selection: selection.clone(),
-                    input: input.into(),
+                    content: input.into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -197,7 +197,7 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("tool-prompt-order").unwrap(),
                 selection,
-                input: "check composition order".into(),
+                content: "check composition order".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -269,7 +269,7 @@ async fn one_runtime_gives_the_prompt_its_working_directory() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("working-directory").unwrap(),
                 selection,
-                input: "report the working directory".into(),
+                content: "report the working directory".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -380,7 +380,7 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("tool-prompt-error-{name}")).unwrap(),
                     selection,
-                    input: "must not reach the model".into(),
+                    content: "must not reach the model".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -426,7 +426,7 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("tool-prompt-composed-limit").unwrap(),
                 selection,
-                input: "must not reach the model".into(),
+                content: "must not reach the model".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -624,7 +624,7 @@ async fn agent_document_can_opt_out_of_agent_md() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("agent-md-opt-out").unwrap(),
                 selection,
-                input: "run without AGENTS.md".into(),
+                content: "run without AGENTS.md".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -678,7 +678,7 @@ async fn consecutive_root_runs_reload_agent_md() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("agent-md-first").unwrap(),
                 selection: selection.clone(),
-                input: "first agent-md run".into(),
+                content: "first agent-md run".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -695,7 +695,7 @@ async fn consecutive_root_runs_reload_agent_md() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("agent-md-second").unwrap(),
                 selection,
-                input: "second agent-md run".into(),
+                content: "second agent-md run".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -768,7 +768,7 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("agent-md-replay").unwrap(),
                 selection,
-                input: "run with AGENTS.md context".into(),
+                content: "run with AGENTS.md context".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

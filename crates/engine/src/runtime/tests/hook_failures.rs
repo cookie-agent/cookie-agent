@@ -162,7 +162,7 @@ async fn start(
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new(name).expect("run ID"),
                 selection: selection.clone(),
-                input: "check this".into(),
+                content: "check this".into(),
             },
             origin(),
         )

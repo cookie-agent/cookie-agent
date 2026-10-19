@@ -379,7 +379,7 @@ impl App {
             let result = client
                 .submit_input(SessionSubmitInputParams {
                     session_id,
-                    input: input.clone(),
+                    content: cookie_agent_protocol::UserContent::text(input.clone()),
                     delivery,
                     selection,
                     client_run_id: submitted_id.clone(),
@@ -708,9 +708,9 @@ impl App {
                 .recall_input(SessionRecallInputParams { session_id, seq })
                 .await
             {
-                Ok(SessionRecallInputResult::Recalled { input }) => RpcUpdate::SteerRecalled {
+                Ok(SessionRecallInputResult::Recalled { content }) => RpcUpdate::SteerRecalled {
                     session_id,
-                    text: input,
+                    text: crate::state::composer_text(&content),
                 },
                 // The lane raced ahead (a promotion or run start landed
                 // first): nothing is owed; the strip is already catching up.

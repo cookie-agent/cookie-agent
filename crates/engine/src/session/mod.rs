@@ -177,7 +177,9 @@ pub enum SessionError {
 pub struct RunProjection {
     pub id: RunId,
     pub client_run_id: ClientRunId,
-    pub input: String,
+    /// The run's submitted input; `None` until it is recorded, and for a
+    /// run a producer's message started.
+    pub input: Option<cookie_agent_protocol::UserContent>,
     pub selection: RunSelection,
     pub agent: Arc<AgentSnapshot>,
     pub status: SessionStatus,

@@ -1278,7 +1278,9 @@ pub struct RunStartParams {
     pub session_id: SessionId,
     pub client_run_id: ClientRunId,
     pub selection: RunSelection,
-    pub input: String,
+    /// The user's input: text and file parts, each file an artifact of the
+    /// session tree's store (`artifact.upload.*`).
+    pub content: UserContent,
     // An explicit model/agent/preset choice may restore a previously skipped prefix.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reset_fallback: bool,
@@ -1295,7 +1297,8 @@ pub struct RunStartResult {
 #[serde(deny_unknown_fields)]
 pub struct RunSteerParams {
     pub run_id: RunId,
-    pub input: String,
+    /// As in `run.start`.
+    pub content: UserContent,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct RunSteerResult {
@@ -1412,7 +1415,8 @@ pub enum InputDelivery {
 #[serde(deny_unknown_fields)]
 pub struct SessionSubmitInputParams {
     pub session_id: SessionId,
-    pub input: String,
+    /// As in `run.start`.
+    pub content: UserContent,
     pub delivery: InputDelivery,
     /// The selection for a run this input starts, now or after the queue
     /// drains. Omitted means the session's current selection.
@@ -1457,8 +1461,8 @@ pub struct SessionRecallInputParams {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 #[schemars(extend("x-open" = true))]
 pub enum SessionRecallInputResult {
-    /// The input was withdrawn; its text is returned for editing.
-    Recalled { input: String },
+    /// The input was withdrawn; its content is returned for editing.
+    Recalled { content: UserContent },
     /// The input is no longer pending or queued: the model already saw it,
     /// a run started with it, or it was voided.
     Gone,

@@ -26,7 +26,7 @@ fn submit(
 ) -> SessionSubmitInputParams {
     SessionSubmitInputParams {
         session_id,
-        input: input.into(),
+        content: input.into(),
         delivery,
         selection: None,
         client_run_id: ClientRunId::new(client_run_id).unwrap(),

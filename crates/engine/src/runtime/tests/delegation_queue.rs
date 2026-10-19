@@ -34,7 +34,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("startup-failure-delegation").expect("run ID"),
                 selection,
-                input: "start five children with one injected failure".into(),
+                content: "start five children with one injected failure".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -114,7 +114,7 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-delegation").expect("run ID"),
                 selection,
-                input: "launch five background children".into(),
+                content: "launch five background children".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -184,7 +184,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("full-delegation-queue").expect("run ID"),
                 selection,
-                input: "fill the background delegation queue".into(),
+                content: "fill the background delegation queue".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

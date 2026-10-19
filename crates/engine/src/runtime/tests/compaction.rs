@@ -28,7 +28,7 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
                     })
                     .unwrap(),
                     selection,
-                    input: "compact this context".into(),
+                    content: "compact this context".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -253,7 +253,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                     client_run_id: ClientRunId::new(format!("raw-first-{expect_elision}"))
                         .expect("run ID"),
                     selection: selection.clone(),
-                    input: "prepare compaction history".into(),
+                    content: "prepare compaction history".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -664,7 +664,7 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("auto-{index}")).unwrap(),
                     selection: selection.clone(),
-                    input: "trigger".into(),
+                    content: "trigger".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -766,10 +766,11 @@ async fn auto_compaction_commits_checkpoint_before_the_attempt_that_uses_it() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("compaction-ordering").unwrap(),
                 selection: selection.clone(),
-                input: format!(
+                content: format!(
                     "trigger compaction ordering {}",
                     "context padding ".repeat(1500)
-                ),
+                )
+                .into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -894,7 +895,8 @@ async fn auto_compaction_triggers_on_the_model_input_limit_not_the_context_windo
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new("input-limit-compaction").unwrap(),
                     selection,
-                    input: format!("trigger compaction {}", "context padding ".repeat(1500)),
+                    content: format!("trigger compaction {}", "context padding ".repeat(1500))
+                        .into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -975,7 +977,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(client_run_id).unwrap(),
                     selection: selection.clone(),
-                    input: input.into(),
+                    content: input.into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -1082,7 +1084,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("new-after-checkpoint").unwrap(),
                 selection: selection.clone(),
-                input: NEW_USER.into(),
+                content: NEW_USER.into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1195,7 +1197,7 @@ async fn compact_cancellation_reason_reaches_the_engine_result() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("compact-cancel-reason").unwrap(),
                 selection,
-                input: "complete before compacting".into(),
+                content: "complete before compacting".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1263,7 +1265,7 @@ async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() 
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("unsigned-compaction-seed").unwrap(),
                 selection: selection.clone(),
-                input: format!("{OLD_PREFIX} {}", "old context ".repeat(1_500)),
+                content: format!("{OLD_PREFIX} {}", "old context ".repeat(1_500)).into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1425,7 +1427,7 @@ async fn compaction_summary_streams_live_deltas_for_its_invocation() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(client_run_id).unwrap(),
                     selection: selection.clone(),
-                    input: input.into(),
+                    content: input.into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )

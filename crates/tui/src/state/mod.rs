@@ -229,6 +229,13 @@ pub(crate) fn user_content_text(content: &cookie_agent_protocol::UserContent) ->
         .join("\n")
 }
 
+/// What of `content` goes back into the composer for editing: its text
+/// parts, joined by newlines. The composer holds no attachments yet, so file
+/// parts are not restored.
+pub(crate) fn composer_text(content: &cookie_agent_protocol::UserContent) -> String {
+    content.texts().collect::<Vec<_>>().join("\n")
+}
+
 /// [`user_content_text`] as markdown: text parts are markdown already, and
 /// a chip's characters are escaped so a filename renders as written.
 fn user_content_markdown(content: &cookie_agent_protocol::UserContent) -> String {
@@ -265,6 +272,8 @@ fn user_content_markdown(content: &cookie_agent_protocol::UserContent) -> String
 #[derive(Clone, Debug)]
 pub struct PendingInput {
     pub text: String,
+    /// What a recall or a void hands back to the composer.
+    pub composer_text: String,
     pub admission_seq: u64,
     /// Durable admission timestamp from the admitting event.
     pub admitted_at: jiff::Timestamp,

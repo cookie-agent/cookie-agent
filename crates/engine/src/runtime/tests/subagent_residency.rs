@@ -56,7 +56,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
                 client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-delegation")
                     .expect("run ID"),
                 selection,
-                input: "delegate this task".to_owned(),
+                content: "delegate this task".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -285,7 +285,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
                     client_run_id: ClientRunId::new(format!("paging-parent-{index}"))
                         .expect("run ID"),
                     selection: selection.clone(),
-                    input: parent_input,
+                    content: parent_input.into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -854,7 +854,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("paging-resume-parent").expect("run ID"),
                 selection,
-                input: "resume the evicted paging child".into(),
+                content: "resume the evicted paging child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -966,7 +966,7 @@ async fn delegate_idle_child(
                 session_id: parent,
                 client_run_id: ClientRunId::new(format!("parent-{label}")).expect("run ID"),
                 selection: selection.clone(),
-                input: parent_input,
+                content: parent_input.into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1114,7 +1114,7 @@ async fn idle_root_trees_page_out_when_unwatched_and_reload_on_view() {
                 session_id: root,
                 client_run_id: ClientRunId::new("idle-root").expect("run ID"),
                 selection,
-                input: "delegate before idling".to_owned(),
+                content: "delegate before idling".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

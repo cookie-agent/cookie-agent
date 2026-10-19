@@ -245,11 +245,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.compact.cancel` | Session ID | Whether a running manual compaction was cancelled |
 | `session.revert` | Session ID, positive `through_seq`, `expected_last_seq` | Updated session metadata |
 | `session.fork` | Session ID, positive `through_seq`, `client_fork_id` | New session ID |
-| `run.start` | Session ID, client run ID, selection, input | Run ID |
-| `run.steer` | Run ID, input | `accepted` boolean, admission `user_input_seq` |
+| `run.start` | Session ID, client run ID, selection, [`content`](#user-content) | Run ID |
+| `run.steer` | Run ID, [`content`](#user-content) | `accepted` boolean, admission `user_input_seq` |
 | `session.select_model` | Session ID, selection | Whether the session's selection changed |
-| `session.submit_input` | Session ID, input, `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
-| `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` text, `gone`, or `not_owner` |
+| `session.submit_input` | Session ID, [`content`](#user-content), `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
+| `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` content, `gone`, or `not_owner` |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
 | `session.background.list` | Session ID | The session's background `calls` |
@@ -268,6 +268,24 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `mcp.auth.begin` | `server`, the client's loopback `redirect_uri` | `authorization_url` to open in a browser |
 | `mcp.auth.complete` | `server`, the `callback_url` the browser was redirected to | The `server` |
 | `mcp.auth.cancel` | `server` | The `server` |
+
+### User content
+
+`run.start`, `run.steer`, and `session.submit_input` take the user's input as
+`content`, a nonempty list of parts, and `session.recall_input` hands the
+recalled input back the same way:
+
+```json
+"content": [
+  { "type": "text", "text": "What is wrong with this layout?" },
+  { "type": "file", "artifact": { "sha256": "…", "byte_length": 482113,
+      "media_type": "image/png", "filename": "screenshot.png" } }
+]
+```
+
+A `text` part carries text; a `file` part names an artifact of the session
+tree's store by its `ArtifactRef`. The input-lane events store the same
+content (see [Events](events.md)).
 
 Model, agent, and catalog discovery uses `runtime.snapshot.get`. Skills use the
 session-aware `skills.list` and `skills.get` methods because visibility depends

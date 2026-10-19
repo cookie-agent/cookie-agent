@@ -278,7 +278,7 @@ async fn start_reply_elsewhere(
             client_run_id: ClientRunId::new(format!("live-stream-{}", uuid::Uuid::now_v7()))
                 .expect("client run ID"),
             selection: crate::tests::test_run_selection(),
-            input: input.into(),
+            content: input.into(),
             reset_fallback: false,
         })
         .await
@@ -612,7 +612,7 @@ async fn durable_input_mid_reply_keeps_each_delta_once() {
     let steer = runner
         .steer_run(RunSteerParams {
             run_id: run,
-            input: "also this".into(),
+            content: "also this".into(),
         })
         .await
         .expect("steer");

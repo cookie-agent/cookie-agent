@@ -654,8 +654,11 @@ list of parts tagged by `type`: `text { text }` or
 as files read from the session tree's artifact store, the way tool-emitted user
 messages carry theirs; a missing or damaged artifact becomes a short note. A
 part of a kind this build does not know is kept and never sent to a model.
-Clients still submit text, which the engine stores as one text part. A writer
-rejects a file part whose artifact reference is malformed.
+The content is what the client submitted (`run.start`, `run.steer`,
+`session.submit_input`), after any `user_before_input` transform. A writer
+rejects a file part whose artifact reference is malformed. The artifact a file
+part names stays in the tree's store for as long as an event references it,
+like a tool attachment: revert sweeps and fork linking count it.
 
 `message_injected` is a run-owned role and `content` message accepted from `agent_before_start`. It is
 written during run setup and projected into model history, so reopen, fork, revert, and compaction

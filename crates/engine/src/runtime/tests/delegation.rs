@@ -97,7 +97,7 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
                 client_run_id: cookie_agent_protocol::ClientRunId::new("wildcard-delegation")
                     .unwrap(),
                 selection,
-                input: "delegate this task".into(),
+                content: "delegate this task".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -155,7 +155,7 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("parallel-delegates").expect("client run ID"),
                 selection,
-                input: "start both children".into(),
+                content: "start both children".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -298,7 +298,7 @@ async fn rebuilding_registry_strips_foreground_delegation_producer() {
                 client_run_id: ClientRunId::new("rebuild-foreground-producer")
                     .expect("client run ID"),
                 selection,
-                input: "start both children".into(),
+                content: "start both children".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -415,7 +415,7 @@ async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting(
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancel-foreground-delegates").unwrap(),
                 selection,
-                input: "start both children".into(),
+                content: "start both children".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -595,7 +595,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("missing-child-recovery").expect("run ID"),
                 selection,
-                input: "delegate before crashing".into(),
+                content: "delegate before crashing".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -765,7 +765,7 @@ async fn delegated_children_inherit_the_root_attachments() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("inheriting").unwrap(),
                 selection,
-                input: "delegate once".into(),
+                content: "delegate once".into(),
             },
             origin,
         )

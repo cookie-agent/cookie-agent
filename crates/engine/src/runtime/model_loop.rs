@@ -222,15 +222,12 @@ impl Engine {
             None
         } else {
             match self
-                .intercept_user_input(params.session_id, params.input)
+                .intercept_user_input(params.session_id, params.content)
                 .await?
             {
-                UserInputInterception::Accepted {
-                    input,
-                    original_input,
-                } => {
-                    params.input = input;
-                    original_input
+                UserInputInterception::Accepted { content, original } => {
+                    params.content = content;
+                    original
                 }
                 UserInputInterception::Handled { reason } => {
                     return Err(EngineError::InputHandled(reason));
@@ -239,14 +236,20 @@ impl Engine {
         };
         let staged_skill = self.pending_child_skill(params.session_id);
         let direct_skill = (staged_skill.is_none())
-            .then(|| cookie_agent_protocol::decode_skill_submission(&params.input))
+            .then(|| {
+                params
+                    .content
+                    .single_text()
+                    .and_then(cookie_agent_protocol::decode_skill_submission)
+            })
             .flatten()
             .map(|(name, args, prompt)| {
-                params.input = prompt
-                    .unwrap_or_else(|| "Apply the loaded skill to the current session.".into());
+                params.content = prompt
+                    .unwrap_or_else(|| "Apply the loaded skill to the current session.".into())
+                    .into();
                 (name, args)
             });
-        original_input = original_input.filter(|original| original != &params.input);
+        original_input = original_input.filter(|original| original != &params.content);
         let direct_plan = direct_skill
             .as_ref()
             .map(|(name, args)| self.prepare_user_skill_invocation(params.session_id, name, args))
@@ -278,7 +281,7 @@ impl Engine {
                     .collect::<Vec<_>>(),
                 params.reset_fallback,
             );
-            if run.input != params.input || run.selection != params.selection {
+            if run.input.as_ref() != Some(&params.content) || run.selection != params.selection {
                 return Err(EngineError::RunIdempotencyConflict);
             }
             return Ok(RunStartResult { run_id: run.id });
@@ -442,8 +445,7 @@ impl Engine {
                         context_id: context_id.clone(),
                         agent_path: run_policy.agent.agent.to_string(),
                         prompt_context: cookie_agent_protocol::ExtensionPromptContext {
-                            input: (!producer_start)
-                                .then(|| cookie_agent_protocol::UserContent::text(&params.input)),
+                            input: (!producer_start).then(|| params.content.clone()),
                             system_prompt: run_policy.agent.composed_prompt.clone(),
                             injected_messages: injected_messages.clone(),
                         },
@@ -643,14 +645,14 @@ impl Engine {
             if producer_start {
                 return Ok(());
             }
-            if let Some(original_input) = original_input {
+            if let Some(original_content) = original_input {
                 self.append(
                     params.session_id,
                     Some(run_id),
                     origin.clone(),
                     Event::UserInputTransformed {
-                        original_content: original_input.into(),
-                        content: params.input.clone().into(),
+                        original_content,
+                        content: params.content.clone(),
                     },
                 )
                 .await?;
@@ -660,7 +662,7 @@ impl Engine {
                 Some(run_id),
                 origin,
                 Event::UserInputSubmitted {
-                    content: params.input.into(),
+                    content: params.content,
                 },
             )
             .await
@@ -812,18 +814,17 @@ impl Engine {
     pub(super) async fn intercept_user_input(
         &self,
         session_id: SessionId,
-        input: String,
+        content: cookie_agent_protocol::UserContent,
     ) -> Result<UserInputInterception, EngineError> {
         let session = self.inner.store.get(session_id)?;
         if !matches!(session.meta.origin, SessionOrigin::Root) {
             return Ok(UserInputInterception::Accepted {
-                input,
-                original_input: None,
+                content,
+                original: None,
             });
         }
         self.inner.plugins.await_eager_ready().await;
-        let original_input = input.clone();
-        let mut current = cookie_agent_protocol::UserContent::from(input);
+        let mut current = content.clone();
         let context_id = crate::plugin::plugin_context_id();
         for hooked in self
             .inner
@@ -884,14 +885,12 @@ impl Engine {
                 }
             }
         }
-        // Input is text until clients send content (phase F of the
-        // compatibility spec); a transform cannot add files, so neither can
-        // its result here.
-        let current = current.as_plain_text().into_owned();
-        let audit_original = (current != original_input).then_some(original_input);
+        // A transform cannot add files, so the result names only files the
+        // input already named.
+        let original = (current != content).then_some(content);
         Ok(UserInputInterception::Accepted {
-            input: current,
-            original_input: audit_original,
+            content: current,
+            original,
         })
     }
 

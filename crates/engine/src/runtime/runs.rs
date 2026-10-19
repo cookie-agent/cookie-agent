@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use cookie_agent_protocol::{
     ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult,
-    RunSteerResult, SessionId, SessionStatus, ToolCallId,
+    RunSteerResult, SessionId, SessionStatus, ToolCallId, UserContent,
 };
 
 use super::{
@@ -31,7 +31,7 @@ impl Engine {
     pub async fn steer(
         &self,
         run_id: RunId,
-        input: String,
+        content: UserContent,
         origin: EventOrigin,
     ) -> Result<RunSteerResult, EngineError> {
         let active = self
@@ -55,11 +55,8 @@ impl Engine {
                 .or_default(),
         );
         let _in_order = order.lock().await;
-        match self.intercept_user_input(active.session, input).await? {
-            UserInputInterception::Accepted {
-                input,
-                original_input,
-            } => {
+        match self.intercept_user_input(active.session, content).await? {
+            UserInputInterception::Accepted { content, original } => {
                 let session = active.session;
                 self.on_actor(session, move |engine| {
                     engine.active_run_in(session, run_id)?;
@@ -70,14 +67,14 @@ impl Engine {
                             user_input_seq: None,
                         });
                     }
-                    if let Some(original_input) = original_input {
+                    if let Some(original_content) = original {
                         engine.append_direct(
                             session,
                             Some(run_id),
                             origin.clone(),
                             Event::UserInputTransformed {
-                                original_content: original_input.into(),
-                                content: input.clone().into(),
+                                original_content,
+                                content: content.clone(),
                             },
                         )?;
                     }
@@ -85,9 +82,7 @@ impl Engine {
                         session,
                         Some(run_id),
                         origin,
-                        Event::UserInputAdmitted {
-                            content: input.into(),
-                        },
+                        Event::UserInputAdmitted { content },
                     )?;
                     let user_input_seq = engine.inner.store.get(session)?.meta.last_event_seq;
                     engine.clear_skill_turn_state(session);

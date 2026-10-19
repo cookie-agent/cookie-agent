@@ -380,7 +380,7 @@ impl SessionProjection {
                     RunProjection {
                         id: run_id,
                         client_run_id: client_run_id.clone(),
-                        input: String::new(),
+                        input: None,
                         selection: selection.clone(),
                         agent: previous
                             .and_then(|previous| previous.runs.get(&run_id))
@@ -397,9 +397,9 @@ impl SessionProjection {
             // User input is prompt history, not a lifecycle transition.
             EventPayload::UserInputSubmitted { content } => {
                 if let Some(run) = self.runs.get_mut(&run_id)
-                    && run.input.is_empty()
+                    && run.input.is_none()
                 {
-                    run.input = content.as_plain_text().into_owned();
+                    run.input = Some(content.clone());
                 }
             }
             EventPayload::RunFinished { outcome } => {

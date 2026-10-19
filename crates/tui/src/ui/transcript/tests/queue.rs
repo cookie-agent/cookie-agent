@@ -1099,7 +1099,7 @@ async fn clicking_a_strip_entry_recalls_and_restores_the_returned_text() {
         .send(MessageFrame::Value(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": { "outcome": "recalled", "input": "first" }
+            "result": { "outcome": "recalled", "content": [{ "type": "text", "text": "first" }] }
         })))
         .expect("script recall response");
     let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
@@ -1378,14 +1378,20 @@ async fn alt_enter_queues_while_enter_steers_and_ctrl_enter_adds_a_line() {
     wait_for_recorded_request(&recorded, "session.submit_input", 1).await;
     let params = last_request_params(&recorded, "session.submit_input");
     assert_eq!(params["delivery"], "queue");
-    assert_eq!(params["input"], "later");
+    assert_eq!(
+        params["content"],
+        serde_json::json!([{ "type": "text", "text": "later" }])
+    );
     app.input.set_buffer("now".into());
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
     wait_for_recorded_request(&recorded, "session.submit_input", 2).await;
     let params = last_request_params(&recorded, "session.submit_input");
     assert_eq!(params["delivery"], "steer");
-    assert_eq!(params["input"], "now");
+    assert_eq!(
+        params["content"],
+        serde_json::json!([{ "type": "text", "text": "now" }])
+    );
 }
 
 #[tokio::test]

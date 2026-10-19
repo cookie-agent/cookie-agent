@@ -203,7 +203,7 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
                     client_run_id: ClientRunId::new(format!("setup-failure-{inject_message}"))
                         .unwrap(),
                     selection,
-                    input: "setup input".into(),
+                    content: "setup input".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -265,7 +265,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_trusts_its_finger
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("event-reservation-reopen").expect("run ID"),
                 selection,
-                input: "scripted root input".into(),
+                content: "scripted root input".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -445,7 +445,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("best-effort-delegations").expect("run ID"),
                 selection,
-                input: "scripted root input".into(),
+                content: "scripted root input".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -661,7 +661,7 @@ async fn a_delegation_whose_records_do_not_verify_is_unrecoverable_alone() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("unrecoverable-delegation").expect("run ID"),
                 selection,
-                input: "scripted root input".into(),
+                content: "scripted root input".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -821,7 +821,7 @@ async fn a_crash_mid_stream_recovers_without_the_live_only_partial_output() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("crash-mid-stream").expect("client run ID"),
                 selection,
-                input: "start a long answer".into(),
+                content: "start a long answer".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

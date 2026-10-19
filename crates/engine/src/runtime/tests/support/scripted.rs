@@ -480,7 +480,7 @@ pub(crate) async fn assert_retry_budget_and_fallback(
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new(format!("retry-budget-{status}")).unwrap(),
                 selection,
-                input: "exercise retry budget".into(),
+                content: "exercise retry budget".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

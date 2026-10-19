@@ -270,7 +270,7 @@ async fn start_job_run(
                 session_id,
                 client_run_id: ClientRunId::new("background-call").expect("client run id"),
                 selection,
-                input: "run the job".into(),
+                content: "run the job".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

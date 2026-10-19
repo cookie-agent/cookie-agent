@@ -43,7 +43,7 @@ async fn mid_stream_failure_still_consumes_standard_retries_before_fallback() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("mid-stream-retry-budget").unwrap(),
                 selection,
-                input: "exercise mid-stream retry budget".into(),
+                content: "exercise mid-stream retry budget".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -129,7 +129,7 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("infinite-overload-cancel").unwrap(),
                 selection,
-                input: "cancel overloaded model".into(),
+                content: "cancel overloaded model".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -208,7 +208,7 @@ async fn interrupted_stream_commits_its_partial_turn_before_the_abandonment() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("interrupted-partial-turn").unwrap(),
                 selection,
-                input: "start a long answer".into(),
+                content: "start a long answer".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -358,7 +358,7 @@ async fn stream_deltas_are_delivered_live_but_never_logged() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("live-deltas").unwrap(),
                 selection: selection.clone(),
-                input: "say hi".into(),
+                content: "say hi".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -517,7 +517,7 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("responses-internal-output").unwrap(),
                 selection,
-                input: "write a test value".into(),
+                content: "write a test value".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -623,7 +623,7 @@ async fn responses_message_transport_fields_allow_generated_titles() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("responses-title-output").unwrap(),
                 selection,
-                input: "Create a transport title".into(),
+                content: "Create a transport title".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -670,7 +670,7 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
                 client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-root")
                     .expect("run ID"),
                 selection,
-                input: "hello scripted model".to_owned(),
+                content: "hello scripted model".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -786,7 +786,7 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
                     })
                     .unwrap(),
                     selection,
-                    input: "read the image".into(),
+                    content: "read the image".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -915,7 +915,7 @@ async fn history_media_over_the_model_count_limit_elides_oldest_and_proceeds() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("media-limit").unwrap(),
                 selection,
-                input: "read both images".into(),
+                content: "read both images".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -972,7 +972,7 @@ async fn shutdown_joins_in_flight_run_tasks_and_records_run_cancelled() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("shutdown-cancellation").expect("run ID"),
                 selection,
-                input: "stall in the provider stream".into(),
+                content: "stall in the provider stream".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1057,7 +1057,7 @@ async fn model_tools_are_recorded_once_while_unchanged() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(client_run).unwrap(),
                     selection: selection.clone(),
-                    input: format!("run {client_run}"),
+                    content: format!("run {client_run}").into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -1136,7 +1136,7 @@ async fn repeated_write_outputs(loop_warning: bool) -> Vec<String> {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("loop-warning").expect("run ID"),
                 selection,
-                input: "repeat the same write".into(),
+                content: "repeat the same write".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1208,7 +1208,7 @@ async fn a_reader_joining_mid_stream_first_receives_the_output_it_missed() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("late-reader").unwrap(),
                 selection,
-                input: "start a long answer".into(),
+                content: "start a long answer".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

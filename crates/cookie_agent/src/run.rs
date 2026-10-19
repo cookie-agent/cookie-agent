@@ -506,7 +506,7 @@ async fn prepare_run(
                 client_run_id: ClientRunId::new(Uuid::now_v7().to_string())
                     .expect("UUID is a valid client run ID"),
                 selection,
-                input: prompt,
+                content: prompt.into(),
             },
             headless_origin(),
         )

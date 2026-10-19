@@ -596,7 +596,7 @@ async fn attach_and_detach_are_rejected_while_the_session_runs() {
                 session_id: session,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("attach-run").unwrap(),
                 selection,
-                input: "hold".into(),
+                content: "hold".into(),
             },
             origin(),
         )
@@ -794,7 +794,7 @@ async fn each_coding_attachment_loads_its_own_agent_md() {
                 session_id: session,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("agent-md").unwrap(),
                 selection,
-                input: "read the rules".into(),
+                content: "read the rules".into(),
             },
             origin(),
         )

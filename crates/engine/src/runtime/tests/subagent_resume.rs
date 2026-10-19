@@ -61,7 +61,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-terminal-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "create a resumable child".into(),
+                content: "create a resumable child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -169,7 +169,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
             session_id: parent.session_id,
             client_run_id: ClientRunId::new("resume-terminal-second").expect("run ID"),
             selection,
-            input: "resume the existing child".into(),
+            content: "resume the existing child".into(),
         },
         cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
     )
@@ -386,7 +386,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-resume-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "create the resume target".into(),
+                content: "create the resume target".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -424,7 +424,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-resume-second").expect("run ID"),
                 selection,
-                input: "fill the slot then resume the terminal child".into(),
+                content: "fill the slot then resume the terminal child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -546,7 +546,7 @@ async fn queued_terminal_resume_cancel_is_durable() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-cancel-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "create terminal cancellation target".into(),
+                content: "create terminal cancellation target".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -584,7 +584,7 @@ async fn queued_terminal_resume_cancel_is_durable() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-cancel-second").expect("run ID"),
                 selection,
-                input: "queue then cancel the terminal resume".into(),
+                content: "queue then cancel the terminal resume".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -685,7 +685,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("running-resume-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "start the long-running child".into(),
+                content: "start the long-running child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -747,7 +747,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("running-resume-second").expect("run ID"),
                 selection,
-                input: "attach to the active child".into(),
+                content: "attach to the active child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -984,7 +984,7 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-handoff-race-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "start the race child".into(),
+                content: "start the race child".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1030,7 +1030,7 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-handoff-race-second").expect("run ID"),
                 selection,
-                input: "race completion against resume admission".into(),
+                content: "race completion against resume admission".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1107,7 +1107,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancel-resume-admission-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "start child for cancelled resume".into(),
+                content: "start child for cancelled resume".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1160,7 +1160,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancel-resume-admission-second").expect("run ID"),
                 selection,
-                input: "cancel while resume is admitting".into(),
+                content: "cancel while resume is admitting".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1367,7 +1367,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-monitor-failure-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "start child for monitor failure".into(),
+                content: "start child for monitor failure".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1418,7 +1418,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-monitor-failure-second").expect("run ID"),
                 selection,
-                input: "resume with failed monitor installation".into(),
+                content: "resume with failed monitor installation".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1487,7 +1487,7 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-attachment-cancel-first").expect("run ID"),
                 selection: selection.clone(),
-                input: "start child for attachment cancellation".into(),
+                content: "start child for attachment cancellation".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1533,7 +1533,7 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-attachment-cancel-second").expect("run ID"),
                 selection,
-                input: "cancel after durable run attachment".into(),
+                content: "cancel after durable run attachment".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

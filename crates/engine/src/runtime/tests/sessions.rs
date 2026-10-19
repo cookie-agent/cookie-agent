@@ -347,7 +347,7 @@ async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() 
                 session_id: created.session_id,
                 client_run_id: ClientRunId::new("metadata-persist").expect("client run ID"),
                 selection,
-                input: "persist session".into(),
+                content: "persist session".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -416,7 +416,7 @@ async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("metadata-cache-persist").expect("client run ID"),
                 selection,
-                input: "persist session".into(),
+                content: "persist session".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -564,7 +564,7 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("first-persist").expect("client run ID"),
                 selection,
-                input: "first user message".into(),
+                content: "first user message".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -678,7 +678,7 @@ async fn session_meta_tracks_user_initiated_activity_only() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("activity-run").expect("client run ID"),
                 selection,
-                input: "do the thing".into(),
+                content: "do the thing".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -736,7 +736,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
                     session_id,
                     client_run_id: ClientRunId::new(run).expect("client run ID"),
                     selection: selection.clone(),
-                    input: input.into(),
+                    content: input.into(),
                 },
                 origin(),
             )
@@ -848,7 +848,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
                 session_id,
                 client_run_id: ClientRunId::new("revert-cut-third").expect("client run ID"),
                 selection,
-                input: "third input".into(),
+                content: "third input".into(),
             },
             origin(),
         )
@@ -913,7 +913,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("revert-first").expect("client run ID"),
                 selection: selection.clone(),
-                input: "first input".into(),
+                content: "first input".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -940,7 +940,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("revert-second").expect("client run ID"),
                 selection: selection.clone(),
-                input: "second input must disappear".into(),
+                content: "second input must disappear".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1133,7 +1133,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("revert-branch").expect("client run ID"),
                 selection,
-                input: "branch input".into(),
+                content: "branch input".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1647,7 +1647,7 @@ async fn a_session_with_an_unknown_state_event_is_render_only() {
                     session_id,
                     client_run_id: ClientRunId::new("render-only").unwrap(),
                     selection,
-                    input: "hello".into(),
+                    content: "hello".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )

@@ -33,7 +33,7 @@ async fn revert_needs_the_current_tip_and_a_retried_fork_returns_the_same_fork()
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("only").unwrap(),
                 selection,
-                input: "question".into(),
+                content: "question".into(),
             },
             origin(),
         )
@@ -132,7 +132,7 @@ async fn a_manual_compaction_can_be_cancelled_and_input_waits_for_it() {
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(client_run_id).unwrap(),
                     selection: selection.clone(),
-                    input: input.into(),
+                    content: input.into(),
                 },
                 origin(),
             )
@@ -160,7 +160,7 @@ async fn a_manual_compaction_can_be_cancelled_and_input_waits_for_it() {
             .submit_input(
                 SessionSubmitInputParams {
                     session_id,
-                    input: "after".into(),
+                    content: "after".into(),
                     delivery: InputDelivery::Steer,
                     selection: None,
                     client_run_id: ClientRunId::new("after").unwrap(),

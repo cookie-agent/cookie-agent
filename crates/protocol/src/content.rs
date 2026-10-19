@@ -1,9 +1,9 @@
 //! User content and media references, as specified in
 //! `docs/site/specs/compatibility-v1.md` section 11.
 //!
-//! The input-lane events, `message_injected`, and producer message bodies
-//! store [`UserContent`]; the run and input params switch to it in a later
-//! phase.
+//! The params of `run.start`, `run.steer`, and `session.submit_input`, the
+//! input-lane events, `message_injected`, and producer message bodies carry
+//! [`UserContent`].
 
 use std::{borrow::Cow, fmt};
 
@@ -177,6 +177,23 @@ impl UserContent {
     pub fn is_blank(&self) -> bool {
         self.0.iter().all(|part| {
             matches!(part, Open::Known(UserContentPart::Text { text }) if text.trim().is_empty())
+        })
+    }
+
+    /// The text of content that is exactly one text part.
+    #[must_use]
+    pub fn single_text(&self) -> Option<&str> {
+        match self.0.as_slice() {
+            [Open::Known(UserContentPart::Text { text })] => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The text parts' texts, in order.
+    pub fn texts(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().filter_map(|part| match part {
+            Open::Known(UserContentPart::Text { text }) => Some(text.as_str()),
+            _ => None,
         })
     }
 

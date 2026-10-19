@@ -300,7 +300,7 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
                 client_run_id: cookie_agent_protocol::ClientRunId::new("frozen-bedrock-run")
                     .expect("run ID"),
                 selection,
-                input: "hold frozen Bedrock semantics".to_owned(),
+                content: "hold frozen Bedrock semantics".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -855,7 +855,7 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
                 client_run_id: cookie_agent_protocol::ClientRunId::new("immutable-run")
                     .expect("run ID"),
                 selection,
-                input: "hello".to_owned(),
+                content: "hello".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )

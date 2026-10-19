@@ -82,7 +82,7 @@ async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("approval-batch").expect("client run ID"),
                 selection,
-                input: "run approval batch".into(),
+                content: "run approval batch".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -208,7 +208,7 @@ async fn cancellation_during_approval_terminates_batch_without_execution() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("approval-cancellation").expect("client run ID"),
                 selection,
-                input: "start approval batch".into(),
+                content: "start approval batch".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -285,7 +285,7 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
                 client_run_id: cookie_agent_protocol::ClientRunId::new("ask-transaction")
                     .expect("run ID"),
                 selection,
-                input: "request the write tool".to_owned(),
+                content: "request the write tool".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -408,7 +408,7 @@ async fn tool_output_is_subscribable_while_the_call_awaits_approval() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("output-before-approval").expect("run ID"),
                 selection,
-                input: "request the write tool".into(),
+                content: "request the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -467,7 +467,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("overlay-epoch").expect("run ID"),
                 selection,
-                input: "request the write tool".into(),
+                content: "request the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -572,7 +572,7 @@ async fn repeated_approvals_feed_prior_decisions_to_the_reviewer() {
                 client_run_id: cookie_agent_protocol::ClientRunId::new("persistent-approval")
                     .expect("run ID"),
                 selection,
-                input: "request two writes".to_owned(),
+                content: "request two writes".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -656,7 +656,7 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("ask-mode").expect("run ID"),
                 selection,
-                input: "request the write tool".into(),
+                content: "request the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -719,7 +719,7 @@ async fn approval_request_window_uses_the_configured_timeout() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("approval-window").expect("run ID"),
                 selection,
-                input: "request the write tool".into(),
+                content: "request the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -793,7 +793,7 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
                 client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-mode")
                     .expect("run ID"),
                 selection,
-                input: "request the write tool".into(),
+                content: "request the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -887,7 +887,7 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("auto-n-mode").expect("run ID"),
                 selection,
-                input: "request the write tool".into(),
+                content: "request the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -986,7 +986,7 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("auto-y-mode").expect("run ID"),
                 selection,
-                input: "request the write tool".into(),
+                content: "request the write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1072,7 +1072,7 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("auto-y-identical-calls").expect("run ID"),
                 selection,
-                input: "request two identical writes".into(),
+                content: "request two identical writes".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1184,7 +1184,7 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
                     ))
                     .expect("run ID"),
                     selection,
-                    input: "request the write tool".into(),
+                    content: "request the write tool".into(),
                 },
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
@@ -1260,7 +1260,7 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
                 client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-deny")
                     .expect("run ID"),
                 selection,
-                input: "request the denied write tool".into(),
+                content: "request the denied write tool".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1335,7 +1335,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
                 client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-doom-loop")
                     .expect("run ID"),
                 selection,
-                input: "repeat the same write".into(),
+                content: "repeat the same write".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1405,7 +1405,7 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
                 client_run_id: cookie_agent_protocol::ClientRunId::new("live-mode-change")
                     .expect("run ID"),
                 selection,
-                input: "perform two writes".into(),
+                content: "perform two writes".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1495,7 +1495,7 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
                 client_run_id: cookie_agent_protocol::ClientRunId::new("malformed-approval")
                     .expect("run ID"),
                 selection,
-                input: "request the write tool".to_owned(),
+                content: "request the write tool".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1550,7 +1550,7 @@ async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
                 client_run_id: cookie_agent_protocol::ClientRunId::new("approval-e2e")
                     .expect("run ID"),
                 selection,
-                input: "request the write tool".to_owned(),
+                content: "request the write tool".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1638,7 +1638,7 @@ async fn session_resume_does_not_sweep_approvals_of_a_live_running_run() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("live-resume").expect("run ID"),
                 selection,
-                input: "request the write tool".to_owned(),
+                content: "request the write tool".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -1881,7 +1881,7 @@ async fn finalized_approval_during_internal_evaluation_yields_clean_denial() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("late-evaluation").expect("run ID"),
                 selection,
-                input: "request the write tool".to_owned(),
+                content: "request the write tool".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -2003,7 +2003,7 @@ async fn escalated_approval_finalized_externally_still_wakes_the_waiter() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("terminal-race").expect("run ID"),
                 selection,
-                input: "request the write tool".to_owned(),
+                content: "request the write tool".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -2105,7 +2105,7 @@ async fn built_in_approval_agent_request_inherits_the_parent_run_output_cap() {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("inherited-output-cap").expect("run ID"),
                 selection,
-                input: "request the write tool".to_owned(),
+                content: "request the write tool".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
