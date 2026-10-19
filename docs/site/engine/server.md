@@ -27,6 +27,11 @@ machine read it from the same `config.toml`; elsewhere, pass `--token`, set
 `COOKIE_DAEMON_TOKEN`, or copy it into that machine's `[server] token`. See the
 [security contract](../guide/security.md#daemon-authentication-token).
 
+Plain `cookie` on this machine uses a daemon listening at
+`ws://<host>:<port>/ws` of this table, when `token` is set, instead of
+starting an engine of its own; it never reads `url` for that. See
+[A daemon already running](../guide/run.md#a-daemon-already-running).
+
 For clients and runtimes on other machines, `cookie daemon` takes:
 
 | Option | Meaning |

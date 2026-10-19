@@ -141,8 +141,11 @@ runtime that dials in can reconnect after one. The WebSocket subcommands
 read it from the same file unless given `--token` / `COOKIE_DAEMON_TOKEN`.
 Any process that can read your `config.toml` can therefore connect to the
 daemon; keep the file private, and replace the token (delete the line and
-restart the daemon) if it leaks. The daemon also prints the token in its first
-stdout line:
+restart the daemon) if it leaks. Plain `cookie` sends the token to whatever
+listens at `[server] host` and `port` when it looks for a running daemon (see
+[A daemon already running](run.md#a-daemon-already-running)), as
+`cookie attach` with default settings does; it looks only when the token is
+set. The daemon also prints the token in its first stdout line:
 
 ```text
 daemon-ready {"url":"ws://127.0.0.1:<port>/ws","token":"<43-char base64url>"}

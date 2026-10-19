@@ -54,7 +54,8 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/cookie-agent/cooki
 
 See the [installation guide](https://cookie-agent.github.io/doc/latest/install/)
 for direct binary downloads, nightly builds, configuration, and the first run.
-Running `cookie` starts a local daemon and opens the TUI. In the TUI, type
+Running `cookie` opens the TUI on the daemon already running on this
+machine, or starts one inside its own process when none is. In the TUI, type
 `/connect` to store a provider connection, then start a session.
 
 ```sh

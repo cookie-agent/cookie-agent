@@ -8,7 +8,11 @@ Start in the workspace where the agent should operate:
 cookie
 ```
 
-This starts the local engine and terminal client together. Configure the
+When a daemon already runs on this machine, `cookie` opens the terminal
+client on it (see [A daemon already running](#a-daemon-already-running));
+otherwise it starts the engine and the terminal client together in one
+process. The bottom bar starts with where the engine runs: the daemon's
+address, or `standalone`. Configure the
 [theme](../tui/theme.md) and [diagnostic filter](../tui/minimum_event_level.md)
 in the independent client configuration.
 When at least one model is available, select an agent and model if needed, type
@@ -57,7 +61,9 @@ connect to the daemon.
 Pass `--port 0` to let the OS pick an ephemeral port; the ready line then
 carries the real port, and clients must use that URL rather than guessing 7419.
 
-Attach from another terminal on the same machine:
+Plain `cookie` in another terminal on the same machine finds it (see
+[A daemon already running](#a-daemon-already-running)). `cookie attach`
+requires it:
 
 ```sh
 cookie attach
@@ -75,7 +81,43 @@ cookie attach --url wss://laptop.example:7419/ws --token '<43-char base64url>'
 ```
 
 A daemon on another machine listens with `--listen`; see
-[Server](../engine/server.md).
+[Server](../engine/server.md). Unlike plain `cookie`, `cookie attach` never
+falls back to an engine of its own: a daemon it cannot reach or use is an
+error.
+
+### A daemon already running
+
+Plain `cookie` looks for a daemon on this machine before it starts an engine
+of its own, so every client of a running daemon, `cookie daemon` as a
+service included, sees the same sessions:
+
+- It looks only when `config.toml` has `[server] token`, which
+  `cookie daemon` writes at its first start. Without one it starts its own
+  engine and touches no network.
+- It looks at `ws://<[server] host>:<[server] port>/ws` and never at
+  `[server] url`, which may name another machine: reaching another machine
+  takes `cookie attach`. A daemon started with `--port` or `--listen` on
+  another address, or serving only TLS, is not found.
+- Nothing listening (the connection is refused, or it is not open within
+  half a second) starts its own engine, silently.
+- A daemon that answers within two seconds and accepts the handshake gets
+  the TUI, exactly as `cookie attach` would: a dropped connection is
+  retried, and quitting the TUI leaves the daemon running.
+- Something that answers but cannot be used, such as a daemon refusing the
+  token, a daemon of another protocol major, a TLS listener, or another
+  program, starts its own engine with a notice that names the address and
+  the reason.
+
+When the daemon runs another version of cookie than this binary, the TUI
+says so once; restart the daemon to upgrade it. `cookie --standalone`
+always starts its own engine and never looks; it takes no subcommand.
+`cookie run` never looks either: it always runs its own engine. An engine
+of its own beside a running daemon opens the daemon's sessions as
+read-only snapshots. A daemon running as another OS user is not told apart:
+it reports the same machine, so its `local` runtime serves the directory
+with that user's file permissions. Use `--standalone` or a
+[runtime that dials in](runtimes.md#runtimes-that-dial-in) with such a
+daemon.
 
 The daemon, `cookie runtime serve`, and the TUI stop cleanly on a stop
 signal: `SIGINT`, `SIGTERM` (`kill`, systemd), or `SIGHUP` (a closed
@@ -134,12 +176,26 @@ started in: they work there with `local`'s `coding` capability, and its
 session list shows that directory's sessions. Sessions stay in the store of
 the directory the daemon started in.
 
-When the daemon runs on another machine (its handshake reports another
-machine ID), `cookie attach` also offers this machine to it: it dials in a
-runtime named `client_<host name>` that serves the TUI's directory only, and
-the TUI's new sessions use its `coding` capability there instead of the
-daemon's `local`. The runtime lives as long as the TUI; sessions keep its
-attachment and find it again when the TUI attaches again from this machine.
+Plain `cookie` on a found daemon and `cookie attach` choose the runtime
+for the directory the same way, first match first:
+
+1. The daemon runs on this machine (its handshake reports this machine's
+   ID, or either side reports none): its `local` runtime.
+2. A connected runtime of the daemon runs on this machine (the daemon
+   places it on a machine whose IDs include this one's; see
+   [Machines](runtimes.md#machines)) and offers a capability that takes a
+   workspace: new sessions attach that capability
+   at the directory. With several, the lowest runtime ID wins. An example
+   is a daemon in a container with `cookie runtime serve --daemon` running
+   beside it on the host.
+3. Otherwise the TUI offers this machine to the daemon: it dials in a
+   runtime named `client_<host name>` that serves the TUI's directory only,
+   and the TUI's new sessions use its `coding` capability there. The
+   runtime lives as long as the TUI; sessions keep its attachment and find
+   it again when the TUI attaches again from this machine. Another TUI's
+   `client_<host name>` is never chosen in step 2.
+
+The bottom bar shows the chosen runtime and the directory.
 Configured plugins and eager MCP servers, which come only from the user
 `config.toml`, start during engine initialization, before a model tool call is
 approved. Repository `AGENTS.md` files and project skills still enter model

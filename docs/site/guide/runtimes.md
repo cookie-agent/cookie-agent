@@ -241,6 +241,10 @@ cookie runtime serve --daemon
 - **MCP servers.** It hosts its own machine's MCP servers: those of
   `[runtimes.local.mcp]` in that machine's `config.toml`.
 - **Roots.** `--root` limits its workspaces, as for `--stdio`.
+- **Clients on its machine.** Plain `cookie` and `cookie attach` on the
+  runtime's machine use it for their directory when the daemon runs
+  elsewhere, such as in a container; see
+  [A daemon already running](run.md#a-daemon-already-running).
 
 ## Machines
 

@@ -13,7 +13,7 @@ has six top-level subcommands plus a default mode:
 
 | Command | Behavior |
 |---|---|
-| *(none)* | Start an in-process daemon and open the TUI over an in-memory stream |
+| *(none)* | Open the TUI on the daemon `[server]` describes on this machine when one answers; otherwise start an in-process daemon and open the TUI over an in-memory stream. `--standalone` never looks for one |
 | `run [options] <prompt>` | Run one prompt headlessly through the local engine |
 | `daemon [--port]` | Run only the daemon, listening on `ws://127.0.0.1:7419/ws` by default; `--port 0` picks an ephemeral port |
 | `attach [--url] --token` | Attach the TUI to an existing daemon WebSocket |
@@ -43,7 +43,10 @@ ssh) that speak the same protocol over stdio.
 Any number of clients may attach to one daemon at once. Each sees every
 session's events live, can submit input to any of them, and is told of the
 others' changes (see [the protocol](reference/protocol.md#daemon-wide-changes)).
-Plain `cookie` keeps its daemon private to its own TUI. An attached TUI that
+Plain `cookie` uses a daemon already listening at `[server]` on its machine
+and otherwise keeps an in-process daemon private to its own TUI (see
+[A daemon already running](guide/run.md#a-daemon-already-running)). An
+attached TUI that
 loses its connection redials the daemon with backoff under the same client
 identity, then rebuilds the viewed session from a full replay, which also
 restores output that streamed while it was away. When the client gives up
