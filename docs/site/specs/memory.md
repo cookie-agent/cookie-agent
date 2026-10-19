@@ -813,3 +813,102 @@ Each phase is committed and pushed on its own.
 
 None. Q1 to Q10 were decided on 2026-10-19 and are recorded in the sections
 above.
+
+## 16. Implementation notes
+
+### 16.1 Phase 1: machines
+
+Landed 2026-10-19: runtime protocol 1.1.0, client protocol 1.2.0, the
+machine registry, the `machines.*` RPCs and `machines.changed`, `machine`
+on `runtimes.list`, the machine-aware runtimes block and tool notes, the
+`/runtime` Machines view, and `cookie machine`.
+
+Where things are, for the later phases:
+
+- **Memory lock and folders:** `crates/engine/src/memory.rs`
+  (`crate::memory`). `MemoryRoot::new(data_dir)` is `<data_root>/memory`;
+  `MemoryRoot::lock()` takes the advisory lock on `memory/.lock` (waiting up
+  to 5 s, then `MemoryError::Contention`); `machine_dir`,
+  `machine_memory_count` (`*.md` files directly in the folder),
+  `rename_machine_folder` and `merge_machine_folders` (which take the held
+  `MemoryLock` as proof and return `FolderMoves` to undo), and
+  `remove_empty_machine_folder`. The store of phase 2 belongs in this
+  module.
+- **Machine registry:** `crates/engine/src/machines.rs`
+  (`MachineRegistry`, held as `Inner::machines`). `lookup` applies rules 1
+  and 2 without writing; `resolve` also creates the machine of rules 3 and
+  4 and writes it. Every change goes through `mutate`, which takes the
+  memory lock, rereads `machines.json` (another daemon may have changed
+  it), writes it through a temporary file renamed over it, and undoes its
+  folder moves when the write fails.
+- **A session's machines:** `Engine::runtime_machine(runtime_id)`
+  (`crates/engine/src/runtime/machine_api.rs`) names a runtime's machine:
+  resolved, and written when new, while the runtime is connected; looked
+  up from its pin or last reported ID otherwise. The prompt reads it per
+  attachment in `Engine::attachment_facts`
+  (`crates/engine/src/runtime/runtime_notes.rs`), which yields each
+  attachment besides `global` in attach order with its runtime, kind,
+  workspace, platform, and machine: the session's machines of section 6
+  are the distinct machines of that list in order, plus the daemon's
+  machine (`runtime_machine("global")`) for a session with only `global`.
+  `Engine::subscribe_machine_changes` signals every registry change.
+
+Deviations and readings of the spec:
+
+- **The lock creates no memory folder.** While `<data_root>/memory` does
+  not exist, `MemoryRoot::lock` holds no file and creates nothing, so that
+  phase 2's first start (section 4.5), which keys off the folder's absence,
+  still runs for a data root phase 1 has used. Registry changes are then
+  serialized within the daemon only; two daemons sharing a data root
+  without a memory folder can race a registry write (each change rereads
+  the file first, so the window is the write itself). Once phase 2 creates
+  the folder at start, the lock always holds a file.
+- **Host names become machine names by their first label** (`labpc.lan` is
+  `labpc`), lowercased, with each run of other characters replaced by `-`,
+  edges trimmed, `host-` in front of a name that does not start with a
+  letter, `machine` when nothing is left, and at most 32 bytes; a clash
+  shortens the base to keep `-2`, `-3`, … within 32 bytes.
+- **`host_name` is optional** in `InitializeResult.machine`; a machine ID
+  without it gets the name `machine`. A machine whose ID is empty, longer
+  than 128 bytes, or not printable ASCII, or whose host name is longer than
+  255 bytes or holds control characters, is read as not reported.
+- **A runtime's machine is never stored with the runtime.** It is computed
+  from the registry when asked for, so a registry change "moves" connected
+  runtimes by being the new answer. The daemon places connected runtimes at
+  start and after every runtime registry change, so a new machine is
+  written as soon as a runtime it belongs to connects.
+- **Assigned-by.** A runtime placed by rule 4 reports `assigned_by:
+  pinned`, since its new machine pins it; one placed by rule 3 reports
+  `machine_id`.
+- **Every `machines.*` change answers with `MachinesListResult`**, the
+  machines afterwards, and `machines.changed` is an empty object; it is
+  also sent when a connecting runtime creates a machine. Params use the
+  spec's member names (`runtime`, `machine`, `name`, `from`, `into`).
+- **Refusals are registry errors:** `machine_not_found`,
+  `machine_name_taken` (another machine, or a memory folder that belongs to
+  none, has the name), `machine_in_use`, `machine_memory_conflict`,
+  `machine_merge_self`, `runtime_not_pinned` (unassigning a runtime no
+  machine pins), and `machine_store_failed`.
+- **Forget** refuses a machine whose memory folder holds anything at all,
+  not only memories, so it never deletes a file; an empty folder goes with
+  the machine. `memories` in `machines.list` counts `*.md` files.
+- **`machines.json` is strict** like configuration: an unknown member,
+  another `version`, a malformed name or machine ID, or an ID or runtime on
+  two machines fails the daemon's start with the file's path.
+- **Assigning a new name** creates the machine without checking for a
+  memory folder of that name; a stray folder becomes the new machine's.
+- **Prompt text.** The several-attachments paragraph is one line, as the
+  previous runtimes paragraph was; the spec's line breaks are wrapping. An
+  attachment whose machine the daemon cannot name gets a `<machine>` of its
+  own without a `name`, since nothing says it shares files with another; a
+  tool note then reads ``Belongs to attachment `x` (runtime `r`).``. The
+  platform goes on the machine only when every attachment on it reports the
+  same one.
+- **The TUI** shows machines in a second view of the `/runtime` panel
+  (`m` or its tab) rather than regrouping the attachment list; the
+  attachment rows name their runtime's machine.
+- **Corpora.** No `runtime/1.1.0` or `client/1.2.0` corpus directory was
+  recorded, as none was for `client/1.1.0`: the recorder's session does
+  not exercise the new methods, and its runtime handshake would record the
+  recording machine's host name. The future-data fixture
+  `corpus/future/runtime.json` expects this build's version, 1.1.0.
