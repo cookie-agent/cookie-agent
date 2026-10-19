@@ -63,14 +63,15 @@ plugin feature; runtime protocol 4 later opened them to runtimes (see
 | **Runtime template** | A configured way to start runtimes: `[runtimes.<id>]`. The `<id>` is the *runtime ID*. |
 | **Runtime instance** | A running runtime: one per (runtime ID, canonical workspace). Shared by every session attached to it. |
 | **Attachment** | A durable session fact binding a session to a runtime instance under a session-unique *attachment name*. |
-| **Attachment name** | The name the runtime instance reports for itself in `runtime/initialize`; used as the tool prefix on collisions. |
+| **Attachment name** | The name the runtime instance reports for itself in `runtime/initialize`; used as the tool prefix on collisions. Model-facing text calls this an *attachment* (see the [memory spec](memory.md#34-what-the-model-is-told)). |
+| **Machine** | The computer a runtime runs on; the daemon groups runtimes into machines. Added by the [memory spec](memory.md#3-machines). |
 
 ## 3. Layers
 
 | Layer | Runs in | Tools | Context |
 |---|---|---|---|
-| Base layer | daemon | `delegate_subagent`, `get_subagent_result`, `cancel_subagent`, `send_message`, `skill`, `goal_get`, `goal_update`, `read_artifact` (new) | none |
-| Global runtime (`global`) | daemon process, in-process trait calls | top-level `[mcp]` servers and `[plugins]`, `webfetch` (declared `Fallback`) | user skills (`~/.agents/skills`, `~/.cookie-agent/skills`) |
+| Base layer | daemon | `delegate_subagent`, `get_subagent_result`, `send_message`, `skill`, `goal_get`, `goal_update`, `read_artifact` (new), `stop_background` | none |
+| Global runtime (`global`) | daemon process, in-process trait calls | top-level `[mcp]` servers and `[plugins]`, `webfetch` (declared `Fallback`), memory tools ([memory spec](memory.md)) | user skills (`~/.agents/skills`, `~/.cookie-agent/skills`), memory snapshot |
 | Coding runtime (`coding`) | built-in `local` instance in the daemon process; others in child processes | `read`, `write`, `edit`, `bash`, `webfetch`, plus MCP servers from its template | workspace root, platform, `AGENTS.md`, project skills |
 
 Plugins exist only on the daemon, hosted by the global runtime. Hosting MCP
