@@ -35,8 +35,9 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::LoadedMcpServer;
 use cookie_agent_protocol::{
-    DisplayDelta, PersistedToolResult as ToolResult, SafeDisplayText, ToolAttachment, ToolCallId,
-    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole,
+    DisplayBlock, DisplayDelta, Open, PersistedToolResult as ToolResult, PreparedPresentation,
+    SafeDisplayText, ToolAttachment, ToolCallId, ToolEmittedContent, ToolEmittedMessage,
+    ToolEmittedMessageRole, ToolHint,
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolCompletion,
@@ -1719,6 +1720,19 @@ impl ToolProvider for McpRegistry {
         Ok(name.to_owned())
     }
 
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
+        let presentation = cookie_agent_runtime_api::tool_presentation(&call.name, &call.name)
+            .with_hint(ToolHint::GENERIC);
+        match call.arguments.as_object() {
+            Some(arguments) if !arguments.is_empty() => {
+                presentation.with_arguments([DisplayBlock::Json {
+                    value: call.arguments.clone(),
+                }])
+            }
+            _ => presentation,
+        }
+    }
+
     async fn prepare(
         &self,
         _ctx: ToolPreparationContext,
@@ -1856,6 +1870,8 @@ fn map_tool_result(
     result: rmcp::model::CallToolResult,
 ) -> Result<ToolResult, ToolError> {
     let mut output = Vec::new();
+    // The retained attachment each placeholder in `output` stands for.
+    let mut media = HashMap::new();
     let mut attachments = Vec::new();
     let mut emitted_attachments = Vec::new();
     for block in result.content {
@@ -1870,18 +1886,20 @@ fn map_tool_result(
                 }
                 match retain_base64_attachment(context, image.mime_type, &image.data) {
                     Ok(retained) => {
-                        output.push(
-                            if route_mcp_attachment(
-                                retained,
-                                &mut attachments,
-                                &mut emitted_attachments,
-                            ) {
-                                "[MCP image attachment]".into()
-                            } else {
+                        let artifact = retained.attachment.artifact_ref();
+                        if route_mcp_attachment(
+                            retained,
+                            &mut attachments,
+                            &mut emitted_attachments,
+                        ) {
+                            output.push("[MCP image attachment]".into());
+                            media.insert(output.len() - 1, artifact);
+                        } else {
+                            output.push(
                                 "[MCP image attachment omitted: combined attachment limit reached]"
-                                    .into()
-                            },
-                        );
+                                    .into(),
+                            );
+                        }
                     }
                     Err(McpAttachmentError::Invalid(error)) => {
                         output.push(format!("[Invalid MCP image content: {error}]"));
@@ -1900,18 +1918,20 @@ fn map_tool_result(
                 }
                 match retain_base64_attachment(context, audio.mime_type, &audio.data) {
                     Ok(retained) => {
-                        output.push(
-                            if route_mcp_attachment(
-                                retained,
-                                &mut attachments,
-                                &mut emitted_attachments,
-                            ) {
-                                "[MCP audio attachment]".into()
-                            } else {
+                        let artifact = retained.attachment.artifact_ref();
+                        if route_mcp_attachment(
+                            retained,
+                            &mut attachments,
+                            &mut emitted_attachments,
+                        ) {
+                            output.push("[MCP audio attachment]".into());
+                            media.insert(output.len() - 1, artifact);
+                        } else {
+                            output.push(
                                 "[MCP audio attachment omitted: combined attachment limit reached]"
-                                    .into()
-                            },
-                        );
+                                    .into(),
+                            );
+                        }
                     }
                     Err(McpAttachmentError::Invalid(error)) => {
                         output.push(format!("[Invalid MCP audio content: {error}]"));
@@ -1943,6 +1963,7 @@ fn map_tool_result(
                         &blob,
                     ) {
                         Ok(retained) => {
+                            let artifact = retained.attachment.artifact_ref();
                             let routed = route_mcp_attachment(
                                 retained,
                                 &mut attachments,
@@ -1955,6 +1976,9 @@ fn map_tool_result(
                                     "[MCP embedded resource unavailable: {uri}: combined attachment limit reached]"
                                 )
                             });
+                            if routed {
+                                media.insert(output.len() - 1, artifact);
+                            }
                         }
                         Err(McpAttachmentError::Invalid(error)) => output.push(format!(
                             "[MCP embedded resource unavailable: {uri}: {error}]"
@@ -1984,7 +2008,11 @@ fn map_tool_result(
             "is_error": result.is_error.unwrap_or(false),
         }
     });
+    let mut display = result_display(&output, &mut media);
     if let Some(structured) = structured_content {
+        display.push(Open::Known(DisplayBlock::Json {
+            value: structured.clone(),
+        }));
         metadata["mcp"]["structured_content"] = structured;
     }
     let additional_messages = if emitted_attachments.is_empty() {
@@ -2002,7 +2030,7 @@ fn map_tool_result(
         ]
     };
     Ok(ToolResult {
-        display: Vec::new(),
+        display: cookie_agent_protocol::fit_result_display(display),
         background: None,
         retained_output: None,
         title: safe_title(tool_name),
@@ -2011,6 +2039,33 @@ fn map_tool_result(
         attachments,
         additional_messages,
     })
+}
+
+/// What clients see of a result's `output` parts: consecutive text as one
+/// `text` block, as the output joins it, and each retained attachment as the
+/// `media` it is instead of its placeholder.
+fn result_display(
+    output: &[String],
+    media: &mut HashMap<usize, cookie_agent_protocol::ArtifactRef>,
+) -> Vec<Open<DisplayBlock>> {
+    let mut display = Vec::new();
+    for (index, part) in output.iter().enumerate() {
+        if let Some(artifact) = media.remove(&index) {
+            display.push(Open::Known(DisplayBlock::Media {
+                artifact,
+                alt: None,
+            }));
+            continue;
+        }
+        match display.last_mut() {
+            Some(Open::Known(DisplayBlock::Text { text, .. })) => {
+                text.push('\n');
+                text.push_str(part);
+            }
+            _ => display.push(Open::Known(DisplayBlock::text(part.clone()))),
+        }
+    }
+    display
 }
 
 #[derive(Debug)]

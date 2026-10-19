@@ -9,8 +9,8 @@ use std::{
 
 use cookie_agent_config::{LoadedMcpServer, McpServerConfig, McpServerSource};
 use cookie_agent_protocol::{
-    AgentId, CancellationCapability, Modality, ModelCapabilities, ReplayCapability, RunId,
-    SessionId, ToolCallId,
+    AgentId, CancellationCapability, DisplayBlock, Modality, ModelCapabilities, Open,
+    ReplayCapability, RunId, SessionId, ToolCallId,
 };
 use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
@@ -391,6 +391,18 @@ fn tool_result_retains_only_distinct_structured_content() {
         };
         assert_eq!(mapped.metadata, expected);
         assert!(mapped.attachments.is_empty());
+        // Clients see the text as one block and distinct structured content
+        // as JSON.
+        let mut display = Vec::new();
+        if !texts.is_empty() {
+            display.push(Open::Known(DisplayBlock::text(texts.join("\n"))));
+        }
+        if retain {
+            display.push(Open::Known(DisplayBlock::Json {
+                value: data.clone().unwrap(),
+            }));
+        }
+        assert_eq!(mapped.display, display);
     }
 }
 
@@ -554,6 +566,14 @@ fn base64_attachments_follow_the_media_gate() {
     assert_eq!(mapped.attachments[0].mime_type.as_str(), "image/png");
     assert_eq!(mapped.metadata, json!({"mcp": {"is_error": false}}));
     assert!(!mapped.output.contains(&data));
+    // Clients see the retained attachment in place of its placeholder.
+    assert_eq!(
+        mapped.display,
+        [Open::Known(DisplayBlock::Media {
+            artifact: mapped.attachments[0].artifact_ref(),
+            alt: None,
+        })]
+    );
 }
 
 #[test]
@@ -668,6 +688,29 @@ async fn stdio_lists_calls_and_refreshes_tools() {
     assert_eq!(error.output, "fixture failure");
     assert_eq!(error.metadata, json!({"mcp": {"is_error": true}}));
     registry.shutdown().await;
+}
+
+#[test]
+fn an_mcp_call_shows_its_arguments_as_json() {
+    let registry = registry(McpServerSource::UserFile);
+    let call = |arguments: Value| ToolCall {
+        id: ToolCallId::new_v7(),
+        name: "fixture_echo".into(),
+        arguments,
+    };
+    let presentation = registry.presentation(&call(json!({"text": "hi"})));
+    assert_eq!(presentation.title.as_str(), "fixture_echo");
+    assert_eq!(
+        presentation.hint.as_ref().map(|hint| hint.as_str()),
+        Some("generic")
+    );
+    assert_eq!(
+        presentation.arguments,
+        [Open::Known(DisplayBlock::Json {
+            value: json!({"text": "hi"})
+        })]
+    );
+    assert!(registry.presentation(&call(json!({}))).arguments.is_empty());
 }
 
 #[test]
