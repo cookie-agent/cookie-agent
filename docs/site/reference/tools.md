@@ -40,6 +40,38 @@ A failed tool call terminates with a failure code and a message for the model:
 | `unsupported_platform` | The tool cannot run on this platform. |
 | `invalid_url`, `redirect_error`, `timeout`, `transport_error`, `unsupported_content_type` | `webfetch` failures (see [Webfetch](#webfetch)). |
 
+## Tool display
+
+Every built-in tool describes its calls to clients as typed display blocks
+(the [structured tool display spec](../specs/compatibility-v1.md#12-structured-tool-display)).
+Display never enters model history: the output, title, and metadata the model
+reads are the same with or without it.
+
+- **Presentation.** `tool_call_started.presentation` carries a human title
+  (such as `Edit src/main.rs` or ``Run `cargo test` ``), a `hint` for icons
+  and grouping, the `primary_argument` shown beside the title, `arguments`
+  (the call's arguments as blocks), and, for `edit` and `write`, a
+  `preview` of what the call will do.
+- **Results.** A result's `display` replaces the live progress display when
+  the call ends.
+- **Diffs.** `edit` and `write` show a `diff` with 1-based file line numbers
+  and five lines of context on each side of each change. Changes whose
+  context overlaps or touches share a hunk. A preview is `as_of: prepare`
+  and a result `as_of: execute`; the two differ when the file changed
+  between preparation and execution. A side with no lines in a hunk starts
+  at the line before it (`0` at the top of the file), as a unified diff
+  numbers it.
+- **Budget.** A result's blocks share 64 KiB serialized. A block that had to
+  be cut counts what it left out (`omitted`, `omitted_lines`, or
+  `omitted_rows`) and, where its complete content exists, names it in
+  `full`: an executed `edit` or `write` retains its complete diff (as
+  unified-diff text, `text/plain`, named `<file>.diff`) and `bash` names its
+  retained output. Previews and `read` excerpts have no `full`: nothing is
+  retained when a call is prepared, and a `read` page is the file itself.
+
+The per-tool **Display** sections below list each tool's hint, arguments,
+preview, and result blocks.
+
 ## Webfetch
 
 `webfetch` accepts `{"url":"https://docs.quantumcookie.xyz/", "raw":false}`.
@@ -80,6 +112,16 @@ Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
 `permission_denied` uses the standard policy-denial path and its structured
 `tool_denied` reason.
 
+### Display
+
+| | `webfetch` |
+|---|---|
+| Hint | `fetch` |
+| Title | `Fetch <url>` |
+| Arguments | `link` of the URL, plus `key_value` `raw: yes` when `raw` is set |
+| Preview | – |
+| Result | `key_value` of `status`, `content type`, and `final URL` (and `truncated: yes` for an over-cap body), then the body's first lines within 24 KiB as `markdown` for `text/markdown` and `text` otherwise, counting the rest in `omitted_lines` |
+
 ## Filesystem tools
 
 `read` accepts `filePath`, plus optional zero-based `offset` and positive
@@ -104,6 +146,36 @@ call order, so same-file edits in one turn apply on top of each other.
 Tool results may include image, PDF, audio, or video attachments. Attachments
 are validated, content-addressed, and supplied to models as file parts rather
 than embedded in text output.
+
+### Display
+
+Paths are shown as the call's display argument shows them: relative to the
+workspace, or under `~`. A diff's and an excerpt's `language` comes from the
+path's extension (`rs` is `rust`, `py` is `python`, and so on; an extension
+the table does not know is passed on lowercased).
+
+| | `read` | `write` | `edit` |
+|---|---|---|---|
+| Hint | `file_read` | `file_write` | `file_edit` |
+| Title | `Read <path>` | `Write <path>` | `Edit <path>` |
+| Arguments | `key_value` of `path`, and `offset` and `limit` when the call gives them | `key_value` of `path` | `key_value` of `path` (and `replace all: yes`), then `newString` as `code` in the path's language |
+| Preview | – | `diff` against the file preparation finds (`created` when there is none) | `diff` of the edit applied to the content preparation read |
+| Result | `file_excerpt` of the page (`start_line` is `offset + 1`, `total_lines` the file's), `table` (`name`, `type`) of a directory page, or `media` of the retained attachment | `diff` against the text the write replaced | `diff` built from the ranges the edit replaced |
+
+- **`edit`'s diff** comes from the replaced byte ranges, not a diff
+  algorithm. Each replacement covers the whole lines it touches;
+  replacements whose lines overlap (several on one line, for example) are
+  one change, and lines `oldString` and `newString` share at either end are
+  context. With `replaceAll`, each replacement is its own change, and the
+  changes share hunks where their context overlaps.
+- **`write`'s diff** is a line diff of the old and new text when both are
+  UTF-8 of at most 1 MiB. Otherwise the `diff` has no hunks and counts the
+  lines each side has (a side that is not text counts its newline-separated
+  lines; a file that cannot be read counts none).
+- **A `read` excerpt** holds the page's lines as the output shows them,
+  without line numbers (a cut long line keeps its
+  `[line truncated: N more bytes]` marker), up to 64 KiB; the budget cuts the
+  rest.
 
 ### Media reads
 
@@ -207,6 +279,27 @@ A bash call reaches its detach point as soon as its command runs; its detach
 note is `Process <pid>`. In the background it keeps its timeout and
 process-group cleanup.
 
+### Display
+
+| | `bash` |
+|---|---|
+| Hint | `shell` |
+| Title | ``Run `<command>` ``, the one-line command cut to 60 characters |
+| Arguments | the command as `code` in `sh` |
+| Preview | – |
+| Result | one `terminal` block: stdout and stderr segments in the order they were read, with `exit_code` |
+
+Terminal text keeps SGR colour sequences (`ESC [ … m`); every other escape
+sequence and control character but newline and tab is removed. An escape
+sequence split across two reads of a pipe is held until it is whole. Live
+progress appends each chunk to block `0` with its `stream`, so the live
+display is the same terminal block as it grows. The block holds at most
+64 KiB of output: the rest, and whatever the display budget cuts, is counted
+in `omitted_lines`, and a cut block's `full` names the call's retained output:
+the first declared stream (`stdout`, then `stderr`) that outgrew its preview
+and was kept as an artifact. When neither stream was kept (both fit their
+previews), the model's output holds everything and `full` is absent.
+
 ## Background calls
 
 A tool that declares `background` support (`bash`, `delegate_subagent`, and
@@ -253,6 +346,16 @@ spec](../specs/background-tools.md) describes:
   waiting on ends cancelled with the detach note, and the subagent reports
   its turn as if the call had been moved to the background.
 
+### Display
+
+| | `stop_background` |
+|---|---|
+| Hint | `generic` |
+| Title | `Stop <job>` |
+| Arguments | `key_value` of `job` |
+| Preview | – |
+| Result | the output as `text` |
+
 ## Retained tool output
 
 Tools declare `ToolOutputDeclaration::Single` or an ordered list of 1 to 8 named
@@ -288,12 +391,13 @@ of the output: `append { index, text, stream? }` appends to a `text` (or, with a
 and `replace { blocks }` replaces the list. The `message` and an append's text
 are each limited to 1 KiB; the runtime caps the cumulative live-display budget at
 64 KiB per call, and the messages' at another 64 KiB, without stopping
-authoritative output. Today's tools append to block `0`.
+authoritative output. `bash` appends to block `0` with each chunk's stream.
 
 A result's `display` is a list of display blocks; empty means nothing to show,
 and a result a tool completes with `ToolCompletion::single` and no display shows
-its output as one `text` block. Every built-in tool's display is one `text` block
-today. Final `display` replaces live display; the daemon sanitizes its blocks,
+its output as one `text` block. Each built-in tool's blocks are listed in its
+**Display** section, and [Tool display](#tool-display) describes the shared
+rules. Final `display` replaces live display; the daemon sanitizes its blocks,
 drops kinds it does not know (with a `diagnostic` naming the plugin or
 runtime that sent them), and fits the list to its own 64 KiB serialized
 budget, cutting a block to whole lines and counting the rest in its
@@ -378,6 +482,27 @@ and corrupt artifacts produce tool errors.
 {"artifact":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream":"results","offset":0,"limit":200}
 ```
 
+### Display
+
+| | `read_artifact` |
+|---|---|
+| Hint | `file_read` |
+| Title | `Read artifact <12 hex>[/<stream>]` |
+| Arguments | `key_value` of `artifact`, and `stream`, `offset`, and `limit` when given |
+| Preview | – |
+| Result | the page as `text` |
+
+### MCP tools
+
+MCP tools are shown with the hint `generic`, the published tool name as the
+title, and their arguments as one `json` block (none for an empty object).
+A result shows its text content as `text` (consecutive text parts as one
+block, joined as the output joins them), each retained image, audio, or
+embedded resource blob as `media` in place of its placeholder, and
+`structured_content` that the text does not already hold as `json`.
+`structured_content` also stays in the result's metadata, which the model
+reads.
+
 ## Goal checklist tools
 
 `goal_get` returns the current root goal's objective, status, revision, and entire
@@ -401,6 +526,16 @@ it even while paused. The root must verify evidence before marking items finishe
 return the full state without display truncation. Their existing permission
 actions are `read` and `write`, respectively, both with resource `goal:current`.
 Ordinary permission matching, deny/ask rules, and the unmatched default still apply.
+
+### Display
+
+| | `goal_get` | `goal_update` |
+|---|---|---|
+| Hint | `goal` | `goal` |
+| Title | `Read goal` | `Update goal checklist` |
+| Arguments | – | `key_value` with one entry per item: `done` or `to do`, and its description |
+| Preview | – | – |
+| Result | `markdown`: the objective in bold, the status and revision, and the checklist as `- [x]` and `- [ ]` items (`No goal is set.` without a goal) | the same, for the goal as updated |
 
 ## Delegation and skills
 
@@ -434,6 +569,23 @@ Terminal and lifecycle results keep the UUID under the unified `session_id`
 metadata key and add `handle`. `resume_session_id` accepts the same two forms,
 and a terminal child woken by `send_message` reports as running until its new
 turn ends.
+
+### Display
+
+| | `delegate_subagent` | `get_subagent_result` | `skill` |
+|---|---|---|---|
+| Hint | `delegate` | `delegate` | `skill` |
+| Title | `Delegate to <agent>` | `Read subagent <session>` | `Load skill <name>` |
+| Arguments | `key_value` of `agent`, `description`, `resume` and `inherit context` when set, and `prompt` | `key_value` of `session`, and `offset` (when not 0) and `limit` when given | `key_value` of `name`, and `arguments` when not empty |
+| Preview | – | – | – |
+| Result | `session_ref` of the subagent (handle as `short_id`, `<agent> · <status>` as `label`), then its whole final message as `markdown` | `session_ref` (its status as `label`), then the page's lines as `markdown` | the loaded skill as `markdown` |
+
+The delegate result's `markdown` is the subagent's report itself, not the
+model's bounded preview: up to 48 KiB, then cut by the display budget with
+`omitted_lines`. A cancelled or failed delegation shows the `session_ref`,
+when it has a session, and its output as `text`. A delegation that moves to
+the background commits the immediate result the background section
+describes, which shows its output.
 
 ## Agent messaging
 
@@ -491,3 +643,13 @@ the per-pair window. A pair message counts as unacknowledged while accepted,
 admitted, claimed, or released, and is acknowledged once consumed or
 discarded. See [Agent Messaging](../engine/messaging.md) for the settings and
 the [agent messaging spec](../specs/agent-messaging.md) for the full contract.
+
+### Display
+
+| | `send_message` |
+|---|---|
+| Hint | `message` |
+| Title | `Message <to>` |
+| Arguments | `key_value` of `to`, `mode`, and `body` |
+| Preview | – |
+| Result | the output as `text` |
