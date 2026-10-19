@@ -134,6 +134,7 @@ nav:
       - Events: reference/events.md
       - Tools: reference/tools.md
       - Schemas: reference/schemas.md
+      - Compatibility: reference/compatibility.md
       - Security boundaries: guide/security.md
 
 extra:

@@ -10,6 +10,36 @@
 //!
 //! A log without a `history_format` predates history formats and is not
 //! converted.
+//!
+//! # Adding the first real converter
+//!
+//! Format 1 is the format the protocols froze with. When a change cannot
+//! follow the additive rules of section 8.4, the history format bumps to 2
+//! and this module gains `v1_to_v2.rs`:
+//!
+//! 1. Bump [`HISTORY_FORMAT`] in `cookie_agent_protocol` to 2.
+//! 2. Write `pub(super) fn convert(lines: Vec<Value>) -> Result<Vec<Value>,
+//!    String>` in `v1_to_v2.rs`: it reads format-1 lines as JSON (envelopes
+//!    and payloads exactly as a format-1 writer stored them, the storage
+//!    encodings included, such as a tool result's `display_span`,
+//!    `text_span`, and `lines_span`) and returns format-2 lines. It names no
+//!    Rust event type, since those are format 2's; a line it does not
+//!    understand (an unknown or newer record) is copied unchanged. The chain
+//!    stamps `history_format: 2` on `session_created` afterwards.
+//! 3. Declare `mod v1_to_v2;` and register `Converter { from: 1, convert:
+//!    v1_to_v2::convert }` in [`CONVERTERS`]. Converters are never removed:
+//!    a format-1 log opened by a format-3 build converts 1 to 2 to 3.
+//! 4. Record new golden trees in `crates/engine/tests/fixtures/history/2/`
+//!    with the golden recorder, beside `history/1/`, which stays frozen: its
+//!    test then opens each format-1 tree through the converter and compares
+//!    the result with the snapshot it was recorded with, wherever format 2
+//!    does not change what the snapshot shows (where it does, the test
+//!    compares the converted tree with what format 2 defines instead).
+//! 5. Describe the format in `docs/site/reference/events.md` (History
+//!    formats) and the converter in the compatibility spec's notes.
+//!
+//! The test-only step from format 0 ([`TEST_CONVERTERS`]) shows the shape of
+//! a step and exercises the chain, the tree conversion, and the backups.
 
 use cookie_agent_protocol::HISTORY_FORMAT;
 use serde_json::Value;

@@ -4,7 +4,8 @@ The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
 client protocol `1.0.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
-the patch never matters.
+the patch never matters. [Compatibility](compatibility.md) states the rules
+every change to the protocol follows.
 
 ## Handshake and authentication
 

@@ -104,7 +104,7 @@ anything else, so a peer of another version is answered with
 error of a shape the two do not share; a hello without a readable version
 fails as `invalid_params`. Two versions are compatible when their majors are
 equal: a minor only adds, so the two ends use what the lower minor includes,
-and the patch never matters. A `0.x`
+and the patch never matters (see [Compatibility](compatibility.md)). A `0.x`
 build from before the freeze, and a build from before semver versions, which
 sends an integer, are refused the same way.
 

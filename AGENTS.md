@@ -7,7 +7,24 @@ subject style: `type(scope): imperative summary`, for example
 `refactor(engine): remove obsolete decoder`. Omit the scope for repository-wide
 changes when no single component owns the work.
 
-## Compatibility and Configuration
+## Compatibility
+
+The client, plugin, and runtime protocols and session history follow
+`docs/site/specs/compatibility-v1.md`; `docs/site/reference/compatibility.md`
+states its rules for contributors. Every wire change must pass
+`crates/protocol/scripts/check-compat.py` (run by `check-schema-additive.sh`)
+with the right semver bump: additions are minor, breaking changes major.
+Readers tolerate information they do not know; commands and writers stay
+strict. The frozen corpora in `crates/protocol/compat/corpus/` and the golden
+session logs in `crates/engine/tests/fixtures/history/` are never
+regenerated; a change that fails them breaks data earlier builds wrote.
+
+Session-log converters (`crates/engine/src/events/convert/`) are the only
+migrations allowed, and every history-format bump ships one. Everywhere else,
+prefer removing obsolete aliases, migrations, and compatibility decoders over
+carrying them forward.
+
+## Configuration
 
 Configuration is strict. Unknown keys, removed `schema` or `schema_version`
 fields, wrong types, and malformed values are hard errors. Do not silently
@@ -15,19 +32,13 @@ ignore fields, migrate authored files, or upconvert old shapes.
 Every configuration-surface change must update the configuration reference and
 cover defaults, strict unknown-field handling, and boundary semantics in tests.
 
-The project does not preserve backward compatibility unless a governing
-specification explicitly requires it. Prefer removing obsolete aliases,
-migrations, and compatibility decoders over carrying them forward. Session
-event history is the deliberate exception: it is versionless and read
-best-effort according to its documented contract.
-
 ## Required Gates
 
 Use locked dependency resolution for builds and tests:
 
 ```sh
 cargo build --locked --workspace --all-targets
-cargo test --locked --workspace
+cargo test --locked --workspace --no-fail-fast
 ```
 
 Run formatting and Clippy with warnings denied under stable and the Rust 1.88

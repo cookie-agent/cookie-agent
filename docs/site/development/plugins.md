@@ -180,7 +180,8 @@ other's `protocol_version` from the raw JSON before anything else, and refuses
 an incompatible one with `unsupported_protocol` naming both versions: the
 majors must be equal, so no `0.x` build from before the freeze connects. A
 minor only adds, so the two ends use what the lower minor includes and the
-patch never matters. A different name also fails the start. No plugin feature is defined
+patch never matters (see [Compatibility](../reference/compatibility.md)). A
+different name also fails the start. No plugin feature is defined
 yet; the daemon ignores one it does not know and shows it in the plugin's
 status. Capabilities are fixed for the connection; `tools` is the runtime
 protocol's `RuntimeTools`. The SDK exposes what the handshake said about the
