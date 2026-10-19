@@ -51,7 +51,21 @@ error naming the current revision instead of overwriting your edit.
 
 ## Managing memory
 
-`cookie memory` lists, edits, and deletes memories through the daemon, so it
+In the TUI, `/memory` lists every layer: the `user` categories, each agent's
+file, and the machine and project memories grouped by machine and project,
+with invalid files marked and, at the end, anything in the memory folder that
+is not a memory, each with the reason. Enter opens the selected memory in
+`$VISUAL` or `$EDITOR`, frontmatter included; saving writes it at the
+revision it read. `n` creates a memory, starting from the URL of the selected
+layer, machine, or project, and `d` deletes the selected one after you
+confirm. Every action is also a button under the details. When the text you
+saved is not a valid memory, `e` reopens it as you left it; when the memory
+changed since you opened it, nothing is overwritten: `r` reloads the current
+version into the editor, and `o` overwrites it with your edit. The panel
+refreshes when a memory changes through the daemon, by you, another client,
+or the agent.
+
+From a terminal, `cookie memory` lists, edits, and deletes memories through the daemon, so it
 works against a remote daemon as well (`--url` and `--token`, or `[server]`
 in `config.toml`, as for `cookie config`):
 

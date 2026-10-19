@@ -628,6 +628,16 @@ impl App {
                 outcome,
             } => self.install_config_apply(path, edit, outcome),
             RpcUpdate::ConfigReloaded { status } => self.install_config_reload(status),
+            RpcUpdate::MemoryListed { result } => self.install_memory_listing(result),
+            RpcUpdate::MemoryRead {
+                url,
+                purpose,
+                result,
+            } => self.install_memory_read(url, purpose, result),
+            RpcUpdate::MemoryWritten { request, outcome } => {
+                self.install_memory_write(request, outcome);
+            }
+            RpcUpdate::MemoryDeleted { result } => self.install_memory_delete(result),
             RpcUpdate::MachinesRefreshed { result } => self.runtime_panel.install_machines(result),
             RpcUpdate::MachineChanged { result } => self.install_machine_change(result),
             RpcUpdate::RuntimesRefreshed { result } => {
@@ -959,6 +969,13 @@ impl App {
             ClientDelivery::RuntimesChanged(_) | ClientDelivery::MachinesChanged(_)
         ) {
             self.poll_runtimes();
+        }
+        // Renaming or merging a machine moves its memories too.
+        if matches!(
+            delivery,
+            ClientDelivery::MemoryChanged(_) | ClientDelivery::MachinesChanged(_)
+        ) {
+            self.poll_memory();
         }
         if matches!(delivery, ClientDelivery::PluginsChanged(_)) {
             self.poll_plugins();

@@ -548,10 +548,10 @@ fn restart_note(status: &ConfigStatus) -> String {
     format!(" Restart the daemon to apply: {parts}.")
 }
 
-/// Runs the editor on `request`'s text with the terminal handed over to it;
-/// the edited text, or why there is none.
-pub(super) fn run_editor(request: &EditorRequest) -> Result<String, String> {
-    let suffix = if request.path.ends_with(".md") {
+/// Runs the editor on `text`, the document `path`, with the terminal handed
+/// over to it; the edited text, or why there is none.
+pub(super) fn run_editor(path: &str, text: &str) -> Result<String, String> {
+    let suffix = if path.ends_with(".md") {
         ".md"
     } else {
         ".toml"
@@ -561,7 +561,7 @@ pub(super) fn run_editor(request: &EditorRequest) -> Result<String, String> {
         .suffix(suffix)
         .tempfile()
         .map_err(|error| format!("create a file to edit: {error}"))?;
-    std::io::Write::write_all(&mut file, request.text.as_bytes())
+    std::io::Write::write_all(&mut file, text.as_bytes())
         .map_err(|error| format!("write the file to edit: {error}"))?;
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))

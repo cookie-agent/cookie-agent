@@ -18,6 +18,7 @@ mod hover;
 mod layout;
 mod live_stream;
 mod markdown;
+mod memory_panel;
 mod model_names;
 mod perf;
 mod permissions;

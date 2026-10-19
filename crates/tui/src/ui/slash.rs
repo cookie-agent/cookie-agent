@@ -40,6 +40,7 @@ pub(crate) enum SlashCommand {
     Background,
     Plugins,
     Config,
+    Memory,
     Permissions,
     Usage,
     Sessions,
@@ -166,6 +167,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         description: "edit the daemon's config.toml and agent documents",
         action: PaletteAction::Run(SlashCommand::Config),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "memory",
+        aliases: &["memories"],
+        description: "browse, edit, create, and delete the daemon's memories",
+        action: PaletteAction::Run(SlashCommand::Memory),
         writes_session: false,
     },
     CommandSpec {

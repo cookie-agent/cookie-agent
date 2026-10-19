@@ -1034,6 +1034,7 @@ impl App {
             Modal::Background => self.handle_background_key(key),
             Modal::Plugins => self.handle_plugin_key(key),
             Modal::Config => self.handle_config_key(key),
+            Modal::Memory => self.handle_memory_key(key),
             Modal::Sessions => self.handle_session_picker(key).await,
             Modal::Presets => self.handle_selection_picker(key).await,
             Modal::Agents => self.handle_agent_picker_key(key).await,
@@ -1521,6 +1522,7 @@ impl App {
                     | Modal::Background
                     | Modal::Plugins
                     | Modal::Config
+                    | Modal::Memory
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);

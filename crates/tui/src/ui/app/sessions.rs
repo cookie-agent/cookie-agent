@@ -494,6 +494,7 @@ impl App {
             | Modal::RevertConfirm
             | Modal::AttachConfirm
             | Modal::Config
+            | Modal::Memory
             | Modal::None => 0,
         }
     }

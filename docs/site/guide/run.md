@@ -171,7 +171,7 @@ into the matching rows.
 
 On Unix, Ctrl+Z suspends the TUI to the shell as it would any terminal
 program, and `fg` brings it back with its screen redrawn. A TUI stopped some
-other way, such as `kill -STOP` or an editor opened from `/config` being
+other way, such as `kill -STOP` or an editor opened from `/config` or `/memory` being
 suspended along with it, takes its terminal back and redraws when it is
 continued.
 
@@ -217,6 +217,7 @@ intact.
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes, or choose a new session's before its first prompt; see [Runtimes panel](#runtimes-panel) |
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
 | `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, and reload hand edits; see [config.toml](configuration.md#changes-while-the-daemon-runs) |
+| `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](memory.md#managing-memory) |
 | `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session |

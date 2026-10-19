@@ -950,7 +950,8 @@ impl App {
             | Modal::GoalDetail
             | Modal::Background
             | Modal::Plugins
-            | Modal::Config => {}
+            | Modal::Config
+            | Modal::Memory => {}
             Modal::None => {}
         }
     }

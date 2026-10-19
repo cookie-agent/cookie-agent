@@ -10,6 +10,7 @@ mod draw;
 mod emoji_backend;
 mod keys;
 mod machines;
+pub(in crate::ui) mod memory_panel;
 mod pickers;
 mod plugins;
 mod pointer;
@@ -159,6 +160,8 @@ pub(super) enum Modal {
     Plugins,
     /// `/config`: the daemon's configuration documents.
     Config,
+    /// `/memory`: the daemon's memories.
+    Memory,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -483,6 +486,9 @@ pub(super) enum PointerTarget {
     /// A machines-view row (selects it) and an action on the selected row.
     MachineRow(usize),
     MachineAction(crate::ui::management::MachineAction),
+    /// A `/memory` panel row (selects it) and an action it offers.
+    MemoryRow(usize),
+    MemoryAction(memory_panel::MemoryAction),
     ConfirmButton(ConfirmButton),
     /// A picker's search input: a click places its caret.
     PickerInput,
@@ -561,6 +567,8 @@ pub(super) struct UiHitMap {
     /// The `/runtime` panel's view tabs and its machines view's rows and
     /// actions.
     pub(super) runtimes: crate::ui::management::RuntimeHits,
+    /// The `/memory` panel's rows and actions.
+    pub(super) memory: memory_panel::MemoryHits,
     pub(super) title_segments: Vec<TitleSegmentHit>,
     /// One clickable row per rendered queue-strip line (entries and the
     /// overflow fold alike): any click recalls the newest pending input.
@@ -602,6 +610,7 @@ impl UiHitMap {
         self.approval_details = None;
         self.permissions = PermissionHits::default();
         self.runtimes = crate::ui::management::RuntimeHits::default();
+        self.memory = memory_panel::MemoryHits::default();
         self.title_segments.clear();
         self.queue_entries.clear();
         self.user_messages.clear();
@@ -787,6 +796,9 @@ pub struct App {
     pub(super) config_panel: config_panel::ConfigPanelState,
     /// A configuration document the event loop opens in the editor next.
     pub(super) pending_editor: Option<config_panel::EditorRequest>,
+    pub(super) memory_panel: memory_panel::MemoryPanelState,
+    /// A memory the event loop opens in the editor next.
+    pub(super) pending_memory_editor: Option<memory_panel::MemoryEditRequest>,
     /// Ctrl+Z asked the event loop to suspend the TUI (Unix job control).
     pub(super) pending_suspend: bool,
     pub(super) goal_focus: Option<GoalBarAction>,
@@ -1033,6 +1045,24 @@ pub(in crate::ui) enum RpcUpdate {
     },
     ConfigLoaded {
         result: Result<cookie_agent_protocol::ConfigGetResult, String>,
+    },
+    MemoryListed {
+        result: Result<cookie_agent_protocol::MemoryListResult, String>,
+    },
+    /// `memory.read` answered for `purpose`: the memory, `None` when it
+    /// does not exist, or why it could not be read.
+    MemoryRead {
+        url: String,
+        purpose: memory_panel::ReadPurpose,
+        result: Result<Option<cookie_agent_protocol::MemoryReadResult>, String>,
+    },
+    MemoryWritten {
+        request: memory_panel::MemoryEditRequest,
+        outcome: memory_panel::MemoryWriteOutcome,
+    },
+    /// A delete finished: what to tell the user either way.
+    MemoryDeleted {
+        result: Result<String, String>,
     },
     /// `config.apply` answered for `path`; `edit` is the edit it carried.
     ConfigApplied {
@@ -1393,6 +1423,8 @@ impl App {
             plugin_panel: plugins::PluginPanelState::default(),
             config_panel: config_panel::ConfigPanelState::default(),
             pending_editor: None,
+            memory_panel: memory_panel::MemoryPanelState::default(),
+            pending_memory_editor: None,
             pending_suspend: false,
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
@@ -1884,12 +1916,24 @@ async fn event_loop(
         if let Some(reconnected) = app.deliveries.take() {
             deliveries = reconnected;
         }
-        // `/config` edits a document in an external editor: the terminal and
-        // its input belong to the editor until it exits.
-        if let Some(request) = app.pending_editor.take() {
+        // `/config` and `/memory` edit a document in an external editor: the
+        // terminal and its input belong to the editor until it exits.
+        let editing = match (app.pending_editor.take(), app.pending_memory_editor.take()) {
+            (Some(request), _) => Some(EditorJob::Config(request)),
+            (None, Some(request)) => Some(EditorJob::Memory(request)),
+            (None, None) => None,
+        };
+        if let Some(job) = editing {
             drop(events);
             suspend_terminal();
-            let edited = edit_blocking(&request);
+            let edited = match &job {
+                EditorJob::Config(request) => {
+                    edit_blocking(|| config_panel::run_editor(&request.path, &request.text))
+                }
+                EditorJob::Memory(request) => {
+                    edit_blocking(|| config_panel::run_editor("memory.md", &request.text))
+                }
+            };
             let resumed = resume_terminal().context("resume the terminal");
             // Clear before the event stream reads stdin again, so it cannot
             // take the terminal's answer to the clear's cursor query.
@@ -1897,7 +1941,10 @@ async fn event_loop(
                 return (Err(error), app.session_errors.clone());
             }
             events = EventStream::new();
-            app.finish_config_edit(request, edited);
+            match job {
+                EditorJob::Config(request) => app.finish_config_edit(request, edited),
+                EditorJob::Memory(request) => app.finish_memory_edit(request, edited),
+            }
             render.mark_immediate();
         }
         // Ctrl+Z stops the process until the shell continues it; a SIGCONT
@@ -2038,14 +2085,18 @@ async fn event_loop(
     }
 }
 
+/// A document the event loop hands to the editor.
+enum EditorJob {
+    Config(config_panel::EditorRequest),
+    Memory(memory_panel::MemoryEditRequest),
+}
+
 /// Runs the editor, letting the runtime's other work go on meanwhile when it
 /// can.
-fn edit_blocking(request: &config_panel::EditorRequest) -> Result<String, String> {
+fn edit_blocking(run: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
     match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
-        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
-            tokio::task::block_in_place(|| config_panel::run_editor(request))
-        }
-        _ => config_panel::run_editor(request),
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(run),
+        _ => run(),
     }
 }
 
