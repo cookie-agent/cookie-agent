@@ -405,7 +405,10 @@ impl Theme {
     /// background — one calm step deeper than the cream surface, never a
     /// reddish tint. Cruder targets (mono, ANSI-16, high contrast) underline
     /// as well, so the affordance never relies on a subtle background shift
-    /// alone. Existing foreground colors are preserved by the patch.
+    /// alone; without colour there is no background at all, so the cells
+    /// reverse, and the underline keeps a cell that is already reversed (a
+    /// mono selection) changing. None of it changes layout. Existing
+    /// foreground colors are preserved by the patch.
     pub fn hover(&self) -> Style {
         let quiet_background_only = matches!(
             (self.key.kind, self.key.colors),
@@ -420,14 +423,19 @@ impl Theme {
             Style::default().add_modifier(Modifier::UNDERLINED)
         };
         self.background_color(self.palette().glaze, Some(Color::DarkGray))
-            .map_or(style, |background| style.bg(background))
+            .map_or_else(
+                || style.add_modifier(Modifier::REVERSED),
+                |background| style.bg(background),
+            )
     }
 
-    /// Background-only hover fill for approval buttons and other glyph
-    /// cells where an underline would not read.
+    /// Hover fill for approval buttons and other glyph cells. On a quiet
+    /// palette it is the glaze background alone, like [`Self::hover`];
+    /// cruder targets need that style's underline on buttons too, because
+    /// the ANSI-16 glaze is the panel surface itself and a mono button may
+    /// already be reversed, so the fill is exactly the text hover.
     pub fn hover_fill(&self) -> Style {
-        self.background_color(self.palette().glaze, Some(Color::DarkGray))
-            .map_or_else(Style::default, |background| Style::default().bg(background))
+        self.hover()
     }
 
     /// Subtle parchment band behind fenced code blocks. The bakery themes
@@ -478,6 +486,7 @@ impl Theme {
     }
 
     /// Interactive block hover preserves foregrounds and never underlines.
+    /// Without colour it is the fill's reverse video, in bold.
     pub fn block_hover(&self) -> Style {
         let style = self.hover_fill().remove_modifier(Modifier::UNDERLINED);
         if self.key.colors == ColorLevel::None {

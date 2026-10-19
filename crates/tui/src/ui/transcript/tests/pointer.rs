@@ -67,13 +67,46 @@ fn kind(target: PointerTarget) -> &'static str {
     }
 }
 
+/// Targets that live inside the conversation viewport.
+fn is_transcript(target: PointerTarget) -> bool {
+    matches!(
+        target,
+        PointerTarget::TranscriptBlock(_)
+            | PointerTarget::BackgroundButton(_)
+            | PointerTarget::UserMessage(_)
+    )
+}
+
+/// Every theme kind at every colour level.
+fn every_theme() -> impl Iterator<Item = Theme> {
+    [
+        ThemeKind::Default,
+        ThemeKind::Dark,
+        ThemeKind::Mono,
+        ThemeKind::HighContrast,
+    ]
+    .into_iter()
+    .flat_map(|kind| {
+        [
+            ColorLevel::None,
+            ColorLevel::Ansi16,
+            ColorLevel::Ansi256,
+            ColorLevel::TrueColor,
+        ]
+        .into_iter()
+        .map(move |level| Theme::new(kind, level))
+    })
+}
+
 /// Sweep every cell of the frame. Wherever the pointer resolves a target,
 /// hover resolves the same one unless it is a text field or a passive queue
-/// row; and hovering each hoverable target restyles at least one of the
-/// cells that resolve to it. Returns the kinds of target seen.
+/// row; and in every theme, hovering each hoverable target restyles at
+/// least one of the cells that resolve to it, and a transcript target's
+/// hover never leaves the conversation viewport. Returns the kinds of
+/// target seen.
 fn sweep(app: &mut App, surface: &str) -> BTreeSet<&'static str> {
     app.hover = None;
-    let plain = draw(app);
+    draw(app);
     let mut targets: Vec<(PointerTarget, Vec<(u16, u16)>)> = Vec::new();
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
@@ -99,25 +132,49 @@ fn sweep(app: &mut App, surface: &str) -> BTreeSet<&'static str> {
                 );
                 assert_eq!(app.hover_target_at(x, y), None, "{surface} at {x},{y}");
             }
+            if is_transcript(target) {
+                assert!(
+                    app.hit_map
+                        .conversation
+                        .is_some_and(|viewport| viewport.contains((x, y).into())),
+                    "{surface}: {target:?} resolves at {x},{y} outside the conversation"
+                );
+            }
             match targets.iter_mut().find(|(seen, _)| *seen == target) {
                 Some((_, cells)) => cells.push((x, y)),
                 None => targets.push((target, vec![(x, y)])),
             }
         }
     }
-    for (target, cells) in &targets {
-        if !target.is_hoverable() {
-            continue;
+    let theme = app.theme.clone();
+    for candidate in every_theme() {
+        let key = candidate.key();
+        app.theme = candidate;
+        app.hover = None;
+        let plain = draw(app);
+        for (target, cells) in &targets {
+            if !target.is_hoverable() {
+                continue;
+            }
+            app.hover = Some(*target);
+            let hovered = draw(app);
+            let restyled = |x: u16, y: u16| hovered[(x, y)].style() != plain[(x, y)].style();
+            assert!(
+                cells.iter().any(|&(x, y)| restyled(x, y)),
+                "{surface} in {key:?}: hovering {target:?} restyles none of its cells"
+            );
+            if is_transcript(*target) {
+                let viewport = app.hit_map.conversation.expect("conversation");
+                for position in hovered.area.positions() {
+                    assert!(
+                        !restyled(position.x, position.y) || viewport.contains(position),
+                        "{surface} in {key:?}: hovering {target:?} restyles {position:?} outside the conversation"
+                    );
+                }
+            }
         }
-        app.hover = Some(*target);
-        let hovered = draw(app);
-        assert!(
-            cells
-                .iter()
-                .any(|&(x, y)| hovered[(x, y)].style() != plain[(x, y)].style()),
-            "{surface}: hovering {target:?} restyles none of its cells"
-        );
     }
+    app.theme = theme;
     app.hover = None;
     targets.iter().map(|(target, _)| kind(*target)).collect()
 }
@@ -510,4 +567,27 @@ async fn background_bar_rows_and_stops_hover() {
     assert_eq!(app.status, "stopping job_2…");
     app.handle_click(0, 0).await;
     assert_eq!(app.modal, Modal::None);
+}
+
+#[tokio::test]
+async fn a_hidden_goal_bar_leaves_no_target_behind() {
+    let (mut app, session, _) = content_app().await;
+    draw(&mut app);
+    let actions = app.hit_map.goal_actions.clone();
+    assert!(!actions.is_empty());
+    // The goal goes away before the next frame: its stale bar geometry
+    // neither hovers nor clicks.
+    app.store.sessions.get_mut(&session).expect("session").goal = None;
+    for (rect, _) in &actions {
+        assert!(!matches!(
+            app.hover_target_at(rect.x, rect.y),
+            Some(PointerTarget::GoalAction(_))
+        ));
+    }
+    let (details, _) = actions[0];
+    app.handle_click(details.x, details.y).await;
+    assert_ne!(app.modal, Modal::GoalDetail);
+    // The next frame drops the geometry altogether.
+    draw(&mut app);
+    assert!(app.hit_map.goal_actions.is_empty());
 }

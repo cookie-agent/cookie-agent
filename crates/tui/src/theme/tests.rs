@@ -197,8 +197,8 @@ fn semantic_theme_snapshot_is_deterministic_with_and_without_color() {
         mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
         mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
         mono.selected: fg=None bg=None bold=false italic=false underline=false dim=false reverse=true
-        mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false reverse=false
-        mono.block_hover: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
+        mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false reverse=true
+        mono.block_hover: fg=None bg=None bold=true italic=false underline=false dim=false reverse=true
         mono.terminal_background: fg=None bg=None bold=false italic=false underline=false dim=false reverse=false
         contrast.block_hover: fg=None bg=Some(DarkGray) bold=false italic=false underline=false dim=false reverse=false
         contrast.terminal_background: fg=None bg=None bold=false italic=false underline=false dim=false reverse=false

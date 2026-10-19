@@ -34,7 +34,11 @@ impl App {
                 .filter(|rect| over(*rect))
                 .map(|_| PointerTarget::ApprovalDetails);
         }
-        if let Some((_, action)) = hits.goal_actions.iter().find(|(rect, _)| over(*rect)) {
+        // A goal that went away since the last frame leaves no target
+        // behind on its stale bar geometry.
+        if self.goal_bar_visible()
+            && let Some((_, action)) = hits.goal_actions.iter().find(|(rect, _)| over(*rect))
+        {
             return Some(PointerTarget::GoalAction(*action));
         }
         if hits.background_bar.is_some_and(over) {
@@ -72,6 +76,23 @@ impl App {
         if hits.scrollbar.is_some_and(over) && self.scrollbar_geometry.is_some() {
             return Some(PointerTarget::Scrollbar(ScrollbarTarget::Conversation));
         }
+        if hits.conversation.is_some_and(over)
+            && let Some(target) = self.transcript_target_at(over)
+        {
+            return Some(target);
+        }
+        hits.tree_rows.iter().find(|hit| over(hit.rect)).map(|hit| {
+            match hit.expand_rect.filter(|rect| over(*rect)) {
+                Some(_) => PointerTarget::TreeExpand(hit.session_id),
+                None => PointerTarget::TreeRow(hit.session_id),
+            }
+        })
+    }
+
+    /// The transcript element under a point inside the conversation
+    /// viewport, which bounds every transcript target.
+    fn transcript_target_at(&self, over: impl Fn(Rect) -> bool) -> Option<PointerTarget> {
+        let hits = &self.hit_map;
         // Past user-message rows open the copy/revert/fork menu — never
         // assistant/tool rows, which keep their expand/collapse toggle.
         if let Some(hit) = hits.user_messages.iter().find(|hit| over(hit.rect)) {
@@ -83,7 +104,7 @@ impl App {
             .blocks
             .iter()
             .rev()
-            .find(|hit| hit.action_rect.is_some_and(over))
+            .find(|hit| hit.action_rect.is_some_and(&over))
             .and_then(|hit| match hit.id {
                 BlockId::Tool(call_id) => Some(call_id),
                 _ => None,
@@ -91,20 +112,11 @@ impl App {
         {
             return Some(PointerTarget::BackgroundButton(call_id));
         }
-        if let Some(hit) = hits
-            .blocks
+        hits.blocks
             .iter()
             .rev()
-            .find(|hit| hit.toggle_rect.is_some_and(over))
-        {
-            return Some(PointerTarget::TranscriptBlock(hit.id));
-        }
-        hits.tree_rows.iter().find(|hit| over(hit.rect)).map(|hit| {
-            match hit.expand_rect.filter(|rect| over(*rect)) {
-                Some(_) => PointerTarget::TreeExpand(hit.session_id),
-                None => PointerTarget::TreeRow(hit.session_id),
-            }
-        })
+            .find(|hit| hit.toggle_rect.is_some_and(&over))
+            .map(|hit| PointerTarget::TranscriptBlock(hit.id))
     }
 
     /// The element under the pointer inside the open modal, which owns
@@ -450,7 +462,11 @@ impl App {
                     .blocks
                     .iter()
                     .find(|hit| hit.id == BlockId::Tool(call_id))
-                    .and_then(|hit| hit.action_rect)),
+                    .and_then(|hit| hit.action_rect)
+                    .map(|rect| match hits.conversation {
+                        Some(viewport) => rect.intersection(viewport),
+                        None => rect,
+                    })),
                 fill_style,
             ),
             PointerTarget::UserMessage(seq) => (
