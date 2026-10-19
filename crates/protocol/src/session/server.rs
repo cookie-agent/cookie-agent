@@ -119,6 +119,14 @@ impl ServerContext {
         }
     }
 
+    /// What this connection's client receives of display blocks: the
+    /// kinds its version includes (`docs/site/specs/compatibility-v1.md`
+    /// section 12.4).
+    #[must_use]
+    pub fn display_audience(&self) -> crate::DisplayAudience {
+        crate::DisplayAudience::new(self.client_version())
+    }
+
     /// The client protocol version the client sent in its handshake: the
     /// daemon sends only what this version includes. Requests run only after
     /// the handshake, so it is set whenever a request sees it.
@@ -164,6 +172,7 @@ impl ServerContext {
                         None => return,
                     },
                 };
+                let message = context.display_audience().message(message);
                 if context
                     .notify("events.subscription", &message)
                     .await
@@ -923,7 +932,14 @@ async fn dispatch<S: ServerProtocol>(
             value(server.recall_input(decode(params)?, context).await?)
         }
         "run.cancel" => value(server.cancel_run(decode(params)?, context).await?),
-        "events.subscribe" => value(server.subscribe_events(decode(params)?, context).await?),
+        "events.subscribe" => {
+            let mut page = server.subscribe_events(decode(params)?, context).await?;
+            let audience = context.display_audience();
+            for event in &mut page.events {
+                *event = audience.stored(event);
+            }
+            value(page)
+        }
         "approval.respond" => value(server.respond_approval(decode(params)?, context).await?),
         "approval.list" => value(server.list_approvals(decode(params)?).await?),
         "mcp.auth.begin" => value(server.begin_mcp_auth(decode(params)?).await?),

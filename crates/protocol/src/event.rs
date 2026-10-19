@@ -4528,6 +4528,85 @@ impl fmt::Display for EventSchemaError {
 }
 impl std::error::Error for EventSchemaError {}
 
+impl crate::DisplayAudience {
+    /// What the client receives of `payload`'s display blocks: the call's
+    /// presentation, its result's display, and a progress `replace`. `None`
+    /// when that is `payload` unchanged.
+    #[must_use]
+    pub fn payload(&self, payload: &EventPayload) -> Option<EventPayload> {
+        match payload {
+            EventPayload::ToolCallStarted { start } => {
+                let arguments = self.blocks(&start.presentation.arguments);
+                let preview = self.blocks(&start.presentation.preview);
+                if arguments.is_none() && preview.is_none() {
+                    return None;
+                }
+                let mut start = start.clone();
+                if let Some(arguments) = arguments {
+                    start.presentation.arguments = arguments;
+                }
+                if let Some(preview) = preview {
+                    start.presentation.preview = preview;
+                }
+                Some(EventPayload::ToolCallStarted { start })
+            }
+            EventPayload::ToolCallTerminated { termination } => {
+                let display = self.blocks(&termination.result.as_ref()?.display)?;
+                let mut termination = termination.clone();
+                if let Some(result) = termination.result.as_mut() {
+                    result.display = display;
+                }
+                Some(EventPayload::ToolCallTerminated { termination })
+            }
+            EventPayload::ToolCallProgress {
+                tool_call_id,
+                message,
+                display: Some(Open::Known(crate::DisplayDelta::Replace { blocks })),
+            } => Some(EventPayload::ToolCallProgress {
+                tool_call_id: *tool_call_id,
+                message: message.clone(),
+                display: Some(Open::Known(crate::DisplayDelta::Replace {
+                    blocks: self.blocks(blocks)?,
+                })),
+            }),
+            _ => None,
+        }
+    }
+
+    /// What the client receives of a stored event; the same event, shared,
+    /// when nothing changes.
+    #[must_use]
+    pub fn stored(&self, event: &std::sync::Arc<StoredEvent>) -> std::sync::Arc<StoredEvent> {
+        match self.payload(&event.payload) {
+            None => std::sync::Arc::clone(event),
+            Some(payload) => std::sync::Arc::new(StoredEvent {
+                payload,
+                ..StoredEvent::clone(event)
+            }),
+        }
+    }
+
+    /// What the client receives of one `events.subscription` message.
+    #[must_use]
+    pub fn message(&self, message: EventSubscriptionMessage) -> EventSubscriptionMessage {
+        match message {
+            EventSubscriptionMessage::Event { event } => EventSubscriptionMessage::Event {
+                event: self.stored(&event),
+            },
+            EventSubscriptionMessage::Transient { event } => match self.payload(&event.payload) {
+                None => EventSubscriptionMessage::Transient { event },
+                Some(payload) => EventSubscriptionMessage::Transient {
+                    event: std::sync::Arc::new(TransientEvent {
+                        payload,
+                        ..TransientEvent::clone(&event)
+                    }),
+                },
+            },
+            message => message,
+        }
+    }
+}
+
 #[cfg(test)]
 mod size_limit_tests {
     use super::*;

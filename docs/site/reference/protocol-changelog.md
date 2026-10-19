@@ -37,6 +37,9 @@ section 3).
   revision as `expected_revision`; the disconnect receipt keeps its ID and
   time only. `runtime.changed` takes any number of reasons.
 - `SessionMeta.short_id` is required (nullable).
+- The daemon sends a connection only the display-block kinds its version
+  includes, downgrading newer kinds to `text` and leaving out kinds it does not
+  know.
 
 ## Before semver versions
 

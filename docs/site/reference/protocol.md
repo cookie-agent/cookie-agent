@@ -94,6 +94,12 @@ The daemon and its clients read what they receive by its role (see the
   place as `ClientDelivery::UnknownEvent`, which advances the session's
   sequence and changes nothing else (the TUI shows a dim row in its debug
   view). A replay page does not fail for it.
+- **Display blocks.** The daemon sends each connection only the display-block
+  kinds its client protocol version includes: a block of a newer kind arrives
+  as a `text` block of its canonical text rendering, and a block of a kind the
+  daemon itself does not know (from a log a newer build wrote) is left out of
+  what it sends, while the log keeps it. Every kind of this build exists from
+  the first minor, so today no block is downgraded.
 - **Params are commands.** An unknown or mistyped member fails with `-32602`
   and `data.code` `unknown_field` (or `unknown_variant` for a value or tag),
   with `data.field` naming the JSON path. A client sends a method or member

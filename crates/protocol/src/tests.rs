@@ -2682,3 +2682,140 @@ fn result_enums_read_values_a_newer_daemon_added_as_their_fallbacks() {
         );
     }
 }
+
+/// `code` as if a later minor (9) had added it: a client at minor 8 receives
+/// it as text, a client at 9 as it is.
+fn code_added_in_nine(kind: &str) -> Option<u32> {
+    if kind == "code" {
+        Some(9)
+    } else {
+        DisplayBlock::since(kind)
+    }
+}
+
+fn code_block() -> DisplayBlock {
+    DisplayBlock::Code {
+        text: "cargo test".into(),
+        language: Some("sh".into()),
+        start_line: None,
+        omitted_lines: None,
+    }
+}
+
+fn from_the_future() -> Open<DisplayBlock> {
+    serde_json::from_value(json!({"type": "hologram", "frames": 3})).unwrap()
+}
+
+#[test]
+fn display_blocks_newer_than_the_client_reach_it_as_text_and_unknown_ones_not_at_all() {
+    let blocks = vec![
+        Open::Known(code_block()),
+        Open::Known(DisplayBlock::text("done")),
+        from_the_future(),
+    ];
+    let older = DisplayAudience::with_since(8, code_added_in_nine);
+    assert_eq!(
+        older.blocks(&blocks),
+        Some(vec![
+            Open::Known(DisplayBlock::text(code_block().to_text())),
+            Open::Known(DisplayBlock::text("done")),
+        ])
+    );
+    let current = DisplayAudience::with_since(9, code_added_in_nine);
+    assert_eq!(
+        current.blocks(&blocks),
+        Some(blocks[..2].to_vec()),
+        "only the unknown block goes"
+    );
+    assert_eq!(current.blocks(&blocks[..2]), None, "nothing to change");
+    // Every kind exists from the first minor, so no client of this build
+    // receives a downgraded block.
+    let this_build = DisplayAudience::new(CLIENT_PROTOCOL_VERSION);
+    assert_eq!(this_build.blocks(&blocks[..2]), None);
+    for kind in DISPLAY_BLOCK_SINCE.iter().map(|(kind, _)| *kind) {
+        assert_eq!(
+            DisplayBlock::since(kind),
+            Some(FIRST_STABLE_MINOR),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn events_reach_each_client_with_the_display_blocks_its_version_reads() {
+    let termination = ToolCallTermination {
+        tool_call_id: ToolCallId::new_v7(),
+        owner: AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: ModelCallId::new("call").unwrap(),
+            provider_item_id: None,
+        },
+        outcome: ToolTerminationOutcome::Completed,
+        result: Some(display_result(
+            "cargo test",
+            vec![Open::Known(code_block()), from_the_future()],
+        )),
+        error: None,
+    };
+    let event = std::sync::Arc::new(StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id: SessionId::new_v7(),
+        run_id: Some(RunId::new_v7()),
+        seq: 4,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::ToolCallTerminated { termination },
+    });
+    let older = DisplayAudience::with_since(8, code_added_in_nine);
+    let sent = older.stored(&event);
+    let EventPayload::ToolCallTerminated { termination } = &sent.payload else {
+        panic!("a termination");
+    };
+    assert_eq!(
+        termination.result.as_ref().unwrap().display,
+        [Open::Known(DisplayBlock::text("cargo test"))]
+    );
+    assert_eq!(sent.seq, event.seq);
+    // The stored event keeps what it holds.
+    let EventPayload::ToolCallTerminated { termination } = &event.payload else {
+        unreachable!();
+    };
+    assert_eq!(termination.result.as_ref().unwrap().display.len(), 2);
+
+    // An event without blocks to change is shared, not copied.
+    let plain = std::sync::Arc::new(StoredEvent {
+        payload: EventPayload::UserInputAdmitted {
+            content: "hi".into(),
+        },
+        ..StoredEvent::clone(&event)
+    });
+    assert!(std::sync::Arc::ptr_eq(&older.stored(&plain), &plain));
+
+    // Live progress that replaces the display is downgraded the same way.
+    let progress = EventSubscriptionMessage::Transient {
+        event: std::sync::Arc::new(TransientEvent {
+            session_id: event.session_id,
+            run_id: event.run_id,
+            after_seq: 4,
+            timestamp: event.timestamp,
+            payload: EventPayload::ToolCallProgress {
+                tool_call_id: ToolCallId::new_v7(),
+                message: SafeDisplayText::new("running").unwrap(),
+                display: Some(Open::Known(DisplayDelta::Replace {
+                    blocks: vec![Open::Known(code_block())],
+                })),
+            },
+        }),
+    };
+    let EventSubscriptionMessage::Transient { event: sent } = older.message(progress) else {
+        panic!("transient");
+    };
+    assert!(matches!(
+        &sent.payload,
+        EventPayload::ToolCallProgress {
+            display: Some(Open::Known(DisplayDelta::Replace { blocks })),
+            ..
+        } if *blocks == [Open::Known(DisplayBlock::text("cargo test"))]
+    ));
+}

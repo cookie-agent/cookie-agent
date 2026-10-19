@@ -856,6 +856,67 @@ pub fn take_unknown_blocks(blocks: &mut Vec<Open<DisplayBlock>>) -> Vec<String> 
     unknown
 }
 
+/// What one client receives of display blocks
+/// (`docs/site/specs/compatibility-v1.md` section 12.4): a block of a kind
+/// newer than the client's negotiated minor becomes a `text` block of its
+/// [`DisplayBlock::to_text`] rendering, and a block of a kind this build does
+/// not know, which only a log a newer build wrote can hold, is left out. The
+/// stored data keeps every block as it was.
+#[derive(Clone, Copy, Debug)]
+pub struct DisplayAudience {
+    client_minor: u32,
+    since: fn(&str) -> Option<u32>,
+}
+
+impl DisplayAudience {
+    /// The audience of a client that negotiated `client`.
+    #[must_use]
+    pub fn new(client: crate::SemVer) -> Self {
+        Self {
+            client_minor: client.minor(),
+            since: DisplayBlock::since,
+        }
+    }
+
+    /// An audience whose block kinds were introduced as `since` says, for
+    /// tests of kinds newer than every client this build knows.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_since(client_minor: u32, since: fn(&str) -> Option<u32>) -> Self {
+        Self {
+            client_minor,
+            since,
+        }
+    }
+
+    fn newer(&self, block: &DisplayBlock) -> bool {
+        (self.since)(block.kind()).is_some_and(|since| since > self.client_minor)
+    }
+
+    /// What the client receives of `blocks`; `None` when that is `blocks`
+    /// unchanged, which is the common case and copies nothing.
+    #[must_use]
+    pub fn blocks(&self, blocks: &[Open<DisplayBlock>]) -> Option<Vec<Open<DisplayBlock>>> {
+        let changed = blocks.iter().any(|block| match block {
+            Open::Known(block) => self.newer(block),
+            Open::Unknown { .. } => true,
+        });
+        changed.then(|| {
+            blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Open::Known(block) => Some(Open::Known(
+                        block
+                            .clone()
+                            .downgrade_from((self.since)(block.kind()), self.client_minor),
+                    )),
+                    Open::Unknown { .. } => None,
+                })
+                .collect()
+        })
+    }
+}
+
 /// Checks a display block list as a writer must before storing or sending
 /// it: every known block is valid and the list fits [`DISPLAY_BUDGET_BYTES`].
 /// Blocks of a kind this build does not know are passed on as they are.
