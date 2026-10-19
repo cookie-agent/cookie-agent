@@ -197,6 +197,25 @@ enum Command {
         )]
         token: Option<String>,
     },
+    /// List, edit, and delete a daemon's memories: what agents and the user
+    /// keep about the user, agents, machines, and projects.
+    Memory {
+        #[command(subcommand)]
+        command: memory_command::MemoryCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true
+        )]
+        token: Option<String>,
+    },
     /// Manage the session history this machine stores.
     Sessions {
         #[command(subcommand)]
@@ -524,6 +543,14 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             let target = daemon_target(url, token)?;
             machine_command::run_machine(&target.url, &target.token, command).await
         }
+        Some(Command::Memory {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            memory_command::run_memory(&target.url, &target.token, command).await
+        }
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
@@ -552,6 +579,7 @@ fn local_workspace(
                 | Command::Mcp { .. }
                 | Command::Config { .. }
                 | Command::Machine { .. }
+                | Command::Memory { .. }
                 | Command::Runtime { .. },
         )
     ) {
@@ -1800,6 +1828,7 @@ fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
 
 mod config_command;
 mod machine_command;
+mod memory_command;
 
 #[cfg(test)]
 #[path = "../../../test-support/config_harness.rs"]

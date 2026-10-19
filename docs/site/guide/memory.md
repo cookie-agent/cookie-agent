@@ -49,6 +49,29 @@ invalid: search and the snapshot skip it. You may edit the files with any
 editor; a session that writes a memory you changed since it read it gets an
 error naming the current revision instead of overwriting your edit.
 
+## Managing memory
+
+`cookie memory` lists, edits, and deletes memories through the daemon, so it
+works against a remote daemon as well (`--url` and `--token`, or `[server]`
+in `config.toml`, as for `cookie config`):
+
+```sh
+cookie memory list                      # every layer, invalid files with the reason
+cookie memory list project              # one layer: user, agent, machine, or project
+cookie memory edit project://web/build  # in $VISUAL or $EDITOR; created when absent
+cookie memory rm machine://labpc/gpu    # asks first; --yes does not
+```
+
+`edit` opens the whole file, frontmatter included, and saves it at the
+revision it read. Text that is not a valid memory is offered again as you
+left it; a memory that changed since you opened it is not overwritten, and
+you can reload it and edit the current version. You may add and remove
+`user://` categories and remove `agent://` files, which the agent cannot. An
+`agent://` file can be created only for an agent that exists; a file whose
+agent was removed or renamed stays and is listed as belonging to no current
+agent. Your edits never change the snapshot of an open session; it sees them
+when it next takes one.
+
 ## What the model sees
 
 At the start of a run that has memory, the model gets a **snapshot** as one

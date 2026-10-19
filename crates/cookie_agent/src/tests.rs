@@ -1901,3 +1901,272 @@ async fn cookie_machine_lists_and_regroups_the_daemon_machines() {
     runtime.stop_catalog_refresh().await;
     runtime.engine.shutdown().await;
 }
+
+#[test]
+fn memory_commands_take_a_layer_a_url_and_a_confirmation_switch() {
+    use cookie_agent_protocol::MemoryLayer;
+    use memory_command::MemoryCommand;
+    let parsed = |arguments: &[&str]| match Cli::try_parse_from(arguments).unwrap().command {
+        Some(Command::Memory { command, .. }) => command,
+        other => panic!("not a memory command: {other:?}"),
+    };
+    assert_eq!(
+        parsed(&["cookie", "memory", "list"]),
+        MemoryCommand::List { layer: None }
+    );
+    assert_eq!(
+        parsed(&["cookie", "memory", "list", "project"]),
+        MemoryCommand::List {
+            layer: Some(MemoryLayer::Project)
+        }
+    );
+    assert_eq!(
+        parsed(&["cookie", "memory", "edit", "project://web/build"]),
+        MemoryCommand::Edit {
+            url: "project://web/build".into()
+        }
+    );
+    assert_eq!(
+        parsed(&["cookie", "memory", "rm", "user://hardware", "--yes"]),
+        MemoryCommand::Rm {
+            url: "user://hardware".into(),
+            yes: true
+        }
+    );
+    assert_eq!(
+        parsed(&["cookie", "memory", "rm", "user://hardware"]),
+        MemoryCommand::Rm {
+            url: "user://hardware".into(),
+            yes: false
+        }
+    );
+    for arguments in [
+        &["cookie", "memory", "list", "projects"][..],
+        &["cookie", "memory", "edit"][..],
+        &["cookie", "memory", "rm"][..],
+    ] {
+        assert!(Cli::try_parse_from(arguments).is_err(), "{arguments:?}");
+    }
+}
+
+struct ScriptedMemoryIo {
+    edits: VecDeque<String>,
+    confirmations: VecDeque<bool>,
+    seen: Vec<String>,
+    output: Vec<String>,
+    /// Written to a file before the next edit returns, as another writer
+    /// would.
+    meanwhile: Option<(std::path::PathBuf, String)>,
+}
+
+impl ScriptedMemoryIo {
+    fn new(edits: &[&str], confirmations: &[bool]) -> Self {
+        Self {
+            edits: edits.iter().map(|edit| (*edit).to_owned()).collect(),
+            confirmations: confirmations.iter().copied().collect(),
+            seen: Vec::new(),
+            output: Vec::new(),
+            meanwhile: None,
+        }
+    }
+}
+
+impl memory_command::MemoryIo for ScriptedMemoryIo {
+    fn write_line(&mut self, line: &str) -> anyhow::Result<()> {
+        self.output.push(line.to_owned());
+        Ok(())
+    }
+
+    fn edit(&mut self, _url: &str, text: &str) -> anyhow::Result<String> {
+        self.seen.push(text.to_owned());
+        if let Some((path, text)) = self.meanwhile.take() {
+            std::fs::write(path, text).unwrap();
+        }
+        self.edits.pop_front().context("missing scripted edit")
+    }
+
+    fn confirm(&mut self, _prompt: &str, _default: bool) -> anyhow::Result<bool> {
+        self.confirmations
+            .pop_front()
+            .context("missing scripted confirmation")
+    }
+}
+
+/// `cookie memory` lists, creates, edits, and deletes a running daemon's
+/// memories through `memory.*`: invalid text is offered again as it was
+/// left, a memory changed meanwhile is reloaded, and `rm` asks first.
+#[tokio::test]
+async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
+    use memory_command::{MemoryCommand, NEW_MEMORY, run_memory_with};
+    let temporary = tempfile::tempdir().unwrap();
+    private_directory(temporary.path());
+    let workspace = temporary.path().join("workspace");
+    let cache_anchor = temporary.path().join("cache-anchor");
+    write_empty_config(&workspace);
+    private_directory(&cache_anchor);
+    let mut runtime = compose_isolated(
+        &workspace,
+        || {
+            Ok(OfflineTransport {
+                fetches: Arc::new(AtomicUsize::new(0)),
+                body: openai_catalog(),
+            })
+        },
+        |transport| CatalogManager::in_directory(transport, &cache_anchor, "catalog"),
+        || ProviderStore::open(temporary.path().join("providers")),
+        || Ok(temporary.path().join("data")),
+    )
+    .await
+    .unwrap();
+    let memory = temporary.path().join("data/memory");
+    let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
+    let server_task = tokio::spawn(runtime.server.clone().serve_stream(
+        server_stream,
+        cookie_agent_protocol::Authentication::Authenticated,
+    ));
+    let client = Client::connect_stream(client_stream);
+    client.handshake().await.unwrap();
+    let url = "project://web/build";
+    let valid = "---\ndescription: Build conventions\n---\nRun the gates.\n";
+
+    // A new memory starts from the template; invalid text is offered again
+    // as it was left.
+    let mut io = ScriptedMemoryIo::new(&["---\ndescription: \n---\n", valid], &[true]);
+    run_memory_with(&client, MemoryCommand::Edit { url: url.into() }, &mut io)
+        .await
+        .expect("create");
+    assert_eq!(io.seen, [NEW_MEMORY, "---\ndescription: \n---\n"]);
+    assert!(
+        io.output[0].starts_with("Not saved: The text is not a valid memory"),
+        "{:?}",
+        io.output
+    );
+    assert_eq!(io.output.last().unwrap(), "Created project://web/build.");
+    assert_eq!(
+        std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap(),
+        valid
+    );
+
+    // Leaving a new memory's template as it is creates nothing.
+    let mut io = ScriptedMemoryIo::new(&[NEW_MEMORY], &[]);
+    run_memory_with(
+        &client,
+        MemoryCommand::Edit {
+            url: "project://web/empty".into(),
+        },
+        &mut io,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        io.output,
+        ["No changes; project://web/empty was not created."]
+    );
+
+    // A memory changed while it was open is reloaded and edited again.
+    let changed = "---\ndescription: Build conventions\n---\nRun every gate.\n";
+    let mine = "---\ndescription: Build conventions\n---\nMine.\n";
+    let mut io = ScriptedMemoryIo::new(&[mine, mine], &[true]);
+    io.meanwhile = Some((memory.join("projects/web/build.md"), changed.to_owned()));
+    run_memory_with(&client, MemoryCommand::Edit { url: url.into() }, &mut io)
+        .await
+        .expect("edit");
+    assert_eq!(io.seen, [valid, changed]);
+    assert_eq!(
+        io.output,
+        [
+            "Not saved: project://web/build changed since it was opened.",
+            "Saved project://web/build."
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap(),
+        mine
+    );
+
+    // The listing groups by layer and project and names what is not a
+    // memory.
+    std::fs::write(memory.join("projects/web/notes.txt"), "stray").unwrap();
+    let mut io = ScriptedMemoryIo::new(&[], &[]);
+    run_memory_with(
+        &client,
+        MemoryCommand::List {
+            layer: Some(cookie_agent_protocol::MemoryLayer::Project),
+        },
+        &mut io,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        io.output,
+        [
+            "Projects".to_owned(),
+            "  web".to_owned(),
+            format!(
+                "    project://web/build  Build conventions  [{} B]",
+                mine.len()
+            ),
+            "Not memories (ignored)".to_owned(),
+            "  projects/web/notes.txt: not a `.md` file".to_owned(),
+        ]
+    );
+    let mut io = ScriptedMemoryIo::new(&[], &[]);
+    run_memory_with(&client, MemoryCommand::List { layer: None }, &mut io)
+        .await
+        .unwrap();
+    assert_eq!(io.output[0], "User");
+    assert!(io.output[1].starts_with("  user://feedback  Corrections"));
+
+    // `rm` asks first; declining keeps the memory.
+    let mut io = ScriptedMemoryIo::new(&[], &[false]);
+    run_memory_with(
+        &client,
+        MemoryCommand::Rm {
+            url: url.into(),
+            yes: false,
+        },
+        &mut io,
+    )
+    .await
+    .unwrap();
+    assert_eq!(io.output, ["project://web/build was not deleted."]);
+    assert!(memory.join("projects/web/build.md").exists());
+    let mut io = ScriptedMemoryIo::new(&[], &[]);
+    run_memory_with(
+        &client,
+        MemoryCommand::Rm {
+            url: url.into(),
+            yes: true,
+        },
+        &mut io,
+    )
+    .await
+    .unwrap();
+    assert_eq!(io.output, ["Deleted project://web/build."]);
+    assert!(!memory.join("projects/web/build.md").exists());
+
+    // A refusal is the daemon's error.
+    let refused = run_memory_with(
+        &client,
+        MemoryCommand::Rm {
+            url: url.into(),
+            yes: true,
+        },
+        &mut ScriptedMemoryIo::new(&[], &[]),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<cookie_agent_protocol::ClientError>())
+            .any(|error| error.is(&cookie_agent_protocol::errors::MEMORY_NOT_FOUND)),
+        "{refused:#}"
+    );
+
+    drop(client);
+    server_task.await.unwrap().unwrap();
+    runtime.server.shutdown();
+    runtime.stop_catalog_refresh().await;
+    runtime.engine.shutdown().await;
+}
