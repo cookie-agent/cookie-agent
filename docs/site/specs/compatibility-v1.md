@@ -2340,3 +2340,120 @@ wire shape changed, so no protocol version moved; no block kind was added.
   `write`, `skill`, the goal and delegation tools) now store it beside the
   output, at most 64 KiB each. Phase H can revisit a terminal span before the
   freeze.
+
+Step 2: the TUI renders by block kind and hint (12.6) and attaches files
+(11.6); `cookie run` prints tool calls as text. No wire shape changed.
+
+- **Removed special cases.** `tool_icon`'s name table and
+  `external_tool_icon` (icons come from `hint_icon`: one per documented hint,
+  the hammer for `generic`, an unknown hint, or none), `abbreviate_tool_argument`
+  (every argument cuts at the right edge), `ParsedToolArguments`,
+  `display_tool_arguments`, the bash title expansion, `parse_read_output` and
+  `render_read_output`, `tool_diff` with its pseudo-diffs, `is_unified_diff`,
+  `approval_operation_preview` with its `$` command rows, the bash hero-line
+  rule, the `delegate_subagent` check in the reducer (a start whose hint is
+  `delegate` counts as agent activity, so `get_subagent_result` now counts
+  too), and the permission panel's action icons keyed by tool names (an action
+  maps to the hint its built-in tools carry). `IndexedToolCall` lost the
+  tool's name. The only built-in tool name left in `crates/tui/src` outside
+  tests is `"bash"` as the syntax name `normalized_language` maps `sh` to.
+  Background state was already typed (C3).
+- **Call state.** `ToolCallState` holds the result's `display`, a `failure`
+  line, the running call's `progress` message, the `LiveDisplay`, and loaded
+  `full` content, replacing `detail`, `has_output_chunks`, and
+  `operation_fingerprint`. A call that did not complete shows its result's
+  display when it has one, else what it streamed, else its result's output as
+  text; the old rule that put a failed call's model output ahead of its
+  display is gone. The `model call: …` line a running call showed is gone.
+- **Header.** The title, then `primary_argument` unless the title already
+  shows it, whole or cut before a `…` (at least 8 characters of it), since
+  12.5's titles name their argument (``Run `ls` ``, `Edit src/main.rs`). A
+  running call's progress message follows the title in the collapsed row and
+  is the first output row when expanded.
+- **Panel.** The presentation's argument blocks show under the `arguments`
+  label at every event level (48 rows, 4 KiB); the raw arguments stay a
+  `info`/`debug` fallback for a call without argument blocks. Blocks follow,
+  one blank row apart, from one budget (64 rows/8 KiB collapsed, 1024/128 KiB
+  expanded): `text` as is; `markdown` through the transcript's renderer;
+  `code`, `file_excerpt`, and `json` as numbered or plain code rows
+  highlighted by `language` (an excerpt or diff without one by its path's
+  extension; `json` always), an excerpt under a `path · lines a–b of N`
+  header; `diff` under `created|modified|deleted|renamed path · +A -R`
+  (`· preview` as of prepare), each hunk under its `@@` header with the file
+  line number (the new one for context rows) and a `+`/`-` marker in the
+  gutter on the diff tints, a hunk-less diff as the header alone, and
+  `… N more hunks (M lines) not shown`; `terminal` with SGR mapped to styles
+  (basic, bright, 256-colour, and RGB colours fitted to the theme's colour
+  level, none in mono; bold, dim, italic, underline, reverse, strike; each
+  stream keeps its own rendition across lines; stderr in the warning tone
+  under its own colours; any other escape dropped) and `exit code N` (failure
+  tone when not zero) as a row the budget always keeps; `key_value` with keys
+  aligned (at most 24 columns) and multi-line values hanging; `table` with
+  columns aligned (cells at most 40 columns); `media` as its chip and `alt`;
+  `link` as label and `<url>`; `session_ref` as a `↗ session …` row whose
+  click opens the session (`watch_session`); an unknown block as nothing.
+  Every cut block counts its `omitted_*` units.
+- **Full content.** A cut block with `full` adds `click to load the full
+  output (size)`. The click reads one `artifact.read` chunk (at most 1 MiB,
+  so a longer artifact shows its start and says so), expands the call's output
+  for the larger budget, and keeps the text on the call (`FullContent`)
+  until the click on `▴ full output · click to show the cut display` puts it
+  away or the call's result replaces it. The text replaces the block's cut
+  rows: a diff's is parsed as the unified diff 12.5 retains, a terminal's is
+  drawn as stdout with its SGR, an excerpt's numbered from its `start_line`.
+  A failed read says why and offers a retry. Loaded content is view state, so
+  a rebuild from history drops it.
+- **Approvals.** The panel's hero is the hint icon, the title, and the header
+  argument, then the presentation's argument blocks and its `preview`, drawn
+  by the same block renderer and wrapped to the panel; the request's
+  resources show when the presentation has neither, as before.
+- **Attachments.** Commands run only from the palette, so `/attach` (aliases
+  `file`, `image`) is a palette entry with a path step, listed only while the
+  selected (draft) model's `input_media` is nonempty; the step's placeholder
+  names the kinds. Before reading, a path that is no file, a model that takes
+  nothing, and a file larger than the largest `max_bytes` are refused. The
+  file is then read and checked with `runtime_api::media::validate_upload`
+  (the daemon's own recognizer, so the TUI now depends on
+  `cookie_agent_runtime_api`) against the entry of its kind: refused kinds
+  name the accepted ones, and byte, side, and pixel limits are named. Chunks
+  go one after another (`artifact.upload.cancel` on a refused chunk), and a
+  `media_too_large` from the daemon shows its limit; nothing is downscaled. A
+  new-session draft creates its session first. An upload that finishes after
+  the view moved to another session is not attached, since its blob is in the
+  first session's tree. Chips sit on the composer's bottom border (as many as
+  fit, then `+N`); Backspace with the cursor at the start of the draft
+  removes the newest. A draft of attachments alone is sent. A paste that is
+  exactly one existing absolute, `~/`, or `file://` path (quoted, or with
+  backslash escapes) opens a confirm; Cancel types the paste. Owed input is a
+  `ComposerInput { text, files }` everywhere text was (`VoidedInput`,
+  `PendingInput`, the submit and recall updates), so recalled, voided, and
+  failed-to-send input restores its files as chips, deduplicated by digest.
+  A revert still restores the message's text only, as the menu captured it.
+- **Job control.** Ctrl+Z (Unix) sets `pending_suspend`; the event loop
+  drops its event stream, restores the terminal like `suspend_terminal`,
+  stops the process group with SIGTSTP (as vim and neovim do), and on return
+  re-enters the modes like `resume_terminal`, clears, and redraws. A SIGCONT
+  listener re-enters the same way (leaving the modes first, so the keyboard
+  enhancement stack is never pushed twice) for a stop the TUI did not ask
+  for; `JobControl` skips the one SIGCONT that follows its own Ctrl+Z. The
+  cursor-position tolerance in `emoji_backend.rs` is unchanged. Elsewhere
+  than Unix, Ctrl+Z does nothing.
+- **CLI.** `--verbose` in text and `none` modes writes, per finished call,
+  `cookie run: tool <title>` (with the outcome when it did not complete) and
+  the first eight lines of its display's `display_text`, indented, to
+  standard error; standard output, the failure diagnostics, and JSON mode are
+  unchanged.
+- **Coding runtime.** `BuiltinTools` did not forward
+  `ToolProvider::presentation`, so a `bash`, `read`, or `webfetch` call (and an
+  `edit` or `write` that failed to prepare) reached clients as its bare name
+  with no hint or argument blocks; it now forwards to each tool.
+- **Docs.** The TUI's behavior is documented in `guide/run.md` (composer,
+  attachments, Ctrl+Z, palette, transcript details, approvals, live output)
+  and `guide/media.md`; the `docs/site/tui/` pages cover `tui.toml` only and
+  gained nothing.
+- **For phase H.** The TUI tests build display blocks, presentations, and
+  attachment flows from protocol types (`tests/display_blocks.rs`,
+  `tests/diffs.rs`, `tests/attachments.rs` with `answering_client`, which
+  scripts the daemon's answers); their request and event JSON could seed the
+  client corpus. The golden logs should include a `terminal` block with SGR,
+  a cut block with `full`, a `session_ref`, and a user input with a file part.
