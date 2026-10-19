@@ -1020,3 +1020,107 @@ Deviations and readings of the spec:
   text, headings, tags, and escaping. Escaping can lengthen a body
   (`<memory` becomes `&lt;memory`), so phase 3 must measure the agent
   section, too, on its rendered text and keep the reserve's promise.
+
+### 16.3 Phase 3: model surface
+
+Landed 2026-10-19: the `memory` and `memory_write` actions with their
+mode-based defaults and `agent://self`, the `memory_loaded` event (client
+protocol 1.3.0, plugin protocol 1.2.0), the snapshot taken at run admission
+and its place in history, and the five tools in the `global` runtime.
+
+Where things are, for the later phases:
+
+- **Permissions** (`crates/engine/src/permissions.rs`):
+  `agent_permission_rules(document)` freezes an agent document's rules into
+  its run snapshot with the mode defaults appended; `rule_matches` and
+  `specificity` read `agent://self` as the run's agent. `self` is a
+  reserved agent ID (`cookie_agent_config::SELF_AGENT_ID`).
+- **Snapshot** (`crate::memory`): `MemoryRoot::snapshot(&SnapshotRequest)`
+  in `memory/snapshot.rs` reads and fits it; `memory/render.rs` renders it
+  (`snapshot_turn`, and the sections the limits measure).
+- **Runs** (`crates/engine/src/runtime/memory_runs.rs`): `memory_access`
+  (available and writable), `snapshot_change` (section 7.2),
+  `Engine::session_machines`, `Engine::refresh_memory_snapshot` (called at
+  run admission after the `AGENTS.md` events), `Engine::memory_root` and
+  `Engine::memory_limits` (the limits as configured now), and
+  `Engine::agent_registered` (the creation check for `agent://`).
+- **Tools** (`crates/engine/src/memory_tools.rs`): the `MemoryTools`
+  provider, built with the `global` runtime and bound to the engine once it
+  exists (`OnceLock<Weak<Inner>>`). Composition
+  (`Engine::compose_for_policy`) publishes its tools only when
+  `memory_access` says the run has memory. `memory_tool_specs()` feeds the
+  generated [Tools](../guide/tools.md) page.
+- **History** (`crates/engine/src/model_history.rs`): the latest
+  `memory_loaded` of the log renders after the `AGENTS.md` turn and is
+  pinned through compaction with it.
+- **Still unused, for phase 4:** `Origin::User`, `MemoryEntry::size`,
+  `ListScope::Agent` and `ListScope::Project`, and `MemoryRevision::as_str`
+  carry `#[allow(dead_code)]` until the client surface calls them.
+
+Deviations and readings of the spec:
+
+- **Versions.** Phase 1 had already made the client protocol 1.2.0, so
+  `memory_loaded` makes it 1.3.0; the plugin protocol goes from 1.1.0 to
+  1.2.0 as section 12 says. History format is unchanged; the event is a
+  state event, so a build that does not know it opens such a log
+  render-only. No `client/1.3.0` or `plugin/1.2.0` corpus directory was
+  recorded, as for 1.2.0.
+- **Event shape.** Every member is left out when empty or false, so an
+  empty snapshot is the bare `{"type": "memory_loaded"}`. `agent` gains
+  `omitted` (below). Writers refuse a snapshot that holds anything but its
+  agent when delegated, anything at all when empty, blank names or
+  descriptions, or more than 128 KiB of JSON: the 64 KiB bound is kept on
+  the rendered text, and JSON escaping can lengthen text with many line
+  breaks or quotes.
+- **Byte accounting.** Each user category and each machine memory is added
+  only while the whole section, rendered as it would end with that entry
+  the last one shown (the `Not shown` names and `N more` counts included),
+  fits its limit; so the section that is kept was measured whole. The agent
+  file is measured on its escaped description and body against
+  `max_file_bytes`, the heading and tags coming out of the 8 KiB reserve;
+  when escaping makes it longer, the file is left out with
+  `agent.omitted`, rendered `Not shown (too long): agent://<agent>`.
+- **Rendered text.** Each fixed paragraph is one line; the spec's line
+  breaks are wrapping. `Empty:` and `Not shown (too long):` are consecutive
+  lines of one block. A body is shown without leading blank lines and
+  trailing whitespace, and a body of only whitespace counts as empty.
+  Machine index lines escape like bodies. A `<machine>` lists its
+  attachments comma-separated and has no `attachments` attribute when there
+  are none (the daemon's machine of a session with only `global`).
+  Keywords of user categories and of the agent file are stored but not
+  rendered.
+- **Session machines.** An attachment whose machine the daemon cannot name
+  adds no machine. "The set of the session's machines changed" compares
+  machine names: a new attachment on a machine already listed does not
+  refresh the snapshot, which keeps naming the attachments it was taken
+  with. A delegated snapshot has no machines and never refreshes for them.
+  A change of `delegated` would refresh too, though a session never
+  changes it.
+- **Defaults.** A key for a memory action with any runtime selector
+  (`memory_write@global`) declares the action. The defaults are appended
+  after the document's own rules in the frozen agent snapshot, so
+  `run_started` and the permission views show them.
+- **`agent://self`** is substituted only for the exact pattern
+  `agent://self`, in agent documents and session overlays alike, when
+  matching; it then ranks like the literal URL.
+- **`memory_search` declares no permission.** It needs no rule of its own
+  and is never approved as a whole; composition publishes it only with
+  `memory_read`, and each hit is checked against the run's `memory` rules
+  and session overlay for its URL. Matching body lines longer than 200
+  characters are cut and end with `…`.
+- **Refusals before rules.** A delegated run's write to anything but its own
+  agent file, and a delete of a `user://` or `agent://` memory, are refused
+  while the call is prepared, so no approval is asked for a call that
+  cannot succeed. Creating a `user://` file and creating an `agent://` file
+  for an unknown agent are refused by the store when the call runs.
+- **Errors.** Tool failures reach the model as failed tool results with the
+  store's message (current revisions included); registry error codes
+  belong to RPCs, so the `memory.*` codes come with phase 4.
+- **Arguments.** `memory_write` requires `keywords` and `body` (each may be
+  empty). `memory_read` returns a `url:` and `revision:` header and the
+  whole file text, and says when the file is invalid so the model can fix
+  it with `memory_write`. Reads run in parallel; writes are exclusive.
+- **A snapshot that cannot be read** (a memory folder that fails to list) is
+  reported on standard error and not recorded; the latest snapshot stays.
+- **The TUI** shows `memory_loaded` as a debug row only; the `/memory` panel
+  is phase 4.
