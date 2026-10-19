@@ -7,7 +7,7 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    DelegateRequestPayload, DelegatedContextRole, DelegatedContextTurn, InvocationId,
+    DelegateRequestPayload, DelegatedContextRole, DelegatedContextTurn, DisplayBlock, InvocationId,
     PersistedAssistantPart, PersistedToolResult as ToolResult, ProducerId, ProducerOwner, RunId,
     RunStartParams, SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallId,
     ToolCallTermination, ToolTerminationOutcome,
@@ -2437,6 +2437,7 @@ impl Engine {
             if !running {
                 let text = last_assistant_message(&child);
                 return Ok(paginated_subagent_result(
+                    (child_session_id, child.meta.short_id.as_deref()),
                     session_status_name(child.status),
                     &text,
                     offset,
@@ -2444,7 +2445,13 @@ impl Engine {
                 ));
             }
             if !wait {
-                return Ok(paginated_subagent_result("running", "", offset, limit));
+                return Ok(paginated_subagent_result(
+                    (child_session_id, child.meta.short_id.as_deref()),
+                    "running",
+                    "",
+                    offset,
+                    limit,
+                ));
             }
             tokio::select! {
                 () = cancellation.cancelled() => {
@@ -3768,20 +3775,35 @@ const fn background_queue_limit_reached(limit: u32, queued: u32) -> bool {
     queued >= limit.saturating_mul(4)
 }
 
-fn paginated_subagent_result(status: &str, text: &str, offset: u32, limit: u32) -> ToolResult {
+fn paginated_subagent_result(
+    child: (SessionId, Option<&str>),
+    status: &str,
+    text: &str,
+    offset: u32,
+    limit: u32,
+) -> ToolResult {
     let lines = text.lines().collect::<Vec<_>>();
     let mut output = format!("<status>{status}</status>\n<content>\n");
-    for (index, line) in lines
+    let page = lines
         .iter()
         .enumerate()
         .skip(offset as usize)
         .take(limit as usize)
-    {
+        .collect::<Vec<_>>();
+    for (index, line) in &page {
         output.push_str(&format!("{}: {line}\n", index + 1));
     }
     output.push_str("</content>");
+    let page = page
+        .iter()
+        .map(|(_, line)| **line)
+        .collect::<Vec<_>>()
+        .join("\n");
     ToolResult {
-        display: cookie_agent_runtime_api::bounded_tool_display(&output),
+        display: delegate_display(
+            Some(session_display(child.0, child.1, status.to_owned())),
+            (!page.is_empty()).then(|| report_markdown(&page)),
+        ),
         background: None,
         retained_output: None,
         title: safe_display("Read subagent result"),
@@ -3831,12 +3853,82 @@ fn terminal_delegate_result(
         "status": session_status_name(teaser.status),
         "total_lines": teaser.total_lines,
     });
-    structured_delegate_result("Subagent finished", output, metadata)
+    // Clients see the subagent's whole report, not the model's preview.
+    let report = delegate_final_text(child, child_run_id);
+    let display = delegate_display(
+        Some(session_display(
+            teaser.session_id,
+            child.meta.short_id.as_deref(),
+            format!(
+                "{} · {}",
+                child.creation_agent.agent,
+                session_status_name(teaser.status)
+            ),
+        )),
+        (!report.trim().is_empty()).then(|| report_markdown(report)),
+    );
+    structured_delegate_result("Subagent finished", output, metadata, Some(display))
 }
 
-fn structured_delegate_result(title: &str, output: String, metadata: Value) -> ToolResult {
+/// A subagent's session as a delegate result shows it, labeled `label`.
+fn session_display(session_id: SessionId, short_id: Option<&str>, label: String) -> DisplayBlock {
+    DisplayBlock::SessionRef {
+        session_id,
+        short_id: short_id.map(str::to_owned),
+        label: Some(label),
+    }
+}
+
+/// The longest subagent report a display holds before the budget cuts it.
+const MAX_REPORT_DISPLAY_BYTES: usize = 48 * 1024;
+
+/// A subagent's report as a `markdown` block.
+fn report_markdown(report: &str) -> DisplayBlock {
+    let (head, omitted_lines) =
+        cookie_agent_runtime_api::text_head(report, MAX_REPORT_DISPLAY_BYTES);
+    DisplayBlock::Markdown {
+        text: head.to_owned(),
+        omitted_lines,
+    }
+}
+
+/// A delegate result's display: the subagent's session, then `body`.
+fn delegate_display(
+    session: Option<DisplayBlock>,
+    body: Option<DisplayBlock>,
+) -> Vec<cookie_agent_protocol::Open<DisplayBlock>> {
+    cookie_agent_protocol::fit_result_display(
+        session
+            .into_iter()
+            .chain(body)
+            .map(cookie_agent_protocol::Open::Known)
+            .collect(),
+    )
+}
+
+/// A delegate result. Without `display` it shows its output, after the
+/// subagent's session when it names one.
+fn structured_delegate_result(
+    title: &str,
+    output: String,
+    metadata: Value,
+    display: Option<Vec<cookie_agent_protocol::Open<DisplayBlock>>>,
+) -> ToolResult {
+    let display = display.unwrap_or_else(|| {
+        let session = metadata["session_id"]
+            .as_str()
+            .and_then(|id| id.parse::<SessionId>().ok())
+            .map(|id| {
+                session_display(
+                    id,
+                    metadata["handle"].as_str(),
+                    metadata["status"].as_str().unwrap_or("unknown").to_owned(),
+                )
+            });
+        delegate_display(session, Some(DisplayBlock::text(output.clone())))
+    });
     ToolResult {
-        display: cookie_agent_runtime_api::bounded_tool_display(&output),
+        display,
         background: None,
         retained_output: None,
         title: safe_display(title),
@@ -3867,6 +3959,7 @@ pub(super) fn cancelled_delegate_result(
             "handle": short_id,
             "partial_report": partial_report,
         }),
+        None,
     )
 }
 
@@ -3888,6 +3981,7 @@ pub(super) fn cancelled_delegate_result_with_reason(
             "handle": short_id,
             "reason": reason,
         }),
+        None,
     )
 }
 
@@ -3909,6 +4003,7 @@ pub(super) fn delegate_failure_result(
             "handle": short_id,
             "reason": reason,
         }),
+        None,
     )
 }
 
@@ -4230,19 +4325,45 @@ second line
 
     #[test]
     fn result_pages_match_read_line_numbering_and_empty_running_shape() {
-        let page = paginated_subagent_result("completed", "one\ntwo\nthree", 1, 1);
+        use cookie_agent_protocol::{DisplayBlock, SessionId};
+
+        let child = SessionId::new_v7();
+        let session = |label: &str| {
+            cookie_agent_protocol::Open::Known(DisplayBlock::SessionRef {
+                session_id: child,
+                short_id: Some("explore_1a2b3c4d".into()),
+                label: Some(label.into()),
+            })
+        };
+        let page = paginated_subagent_result(
+            (child, Some("explore_1a2b3c4d")),
+            "completed",
+            "one\ntwo\nthree",
+            1,
+            1,
+        );
         assert_eq!(
             page.output,
             "<status>completed</status>\n<content>\n2: two\n</content>"
         );
         assert_eq!(page.metadata["total_lines"], 3);
+        // Clients see the subagent and the page's own text.
+        assert_eq!(
+            page.display,
+            [
+                session("completed"),
+                cookie_agent_protocol::Open::Known(DisplayBlock::markdown("two")),
+            ]
+        );
 
-        let running = paginated_subagent_result("running", "", 0, 20);
+        let running =
+            paginated_subagent_result((child, Some("explore_1a2b3c4d")), "running", "", 0, 20);
         assert_eq!(
             running.output,
             "<status>running</status>\n<content>\n</content>"
         );
         assert_eq!(running.metadata["total_lines"], 0);
+        assert_eq!(running.display, [session("running")]);
     }
 
     #[test]

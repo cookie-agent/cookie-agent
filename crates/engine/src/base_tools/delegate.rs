@@ -10,7 +10,7 @@ use cookie_agent_runtime_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{prepared_operation, prepared_resource};
+use super::{base_presentation, prepared_operation, prepared_resource};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
@@ -239,6 +239,49 @@ impl ToolProvider for DelegateToolProvider {
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
             )),
+        }
+    }
+
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        let hint = cookie_agent_protocol::ToolHint::DELEGATE;
+        match call.name.as_str() {
+            "delegate_subagent" => match parse_delegate(&call.arguments) {
+                Ok(args) => {
+                    let mut entries = vec![
+                        ("agent", args.agent_type.to_string()),
+                        ("description", args.description.clone()),
+                    ];
+                    entries.extend(args.resume_session_id.clone().map(|id| ("resume", id)));
+                    if args.inherit_context {
+                        entries.push(("inherit context", "yes".into()));
+                    }
+                    entries.push(("prompt", args.prompt));
+                    base_presentation(
+                        &format!("Delegate to {}", args.agent_type),
+                        hint,
+                        &args.description,
+                        entries,
+                    )
+                }
+                Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
+            },
+            "get_subagent_result" => match parse_result(&call.arguments) {
+                Ok(args) => {
+                    let mut entries = vec![("session", args.session_id.clone())];
+                    if args.offset > 0 {
+                        entries.push(("offset", args.offset.to_string()));
+                    }
+                    entries.extend(args.limit.map(|limit| ("limit", limit.to_string())));
+                    base_presentation(
+                        &format!("Read subagent {}", args.session_id),
+                        hint,
+                        &args.session_id,
+                        entries,
+                    )
+                }
+                Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
+            },
+            _ => cookie_agent_runtime_api::tool_title_only(&call.name),
         }
     }
 

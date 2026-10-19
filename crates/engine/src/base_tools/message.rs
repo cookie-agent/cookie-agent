@@ -11,7 +11,7 @@ use cookie_agent_runtime_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{prepared_operation, prepared_resource, safe_title};
+use super::{base_presentation, prepared_operation, prepared_resource, safe_title};
 
 fn default_mode() -> ProducerDeliveryMode {
     ProducerDeliveryMode::Steer
@@ -121,6 +121,24 @@ impl ToolProvider for MessageToolProvider {
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
         Ok(Self::parse(arguments)?.to.to_string())
+    }
+
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        match Self::parse(&call.arguments) {
+            Ok(args) => {
+                let mode = serde_json::to_value(args.mode)
+                    .ok()
+                    .and_then(|mode| mode.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                base_presentation(
+                    &format!("Message {}", args.to),
+                    cookie_agent_protocol::ToolHint::MESSAGE,
+                    &args.to,
+                    vec![("to", args.to.clone()), ("mode", mode), ("body", args.body)],
+                )
+            }
+            Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
     }
 
     async fn prepare(

@@ -16,7 +16,10 @@ use cookie_agent_runtime_api::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use super::{
+    base_presentation, parse_args, prepared_operation, prepared_resource, safe_title, schema,
+    tool_error,
+};
 
 const TOOL_NAME: &str = "read_artifact";
 /// Most lines one page returns; larger requests are clamped to it.
@@ -129,6 +132,29 @@ impl ToolProvider for ReadArtifactTool {
             display.push(']');
         }
         Ok(display)
+    }
+
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        let (Ok(primary), Ok(args)) = (
+            self.get_display_argument(&call.name, &call.arguments),
+            parse_args::<ReadArtifactArgs>(TOOL_NAME, call.arguments.clone()),
+        ) else {
+            return cookie_agent_runtime_api::tool_title_only(&call.name);
+        };
+        let mut entries = vec![("artifact", args.artifact.clone())];
+        entries.extend(args.stream.clone().map(|stream| ("stream", stream)));
+        entries.extend(args.offset.map(|offset| ("offset", offset.to_string())));
+        entries.extend(args.limit.map(|limit| ("limit", limit.to_string())));
+        let shown = match &args.stream {
+            Some(stream) => format!("{}/{stream}", &args.artifact[..DISPLAY_DIGEST_CHARS]),
+            None => args.artifact[..DISPLAY_DIGEST_CHARS].to_owned(),
+        };
+        base_presentation(
+            &format!("Read artifact {shown}"),
+            cookie_agent_protocol::ToolHint::FILE_READ,
+            &primary,
+            entries,
+        )
     }
 
     async fn prepare(

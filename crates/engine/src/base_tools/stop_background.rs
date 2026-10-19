@@ -17,7 +17,10 @@ use cookie_agent_runtime_api::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use super::{
+    base_presentation, parse_args, prepared_operation, prepared_resource, safe_title, schema,
+    tool_error,
+};
 use crate::Engine;
 
 pub(crate) const TOOL_NAME: &str = "stop_background";
@@ -92,6 +95,18 @@ impl ToolProvider for StopBackgroundTool {
         Self::get_permission_name(name)?;
         let args: StopBackgroundArgs = parse_args(TOOL_NAME, arguments.clone())?;
         Ok(args.job)
+    }
+
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        match parse_args::<StopBackgroundArgs>(TOOL_NAME, call.arguments.clone()) {
+            Ok(args) if call.name == TOOL_NAME => base_presentation(
+                &format!("Stop {}", args.job),
+                cookie_agent_protocol::ToolHint::GENERIC,
+                &args.job,
+                vec![("job", args.job.clone())],
+            ),
+            _ => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
     }
 
     async fn prepare(

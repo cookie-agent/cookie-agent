@@ -31,6 +31,43 @@ fn tool_error(error: impl std::fmt::Display) -> crate::ToolError {
     crate::ToolError::execution(error.to_string())
 }
 
+/// How clients show a call of a base tool: `title`, `hint`, `primary` beside
+/// the title, and the call's arguments as `entries`.
+fn base_presentation(
+    title: &str,
+    hint: &str,
+    primary: &str,
+    entries: Vec<(&str, String)>,
+) -> cookie_agent_protocol::PreparedPresentation {
+    let presentation = cookie_agent_runtime_api::tool_presentation(title, primary).with_hint(hint);
+    if entries.is_empty() {
+        presentation
+    } else {
+        presentation.with_arguments([cookie_agent_protocol::DisplayBlock::key_value(entries)])
+    }
+}
+
+/// The longest text a base tool's `markdown` result holds before the display
+/// budget cuts it.
+const MAX_MARKDOWN_DISPLAY_BYTES: usize = 48 * 1024;
+
+/// `text` as a result's `markdown` display.
+fn markdown_display(
+    text: &str,
+) -> Vec<cookie_agent_protocol::Open<cookie_agent_protocol::DisplayBlock>> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let (head, omitted_lines) =
+        cookie_agent_runtime_api::text_head(text, MAX_MARKDOWN_DISPLAY_BYTES);
+    cookie_agent_protocol::fit_result_display(vec![cookie_agent_protocol::Open::Known(
+        cookie_agent_protocol::DisplayBlock::Markdown {
+            text: head.to_owned(),
+            omitted_lines,
+        },
+    )])
+}
+
 impl Engine {
     /// Registers the base layer's providers, in composition order.
     pub(crate) fn register_base_layer(&self) -> Result<(), EngineError> {

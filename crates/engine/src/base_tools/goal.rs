@@ -11,8 +11,8 @@ use cookie_agent_runtime_api::{
 };
 
 use super::{
-    parse_args, parse_args_strict, prepared_operation, prepared_resource, safe_title, schema,
-    strict_schema, tool_error,
+    base_presentation, markdown_display, parse_args, parse_args_strict, prepared_operation,
+    prepared_resource, safe_title, schema, strict_schema, tool_error,
 };
 
 pub struct GoalTools {
@@ -144,6 +144,10 @@ impl ToolProvider for GoalTools {
         }
     }
 
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        goal_presentation(call)
+    }
+
     async fn prepare(
         &self,
         ctx: ToolPreparationContext,
@@ -212,15 +216,16 @@ impl PreparedExecutor for GoalExecutor {
             if context.cancellation.is_cancelled() {
                 return Err(ToolError::execution("goal tool was cancelled"));
             }
-            let (title, result) = match *self {
+            let (title, result, goal) = match *self {
                 Self::Get { engine, session } => {
                     if context.session != session {
                         return Err(ToolError::operation_changed("session changed"));
                     }
+                    let result = engine.goal_get(session).await.map_err(tool_error)?;
                     (
                         "Current goal",
-                        serde_json::to_value(engine.goal_get(session).await.map_err(tool_error)?)
-                            .map_err(tool_error)?,
+                        serde_json::to_value(&result).map_err(tool_error)?,
+                        result.goal,
                     )
                 }
                 Self::Update {
@@ -231,23 +236,79 @@ impl PreparedExecutor for GoalExecutor {
                     if context.session != session {
                         return Err(ToolError::operation_changed("session changed"));
                     }
+                    let result = engine
+                        .goal_update(session, params)
+                        .await
+                        .map_err(tool_error)?;
                     (
                         "Updated goal checklist",
-                        serde_json::to_value(
-                            engine
-                                .goal_update(session, params)
-                                .await
-                                .map_err(tool_error)?,
-                        )
-                        .map_err(tool_error)?,
+                        serde_json::to_value(&result).map_err(tool_error)?,
+                        Some(result.goal),
                     )
                 }
             };
-            goal_result(title, result)
+            let mut result = goal_result(title, result)?;
+            result.display = markdown_display(&goal_markdown(goal.as_ref()));
+            Ok(result)
         }
         .await;
         result.map(cookie_agent_runtime_api::ToolCompletion::single)
     }
+}
+
+/// How clients show a goal tool call.
+fn goal_presentation(call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+    let hint = cookie_agent_protocol::ToolHint::GOAL;
+    match call.name.as_str() {
+        "goal_get" if parse_args::<GoalGetParams>(&call.name, call.arguments.clone()).is_ok() => {
+            base_presentation("Read goal", hint, "current goal", Vec::new())
+        }
+        "goal_update" => {
+            match parse_args_strict::<GoalUpdateParams>(&call.name, call.arguments.clone()) {
+                Ok(params) => base_presentation(
+                    "Update goal checklist",
+                    hint,
+                    "current goal",
+                    params
+                        .items
+                        .into_iter()
+                        .map(|item| {
+                            (
+                                if item.finished { "done" } else { "to do" },
+                                item.description,
+                            )
+                        })
+                        .collect(),
+                ),
+                Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
+            }
+        }
+        _ => cookie_agent_runtime_api::tool_title_only(&call.name),
+    }
+}
+
+/// A goal as clients see it: its objective, status, and checklist.
+fn goal_markdown(goal: Option<&cookie_agent_protocol::GoalState>) -> String {
+    let Some(goal) = goal else {
+        return "No goal is set.".into();
+    };
+    let status = serde_json::to_value(goal.status)
+        .ok()
+        .and_then(|status| status.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let mut text = format!(
+        "**{}**\n\n{status} · revision {}\n",
+        goal.objective.trim(),
+        goal.revision
+    );
+    if !goal.items.is_empty() {
+        text.push('\n');
+    }
+    for item in &goal.items {
+        let mark = if item.finished { 'x' } else { ' ' };
+        text.push_str(&format!("- [{mark}] {}\n", item.description.trim()));
+    }
+    text
 }
 
 fn goal_result(title: &str, result: serde_json::Value) -> Result<ToolResult, ToolError> {
@@ -285,6 +346,53 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn clients_see_a_goal_as_a_markdown_checklist() {
+        let goal = cookie_agent_protocol::GoalState {
+            goal_id: cookie_agent_protocol::GoalId::new_v7(),
+            objective: "Ship the release".into(),
+            status: cookie_agent_protocol::GoalStatus::Active,
+            items: vec![
+                cookie_agent_protocol::GoalItem {
+                    description: "Tag it".into(),
+                    finished: true,
+                },
+                cookie_agent_protocol::GoalItem {
+                    description: "Publish notes".into(),
+                    finished: false,
+                },
+            ],
+            revision: 3,
+        };
+        assert_eq!(
+            super::goal_markdown(Some(&goal)),
+            "**Ship the release**\n\nactive · revision 3\n\n- [x] Tag it\n- [ ] Publish notes\n"
+        );
+        assert_eq!(super::goal_markdown(None), "No goal is set.");
+        let presentation = super::goal_presentation(&cookie_agent_runtime_api::ToolCall {
+            id: cookie_agent_protocol::ToolCallId::new_v7(),
+            name: "goal_update".into(),
+            arguments: serde_json::json!({"items": [
+                {"description": "Tag it", "finished": true},
+                {"description": "Publish notes", "finished": false}
+            ]}),
+        });
+        assert_eq!(presentation.title.as_str(), "Update goal checklist");
+        assert_eq!(
+            presentation.hint.as_ref().map(|hint| hint.as_str()),
+            Some("goal")
+        );
+        assert_eq!(
+            presentation.arguments,
+            [cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::DisplayBlock::key_value([
+                    ("done", "Tag it"),
+                    ("to do", "Publish notes"),
+                ])
+            )]
+        );
     }
 
     #[test]

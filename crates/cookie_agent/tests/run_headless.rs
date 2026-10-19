@@ -2521,7 +2521,7 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
         .find_map(|record| {
             let payload = &record["event"]["payload"];
             (payload["type"] == "tool_call_started"
-                && payload["presentation"]["title"] == "get_subagent_result")
+                && payload["presentation"]["tool"]["name"] == "get_subagent_result")
                 .then(|| payload["tool_call_id"].clone())
         })
         .expect("get_subagent_result tool call");

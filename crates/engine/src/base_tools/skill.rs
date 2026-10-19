@@ -10,7 +10,10 @@ use cookie_agent_runtime_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use super::{
+    base_presentation, markdown_display, parse_args, prepared_operation, prepared_resource,
+    safe_title, schema, tool_error,
+};
 
 pub struct SkillTool {
     engine: Engine,
@@ -74,7 +77,7 @@ impl PreparedExecutor for SkillExecutor {
                 .await
                 .map_err(tool_error)?;
             Ok(ToolResult {
-                display: Vec::new(),
+                display: markdown_display(&invocation.rendered),
                 background: None,
                 retained_output: None,
                 title: safe_title(format!("Loaded skill {}", invocation.name)),
@@ -157,6 +160,24 @@ impl ToolProvider for SkillTool {
         Ok(serde_json::from_value::<SkillArgs>(arguments.clone())
             .map_err(tool_error)?
             .name)
+    }
+
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        match serde_json::from_value::<SkillArgs>(call.arguments.clone()) {
+            Ok(args) if call.name == "skill" => {
+                let mut entries = vec![("name", args.name.clone())];
+                if !args.args.is_empty() {
+                    entries.push(("arguments", args.args));
+                }
+                base_presentation(
+                    &format!("Load skill {}", args.name),
+                    cookie_agent_protocol::ToolHint::SKILL,
+                    &args.name,
+                    entries,
+                )
+            }
+            _ => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
     }
 
     async fn prepare(
