@@ -186,7 +186,7 @@ async fn system_prompt_hover_covers_wrapped_item_rows_but_not_expanded_body() {
                     assert_eq!(
                         app.hover,
                         hit.toggle_rect
-                            .map(|_| HoverTarget::TranscriptBlock(BlockId::SystemPrompt))
+                            .map(|_| PointerTarget::TranscriptBlock(BlockId::SystemPrompt))
                     );
                     terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
                     let after = terminal.backend().buffer();

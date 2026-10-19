@@ -906,3 +906,46 @@ fn inline_code_differs_from_body_text_at_every_colour_level() {
         }
     }
 }
+
+#[test]
+fn scrollbar_hover_brightens_the_bar_in_every_theme() {
+    // The rail and thumb as `render_scrollbar_track` draws them, then with
+    // the hover patched over: the rail always changes, and wherever there
+    // is colour the thumb takes the accent too.
+    let drawn = |style: Style, hover: Option<Style>| {
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_style(style);
+        if let Some(hover) = hover {
+            cell.set_style(hover);
+        }
+        (cell.fg, cell.bg, cell.modifier)
+    };
+    for kind in [
+        ThemeKind::Default,
+        ThemeKind::Dark,
+        ThemeKind::Mono,
+        ThemeKind::HighContrast,
+    ] {
+        for level in [
+            ColorLevel::None,
+            ColorLevel::Ansi16,
+            ColorLevel::Ansi256,
+            ColorLevel::TrueColor,
+        ] {
+            let theme = Theme::new(kind, level);
+            let hover = Some(theme.scrollbar_hover());
+            assert_ne!(
+                drawn(theme.muted(), hover),
+                drawn(theme.muted(), None),
+                "{kind:?} {level:?} rail"
+            );
+            if theme.key().colors != ColorLevel::None {
+                assert_ne!(
+                    drawn(theme.assistant(), hover),
+                    drawn(theme.assistant(), None),
+                    "{kind:?} {level:?} thumb"
+                );
+            }
+        }
+    }
+}

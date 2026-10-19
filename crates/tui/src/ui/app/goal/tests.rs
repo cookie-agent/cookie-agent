@@ -427,7 +427,7 @@ async fn lifecycle_buttons_fetch_fresh_identity_and_revision() {
             .expect("lifecycle button");
         assert_eq!(
             app.hover_target_at(rect.x, rect.y),
-            Some(super::super::HoverTarget::GoalAction(button))
+            Some(super::super::PointerTarget::GoalAction(button))
         );
         app.handle_click(rect.x, rect.y).await;
         finish_rpc(&mut app).await;

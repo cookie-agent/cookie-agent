@@ -11,6 +11,7 @@ mod emoji_backend;
 mod keys;
 mod pickers;
 mod plugins;
+mod pointer;
 mod providers;
 mod refresh;
 mod sessions;
@@ -311,6 +312,22 @@ pub(super) struct TreeRowHit {
     pub(super) expand_rect: Option<Rect>,
 }
 
+impl TreeRowHit {
+    /// The cells a row hover paints: the whole row, or past an expand marker
+    /// only the cells after the marker and its separating space, so the row
+    /// highlight never touches the marker's own.
+    pub(super) fn hover_rect(&self) -> Rect {
+        let Some(marker) = self.expand_rect else {
+            return self.rect;
+        };
+        let x = marker
+            .right()
+            .saturating_add(1)
+            .clamp(self.rect.x, self.rect.right());
+        Rect::new(x, self.rect.y, self.rect.right() - x, self.rect.height)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PickerRowHit {
     pub(super) rect: Rect,
@@ -415,6 +432,9 @@ pub(super) struct QueueEntryHit {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct UserMessageHit {
     pub(super) rect: Rect,
+    /// The message's content columns, past its leading gutter: what a
+    /// hover paints.
+    pub(super) hover_rect: Rect,
     pub(super) seq: u64,
 }
 
@@ -440,34 +460,65 @@ pub(super) enum ScrollbarTarget {
     Input,
 }
 
-/// The interactive element currently under the pointer. Hover is resolved
-/// from the same per-frame hit map that click handling consults, in the same
-/// priority order, and only ever changes styling — never selection state.
-/// Only elements with a real click action are hover targets at all: passive
-/// surfaces (the composer and scrollbar) stay quiet even
-/// though clicks on them still work.
+/// The interactive element under a point, resolved once by
+/// [`App::pointer_target_at`] from the per-frame hit map in the state-owned
+/// overlay priority. Clicks act on it and hover highlights it, so a click
+/// target without a hover cannot exist; the only exemptions
+/// ([`PointerTarget::is_hoverable`]) are the text fields, whose caret is
+/// their affordance, and queue rows that can only say why they cannot be
+/// recalled. Hover only ever changes styling, never selection state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum HoverTarget {
+pub(super) enum PointerTarget {
     PaletteRow(usize),
+    GoalClose,
+    PermissionPanelMode,
+    PermissionEffect(PermissionEffect),
+    PermissionRow(usize),
+    /// A background panel row (selects it) and its stop button.
+    BackgroundRow(usize),
+    BackgroundStop(usize),
+    ConfirmButton(ConfirmButton),
+    /// A picker's search input: a click places its caret.
+    PickerInput,
     PickerRow(usize),
+    ProviderSubmit,
+    ProviderCancel,
+    ProviderField(ProviderFormFocus),
     ApprovalAction(ApprovalUserDecision),
     ApprovalDetails,
-    PermissionRow(usize),
-    PermissionEffect(PermissionEffect),
-    PermissionPanelMode,
-    TitleSegment(TitleSegment),
+    GoalAction(GoalBarAction),
+    /// The background bar; a click opens the panel.
+    BackgroundBar,
     PermissionMode,
     SessionCost,
     EventLevelFilter,
-    TreeRow(SessionId),
+    TitleSegment(TitleSegment),
+    /// The composer outside its scrollbar: a click places the caret.
+    ComposerText,
+    /// A queue-strip row that recalls the newest pending input.
     QueueEntry(usize),
-    ProviderField(ProviderFormFocus),
-    ProviderSubmit,
-    ProviderCancel,
-    ConfirmButton(ConfirmButton),
-    GoalAction(GoalBarAction),
-    GoalClose,
+    /// A queue-strip row this client cannot recall; a click only says why.
+    PassiveQueueEntry(usize),
+    /// A pane's scrollbar column: the thumb captures a drag, the track pages.
+    Scrollbar(ScrollbarTarget),
+    /// A past user message, by input seq: opens its copy/revert/fork menu.
+    UserMessage(u64),
+    /// A running call's background button on its title row.
+    BackgroundButton(cookie_agent_protocol::ToolCallId),
     TranscriptBlock(BlockId),
+    /// A tree row's expand/collapse marker.
+    TreeExpand(SessionId),
+    TreeRow(SessionId),
+}
+
+impl PointerTarget {
+    /// Whether the target highlights under the pointer.
+    pub(super) fn is_hoverable(self) -> bool {
+        !matches!(
+            self,
+            Self::PickerInput | Self::ComposerText | Self::PassiveQueueEntry(_)
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -714,7 +765,7 @@ pub struct App {
     pub(super) hit_map: UiHitMap,
     /// Interactive element under the pointer as of the last mouse move;
     /// resolved against the hit map at render time and purely visual.
-    pub(super) hover: Option<HoverTarget>,
+    pub(super) hover: Option<PointerTarget>,
     /// Monotonic frame counter driving the streaming "thinking…" ellipsis;
     /// advanced by the frame tick only while animation is active.
     pub(super) animation_ticks: u64,

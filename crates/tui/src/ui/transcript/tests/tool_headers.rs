@@ -882,7 +882,7 @@ async fn bash_header_hover_covers_visible_header_only() {
             assert_eq!(
                 app.hover,
                 hit.toggle_rect
-                    .map(|_| HoverTarget::TranscriptBlock(BlockId::Tool(id)))
+                    .map(|_| PointerTarget::TranscriptBlock(BlockId::Tool(id)))
             );
             terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
             let after = terminal.backend().buffer();
@@ -966,7 +966,8 @@ async fn tool_rows_never_underline_across_themes_and_hover() {
                     );
                 }
                 for hovered in [false, true] {
-                    app.hover = hovered.then_some(HoverTarget::TranscriptBlock(BlockId::Tool(id)));
+                    app.hover =
+                        hovered.then_some(PointerTarget::TranscriptBlock(BlockId::Tool(id)));
                     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
                     terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
                     let hit = app
@@ -977,7 +978,7 @@ async fn tool_rows_never_underline_across_themes_and_hover() {
                         .unwrap();
                     assert_eq!(
                         app.hover_target_at(hit.rect.x, hit.rect.y),
-                        Some(HoverTarget::TranscriptBlock(BlockId::Tool(id)))
+                        Some(PointerTarget::TranscriptBlock(BlockId::Tool(id)))
                     );
                     for y in hit.rect.y..hit.rect.bottom() {
                         for x in hit.rect.x..hit.rect.right() {

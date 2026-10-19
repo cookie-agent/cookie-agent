@@ -22,6 +22,7 @@ mod model_names;
 mod perf;
 mod permissions;
 mod pickers;
+mod pointer;
 mod producers;
 mod providers;
 mod queue;

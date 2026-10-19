@@ -233,15 +233,17 @@ async fn connect_form_fields_focus_on_click_and_submit_dispatches() {
         .expect("credential hit");
     assert_eq!(
         app.hover_target_at(credential.rect.x + 1, credential.rect.y + 1),
-        Some(HoverTarget::ProviderField(ProviderFormFocus::Credential(0)))
+        Some(PointerTarget::ProviderField(ProviderFormFocus::Credential(
+            0
+        )))
     );
     assert_eq!(
         app.hover_target_at(submit.x + 1, submit.y + 1),
-        Some(HoverTarget::ProviderSubmit)
+        Some(PointerTarget::ProviderSubmit)
     );
     assert_eq!(
         app.hover_target_at(cancel.x + 1, cancel.y + 1),
-        Some(HoverTarget::ProviderCancel)
+        Some(PointerTarget::ProviderCancel)
     );
 
     // Clicking the auth selector cycles the method, mirroring Enter, and

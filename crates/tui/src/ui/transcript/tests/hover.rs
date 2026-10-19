@@ -31,7 +31,7 @@ async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
     assert!(app.handle_mouse(moved(target.x, target.y)).await);
     assert_eq!(
         app.hover,
-        Some(HoverTarget::ApprovalAction(
+        Some(PointerTarget::ApprovalAction(
             ApprovalUserDecision::ApproveOnce
         ))
     );
@@ -41,7 +41,7 @@ async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
     assert!(app.handle_mouse(moved(next.x, next.y)).await);
     assert_eq!(
         app.hover,
-        Some(HoverTarget::ApprovalAction(ApprovalUserDecision::Reject))
+        Some(PointerTarget::ApprovalAction(ApprovalUserDecision::Reject))
     );
     // While the approval is up it owns the pointer: anywhere off a
     // button clears the hover instead of leaking to content beneath.
@@ -50,7 +50,7 @@ async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
     assert!(!app.handle_mouse(moved(0, 0)).await);
 
     // The hovered button is visibly filled with the glaze hover color.
-    app.hover = Some(HoverTarget::ApprovalAction(
+    app.hover = Some(PointerTarget::ApprovalAction(
         ApprovalUserDecision::ApproveOnce,
     ));
     let backend = TestBackend::new(120, 40);
@@ -97,7 +97,9 @@ async fn hover_only_targets_elements_with_a_click_action() {
         modifiers: KeyModifiers::NONE,
     };
 
-    // Passive surfaces stay quiet; collapsible blocks have a click action.
+    // The composer text shows its caret instead of a hover; collapsible
+    // blocks have a click action; a scrollbar with nothing to scroll has
+    // no thumb to move and stays quiet.
     let input = app.hit_map.input.expect("input hit").rect;
     assert!(
         !app.handle_mouse(moved(input.x.saturating_add(1), input.y.saturating_add(1)))
@@ -106,7 +108,7 @@ async fn hover_only_targets_elements_with_a_click_action() {
     assert_eq!(app.hover, None);
     let block = app.hit_map.blocks.first().copied().expect("block hit");
     assert!(app.handle_mouse(moved(block.rect.x, block.rect.y)).await);
-    assert_eq!(app.hover, Some(HoverTarget::TranscriptBlock(block.id)));
+    assert_eq!(app.hover, Some(PointerTarget::TranscriptBlock(block.id)));
     let track = app.hit_map.scrollbar.expect("scrollbar reserved");
     assert!(app.handle_mouse(moved(track.x, track.y)).await);
     assert_eq!(app.hover, None);
@@ -116,10 +118,10 @@ async fn hover_only_targets_elements_with_a_click_action() {
     // tree row.
     let mode = app.hit_map.permission_mode.expect("permission mode hit");
     assert!(app.handle_mouse(moved(mode.x, mode.y)).await);
-    assert_eq!(app.hover, Some(HoverTarget::PermissionMode));
+    assert_eq!(app.hover, Some(PointerTarget::PermissionMode));
     let filter = app.hit_map.event_level_filter.expect("event filter hit");
     assert!(app.handle_mouse(moved(filter.x, filter.y)).await);
-    assert_eq!(app.hover, Some(HoverTarget::EventLevelFilter));
+    assert_eq!(app.hover, Some(PointerTarget::EventLevelFilter));
     let row = app
         .hit_map
         .tree_rows
@@ -127,7 +129,7 @@ async fn hover_only_targets_elements_with_a_click_action() {
         .copied()
         .expect("tree row hit");
     assert!(app.handle_mouse(moved(row.rect.x, row.rect.y)).await);
-    assert_eq!(app.hover, Some(HoverTarget::TreeRow(session)));
+    assert_eq!(app.hover, Some(PointerTarget::TreeRow(session)));
 }
 
 #[test]

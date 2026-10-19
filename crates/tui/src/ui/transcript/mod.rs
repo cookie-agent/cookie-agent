@@ -809,6 +809,40 @@ pub(super) struct BlockHit {
     pub(super) action_rect: Option<Rect>,
 }
 
+impl BlockHit {
+    /// The cells a hover paints: the block's header content rect, clipped to
+    /// its hit rect and to `viewport` (which already stops before the
+    /// reserved scrollbar columns), minus a background button and the blank
+    /// column before it. The header highlight ends before the button, which
+    /// hovers on its own, so the two highlights never touch.
+    pub(super) fn hover_cells(&self, viewport: Option<Rect>) -> Vec<Rect> {
+        let Some(rect) = self.hover_rect.map(|rect| rect.intersection(self.rect)) else {
+            return Vec::new();
+        };
+        let rect = viewport.map_or(rect, |viewport| rect.intersection(viewport));
+        let Some(button) = self
+            .action_rect
+            .filter(|button| button.y >= rect.y && button.y < rect.bottom())
+        else {
+            return vec![rect];
+        };
+        let row_end = button.x.saturating_sub(1).clamp(rect.x, rect.right());
+        [
+            Rect::new(rect.x, rect.y, rect.width, button.y - rect.y),
+            Rect::new(rect.x, button.y, row_end - rect.x, 1),
+            Rect::new(
+                rect.x,
+                button.y + 1,
+                rect.width,
+                rect.bottom() - button.y - 1,
+            ),
+        ]
+        .into_iter()
+        .filter(|rect| !rect.is_empty())
+        .collect()
+    }
+}
+
 // Layout cache validity depends on each independent render input; grouping them
 // would obscure invalidation semantics without reducing call-site complexity.
 #[allow(clippy::too_many_arguments)]
@@ -1664,7 +1698,7 @@ impl App {
         self.hit_map
             .user_messages
             .extend(user_regions.iter().filter_map(|region| {
-                user_message_hit(*region, viewport, self.conversation_scroll.offset)
+                user_message_hit(*region, line_at, viewport, self.conversation_scroll.offset)
             }));
         let filter = self.tui_config.minimum_event_level.name();
         // Conversation and Message border titles carry no instructional
@@ -2193,21 +2227,36 @@ pub(super) fn block_hit_at<'a>(
 
 /// The user-message analogue of [`block_hit`]: clip a message's logical-line
 /// range to the visible window so its rows open the copy/revert/fork menu.
-pub(super) fn user_message_hit(
+/// The hover paints the message's content columns only, right of the widest
+/// leading gutter among its visible rows, like a block header's.
+pub(super) fn user_message_hit<'a>(
     region: UserRegion,
+    line_at: impl Fn(usize) -> Option<&'a Line<'static>>,
     viewport: Rect,
     scroll_offset: usize,
 ) -> Option<UserMessageHit> {
     let viewport_end = scroll_offset.saturating_add(usize::from(viewport.height));
     let start = region.start_line.max(scroll_offset);
     let end = region.end_line.min(viewport_end);
+    let rect = Rect::new(
+        viewport.x,
+        viewport.y + u16::try_from(start.saturating_sub(scroll_offset)).unwrap_or(u16::MAX),
+        viewport.width,
+        u16::try_from(end.saturating_sub(start)).unwrap_or(u16::MAX),
+    );
+    let gutter = (start..end)
+        .filter_map(line_at)
+        .map(leading_gutter_columns)
+        .max()
+        .unwrap_or(0)
+        .min(viewport.width);
     (start < end).then(|| UserMessageHit {
-        rect: Rect::new(
-            viewport.x,
-            viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),
-            viewport.width,
-            u16::try_from(end - start).unwrap_or(u16::MAX),
-        ),
+        rect,
+        hover_rect: Rect {
+            x: rect.x.saturating_add(gutter),
+            width: rect.width - gutter,
+            ..rect
+        },
         seq: region.seq,
     })
 }

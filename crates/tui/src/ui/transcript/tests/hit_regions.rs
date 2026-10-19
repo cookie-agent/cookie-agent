@@ -188,7 +188,7 @@ async fn hovering_a_block_only_repaints_its_own_content_columns() {
     let (mut app, _session, block) = expansion_scroll_app("thinking").await;
     rendered_frame(&mut app, 80, 24);
     let plain = drawn_styles(&mut app, 80, 24);
-    app.hover = Some(HoverTarget::TranscriptBlock(block));
+    app.hover = Some(PointerTarget::TranscriptBlock(block));
     let hovered = drawn_styles(&mut app, 80, 24);
     let viewport = app.hit_map.conversation.expect("conversation viewport");
     let hit = app

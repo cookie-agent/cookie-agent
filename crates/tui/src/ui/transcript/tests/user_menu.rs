@@ -200,9 +200,14 @@ fn user_message_hit_rects_clip_and_shift_like_block_hits() {
         end_line: 20,
     };
     let viewport = Rect::new(0, 0, 40, 5);
-    let hit = user_message_hit(region, viewport, 8).expect("hit");
+    let lines = (0..20)
+        .map(|index| Line::from(vec![Span::raw("│ "), Span::raw(format!("row {index}"))]))
+        .collect::<Vec<_>>();
+    let hit = user_message_hit(region, |index| lines.get(index), viewport, 8).expect("hit");
     assert_eq!(hit.rect.y, 2);
     assert_eq!(hit.rect.height, 3);
     assert_eq!(hit.seq, 7);
-    assert!(user_message_hit(region, viewport, 25).is_none());
+    // The hover covers the same rows past the `│ ` gutter.
+    assert_eq!(hit.hover_rect, Rect::new(2, 2, 38, 3));
+    assert!(user_message_hit(region, |index| lines.get(index), viewport, 25).is_none());
 }

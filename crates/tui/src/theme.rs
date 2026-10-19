@@ -729,6 +729,15 @@ impl Theme {
         self.semantic(self.palette().espresso, Color::White, Modifier::DIM)
     }
 
+    /// A scrollbar under the pointer, patched over its whole column: rail
+    /// and thumb take the honey focus accent in bold. Without colour the
+    /// rail sheds its dim and turns bold, so the bar still brightens where
+    /// the already-bold thumb cannot.
+    pub fn scrollbar_hover(&self) -> Style {
+        self.semantic(self.palette().honey, Color::LightYellow, Modifier::BOLD)
+            .remove_modifier(Modifier::DIM)
+    }
+
     pub fn input_border(&self, focused: bool) -> Style {
         if focused {
             // The theme's highlight is honey yellow, not the reddish caramel

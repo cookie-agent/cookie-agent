@@ -1408,7 +1408,7 @@ async fn strip_entries_highlight_on_hover() {
         modifiers: KeyModifiers::NONE,
     })
     .await;
-    assert_eq!(app.hover, Some(HoverTarget::QueueEntry(1)));
+    assert_eq!(app.hover, Some(PointerTarget::QueueEntry(1)));
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
@@ -1535,7 +1535,7 @@ async fn goal_bar_opens_details_by_mouse_and_keyboard_without_touching_draft() {
         .expect("description hit");
     assert_eq!(
         app.hover_target_at(description.x, description.y),
-        Some(HoverTarget::GoalAction(
+        Some(PointerTarget::GoalAction(
             crate::ui::app::GoalBarAction::Details
         ))
     );
@@ -1546,7 +1546,7 @@ async fn goal_bar_opens_details_by_mouse_and_keyboard_without_touching_draft() {
     let close = app.hit_map.goal_close.expect("close goal details");
     assert_eq!(
         app.hover_target_at(close.x, close.y),
-        Some(HoverTarget::GoalClose)
+        Some(PointerTarget::GoalClose)
     );
     app.handle_click(close.x, close.y).await;
     assert_eq!(app.modal, Modal::None);
