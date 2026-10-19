@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.2, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.3, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
@@ -185,6 +185,7 @@ mod goal;
 mod identity;
 mod input_lanes;
 mod manifest;
+mod memory;
 mod model;
 #[cfg(feature = "oauth-callback")]
 pub mod oauth_callback;
@@ -227,6 +228,7 @@ pub use goal::*;
 pub use identity::*;
 pub use input_lanes::*;
 pub use manifest::*;
+pub use memory::*;
 pub use model::*;
 pub use open::*;
 pub use producer::*;

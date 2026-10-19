@@ -1919,6 +1919,59 @@
           "type": "object"
         },
         {
+          "description": "The memory snapshot the session's model sees from this run on\n(`docs/site/specs/memory.md` section 7). An empty snapshot records\nthat memory is no longer available.",
+          "properties": {
+            "agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MemorySnapshotAgent"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The run's agent and its memory; absent in an empty snapshot."
+            },
+            "delegated": {
+              "description": "The snapshot was taken for a delegated run: it holds only the run's\nagent's file.",
+              "type": "boolean"
+            },
+            "machines": {
+              "description": "One entry per machine of the session, in the order the session's\nattachments first name them.",
+              "items": {
+                "$ref": "#/$defs/MemorySnapshotMachine"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "memory_loaded",
+              "type": "string"
+            },
+            "user": {
+              "description": "Every valid user category that fits, in name order, including empty\nones.",
+              "items": {
+                "$ref": "#/$defs/MemorySnapshotCategory"
+              },
+              "type": "array"
+            },
+            "user_omitted": {
+              "description": "Categories that did not fit, by name, in name order.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "writable": {
+              "description": "The run could see the memory write tools, so the snapshot's text\ntells it how to save.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
           "description": "A notice about the engine, a plugin, or a runtime: something it\nturned off, could not do, or dropped. `detail` is display-only.",
           "properties": {
             "count": {
@@ -4219,6 +4272,145 @@
         "action",
         "resource",
         "effect"
+      ],
+      "type": "object"
+    },
+    "MemorySnapshotAgent": {
+      "description": "The run's agent and its memory file.",
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemorySnapshotMemory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The agent's file, whole; absent when it does not exist, is invalid,\nor is `omitted`."
+        },
+        "omitted": {
+          "description": "The file exists but its rendered text did not fit the snapshot.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "MemorySnapshotCategory": {
+      "description": "One user category file, whole.",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "keywords": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "category",
+        "description",
+        "body"
+      ],
+      "type": "object"
+    },
+    "MemorySnapshotIndexEntry": {
+      "description": "One line of a machine's memory index.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "keywords": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The memory URL, `machine://<machine>/<name>`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "description"
+      ],
+      "type": "object"
+    },
+    "MemorySnapshotMachine": {
+      "description": "One machine of the session and the index of its memories.",
+      "properties": {
+        "attachments": {
+          "description": "The session's attachments that run on the machine; empty for the\ndaemon's machine of a session with only `global`.",
+          "items": {
+            "maxLength": 40,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]{0,39}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "machine": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+          "type": "string"
+        },
+        "memories": {
+          "description": "The machine's memories that fit, newest file first.",
+          "items": {
+            "$ref": "#/$defs/MemorySnapshotIndexEntry"
+          },
+          "type": "array"
+        },
+        "omitted": {
+          "description": "How many more memories the machine has.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "machine"
+      ],
+      "type": "object"
+    },
+    "MemorySnapshotMemory": {
+      "description": "A memory file's content.",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "keywords": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "description",
+        "body"
       ],
       "type": "object"
     },

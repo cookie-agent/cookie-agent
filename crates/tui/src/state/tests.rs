@@ -757,6 +757,55 @@ fn an_omitted_record_is_a_debug_row_and_nothing_else() {
     ));
 }
 
+#[test]
+fn a_memory_snapshot_is_a_debug_event() {
+    let session = SessionId::new_v7();
+    let snapshot = cookie_agent_protocol::MemorySnapshot {
+        agent: Some(cookie_agent_protocol::MemorySnapshotAgent {
+            agent: cookie_agent_protocol::AgentId::new("reviewer").unwrap(),
+            memory: None,
+            omitted: false,
+        }),
+        ..cookie_agent_protocol::MemorySnapshot::default()
+    };
+    let events = vec![
+        stored_event(
+            session,
+            Some(RunId::new_v7()),
+            1,
+            EventPayload::MemoryLoaded { snapshot },
+        ),
+        stored_event(
+            session,
+            Some(RunId::new_v7()),
+            2,
+            EventPayload::MemoryLoaded {
+                snapshot: cookie_agent_protocol::MemorySnapshot::unavailable(),
+            },
+        ),
+    ];
+    let replayed = reduce_session_events(session, 0, &events);
+    let texts = replayed
+        .transcript
+        .iter()
+        .map(|item| match item {
+            TranscriptItem::Event {
+                level: EventLevel::Debug,
+                text,
+                ..
+            } => text.as_str(),
+            other => panic!("unexpected item {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        texts,
+        [
+            "memory snapshot loaded for agent reviewer",
+            "memory is not available from here on"
+        ]
+    );
+}
+
 fn goal_item(description: &str, finished: bool) -> cookie_agent_protocol::GoalItem {
     cookie_agent_protocol::GoalItem {
         description: description.into(),

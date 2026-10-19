@@ -2412,6 +2412,13 @@ pub enum EventPayload {
         /// from.
         attachment: AttachmentName,
     },
+    /// The memory snapshot the session's model sees from this run on
+    /// (`docs/site/specs/memory.md` section 7). An empty snapshot records
+    /// that memory is no longer available.
+    MemoryLoaded {
+        #[serde(flatten)]
+        snapshot: MemorySnapshot,
+    },
     /// A notice about the engine, a plugin, or a runtime: something it
     /// turned off, could not do, or dropped. `detail` is display-only.
     Diagnostic {
@@ -2936,6 +2943,7 @@ impl EventPayload {
             | Self::RuntimeDetached { .. }
             | Self::SkillLoaded { .. }
             | Self::AgentMdLoaded { .. }
+            | Self::MemoryLoaded { .. }
             | Self::GoalActivated { .. }
             | Self::GoalChecklistRevised { .. }
             | Self::GoalLifecycleChanged { .. }
@@ -3130,6 +3138,7 @@ impl EventPayload {
                     entry.validate()?;
                 }
             }
+            Self::MemoryLoaded { snapshot } => snapshot.validate()?,
             Self::ModelToolsPublished { tool_names, .. } if !valid_model_tool_names(tool_names) => {
                 return Err(EventSchemaError::InvalidModelTools);
             }
@@ -4446,6 +4455,7 @@ pub enum EventSchemaError {
     InvalidProducerMessage,
     InvalidOrigin,
     InvalidAgentMd,
+    InvalidMemorySnapshot,
     InvalidDiagnostic,
     UnsupportedHistoryFormat,
     SkippableMismatch,
@@ -4507,6 +4517,7 @@ impl fmt::Display for EventSchemaError {
             }
             Self::InvalidOrigin => "event origin is invalid",
             Self::InvalidAgentMd => "AGENTS.md context event is invalid",
+            Self::InvalidMemorySnapshot => "memory snapshot event is invalid",
             Self::InvalidDiagnostic => "diagnostic message, count, or detail is invalid",
             Self::UnsupportedHistoryFormat => {
                 "session history format is not the one this build writes"

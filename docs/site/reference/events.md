@@ -167,6 +167,7 @@ never stored.
 | `skill_invocation_noted` | audit | either | A repeat of an identical skill load |
 | `session_title_committed` | state | either | A title change |
 | `agent_md_loaded` | state | run | The `AGENTS.md` context of one attachment |
+| `memory_loaded` | state | run | The [memory snapshot](#memory-snapshots) the model sees from this run on |
 | `diagnostic` | audit | either | A notice about the engine, a plugin, or a runtime |
 | `record_omitted` | audit | either | A record its writer deliberately did not carry over |
 | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` | state | runless or run | The session goal |
@@ -384,6 +385,30 @@ only the latest run's events, the latest per attachment, and replays their
 entries as one provenance-delimited user turn. Compaction pins that turn
 alongside loaded skill bodies. See
 [System Prompt Composition](system-prompt.md#agentsmd-context-turn).
+
+### Memory snapshots
+
+`memory_loaded` is a run-scoped event stamped `engine:memory`, appended at a
+run's admission (root or delegated, each in its own session's log) when the
+run's memory changed: the [memory spec](../specs/memory.md#72-when-a-snapshot-is-taken)
+lists when. Its members, each left out when empty or false:
+
+| Member | Meaning |
+|---|---|
+| `delegated` | The snapshot was taken for a delegated run and holds only `agent` |
+| `writable` | The run could see the memory write tools |
+| `user` | `[{ category, description, keywords?, body }]`: user categories, whole, in name order |
+| `user_omitted` | Names of the categories that did not fit |
+| `agent` | `{ agent, memory?: { description, keywords?, body }, omitted? }`: the run's agent and its file; `omitted` when the file did not fit |
+| `machines` | `[{ machine, attachments?, memories?: [{ url, description, keywords? }], omitted? }]`: the session's machines, each with an index of its memories, newest first, and how many more it has |
+
+An event without `agent` is empty: memory is no longer available, and the
+model sees no memory turn from then on. History renders only the latest
+`memory_loaded` of the log, as one user turn right after the `AGENTS.md`
+turn, and compaction pins it like that turn; the text depends on the event
+alone, so a replay shows exactly what the model saw. The stored event is at
+most 128 KiB of JSON; its rendered text stays within 64 KiB. The memory
+spec gives [the rendered text](../specs/memory.md#74-rendered-text).
 
 `diagnostic { source, kind, message, count?, detail? }` is a notice about the
 engine, a plugin, or a runtime: something it turned off, could not do, or
@@ -734,8 +759,8 @@ the active pre-compaction history before the recent messages retained unchanged
 after the summary; the two do not overlap. Active history is the currently assembled context,
 not a reload of events replaced by earlier checkpoints. The original saved log
 is preserved; retained recent messages are replayed from it. System and tool
-context comes first, followed by pinned `AGENTS.md`, loaded skills, the summary,
-and the recent messages. See [Compaction](../guide/compaction.md) for selection
+context comes first, followed by pinned `AGENTS.md`, the latest memory
+snapshot, loaded skills, the summary, and the recent messages. See [Compaction](../guide/compaction.md) for selection
 and fit rules.
 
 The retention fields:

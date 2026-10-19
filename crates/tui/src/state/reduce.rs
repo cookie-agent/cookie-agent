@@ -1193,6 +1193,17 @@ pub(super) fn reduce_event_from(
                 .to_lowercase(),
             timestamp,
         ),
+        // The snapshot reaches the model as a pinned turn; the debug view
+        // notes when it changes.
+        EventPayload::MemoryLoaded { snapshot } => push_event(
+            state,
+            EventLevel::Debug,
+            match &snapshot.agent {
+                Some(agent) => format!("memory snapshot loaded for agent {}", agent.agent),
+                None => "memory is not available from here on".to_owned(),
+            },
+            timestamp,
+        ),
         // What a writer left out changes nothing; the debug view names it.
         EventPayload::RecordOmitted { omitted_type } => push_event(
             state,

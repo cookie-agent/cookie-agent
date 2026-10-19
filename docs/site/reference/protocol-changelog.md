@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.3.0
+
+- A new state event, `memory_loaded`, records the memory snapshot a
+  session's model sees from a run on: user categories, the run's agent's
+  memory, and an index of the session's machines' memories (see
+  [Events](events.md#memory-snapshots)). An event without `agent` records
+  that memory is no longer available. A 1.2 client reads it as an unknown
+  state event. The plugin protocol is `1.2.0` for the same event.
+- `memory` and `memory_write` join the built-in permission actions that
+  `session.permissions.get` lists.
+
 ## 1.2.0
 
 - Machines: the computers runtimes run on. `machines.list`,

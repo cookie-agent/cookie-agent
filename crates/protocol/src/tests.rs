@@ -1141,6 +1141,114 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
 }
 
 #[test]
+fn memory_loaded_round_trips_and_checks_its_shape() {
+    let agent = MemorySnapshotAgent {
+        agent: crate::AgentId::new("reviewer").unwrap(),
+        memory: Some(MemorySnapshotMemory {
+            description: "Reviews".into(),
+            keywords: vec!["review".into()],
+            body: "- bugs first\n".into(),
+        }),
+        omitted: false,
+    };
+    let root = MemorySnapshot {
+        delegated: false,
+        writable: true,
+        user: vec![MemorySnapshotCategory {
+            category: "profile".into(),
+            description: "Who the user is".into(),
+            keywords: Vec::new(),
+            body: String::new(),
+        }],
+        user_omitted: vec!["references".into()],
+        agent: Some(agent.clone()),
+        machines: vec![MemorySnapshotMachine {
+            machine: crate::MachineName::new("labpc").unwrap(),
+            attachments: vec![crate::AttachmentName::new("labpc").unwrap()],
+            memories: vec![MemorySnapshotIndexEntry {
+                url: "machine://labpc/scratch".into(),
+                description: "Use /scratch".into(),
+                keywords: Vec::new(),
+            }],
+            omitted: 2,
+        }],
+    };
+    let event = |snapshot: MemorySnapshot| StoredEvent {
+        engine_version: None,
+        origin: Some(EventOrigin::new("engine:memory").unwrap()),
+        session_id: SessionId::new_v7(),
+        run_id: Some(RunId::new_v7()),
+        seq: 1,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::MemoryLoaded { snapshot },
+    };
+    let stored = event(root.clone());
+    assert!(!stored.payload.is_audit());
+    assert_eq!(stored.validate(), Ok(()));
+    let value = serde_json::to_value(&stored).unwrap();
+    assert_eq!(value["payload"]["type"], "memory_loaded");
+    assert_eq!(value["payload"]["machines"][0]["omitted"], 2);
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(value).unwrap(),
+        stored
+    );
+
+    // The empty snapshot is the bare event.
+    let empty = event(MemorySnapshot::unavailable());
+    assert_eq!(empty.validate(), Ok(()));
+    assert_eq!(
+        serde_json::to_value(&empty.payload).unwrap(),
+        json!({"type": "memory_loaded"})
+    );
+
+    let invalid = |snapshot: MemorySnapshot| {
+        assert_eq!(
+            event(snapshot).validate(),
+            Err(EventSchemaError::InvalidMemorySnapshot)
+        );
+    };
+    // An empty snapshot holds nothing else.
+    invalid(MemorySnapshot {
+        agent: None,
+        ..root.clone()
+    });
+    invalid(MemorySnapshot {
+        writable: true,
+        ..MemorySnapshot::unavailable()
+    });
+    // A delegated snapshot holds only its agent.
+    invalid(MemorySnapshot {
+        delegated: true,
+        ..root.clone()
+    });
+    assert_eq!(
+        event(MemorySnapshot {
+            delegated: true,
+            agent: Some(agent.clone()),
+            ..MemorySnapshot::default()
+        })
+        .validate(),
+        Ok(())
+    );
+    // An omitted agent file carries no memory.
+    invalid(MemorySnapshot {
+        agent: Some(MemorySnapshotAgent {
+            omitted: true,
+            ..agent
+        }),
+        ..root.clone()
+    });
+    // Blank names and descriptions are refused.
+    let mut blank = root.clone();
+    blank.user[0].description = " ".into();
+    invalid(blank);
+    // The writer caps the stored size.
+    let mut oversized = root;
+    oversized.user[0].body = "x".repeat(MemorySnapshot::MAX_JSON_BYTES);
+    invalid(oversized);
+}
+
+#[test]
 fn diagnostics_round_trip_and_bound_their_fields() {
     let diagnostic = |count: Option<u64>, message: &str, detail: Option<Value>| StoredEvent {
         engine_version: None,
