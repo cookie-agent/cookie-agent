@@ -608,3 +608,38 @@ fn machine_changes_before_the_first_start_create_no_memory_folder() {
     assert!(!data.path().join("memory").exists());
     assert!(memory.create_defaults_if_absent().unwrap());
 }
+
+/// Every clone of a root shares one change signal, so a model tool's write
+/// reaches the `memory.changed` subscribers too; a refused change signals
+/// nothing.
+#[test]
+fn successful_changes_through_any_clone_signal_subscribers() {
+    let (_data, memory) = root();
+    let mut changes = memory.subscribe();
+    let tool = memory.clone();
+    let revision = create(&tool, "project://web/build", "b");
+    assert!(changes.has_changed().unwrap());
+    changes.mark_unchanged();
+
+    // A refused write changes nothing and signals nothing.
+    let refused = tool.write(
+        &url("project://web/build"),
+        &text("d", "c"),
+        None,
+        Origin::Model,
+        any_agent,
+        LIMIT,
+    );
+    assert!(matches!(refused, Err(StoreError::Exists { .. })));
+    assert!(!changes.has_changed().unwrap());
+
+    let revision = tool
+        .edit(&url("project://web/build"), "b", "c", &revision, LIMIT)
+        .unwrap();
+    assert!(changes.has_changed().unwrap());
+    changes.mark_unchanged();
+    memory
+        .delete(&url("project://web/build"), &revision, Origin::User)
+        .unwrap();
+    assert!(changes.has_changed().unwrap());
+}
