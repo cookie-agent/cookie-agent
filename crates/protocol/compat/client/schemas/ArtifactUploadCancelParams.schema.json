@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`artifact.upload.cancel`: drops an upload in progress.",
+  "properties": {
+    "upload_id": {
+      "description": "An upload in progress on this connection.",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "upload_id"
+  ],
+  "title": "ArtifactUploadCancelParams",
+  "type": "object"
+}

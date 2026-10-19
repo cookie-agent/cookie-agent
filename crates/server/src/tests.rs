@@ -1358,3 +1358,190 @@ async fn mcp_connection_failures_reach_clients_viewing_affected_sessions() {
     harness.server.shutdown();
     harness.engine.shutdown().await;
 }
+
+/// A 1×1 PNG.
+const PIXEL_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c,
+    0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00,
+    0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+];
+
+fn upload_temporaries(directory: &std::path::Path) -> usize {
+    let mut found = 0;
+    for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found += upload_temporaries(&path);
+        } else if entry.file_name().to_string_lossy().starts_with(".upload-") {
+            found += 1;
+        }
+    }
+    found
+}
+
+#[tokio::test]
+async fn media_uploads_and_reads_travel_as_base64_and_end_with_their_connection() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let base64 = base64::engine::general_purpose::STANDARD;
+    let mut catalog = (*openai_catalog()).clone();
+    Arc::make_mut(&mut catalog.providers)
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let harness = harness_with_catalog(Arc::new(catalog), |_| {});
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let (connected, _) = request(
+        &mut client,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"upload-rpc-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+    let (created, _) = request(
+        &mut client,
+        3,
+        "session.create",
+        json!({"selection": {"agent": "default", "model": {"model": "openai/gpt-5-mini", "variant": null}}}),
+    )
+    .await;
+    let session_id = created["result"]["session"]["session_id"].clone();
+
+    let (begun, _) = request(
+        &mut client,
+        4,
+        "artifact.upload.begin",
+        json!({"session_id": session_id, "byte_length": PIXEL_PNG.len(), "filename": "pixel.png"}),
+    )
+    .await;
+    assert_eq!(begun["result"]["chunk_bytes"], 1024 * 1024, "{begun}");
+    let upload_id = begun["result"]["upload_id"].clone();
+    let (bad, _) = request(
+        &mut client,
+        5,
+        "artifact.upload.chunk",
+        json!({"upload_id": upload_id, "offset": 0, "data": "not base64!"}),
+    )
+    .await;
+    assert_eq!(bad["error"]["code"], -32602, "{bad}");
+    let (gap, _) = request(
+        &mut client,
+        6,
+        "artifact.upload.chunk",
+        json!({"upload_id": upload_id, "offset": 3, "data": base64.encode(PIXEL_PNG)}),
+    )
+    .await;
+    assert_eq!(
+        gap["error"]["data"]["code"], "upload_offset_mismatch",
+        "{gap}"
+    );
+    assert_eq!(gap["error"]["data"]["expected_offset"], 0, "{gap}");
+    let (chunk, _) = request(
+        &mut client,
+        7,
+        "artifact.upload.chunk",
+        json!({"upload_id": upload_id, "offset": 0, "data": base64.encode(PIXEL_PNG)}),
+    )
+    .await;
+    assert_eq!(chunk["result"], json!({}), "{chunk}");
+    let sha256 = format!("{:x}", sha2::Sha256::digest(PIXEL_PNG));
+    let (finished, _) = request(
+        &mut client,
+        8,
+        "artifact.upload.finish",
+        json!({"upload_id": upload_id, "sha256": sha256}),
+    )
+    .await;
+    assert_eq!(
+        finished["result"],
+        json!({
+            "artifact": {"sha256": sha256, "byte_length": PIXEL_PNG.len(),
+                         "media_type": "image/png", "filename": "pixel.png"},
+            "image": {"width": 1, "height": 1}
+        }),
+        "{finished}"
+    );
+    let (read, _) = request(
+        &mut client,
+        9,
+        "artifact.read",
+        json!({"session_id": session_id, "sha256": sha256, "offset": 8, "length": 8}),
+    )
+    .await;
+    assert_eq!(
+        read["result"],
+        json!({"data": base64.encode(&PIXEL_PNG[8..16]), "total_bytes": PIXEL_PNG.len(),
+               "media_type": "image/png"}),
+        "{read}"
+    );
+    let (missing, _) = request(
+        &mut client,
+        10,
+        "artifact.read",
+        json!({"session_id": session_id, "sha256": "0".repeat(64), "offset": 0, "length": 8}),
+    )
+    .await;
+    assert_eq!(
+        missing["error"]["data"]["code"], "artifact_not_found",
+        "{missing}"
+    );
+    let (unknown, _) = request(
+        &mut client,
+        11,
+        "artifact.upload.finish",
+        json!({"upload_id": upload_id, "sha256": sha256}),
+    )
+    .await;
+    assert_eq!(
+        unknown["error"]["data"]["code"], "upload_not_found",
+        "{unknown}"
+    );
+    let (large, _) = request(
+        &mut client,
+        12,
+        "artifact.upload.begin",
+        json!({"session_id": session_id, "byte_length": 25 * 1024 * 1024 + 1}),
+    )
+    .await;
+    assert_eq!(large["error"]["data"]["code"], "media_too_large", "{large}");
+    assert_eq!(
+        large["error"]["data"]["max_bytes"],
+        25 * 1024 * 1024,
+        "{large}"
+    );
+
+    // An upload left in progress ends with its connection.
+    let (begun, _) = request(
+        &mut client,
+        13,
+        "artifact.upload.begin",
+        json!({"session_id": session_id, "byte_length": 100}),
+    )
+    .await;
+    assert!(begun.get("result").is_some(), "{begun}");
+    assert_eq!(upload_temporaries(harness._directory.path()), 1);
+    drop(client);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while upload_temporaries(harness._directory.path()) != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the closed connection's upload is dropped");
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
+}

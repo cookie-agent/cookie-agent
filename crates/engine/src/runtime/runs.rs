@@ -58,6 +58,17 @@ impl Engine {
         match self.intercept_user_input(active.session, content).await? {
             UserInputInterception::Accepted { content, original } => {
                 let session = active.session;
+                // A steer reaches the run's own model; a fallback it moved
+                // to gets stand-ins for what it does not accept.
+                let model = &active.policy.selected_suffix[0].selection.model;
+                let _input_artifacts = self
+                    .admit_input_media(
+                        session,
+                        &content,
+                        model,
+                        &super::uploads::catalog_input_media(&active.policy.runtime, model),
+                    )
+                    .await?;
                 self.on_actor(session, move |engine| {
                     engine.active_run_in(session, run_id)?;
                     if !engine.run_is_running(session, run_id)? {

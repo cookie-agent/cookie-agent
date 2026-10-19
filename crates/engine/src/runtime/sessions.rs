@@ -677,12 +677,24 @@ impl Engine {
 
     /// Deletes the artifacts only the reverted events referenced, off the async
     /// workers. A failure leaves orphans behind, never a broken session.
+    ///
+    /// An upload still leased, or an artifact an input being admitted holds,
+    /// is kept: the lease lock is held throughout, so neither can change
+    /// while the sweep decides (see [`super::uploads`]).
     async fn collect_reverted_artifacts(&self, session: SessionId, dropped: HashSet<String>) {
         if dropped.is_empty() {
             return;
         }
         let engine = self.clone();
         let collected = super::blocking_io::run(move || {
+            let leases = engine
+                .inner
+                .uploads
+                .leases
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let held = leases.held(engine.inner.artifacts.tree_for(session));
+            let dropped = dropped.difference(&held).cloned().collect();
             engine
                 .inner
                 .artifacts
@@ -700,7 +712,7 @@ impl Engine {
 
     /// Every artifact reference the logs of `session`'s tree hold, or `None`
     /// while a session of the tree runs and may still add one.
-    fn tree_artifact_references(
+    pub(super) fn tree_artifact_references(
         &self,
         session: SessionId,
     ) -> std::io::Result<Option<HashSet<String>>> {

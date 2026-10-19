@@ -483,6 +483,14 @@ fn recognize(path: &Path, bytes: &[u8], len: u64) -> Option<(&'static str, Media
     }
 }
 
+/// The media type a file whose first [`MEDIA_SNIFF_BYTES`] are `head` and
+/// which is `len` bytes long starts like, recognized from its content
+/// alone; nothing is validated.
+#[must_use]
+pub fn recognize_media_type(head: &[u8], len: u64) -> Option<&'static str> {
+    recognize(Path::new(""), head, len).map(|(media_type, _)| media_type)
+}
+
 /// What a client's upload is, recognized from its content alone and
 /// validated as a tool attachment is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

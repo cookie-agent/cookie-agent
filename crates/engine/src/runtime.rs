@@ -86,6 +86,7 @@ pub(crate) mod tests;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
+pub(crate) mod uploads;
 
 pub(crate) use artifact_reads::read_artifact_async;
 pub(crate) use artifacts::{ArtifactRouter, SessionArtifacts};
@@ -279,6 +280,9 @@ pub enum EngineError {
     ModelManager(#[from] cookie_agent_models::ModelManagerError),
     #[error(transparent)]
     Manifest(ManifestError),
+    /// An upload, an artifact read, or an input's media was refused.
+    #[error("{0}")]
+    Media(uploads::MediaError),
 }
 
 /// Atomic, secret-safe rejection details produced by the serialized approval transaction.
@@ -836,6 +840,7 @@ pub(crate) struct Inner {
     pub(crate) output: OutputState,
     pub(crate) background: background_tasks::BackgroundTaskState,
     pub(crate) compaction: CompactionState,
+    pub(crate) uploads: uploads::UploadState,
     runtime: Option<tokio::runtime::Handle>,
     janitor_task: Mutex<Option<JoinHandle<()>>>,
     #[cfg(test)]
@@ -1041,6 +1046,7 @@ impl Engine {
                 output: OutputState::default(),
                 background: background_tasks::BackgroundTaskState::default(),
                 compaction: CompactionState::default(),
+                uploads: uploads::UploadState::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),
                 #[cfg(test)]

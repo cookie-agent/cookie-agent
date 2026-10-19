@@ -276,6 +276,18 @@ impl Engine {
             None => self.current_selection(session)?,
         };
         let content = params.content.clone();
+        // The run the entry starts uses its selection's model.
+        let _input_artifacts = self
+            .admit_input_media(
+                session,
+                &content,
+                &selection.model.model,
+                &super::uploads::catalog_input_media(
+                    &self.current_runtime(),
+                    &selection.model.model,
+                ),
+            )
+            .await?;
         let client_run_id = params.client_run_id.clone();
         self.on_actor(session, move |engine| {
             let projection = engine.inner.store.get(session)?;

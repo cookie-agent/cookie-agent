@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`artifact.upload.finish`: checks the digest, recognizes and validates\nthe content, and stores it.",
+  "properties": {
+    "sha256": {
+      "description": "Lowercase hex SHA-256 of every byte sent.",
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "upload_id": {
+      "description": "An upload in progress on this connection.",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "upload_id",
+    "sha256"
+  ],
+  "title": "ArtifactUploadFinishParams",
+  "type": "object"
+}

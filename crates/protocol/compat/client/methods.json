@@ -18,6 +18,46 @@
       "result": "ApprovalRespondResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "artifact.read",
+      "params": "ArtifactReadParams",
+      "params_role": "command",
+      "result": "ArtifactReadResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "artifact.upload.begin",
+      "params": "ArtifactUploadBeginParams",
+      "params_role": "command",
+      "result": "ArtifactUploadBeginResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "artifact.upload.cancel",
+      "params": "ArtifactUploadCancelParams",
+      "params_role": "command",
+      "result": "ArtifactUploadCancelResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "artifact.upload.chunk",
+      "params": "ArtifactUploadChunkParams",
+      "params_role": "command",
+      "result": "ArtifactUploadChunkResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "artifact.upload.finish",
+      "params": "ArtifactUploadFinishParams",
+      "params_role": "command",
+      "result": "ArtifactUploadFinishResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "background.changed",

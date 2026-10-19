@@ -714,6 +714,33 @@ error_codes! {
         hint: None,
         description: "A request named an artifact the session tree's store does not have.",
     }
+    UPLOAD_OFFSET_MISMATCH {
+        code: "upload_offset_mismatch",
+        rpc: APPLICATION_ERROR,
+        fields: [required("expected_offset", "The bytes received so far: the next chunk's offset.")],
+        message: "The upload's chunks arrived out of order.",
+        hint: Some("Send the chunk at offset {expected_offset} next."),
+        description: "`artifact.upload.chunk` at an offset other than the bytes received so far.",
+    }
+    UPLOAD_SIZE_MISMATCH {
+        code: "upload_size_mismatch",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("byte_length", "The size the upload began with."),
+            required("received", "The bytes it would hold."),
+        ],
+        message: "The upload does not match the size it began with.",
+        hint: Some("Send exactly {byte_length} bytes before finishing it."),
+        description: "A chunk past the upload's size, or a finish before all of it arrived.",
+    }
+    TOO_MANY_UPLOADS {
+        code: "too_many_uploads",
+        rpc: APPLICATION_ERROR,
+        fields: [required("max_uploads", "The most uploads one connection may have in progress.")],
+        message: "Too many uploads are in progress on this connection.",
+        hint: Some("Finish or cancel an upload first."),
+        description: "`artifact.upload.begin` on a connection already at its upload limit.",
+    }
 
     // --- runtime and plugin protocols ------------------------------------------
     ALREADY_INITIALIZED {

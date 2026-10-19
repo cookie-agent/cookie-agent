@@ -40,6 +40,7 @@ impl ServerProtocol for Server {
         self.start_runtime_instance_notifications(context.clone());
         self.start_plugin_notifications(context.clone());
         self.start_background_notifications(context.clone());
+        self.start_upload_cleanup(&context);
         self.start_engine_event_notifications(context);
     }
 
@@ -795,6 +796,92 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn begin_upload(
+        &self,
+        params: cookie_agent_protocol::ArtifactUploadBeginParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadBeginResult> {
+        let upload_id = self
+            .engine
+            .begin_upload(
+                context.connection_id(),
+                params.session_id,
+                params.byte_length,
+                params.filename,
+            )
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::ArtifactUploadBeginResult {
+            upload_id,
+            chunk_bytes: cookie_agent_protocol::ARTIFACT_CHUNK_BYTES,
+        })
+    }
+
+    async fn upload_chunk(
+        &self,
+        params: cookie_agent_protocol::ArtifactUploadChunkParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadChunkResult> {
+        use base64::Engine as _;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(params.data.as_bytes())
+            .map_err(|error| ServerFault::invalid_params(format!("data is not base64: {error}")))?;
+        self.engine
+            .upload_chunk(
+                context.connection_id(),
+                &params.upload_id,
+                params.offset,
+                data,
+            )
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::ArtifactUploadChunkResult {})
+    }
+
+    async fn finish_upload(
+        &self,
+        params: cookie_agent_protocol::ArtifactUploadFinishParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadFinishResult> {
+        self.engine
+            .finish_upload(context.connection_id(), &params.upload_id, &params.sha256)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn cancel_upload(
+        &self,
+        params: cookie_agent_protocol::ArtifactUploadCancelParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ArtifactUploadCancelResult> {
+        self.engine
+            .cancel_upload(context.connection_id(), &params.upload_id)
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::ArtifactUploadCancelResult {})
+    }
+
+    async fn read_artifact(
+        &self,
+        params: cookie_agent_protocol::ArtifactReadParams,
+    ) -> Result<cookie_agent_protocol::ArtifactReadResult> {
+        use base64::Engine as _;
+        let (data, total_bytes, media_type) = self
+            .engine
+            .read_artifact_range(
+                params.session_id,
+                &params.sha256,
+                params.offset,
+                params.length,
+            )
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::ArtifactReadResult {
+            data: base64::engine::general_purpose::STANDARD.encode(data),
+            total_bytes,
+            media_type,
+        })
+    }
+
     async fn runtime_snapshot(&self, _: RuntimeSnapshotGetParams) -> Result<RuntimeSnapshotResult> {
         self.engine.runtime_snapshot().map_err(protocol_fault)
     }
@@ -823,6 +910,19 @@ impl ServerProtocol for Server {
             .await
             .map_err(|_| ServerFault::from(RpcFault::internal()))?
             .map_err(Into::into)
+    }
+}
+
+impl Server {
+    /// Drops the connection's uploads in progress once it closes.
+    fn start_upload_cleanup(&self, context: &ServerContext) {
+        let engine = self.engine.clone();
+        let connection = context.connection_id();
+        let shutdown = context.shutdown();
+        tokio::spawn(async move {
+            shutdown.cancelled().await;
+            engine.drop_connection_uploads(connection);
+        });
     }
 }
 

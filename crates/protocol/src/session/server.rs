@@ -561,6 +561,37 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: McpServerPersistParams,
     ) -> Result<McpServerMutationResult, ServerFault>;
+    /// Starts an upload into the store of a session's tree. It belongs to
+    /// this connection, which may have a bounded number in progress, and is
+    /// dropped when the connection closes.
+    async fn begin_upload(
+        &self,
+        params: crate::ArtifactUploadBeginParams,
+        context: &ServerContext,
+    ) -> Result<crate::ArtifactUploadBeginResult, ServerFault>;
+    /// Appends the next chunk of one of this connection's uploads.
+    async fn upload_chunk(
+        &self,
+        params: crate::ArtifactUploadChunkParams,
+        context: &ServerContext,
+    ) -> Result<crate::ArtifactUploadChunkResult, ServerFault>;
+    /// Checks, validates, and stores one of this connection's uploads.
+    async fn finish_upload(
+        &self,
+        params: crate::ArtifactUploadFinishParams,
+        context: &ServerContext,
+    ) -> Result<crate::ArtifactUploadFinishResult, ServerFault>;
+    /// Drops one of this connection's uploads.
+    async fn cancel_upload(
+        &self,
+        params: crate::ArtifactUploadCancelParams,
+        context: &ServerContext,
+    ) -> Result<crate::ArtifactUploadCancelResult, ServerFault>;
+    /// Reads a range of any artifact in the store of a session's tree.
+    async fn read_artifact(
+        &self,
+        params: crate::ArtifactReadParams,
+    ) -> Result<crate::ArtifactReadResult, ServerFault>;
     async fn runtime_snapshot(
         &self,
         params: RuntimeSnapshotGetParams,
@@ -974,6 +1005,19 @@ async fn dispatch<S: ServerProtocol>(
         "mcp.server.set_enabled" => value(server.set_mcp_server_enabled(decode(params)?).await?),
         "mcp.server.reconnect" => value(server.reconnect_mcp_server(decode(params)?).await?),
         "mcp.server.persist" => value(server.persist_mcp_server(decode(params)?).await?),
+        crate::ARTIFACT_UPLOAD_BEGIN_METHOD => {
+            value(server.begin_upload(decode(params)?, context).await?)
+        }
+        crate::ARTIFACT_UPLOAD_CHUNK_METHOD => {
+            value(server.upload_chunk(decode(params)?, context).await?)
+        }
+        crate::ARTIFACT_UPLOAD_FINISH_METHOD => {
+            value(server.finish_upload(decode(params)?, context).await?)
+        }
+        crate::ARTIFACT_UPLOAD_CANCEL_METHOD => {
+            value(server.cancel_upload(decode(params)?, context).await?)
+        }
+        crate::ARTIFACT_READ_METHOD => value(server.read_artifact(decode(params)?).await?),
         crate::RUNTIME_SNAPSHOT_GET_METHOD if has_request_id => {
             value(server.runtime_snapshot(decode_default(params)?).await?)
         }

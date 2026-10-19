@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`artifact.upload.chunk`: the bytes at `offset`, which must be exactly\nthe bytes received so far. Send a chunk once the previous one is\nanswered: requests run concurrently, so pipelined chunks may arrive out\nof order and be refused.",
+  "properties": {
+    "data": {
+      "description": "Base64 (standard alphabet, padded) of at most `chunk_bytes` bytes.",
+      "maxLength": 1398104,
+      "minLength": 1,
+      "type": "string"
+    },
+    "offset": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "upload_id": {
+      "description": "An upload in progress on this connection.",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "upload_id",
+    "offset",
+    "data"
+  ],
+  "title": "ArtifactUploadChunkParams",
+  "type": "object"
+}

@@ -710,6 +710,50 @@ impl Client {
         )
     }
 
+    /// Start an upload into a session tree's store (`artifact.upload.begin`).
+    pub async fn begin_upload(
+        &self,
+        params: crate::ArtifactUploadBeginParams,
+    ) -> Result<crate::ArtifactUploadBeginResult, ClientError> {
+        self.call(crate::ARTIFACT_UPLOAD_BEGIN_METHOD, &params)
+            .await
+    }
+
+    /// Send an upload's next chunk (`artifact.upload.chunk`).
+    pub async fn upload_chunk(
+        &self,
+        params: crate::ArtifactUploadChunkParams,
+    ) -> Result<crate::ArtifactUploadChunkResult, ClientError> {
+        self.call(crate::ARTIFACT_UPLOAD_CHUNK_METHOD, &params)
+            .await
+    }
+
+    /// Store a complete upload (`artifact.upload.finish`).
+    pub async fn finish_upload(
+        &self,
+        params: crate::ArtifactUploadFinishParams,
+    ) -> Result<crate::ArtifactUploadFinishResult, ClientError> {
+        self.call(crate::ARTIFACT_UPLOAD_FINISH_METHOD, &params)
+            .await
+    }
+
+    /// Drop an upload in progress (`artifact.upload.cancel`).
+    pub async fn cancel_upload(
+        &self,
+        params: crate::ArtifactUploadCancelParams,
+    ) -> Result<crate::ArtifactUploadCancelResult, ClientError> {
+        self.call(crate::ARTIFACT_UPLOAD_CANCEL_METHOD, &params)
+            .await
+    }
+
+    /// Read a range of an artifact of a session's tree (`artifact.read`).
+    pub async fn read_artifact(
+        &self,
+        params: crate::ArtifactReadParams,
+    ) -> Result<crate::ArtifactReadResult, ClientError> {
+        self.call(crate::ARTIFACT_READ_METHOD, &params).await
+    }
+
     pub async fn cancel_run(
         &self,
         params: RunCancelParams,

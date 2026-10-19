@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "data": {
+      "description": "Base64 of the bytes read: fewer than `length` at the end.",
+      "type": "string"
+    },
+    "media_type": {
+      "description": "The media type recognized from the content; `text/plain` for UTF-8\ntext and `application/octet-stream` for anything else.",
+      "type": "string"
+    },
+    "total_bytes": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "data",
+    "total_bytes",
+    "media_type"
+  ],
+  "title": "ArtifactReadResult",
+  "type": "object"
+}

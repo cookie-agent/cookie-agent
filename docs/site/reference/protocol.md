@@ -250,6 +250,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.select_model` | Session ID, selection | Whether the session's selection changed |
 | `session.submit_input` | Session ID, [`content`](#user-content), `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
 | `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` content, `gone`, or `not_owner` |
+| `artifact.upload.begin` | Session ID, `byte_length`, optional `filename` | `upload_id`, `chunk_bytes` (see [Media](#media)) |
+| `artifact.upload.chunk` | `upload_id`, `offset`, base64 `data` of at most `chunk_bytes` bytes | Empty object |
+| `artifact.upload.finish` | `upload_id`, `sha256` of every byte sent | The stored `artifact` (`ArtifactRef`), and `image` `{ width, height }` for an image |
+| `artifact.upload.cancel` | `upload_id` | Empty object |
+| `artifact.read` | Session ID, `sha256`, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
 | `session.background.list` | Session ID | The session's background `calls` |
@@ -284,8 +289,73 @@ recalled input back the same way:
 ```
 
 A `text` part carries text; a `file` part names an artifact of the session
-tree's store by its `ArtifactRef`. The input-lane events store the same
-content (see [Events](events.md)).
+tree's store by its `ArtifactRef`, as an upload returned it. The input-lane
+events store the same content (see [Events](events.md)).
+
+### Media
+
+A client attaches a file by uploading it into the session tree's artifact
+store and naming the result in a `file` part. A client that attaches before
+its first prompt creates the session first; the upload publishes a session
+that was still only in memory.
+
+1. **`artifact.upload.begin`** `{ session_id, byte_length, filename? }`
+   returns `{ upload_id, chunk_bytes }`. `chunk_bytes` is 1 MiB. A
+   `byte_length` above the largest attachment cap (25 MiB) is refused with
+   `media_too_large` whose `kind` is `file`. The upload belongs to this
+   connection: another connection cannot see it, it is dropped when the
+   connection closes, and a connection may have at most 8 in progress
+   (`too_many_uploads`). Its bytes stream into a temporary file of the store,
+   never into memory.
+2. **`artifact.upload.chunk`** `{ upload_id, offset, data }` appends `data`
+   (standard base64, at most `chunk_bytes` decoded bytes) at `offset`, which
+   must be exactly the bytes received so far (`upload_offset_mismatch` names
+   `expected_offset` otherwise; the upload waits for the right chunk). A chunk
+   past `byte_length` is `upload_size_mismatch`. Requests run concurrently, so
+   send a chunk once the previous one is answered.
+3. **`artifact.upload.finish`** `{ upload_id, sha256 }` checks the digest
+   (`digest_mismatch`), recognizes the media type from the content alone (a
+   filename never decides it), validates the content as tool attachments are
+   validated (structure, the 20 MiB cap or 25 MiB for video, and for images at
+   most 16384 pixels a side and 16 Mi pixels), and stores the blob under its
+   digest. It returns `{ artifact: ArtifactRef, image? }`; put `artifact` in a
+   `file` part as it is. An upload whose digest or content is refused
+   (`digest_mismatch`, `media_type_unsupported`, `media_too_large`) is
+   dropped; one finished before all of its bytes arrived
+   (`upload_size_mismatch`) stays in progress.
+4. **`artifact.upload.cancel`** `{ upload_id }` drops an upload in progress.
+
+An unknown or another connection's `upload_id` is `upload_not_found`.
+
+**Leases.** A finished upload is kept for an hour while no event references
+it, then removed. Once an input that names it is submitted, its event keeps
+it, as tool attachments are kept: a revert that removes every reference
+removes it after its lease, and a fork takes it into the fork's tree. A
+daemon restart forgets leases; an upload no event referenced then stays in
+the store.
+
+**Admission.** `run.start`, `run.steer`, and `session.submit_input` check
+every `file` part against the model the input reaches: the run's selected
+model (for a steer, the running run's; for a queued input, the model of the
+selection it will start with). The part must name an artifact of the tree's
+store whose content is what the reference says (`artifact_not_found`, or
+`media_type_unsupported` when the content is not that type), of a kind the
+model accepts (`media_unsupported` with `kind` and `model`), of a media type
+it lists (`media_type_unsupported`), within its byte and image limits
+(`media_too_large`, with the image's `width` and `height` and the model's
+limits), and the parts of one kind must not outnumber `max_count`
+(`media_limit_exceeded`). These are the model's
+[`input_media`](#the-catalog-view); a client that checks them first never
+meets these errors. A refused input records nothing.
+
+**`artifact.read`** `{ session_id, sha256, offset, length }` returns
+`{ data, total_bytes, media_type }`: up to `length` (at most 1 MiB) bytes
+from `offset` of any artifact of the session's tree (user uploads, tool
+attachments, and the `full` content of truncated display blocks), base64
+encoded, fewer at the end, and none at `offset = total_bytes`. `media_type`
+is recognized from the content: a media type, `text/plain` for UTF-8 text,
+or `application/octet-stream`. A blob is verified against its digest when it
+is first read. An artifact the store does not have is `artifact_not_found`.
 
 Model, agent, and catalog discovery uses `runtime.snapshot.get`. Skills use the
 session-aware `skills.list` and `skills.get` methods because visibility depends

@@ -340,6 +340,21 @@ impl Engine {
             run_policy.agent.selected_suffix_start += start as u32;
             params.selection = effective;
         }
+        // The run's model takes the input's files, or nothing is recorded.
+        let _input_artifacts = if producer_start {
+            None
+        } else {
+            let model = &run_policy.selected_suffix[0].selection.model;
+            Some(
+                self.admit_input_media(
+                    params.session_id,
+                    &params.content,
+                    model,
+                    &super::uploads::catalog_input_media(&run_policy.runtime, model),
+                )
+                .await?,
+            )
+        };
         let from_model = session.log.last_run_started().and_then(|_| {
             remembered
                 .selection

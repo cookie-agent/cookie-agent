@@ -36,5 +36,6 @@ cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = [
 cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 jiff.workspace = true
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+sha2.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true

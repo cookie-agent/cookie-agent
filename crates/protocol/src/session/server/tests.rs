@@ -407,6 +407,40 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn begin_upload(
+        &self,
+        _: crate::ArtifactUploadBeginParams,
+        _: &ServerContext,
+    ) -> Result<crate::ArtifactUploadBeginResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn upload_chunk(
+        &self,
+        _: crate::ArtifactUploadChunkParams,
+        _: &ServerContext,
+    ) -> Result<crate::ArtifactUploadChunkResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn finish_upload(
+        &self,
+        _: crate::ArtifactUploadFinishParams,
+        _: &ServerContext,
+    ) -> Result<crate::ArtifactUploadFinishResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn cancel_upload(
+        &self,
+        _: crate::ArtifactUploadCancelParams,
+        _: &ServerContext,
+    ) -> Result<crate::ArtifactUploadCancelResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn read_artifact(
+        &self,
+        _: crate::ArtifactReadParams,
+    ) -> Result<crate::ArtifactReadResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn runtime_snapshot(
         &self,
         _: crate::RuntimeSnapshotGetParams,

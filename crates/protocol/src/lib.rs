@@ -200,6 +200,7 @@ mod session_model;
 mod setup_value;
 mod stop;
 pub mod strict;
+mod uploads;
 
 pub use agent::*;
 pub use approval::*;
@@ -234,6 +235,7 @@ pub use session::*;
 pub use session_model::*;
 pub use setup_value::*;
 pub use stop::StopSignals;
+pub use uploads::*;
 
 #[cfg(test)]
 mod goal_producer_tests;

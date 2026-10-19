@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "chunk_bytes": {
+      "description": "The most decoded bytes one chunk may carry.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "upload_id": {
+      "description": "An upload in progress on this connection.",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "upload_id",
+    "chunk_bytes"
+  ],
+  "title": "ArtifactUploadBeginResult",
+  "type": "object"
+}

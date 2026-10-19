@@ -4,7 +4,7 @@
 //! the detail.
 
 use cookie_agent_engine::{
-    ApprovalRespondFailure, EngineError, delegation_events::DelegationEventError,
+    ApprovalRespondFailure, EngineError, MediaError, delegation_events::DelegationEventError,
     events::EventLogError, session::SessionError,
 };
 use cookie_agent_models::{ModelManagerError, provider_store::ProviderStoreError};
@@ -299,6 +299,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         _ => {}
     }
     let builder = match &error {
+        EngineError::Media(error) => media_error(error),
         EngineError::PluginHookFailed(failure) => errors::PLUGIN_HOOK_FAILED
             .error()
             .field("plugin", &failure.plugin)
@@ -361,6 +362,64 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         _ => errors::ENGINE_FAILED.error(),
     };
     RpcFault::of(builder.detail(detail))
+}
+
+/// The registry error of a refused upload, read, or input media.
+fn media_error(error: &MediaError) -> ErrorBuilder {
+    match error {
+        MediaError::UploadNotFound => errors::UPLOAD_NOT_FOUND.error(),
+        MediaError::OffsetMismatch {
+            expected_offset, ..
+        } => errors::UPLOAD_OFFSET_MISMATCH
+            .error()
+            .field("expected_offset", expected_offset),
+        MediaError::SizeMismatch {
+            byte_length,
+            received,
+        } => errors::UPLOAD_SIZE_MISMATCH
+            .error()
+            .field("byte_length", byte_length)
+            .field("received", received),
+        MediaError::TooManyUploads { max_uploads } => errors::TOO_MANY_UPLOADS
+            .error()
+            .field("max_uploads", max_uploads),
+        MediaError::DigestMismatch { .. } => errors::DIGEST_MISMATCH.error(),
+        MediaError::TypeUnsupported { media_type, .. } => errors::MEDIA_TYPE_UNSUPPORTED
+            .error()
+            .field("media_type", media_type),
+        MediaError::TooLarge {
+            kind,
+            byte_length,
+            max_bytes,
+            width,
+            height,
+            max_dimension,
+            max_pixels,
+        } => errors::MEDIA_TOO_LARGE
+            .error()
+            .field("kind", kind)
+            .field("byte_length", byte_length)
+            .field("max_bytes", max_bytes)
+            .field("width", width)
+            .field("height", height)
+            .field("max_dimension", max_dimension)
+            .field("max_pixels", max_pixels),
+        MediaError::Unsupported { kind, model } => errors::MEDIA_UNSUPPORTED
+            .error()
+            .field("kind", kind)
+            .field("model", model),
+        MediaError::LimitExceeded {
+            kind,
+            count,
+            max_count,
+        } => errors::MEDIA_LIMIT_EXCEEDED
+            .error()
+            .field("kind", kind)
+            .field("count", count)
+            .field("max_count", max_count),
+        MediaError::ArtifactNotFound { .. } => errors::ARTIFACT_NOT_FOUND.error(),
+        MediaError::InvalidRequest(_) => errors::BAD_PARAMS.error(),
+    }
 }
 
 /// The registry entry `error` is answered with.

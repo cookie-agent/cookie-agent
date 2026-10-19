@@ -312,6 +312,9 @@ pub(crate) struct ArtifactStore {
     pub(crate) io_test_hook: ArtifactIoTestHook,
     directory: platform::Directory,
     verified_reads: std::sync::Mutex<VerifiedFileCache>,
+    /// Handles [`ArtifactStore::read_range`] verified once, when it opened
+    /// them; ranges of a cached handle are served without hashing again.
+    verified_ranges: std::sync::Mutex<VerifiedFileCache>,
     verified_attachment_bytes: std::sync::Mutex<VerifiedBytesCache>,
 }
 
@@ -322,6 +325,7 @@ impl ArtifactStore {
             io_test_hook: ArtifactIoTestHook::default(),
             directory: platform::Directory::at(directory)?,
             verified_reads: std::sync::Mutex::default(),
+            verified_ranges: std::sync::Mutex::default(),
             verified_attachment_bytes: std::sync::Mutex::default(),
         }))
     }
@@ -350,7 +354,7 @@ impl ArtifactStore {
     /// Whether a blob of `byte_length` bytes is stored under `digest`. Names
     /// are content addresses, so that blob is the content; a torn one (wrong
     /// length) is replaced, and readers verify digests anyway.
-    fn holds(&self, digest: &str, byte_length: u64) -> std::io::Result<bool> {
+    pub(crate) fn holds(&self, digest: &str, byte_length: u64) -> std::io::Result<bool> {
         Ok(self.directory.len(digest)? == Some(byte_length))
     }
 
@@ -386,6 +390,10 @@ impl ArtifactStore {
                 continue;
             }
             self.verified_reads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .evict(digest);
+            self.verified_ranges
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .evict(digest);
@@ -478,6 +486,81 @@ impl ArtifactStore {
         Ok(page)
     }
 
+    /// Up to `length` bytes of blob `digest` from `offset`, its length, and
+    /// its first [`MEDIA_SNIFF_BYTES`] for recognizing what it is. The whole
+    /// blob is verified against its digest when it is opened; a handle kept
+    /// open pins the content it verified.
+    ///
+    /// [`MEDIA_SNIFF_BYTES`]: cookie_agent_runtime_api::media::MEDIA_SNIFF_BYTES
+    pub(crate) fn read_range(
+        &self,
+        digest: &str,
+        offset: u64,
+        length: u64,
+    ) -> std::io::Result<ArtifactRange> {
+        use std::io::Read as _;
+
+        if !is_digest_name_common(digest) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid artifact digest",
+            ));
+        }
+        let (cached, generation) = {
+            let mut verified = self
+                .verified_ranges
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (verified.take(digest), verified.generation)
+        };
+        let mut file = match cached {
+            Some(file) => file,
+            None => {
+                let mut file = self.directory.open_reader(digest)?.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+                })?;
+                file.seek(SeekFrom::Start(0))?;
+                let mut hasher = Sha256::new();
+                std::io::copy(&mut file, &mut hasher)?;
+                if format!("{:x}", hasher.finalize()) != digest {
+                    return Err(invalid("artifact content does not match its digest"));
+                }
+                file
+            }
+        };
+        let total_bytes = file.metadata()?.len();
+        let mut head = Vec::new();
+        file.seek(SeekFrom::Start(0))?;
+        (&mut file)
+            .take(cookie_agent_runtime_api::media::MEDIA_SNIFF_BYTES as u64)
+            .read_to_end(&mut head)?;
+        let mut data = Vec::new();
+        if offset < total_bytes {
+            file.seek(SeekFrom::Start(offset))?;
+            (&mut file).take(length).read_to_end(&mut data)?;
+        }
+        self.verified_ranges
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .restore(digest, file, generation);
+        Ok(ArtifactRange {
+            data,
+            total_bytes,
+            head,
+        })
+    }
+
+    /// Creates the private file a client's upload streams into.
+    pub(crate) fn create_upload_file(&self, name: &str) -> std::io::Result<File> {
+        if !valid_temporary_artifact_name(name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid upload artifact name",
+            ));
+        }
+        self.directory.create(name)
+    }
+
     pub(crate) fn create_capture_file(&self, name: &str) -> std::io::Result<File> {
         #[cfg(test)]
         self.io_test_hook.run("capture_create", name)?;
@@ -563,6 +646,14 @@ impl ArtifactStore {
     }
 }
 
+/// What [`ArtifactStore::read_range`] read.
+#[derive(Debug)]
+pub(crate) struct ArtifactRange {
+    pub(crate) data: Vec<u8>,
+    pub(crate) total_bytes: u64,
+    pub(crate) head: Vec<u8>,
+}
+
 fn artifact_reference(digest: &str) -> cookie_agent_protocol::ArtifactReference {
     cookie_agent_protocol::ArtifactReference {
         uri: format!("artifact://sha256/{digest}"),
@@ -570,6 +661,12 @@ fn artifact_reference(digest: &str) -> cookie_agent_protocol::ArtifactReference 
 }
 
 fn valid_temporary_artifact_name(name: &str) -> bool {
+    if let Some(id) = name
+        .strip_prefix(".upload-")
+        .and_then(|value| value.strip_suffix(".tmp"))
+    {
+        return uuid::Uuid::parse_str(id).is_ok();
+    }
     if let Some(value) = name
         .strip_prefix(".capture-")
         .and_then(|value| value.strip_suffix(".tmp"))
@@ -893,12 +990,12 @@ impl ArtifactRouter {
     }
 
     /// The tree a session's artifacts belong to.
-    fn tree_for(&self, session: SessionId) -> SessionId {
+    pub(crate) fn tree_for(&self, session: SessionId) -> SessionId {
         self.tree_of(session).unwrap_or(session)
     }
 
     /// The store a session writes to, created on first write.
-    fn write_store(&self, session: SessionId) -> std::io::Result<Arc<ArtifactStore>> {
+    pub(crate) fn write_store(&self, session: SessionId) -> std::io::Result<Arc<ArtifactStore>> {
         match &self.flat {
             Some(flat) => Ok(Arc::clone(flat)),
             None => self.tree_store(self.tree_for(session)),
@@ -908,7 +1005,10 @@ impl ArtifactRouter {
     /// The store a session reads from, or `None` when its tree has never
     /// stored anything. A read never creates a tree directory, so it cannot
     /// race an unpublished root's publication.
-    fn read_store(&self, session: SessionId) -> std::io::Result<Option<Arc<ArtifactStore>>> {
+    pub(crate) fn read_store(
+        &self,
+        session: SessionId,
+    ) -> std::io::Result<Option<Arc<ArtifactStore>>> {
         if let Some(flat) = &self.flat {
             return Ok(Some(Arc::clone(flat)));
         }

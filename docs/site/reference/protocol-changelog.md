@@ -14,6 +14,13 @@ section 3).
 - `run.start`, `run.steer`, and `session.submit_input` take `content` (text
   and file parts) in place of `input`, and a `recalled` outcome of
   `session.recall_input` returns `content`.
+- `artifact.upload.begin`, `artifact.upload.chunk`, `artifact.upload.finish`,
+  `artifact.upload.cancel`, and `artifact.read` upload media into a session
+  tree's store and read any of its artifacts back; new error codes
+  `upload_offset_mismatch`, `upload_size_mismatch`, and `too_many_uploads`.
+- Input file parts are admitted against the model the input reaches:
+  `media_unsupported`, `media_type_unsupported`, `media_too_large`,
+  `media_limit_exceeded`, and `artifact_not_found`.
 
 ## 0.51.0
 

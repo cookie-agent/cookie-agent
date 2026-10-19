@@ -40,6 +40,14 @@ impl Engine {
                 if let Err(error) = engine.evict_idle_roots_with(ROOT_IDLE_EVICTION_AFTER).await {
                     eprintln!("root session janitor failed: {error}");
                 }
+                let sweeper = engine.clone();
+                if let Err(error) = super::blocking_io::run(move || {
+                    sweeper.sweep_upload_leases(std::time::Instant::now());
+                })
+                .await
+                {
+                    eprintln!("upload lease sweep failed: {error}");
+                }
             }
         });
         *self

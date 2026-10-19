@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`artifact.upload.begin`: starts an upload of `byte_length` bytes into\nthe store of `session_id`'s tree.",
+  "properties": {
+    "byte_length": {
+      "description": "The upload's size; at most the largest attachment cap (25 MiB).",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "filename": {
+      "description": "The name to attach the file under, without a directory. It never\ndecides the media type.",
+      "maxLength": 255,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "byte_length"
+  ],
+  "title": "ArtifactUploadBeginParams",
+  "type": "object"
+}
