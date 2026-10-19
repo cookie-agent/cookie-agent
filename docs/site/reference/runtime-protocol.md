@@ -95,7 +95,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.0.0**
+The protocol version is a semver string, currently **1.1.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -132,7 +132,9 @@ added `engine_version` and `features` to the handshake, and moved errors to
 the registry's codes (see [Errors](#errors)). 0.8.0 replaced the turn's
 adapter family and model capabilities with `turn.model` (see
 [`tool/prepare`](#toolprepare)). 1.0.0 froze the protocol: no `0.x` build
-connects to a 1.x one.
+connects to a 1.x one. 1.1.0 added the optional `machine` of
+`runtime/initialize`'s result, which the daemon groups runtimes into
+machines by.
 
 ## Capabilities and instances
 
@@ -145,6 +147,17 @@ workspace) is shared by every session attached to it, and stays open for the
 connection's life. Tool calls, context, and MCP reports name the instance
 they belong to; prepared IDs are unique per connection, so the messages
 about one prepared call need no instance.
+
+## Machines
+
+Every runtime belongs to one **machine**, the computer it runs on. The
+daemon assigns a runtime to a machine when it connects, from the `machine`
+it reports in `runtime/initialize`: a machine the user pinned the runtime ID
+to comes first, then the machine that stands for the reported ID, then a new
+machine named after the host name. A runtime that reports no machine gets a
+machine of its own, named after its runtime ID. The user regroups, renames,
+and merges machines from any client; a runtime never learns its machine's
+name. See the [memory spec](../specs/memory.md#3-machines).
 
 ## Lifecycle
 
@@ -234,7 +247,8 @@ or enables OAuth, which stays with the daemon's global runtime.
 |---|---|
 | `protocol_version` | The runtime's protocol version. |
 | `features` | Optional: what the runtime's configuration enables; none are defined yet. |
-| `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt with the runtime's workspace. |
+| `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt with the runtime's machine. |
+| `machine` | Optional, since 1.1.0: the machine the runtime runs on, `{ id, host_name? }`. `id` is a stable, opaque ID of 1 to 128 printable ASCII bytes; runtimes reporting one ID belong to one machine. `host_name` (at most 255 bytes) names a machine the daemon has not seen. `cookie runtime serve` reports the digest `cookie` uses as its machine ID and the host name; a runtime that cannot tell leaves it out, and the daemon reads a malformed one as left out. See [Machines](#machines). |
 | `capabilities` | What the runtime offers: `name` (`[a-z][a-z0-9_]{0,31}`, unique within the runtime); `kind`, a self-declared label such as `coding` (a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens) that the daemon shows to clients and in approval reviews and never branches on; `takes_workspace`; and an optional `description`. The coding runtime offers `coding`, which takes a workspace. |
 | `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |
 

@@ -222,6 +222,10 @@ pub struct InitializeResult {
     /// runtime where it matters.
     #[serde(default)]
     pub platform: Option<String>,
+    /// The machine the runtime runs on, which the daemon groups runtimes
+    /// by (runtime protocol 1.1.0). Absent when the runtime cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<RuntimeMachine>,
     /// What the runtime offers; sessions attach each one separately.
     pub capabilities: Vec<CapabilityDeclaration>,
     /// The runtime sends producer messages to the sessions attached to its
@@ -229,6 +233,50 @@ pub struct InitializeResult {
     /// `producer/recovery/start`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub producer_messaging: bool,
+}
+
+/// The machine a runtime runs on, as `runtime/initialize` reports it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct RuntimeMachine {
+    /// A stable, opaque ID of the machine, such as
+    /// [`crate::paths::machine_id`]: 1 to [`RuntimeMachine::MAX_ID_BYTES`]
+    /// bytes of printable ASCII. Runtimes that report one ID run on one
+    /// machine.
+    pub id: String,
+    /// The machine's host name, which names a machine the daemon has not
+    /// seen before; at most [`RuntimeMachine::MAX_HOST_NAME_BYTES`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
+}
+
+impl RuntimeMachine {
+    /// The longest machine ID.
+    pub const MAX_ID_BYTES: usize = 128;
+    /// The longest host name.
+    pub const MAX_HOST_NAME_BYTES: usize = 255;
+
+    /// This machine: [`crate::paths::machine_id`] and
+    /// [`crate::paths::host_name`]. `None` when it has no machine ID.
+    #[must_use]
+    pub fn this_machine() -> Option<Self> {
+        let host_name = crate::paths::host_name();
+        Some(Self {
+            id: crate::paths::machine_id()?,
+            host_name: (!host_name.is_empty()).then_some(host_name),
+        })
+        .filter(Self::is_valid)
+    }
+
+    /// Whether the ID and host name keep their bounds: a reader treats a
+    /// machine that does not as unreported.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        (1..=Self::MAX_ID_BYTES).contains(&self.id.len())
+            && self.id.bytes().all(|byte| byte.is_ascii_graphic())
+            && self.host_name.as_ref().is_none_or(|host| {
+                host.len() <= Self::MAX_HOST_NAME_BYTES && !host.chars().any(char::is_control)
+            })
+    }
 }
 
 /// One capability a runtime offers.
@@ -790,4 +838,40 @@ pub enum ToolResultTruncationPolicy {
     #[default]
     #[serde(other)]
     Bounded,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeMachine;
+
+    fn machine(id: &str, host_name: Option<&str>) -> RuntimeMachine {
+        RuntimeMachine {
+            id: id.to_owned(),
+            host_name: host_name.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_reported_machine_keeps_its_bounds() {
+        assert!(machine("3f9c", Some("labpc")).is_valid());
+        assert!(machine("3f9c", None).is_valid());
+        assert!(machine(&"a".repeat(128), Some(&"h".repeat(255))).is_valid());
+        assert!(!machine("", Some("labpc")).is_valid());
+        assert!(!machine(&"a".repeat(129), None).is_valid());
+        assert!(!machine("3f 9c", None).is_valid());
+        assert!(!machine("3f9c", Some(&"h".repeat(256))).is_valid());
+        assert!(!machine("3f9c", Some("lab\npc")).is_valid());
+    }
+
+    #[test]
+    fn an_absent_machine_is_left_out_and_read_as_unreported() {
+        let result: super::InitializeResult = serde_json::from_value(serde_json::json!({
+            "protocol_version": "1.0.0",
+            "capabilities": []
+        }))
+        .unwrap();
+        assert_eq!(result.machine, None);
+        let encoded = serde_json::to_value(&result).unwrap();
+        assert!(encoded.get("machine").is_none(), "{encoded}");
+    }
 }

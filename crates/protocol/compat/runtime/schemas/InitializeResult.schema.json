@@ -30,6 +30,26 @@
         "takes_workspace"
       ],
       "type": "object"
+    },
+    "RuntimeMachine": {
+      "description": "The machine a runtime runs on, as `runtime/initialize` reports it.",
+      "properties": {
+        "host_name": {
+          "description": "The machine's host name, which names a machine the daemon has not\nseen before; at most [`RuntimeMachine::MAX_HOST_NAME_BYTES`] bytes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A stable, opaque ID of the machine, such as\n[`crate::paths::machine_id`]: 1 to [`RuntimeMachine::MAX_ID_BYTES`]\nbytes of printable ASCII. Runtimes that report one ID run on one\nmachine.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -48,6 +68,17 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "machine": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeMachine"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The machine the runtime runs on, which the daemon groups runtimes\nby (runtime protocol 1.1.0). Absent when the runtime cannot tell."
     },
     "platform": {
       "default": null,

@@ -822,25 +822,7 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 
 /// This machine's host name; empty when it is unavailable.
 fn host_name() -> String {
-    #[cfg(unix)]
-    {
-        let mut buffer = [0_u8; 256];
-        // SAFETY: the buffer is writable for its whole length, and
-        // gethostname writes at most that many bytes.
-        let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-        if result != 0 {
-            return String::new();
-        }
-        let end = buffer
-            .iter()
-            .position(|byte| *byte == 0)
-            .unwrap_or(buffer.len());
-        String::from_utf8_lossy(&buffer[..end]).into_owned()
-    }
-    #[cfg(windows)]
-    {
-        std::env::var("COMPUTERNAME").unwrap_or_default()
-    }
+    paths::host_name()
 }
 
 /// The ID a TUI offers its machine's runtime under: `client_` and the host

@@ -499,6 +499,7 @@ impl Server {
             protocol_version: RUNTIME_PROTOCOL_VERSION,
             features: Vec::new(),
             platform: Some(std::env::consts::OS.to_owned()),
+            machine: cookie_agent_protocol::runtime_protocol::RuntimeMachine::this_machine(),
             capabilities: vec![CapabilityDeclaration {
                 name: cookie_agent_protocol::CapabilityName::coding(),
                 kind: RuntimeKind::new(cookie_agent_runtime_api::CODING_RUNTIME_KIND)

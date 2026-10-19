@@ -70,6 +70,30 @@ pub fn machine_id() -> Option<String> {
         .clone()
 }
 
+/// This machine's host name; empty when it is unavailable.
+#[must_use]
+pub fn host_name() -> String {
+    #[cfg(unix)]
+    {
+        let mut buffer = [0_u8; 256];
+        // SAFETY: the buffer is writable for its whole length, and
+        // gethostname writes at most that many bytes.
+        let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+        if result != 0 {
+            return String::new();
+        }
+        let end = buffer
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(buffer.len());
+        String::from_utf8_lossy(&buffer[..end]).into_owned()
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_default()
+    }
+}
+
 /// The random machine ID kept in the user's data root, created when missing.
 fn user_machine_id() -> Option<String> {
     let path = user_data_root().ok()?.join("machine-id");
