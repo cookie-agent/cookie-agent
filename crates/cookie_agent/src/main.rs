@@ -178,6 +178,25 @@ enum Command {
         )]
         token: Option<String>,
     },
+    /// List the machines a daemon's runtimes run on, and rename, regroup,
+    /// merge, or forget them.
+    Machine {
+        #[command(subcommand)]
+        command: machine_command::MachineCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true
+        )]
+        token: Option<String>,
+    },
     /// Manage the session history this machine stores.
     Sessions {
         #[command(subcommand)]
@@ -497,6 +516,14 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             let target = daemon_target(url, token)?;
             config_command::run_config(&target.url, &target.token, command).await
         }
+        Some(Command::Machine {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            machine_command::run_machine(&target.url, &target.token, command).await
+        }
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
@@ -524,6 +551,7 @@ fn local_workspace(
                 | Command::Disconnect { .. }
                 | Command::Mcp { .. }
                 | Command::Config { .. }
+                | Command::Machine { .. }
                 | Command::Runtime { .. },
         )
     ) {
@@ -1771,6 +1799,7 @@ fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
 }
 
 mod config_command;
+mod machine_command;
 
 #[cfg(test)]
 #[path = "../../../test-support/config_harness.rs"]

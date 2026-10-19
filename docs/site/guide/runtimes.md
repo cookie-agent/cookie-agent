@@ -241,3 +241,32 @@ cookie runtime serve --daemon
 - **MCP servers.** It hosts its own machine's MCP servers: those of
   `[runtimes.local.mcp]` in that machine's `config.toml`.
 - **Roots.** `--root` limits its workspaces, as for `--stdio`.
+
+## Machines
+
+Every runtime belongs to a **machine**, the computer it runs on. The model
+is told which machine each attachment's runtime runs on, so it knows which
+tools share files (see the [system prompt](../reference/system-prompt.md#runtimes)).
+The daemon groups runtimes into machines on its own: runtimes that report
+the same machine ID, such as `global`, `local`, and a `cookie runtime serve`
+on the daemon's own computer, share a machine, and a computer it has not
+seen gets a machine named after its host name. A runtime that reports no
+machine ID gets a machine of its own, named after its runtime ID. Machines
+are kept in `~/.cookie-agent/machines.json`, which only the daemon writes;
+there is no configuration for them.
+
+Regroup them by hand when the automatic grouping is wrong, for example when
+a container reports its own machine ID, with `cookie machine`, which works
+against a remote daemon like `cookie config`:
+
+```sh
+cookie machine list                  # machines, their runtimes, and memories
+cookie machine rename labpc lab      # a machine's memory folder moves with it
+cookie machine assign box labpc      # pin runtime `box` to machine `labpc`
+cookie machine unassign box          # follow the machine ID it reports again
+cookie machine merge box labpc       # move `box`'s IDs, pins, and memories
+cookie machine forget old-laptop     # only with no connected runtimes or memories
+```
+
+A change applies to connected runtimes at once; sessions see the new
+machine names from their next run.
