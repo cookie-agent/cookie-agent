@@ -2958,3 +2958,45 @@ fn model_capabilities_drop_modalities_a_newer_daemon_added() {
     let capabilities: ModelCapabilities = serde_json::from_value(value).unwrap();
     assert_eq!(capabilities.native_replay, ReplayCapability::Unsupported);
 }
+
+#[test]
+fn approval_records_with_values_a_newer_build_added_read_without_coherence_checks() {
+    let future: Value = serde_json::from_str(include_str!("../compat/corpus/future/client.json"))
+        .expect("future client fixture");
+    let record = future["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["method"] == "approval.list")
+        .expect("an approval.list result")["result"]["approvals"][0]
+        .clone();
+    serde_json::from_value::<ApprovalRecord>(record.clone()).expect("the fixture reads");
+    let with = |pointer: &str, value: Value| {
+        let mut record = record.clone();
+        *record.pointer_mut(pointer).unwrap() = value;
+        record
+    };
+    // A status, a decision kind, and a reason a newer build added read as
+    // their fallbacks, whose combination with the rest this build would not
+    // write.
+    let deferred = serde_json::from_value::<ApprovalRecord>(with("/status", json!("deferred")))
+        .expect("an unknown status");
+    assert_eq!(deferred.status, ApprovalStatus::Cancelled);
+    for (pointer, value) in [
+        ("/internal_decision/decision", json!("defer")),
+        ("/internal_decision/reason_code", json!("rate_limited")),
+        ("/internal_decision/source", json!("committee")),
+    ] {
+        serde_json::from_value::<ApprovalRecord>(with(pointer, value.clone()))
+            .unwrap_or_else(|error| panic!("{pointer} = {value}: {error}"));
+    }
+    // Known values that contradict each other are still refused.
+    assert!(serde_json::from_value::<ApprovalRecord>(with("/status", json!("approved"))).is_err());
+    assert!(
+        serde_json::from_value::<ApprovalRecord>(with(
+            "/internal_decision/decision",
+            json!("allow")
+        ))
+        .is_err()
+    );
+}

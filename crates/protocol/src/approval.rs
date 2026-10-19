@@ -522,14 +522,17 @@ impl<'de> Deserialize<'de> for ApprovalInternalDecision {
             reason_code: ApprovalReasonCode,
             evaluations: Vec<ApprovalEvaluation>,
         }
-        let wire = Wire::deserialize(deserializer)?;
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let wire = Wire::deserialize(&raw).map_err(serde::de::Error::custom)?;
         let value = Self {
             decision: wire.decision,
             source: wire.source,
             reason_code: wire.reason_code,
             evaluations: wire.evaluations,
         };
-        value.validate().map_err(serde::de::Error::custom)?;
+        if reads_as_known(&raw, &value, DECISION_MEMBERS) {
+            value.validate().map_err(serde::de::Error::custom)?;
+        }
         Ok(value)
     }
 }
@@ -652,7 +655,8 @@ impl<'de> Deserialize<'de> for ApprovalFinalDecision {
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             tree_grant_id: Option<TreeApprovalGrantId>,
         }
-        let wire = Wire::deserialize(deserializer)?;
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let wire = Wire::deserialize(&raw).map_err(serde::de::Error::custom)?;
         let value = Self {
             outcome: wire.outcome,
             source: wire.source,
@@ -660,7 +664,9 @@ impl<'de> Deserialize<'de> for ApprovalFinalDecision {
             feedback: wire.feedback,
             tree_grant_id: wire.tree_grant_id,
         };
-        value.validate().map_err(serde::de::Error::custom)?;
+        if reads_as_known(&raw, &value, FINAL_DECISION_MEMBERS) {
+            value.validate().map_err(serde::de::Error::custom)?;
+        }
         Ok(value)
     }
 }
@@ -1065,7 +1071,8 @@ impl<'de> Deserialize<'de> for ApprovalRecord {
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             final_decision: Option<ApprovalFinalDecision>,
         }
-        let wire = Wire::deserialize(deserializer)?;
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let wire = Wire::deserialize(&raw).map_err(serde::de::Error::custom)?;
         let value = Self {
             session_id: wire.session_id,
             request: wire.request,
@@ -1074,9 +1081,42 @@ impl<'de> Deserialize<'de> for ApprovalRecord {
             user_decision: wire.user_decision,
             final_decision: wire.final_decision,
         };
-        value.validate().map_err(serde::de::Error::custom)?;
+        if reads_as_known(&raw, &value, RECORD_MEMBERS) {
+            value.validate().map_err(serde::de::Error::custom)?;
+        }
         Ok(value)
     }
+}
+
+/// The open-enum members whose combination an internal decision's
+/// validation checks.
+const DECISION_MEMBERS: &[&str] = &["/decision", "/source", "/reason_code"];
+/// The same for a final decision.
+const FINAL_DECISION_MEMBERS: &[&str] = &["/outcome", "/source", "/reason_code"];
+/// The same for an approval record and the decisions it holds.
+const RECORD_MEMBERS: &[&str] = &[
+    "/status",
+    "/user_decision",
+    "/internal_decision/decision",
+    "/internal_decision/source",
+    "/internal_decision/reason_code",
+    "/final_decision/outcome",
+    "/final_decision/source",
+    "/final_decision/reason_code",
+];
+
+/// Whether every member at `pointers` of `raw` reads as itself in `value`.
+/// A value a newer build added reads as its fallback, and a combination that
+/// is coherent there may not be among this build's: the writer keeps
+/// coherence (`docs/site/specs/compatibility-v1.md` section 4.1), so a reader
+/// checks it only for values it knows.
+fn reads_as_known(raw: &serde_json::Value, value: &impl Serialize, pointers: &[&str]) -> bool {
+    let Ok(read) = serde_json::to_value(value) else {
+        return false;
+    };
+    pointers
+        .iter()
+        .all(|pointer| raw.pointer(pointer) == read.pointer(pointer))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
