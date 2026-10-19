@@ -1,9 +1,10 @@
 # Memory
 
-Status: **approved** (2026-10-19); implementation in progress. Decisions are
+Status: **implemented** (2026-10-19); approved the same day. Decisions are
 listed in [section 1](#1-goal-and-scope) and the sections that follow; none
-are open ([section 15](#15-open-questions)). This spec builds on the
-[runtimes spec](runtimes.md) and the
+are open ([section 15](#15-open-questions)). How each phase settled, with
+its deviations, is in [section 16](#16-implementation-notes). This spec
+builds on the [runtimes spec](runtimes.md) and the
 [runtime capabilities spec](runtime-capabilities.md), and adds the term
 *machine* to their vocabulary.
 
@@ -1124,3 +1125,105 @@ Deviations and readings of the spec:
   reported on standard error and not recorded; the latest snapshot stays.
 - **The TUI** shows `memory_loaded` as a debug row only; the `/memory` panel
   is phase 4.
+
+### 16.4 Phase 4: client surface
+
+Landed 2026-10-19: `memory.list`, `memory.read`, `memory.write`, and
+`memory.delete` with their registry errors and the `memory.changed`
+notification (client protocol 1.4.0), the TUI `/memory` panel, and
+`cookie memory list|edit|rm`.
+
+Where things are:
+
+- **Engine** (`crates/engine/src/runtime/memory_api.rs`):
+  `Engine::list_memory`, `read_memory`, `write_memory`, and
+  `delete_memory` take and return the protocol types, run the store on a
+  blocking thread, and fail with `EngineError::MemoryRequest`
+  (`MemoryRequestError`), which the server maps to registry errors.
+  `Engine::subscribe_memory_changes` signals every write, edit, and delete
+  through the daemon's `MemoryRoot`, whose clones share one signal.
+- **Server**: the four routes and `start_memory_notifications`
+  (`crates/server/src/service/`), and `memory_error` in
+  `crates/server/src/rpc.rs`.
+- **TUI** (`crates/tui/src/ui/app/memory_panel.rs`): the panel, its
+  `PointerTarget::MemoryRow` and `MemoryAction` targets, and the editor
+  handoff, which `/config` and `/memory` now share (`EditorJob` in
+  `crates/tui/src/ui/app/mod.rs`).
+- **CLI** (`crates/cookie_agent/src/memory_command.rs`).
+
+Deviations and readings of the spec:
+
+- **Versions.** Phases 1 and 3 had taken client protocol 1.2.0 and 1.3.0,
+  so the `memory.*` methods make it 1.4.0 rather than the 1.2.0 of
+  section 12. The plugin and runtime protocols are unchanged: neither
+  surface carries the new methods. No `client/1.4.0` corpus directory was
+  recorded, as none was for 1.2.0 and 1.3.0. Clients send `memory.*`
+  without checking the daemon's minor, as for `machines.*`; a 1.3 daemon
+  answers `method_not_found`.
+- **`memory.changed`** was added, since it costs one watch channel and
+  matches `machines.changed`: an empty notification to every connection
+  after any memory file changes through the daemon, whether a client or a
+  model tool changed it. Changes another daemon sharing the data root makes
+  are not announced. Machine renames and merges move memories without it;
+  `machines.changed` covers them, and the TUI refetches `/memory` on both.
+- **Listing shape.** `memory.list` returns `memories` (valid and invalid
+  files together, an invalid one with `invalid` and no description) and
+  `ignored` (`{ path, reason }`). Each entry carries `url`, `layer`,
+  `group` (the machine or project), `revision`, `size`, `description`,
+  `keywords`, and `orphaned`, set on an `agent://` file whose agent the
+  registry does not have; the spec's "agent folders" are agent files. No
+  modification time is sent.
+- **Filters.** At most one of `agent`, `machine`, and `project` may be
+  given, and `layer`, when given too, must be that filter's layer; a
+  violation, or a project name that breaks the naming rule, is `-32602`
+  `invalid_params` with the member as `field`. `machine` and `agent` are
+  typed, so a malformed one is refused while decoding.
+- **Reads and writes.** `memory.read` also says why a file is `invalid`.
+  `memory.write` keeps the text exactly as sent once it validates;
+  `memory.delete` answers an empty object. The user may create `user://`
+  categories; creating an `agent://` file still needs an agent the registry
+  has, and is otherwise `memory_refused`.
+- **Errors.** A URL that does not parse is `memory_url_invalid` with the
+  parser's reason; a malformed revision is `-32602` with `field:
+  revision`, since clients only echo revisions. `memory_exists` and
+  `memory_revision_mismatch` carry the current revision. Lock contention
+  is its own code, `memory_busy`; other I/O failures are
+  `memory_store_failed`.
+- **TUI.** The panel is one list: a heading per layer (always shown, so a
+  memory can be created in an empty layer), a row per machine and project
+  under its layer, the memories, and a final "Not memories (ignored)"
+  section. Headings and groups are selectable: `n` starts the new memory's
+  URL from the selected row (`project://web/`). The actions of the current
+  state are buttons under the details: edit, new memory, and delete for a
+  memory; delete and cancel while a delete waits; edit again and cancel
+  after invalid text; reload current, overwrite, and cancel after a
+  revision conflict. Overwrite rereads the memory for its current revision
+  and writes the user's text over it, creating it again if it is gone.
+  Delete sends the revision the listing showed; a file changed since is
+  reported and the list refreshed. The panel takes no part in the wheel.
+  `/memory` has the alias `memories`.
+- **CLI.** `edit` needs an interactive terminal; `rm` without `--yes`
+  needs one for its question, whose default is no. `edit` offers invalid
+  text again as it was left; after a conflict it offers to reload the
+  current version, dropping the edit. Leaving a new memory's template as
+  it is creates nothing. `list` prints a heading per layer and group, each
+  memory's description or why it is invalid, its size, and the ignored
+  entries. The editor helper of `cookie config` is shared.
+
+### 16.5 Phase 5: docs
+
+Landed 2026-10-19. The [memory guide](../guide/memory.md) describes the
+client surface (`/memory` and `cookie memory`) and links machine management
+in the [runtimes guide](../guide/runtimes.md#machines), which in turn
+describes each machine's memories; its capability table and the
+[architecture overview](../architecture.md) now list memory under `global`,
+which they had left out. The [protocol reference](../reference/protocol.md#memory)
+has the `memory.*` methods and `memory.changed`, the
+[changelog](../reference/protocol-changelog.md) client protocol 1.4.0,
+the [error reference](../reference/errors.md) the `memory_*` codes, and
+[Run](../guide/run.md#command-palette) the `/memory` command. The configuration
+reference for `[memory]` ([Memory](../engine/memory.md)), the
+[Tools](../guide/tools.md) page, the [Events](../reference/events.md)
+reference for `memory_loaded`, the [system prompt reference](../reference/system-prompt.md),
+and [Agents](../guide/agents.md) were checked against the code and needed no
+change beyond what is listed here. No deviations.

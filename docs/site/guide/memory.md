@@ -65,9 +65,9 @@ version into the editor, and `o` overwrites it with your edit. The panel
 refreshes when a memory changes through the daemon, by you, another client,
 or the agent.
 
-From a terminal, `cookie memory` lists, edits, and deletes memories through the daemon, so it
-works against a remote daemon as well (`--url` and `--token`, or `[server]`
-in `config.toml`, as for `cookie config`):
+From a terminal, `cookie memory` lists, edits, and deletes memories through
+the daemon, so it works against a remote daemon as well (`--url` and
+`--token`, or `[server]` in `config.toml`, as for `cookie config`):
 
 ```sh
 cookie memory list                      # every layer, invalid files with the reason
@@ -85,6 +85,15 @@ you can reload it and edit the current version. You may add and remove
 agent was removed or renamed stays and is listed as belonging to no current
 agent. Your edits never change the snapshot of an open session; it sees them
 when it next takes one.
+
+## Machines
+
+The `machine` layer is keyed by machine names, the computers runtimes run on,
+which the daemon assigns on its own and you can rename, merge, and forget from
+the Machines view of `/runtime` or with `cookie machine` (see
+[Machines](runtimes.md#machines)). A machine's memories live in
+`memory/machines/<machine>/` and move with it when it is renamed or merged
+into another; `machines.list` and `cookie machine list` count them.
 
 ## What the model sees
 

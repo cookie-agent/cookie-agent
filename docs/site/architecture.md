@@ -31,8 +31,8 @@ from `--token`, `COOKIE_DAEMON_TOKEN`, or the same configuration, and accept
 the TUI, so the CLI keeps working even when built without the `tui` feature.
 
 Tools run in *runtimes* (see the [runtimes specification](specs/runtimes.md)).
-The daemon itself hosts the base layer and the global runtime (MCP servers and
-plugins). The `local` coding runtime, with `read`, `write`, `edit`, `bash`,
+The daemon itself hosts the base layer and the global runtime (MCP servers,
+plugins, and [memory](guide/memory.md)). The `local` coding runtime, with `read`, `write`, `edit`, `bash`,
 and `webfetch` in the daemon's working directory, runs on a task of the daemon
 process and is reached over the [runtime protocol](reference/runtime-protocol.md)
 through an in-memory frame pair. A configured
@@ -309,7 +309,8 @@ session and drive the run loop:
   - *runtime instances*, started from *templates* by a registry that keeps one
     instance per (runtime ID, canonical workspace) and shares it with every
     session attached to it. The built-in templates are `global` (top-level MCP
-    servers, plugins, and a `webfetch` that is only a fallback; no workspace)
+    servers, plugins, the memory tools, and a `webfetch` that is only a
+    fallback; no workspace)
     and `local` (kind `coding`: `read`, `write`, `edit`, `bash`, and
     `webfetch` in the daemon's working directory, and the
     `[runtimes.local.mcp]` servers). A coding runtime hosts its template's

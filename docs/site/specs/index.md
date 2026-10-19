@@ -6,7 +6,7 @@ configuration reference.
 
 | Specification | Status |
 |---|---|
-| [Memory](memory.md) | Approved, implementation in progress; `user`, `machine`, and `project` memory layers as Markdown files in the `global` runtime, machines as a daemon concept |
+| [Memory](memory.md) | Implemented; `user`, `agent`, `machine`, and `project` memory layers as Markdown files in the `global` runtime, machines as a daemon concept, the memory tools and snapshot, `memory.*` (client protocol 1.4.0), TUI `/memory`, and `cookie memory` |
 | [Runtimes](runtimes.md) | Implemented; daemon as gateway with global and coding runtimes, attachments, the runtime protocol, remote runtimes from `[runtimes.<id>]` templates, and template MCP servers; the manual labpc check is pending the author |
 | [Persistent daemon, dial-in runtimes, and runtime capabilities](runtime-capabilities.md) | Implemented; capability attachments, dial-in runtimes (the TUI embeds one when remote), listening daemon with TLS, directory-independent daemon; client protocol 45, runtime protocol 5 |
 | [Live engine configuration](engine-configuration.md) | Implemented; `config.get`/`config.apply`/`config.reload` (client protocol 48), live reload of settings, agents, providers, headers, and MCP servers, TUI `/config` and `cookie config`, plus provider-connect fixes |

@@ -55,7 +55,7 @@ name and tools.
 
 | Runtime | Capability | Workspace | Offers |
 |---|---|---|---|
-| `global` | `global` | none | top-level MCP servers, plugins, the fallback `webfetch` |
+| `global` | `global` | none | top-level MCP servers, plugins, the [memory](memory.md) tools, the fallback `webfetch` |
 | `local` | `coding` | any directory on the daemon's machine; the daemon's own directory when none is named | `read`, `write`, `edit`, `bash`, `webfetch`, project skills, `AGENTS.md` |
 | `cookie runtime serve` | `coding` | any directory on its machine, or under its `--root` directories | the same |
 
@@ -274,3 +274,11 @@ cookie machine forget old-laptop     # only with no connected runtimes or memori
 
 A change applies to connected runtimes at once; sessions see the new
 machine names from their next run.
+
+Each machine has its own memories, `machine://<machine>/<name>`, in the
+folder `~/.cookie-agent/memory/machines/<machine>` (see
+[Memory](memory.md)): renaming a machine moves its folder, merging moves its
+memories into the other machine's and fails when both have a memory of one
+name, and a machine can be forgotten only once its folder is empty. A
+session's model sees an index of the memories of the machines its
+attachments run on.
