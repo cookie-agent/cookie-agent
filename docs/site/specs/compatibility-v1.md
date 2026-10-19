@@ -1929,3 +1929,175 @@ Step 3: tool messages, the SDK, schemas, and the reference plugin (9.4 to
 - **Left for later.** Built-in tools report no hint and only their text block
   (phase G). Phase H can record the plugin corpus from
   `check_reference_plugin.py`'s conversation.
+
+### Phase F
+
+Step 1: the client protocol (section 10, without media). `CLIENT_PROTOCOL_VERSION`
+is `0.51.0`; the exact numeric `ProtocolVersion`, `PROTOCOL_VERSION`,
+`RuntimeSnapshotSchemaVersion`, `RUNTIME_SNAPSHOT_SCHEMA_VERSION`, and
+`exact_numeric_wire_type!` are gone.
+
+- **Handshake.** `ClientHello { protocol_version, client, token?, features }`
+  is a command (strict); `ServerHello { protocol_version, engine_version,
+  origin, machine_id?, features }` is information. The daemon reads the version
+  with `negotiate_version` before decoding the rest; a refused version leaves
+  the connection open for another handshake, within the authentication
+  deadline. `engine_version` comes from `ServerProtocol::engine_version`. The
+  client also checks the reply's version and keeps it
+  (`Client::daemon_version`); before the freeze the minors are equal, so no
+  method or member is gated yet. No feature is defined on either side.
+- **Authentication.** `protocol::serve` takes an `Authentication`:
+  `Authenticated` (an in-process connection, or an upgrade whose
+  `Authorization` header carried the token) or `Token(token)`. Before a
+  `Token` connection's handshake carries the token, only `handshake` is
+  answered (`-32003` otherwise); a wrong or missing token is answered with
+  `-32003` and closes the connection; `AUTHENTICATION_DEADLINE` (10 s) closes
+  one that has not authenticated, and being answered does not extend it. An
+  authenticated connection that has not handshaken gets `-32001`. A token in
+  the handshake of a connection the header authenticated is ignored. A wrong
+  `Authorization` header is still refused at the upgrade with HTTP 401, since
+  it is a claim the daemon can check before upgrading. `/runtime` keeps header
+  authentication and refuses any `Origin`.
+- **Origins.** `[server] allowed_origins` entries must equal their URL's
+  ASCII origin serialization, so an entry is spelled as a browser sends it
+  (lowercase, no default port, no path or trailing slash); `*` inside an entry
+  is refused, as patterns are not supported. The opaque origin `null` matches
+  only `"*"`. Like the rest of `[server]`, a change needs a restart.
+- **Information types.** 102 client types and the JSON-RPC envelope
+  (`Request`, `Notification`, responses, and the client's `IncomingMessage`)
+  dropped `deny_unknown_fields`. The checker no longer counts
+  `additionalProperties: false` on an object with `patternProperties`: such an
+  object is a map with typed keys (`UsageRollup.by_model`,
+  `DurableConnectionDescriptor.setup_values`), not a type with fields. The
+  client surface reports 0 information types rejecting unknown members (109
+  before); the remaining 7 were the typed error data roots, which are gone.
+- **Open enums in results.** Value fallbacks (`#[serde(other)]`, `x-open`):
+  `AgentMode` → `internal`, `ApprovalDecisionSource` → `system`,
+  `ApprovalFinalOutcome` → `cancelled`, `ApprovalInternalDecisionKind` →
+  `ask`, `ApprovalReasonCode` → `system_error`, `ApprovalResourceSource` →
+  `primary_operation`, `ApprovalStatus` → `cancelled`, `ApprovalTrigger` →
+  `permission_policy`, `ApprovalUserDecision` → `cancel`, `BackgroundActor` →
+  `model`, `CancellationCapability` → `local_only`, `CatalogAge` →
+  `older_than_thirty_days`, `CatalogSource` → `cache`, `ConfigRestartPart` →
+  `server`, `ConfigApplyErrorCode` → `invalid_change`, `CredentialFieldType`
+  → `api_key`, `EffectiveAuthSource` → `no_auth`, `EffectiveAuthState` →
+  `unavailable`, `GoalStatus` → `cancelled`, `McpConfigSource` → `runtime`,
+  `ModelUnavailableKind` → `unsupported`, `PermissionEffect` → `ask`,
+  `PermissionMode` → `ask`, `PermissionRuleSource` → `default`,
+  `PreparedBindingLifetime` → `process_local`, `ProviderConfigurationState`
+  → `unconfigured`, `ProviderPresence` → `current`, `ProviderSupportState` →
+  `unsupported`, `ReplayCapability` → `unsupported`, `RuntimeLifetime` →
+  `spawned`, `SetupFieldType` → `string`, `SkillSource` → `user`,
+  `VariantOrigin` → `explicit`. An `Unknown` variant, rendered "unknown" with
+  no action: `SessionStatus`, `PluginState`, the client's `McpServerState`,
+  `RuntimeInstanceStatus`, `ProducerSourceStatus`, and `RuntimeChangeReason`
+  (a reader drops unknown reasons). `Modality` values a reader does not know
+  are dropped from a model's capabilities. Tagged: an unknown
+  `sessions.changed` change reads as `resync`, an unknown
+  `events.subscription` message type is ignored, and an unknown
+  `session.submit_input` or `session.recall_input` outcome fails that call
+  with `ClientError::UnknownOutcome`. Several fallback enums are also stored in
+  history, where a newer build's value reads as the same fallback; the engine
+  gained no new branch except treating a child's unknown status as
+  interrupted. Closed by design, since history stores them and they decide
+  identity or routing: `ApprovalBoundary`, `ProducerOwner`, and
+  `SessionOrigin`. Enums reached only inside events need no fallback of their
+  own for clients: an event a client cannot read as a whole is an unknown
+  event (next point).
+- **Events for clients.** `StoredEvent`, `TransientEvent`, and
+  `EventSubscriptionMessage` take a payload parameter defaulting to
+  `EventPayload`; `ClientEvent`, `ClientTransientEvent`, and
+  `ClientSubscriptionMessage` are the `Open<EventPayload>` forms the client
+  decodes. A `ClientEvent` with a known tag whose payload does not decode even
+  best-effort is `Unknown` too, unlike `Open`'s own rule, because 10.2 says an
+  event a client cannot decode is delivered as `Unknown`. The client hands the
+  UI known types: such an event becomes `ClientDelivery::UnknownEvent` (with
+  the replay's `final_seq` in a replay), which advances the sequence, and the
+  TUI shows a dim debug row; unreadable live-only output is dropped. A replay
+  page decodes its events one by one: an event whose envelope cannot be read
+  is dropped with `ClientDelivery::Diagnostic`, and the next page starts after
+  the page's last raw `seq`. `cookie run` reads the engine in process and
+  never meets an unknown event.
+- **Isolation.** A notification that does not decode is dropped with
+  `ClientDelivery::Diagnostic` and fails no call. A response that does not
+  decode fails only its call. A frame that is not JSON-RPC at all ends the
+  connection as 4.1 says, which replaces failing every pending call while
+  keeping the connection.
+- **Errors.** `ServerFault.message` is a `Cow` (`ServerFault::from_error`
+  takes a registry error) and the server's `RpcFault` wraps a registry
+  `JsonRpcError`, so messages name fields. Every application error is
+  `-32000` from the registry with the engine's description as `detail`; the
+  codes `-32011`, `-32012`, `-32020` to `-32022`, `-32030`, `-32031`,
+  `-32040`, the refusals sent as `-32602`, `debug_code`, and the typed error
+  data (`RunStartConflict`, `SessionRenameError`, `SessionRevertConflict`,
+  `ApprovalRespondError`, `ProviderConnectError`, `ProviderDisconnectError`,
+  `ConfigApplyError`, and their code enums, except `ApprovalRespondErrorCode`,
+  which the engine uses and which maps to registry codes) are gone. New codes:
+  `sequence_broken` (`seq`), `unreadable_model_binding`, `agent_unavailable`,
+  `runtime_rejected`, and `mcp_rejected`. `goal_rejected`, `plugin_rejected`,
+  `runtime_rejected`, and `mcp_rejected` carry the engine's reason as a
+  required `reason` their message names, so a status line says why;
+  `producer_rejected` keeps its reason as detail, as the runtime protocol
+  sends it. `plugin_hook_failed` names the plugin and the hook.
+  `errors::ErrorData::of` reads error data per code (a known code keeps only
+  its declared fields; an unknown one reads as generic with every member).
+- **Showing errors.** `ClientError`'s display is `message`, then `hint`;
+  `error_code`, `is`, `detail`, and `error_data` read the rest, and `-32601`
+  is `ClientError::DaemonTooOld` ("the daemon is too old for <method>"). The
+  TUI and CLI branch only on `data.code`. The TUI shows the status line as
+  before and, when the error has detail, adds an error row to the viewed
+  session whose first line is the error and whose collapsed rest is the
+  detail, behind the existing `▸` expansion. The CLI prints the detail with the
+  new global `--error-details` option, and otherwise a one-line pointer to it.
+  `docs/site/reference/errors.md` is generated from the registry
+  (`reference_markdown`); a test keeps the committed page equal to it
+  (`COOKIE_UPDATE_ERROR_REFERENCE=1` regenerates it).
+- **Catalog view.** `ModelCatalogView { revision, catalog, providers, models,
+  agents }` replaces `RuntimeSnapshotV1` in `runtime.snapshot.get`,
+  `runtime.changed`, and the provider results. `catalog` (source, staleness,
+  age, quarantine counts, last error) is a member 10.4 does not list: the TUI
+  shows the catalog's provenance from it. `revision` is a `ViewRevision`, an
+  opaque string of 1 to 256 bytes (the runtime revision's text). The view
+  lost the snapshot schema version, the recipe registry, catalog,
+  provider-state, model, agent, config, and runtime revisions, the provider
+  store generation, the quarantine digest, the model and variant behavior
+  fingerprints, the durable connection's setup and recipe fingerprints, and
+  the receipt's store and provider-state revisions; a durable connection keeps
+  its `connection_generation`, which a disconnect sends. `provider.connect`
+  and `provider.disconnect` take `expected_revision`: the engine's runtime
+  revision index (persisted) now also records each runtime's catalog and
+  provider-state revisions and resolves them, so a retried request still
+  replays and a stale catalog still conflicts. A view the index cannot resolve
+  (a record from before this change) is a conflict, which the client's retry
+  reads again. The engine keeps the revisions history freezes in
+  `PublishedRuntime::revisions`. `runtime.changed` reasons are read sorted,
+  deduplicated, and uncapped. `input_media` is left to step 2.
+- **Session metadata.** `SessionMeta.short_id` is required and nullable (its
+  default served pre-handle sessions); a cached `metadata` without it is
+  rebuilt by phase D's mechanism. `last_agent_activity` keeps its default,
+  since a session may have had no activity yet, and the revisions stay typed
+  identity strings.
+- **Display downgrade.** `DisplayAudience` (from
+  `ServerContext::display_audience`, the handshake's version) turns a block of
+  a kind newer than the client's minor into a `text` block of its `to_text`
+  and leaves out a block of an unknown kind, copying an event only when it
+  changes. `protocol::serve` applies it to `events.subscribe` pages and the
+  forwarded tail, so every server implementation gets it; the log keeps every
+  block. It covers presentations, results, and progress `replace` deltas. An
+  `append` delta passes through; a later kind that takes appends must
+  downgrade them too. `DisplayAudience::with_since` overrides the table for
+  tests; every kind of this build is in `DISPLAY_BLOCK_SINCE` at the first
+  stable minor.
+- **Docs.** `protocol.md` lost its version history (the 34–50 paragraph and
+  the older per-version notes, rewritten as current behavior), gained
+  sections on the handshake, decoding, errors, and the catalog view, and lists
+  every method and notification, which a test checks against the method
+  registry. `protocol-changelog.md` and the generated `errors.md` are new and
+  in the nav; `schemas.md` states the three versions and the history format;
+  the client protocol's schemas are published with the plugin and runtime
+  ones. `AGENTS.md` describes bumping the semver constants.
+- **Left for later.** Step 2 adds `input_media` to each model of the catalog
+  view and the media methods (their error codes are registered). Gating on
+  the daemon's minor has nothing to gate until a minor adds a method or
+  member; `Client::daemon_version` is there for it. Phase H stamps `1.0.0`;
+  `FIRST_STABLE_MINOR` already names minor 0 of that line.
