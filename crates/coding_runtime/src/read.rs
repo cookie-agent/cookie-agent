@@ -160,12 +160,17 @@ impl ToolProvider for ReadTool {
             return cookie_agent_runtime_api::tool_title_only(&call.name);
         };
         let shown = self.shown_path(&args).display().to_string();
-        let mut entries = vec![("path", shown.clone())];
+        // The title and primary argument already name the file.
+        let mut entries = Vec::new();
         entries.extend(args.offset.map(|offset| ("offset", offset.to_string())));
         entries.extend(args.limit.map(|limit| ("limit", limit.to_string())));
-        tool_presentation(&format!("Read {shown}"), &primary)
-            .with_hint(ToolHint::FILE_READ)
-            .with_arguments([DisplayBlock::key_value(entries)])
+        let presentation =
+            tool_presentation(&format!("Read {shown}"), &primary).with_hint(ToolHint::FILE_READ);
+        if entries.is_empty() {
+            presentation
+        } else {
+            presentation.with_arguments([DisplayBlock::key_value(entries)])
+        }
     }
 
     async fn prepare(

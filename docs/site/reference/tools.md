@@ -150,7 +150,9 @@ than embedded in text output.
 ### Display
 
 Paths are shown as the call's display argument shows them: relative to the
-workspace, or under `~`. A diff's and an excerpt's `language` comes from the
+workspace, or under `~`. The title and display argument already name the
+file, so no argument block repeats the path, and an edit's or a write's new
+text shows in its preview `diff` rather than again as an argument. A diff's and an excerpt's `language` comes from the
 path's extension (`rs` is `rust`, `py` is `python`, and so on; an extension
 the table does not know is passed on lowercased).
 
@@ -158,7 +160,7 @@ the table does not know is passed on lowercased).
 |---|---|---|---|
 | Hint | `file_read` | `file_write` | `file_edit` |
 | Title | `Read <path>` | `Write <path>` | `Edit <path>` |
-| Arguments | `key_value` of `path`, and `offset` and `limit` when the call gives them | `key_value` of `path` | `key_value` of `path` (and `replace all: yes`), then `newString` as `code` in the path's language |
+| Arguments | `key_value` of `offset` and `limit` when the call gives them | – | `key_value` `replace all: yes` when set; `newString` as `code` in the path's language only when there is no preview (a call that failed to prepare) |
 | Preview | – | `diff` against the file preparation finds (`created` when there is none) | `diff` of the edit applied to the content preparation read |
 | Result | `file_excerpt` of the page (`start_line` is `offset + 1`, `total_lines` the file's), `table` (`name`, `type`) of a directory page, or `media` of the retained attachment | `diff` against the text the write replaced | `diff` built from the ranges the edit replaced |
 

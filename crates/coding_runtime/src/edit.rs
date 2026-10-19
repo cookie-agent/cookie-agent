@@ -139,21 +139,26 @@ impl EditTool {
         PathBuf::from(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
-    /// How clients show a call of `args`: the path, and the replacement as
-    /// code.
-    fn presentation_of(&self, args: &EditArgs) -> PreparedPresentation {
+    /// How clients show a call of `args`. The title and primary argument
+    /// name the file, so the arguments add only what they do not show: that
+    /// every match is replaced, and the replacement as code when no preview
+    /// `diff` shows it in place.
+    fn presentation_of(&self, args: &EditArgs, previewed: bool) -> PreparedPresentation {
         let path = self.shown_path(args);
         let shown = path.display().to_string();
-        let mut entries = vec![("path", shown.clone())];
+        let mut arguments = Vec::new();
         if args.replace_all {
-            entries.push(("replace all", "yes".to_owned()));
+            arguments.push(DisplayBlock::key_value([("replace all", "yes".to_owned())]));
+        }
+        if !previewed {
+            arguments.push(DisplayBlock::code(
+                args.new_string.clone(),
+                display::language_for_path(&path),
+            ));
         }
         tool_presentation(&format!("Edit {shown}"), &shown)
             .with_hint(ToolHint::FILE_EDIT)
-            .with_arguments([
-                DisplayBlock::key_value(entries),
-                DisplayBlock::code(args.new_string.clone(), display::language_for_path(&path)),
-            ])
+            .with_arguments(arguments)
     }
 
     /// Builds the prepared call, with a preview of the edit applied to
@@ -169,7 +174,7 @@ impl EditTool {
         let shown_path = self.shown_path(&args);
         let preview =
             display::fit_block(edit_diff(text, &args, &shown_path, DiffAsOf::Prepare), None)?;
-        let presentation = self.presentation_of(&args).with_preview([preview]);
+        let presentation = self.presentation_of(&args, true).with_preview([preview]);
         let normalized_arguments = serde_json::json!({
             "filePath": target.display_path,
             "oldString": args.old_string,
@@ -250,7 +255,7 @@ impl ToolProvider for EditTool {
 
     fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
         match parse_args::<EditArgs>("edit", call.arguments.clone()) {
-            Ok(args) if !args.file_path.is_empty() => self.presentation_of(&args),
+            Ok(args) if !args.file_path.is_empty() => self.presentation_of(&args, false),
             _ => cookie_agent_runtime_api::tool_title_only(&call.name),
         }
     }
@@ -882,12 +887,17 @@ mod tests {
             presentation.hint.as_ref().map(|hint| hint.as_str()),
             Some("file_edit")
         );
+        // The title names the file and the preview diff shows the
+        // replacement in place.
+        assert!(presentation.arguments.is_empty());
+        let unprepared = tool.presentation(&edit_call("value.rs", "line 10\n", "ten\n"));
         assert_eq!(
-            presentation.arguments,
-            [
-                Open::Known(DisplayBlock::key_value([("path", "value.rs")])),
-                Open::Known(DisplayBlock::code("ten\n", Some("rust".into()))),
-            ]
+            unprepared.arguments,
+            [Open::Known(DisplayBlock::code(
+                "ten\n",
+                Some("rust".into())
+            ))],
+            "without a preview the replacement shows as code"
         );
         let preview = only_diff(&presentation.preview);
         assert_eq!(preview.as_of, DiffAsOf::Prepare);

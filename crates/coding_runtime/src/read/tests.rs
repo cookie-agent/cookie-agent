@@ -211,13 +211,9 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
         presentation.hint.as_ref().map(|hint| hint.as_str()),
         Some("file_read")
     );
-    assert_eq!(
-        presentation.arguments,
-        [Open::Known(DisplayBlock::key_value([(
-            "path",
-            "src/lib.rs"
-        )]))]
-    );
+    // The title and primary argument name the file; a whole-file read has
+    // no window to add.
+    assert!(presentation.arguments.is_empty());
     let windowed = tool.presentation(&ToolCall {
         id: ToolCallId::new_v7(),
         name: "read".into(),
@@ -226,7 +222,6 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
     assert_eq!(
         windowed.arguments,
         [Open::Known(DisplayBlock::key_value([
-            ("path", "src/lib.rs"),
             ("offset", "10"),
             ("limit", "5"),
         ]))]

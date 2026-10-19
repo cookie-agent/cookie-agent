@@ -1,6 +1,7 @@
 //! Tool call header rows, argument display, and tool block layout.
 
 use super::*;
+use cookie_agent_protocol::{DisplayBlock, Open};
 use ratatui::style::Color;
 
 /// The icon for a tool hint (spec 12.2). Hints are open labels: one this
@@ -468,8 +469,20 @@ fn argument_section_lines(
         lines: MAX_ARGUMENT_LINES,
         bytes: MAX_ARGUMENT_BYTES,
     };
-    let rows = if tool.presentation.arguments.is_empty() {
-        if minimum_event_level > crate::state::EventLevel::Info {
+    let arguments = shown_arguments(
+        &tool.presentation.arguments,
+        tool.presentation
+            .primary_argument
+            .as_ref()
+            .map(|argument| argument.as_str()),
+    );
+    let rows = if arguments.is_empty() {
+        // A presentation with argument blocks or a preview is complete as
+        // given; only one with neither falls back to the raw arguments.
+        if minimum_event_level > crate::state::EventLevel::Info
+            || !tool.presentation.arguments.is_empty()
+            || !tool.presentation.preview.is_empty()
+        {
             return Vec::new();
         }
         let raw = serde_json::from_str::<serde_json::Value>(&tool.arguments)
@@ -483,7 +496,7 @@ fn argument_section_lines(
     } else {
         let mut budget = RenderBudget::new(limits);
         let mut sink = LineSink::new(&mut budget, limits);
-        let mut rows = display_rows(&tool.presentation.arguments, &[], style, &mut sink);
+        let mut rows = display_rows(&arguments, &[], style, &mut sink);
         let omitted = sink.omitted();
         if omitted > 0 {
             rows.push(ToolBodyLine::wrapped(Line::styled(
@@ -507,6 +520,36 @@ fn argument_section_lines(
         lines.push(ToolBodyLine::wrapped(Line::default()));
     }
     lines
+}
+
+/// The argument blocks worth showing: a `key_value` entry whose value is the
+/// primary argument the header already shows is left out, and so is a
+/// `key_value` block left with no entries.
+fn shown_arguments(
+    arguments: &[Open<DisplayBlock>],
+    primary_argument: Option<&str>,
+) -> Vec<Open<DisplayBlock>> {
+    arguments
+        .iter()
+        .filter_map(|block| match block {
+            Open::Known(DisplayBlock::KeyValue { entries, .. }) if primary_argument.is_some() => {
+                let kept = entries
+                    .iter()
+                    .filter(|entry| Some(entry.value.as_str()) != primary_argument)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if kept.is_empty() {
+                    return None;
+                }
+                let mut block = block.clone();
+                if let Open::Known(DisplayBlock::KeyValue { entries, .. }) = &mut block {
+                    *entries = kept;
+                }
+                Some(block)
+            }
+            _ => Some(block.clone()),
+        })
+        .collect()
 }
 
 /// The collapsed header row and the pieces an expanded title block reuses.

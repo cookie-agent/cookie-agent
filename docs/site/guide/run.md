@@ -331,7 +331,8 @@ follows the title.
 
 Expanded tools use ordinary text colours and end with a blank row: a grey
 title block over a lighter grey panel. The panel shows the call's argument
-blocks (a command, a path) under a muted `arguments` label, then what the
+blocks (a command, a URL) under a muted `arguments` label, leaving out a
+key/value row that only repeats the header's primary argument, then what the
 call shows, drawn by the kind of each block rather than by which tool sent it:
 
 - **Diffs** name how the file changed (`created`, `modified`, `deleted`, or

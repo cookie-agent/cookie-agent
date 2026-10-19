@@ -468,6 +468,50 @@ fn argument_blocks_show_above_the_output_at_every_level() {
 }
 
 #[test]
+fn arguments_leave_out_what_the_header_and_preview_already_show() {
+    let mut state = shown(vec![DisplayBlock::text("done")]);
+    let call_id = read_tool_id(&state);
+    let tool = state.tools.get_mut(&call_id).unwrap();
+    tool.arguments = r#"{"filePath":"notes.txt"}"#.into();
+    tool.presentation =
+        hinted_presentation("Edit notes.txt", ToolHint::FILE_EDIT, Some("notes.txt"));
+    // A key/value row that repeats the primary argument is left out; the
+    // others stay.
+    tool.presentation.arguments = vec![Open::Known(DisplayBlock::key_value([
+        ("path", "notes.txt"),
+        ("replace all", "yes"),
+    ]))];
+    let expanded = HashSet::from([BlockId::Tool(call_id)]);
+    let render = |state: &SessionState| {
+        snapshot_lines(
+            &transcript_layout_with_level(
+                state,
+                Some(&expanded),
+                80,
+                &Theme::default(),
+                &PlainHighlighter,
+                crate::state::EventLevel::Debug,
+            )
+            .lines,
+        )
+    };
+    let text = render(&state);
+    assert!(text.contains("replace all"), "{text}");
+    assert!(!text.contains("path"), "{text}");
+    // A block left with nothing to show drops the whole section, and a call
+    // with a preview does not fall back to its raw arguments.
+    let tool = state.tools.get_mut(&call_id).unwrap();
+    tool.presentation.arguments = vec![Open::Known(DisplayBlock::key_value([(
+        "path",
+        "notes.txt",
+    )]))];
+    tool.presentation.preview = vec![Open::Known(DisplayBlock::text("preview"))];
+    let text = render(&state);
+    assert!(!text.contains("arguments"), "{text}");
+    assert!(!text.contains("filePath"), "{text}");
+}
+
+#[test]
 fn live_appends_and_the_progress_message_show_while_the_call_runs() {
     let mut state = display_tool_state(
         hinted_presentation("Run `make`", ToolHint::SHELL, Some("make")),

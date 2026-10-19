@@ -168,12 +168,12 @@ impl WriteTool {
         PathBuf::from(crate::abbreviated_display_path(&path, &self.workspace))
     }
 
-    /// How clients show a call of `args`.
+    /// How clients show a call of `args`: the title and primary argument
+    /// name the file, and the preview `diff` shows the content, so there are
+    /// no argument blocks.
     fn presentation_of(&self, args: &WriteArgs) -> PreparedPresentation {
         let shown = self.shown_path(args).display().to_string();
-        tool_presentation(&format!("Write {shown}"), &shown)
-            .with_hint(ToolHint::FILE_WRITE)
-            .with_arguments([DisplayBlock::key_value([("path", shown)])])
+        tool_presentation(&format!("Write {shown}"), &shown).with_hint(ToolHint::FILE_WRITE)
     }
 }
 
@@ -723,10 +723,8 @@ mod tests {
             presentation.hint.as_ref().map(|hint| hint.as_str()),
             Some("file_write")
         );
-        assert_eq!(
-            presentation.arguments,
-            [Open::Known(DisplayBlock::key_value([("path", "new.rs")]))]
-        );
+        // The title names the file and the preview shows the content.
+        assert!(presentation.arguments.is_empty());
         let preview = only_diff(&presentation.preview);
         assert_eq!(
             (preview.change, preview.as_of),
