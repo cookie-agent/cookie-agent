@@ -1409,6 +1409,42 @@ pub(crate) fn live_recording_client() -> (
     )
 }
 
+/// A client whose daemon answers every request at once with
+/// `answer(method, params)`: `Ok` with the result, `Err` with the JSON-RPC
+/// error object. Requests are recorded as `recording_client` records them.
+pub(crate) fn answering_client(
+    answer: impl Fn(&str, &Value) -> Result<Value, Value> + Send + 'static,
+) -> (Client, Arc<Mutex<Vec<Value>>>) {
+    let (incoming, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = recorded.clone();
+    tokio::spawn(async move {
+        while let Some(frame) = sent_rx.recv().await {
+            let value = match frame {
+                MessageFrame::Value(value) => value,
+                MessageFrame::Text(text) => serde_json::from_str(&text).unwrap_or(Value::Null),
+                MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            };
+            sink.lock().expect("recorded lock").push(value.clone());
+            if let (Some(id), Some(method)) = (value.get("id"), value["method"].as_str()) {
+                let response = match answer(method, &value["params"]) {
+                    Ok(result) => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                    Err(error) => serde_json::json!({"jsonrpc": "2.0", "id": id, "error": error}),
+                };
+                let _ = incoming.send(MessageFrame::Value(response));
+            }
+        }
+    });
+    (
+        Client::connect_stream(ScriptedStream {
+            incoming: incoming_rx,
+            sent,
+        }),
+        recorded,
+    )
+}
+
 pub(crate) fn last_request_params(recorded: &Arc<Mutex<Vec<Value>>>, method: &str) -> Value {
     recorded
         .lock()

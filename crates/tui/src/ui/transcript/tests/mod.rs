@@ -2,6 +2,7 @@
 
 mod approvals;
 mod assistant;
+mod attachments;
 mod attempts;
 mod chrome;
 mod commands;

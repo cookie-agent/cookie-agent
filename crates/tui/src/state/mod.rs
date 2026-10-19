@@ -334,11 +334,51 @@ pub(crate) fn user_content_text(content: &cookie_agent_protocol::UserContent) ->
         .join("\n")
 }
 
-/// What of `content` goes back into the composer for editing: its text
-/// parts, joined by newlines. The composer holds no attachments yet, so file
-/// parts are not restored.
-pub(crate) fn composer_text(content: &cookie_agent_protocol::UserContent) -> String {
-    content.texts().collect::<Vec<_>>().join("\n")
+/// What of a user's input goes back into the composer for editing: its text
+/// parts, joined by newlines, and its file parts as attachments.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ComposerInput {
+    pub text: String,
+    pub files: Vec<cookie_agent_protocol::ArtifactRef>,
+}
+
+impl ComposerInput {
+    /// Input of text alone.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            files: Vec::new(),
+        }
+    }
+
+    /// The composer's share of `content`. A part of a kind this build does
+    /// not know cannot be edited, so it is left out.
+    pub fn of(content: &cookie_agent_protocol::UserContent) -> Self {
+        Self {
+            text: content.texts().collect::<Vec<_>>().join("\n"),
+            files: content.files().cloned().collect(),
+        }
+    }
+
+    /// The input as content to submit: its text, unless blank, then a file
+    /// part for each attachment; `None` when there is neither.
+    pub fn content(&self) -> Option<cookie_agent_protocol::UserContent> {
+        use cookie_agent_protocol::{Open, UserContentPart};
+        let text = (!self.text.trim().is_empty()).then(|| {
+            Open::Known(UserContentPart::Text {
+                text: self.text.clone(),
+            })
+        });
+        let parts = text
+            .into_iter()
+            .chain(self.files.iter().map(|artifact| {
+                Open::Known(UserContentPart::File {
+                    artifact: artifact.clone(),
+                })
+            }))
+            .collect();
+        cookie_agent_protocol::UserContent::new(parts).ok()
+    }
 }
 
 /// [`user_content_text`] as markdown: text parts are markdown already, and
@@ -378,7 +418,7 @@ fn user_content_markdown(content: &cookie_agent_protocol::UserContent) -> String
 pub struct PendingInput {
     pub text: String,
     /// What a recall or a void hands back to the composer.
-    pub composer_text: String,
+    pub composer: ComposerInput,
     pub admission_seq: u64,
     /// Durable admission timestamp from the admitting event.
     pub admitted_at: jiff::Timestamp,
@@ -394,10 +434,10 @@ pub struct VoidedInput {
     /// submission order.
     pub seq: u64,
     pub origin: Option<cookie_agent_protocol::EventOrigin>,
-    /// This client's own text handed back by a failed request: restored
+    /// This client's own input handed back by a failed request: restored
     /// whatever the origin.
     pub parked: bool,
-    pub text: String,
+    pub input: ComposerInput,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1413,7 +1453,7 @@ impl StateStore {
         &mut self,
         session_id: SessionId,
         own: Option<&cookie_agent_protocol::EventOrigin>,
-    ) -> Vec<String> {
+    ) -> Vec<ComposerInput> {
         let Some(state) = self.sessions.get_mut(&session_id) else {
             return Vec::new();
         };
@@ -1422,20 +1462,20 @@ impl StateStore {
         voided
             .into_iter()
             .filter(|input| input.parked || input.origin.as_ref() == own)
-            .map(|input| input.text)
+            .map(|input| input.input)
             .collect()
     }
 
-    /// Park this client's text as voided for a session (e.g. a recall
+    /// Park this client's input as voided for a session (e.g. a recall
     /// resolved while a different session was being viewed); the UI
     /// restores it on sight.
-    pub fn park_voided_input(&mut self, session_id: SessionId, text: String) {
+    pub fn park_voided_input(&mut self, session_id: SessionId, input: ComposerInput) {
         if let Some(state) = self.sessions.get_mut(&session_id) {
             state.voided_inputs.push(VoidedInput {
                 seq: u64::MAX,
                 origin: None,
                 parked: true,
-                text,
+                input,
             });
         }
     }

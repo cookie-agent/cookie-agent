@@ -1052,7 +1052,7 @@ async fn steer_transport_failure_restores_the_submitted_text() {
     app.input.set_buffer("next draft".into());
     app.handle_rpc_update(RpcUpdate::SteerFailed {
         session_id: session,
-        input: "keep me".into(),
+        input: crate::state::ComposerInput::text("keep me"),
         error: "transport closed".into(),
     });
     assert_eq!(app.input.as_str(), "keep me\nnext draft");

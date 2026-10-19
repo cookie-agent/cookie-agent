@@ -429,7 +429,7 @@ impl App {
                             && (!reset_fallback
                                 || self.pending_fallback_resets.contains_key(&client_run_id))
                         {
-                            self.restore_composer_text(vec![input]);
+                            self.restore_composer(vec![input]);
                             self.session_errors.record(&error);
                             self.status =
                                 format!("run failed to start ({error}); restored to the composer");
@@ -465,7 +465,7 @@ impl App {
                 error,
             } => {
                 if self.selected == Some(session_id) {
-                    self.restore_composer_text(vec![input]);
+                    self.restore_composer(vec![input]);
                     self.status = format!("message not sent ({error}); restored to the composer");
                 } else {
                     self.store.park_voided_input(session_id, input);
@@ -473,15 +473,20 @@ impl App {
                         format!("a message failed to send ({error}); kept for its session");
                 }
             }
-            RpcUpdate::SteerRecalled { session_id, text } => {
+            RpcUpdate::AttachmentUploaded {
+                session_id,
+                name,
+                result,
+            } => self.finish_attachment(session_id, name, result),
+            RpcUpdate::SteerRecalled { session_id, input } => {
                 if self.selected == Some(session_id) {
-                    self.restore_composer_text(vec![text]);
+                    self.restore_composer(vec![input]);
                     self.status = "recalled message restored to the composer".into();
                 } else {
                     // The composer belongs to another session right now;
                     // park the text so it is restored when that session is
                     // viewed rather than leaking across sessions.
-                    self.store.park_voided_input(session_id, text);
+                    self.store.park_voided_input(session_id, input);
                     self.status = "recalled message kept for its session".into();
                 }
             }
@@ -490,10 +495,11 @@ impl App {
                 // here only the composer's share and the tree's
                 // branch-derived rows (title/status/usage) need attention.
                 if self.selected == Some(session_id) {
-                    self.restore_composer_text(vec![text]);
+                    self.restore_composer(vec![crate::state::ComposerInput::text(text)]);
                     self.status = "reverted; the message text is back in the composer".into();
                 } else {
-                    self.store.park_voided_input(session_id, text);
+                    self.store
+                        .park_voided_input(session_id, crate::state::ComposerInput::text(text));
                     self.status = "reverted; the message text is kept for its session".into();
                 }
                 self.refresh_tree_background();

@@ -1062,6 +1062,7 @@ impl App {
             Modal::DisconnectConfirm => self.handle_disconnect_confirm_key(key),
             Modal::UserMessage => self.handle_user_menu_key(key).await,
             Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
+            Modal::AttachConfirm => self.handle_attach_offer_key(key).await,
             Modal::Mcp => self.handle_mcp_key(key).await,
             Modal::Runtimes => self.handle_runtime_key(key),
             Modal::Permissions => self.handle_permissions_key(key).await,
@@ -1883,6 +1884,8 @@ impl App {
             {
                 if self.modal == Modal::RevertConfirm {
                     self.answer_revert_confirm(button);
+                } else if self.modal == Modal::AttachConfirm {
+                    self.answer_attach_offer(button).await;
                 }
                 return;
             }
@@ -2228,6 +2231,7 @@ impl App {
                     | Modal::ConnectError
                     | Modal::DisconnectConfirm
                     | Modal::RevertConfirm
+                    | Modal::AttachConfirm
                     | Modal::Mcp
                     | Modal::Runtimes
                     | Modal::Permissions

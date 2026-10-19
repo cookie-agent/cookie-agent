@@ -109,6 +109,11 @@ impl App {
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.mutate_input(|input| input.delete_word_left());
             }
+            // At the start of the draft, Backspace takes back the newest
+            // attachment, the chip just before the text.
+            KeyCode::Backspace if self.input.cursor_byte() == 0 && !self.attachments.is_empty() => {
+                self.remove_last_attachment();
+            }
             KeyCode::Backspace => {
                 self.mutate_input(|input| input.backspace());
             }
@@ -293,6 +298,18 @@ impl App {
         // the deletion leaves the cursor in the gap the text fills.
         self.delete_composer_selection();
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        // A file dropped on the terminal pastes as its path: offer to attach
+        // it rather than attach it unasked.
+        if self.attachments_offered()
+            && let Some(path) = super::attachments::pasted_file_path(&normalized)
+        {
+            self.attach_offer = Some(super::attachments::AttachOffer {
+                path,
+                pasted: normalized,
+            });
+            self.modal = Modal::AttachConfirm;
+            return;
+        }
         self.mutate_input(|input| input.insert_text(&normalized));
     }
 
@@ -308,18 +325,32 @@ impl App {
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
         }
-        if self.input.as_str().trim().is_empty() {
+        if self.input.as_str().trim().is_empty() && self.attachments.is_empty() {
             return;
         }
-        let prompt = self.input.as_str().to_owned();
-        self.submit_prompt_as(prompt, delivery).await;
+        let input = crate::state::ComposerInput {
+            text: self.input.as_str().to_owned(),
+            files: self.attachments.clone(),
+        };
+        self.submit_prompt_as(input, delivery).await;
     }
 
     pub(in crate::ui) async fn submit_prompt(&mut self, input: String) {
-        self.submit_prompt_as(input, InputDelivery::Steer).await;
+        self.submit_prompt_as(
+            crate::state::ComposerInput::text(input),
+            InputDelivery::Steer,
+        )
+        .await;
     }
 
-    async fn submit_prompt_as(&mut self, input: String, delivery: InputDelivery) {
+    async fn submit_prompt_as(
+        &mut self,
+        input: crate::state::ComposerInput,
+        delivery: InputDelivery,
+    ) {
+        let Some(content) = input.content() else {
+            return;
+        };
         if self.runtime.phase() == RuntimePhase::Loading {
             self.status = "loading runtime snapshot".into();
             return;
@@ -367,6 +398,7 @@ impl App {
         self.mutate_input(|input| {
             input.take();
         });
+        self.attachments.clear();
         let submitted_id = client_run_id();
         let draft_generation = self.draft_generation;
         if active_run.is_none() {
@@ -379,7 +411,7 @@ impl App {
             let result = client
                 .submit_input(SessionSubmitInputParams {
                     session_id,
-                    content: cookie_agent_protocol::UserContent::text(input.clone()),
+                    content,
                     delivery,
                     selection,
                     client_run_id: submitted_id.clone(),
@@ -655,10 +687,28 @@ impl App {
         };
     }
 
-    /// Prepend restored text to the composer, preserving FIFO order for
-    /// multiple entries. Never called with an empty batch.
-    pub(super) fn restore_composer_text(&mut self, texts: Vec<String>) {
-        debug_assert!(!texts.is_empty());
+    /// Prepend restored input to the composer, preserving FIFO order for
+    /// multiple entries: its text ahead of the draft's, and its files ahead
+    /// of the draft's attachments. Never called with an empty batch.
+    pub(super) fn restore_composer(&mut self, inputs: Vec<crate::state::ComposerInput>) {
+        debug_assert!(!inputs.is_empty());
+        let mut files = Vec::new();
+        let mut texts = Vec::new();
+        for input in inputs {
+            if !input.text.is_empty() || input.files.is_empty() {
+                texts.push(input.text);
+            }
+            files.extend(input.files);
+        }
+        for artifact in std::mem::take(&mut self.attachments) {
+            files.push(artifact);
+        }
+        let mut seen = std::collections::HashSet::new();
+        files.retain(|artifact| seen.insert(artifact.sha256.clone()));
+        self.attachments = files;
+        if texts.is_empty() {
+            return;
+        }
         let mut restored = texts.join("\n");
         let existing = self.input.as_str();
         if !existing.is_empty() {
@@ -675,13 +725,13 @@ impl App {
         let Some(session_id) = self.selected else {
             return;
         };
-        let texts = self
+        let inputs = self
             .store
             .take_voided_inputs(session_id, self.client.origin().as_ref());
-        if texts.is_empty() {
+        if inputs.is_empty() {
             return;
         }
-        self.restore_composer_text(texts);
+        self.restore_composer(inputs);
         self.status = "unsent message restored to the composer".into();
     }
 
@@ -710,7 +760,7 @@ impl App {
             {
                 Ok(SessionRecallInputResult::Recalled { content }) => RpcUpdate::SteerRecalled {
                     session_id,
-                    text: crate::state::composer_text(&content),
+                    input: crate::state::ComposerInput::of(&content),
                 },
                 // The lane raced ahead (a promotion or run start landed
                 // first): nothing is owed; the strip is already catching up.

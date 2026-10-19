@@ -136,7 +136,6 @@ impl InputState {
         self.reanchor_cursor();
     }
 
-    #[cfg(test)]
     pub(crate) fn cursor_byte(&self) -> usize {
         self.cursor
     }

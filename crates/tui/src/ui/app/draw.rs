@@ -135,6 +135,7 @@ impl App {
                     hits
                 })
         };
+        self.render_attachment_chips(frame, layout.input);
         self.hit_map.input = Some(InputHit {
             rect: layout.input,
             text_rect: rendered_input.text_rect,
@@ -377,6 +378,9 @@ impl App {
             }
             Modal::RevertConfirm => {
                 self.render_revert_confirm(frame, frame.area());
+            }
+            Modal::AttachConfirm => {
+                self.render_attach_offer(frame, frame.area());
             }
             Modal::Mcp => {
                 crate::ui::management::render_mcp(
@@ -797,7 +801,7 @@ impl App {
         }
     }
 
-    pub(super) fn command_is_available(&self, spec: &CommandSpec) -> bool {
+    pub(in crate::ui) fn command_is_available(&self, spec: &CommandSpec) -> bool {
         if spec.writes_session && !self.session_writable() {
             return false;
         }
@@ -811,6 +815,8 @@ impl App {
             PaletteAction::Run(SlashCommand::AutoAgentPanel) => {
                 self.agent_panel_mode != AgentPanelMode::Auto
             }
+            // Attaching is offered only when the model takes some file.
+            PaletteAction::Attach => self.attachments_offered(),
             _ => true,
         }
     }
@@ -1568,6 +1574,11 @@ impl App {
                         "Compact".to_owned(),
                         "Optional focus to emphasize; enter alone compacts".to_owned(),
                         "enter: compact · esc: back",
+                    ),
+                    TextTarget::AttachPath { accepts } => (
+                        "Attach".to_owned(),
+                        format!("Path of the file to attach ({accepts})"),
+                        "enter: attach · esc: back",
                     ),
                     TextTarget::SkillArguments { name, hint } => (
                         format!("/{name}"),

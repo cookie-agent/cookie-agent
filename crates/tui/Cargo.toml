@@ -13,6 +13,7 @@ workspace = true
 anyhow.workspace = true
 base64 = "0.22"
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["oauth-callback"] }
+cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 crossterm.workspace = true
 futures-util.workspace = true
 foldhash.workspace = true
@@ -40,9 +41,9 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 async-trait.workspace = true
+crc32fast.workspace = true
 cookie_agent_config = { version = "=0.3.0", path = "../config" }
 cookie_agent_engine = { version = "=0.3.0", path = "../engine" }
 cookie_agent_models = { version = "=0.3.0", path = "../models" }
-cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 cookie_agent_server = { version = "=0.3.0", path = "../server" }
 insta.workspace = true

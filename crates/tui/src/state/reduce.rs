@@ -117,7 +117,7 @@ pub(super) fn reduce_event_from(
             seq: entry.queued_seq,
             origin: entry.origin,
             parked: false,
-            text: composer_text(&entry.content),
+            input: ComposerInput::of(&entry.content),
         }));
     // Every durable timestamp is indexed by sequence so a committed turn
     // can measure its generation wall time from the exact event that closed
@@ -441,7 +441,7 @@ pub(super) fn reduce_event_from(
             state.last_agent_activity = Some(timestamp);
             state.pending_inputs.push_back(PendingInput {
                 text: user_content_text(&content),
-                composer_text: composer_text(&content),
+                composer: ComposerInput::of(&content),
                 admission_seq: sequence,
                 admitted_at: timestamp,
                 origin,
@@ -2212,7 +2212,7 @@ pub(super) fn void_pending_inputs(state: &mut SessionState) {
             seq: pending.admission_seq,
             origin: pending.origin,
             parked: false,
-            text: pending.composer_text,
+            input: pending.composer,
         })
         .collect::<Vec<_>>();
     state.voided_inputs.extend(drained);

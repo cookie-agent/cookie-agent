@@ -55,6 +55,7 @@ pub(crate) enum PaletteAction {
     Compact,
     Events,
     Skills,
+    Attach,
 }
 
 pub(crate) struct CommandSpec {
@@ -210,6 +211,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         writes_session: true,
     },
     CommandSpec {
+        name: "attach",
+        aliases: &["file", "image"],
+        description: "attach a file to the next message (asks for its path)",
+        action: PaletteAction::Attach,
+        writes_session: true,
+    },
+    CommandSpec {
         name: "goal",
         aliases: &[],
         description: "set a root-session goal (asks for the objective)",
@@ -291,7 +299,14 @@ pub(crate) fn normalized_query(query: &str) -> String {
 pub(crate) enum TextTarget {
     GoalObjective,
     CompactFocus,
-    SkillArguments { name: String, hint: Option<String> },
+    SkillArguments {
+        name: String,
+        hint: Option<String>,
+    },
+    /// The path of a file to attach; `accepts` names what the model takes.
+    AttachPath {
+        accepts: String,
+    },
 }
 
 pub(crate) enum PaletteStep {

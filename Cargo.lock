@@ -847,6 +847,7 @@ dependencies = [
  "cookie_agent_protocol",
  "cookie_agent_runtime_api",
  "cookie_agent_server",
+ "crc32fast",
  "crossterm",
  "foldhash",
  "futures-util",

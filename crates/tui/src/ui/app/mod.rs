@@ -2,6 +2,7 @@
 
 mod agents;
 mod approvals;
+mod attachments;
 mod background;
 mod composer;
 mod config_panel;
@@ -17,6 +18,8 @@ mod subscriptions;
 pub(super) use agents::DescendantEvent;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(super) use approvals::{ApprovalPanel, approval_content};
+#[cfg(test)]
+pub(crate) use attachments::pasted_file_path_for_test;
 use emoji_backend::EmojiBackend;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
 use pickers::{agent_picker_row, draft_title, model_picker_row};
@@ -142,6 +145,8 @@ pub(super) enum Modal {
     UserMessage,
     /// Confirm guard behind the menu's revert action.
     RevertConfirm,
+    /// The offer to attach a pasted file path.
+    AttachConfirm,
     Mcp,
     Runtimes,
     Permissions,
@@ -740,6 +745,10 @@ pub struct App {
     /// the quit window exits.
     pub(super) last_quit_press: Option<Instant>,
     pub(super) input: InputState,
+    /// Files attached to the draft, sent with it as file parts.
+    pub(super) attachments: Vec<cookie_agent_protocol::ArtifactRef>,
+    /// A pasted path waiting for the user to attach it or paste it as text.
+    pub(super) attach_offer: Option<attachments::AttachOffer>,
     pub(super) modal: Modal,
     pub(super) status: String,
     session_errors: SessionErrorSummary,
@@ -852,7 +861,7 @@ pub(in crate::ui) enum RpcUpdate {
         client_run_id: ClientRunId,
         draft_generation: u64,
         reset_fallback: bool,
-        input: String,
+        input: crate::state::ComposerInput,
         result: Result<(), String>,
     },
     GoalFinished {
@@ -873,7 +882,7 @@ pub(in crate::ui) enum RpcUpdate {
     /// rejects anymore): the submitted text is owed back to the composer.
     SteerFailed {
         session_id: SessionId,
-        input: String,
+        input: crate::state::ComposerInput,
         error: String,
     },
     /// The current runtime snapshot, fetched after a `runtime.changed`
@@ -887,10 +896,17 @@ pub(in crate::ui) enum RpcUpdate {
         client_run_id: ClientRunId,
         notice: Option<String>,
     },
-    /// A recall RPC returned the withdrawn pending input's text.
+    /// A recall RPC returned the withdrawn pending input.
     SteerRecalled {
         session_id: SessionId,
-        text: String,
+        input: crate::state::ComposerInput,
+    },
+    /// A file `/attach` or a pasted path started uploading was stored, or
+    /// could not be.
+    AttachmentUploaded {
+        session_id: SessionId,
+        name: String,
+        result: Result<cookie_agent_protocol::ArtifactRef, String>,
     },
     /// A revert RPC committed; the `rewound` notification rebuilds the
     /// transcript, and the message text is owed back to the composer.
@@ -1318,6 +1334,8 @@ impl App {
             last_escape: None,
             last_quit_press: None,
             input: InputState::default(),
+            attachments: Vec::new(),
+            attach_offer: None,
             modal: Modal::None,
             status: "Connected. Press / or Ctrl-P for commands.".into(),
             session_errors: SessionErrorSummary::default(),

@@ -407,6 +407,14 @@ impl App {
                 self.close_command_palette();
                 self.invoke_skill(name, args).await;
             }
+            PaletteSubmit::Text(TextTarget::AttachPath { .. }, path) => {
+                if path.trim().is_empty() {
+                    self.status = "enter the path of a file to attach".into();
+                    return;
+                }
+                self.close_command_palette();
+                self.attach_file(&path).await;
+            }
         }
     }
 
@@ -424,6 +432,21 @@ impl App {
                 }
                 self.push_palette_step(PaletteStep::Text {
                     target: TextTarget::GoalObjective,
+                    input: InputState::default(),
+                });
+            }
+            PaletteAction::Attach => {
+                let Some(accepted) = self
+                    .accepted_media()
+                    .filter(|accepted| !accepted.media.is_empty())
+                else {
+                    self.status = "the selected model accepts no attachments".into();
+                    return;
+                };
+                self.push_palette_step(PaletteStep::Text {
+                    target: TextTarget::AttachPath {
+                        accepts: format!("{} accepts {}", accepted.model, accepted.kinds()),
+                    },
                     input: InputState::default(),
                 });
             }
@@ -919,7 +942,7 @@ impl App {
             | Modal::ConnectError
             | Modal::DisconnectConfirm => {}
             Modal::UserMessage => self.activate_user_menu_entry(index),
-            Modal::RevertConfirm => {}
+            Modal::RevertConfirm | Modal::AttachConfirm => {}
             Modal::Mcp
             | Modal::Runtimes
             | Modal::Permissions

@@ -162,6 +162,23 @@ selects the whole draft; typing or pasting over a selection replaces it. The
 composer keeps keyboard focus while you click around the conversation; only a
 panel, the command palette, or an approval on top of it takes focus away.
 
+### Attachments
+
+When the selected model accepts files (images, PDFs, audio, or video; see
+[Attaching media](media.md)), `/attach` asks for the path of a file and
+attaches it to the next message. Pasting text that is exactly the path of one
+existing file, as a terminal pastes a file dropped on it, asks whether to
+attach that file; Cancel pastes the path as text instead. The TUI uploads the
+file to the daemon, which may run on another machine, so the path only needs
+to exist where the TUI runs. Before uploading, it refuses a kind of file the
+model does not accept (and says which kinds it does), a file larger than the
+model's limit, and an image with more pixels than the model takes, naming the
+limit; it does not shrink images. Each attachment shows on the composer's
+bottom border as `📎 name · type · size`; Backspace at the start of the draft
+removes the newest one. A message may be attachments alone. A message taken
+back from the pending strip, or handed back after it failed to send, returns
+its attachments with its text.
+
 The agent and model panels include search fields. Agent search matches agent IDs
 and descriptions; model search matches display names and `provider/model_id`.
 Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
@@ -196,6 +213,7 @@ intact.
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](skills.md) |
+| `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed only when the selected model accepts files; see [Attachments](#attachments) |
 | `/usage` | Show selected-session and session-tree usage |
 | `/cancel` | Cancel the active run |
 | `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](goals.md) |
@@ -205,8 +223,8 @@ intact.
 | `/quit` (also `q`, `exit`) | Exit the TUI |
 
 In a read-only session owned by another cookie process, commands that write to
-the session (`/permissions`, `/runtime`, `/skills`, `/cancel`, `/goal`,
-`/compact`) are hidden.
+the session (`/permissions`, `/runtime`, `/skills`, `/attach`, `/cancel`,
+`/goal`, `/compact`) are hidden.
 
 The composer only ever sends messages: text beginning with `/` is sent as a
 prompt like any other. To start a message with `/`, open the palette and type

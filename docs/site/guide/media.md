@@ -41,6 +41,18 @@ over its limits, or more of a kind than it takes refuses the message, and
 nothing of it is recorded; the error says which limit, so a client can offer
 to downscale an image that is too large.
 
+## In the terminal UI
+
+`/attach` asks for a file's path and attaches the file to the next message,
+and pasting the path of one existing file (what a terminal pastes when a file
+is dropped on it) offers to attach it. Both appear only while the selected
+model accepts some kind of file. The TUI checks the file's kind, size, and an
+image's pixels against the model's limits before it uploads, and shows the
+limit when a file is refused, by the TUI or the daemon; it does not downscale.
+Attachments show on the composer's border as `📎 name · type · size`, and
+Backspace at the start of the draft removes the newest. See
+[Run](run.md#attachments).
+
 ## When the model changes
 
 A session can move to another model, or a run can fall back to one. A model
