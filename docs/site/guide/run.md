@@ -655,7 +655,10 @@ redirects text or JSON output to a file and cannot be combined with
 
 Text mode writes only the terminal `final_text` to standard output. It does not
 stream model deltas. With `--verbose`, ANSI-free progress lines are written to
-standard error. Failures and model fallback diagnostics are written to standard
+standard error, including one for each finished tool call: `cookie run: tool`
+and the call's title (with `(failed)`, `(cancelled)`, or `(interrupted)` when
+it did not complete), then the first eight lines of its display as plain text,
+indented, and a count of the rest. `--output none` prints the same lines. Failures and model fallback diagnostics are written to standard
 error regardless of verbosity, including recovered failures in a successful run.
 
 JSON mode writes JSON Lines. Records use these stable `type` tags:

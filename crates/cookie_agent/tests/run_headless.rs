@@ -935,6 +935,34 @@ async fn headless_outputs_prompt_sources_selection_and_verbose_tool_output() {
         .expect("write permission");
     assert_eq!(write.effect, PermissionEffect::Ask);
 
+    // Verbose text mode prints each call as its title and the head of its
+    // display's text, never on standard output.
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"printf 'one\\ntwo\\n'"}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("text tool complete")));
+    let mut args = run_args("text tool prompt");
+    args.verbose = true;
+    args.allowed_tools = vec![AllowedTool::Action(
+        cookie_agent_protocol::PermissionAction::BASH,
+    )];
+    let text_tool = fixture.run(args, "").await;
+    assert_eq!(text_tool.code, 0, "{}", text_tool.stderr);
+    assert_eq!(text_tool.stdout, "text tool complete\n");
+    let lines = text_tool.stderr.lines().collect::<Vec<_>>();
+    let title = lines
+        .iter()
+        .position(|line| line.starts_with("cookie run: tool Run `printf"))
+        .unwrap_or_else(|| panic!("{}", text_tool.stderr));
+    assert_eq!(
+        &lines[title + 1..title + 4],
+        ["    one", "    two", "    [exit code 0]"]
+    );
+    assert!(!text_tool.stderr.contains('\u{1b}'));
+
     fixture.shutdown().await;
 }
 

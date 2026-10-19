@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     io::{self, Read as IoRead, Write as IoWrite},
     path::{Path, PathBuf},
@@ -265,6 +265,8 @@ struct DriverState {
     cancellation_requested: bool,
     cancellation: Option<CancellationCause>,
     tool_outputs: Vec<mpsc::Receiver<OutputMessage>>,
+    /// Each started call's presentation title, for the verbose text lines.
+    tool_titles: HashMap<ToolCallId, String>,
 }
 
 impl DriverState {
@@ -277,6 +279,7 @@ impl DriverState {
             rejected: HashSet::new(),
             cancellation_requested: false,
             cancellation: None,
+            tool_titles: HashMap::new(),
             tool_outputs: Vec::new(),
         }
     }
@@ -892,10 +895,14 @@ async fn process_event(
         )?;
     }
     match event.payload {
-        EventPayload::ToolCallStarted { start }
-            if display.args.verbose && display.mode == OutputMode::Json =>
-        {
-            subscribe_tool_output(engine, start.tool_call_id, state, output)?;
+        EventPayload::ToolCallStarted { start } if display.args.verbose => {
+            if display.mode == OutputMode::Json {
+                subscribe_tool_output(engine, start.tool_call_id, state, output)?;
+            } else {
+                state
+                    .tool_titles
+                    .insert(start.tool_call_id, start.presentation.title.to_string());
+            }
         }
         EventPayload::ModelTurnCommitted { .. } => {
             state.turns = state.turns.saturating_add(1);
@@ -996,15 +1003,19 @@ async fn process_event(
                 error: None,
             }));
         }
-        EventPayload::ToolCallTerminated { termination }
-            if termination.outcome == cookie_agent_protocol::ToolTerminationOutcome::Failed =>
-        {
-            writeln!(
-                stderr,
-                "cookie tool {}: {}",
-                termination.tool_call_id,
-                cookie_agent_protocol::diagnostics::tool(&termination)
-            )?;
+        EventPayload::ToolCallTerminated { termination } => {
+            if termination.outcome == cookie_agent_protocol::ToolTerminationOutcome::Failed {
+                writeln!(
+                    stderr,
+                    "cookie tool {}: {}",
+                    termination.tool_call_id,
+                    cookie_agent_protocol::diagnostics::tool(&termination)
+                )?;
+            }
+            if display.args.verbose && display.mode != OutputMode::Json {
+                let title = state.tool_titles.remove(&termination.tool_call_id);
+                write_tool_summary(stderr, title, &termination)?;
+            }
         }
         EventPayload::InternalAgentFinished {
             kind,
@@ -1243,6 +1254,52 @@ fn write_terminal(
         )?;
     }
     output.flush()?;
+    Ok(())
+}
+
+/// Lines of a call's display text a verbose text run prints under its title.
+const MAX_TOOL_SUMMARY_LINES: usize = 8;
+
+/// A verbose text run's account of one finished call: its title and how it
+/// ended, then the head of its result's display as text (the daemon's text
+/// fallback of each block), indented.
+fn write_tool_summary(
+    stderr: &mut dyn IoWrite,
+    title: Option<String>,
+    termination: &cookie_agent_protocol::ToolCallTermination,
+) -> anyhow::Result<()> {
+    use cookie_agent_protocol::ToolTerminationOutcome;
+    let title = title
+        .or_else(|| {
+            termination
+                .result
+                .as_ref()
+                .map(|result| result.title.to_string())
+        })
+        .unwrap_or_else(|| termination.tool_call_id.to_string());
+    let outcome = match termination.outcome {
+        ToolTerminationOutcome::Completed => "",
+        ToolTerminationOutcome::Failed => " (failed)",
+        ToolTerminationOutcome::Cancelled => " (cancelled)",
+        ToolTerminationOutcome::Interrupted => " (interrupted)",
+    };
+    writeln!(stderr, "cookie run: tool {title}{outcome}")?;
+    let text = termination
+        .result
+        .as_ref()
+        .map(|result| cookie_agent_protocol::display_text(&result.display))
+        .unwrap_or_default();
+    let lines = text.lines().collect::<Vec<_>>();
+    for line in lines.iter().take(MAX_TOOL_SUMMARY_LINES) {
+        writeln!(stderr, "    {line}")?;
+    }
+    if lines.len() > MAX_TOOL_SUMMARY_LINES {
+        writeln!(
+            stderr,
+            "    … {} more lines",
+            lines.len() - MAX_TOOL_SUMMARY_LINES
+        )?;
+    }
     Ok(())
 }
 
