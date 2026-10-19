@@ -84,6 +84,26 @@ impl Client {
                 ))
             })
     }
+
+    /// Connect to the `ws://` daemon endpoint `url` over `stream`, a TCP
+    /// connection to its host the caller has already opened, using the
+    /// bearer token. A caller that bounds the TCP connect apart from the
+    /// WebSocket upgrade opens the stream itself.
+    pub async fn connect_websocket_over(
+        stream: tokio::net::TcpStream,
+        url: &str,
+        token: &str,
+    ) -> Result<Self, ClientError> {
+        WebSocketTransport::connect_over(stream, url, token)
+            .await
+            .map(Self::connect_stream)
+            .map_err(|error| {
+                ClientError::WebSocket(diagnostics::sanitize(
+                    &diagnostics::error_chain(&error),
+                    4096,
+                ))
+            })
+    }
 }
 
 /// Tokio WebSocket transport for protocol clients.
@@ -110,17 +130,46 @@ impl WebSocketTransport {
         Self::connect_request(&url, token).await
     }
 
+    /// Upgrade `stream`, an open TCP connection to the host of the `ws://`
+    /// daemon endpoint `url`, with an explicit per-run bearer token. The
+    /// stream carries no TLS, so a `wss://` URL is refused.
+    pub async fn connect_over(
+        stream: tokio::net::TcpStream,
+        url: &str,
+        token: &str,
+    ) -> Result<Self, TransportError> {
+        let parsed =
+            parse_daemon_url(url).map_err(|error| TransportError::Other(error.to_string()))?;
+        if parsed.scheme() != "ws" {
+            return Err(TransportError::Other(
+                "a daemon reached over an open TCP connection needs a ws:// URL".into(),
+            ));
+        }
+        let request = authenticated_request(url, token)?;
+        let (socket, _) = tokio_tungstenite::client_async_with_config(
+            request,
+            MaybeTlsStream::Plain(stream),
+            Some(websocket_config()),
+        )
+        .await
+        .map_err(|error| websocket_error(&error))?;
+        Ok(Self { socket })
+    }
+
     async fn connect_request(url: &str, token: &str) -> Result<Self, TransportError> {
         let request = authenticated_request(url, token)?;
-        let config = WebSocketConfig::default()
-            .max_message_size(Some(MAX_WEBSOCKET_MESSAGE_BYTES))
-            .max_frame_size(Some(MAX_WEBSOCKET_MESSAGE_BYTES));
         let (socket, _) =
-            tokio_tungstenite::connect_async_with_config(request, Some(config), false)
+            tokio_tungstenite::connect_async_with_config(request, Some(websocket_config()), false)
                 .await
                 .map_err(|error| websocket_error(&error))?;
         Ok(Self { socket })
     }
+}
+
+fn websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_WEBSOCKET_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_WEBSOCKET_MESSAGE_BYTES))
 }
 
 fn websocket_error(error: &tokio_tungstenite::tungstenite::Error) -> TransportError {
