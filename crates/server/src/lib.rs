@@ -1,4 +1,4 @@
-//! The cookie-agent client protocol 0.51 JSON-RPC service, transport-neutral.
+//! The cookie-agent client protocol 0.52 JSON-RPC service, transport-neutral.
 
 mod config;
 mod providers;

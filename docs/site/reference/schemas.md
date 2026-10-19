@@ -10,7 +10,7 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 0.51.0 | 0.51.x |
+| Client protocol | 0.52.0 | 0.52.x |
 | Plugin protocol | 0.5.0 | 0.5.x |
 | Runtime protocol | 0.8.0 | 0.8.x |
 | Session history (events JSONL) | history format 1 | format 1; older formats are converted |
@@ -22,7 +22,7 @@ emit only their current version and reject unsupported versions.
 
 The three protocols have semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes: the
-client protocol `CLIENT_PROTOCOL_VERSION` (`0.51.0`), the plugin protocol
+client protocol `CLIENT_PROTOCOL_VERSION` (`0.52.0`), the plugin protocol
 `PLUGIN_PROTOCOL_VERSION` (`0.5.0`), and the runtime protocol
 `RUNTIME_PROTOCOL_VERSION` (`0.8.0`), all in `cookie_agent_protocol`. Each
 handshake sends its side's version and accepts a peer of the same major and,

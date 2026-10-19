@@ -1070,9 +1070,16 @@ pub(crate) fn tool_input_media(
 /// The adapter family of a frozen binding's protocol adapter, for media
 /// delivery.
 fn tool_adapter_family(value: &str) -> cookie_agent_runtime_api::AdapterFamily {
+    media_family(adapter_family(value))
+}
+
+/// The media delivery family of an adapter family.
+pub(crate) fn media_family(
+    family: cookie_agent_models::adapters::OvenAdapterFamily,
+) -> cookie_agent_runtime_api::AdapterFamily {
     use cookie_agent_models::adapters::OvenAdapterFamily as Oven;
     use cookie_agent_runtime_api::AdapterFamily as Tool;
-    match adapter_family(value) {
+    match family {
         Oven::Anthropic => Tool::Anthropic,
         Oven::AnthropicCompatible => Tool::AnthropicCompatible,
         Oven::OpenaiChat => Tool::OpenaiChat,

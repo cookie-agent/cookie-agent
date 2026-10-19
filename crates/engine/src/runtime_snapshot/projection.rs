@@ -513,8 +513,12 @@ fn model_descriptor(
         .ok_or(EngineError::RuntimeCompileFailed)?;
     capability_object.remove("compaction");
     capability_object.remove("input_tokens");
-    let capabilities =
+    let capabilities: protocol::ModelCapabilities =
         serde_json::from_value(capability_value).map_err(|_| EngineError::RuntimeCompileFailed)?;
+    let input_media = cookie_agent_runtime_api::media::user_input_media(
+        crate::policy::media_family(model.model.adapter),
+        &capabilities,
+    );
     let variants = model
         .model
         .variants
@@ -542,6 +546,7 @@ fn model_descriptor(
         key: model.key.clone(),
         display_name: model.model.display_name.clone(),
         capabilities,
+        input_media,
         variants,
         variant_order: model.model.variant_order.clone(),
         default_variant: model.model.default_variant.clone(),

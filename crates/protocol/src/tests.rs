@@ -1593,6 +1593,7 @@ fn available_model_descriptor_serde_round_trip_preserves_variant_order() {
             cancellation: CancellationCapability::LocalOnly,
             media: BTreeMap::new(),
         },
+        input_media: Vec::new(),
         variants: ["alpha", "zeta"]
             .into_iter()
             .map(|id| AvailableVariantDescriptor {

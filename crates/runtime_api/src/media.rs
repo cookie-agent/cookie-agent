@@ -5,7 +5,8 @@ use std::path::Path;
 
 use crate::ToolError;
 use cookie_agent_protocol::{
-    AdaptorId, MediaKind as CapabilityMediaKind, MediaKindLabel, ModelCapabilities, ModelKey,
+    AdaptorId, InputMedia, MediaCapability, MediaKind as CapabilityMediaKind, MediaKindLabel,
+    ModelCapabilities, ModelKey,
     runtime_protocol::{MediaDelivery, ToolInputMedia},
 };
 
@@ -13,8 +14,10 @@ const MAX_ENCODED_BYTES: usize = 20 * 1024 * 1024;
 /// Upper bound on the compatible-brand list scanned when the major brand is unrecognized.
 const MAX_BRAND_SCAN_BYTES: usize = 4 * 1024;
 const MAX_VIDEO_ENCODED_BYTES: usize = 25 * 1024 * 1024;
-const MAX_IMAGE_DIMENSION: u32 = 16_384;
-const MAX_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
+/// The longest side, in pixels, of an image the daemon accepts.
+pub const MAX_IMAGE_DIMENSION: u32 = 16_384;
+/// The most pixels of an image the daemon accepts (summed over a GIF's frames).
+pub const MAX_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_ANIMATION_FRAMES: usize = 256;
 /// Window at the end of a PDF searched for `%%EOF`, and before it for `startxref`; readers
 /// tolerate trailing junk within about this distance.
@@ -114,13 +117,10 @@ pub fn tool_input_media(
     family: AdapterFamily,
     capabilities: &ModelCapabilities,
 ) -> Vec<ToolInputMedia> {
-    capabilities
-        .media
-        .iter()
-        .filter_map(|(kind, capability)| {
-            let (delivery, family_limit) = family_delivery(family, *kind)?;
-            Some(ToolInputMedia {
-                kind: MediaKindLabel::new(media_kind_label(*kind)).expect("static media kind"),
+    deliverable_media(family, capabilities)
+        .map(
+            |(kind, capability, delivery, family_limit)| ToolInputMedia {
+                kind: MediaKindLabel::new(media_kind_label(kind)).expect("static media kind"),
                 mime_types: capability
                     .mime_types
                     .iter()
@@ -128,9 +128,138 @@ pub fn tool_input_media(
                     .collect(),
                 max_bytes: capability.max_bytes.min(family_limit),
                 delivery,
+            },
+        )
+        .collect()
+}
+
+/// The media a model of `capabilities` behind `family` accepts in a user
+/// turn: what clients are told it accepts and what input is admitted by
+/// (`docs/site/specs/compatibility-v1.md` section 11.2). User content always
+/// travels in a user turn, so every kind `family` can deliver at all counts,
+/// unlike in [`tool_input_media`]. The media types are those of the
+/// model's that an upload can be recognized as; the byte limit is the lowest
+/// of the model's, the family's, and the attachment cap; images also carry
+/// the dimension and pixel limits validation applies. A kind left with no
+/// media type is left out.
+#[must_use]
+pub fn user_input_media(
+    family: AdapterFamily,
+    capabilities: &ModelCapabilities,
+) -> Vec<InputMedia> {
+    deliverable_media(family, capabilities)
+        .filter_map(|(kind, capability, _, family_limit)| {
+            let label = media_kind_label(kind);
+            let mime_types = UPLOAD_MEDIA_TYPES
+                .iter()
+                .filter(|(of, mime_type)| {
+                    *of == label
+                        && capability
+                            .mime_types
+                            .iter()
+                            .any(|accepted| mime_type_matches(accepted.as_str(), mime_type))
+                })
+                .map(|(_, mime_type)| (*mime_type).to_owned())
+                .collect::<Vec<_>>();
+            if mime_types.is_empty() {
+                return None;
+            }
+            let image = kind == CapabilityMediaKind::Image;
+            Some(InputMedia {
+                kind: MediaKindLabel::new(label).expect("static media kind"),
+                mime_types,
+                max_bytes: capability
+                    .max_bytes
+                    .min(family_limit)
+                    .min(max_attachment_bytes(label)),
+                max_dimension: image.then_some(MAX_IMAGE_DIMENSION),
+                max_pixels: image.then_some(MAX_IMAGE_PIXELS),
+                max_count: capability.max_count,
             })
         })
         .collect()
+}
+
+/// Every kind of `capabilities` that `family` can deliver, with how it
+/// delivers a tool's attachment of it and its byte limit; the one table
+/// [`tool_input_media`] and [`user_input_media`] share.
+fn deliverable_media(
+    family: AdapterFamily,
+    capabilities: &ModelCapabilities,
+) -> impl Iterator<Item = (CapabilityMediaKind, &MediaCapability, MediaDelivery, u64)> {
+    capabilities
+        .media
+        .iter()
+        .filter_map(move |(kind, capability)| {
+            let (delivery, family_limit) = family_delivery(family, *kind)?;
+            Some((*kind, capability, delivery, family_limit))
+        })
+}
+
+/// The media types an upload's content can be recognized as, by kind. The
+/// Matroska type needs a file extension, which uploads ignore, so a Matroska
+/// upload is recognized as WebM.
+const UPLOAD_MEDIA_TYPES: &[(&str, &str)] = &[
+    (MediaKindLabel::IMAGE, "image/gif"),
+    (MediaKindLabel::IMAGE, "image/jpeg"),
+    (MediaKindLabel::IMAGE, "image/png"),
+    (MediaKindLabel::IMAGE, "image/webp"),
+    (MediaKindLabel::PDF, "application/pdf"),
+    (MediaKindLabel::AUDIO, "audio/flac"),
+    (MediaKindLabel::AUDIO, "audio/mpeg"),
+    (MediaKindLabel::AUDIO, "audio/ogg"),
+    (MediaKindLabel::AUDIO, "audio/wav"),
+    (MediaKindLabel::VIDEO, "video/3gpp"),
+    (MediaKindLabel::VIDEO, "video/mp4"),
+    (MediaKindLabel::VIDEO, "video/mpeg"),
+    (MediaKindLabel::VIDEO, "video/quicktime"),
+    (MediaKindLabel::VIDEO, "video/webm"),
+    (MediaKindLabel::VIDEO, "video/wmv"),
+    (MediaKindLabel::VIDEO, "video/x-flv"),
+    (MediaKindLabel::VIDEO, "video/x-msvideo"),
+];
+
+/// Whether `accepted`, a media type a model lists (exact, or a prefix
+/// ending in `*`), accepts `mime_type`. Case does not matter, and a video
+/// type's aliases are one type.
+#[must_use]
+pub fn mime_type_matches(accepted: &str, mime_type: &str) -> bool {
+    match accepted.strip_suffix('*') {
+        Some(prefix) => mime_type
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix)),
+        None => {
+            accepted.eq_ignore_ascii_case(mime_type)
+                || canonical_video_mime_type(accepted) == canonical_video_mime_type(mime_type)
+        }
+    }
+}
+
+/// The media kind label of `mime_type`: `image`, `pdf`, `audio`, or `video`.
+#[must_use]
+pub fn media_kind(mime_type: &str) -> Option<&'static str> {
+    if mime_type.starts_with("image/") {
+        Some(MediaKindLabel::IMAGE)
+    } else if mime_type == "application/pdf" {
+        Some(MediaKindLabel::PDF)
+    } else if mime_type.starts_with("audio/") {
+        Some(MediaKindLabel::AUDIO)
+    } else if mime_type.starts_with("video/") {
+        Some(MediaKindLabel::VIDEO)
+    } else {
+        None
+    }
+}
+
+/// The attachment cap of a media kind: [`MAX_VIDEO_ATTACHMENT_BYTES`] for
+/// video, [`MAX_ATTACHMENT_BYTES`] for everything else.
+#[must_use]
+pub fn max_attachment_bytes(kind: &str) -> u64 {
+    if kind == MediaKindLabel::VIDEO {
+        MAX_VIDEO_ATTACHMENT_BYTES
+    } else {
+        MAX_ATTACHMENT_BYTES
+    }
 }
 
 const fn media_kind_label(kind: CapabilityMediaKind) -> &'static str {
@@ -210,15 +339,7 @@ pub fn gate_attachment(
     mime_type: &str,
     size: u64,
 ) -> AttachmentGate {
-    let kind = if mime_type.starts_with("image/") {
-        MediaKindLabel::IMAGE
-    } else if mime_type == "application/pdf" {
-        MediaKindLabel::PDF
-    } else if mime_type.starts_with("audio/") {
-        MediaKindLabel::AUDIO
-    } else if mime_type.starts_with("video/") {
-        MediaKindLabel::VIDEO
-    } else {
+    let Some(kind) = media_kind(mime_type) else {
         return AttachmentGate::RejectUnsupportedModel;
     };
     let Some(accepted) = input_media.iter().find(|media| media.kind.as_str() == kind) else {
@@ -284,7 +405,33 @@ fn sniff(
     len: u64,
 ) -> Result<Option<(&'static str, MediaKind)>, ToolError> {
     let known_extension = known_media_extension(path);
-    let candidate = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+    let candidate = recognize(path, bytes, len);
+    let Some((mime, kind)) = candidate else {
+        return if known_extension {
+            Err(malformed_media())
+        } else {
+            Ok(None)
+        };
+    };
+    if known_extension && !media_extension_matches(path, mime) {
+        return Err(malformed_media());
+    }
+    let max_encoded_bytes = match kind {
+        MediaKind::Video => MAX_VIDEO_ENCODED_BYTES,
+        MediaKind::Image(_) | MediaKind::Pdf | MediaKind::Audio => MAX_ENCODED_BYTES,
+    };
+    if len > max_encoded_bytes as u64 {
+        return Err(ToolError::resource_limit(format!(
+            "attachment is {len} bytes; the absolute validation cap is {max_encoded_bytes} bytes"
+        )));
+    }
+    Ok(Some((mime, kind)))
+}
+
+/// The media type and kind `bytes`, the head of a file `len` bytes long,
+/// start like; `path`'s extension tells Matroska from WebM.
+fn recognize(path: &Path, bytes: &[u8], len: u64) -> Option<(&'static str, MediaKind)> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some(("image/png", MediaKind::Image(ImageContainer::Png)))
     } else if bytes.starts_with(&[0xff, 0xd8]) {
         Some(("image/jpeg", MediaKind::Image(ImageContainer::Jpeg)))
@@ -333,27 +480,99 @@ fn sniff(
         Some(("video/wmv", MediaKind::Video))
     } else {
         None
-    };
-    let Some((mime, kind)) = candidate else {
-        return if known_extension {
-            Err(malformed_media())
-        } else {
-            Ok(None)
-        };
-    };
-    if known_extension && !media_extension_matches(path, mime) {
-        return Err(malformed_media());
     }
-    let max_encoded_bytes = match kind {
-        MediaKind::Video => MAX_VIDEO_ENCODED_BYTES,
-        MediaKind::Image(_) | MediaKind::Pdf | MediaKind::Audio => MAX_ENCODED_BYTES,
+}
+
+/// What a client's upload is, recognized from its content alone and
+/// validated as a tool attachment is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedUpload {
+    pub media_type: &'static str,
+    /// The kind label, such as `image`.
+    pub kind: &'static str,
+    /// An image's width and height.
+    pub image: Option<(u32, u32)>,
+}
+
+/// Why an upload's content is refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UploadRejection {
+    /// Not a media type the daemon recognizes.
+    Unrecognized,
+    /// It starts like `media_type` but does not parse as one.
+    Malformed { media_type: &'static str },
+    /// Above the attachment cap of its kind, or an image above the
+    /// dimension or pixel limits.
+    TooLarge {
+        kind: &'static str,
+        byte_length: u64,
+        max_bytes: u64,
+        image: Option<(u32, u32)>,
+    },
+}
+
+/// Recognizes and validates an upload: its media type comes from its content
+/// alone, never from a filename, and it is held to the checks and caps a
+/// tool attachment is ([`validate_attachment`]), with an image's size
+/// reported.
+pub fn validate_upload(bytes: &[u8]) -> Result<ValidatedUpload, UploadRejection> {
+    let byte_length = bytes.len() as u64;
+    let (media_type, kind) =
+        recognize(Path::new(""), bytes, byte_length).ok_or(UploadRejection::Unrecognized)?;
+    let label = match kind {
+        MediaKind::Image(_) => MediaKindLabel::IMAGE,
+        MediaKind::Pdf => MediaKindLabel::PDF,
+        MediaKind::Audio => MediaKindLabel::AUDIO,
+        MediaKind::Video => MediaKindLabel::VIDEO,
     };
-    if len > max_encoded_bytes as u64 {
-        return Err(ToolError::resource_limit(format!(
-            "attachment is {len} bytes; the absolute validation cap is {max_encoded_bytes} bytes"
-        )));
+    let max_bytes = max_attachment_bytes(label);
+    if byte_length > max_bytes {
+        return Err(UploadRejection::TooLarge {
+            kind: label,
+            byte_length,
+            max_bytes,
+            image: None,
+        });
     }
-    Ok(Some((mime, kind)))
+    let malformed = UploadRejection::Malformed { media_type };
+    let image = match kind {
+        MediaKind::Image(container) => {
+            let (dimensions, within) = match container {
+                ImageContainer::Png => (png_dimensions(bytes), None),
+                ImageContainer::Jpeg => (jpeg_dimensions(bytes), None),
+                ImageContainer::WebP => (static_webp_dimensions(bytes), None),
+                ImageContainer::Gif => (
+                    gif_frame_count(bytes).map(|_| gif_screen(bytes)),
+                    Some(gif_within_limits(bytes)),
+                ),
+            };
+            let (width, height) = dimensions.ok_or(malformed)?;
+            if width == 0 || height == 0 {
+                return Err(malformed);
+            }
+            if !within.unwrap_or_else(|| valid_dimensions(width, height)) {
+                return Err(UploadRejection::TooLarge {
+                    kind: label,
+                    byte_length,
+                    max_bytes,
+                    image: Some((width, height)),
+                });
+            }
+            Some((width, height))
+        }
+        MediaKind::Pdf => {
+            if !validate_pdf(bytes) {
+                return Err(malformed);
+            }
+            None
+        }
+        MediaKind::Audio | MediaKind::Video => None,
+    };
+    Ok(ValidatedUpload {
+        media_type,
+        kind: label,
+        image,
+    })
 }
 
 pub fn canonical_video_mime_type(value: &str) -> &str {
@@ -660,13 +879,20 @@ fn gif_within_limits(bytes: &[u8]) -> bool {
     let Some(frames) = gif_frame_count(bytes) else {
         return false;
     };
-    let width = u32::from(u16::from_le_bytes([bytes[6], bytes[7]]));
-    let height = u32::from(u16::from_le_bytes([bytes[8], bytes[9]]));
+    let (width, height) = gif_screen(bytes);
     valid_dimensions(width, height)
         && frames <= MAX_ANIMATION_FRAMES
         && (u64::from(width) * u64::from(height))
             .checked_mul(frames as u64)
             .is_some_and(|pixels| pixels <= MAX_IMAGE_PIXELS)
+}
+
+/// The logical screen size of a GIF whose header [`gif_frame_count`] read.
+fn gif_screen(bytes: &[u8]) -> (u32, u32) {
+    (
+        u32::from(u16::from_le_bytes([bytes[6], bytes[7]])),
+        u32::from(u16::from_le_bytes([bytes[8], bytes[9]])),
+    )
 }
 
 /// Walks the blocks of a complete GIF and returns its image (frame) count.
@@ -910,7 +1136,8 @@ mod tests {
 
     use super::{
         AttachmentGate, BEDROCK_IMAGE_BYTES, BEDROCK_PDF_BYTES, MAX_VIDEO_ATTACHMENT_BYTES,
-        approved_media_type, attachment_gate_error, tool_input_media, validate_attachment,
+        UploadRejection, ValidatedUpload, approved_media_type, attachment_gate_error,
+        tool_input_media, user_input_media, validate_attachment, validate_upload,
     };
     use crate::AdapterFamily;
 
@@ -1367,6 +1594,219 @@ mod tests {
         assert_eq!(media[1].max_bytes, 1024, "the model's lower limit wins");
         assert_eq!(media[1].delivery, MediaDelivery::UserMessage);
         assert!(tool_input_media(AdapterFamily::Anthropic, &capabilities(None)).is_empty());
+    }
+
+    fn with_media(
+        mut model: ModelCapabilities,
+        kind: MediaKind,
+        mime_types: &[&str],
+        max_bytes: u64,
+        max_count: u32,
+    ) -> ModelCapabilities {
+        let modality = match kind {
+            MediaKind::Image => Modality::Image,
+            MediaKind::Audio => Modality::Audio,
+            MediaKind::Pdf => Modality::Pdf,
+            MediaKind::Video => Modality::Video,
+        };
+        model.input.insert(modality);
+        model.media.insert(
+            kind,
+            MediaCapability {
+                mime_types: mime_types
+                    .iter()
+                    .map(|mime_type| MimeType::new(*mime_type).unwrap())
+                    .collect(),
+                max_bytes,
+                max_count,
+            },
+        );
+        model
+    }
+
+    /// `(kind, mime types, max bytes, max dimension, max pixels, max count)`.
+    type MediaSummary = (String, Vec<String>, u64, Option<u32>, Option<u64>, u32);
+
+    fn summary(family: AdapterFamily, model: &ModelCapabilities) -> Vec<MediaSummary> {
+        user_input_media(family, model)
+            .into_iter()
+            .map(|media| {
+                (
+                    media.kind.as_str().to_owned(),
+                    media.mime_types,
+                    media.max_bytes,
+                    media.max_dimension,
+                    media.max_pixels,
+                    media.max_count,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn user_input_media_takes_the_lowest_of_the_model_the_family_and_the_attachment_caps() {
+        let model = with_media(
+            with_media(
+                with_media(
+                    capabilities(None),
+                    MediaKind::Image,
+                    &["image/png", "image/jpeg", "image/heic"],
+                    30 * 1024 * 1024,
+                    20,
+                ),
+                MediaKind::Pdf,
+                &["application/pdf"],
+                30 * 1024 * 1024,
+                5,
+            ),
+            MediaKind::Video,
+            &["video/mov", "video/mp4"],
+            30 * 1024 * 1024,
+            1,
+        );
+        let image = |max_bytes| {
+            (
+                "image".to_owned(),
+                vec!["image/jpeg".to_owned(), "image/png".to_owned()],
+                max_bytes,
+                Some(16_384),
+                Some(16_777_216),
+                20,
+            )
+        };
+        let pdf = |max_bytes| {
+            (
+                "pdf".to_owned(),
+                vec!["application/pdf".to_owned()],
+                max_bytes,
+                None,
+                None,
+                5,
+            )
+        };
+        let video = |max_bytes| {
+            (
+                "video".to_owned(),
+                vec!["video/mp4".to_owned(), "video/quicktime".to_owned()],
+                max_bytes,
+                None,
+                None,
+                1,
+            )
+        };
+        // Anthropic: images at its 7.5 MiB inline limit, PDFs at the
+        // attachment cap, and no video at all.
+        assert_eq!(
+            summary(AdapterFamily::Anthropic, &model),
+            [image(7_864_320), pdf(20_971_520)]
+        );
+        // OpenAI Responses carries images and PDFs in tool results; in a
+        // user turn they count the same way.
+        assert_eq!(
+            summary(AdapterFamily::OpenaiResponses, &model),
+            [image(20_971_520), pdf(20_971_520)]
+        );
+        // OpenAI Chat carries none of them in tool results, yet accepts
+        // images and PDFs in a user turn: they are offered.
+        assert_eq!(
+            summary(AdapterFamily::OpenaiChat, &model),
+            [image(20_971_520), pdf(20_971_520)]
+        );
+        // Bedrock's video budget is below the 25 MiB video cap.
+        assert_eq!(
+            summary(AdapterFamily::AwsBedrockConverse, &model),
+            [image(3_932_160), pdf(4_718_592), video(19_660_797)]
+        );
+        // An Anthropic-compatible endpoint takes video up to the video cap.
+        assert_eq!(
+            summary(AdapterFamily::AnthropicCompatible, &model),
+            [image(7_864_320), pdf(20_971_520), video(26_214_400)]
+        );
+        // Gemini's inline request budget bounds every kind.
+        assert_eq!(
+            summary(AdapterFamily::GoogleGemini, &model),
+            [image(14_680_064), pdf(14_680_064), video(14_680_064)]
+        );
+        // The model's own lower limit wins.
+        let small = with_media(capabilities(None), MediaKind::Image, &["image/*"], 1_000, 3);
+        assert_eq!(
+            summary(AdapterFamily::OpenaiChat, &small),
+            [(
+                "image".to_owned(),
+                vec![
+                    "image/gif".to_owned(),
+                    "image/jpeg".to_owned(),
+                    "image/png".to_owned(),
+                    "image/webp".to_owned()
+                ],
+                1_000,
+                Some(16_384),
+                Some(16_777_216),
+                3
+            )]
+        );
+        // A kind no upload can be recognized as is not offered.
+        let heic = with_media(
+            capabilities(None),
+            MediaKind::Image,
+            &["image/heic"],
+            1_000,
+            1,
+        );
+        assert!(user_input_media(AdapterFamily::OpenaiChat, &heic).is_empty());
+        assert!(user_input_media(AdapterFamily::Anthropic, &capabilities(None)).is_empty());
+    }
+
+    #[test]
+    fn uploads_are_recognized_from_their_content_and_report_image_sizes() {
+        assert_eq!(
+            validate_upload(&png(640, 480)),
+            Ok(ValidatedUpload {
+                media_type: "image/png",
+                kind: "image",
+                image: Some((640, 480)),
+            })
+        );
+        assert_eq!(
+            validate_upload(&jpeg(32, 16)).map(|upload| upload.image),
+            Ok(Some((32, 16)))
+        );
+        assert_eq!(
+            validate_upload(&gif(8, 4, 2)).map(|upload| upload.image),
+            Ok(Some((8, 4)))
+        );
+        assert_eq!(
+            validate_upload(b"plain text").unwrap_err(),
+            UploadRejection::Unrecognized
+        );
+        let mut torn = png(4, 4);
+        torn.truncate(torn.len() - 3);
+        assert_eq!(
+            validate_upload(&torn).unwrap_err(),
+            UploadRejection::Malformed {
+                media_type: "image/png"
+            }
+        );
+        assert_eq!(
+            validate_upload(&png(20_000, 10)).unwrap_err(),
+            UploadRejection::TooLarge {
+                kind: "image",
+                byte_length: png(20_000, 10).len() as u64,
+                max_bytes: 20 * 1024 * 1024,
+                image: Some((20_000, 10)),
+            }
+        );
+        let mut huge = png(4, 4);
+        huge.resize(20 * 1024 * 1024 + 1, 0);
+        assert_eq!(
+            validate_upload(&huge).unwrap_err(),
+            UploadRejection::TooLarge {
+                kind: "image",
+                byte_length: 20 * 1024 * 1024 + 1,
+                max_bytes: 20 * 1024 * 1024,
+                image: None,
+            }
+        );
     }
 
     #[test]

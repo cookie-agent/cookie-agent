@@ -126,6 +126,7 @@ fn install_draft_catalog(app: &mut App) {
                     "cancellation": cookie_agent_protocol::CancellationCapability::LocalOnly,
                     "media": {},
                 },
+                "input_media": [],
                 "variants": [{
                     "id": "high", "display_name": "High",
                     "origin": cookie_agent_protocol::VariantOrigin::Explicit,

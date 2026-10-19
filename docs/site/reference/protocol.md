@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `0.51.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `0.52.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. Until the 1.0 freeze every minor version may break the
 wire, so a client and a daemon connect only when their major and minor
 versions are equal; the patch never matters.
@@ -12,7 +12,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "0.51.0",
+    "protocol_version": "0.52.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -21,7 +21,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "0.51.0", "engine_version": "0.3.0",
+{ "protocol_version": "0.52.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -380,6 +380,22 @@ changes arrive as `plugins.changed`.
   or the internal revisions and counters the view's `revision` stands for.
   `models` lists only selectable models; an agent's `resolved_fallback` names
   model selections.
+- **`input_media`** on every model says what it accepts in user input, one
+  entry per kind (an open label: `image`, `pdf`, `audio`, or `video`):
+
+  ```json
+  { "kind": "image", "mime_types": ["image/jpeg", "image/png"],
+    "max_bytes": 7864320, "max_dimension": 16384, "max_pixels": 16777216,
+    "max_count": 20 }
+  ```
+
+  The limits are effective: the lowest of the model's catalog capability, the
+  delivery limits of its adapter family for a user turn, and the attachment
+  caps (20 MiB, or 25 MiB for video). `mime_types` lists the model's types an
+  upload can be recognized as from its content; `max_dimension` and
+  `max_pixels` are present for images. A kind absent from the list is not
+  accepted: clients offer attachments only for the kinds of the session's
+  selected model and check sizes before uploading.
 
 ### Model availability
 

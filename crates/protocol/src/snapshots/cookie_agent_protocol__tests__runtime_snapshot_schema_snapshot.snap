@@ -200,6 +200,14 @@ expression: schema_for!(RuntimeSnapshotResult)
           "minLength": 1,
           "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$"
         },
+        "input_media": {
+          "description": "What the model accepts in user input, by kind, with the effective\nlimits (`docs/site/specs/compatibility-v1.md` section 11.2). A kind\nabsent here is not accepted; a reader keeps kinds it does not know\nand never offers them.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InputMedia"
+          },
+          "maxItems": 16
+        },
         "key": {
           "type": "string",
           "maxLength": 512,
@@ -228,6 +236,7 @@ expression: schema_for!(RuntimeSnapshotResult)
         "key",
         "display_name",
         "capabilities",
+        "input_media",
         "variants",
         "variant_order",
         "default_variant"
@@ -435,6 +444,60 @@ expression: schema_for!(RuntimeSnapshotResult)
         "unavailable"
       ],
       "x-open": true
+    },
+    "InputMedia": {
+      "description": "What one model accepts of one media kind in user input. The limits are\neffective: the lowest of the model's capability, its provider's delivery\nlimits, and the attachment caps.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "A media kind, such as `image`.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$"
+        },
+        "max_bytes": {
+          "description": "The largest accepted file.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_count": {
+          "description": "The most parts of this kind one input carries.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_dimension": {
+          "description": "The longest accepted side of an image or video, in pixels.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_pixels": {
+          "description": "The most pixels an accepted image or video frame has.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mime_types": {
+          "description": "The media types accepted, such as `image/png`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "mime_types",
+        "max_bytes",
+        "max_count"
+      ]
     },
     "MediaCapability": {
       "type": "object",

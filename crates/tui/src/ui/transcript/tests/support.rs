@@ -1083,6 +1083,7 @@ pub(crate) fn model_descriptor() -> cookie_agent_protocol::AvailableModelDescrip
             cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
             media: BTreeMap::new(),
         },
+        input_media: Vec::new(),
         variants: vec![
             cookie_agent_protocol::AvailableVariantDescriptor {
                 id: cookie_agent_protocol::VariantId::new("fast").expect("variant"),

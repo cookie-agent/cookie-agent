@@ -98,7 +98,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the cookie-agent client protocol 0.51 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the cookie-agent client protocol 0.52 JSON-RPC WebSocket daemon on localhost.
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.

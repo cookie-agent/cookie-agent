@@ -1127,6 +1127,12 @@ pub struct AvailableModelDescriptor {
     #[schemars(with = "ModelDisplayNameSchema")]
     pub display_name: String,
     pub capabilities: ModelCapabilities,
+    /// What the model accepts in user input, by kind, with the effective
+    /// limits (`docs/site/specs/compatibility-v1.md` section 11.2). A kind
+    /// absent here is not accepted; a reader keeps kinds it does not know
+    /// and never offers them.
+    #[schemars(length(max = 16))]
+    pub input_media: Vec<crate::InputMedia>,
     #[schemars(length(max = 256))]
     pub variants: Vec<AvailableVariantDescriptor>,
     #[schemars(length(max = 256))]
@@ -1153,6 +1159,14 @@ impl AvailableModelDescriptor {
     pub fn validate(&self) -> Result<(), ModelSchemaError> {
         validate_display_name(&self.display_name)?;
         self.capabilities.validate()?;
+        let kinds = self
+            .input_media
+            .iter()
+            .map(|media| media.kind.as_str())
+            .collect::<BTreeSet<_>>();
+        if self.input_media.len() > 16 || kinds.len() != self.input_media.len() {
+            return Err(ModelSchemaError::InvalidMediaCapability);
+        }
         if self.variants.len() > 256 {
             return Err(ModelSchemaError::TooManyVariants);
         }
@@ -1196,6 +1210,7 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
             key: ModelKey,
             display_name: String,
             capabilities: ModelCapabilities,
+            input_media: Vec<crate::InputMedia>,
             variants: Vec<AvailableVariantDescriptor>,
             variant_order: Vec<VariantId>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -1206,6 +1221,7 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
             key: w.key,
             display_name: w.display_name,
             capabilities: w.capabilities,
+            input_media: w.input_media,
             variants: w.variants,
             variant_order: w.variant_order,
             default_variant: w.default_variant,

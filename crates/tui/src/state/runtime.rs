@@ -215,6 +215,7 @@ mod tests {
                 cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
                 media: Default::default(),
             },
+            input_media: Vec::new(),
             variants: Vec::new(),
             variant_order: Vec::new(),
             default_variant: None,

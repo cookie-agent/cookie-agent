@@ -56,6 +56,7 @@ impl Harness {
             serde_json::from_value::<AvailableModelDescriptor>(json!({
                 "key":binding.selection.model, "display_name":binding.selection.model.to_string(),
                 "capabilities":{"input":["text"],"output":["text"],"context_tokens":8192,"output_tokens":2048,"tool_calling":true,"parallel_tool_calls":true,"structured_output":false,"reasoning":false,"temperature":true,"top_p":true,"seed":false,"native_replay":"unsupported","cancellation":"local_only","media":{}},
+                "input_media":[],
                 "variants":[],"variant_order":[],"default_variant":null,
             })).unwrap()
         }).collect::<Vec<_>>();

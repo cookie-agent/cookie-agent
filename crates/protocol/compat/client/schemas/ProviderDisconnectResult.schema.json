@@ -183,6 +183,14 @@
           "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$",
           "type": "string"
         },
+        "input_media": {
+          "description": "What the model accepts in user input, by kind, with the effective\nlimits (`docs/site/specs/compatibility-v1.md` section 11.2). A kind\nabsent here is not accepted; a reader keeps kinds it does not know\nand never offers them.",
+          "items": {
+            "$ref": "#/$defs/InputMedia"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
         "key": {
           "maxLength": 512,
           "minLength": 3,
@@ -211,6 +219,7 @@
         "key",
         "display_name",
         "capabilities",
+        "input_media",
         "variants",
         "variant_order",
         "default_variant"
@@ -436,6 +445,60 @@
       ],
       "type": "string",
       "x-open": true
+    },
+    "InputMedia": {
+      "description": "What one model accepts of one media kind in user input. The limits are\neffective: the lowest of the model's capability, its provider's delivery\nlimits, and the attachment caps.",
+      "properties": {
+        "kind": {
+          "description": "A media kind, such as `image`.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "The largest accepted file.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_count": {
+          "description": "The most parts of this kind one input carries.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_dimension": {
+          "description": "The longest accepted side of an image or video, in pixels.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_pixels": {
+          "description": "The most pixels an accepted image or video frame has.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mime_types": {
+          "description": "The media types accepted, such as `image/png`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "mime_types",
+        "max_bytes",
+        "max_count"
+      ],
+      "type": "object"
     },
     "MediaCapability": {
       "properties": {

@@ -6,6 +6,12 @@ every minor version may break the wire; from 1.0 a minor only adds and a
 major breaks (see the [compatibility spec](../specs/compatibility-v1.md)
 section 3).
 
+## 0.52.0
+
+- Every model of the catalog view states `input_media`: the kinds it accepts
+  in user input, with their media types and effective byte, dimension, pixel,
+  and count limits.
+
 ## 0.51.0
 
 - The handshake's `protocol_version` is a semver string. A client of another
