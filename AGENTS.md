@@ -32,6 +32,17 @@ ignore fields, migrate authored files, or upconvert old shapes.
 Every configuration-surface change must update the configuration reference and
 cover defaults, strict unknown-field handling, and boundary semantics in tests.
 
+## TUI
+
+Mouse targets resolve in one place, `App::pointer_target_at`
+(`crates/tui/src/ui/app/pointer.rs`): clicks act on its result and hover
+highlights it. A new click target is a new `PointerTarget` variant and must
+paint a visible hover in `apply_hover`; only text fields, whose caret is their
+affordance, and queue rows that can only say why they cannot be recalled stay
+hover-quiet (`PointerTarget::is_hoverable`). The sweep in
+`crates/tui/src/ui/transcript/tests/pointer.rs` checks every target hovers
+visibly, so reach the new target from one of its surfaces.
+
 ## Required Gates
 
 Use locked dependency resolution for builds and tests:

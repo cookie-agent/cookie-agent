@@ -14,6 +14,8 @@ in the independent client configuration.
 When at least one model is available, select an agent and model if needed, type
 a request in the composer, and press Enter. If no authored root agent is
 runnable, the engine supplies the built-in `default` coding agent.
+Every clickable element highlights under the mouse pointer; text fields, such
+as the composer and picker searches, show their caret instead.
 
 Useful first commands, from the [command palette](#command-palette), are
 `/sessions`, `/new`, `/model`, `/compact`, and `/cancel`. [Agent](agents.md) covers authored prompts and permissions.
