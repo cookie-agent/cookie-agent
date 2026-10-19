@@ -181,6 +181,10 @@ def open_events(surfaces):
     event_payload(surfaces)["x-open"] = True
 
 
+def close_events(surfaces):
+    event_payload(surfaces).pop("x-open", None)
+
+
 def add_event(surfaces):
     event_payload(surfaces)["oneOf"].append(
         {
@@ -224,7 +228,7 @@ CASES = [
     ("value removed from an open enum", "plugin", remove_hook_action, MAJOR, open_hook_action),
     ("value removed from a closed enum", "plugin", remove_hook_action, MAJOR, None),
     ("variant added to an open tagged enum", "events", add_event, MINOR, open_events),
-    ("variant added to a closed tagged enum", "events", add_event, MAJOR, None),
+    ("variant added to a closed tagged enum", "events", add_event, MAJOR, close_events),
     ("variant removed", "events", remove_event, MAJOR, None),
     ("const changed", "plugin", change_const, MAJOR, None),
     ("field removed in a nested definition", "runtime", nested_field_removed, MAJOR, None),

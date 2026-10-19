@@ -341,6 +341,18 @@ string_wire_impl!(
     |value: &str| validate_snake_label(value, DiagnosticKind::MAX_BYTES)
 );
 
+/// The `type` of a session event, such as `delegation_reserved`: a
+/// snake-case label. It may name a type this build does not know.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EventType(String);
+string_wire_impl!(
+    EventType,
+    64,
+    "^[a-z][a-z0-9_]*$",
+    "The type of a session event, as a snake-case label.",
+    |value: &str| validate_snake_label(value, EventType::MAX_BYTES)
+);
+
 /// The name of a hook a plugin intercepts, such as `tool_before_call`: a
 /// snake-case label. A plugin may name a hook this build does not know; the
 /// daemon skips it with a diagnostic.

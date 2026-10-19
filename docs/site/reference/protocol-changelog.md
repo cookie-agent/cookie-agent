@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.1.0
+
+- A new audit event, `record_omitted { omitted_type }`, stands in for a record
+  its writer deliberately did not carry over, at that record's sequence, run,
+  and time. A fork writes one for each of its source's `delegation_reserved`,
+  `delegation_progressed`, and `delegation_finished` records: the fork keeps
+  the conversation but not the subagents, which stay the source's (see
+  [Events](events.md#delegation)). It is skippable and changes nothing a
+  reader projects; a 1.0 client reads it as an unknown event. The plugin
+  protocol is `1.1.0` for the same event.
+
 ## 1.0.0
 
 The client protocol is frozen: every later 1.x version reads and is read by

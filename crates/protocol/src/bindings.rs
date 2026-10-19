@@ -260,7 +260,16 @@ pub fn surface_methods(surface: Surface) -> Vec<MethodSpec> {
 pub fn surface_information_roots(surface: Surface) -> Vec<RootType> {
     match surface {
         Surface::Client => Vec::new(),
-        Surface::Events => vec![root!(EventPayload), root!(StoredEvent)],
+        // A reader accepts an event type it does not know (skipping it, or
+        // opening the log render-only), so the set is open: a new type is an
+        // addition.
+        Surface::Events => vec![
+            RootType {
+                name: "EventPayload",
+                schema: schema_of::<Open<EventPayload>>,
+            },
+            root!(StoredEvent),
+        ],
         Surface::Plugin | Surface::Runtime => Vec::new(),
     }
 }

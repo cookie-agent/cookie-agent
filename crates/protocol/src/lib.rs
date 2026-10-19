@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.0, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.1, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except

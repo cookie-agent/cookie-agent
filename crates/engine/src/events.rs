@@ -312,6 +312,26 @@ impl RawLines {
         let kept = self.lines.partition_point(|line| line.seq <= through_seq);
         self.lines.truncate(kept);
     }
+
+    /// Drops the lines of `seqs`, which ascend.
+    fn remove(&mut self, seqs: &[u64]) {
+        if !seqs.is_empty() {
+            self.lines
+                .retain(|line| seqs.binary_search(&line.seq).is_err());
+        }
+    }
+}
+
+/// Whether a fork leaves the record behind: the delegation records name the
+/// session that delegated, and the subagents they reserve, start, and finish
+/// stay that session's.
+fn left_behind_by_fork(payload: &EventPayload) -> bool {
+    matches!(
+        payload,
+        EventPayload::DelegationReserved { .. }
+            | EventPayload::DelegationProgressed { .. }
+            | EventPayload::DelegationFinished { .. }
+    )
 }
 
 fn is_model_turn(event: &StoredEvent) -> bool {
@@ -687,6 +707,12 @@ impl EventLog {
     /// whole once it is assembled. It writes nothing until
     /// [`Self::mark_written`]. The damage the source's load found in that
     /// prefix comes along, so records it excused stay excused.
+    ///
+    /// The fork leaves its source's subagents behind: each delegation record
+    /// becomes a `record_omitted` at its sequence, run, and time, so the
+    /// sequence stays contiguous. The conversation stays as it was: the
+    /// delegate calls and their results, the links to the children, and
+    /// the producer messages that brought their reports.
     pub(crate) fn fork_buffered(
         path: PathBuf,
         session_id: SessionId,
@@ -694,12 +720,31 @@ impl EventLog {
         through_seq: u64,
         capability: WriteCapability,
     ) -> Result<Arc<Self>, EventLogError> {
+        let mut omitted = Vec::new();
         let records = source
             .event_snapshot()
             .iter()
             .filter(|event| event.seq <= through_seq)
             .map(|event| {
-                let mut copied = event.as_ref().clone();
+                let mut copied = if left_behind_by_fork(&event.payload) {
+                    omitted.push(event.seq);
+                    StoredEvent {
+                        engine_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                        origin: event.origin.clone(),
+                        session_id,
+                        run_id: event.run_id,
+                        seq: event.seq,
+                        timestamp: event.timestamp,
+                        payload: EventPayload::RecordOmitted {
+                            omitted_type: cookie_agent_protocol::EventType::new(
+                                cookie_agent_protocol::OpenTagged::tag(&event.payload),
+                            )
+                            .expect("event types are snake-case labels"),
+                        },
+                    }
+                } else {
+                    event.as_ref().clone()
+                };
                 copied.session_id = session_id;
                 Arc::new(copied)
             })
@@ -715,8 +760,10 @@ impl EventLog {
         // A prefix of a log that validated, so its records hold no
         // duplicates and pass again under the same damage.
         let validation = rebuild_validation(&path, session_id, &records, &taint)?;
-        // The lines the source did not fully understand come along as bytes.
-        let raw = source.storage().raw.through(through_seq);
+        // The lines the source read come along as bytes, except those of
+        // the records left behind, which are written as their replacements.
+        let mut raw = source.storage().raw.through(through_seq);
+        raw.remove(&omitted);
         let next_seq = records
             .last()
             .map(|record| record.seq)
@@ -3048,8 +3095,9 @@ fn validate_record_incremental(
         EventPayload::TreeApprovalGrantCommitted { grant } => {
             validate_approval_owner(path, approval_owners, grant.approval_id, record.run_id)?;
         }
-        // A diagnostic about a run belongs to it; any other is runless.
-        EventPayload::Diagnostic { .. } => {
+        // A diagnostic about a run belongs to it; any other is runless. An
+        // omitted record keeps the run of the record it stands for.
+        EventPayload::Diagnostic { .. } | EventPayload::RecordOmitted { .. } => {
             if record.run_id.is_some() {
                 require_started_run(path, runs, record.run_id)?;
             }

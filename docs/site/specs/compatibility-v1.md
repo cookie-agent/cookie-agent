@@ -2574,7 +2574,13 @@ corpora, and the compatibility policy.
   compatibility work (the delegation journal moved into parent events
   earlier) and is left as an open follow-up, since what a fork should make of
   its source's children is a design question; the future-data test forks
-  `coding`, which has no delegations.
+  `coding`, which has no delegations. (Since resolved in client and plugin
+  protocol 1.1.0: a fork leaves its source's subagents behind, replacing each
+  delegation record with a skippable `record_omitted` at its sequence, and the
+  future-data test forks `delegation` too. The events baseline's
+  `EventPayload` root was recorded closed, so the checker called a new event
+  type major; it is now the open event set, as readers take it, so a new type
+  is the minor addition section 3.3 says it is.)
 - **Corpora.** `crates/protocol/compat/corpus/{client,runtime}/1.0.0/`
   were recorded in one TUI-like session against an in-process daemon with a
   scripted OpenAI-compatible model and the local coding runtime behind the

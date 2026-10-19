@@ -119,6 +119,13 @@ events retain their sequence numbers, timestamps, run IDs, and payloads, while
 their envelope is rebound to the new session ID. Shared content-addressed
 artifacts remain resolvable without copying their bytes.
 
+A fork does not take its source's subagents. The conversation comes along,
+including what the subagents reported, but the subagents stay the source's:
+the fork starts with no children, `get_subagent_result` refuses the source's,
+and the fork creates its own when it delegates. Each delegation record the fork leaves
+behind is replaced by a `record_omitted` event (see
+[Events](../reference/events.md#delegation)).
+
 A fork of a root session is a new root, with a tree of its own, and may be taken
 from a session another process owns. A fork of a delegated session stays inside
 its source's tree, so it is published into that root's directory and needs that

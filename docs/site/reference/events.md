@@ -100,7 +100,10 @@ fork, or a conversion — copies every line it read as it was written: a record
 this build reads in full keeps the members it does not know, and a skipped
 event, a quarantined record, or a degraded one survives as well. A fork sets
 only each copy's `session_id` to the new session's; records appended since the
-log was read are written as this build serializes them. Artifact liveness
+log was read are written as this build serializes them. The exception is a
+fork's source's delegation records, which it leaves behind with its subagents
+(see [Delegation](#delegation)): each becomes a `record_omitted` written by this
+build, so what a newer build added to one goes with it. Artifact liveness
 (what a revert may delete, and what a fork links into its own tree) scans the
 lines as they were read, so a reference inside an unknown event or an unknown
 member keeps its artifact: both an `artifact://sha256/<digest>` anywhere in a
@@ -165,6 +168,7 @@ never stored.
 | `session_title_committed` | state | either | A title change |
 | `agent_md_loaded` | state | run | The `AGENTS.md` context of one attachment |
 | `diagnostic` | audit | either | A notice about the engine, a plugin, or a runtime |
+| `record_omitted` | audit | either | A record its writer deliberately did not carry over |
 | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` | state | runless or run | The session goal |
 | `producer_message_accepted`, `producer_message_discarded` | state | runless or run | A producer message's body; its withdrawal |
 | `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed` | state | run | A producer message's delivery |
@@ -437,6 +441,16 @@ in history exactly once. Full output remains available through
 delegation ends it before it ran (cancelled or failed); it sets the child's own
 status.
 
+A fork does not take its source's subagents: they stay the source's. The
+fork keeps the conversation as it was (the delegate calls and their results,
+`tool_call_linked`, and the producer messages that brought the children's
+reports, which read as any other message), but none of the `delegation_*`
+records. Each is replaced, at its sequence and with its run, time, and origin,
+by `record_omitted { omitted_type }` naming its type, so the sequence stays
+contiguous. The fork has no children until it delegates itself, and
+`get_subagent_result` refuses the source's children. Runtime revisions that
+only a dropped `delegation_reserved` recorded go with it.
+
 Engine startup projects delegation state while opening session logs. A reserved
 or started delegation without a terminal event resumes or rolls back according
 to its child and parent state. Recovery trusts the stored request fingerprint
@@ -529,6 +543,12 @@ no attachment records no attachment event. Delegated children record their own
 attachments.
 
 ### Other events
+
+`record_omitted { omitted_type }` stands in for a record its writer
+deliberately did not carry over, at that record's sequence, run (if any),
+time, and origin; `omitted_type` is the left-out record's `type`. Its run, when
+it has one, is a run the log started. Nothing reads it but a view; today only a
+fork writes it, for its source's [delegation records](#delegation).
 
 The runless `session_permission_overlay_set` event's `overlay`
 contains the complete, validated set of unique `(action, resource)` rules for

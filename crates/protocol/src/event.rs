@@ -2793,6 +2793,13 @@ pub enum EventPayload {
         change: SessionTitleChange,
         input_through_seq: u64,
     },
+    /// In place of a record of type `omitted_type` that the writer
+    /// deliberately did not carry over, at that record's sequence, run, and
+    /// time: a fork writes it for each of its source's delegation records,
+    /// whose subagents stay the source's.
+    RecordOmitted {
+        omitted_type: EventType,
+    },
 }
 
 // Plugins receive events as `Open<EventPayload>`: an event type a plugin
@@ -2915,7 +2922,8 @@ impl EventPayload {
             | Self::InternalAgentTextDelta { .. }
             | Self::NativeCompactionStarted { .. }
             | Self::NativeCompactionFinished { .. }
-            | Self::ToolCallProgress { .. } => true,
+            | Self::ToolCallProgress { .. }
+            | Self::RecordOmitted { .. } => true,
             // The approval projection ignores the doom-loop step; an unknown
             // step reads as a state step, the safe side for its writer's
             // `skippable`.
@@ -3028,6 +3036,7 @@ impl EventPayload {
                 | Self::SessionModelSelected { .. }
                 | Self::DelegatedContextSeeded { .. }
                 | Self::DelegateChildTerminated { .. }
+                | Self::RecordOmitted { .. }
         )
     }
     fn validate(&self) -> Result<(), EventSchemaError> {

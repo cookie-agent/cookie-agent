@@ -6973,7 +6973,29 @@
         "input_through_seq"
       ],
       "type": "object"
+    },
+    {
+      "description": "In place of a record of type `omitted_type` that the writer\ndeliberately did not carry over, at that record's sequence, run, and\ntime: a fork writes it for each of its source's delegation records,\nwhose subagents stay the source's.",
+      "properties": {
+        "omitted_type": {
+          "description": "The type of a session event, as a snake-case label.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "type": {
+          "const": "record_omitted",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "omitted_type"
+      ],
+      "type": "object"
     }
   ],
-  "title": "EventPayload"
+  "title": "EventPayload",
+  "x-open": true
 }

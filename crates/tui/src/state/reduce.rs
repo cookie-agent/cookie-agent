@@ -1193,6 +1193,13 @@ pub(super) fn reduce_event_from(
                 .to_lowercase(),
             timestamp,
         ),
+        // What a writer left out changes nothing; the debug view names it.
+        EventPayload::RecordOmitted { omitted_type } => push_event(
+            state,
+            EventLevel::Debug,
+            format!("event `{omitted_type}` (seq {sequence}) was not carried over"),
+            timestamp,
+        ),
         EventPayload::DelegateChildTerminated { status, reason } => push_event(
             state,
             if matches!(status, cookie_agent_protocol::SessionStatus::Failed) {

@@ -1216,7 +1216,7 @@ fn reference_validate_records(
             EventPayload::TreeApprovalGrantCommitted { grant } => {
                 validate_approval_owner(path, &approval_owners, grant.approval_id, record.run_id)?;
             }
-            EventPayload::Diagnostic { .. } => {
+            EventPayload::Diagnostic { .. } | EventPayload::RecordOmitted { .. } => {
                 if record.run_id.is_some() {
                     require_started_run(path, &runs, record.run_id)?;
                 }
@@ -4213,4 +4213,43 @@ fn unknown_open_enum_values_read_as_their_fallbacks() {
             outcome: cookie_agent_protocol::Open::Unknown { .. },
         }
     ));
+}
+
+/// A `record_omitted` keeps the run of the record it stands for: runless, or
+/// a run that started.
+#[test]
+fn an_omitted_record_belongs_to_no_run_or_a_started_one() {
+    let records = attribution_records();
+    let session_id = records[0].session_id;
+    let run_id = records[1].run_id.expect("run id");
+    let path = Path::new("omitted-events.jsonl");
+    let omitted = EventPayload::RecordOmitted {
+        omitted_type: cookie_agent_protocol::EventType::new("delegation_reserved")
+            .expect("event type"),
+    };
+    let with = |run: Option<RunId>| {
+        let mut log = records.clone();
+        let seq = log.len() as u64 + 1;
+        log.push(event(session_id, run, seq, omitted.clone()));
+        log
+    };
+    for run in [None, Some(run_id)] {
+        rebuild_validation(path, session_id, &with(run), &ValidationTaint::default())
+            .unwrap_or_else(|error| panic!("{run:?}: {error}"));
+    }
+    let unstarted = Some(RunId(Uuid::from_u128(999)));
+    assert!(
+        rebuild_validation(
+            path,
+            session_id,
+            &with(unstarted),
+            &ValidationTaint::default()
+        )
+        .is_err()
+    );
+    assert!(omitted.is_audit());
+    assert!(
+        cookie_agent_protocol::EventType::new("Delegation-Reserved").is_err(),
+        "an event type is a snake-case label"
+    );
 }

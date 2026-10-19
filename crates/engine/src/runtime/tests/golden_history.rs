@@ -1627,10 +1627,7 @@ async fn tolerates_future_data(name: &str) {
                 .unwrap()
                 .is_render_only();
             assert_eq!(render_only, !skippable, "{opening:?}");
-            // A fork of a session that delegated is refused: its delegation
-            // records name the source session (see the compatibility spec's
-            // phase H notes), so the fork is taken where there are none.
-            if matches!(opening, Opening::Owned) && skippable && name == "coding" {
+            if matches!(opening, Opening::Owned) && skippable {
                 let through = opened
                     .engine
                     .inner
@@ -1662,6 +1659,15 @@ async fn tolerates_future_data(name: &str) {
                 ] {
                     assert!(forked.contains(kept), "the fork dropped {kept}");
                 }
+                // A record the fork leaves behind goes whole, unknown members
+                // and all: its replacement is written as this build writes it.
+                for line in forked.lines() {
+                    let line: Value = serde_json::from_str(line).unwrap();
+                    if line["payload"]["type"] == "record_omitted" {
+                        assert!(line.get("future_envelope").is_none(), "{line}");
+                        assert!(line["payload"].get("future_member").is_none(), "{line}");
+                    }
+                }
             }
             if !skippable {
                 let selection = opened.engine.session_model_selection(root).unwrap();
@@ -1686,5 +1692,270 @@ async fn tolerates_future_data(name: &str) {
             }
             opened.engine.shutdown().await;
         }
+    }
+}
+
+// --- forks of a session that delegated -------------------------------------
+
+/// The engine of `opened` shut down, and another opened over the same
+/// directory: holding the lock of every tree in `roots` for a read-only open,
+/// adopting each for an owned one.
+async fn reopen_scenario(
+    opened: OpenedScenario,
+    roots: Vec<SessionId>,
+    opening: Opening,
+) -> OpenedScenario {
+    let OpenedScenario {
+        engine,
+        workdir,
+        _locks,
+        _directory: directory,
+        ..
+    } = opened;
+    engine.shutdown().await;
+    drop(engine);
+    drop(_locks);
+    let mut locks = Vec::new();
+    if matches!(opening, Opening::ReadOnly) {
+        for root in &roots {
+            locks.push(
+                crate::ownership::try_acquire(&workdir.join(root.to_string()))
+                    .expect("hold the tree's lock"),
+            );
+        }
+    }
+    let cwd = directory.path().join("workspace");
+    let models = directory.path().join(format!("reopened-{opening:?}"));
+    create_private_test_dir(&models);
+    let engine = crate::Engine::open(crate::EngineOptions {
+        data_dir: directory.path().join("data"),
+        cwd: cwd.clone(),
+        config: reading_configuration(),
+        model_manager: reading_model_manager(&models),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(&cwd),
+    })
+    .expect("engine over the forked trees");
+    if matches!(opening, Opening::Owned) {
+        for root in &roots {
+            engine.resume(*root).await.expect("adopt a tree");
+        }
+    }
+    OpenedScenario {
+        engine,
+        roots,
+        workdir,
+        _locks: locks,
+        _directory: directory,
+    }
+}
+
+/// A session's events as clients receive them, and its model history.
+async fn fork_view(engine: &Engine, id: SessionId) -> (Vec<Value>, Value) {
+    let snapshot = session_snapshot(engine, id).await;
+    (
+        snapshot["events"].as_array().expect("events").clone(),
+        snapshot["history"].clone(),
+    )
+}
+
+/// A fork of the golden `delegation` root, which delegated in the
+/// foreground and in the background, resumed a child, and received its
+/// children's reports and messages as producer messages, leaves the
+/// subagents behind: each of the source's delegation records becomes a
+/// `record_omitted` at its sequence, everything else is copied as it was,
+/// the model history is the source's, and the fork has no children. The
+/// source's tree is untouched, and the fork reads the same after a restart,
+/// read-only and owned.
+#[tokio::test]
+async fn a_fork_of_a_session_that_delegated_leaves_its_subagents_behind() {
+    let scenario = PathBuf::from(GOLDEN_ROOT)
+        .join(HISTORY_FORMAT.to_string())
+        .join("delegation");
+    for opening in [Opening::ReadOnly, Opening::Owned] {
+        let opened = open_scenario(&scenario, opening).await;
+        let root = opened.roots[0];
+        let engine = &opened.engine;
+        let source_dir = opened.workdir.join(root.to_string());
+        let source_bytes = tree_bytes(&source_dir);
+        let source_children = engine.children(root).expect("source children");
+        assert_eq!(source_children.len(), 2);
+        let source_events = engine.inner.store.log(root).unwrap().event_snapshot();
+        let tip = source_events.last().unwrap().seq;
+        let delegations = engine.inner.delegation_events.entries().len();
+        assert_eq!(delegations, 3);
+
+        let fork = engine
+            .fork_session(root, tip, origin(), None)
+            .await
+            .unwrap_or_else(|error| panic!("{opening:?}: fork a session that delegated: {error}"))
+            .session_id;
+
+        assert_eq!(tree_bytes(&source_dir), source_bytes, "{opening:?}");
+        let fork_events = engine.inner.store.log(fork).unwrap().event_snapshot();
+        let mut omitted = Vec::new();
+        for (source, forked) in source_events.iter().zip(fork_events.iter()) {
+            assert_eq!(forked.session_id, fork);
+            assert_eq!(
+                (forked.seq, forked.run_id, forked.timestamp, &forked.origin),
+                (source.seq, source.run_id, source.timestamp, &source.origin)
+            );
+            let tag = cookie_agent_protocol::OpenTagged::tag(&source.payload);
+            if tag.starts_with("delegation_") {
+                assert_eq!(
+                    forked.payload,
+                    EventPayload::RecordOmitted {
+                        omitted_type: cookie_agent_protocol::EventType::new(tag.clone()).unwrap()
+                    }
+                );
+                omitted.push(tag);
+            } else {
+                assert_eq!(forked.payload, source.payload, "seq {}", source.seq);
+            }
+        }
+        omitted.sort();
+        omitted.dedup_by(|a, b| a == b);
+        assert_eq!(
+            omitted,
+            [
+                "delegation_finished",
+                "delegation_progressed",
+                "delegation_reserved"
+            ]
+        );
+        assert_eq!(
+            fork_events
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::RecordOmitted { .. }))
+                .count(),
+            12
+        );
+        // The links to the children, and the producer messages that brought
+        // their reports, are conversation and stay.
+        for kept in [
+            |payload: &EventPayload| matches!(payload, EventPayload::ToolCallLinked { .. }),
+            |payload: &EventPayload| {
+                matches!(
+                    payload,
+                    EventPayload::ProducerMessageAccepted {
+                        producer_owner: cookie_agent_protocol::ProducerOwner::Delegation { .. },
+                        ..
+                    }
+                )
+            },
+            |payload: &EventPayload| {
+                matches!(
+                    payload,
+                    EventPayload::ProducerMessageAccepted {
+                        producer_owner: cookie_agent_protocol::ProducerOwner::Subagent { .. },
+                        ..
+                    }
+                )
+            },
+        ] {
+            assert!(fork_events.iter().any(|event| kept(&event.payload)));
+        }
+        // The prefix ends between runs: the fork adds only its title.
+        assert_eq!(fork_events.len(), source_events.len() + 1);
+        assert!(matches!(
+            fork_events.last().unwrap().payload,
+            EventPayload::SessionTitleCommitted { .. }
+        ));
+
+        let (_, source_history) = fork_view(engine, root).await;
+        let (_, fork_history) = fork_view(engine, fork).await;
+        assert_eq!(fork_history, source_history, "{opening:?}");
+        assert!(engine.children(fork).expect("fork children").is_empty());
+        assert_eq!(engine.inner.delegation_events.entries().len(), delegations);
+        assert!(
+            engine
+                .inner
+                .delegation_events
+                .entries()
+                .iter()
+                .all(|entry| entry.reservation.parent_session_id == root)
+        );
+        for child in &source_children {
+            assert!(
+                engine
+                    .get_subagent_result(
+                        fork,
+                        child.session_id,
+                        false,
+                        0,
+                        1,
+                        tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await
+                    .is_err(),
+                "the source's child is not the fork's"
+            );
+        }
+        // On disk, each replacement is an audit record.
+        let written = std::fs::read_to_string(
+            opened
+                .workdir
+                .join(fork.to_string())
+                .join(crate::session::EVENTS_FILE),
+        )
+        .unwrap();
+        let mut replaced = 0;
+        for line in written.lines() {
+            let line: Value = serde_json::from_str(line).unwrap();
+            if line["payload"]["type"] == "record_omitted" {
+                assert_eq!(line["skippable"], true, "{line}");
+                replaced += 1;
+            }
+            assert!(
+                !line["payload"]["type"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("delegation_"),
+                "{line}"
+            );
+        }
+        assert_eq!(replaced, 12);
+
+        for reopening in [Opening::ReadOnly, Opening::Owned] {
+            let opened = open_scenario(&scenario, opening).await;
+            let fork = opened
+                .engine
+                .fork_session(root, tip, origin(), None)
+                .await
+                .expect("fork again")
+                .session_id;
+            let (forked_events, _) = fork_view(&opened.engine, fork).await;
+            let reopened = reopen_scenario(opened, vec![root, fork], reopening).await;
+            let (events, history) = fork_view(&reopened.engine, fork).await;
+            assert_eq!(events, forked_events, "{opening:?} then {reopening:?}");
+            assert_eq!(history, source_history, "{opening:?} then {reopening:?}");
+            let meta = reopened.engine.get_session(fork).expect("reopened fork");
+            assert!(meta.skipped_events.is_empty(), "{:?}", meta.skipped_events);
+            assert!(
+                reopened
+                    .engine
+                    .children(fork)
+                    .expect("reopened fork children")
+                    .is_empty()
+            );
+            assert_eq!(
+                reopened
+                    .engine
+                    .children(root)
+                    .expect("reopened source children")
+                    .len(),
+                2
+            );
+            assert!(
+                reopened
+                    .engine
+                    .inner
+                    .delegation_events
+                    .entries()
+                    .iter()
+                    .all(|entry| entry.reservation.parent_session_id == root)
+            );
+            reopened.engine.shutdown().await;
+        }
+        opened.engine.shutdown().await;
     }
 }

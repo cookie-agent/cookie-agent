@@ -736,6 +736,27 @@ fn terminal_and_internal_diagnostics_survive_replay_without_lowercasing() {
     }
 }
 
+/// A record a fork left behind shows only as a debug row naming its type.
+#[test]
+fn an_omitted_record_is_a_debug_row_and_nothing_else() {
+    let session = SessionId::new_v7();
+    let events = vec![stored_event(
+        session,
+        Some(RunId::new_v7()),
+        7,
+        EventPayload::RecordOmitted {
+            omitted_type: cookie_agent_protocol::EventType::new("delegation_finished").unwrap(),
+        },
+    )];
+    let replayed = reduce_session_events(session, 0, &events);
+    assert_eq!(replayed.transcript.len(), 1, "{:?}", replayed.transcript);
+    assert!(matches!(
+        &replayed.transcript[0],
+        TranscriptItem::Event { level: EventLevel::Debug, text, .. }
+            if text == "event `delegation_finished` (seq 7) was not carried over"
+    ));
+}
+
 fn goal_item(description: &str, finished: bool) -> cookie_agent_protocol::GoalItem {
     cookie_agent_protocol::GoalItem {
         description: description.into(),

@@ -387,6 +387,275 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
     fixture.engine.shutdown().await;
 }
 
+/// A fork of a session whose background child's report arrived as a
+/// producer message leaves that child behind: the fork's model history is
+/// the source's, it has no delegations, and it delegates again to a child of
+/// its own while the source and its child stay as they were.
+#[tokio::test]
+async fn a_fork_leaves_its_source_subagents_behind_and_delegates_its_own() {
+    // More requests than either branch makes: the source may take a wake run
+    // for the report, and the server is never awaited.
+    let (endpoint, responses, _captured) = scripted_channel_server(16).await;
+    for response in [
+        MatchedScriptedResponse::last_message_contains(
+            "delegate in the background",
+            scripted_tool_body(
+                "background-delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "description": "Write report",
+                    "prompt": "write report",
+                    "background": true
+                }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "write report",
+            scripted_text_body("first line\nsecond line"),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "background-delegate-call",
+            scripted_text_body("parent continued after admission"),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "parent continued after admission",
+            scripted_text_body("parent read the report"),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "delegate in the fork",
+            scripted_tool_body(
+                "fork-delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "description": "Fork task",
+                    "prompt": "fork child task"
+                }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "fork child task",
+            scripted_text_body("fork child report"),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "fork-delegate-call",
+            scripted_text_body("fork accepted child report"),
+        ),
+    ] {
+        responses.send(response).expect("scripted response");
+    }
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }),
+    );
+    let source = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("source session")
+        .session_id;
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: source,
+                client_run_id: ClientRunId::new("source-delegation").expect("run ID"),
+                selection: selection.clone(),
+                content: "delegate in the background".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("source run");
+    let source_tip = await_projection(
+        &fixture.engine,
+        source,
+        "the report consumed and the source idle",
+        |projection| {
+            projection.status != SessionStatus::Running
+                && crate::goal_projection::GoalProducerProjection::from_events(
+                    &projection.log.event_snapshot(),
+                )
+                .messages
+                .iter()
+                .any(|message| {
+                    message.consumed
+                        && matches!(
+                            message.producer_owner,
+                            cookie_agent_protocol::ProducerOwner::Delegation { .. }
+                        )
+                })
+        },
+    )
+    .await
+    .meta
+    .last_event_seq;
+    let source_children = fixture.engine.children(source).expect("source children");
+    assert_eq!(source_children.len(), 1);
+    let source_child = source_children[0].session_id;
+    let source_events = fixture.engine.inner.store.log(source).unwrap().events();
+    let source_child_events = fixture
+        .engine
+        .inner
+        .store
+        .log(source_child)
+        .unwrap()
+        .events();
+    let delegation_seqs = source_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::DelegationReserved { .. }
+                    | EventPayload::DelegationProgressed { .. }
+                    | EventPayload::DelegationFinished { .. }
+            )
+        })
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    assert!(delegation_seqs.len() >= 3, "{delegation_seqs:?}");
+
+    let fork = fixture
+        .engine
+        .fork_session(
+            source,
+            source_tip,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
+        )
+        .await
+        .expect("fork a session that delegated")
+        .session_id;
+    let fork_events = fixture.engine.inner.store.log(fork).unwrap().events();
+    let omitted_seqs = fork_events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::RecordOmitted { .. }))
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    assert_eq!(omitted_seqs, delegation_seqs);
+    for view in [EngineHistoryView::Full, EngineHistoryView::Assembled] {
+        assert_eq!(
+            serde_json::to_value(fixture.engine.get_history(fork, view).await.unwrap()).unwrap(),
+            serde_json::to_value(fixture.engine.get_history(source, view).await.unwrap()).unwrap(),
+        );
+    }
+    assert!(fixture.engine.children(fork).unwrap().is_empty());
+
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: fork,
+                client_run_id: ClientRunId::new("fork-delegation").expect("run ID"),
+                selection,
+                content: "delegate in the fork".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("fork run");
+    await_projection(&fixture.engine, fork, "the fork's run", |projection| {
+        projection.status == SessionStatus::Completed
+    })
+    .await;
+    let fork_children = fixture.engine.children(fork).expect("fork children");
+    assert_eq!(fork_children.len(), 1);
+    let fork_child = fork_children[0].session_id;
+    assert_ne!(fork_child, source_child);
+    assert!(matches!(
+        fixture.engine.get_session(fork_child).unwrap().origin,
+        cookie_agent_protocol::SessionOrigin::Delegated { parent_session_id, .. }
+            if parent_session_id == fork
+    ));
+    let entries = fixture.engine.inner.delegation_events.entries();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.reservation.parent_session_id == fork
+                && entry.reservation.child_session_id == fork_child)
+            .count(),
+        1
+    );
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .log(fork)
+            .unwrap()
+            .events()
+            .iter()
+            .any(|event| matches!(&event.payload, EventPayload::DelegationFinished { child_session_id, status: SessionStatus::Completed, .. } if *child_session_id == fork_child))
+    );
+    assert_eq!(
+        fixture.engine.inner.store.log(source).unwrap().events(),
+        source_events
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .log(source_child)
+            .unwrap()
+            .events(),
+        source_child_events
+    );
+    assert_eq!(fixture.engine.children(source).unwrap().len(), 1);
+    fixture.engine.shutdown().await;
+
+    let reopened = reopen_engine(&fixture);
+    reopened.resume(fork).await.expect("adopt the fork");
+    let children = reopened.children(fork).expect("reopened fork children");
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].session_id, fork_child);
+    assert_eq!(
+        reopened.children(source).unwrap()[0].session_id,
+        source_child
+    );
+    assert_eq!(reopened.inner.delegation_events.entries().len(), 2);
+    // A prefix that ends while the report waits to be read keeps it waiting:
+    // a producer message whose delegation the fork does not hold reads as any
+    // other.
+    let accepted = source_events
+        .iter()
+        .find(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ProducerMessageAccepted {
+                    producer_owner: cookie_agent_protocol::ProducerOwner::Delegation { .. },
+                    ..
+                }
+            )
+        })
+        .expect("the report's acceptance")
+        .seq;
+    let waiting = reopened
+        .inner
+        .store
+        .fork_with(
+            source,
+            accepted,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            &|_| Ok(()),
+        )
+        .expect("fork while the report waits");
+    let mail = crate::goal_projection::GoalProducerProjection::from_events(
+        &reopened.inner.store.log(waiting).unwrap().event_snapshot(),
+    )
+    .messages;
+    assert_eq!(mail.len(), 1);
+    assert!(!mail[0].consumed && !mail[0].discarded);
+    assert!(reopened.children(waiting).unwrap().is_empty());
+    reopened.shutdown().await;
+}
+
 #[tokio::test]
 async fn delegation_completion_triggers_configured_subagent_eviction_after_teaser() {
     let (endpoint, captured) = scripted_background_delegation_server().await;
