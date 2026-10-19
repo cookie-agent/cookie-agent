@@ -1,0 +1,651 @@
+{
+ "about": "What a newer daemon may send a client of this build. Each result reads as its method's result (its Debug form holding every `reads` string); each notification, sent to a client subscribed as the client corpus subscribed, produces exactly the `expect` deliveries and no diagnostic.",
+ "corpus": "client/1.0.0/session.jsonl",
+ "notifications": [
+  {
+   "about": "an event of a type this build does not know",
+   "expect": [
+    "unknown_event"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "events.subscription",
+    "params": {
+     "event": {
+      "engine_version": "0.3.0",
+      "origin": "engine:model-loop",
+      "payload": {
+       "sky": "clear",
+       "type": "weather_changed"
+      },
+      "run_id": "01a152df-88fe-7580-aebe-e7b8febf301e",
+      "seq": 4,
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "timestamp": "2026-10-19T06:35:43.837552758Z"
+     },
+     "type": "event"
+    }
+   }
+  },
+  {
+   "about": "a call with an unknown hint, unknown blocks, and an unknown tool source",
+   "expect": [
+    "live"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "events.subscription",
+    "params": {
+     "event": {
+      "engine_version": "0.3.0",
+      "origin": "engine:model-loop",
+      "payload": {
+       "background": true,
+       "operation_fingerprint": {
+        "digest": "621a71425999fdf15beb16a362e221f5d12809a19d25d46ca9bff49e59b812fd"
+       },
+       "output": {
+        "kind": "named",
+        "streams": [
+         "stdout",
+         "stderr"
+        ]
+       },
+       "owner": {
+        "content_index": 1,
+        "model_call_id": "corpus-call",
+        "model_turn_seq": 1,
+        "provider_item_id": null
+       },
+       "presentation": {
+        "arguments": [
+         {
+          "language": "sh",
+          "text": "printf 'corpus\\n'",
+          "type": "code"
+         },
+         {
+          "frames": 3,
+          "text": "a block of a kind this build does not know",
+          "type": "hologram"
+         }
+        ],
+        "hint": "teleport",
+        "preview": [
+         {
+          "frames": 3,
+          "text": "a block of a kind this build does not know",
+          "type": "hologram"
+         }
+        ],
+        "primary_argument": "printf 'corpus\\n'",
+        "title": "Run `printf 'corpus\\n'`",
+        "tool": {
+         "name": "bash",
+         "published_name": "bash",
+         "source": {
+          "orbit": "low",
+          "type": "satellite"
+         }
+        }
+       },
+       "tool_call_id": "01a152df-8913-7850-a681-4f2fe3e7bc71",
+       "type": "tool_call_started"
+      },
+      "run_id": "01a152df-88fe-7580-aebe-e7b8febf301e",
+      "seq": 4,
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "timestamp": "2026-10-19T06:35:43.770794858Z"
+     },
+     "type": "event"
+    }
+   }
+  },
+  {
+   "about": "a result with an unknown stream, an unknown block, and an unknown background state",
+   "expect": [
+    "live"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "events.subscription",
+    "params": {
+     "event": {
+      "engine_version": "0.3.0",
+      "origin": "engine:tool-result",
+      "payload": {
+       "error": null,
+       "outcome": "completed",
+       "owner": {
+        "content_index": 1,
+        "model_call_id": "corpus-call",
+        "model_turn_seq": 1,
+        "provider_item_id": null
+       },
+       "result": {
+        "attachments": [],
+        "background": {
+         "by": "model",
+         "state": "orbiting"
+        },
+        "display": [
+         {
+          "exit_code": 0,
+          "segments": [
+           {
+            "stream": "stdtele",
+            "text": "corpus\n"
+           }
+          ],
+          "type": "terminal"
+         },
+         {
+          "frames": 3,
+          "text": "a block of a kind this build does not know",
+          "type": "hologram"
+         }
+        ],
+        "metadata": {
+         "status": 0,
+         "success": true
+        },
+        "output": "[stdout]\ncorpus\n\n[stderr]\n",
+        "retained_output": {
+         "incomplete": false,
+         "streams": [
+          {
+           "byte_length": 7,
+           "line_count": 1,
+           "name": "stdout",
+           "next_offset": null,
+           "truncated": false
+          },
+          {
+           "byte_length": 0,
+           "line_count": 0,
+           "name": "stderr",
+           "next_offset": null,
+           "truncated": false
+          }
+         ]
+        },
+        "title": "Bash"
+       },
+       "tool_call_id": "01a152df-8913-7850-a681-4f2fe3e7bc71",
+       "type": "tool_call_terminated"
+      },
+      "run_id": "01a152df-88fe-7580-aebe-e7b8febf301e",
+      "seq": 4,
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "timestamp": "2026-10-19T06:35:43.817046512Z"
+     },
+     "type": "event"
+    }
+   }
+  },
+  {
+   "about": "an approval step of a type this build does not know",
+   "expect": [
+    "live"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "events.subscription",
+    "params": {
+     "event": {
+      "engine_version": "0.3.0",
+      "origin": "engine:approvals",
+      "payload": {
+       "approval_id": "01a152df-891c-74a0-9313-075d4941421f",
+       "step": {
+        "for_ms": 10,
+        "type": "pondering"
+       },
+       "type": "approval_step"
+      },
+      "run_id": "01a152df-88fe-7580-aebe-e7b8febf301e",
+      "seq": 4,
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "timestamp": "2026-10-19T06:35:43.784629863Z"
+     },
+     "type": "event"
+    }
+   }
+  },
+  {
+   "about": "a run outcome this build does not know",
+   "expect": [
+    "live"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "events.subscription",
+    "params": {
+     "event": {
+      "engine_version": "0.3.0",
+      "origin": "engine:model-loop",
+      "payload": {
+       "outcome": {
+        "type": "transcended"
+       },
+       "type": "run_finished"
+      },
+      "run_id": "01a152df-88fe-7580-aebe-e7b8febf301e",
+      "seq": 4,
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "timestamp": "2026-10-19T06:35:43.837552758Z"
+     },
+     "type": "event"
+    }
+   }
+  },
+  {
+   "about": "a subscription message of a type this build does not know",
+   "expect": [],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "events.subscription",
+    "params": {
+     "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+     "type": "hologram"
+    }
+   }
+  },
+  {
+   "about": "a session change of a kind this build does not know",
+   "expect": [
+    "sessions_resync"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "sessions.changed",
+    "params": {
+     "change": "teleported",
+     "session_id": "01a152df-88db-7921-a0f0-d2a93176939b"
+    }
+   }
+  },
+  {
+   "about": "a runtime change for a reason this build does not know",
+   "expect": [
+    "runtime_changed"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "runtime.changed",
+    "params": {
+     "observatory": {
+      "from": "a newer daemon"
+     },
+     "previous_revision": null,
+     "reasons": [
+      "startup",
+      "solar_flare"
+     ],
+     "snapshot": {
+      "agents": [
+       {
+        "delegation_targets": [],
+        "description": "Built-in approval evaluator",
+        "enabled": true,
+        "id": "approval",
+        "mode": "internal",
+        "resolved_fallback": [],
+        "runnable_as_root": false
+       },
+       {
+        "delegation_targets": [],
+        "description": "Built-in context compaction agent",
+        "enabled": true,
+        "id": "compaction",
+        "mode": "internal",
+        "resolved_fallback": [],
+        "runnable_as_root": false
+       },
+       {
+        "delegation_targets": [],
+        "description": "Corpus agent",
+        "enabled": true,
+        "id": "primary",
+        "mode": "primary",
+        "resolved_fallback": [
+         {
+          "model": "custom.test/group/model",
+          "variant": null
+         }
+        ],
+        "runnable_as_root": true
+       },
+       {
+        "delegation_targets": [],
+        "description": "Built-in session title agent",
+        "enabled": true,
+        "id": "title",
+        "mode": "internal",
+        "resolved_fallback": [],
+        "runnable_as_root": false
+       }
+      ],
+      "catalog": {
+       "age": "current",
+       "last_error": null,
+       "model_quarantine_count": 0,
+       "provider_quarantine_count": 0,
+       "source": "bootstrap",
+       "stale": true
+      },
+      "models": [
+       {
+        "capabilities": {
+         "cancellation": "local_only",
+         "context_tokens": 16384,
+         "input": [
+          "text",
+          "image"
+         ],
+         "media": {
+          "image": {
+           "max_bytes": 1048576,
+           "max_count": 1,
+           "mime_types": [
+            "image/png"
+           ]
+          }
+         },
+         "native_replay": "unsupported",
+         "output": [
+          "text"
+         ],
+         "output_tokens": 1024,
+         "parallel_tool_calls": true,
+         "reasoning": false,
+         "seed": false,
+         "structured_output": false,
+         "temperature": true,
+         "tool_calling": true,
+         "top_p": true
+        },
+        "default_variant": null,
+        "display_name": "Model",
+        "input_media": [
+         {
+          "kind": "image",
+          "max_bytes": 1048576,
+          "max_count": 1,
+          "max_dimension": 16384,
+          "max_pixels": 16777216,
+          "mime_types": [
+           "image/png"
+          ]
+         }
+        ],
+        "key": "custom.test/group/model",
+        "variant_order": [],
+        "variants": []
+       }
+      ],
+      "providers": [],
+      "revision": "sha256:dbec0d923b45d864a900ae21a068777627cc0c5ed0d9ec73f19330c6fe4de8af"
+     }
+    }
+   }
+  },
+  {
+   "about": "a notification this build does not know",
+   "expect": [],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "weather.changed",
+    "params": {
+     "sky": "clear"
+    }
+   }
+  }
+ ],
+ "results": [
+  {
+   "method": "session.get",
+   "reads": [
+    "status: Unknown"
+   ],
+   "result": {
+    "runtimes": [
+     {
+      "capability": "global",
+      "kind": "global",
+      "name": "global",
+      "runtime_id": "global",
+      "teleporter": {
+       "from": "a newer daemon"
+      }
+     },
+     {
+      "capability": "coding",
+      "kind": "coding",
+      "name": "local_workspace",
+      "runtime_id": "local",
+      "workspace": "/cookie-corpus/workspace"
+     }
+    ],
+    "session": {
+     "agent_revision": "sha256:3db2f7404a72409c7eb3ecf5e8e88578e35176456133af418cd5cef9d59940d9",
+     "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+     "creation_selection": {
+      "agent": "primary",
+      "model": {
+       "model": "custom.test/group/model",
+       "variant": null
+      }
+     },
+     "cwd_identity": "/cookie-corpus/workspace",
+     "hibernation": {
+      "from": "a newer daemon"
+     },
+     "last_activity": "2026-10-19T06:35:43.837552758Z",
+     "last_agent_activity": "2026-10-19T06:35:43.819545774Z",
+     "last_event_seq": 36,
+     "manifest_revision": "sha256:df52841441563f1ef69c2ad854653a5e255d1e1233fee1634c03485e7bd11411",
+     "model_revision": "sha256:e817e50f831242f4257d8243a420aa09a38e3b7627b4dfa40796d96a045c685c",
+     "origin": {
+      "type": "root"
+     },
+     "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+     "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+     "runtime_revision": "sha256:dbec0d923b45d864a900ae21a068777627cc0c5ed0d9ec73f19330c6fe4de8af",
+     "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+     "short_id": "primary_3653f432",
+     "skipped_events": [],
+     "status": "hibernating",
+     "title": null,
+     "title_updated_seq": 0
+    }
+   }
+  },
+  {
+   "method": "session.list",
+   "reads": [
+    "status: Unknown"
+   ],
+   "result": {
+    "next_page": {
+     "from": "a newer daemon"
+    },
+    "sessions": [
+     {
+      "agent_revision": "sha256:3db2f7404a72409c7eb3ecf5e8e88578e35176456133af418cd5cef9d59940d9",
+      "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "creation_selection": {
+       "agent": "primary",
+       "model": {
+        "model": "custom.test/group/model",
+        "variant": null
+       }
+      },
+      "cwd_identity": "/cookie-corpus/workspace",
+      "last_activity": "2026-10-19T06:35:43.837552758Z",
+      "last_agent_activity": "2026-10-19T06:35:43.819545774Z",
+      "last_event_seq": 36,
+      "manifest_revision": "sha256:df52841441563f1ef69c2ad854653a5e255d1e1233fee1634c03485e7bd11411",
+      "model_revision": "sha256:e817e50f831242f4257d8243a420aa09a38e3b7627b4dfa40796d96a045c685c",
+      "origin": {
+       "type": "root"
+      },
+      "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+      "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+      "runtime_revision": "sha256:dbec0d923b45d864a900ae21a068777627cc0c5ed0d9ec73f19330c6fe4de8af",
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "short_id": "primary_3653f432",
+      "skipped_events": [],
+      "status": "hibernating",
+      "title": null,
+      "title_updated_seq": 0
+     }
+    ]
+   }
+  },
+  {
+   "method": "approval.list",
+   "reads": [
+    "effect: Ask"
+   ],
+   "result": {
+    "approvals": [
+     {
+      "final_decision": null,
+      "internal_decision": {
+       "decision": "escalate",
+       "evaluations": [
+        {
+         "effect": "ask",
+         "resource_digest": {
+          "digest": "4b2cbc189c17558f3f5e853c758faf335d413ab831229e98c7e48c94a36d000d"
+         },
+         "trace": {
+          "action": "bash",
+          "candidates": [
+           {
+            "action": "bash",
+            "effect": "ask",
+            "resource": "*",
+            "source_layer": "agent_document"
+           }
+          ],
+          "effect": "ask",
+          "normalized_resource": "printf 'corpus\\n'",
+          "precedence_reason": "most-specific matching pattern: more literal characters, then fewer wildcards, then a runtime selector, then later declaration"
+         }
+        }
+       ],
+       "reason_code": "escalated",
+       "source": "internal_agent"
+      },
+      "request": {
+       "approval_id": "01a152df-891c-74a0-9313-075d4941421f",
+       "constraints": {
+        "allow_once": true,
+        "allow_tree_grant": false,
+        "cancellable": true,
+        "expires_at": "2026-10-19T06:36:13.772049247Z"
+       },
+       "evaluations": [
+        {
+         "effect": "consult",
+         "resource_digest": {
+          "digest": "4b2cbc189c17558f3f5e853c758faf335d413ab831229e98c7e48c94a36d000d"
+         },
+         "trace": {
+          "action": "bash",
+          "candidates": [
+           {
+            "action": "bash",
+            "effect": "ask",
+            "resource": "*",
+            "source_layer": "agent_document"
+           }
+          ],
+          "effect": "ask",
+          "normalized_resource": "printf 'corpus\\n'",
+          "precedence_reason": "most-specific matching pattern: more literal characters, then fewer wildcards, then a runtime selector, then later declaration"
+         }
+        }
+       ],
+       "operation": {
+        "capabilities": [
+         {
+          "action": "bash",
+          "operation": "bash:call"
+         }
+        ],
+        "capability_lifetime": "process_local",
+        "execution_context_digest": "9c8a510af47b6563a0e2f106089f320f1370ae9a31618997cb60aba99888c4b8",
+        "normalized_arguments_digest": "5c15774a99ff038ff62faf9e5de53e516ca136ddb76427ddae016b9a0e64c5a9",
+        "resources": [
+         {
+          "binding_digest": {
+           "digest": "4b2cbc189c17558f3f5e853c758faf335d413ab831229e98c7e48c94a36d000d"
+          },
+          "binding_lifetime": "process_local",
+          "boundary": {
+           "prefix": "printf 'corpus\\n'",
+           "type": "command_prefix"
+          },
+          "canonical": "bash:82de2387b3105ef1310b13d1676756368460c200ec9071ba0497252f1e6186a2",
+          "capability": "bash",
+          "source": "primary_operation"
+         }
+        ]
+       },
+       "operation_fingerprint": {
+        "digest": "621a71425999fdf15beb16a362e221f5d12809a19d25d46ca9bff49e59b812fd"
+       },
+       "revision": 1,
+       "runtime_id": "local",
+       "tool_call_id": "01a152df-8913-7850-a681-4f2fe3e7bc71",
+       "trigger": "permission_policy"
+      },
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "status": "escalated",
+      "user_decision": null
+     }
+    ],
+    "tree_grants": []
+   }
+  },
+  {
+   "method": "artifact.upload.finish",
+   "reads": [],
+   "result": {
+    "artifact": {
+     "byte_length": 70,
+     "filename": "pixel.png",
+     "media_type": "image/png",
+     "sha256": "6b7fa434f92a8b80aab02d9bf1a12e49ffcae424e4013a1c4f68b67e3d2bbcd0"
+    },
+    "image": {
+     "depth": 8,
+     "height": 1,
+     "width": 1
+    },
+    "thumbnail": {
+     "from": "a newer daemon"
+    }
+   }
+  },
+  {
+   "method": "handshake",
+   "reads": [
+    "teleportation"
+   ],
+   "result": {
+    "engine_version": "0.3.0",
+    "features": [
+     "teleportation"
+    ],
+    "machine_id": "0123456789abcdef0123456789abcdef",
+    "origin": "client:tui-01a152df88d47fd2b9d332d2ab52badf",
+    "protocol_version": "1.0.0",
+    "resumable": true
+   }
+  }
+ ]
+}

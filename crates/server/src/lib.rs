@@ -11,4 +11,6 @@ pub use service::{AllowedOrigins, RunningServer, Server, ServerError, TlsConfig,
 pub use token::{READY_LINE_PREFIX, TokenError, generate_token, ready_line};
 
 #[cfg(test)]
+mod corpus_tests;
+#[cfg(test)]
 mod tests;

@@ -43,7 +43,7 @@ pub(crate) struct Harness {
     pub(crate) server: Arc<Server>,
 }
 
-fn private_tempdir() -> TempDir {
+pub(crate) fn private_tempdir() -> TempDir {
     let directory = TempDir::new().expect("temp directory");
     #[cfg(unix)]
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
@@ -57,7 +57,7 @@ fn private_tempdir() -> TempDir {
     directory
 }
 
-fn create_private_test_dir(path: &std::path::Path) {
+pub(crate) fn create_private_test_dir(path: &std::path::Path) {
     #[cfg(unix)]
     {
         fs::create_dir(path).expect("private test directory");

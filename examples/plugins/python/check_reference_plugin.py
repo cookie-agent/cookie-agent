@@ -11,7 +11,12 @@ $ref, oneOf, anyOf, allOf, enum, const, items, item and length bounds,
 numeric bounds, patterns (with the Unicode classes `\\p{Cc}` and `\\p{Cf}`),
 and `x-open` enums, which also accept values they do not list.
 
-    python3 examples/plugins/python/check_reference_plugin.py [--schemas DIR]
+With `--record ROOT` it also writes the conversation, both directions in
+order, to ROOT/plugin/<version>/reference.jsonl as the frozen plugin corpus
+(`crates/protocol/compat/corpus`), and refuses when that directory exists: a
+recorded corpus is never rewritten.
+
+    python3 examples/plugins/python/check_reference_plugin.py [--schemas DIR] [--record ROOT]
 """
 
 import argparse
@@ -224,6 +229,7 @@ class Daemon:
         )
         self.next_id = 1
         self.checked = 0
+        self.recorded = []
 
     def method(self, method):
         entry = self.schemas.methods.get(method)
@@ -232,6 +238,7 @@ class Daemon:
         return entry
 
     def send(self, message):
+        self.recorded.append({"from": "daemon", "message": message})
         self.process.stdin.write(json.dumps(message) + "\n")
         self.process.stdin.flush()
 
@@ -242,6 +249,7 @@ class Daemon:
         message = json.loads(line)
         if message.get("jsonrpc") != "2.0":
             raise AssertionError("not a JSON-RPC 2.0 message: %s" % line)
+        self.recorded.append({"from": "plugin", "message": message})
         return message
 
     def notify(self, method, params):
@@ -369,7 +377,11 @@ def converse(schemas, plugin):
         "type": "tool_call_terminated", "tool_call_id": call_id,
         "owner": {"model_turn_seq": 3, "content_index": 0, "model_call_id": "call-1",
                   "provider_item_id": None},
-        "outcome": "completed", "result": None, "error": None,
+        "outcome": "completed", "error": None,
+        "result": {
+            "title": result["title"], "output": result["output"]["text"],
+            "display": result["display"], "metadata": result["metadata"], "attachments": [],
+        },
     }
     for event in (terminated, {"type": "run_finished", "outcome": {"type": "completed"}}):
         daemon.notify("plugin/event", {
@@ -385,7 +397,28 @@ def converse(schemas, plugin):
     daemon.process.stdin.close()
     if daemon.process.wait(timeout=10) != 0:
         raise AssertionError("the plugin exited with %s" % daemon.process.returncode)
-    return daemon.checked
+    return daemon.checked, daemon.recorded
+
+
+def corpus_directory(root, schemas):
+    """ROOT/plugin/<version> for the version of `schemas`; it must not exist
+    yet."""
+    with open(os.path.join(schemas.directory, "version"), encoding="utf-8") as source:
+        directory = os.path.join(root, "plugin", source.read().strip())
+    if os.path.exists(directory):
+        raise SystemExit("%s exists: a recorded corpus is never rewritten" % directory)
+    return directory
+
+
+def record(directory, recorded):
+    """Writes the conversation as DIRECTORY/reference.jsonl."""
+    os.makedirs(directory)
+    path = os.path.join(directory, "reference.jsonl")
+    with open(path, "w", encoding="utf-8") as target:
+        for entry in recorded:
+            target.write(json.dumps(entry, separators=(",", ":"), sort_keys=True,
+                                    ensure_ascii=False) + "\n")
+    return path
 
 
 def main():
@@ -393,9 +426,16 @@ def main():
     parser.add_argument("--schemas", default=DEFAULT_SCHEMAS,
                         help="the plugin surface's compat directory")
     parser.add_argument("--plugin", default=os.path.join(HERE, "reference_plugin.py"))
+    parser.add_argument("--record", metavar="ROOT",
+                        help="also write the conversation to ROOT/plugin/<version>/")
     arguments = parser.parse_args()
-    checked = converse(Schemas(os.path.abspath(arguments.schemas)), arguments.plugin)
+    schemas = Schemas(os.path.abspath(arguments.schemas))
+    directory = arguments.record and corpus_directory(arguments.record, schemas)
+    checked, recorded = converse(schemas, arguments.plugin)
     print("reference plugin: %d messages match the plugin protocol schemas" % checked)
+    if directory:
+        path = record(directory, recorded)
+        print("recorded %d messages in %s" % (len(recorded), path))
 
 
 if __name__ == "__main__":

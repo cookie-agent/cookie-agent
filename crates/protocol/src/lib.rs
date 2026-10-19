@@ -174,6 +174,8 @@ mod attachment;
 mod bindings;
 mod config;
 mod content;
+#[cfg(any(test, feature = "test-support"))]
+pub mod corpus;
 pub mod diagnostics;
 mod display;
 pub mod errors;
@@ -238,6 +240,8 @@ pub use setup_value::*;
 pub use stop::StopSignals;
 pub use uploads::*;
 
+#[cfg(test)]
+mod corpus_tests;
 #[cfg(test)]
 mod goal_producer_tests;
 #[cfg(test)]

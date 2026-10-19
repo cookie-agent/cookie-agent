@@ -810,6 +810,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "cookie_agent_coding_runtime",
  "cookie_agent_config",
  "cookie_agent_engine",
  "cookie_agent_models",
