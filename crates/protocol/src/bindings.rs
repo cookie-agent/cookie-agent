@@ -555,3 +555,52 @@ mod tests {
         assert!(events.contains_key("EventPayload"));
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// The names the first table of a section of the protocol reference
+    /// lists.
+    fn documented(heading: &str) -> BTreeSet<String> {
+        let reference = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/reference/protocol.md"
+        ))
+        .expect("protocol reference");
+        let start = reference
+            .find(&format!("\n## {heading}\n"))
+            .unwrap_or_else(|| panic!("a {heading} section"));
+        reference[start + 1..]
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.starts_with("## "))
+            .skip_while(|line| !line.starts_with('|'))
+            .take_while(|line| line.starts_with('|'))
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|line| line.split_once('`'))
+            .map(|(name, _)| name.to_owned())
+            .collect()
+    }
+
+    /// Every client method and notification of the registry has a row in
+    /// the protocol reference, and every row names one of them.
+    #[test]
+    fn the_protocol_reference_lists_every_client_method() {
+        let methods = surface_methods(Surface::Client);
+        let names = |kind| {
+            methods
+                .iter()
+                .filter(|method| method.kind == kind)
+                .map(|method| method.method.to_owned())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(documented("Methods"), names(MessageKind::Request));
+        assert_eq!(
+            documented("Notifications"),
+            names(MessageKind::Notification)
+        );
+    }
+}

@@ -133,9 +133,8 @@ redacts data. No request headers or credential dumps are added. See
 
 ## Tool-emitted messages
 
-Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 48 alongside independent display and output references. The
-field is an ordered array of at most four messages. Each message has role
+`PersistedToolResult` carries optional `additional_messages`, alongside its
+independent display and output references. The field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
 counts and validates every referenced artifact.
@@ -224,6 +223,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.goal.lifecycle` | Session ID, goal ID, expected revision, pause/resume/cancel action, optional `selection` for resume only | Updated `goal: GoalState` |
 | `session.producers` | Session ID | Runtime `producers` and `sources` (producer source recovery) inspection |
 | `session.usage` | Session ID | Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown |
+| `session.tree_usage` | Session ID | The rollup of the whole tree the session belongs to and `session_count`; a session or delegation record of the tree that is gone or damaged is `tree_usage_session_missing` or `tree_usage_delegation_corrupt` |
 | `session.children` | Session ID | Direct child summaries |
 | `session.tree` | Session ID | Recursive session tree |
 | `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics, and the session's `runtimes` |
@@ -258,6 +258,16 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `events.unsubscribe` | Session ID | Whether this connection had a live tail for it |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
+| `mcp.server.list` | Empty object | Every MCP server the daemon and its runtimes host: its `runtime_id`, `workspace`, `name`, `source`, `definition`, `state`, `tool_count`, and `message` (see [MCP servers](#mcp-servers)) |
+| `mcp.server.add` | `name`, `definition` | The new server as `mcp.server.list` reports it |
+| `mcp.server.edit` | `name`, `definition` | The server afterwards |
+| `mcp.server.remove` | `name` | `null` once the server is gone |
+| `mcp.server.set_enabled` | `name`, `enabled` | The server afterwards |
+| `mcp.server.reconnect` | `name`, optional `runtime_id` and `workspace` of a server a runtime hosts | The server afterwards |
+| `mcp.server.persist` | `name`, `target` (`user_file`) | The server afterwards, written to `config.toml` |
+| `mcp.auth.begin` | `server`, the client's loopback `redirect_uri` | `authorization_url` to open in a browser |
+| `mcp.auth.complete` | `server`, the `callback_url` the browser was redirected to | The `server` |
+| `mcp.auth.cancel` | `server` | The `server` |
 
 Model, agent, and catalog discovery uses `runtime.snapshot.get`. Skills use the
 session-aware `skills.list` and `skills.get` methods because visibility depends
@@ -394,9 +404,8 @@ Unusable models are visible instead of silently dropped. Each
 
 The engine implements these methods through its per-session actor. Goal mutations
 are root-only; producer inspection is available for any owned session.
-Goal/producer request shapes remain unchanged. Session protocol 18 added declared
-tool-output channels, terminal output
-references, and independent UI display.
+Tool calls declare their output channels, and results carry terminal output
+references and a display independent of their output.
 
 | Surface | Public contract | Implementation owner |
 |---|---|---|
@@ -623,33 +632,31 @@ The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.
 
-Protocol 23 removed the `events.tool_output_snapshot`, `events.tool_output_delta`,
-and `events.tool_output_gap` notifications. Tool display comes from
-`tool_call_progress` and `tool_call_terminated` events; retained output is read
-through its artifact references.
+Tool display comes from `tool_call_progress` and `tool_call_terminated`
+events; retained output is read through its artifact references. Raw tool
+output is not streamed to clients.
 
-Protocol 25 makes `text_delta`, `reasoning_delta`, and `tool_call_progress`
-live-only: `events.subscription` delivers them as `transient` messages carrying
-the durable `after_seq` they follow instead of a sequence of their own, and they
+`text_delta`, `reasoning_delta`, and `tool_call_progress` are live-only:
+`events.subscription` delivers them as `transient` messages carrying the
+durable `after_seq` they follow instead of a sequence of their own, and they
 are never stored or replayed. `model_output_started` durably marks where each
 streamed part began. See
 [live-only stream output](events.md#live-only-stream-output).
 
-Protocol 27 moves the MCP OAuth callback to the client, so a daemon reached
-through a tunnel or on another machine can still be authorized from the
-client's browser. `mcp.auth.begin` requires `redirect_uri`, the client's own
-loopback callback (`http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`
+The MCP OAuth callback runs on the client, so a daemon reached through a
+tunnel or on another machine can still be authorized from the client's
+browser. `mcp.auth.begin` requires `redirect_uri`, the client's own loopback
+callback (`http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`
 with no query, fragment, or credentials). The client then sends the browser's
-redirect to the new `mcp.auth.complete { server, callback_url }`; the daemon
-keeps the PKCE verifier, exchanges the code, and stores the tokens, which never
-cross the connection. A `callback_url` that is not a redirect to the pending
+redirect to `mcp.auth.complete { server, callback_url }`; the daemon keeps the
+PKCE verifier, exchanges the code, and stores the tokens, which never cross
+the connection. A `callback_url` that is not a redirect to the pending
 `redirect_uri` with a `code` or `error` parameter is rejected and leaves the
 flow waiting. Any other completion ends it. A `begin` with the pending
 `redirect_uri` returns the same authorization URL; one with a different
-`redirect_uri` replaces the pending flow. Protocol 26 shipped only in a nightly
-build and is not reused.
+`redirect_uri` replaces the pending flow.
 
-Protocol 30 lets a client configure permissions before a session exists.
+A client can configure permissions before a session exists.
 `session.create` accepts an optional `permission_mode` for the new tree and
 optional `permission_rules`, which are validated like any overlay (no duplicate
 action and pattern, at most 256) before the session is created and committed as
@@ -659,23 +666,18 @@ permissions such a session would have, computed from the selection's frozen
 agent policy exactly as `session.permission.get` computes them for a live
 session.
 
-Protocol 31 adds background jobs. `ProducerOwner` gains `tool { tool_call_id }`
-for the completion report of a job a tool call started (a `bash` call with
-`background: true`), and `producer_message_accepted` gains an optional
-`retained_output` naming the job's captured output artifacts. Older clients
-cannot decode the new owner variant, so the version moves.
+Background jobs report through the `tool { tool_call_id }` producer owner (the
+completion report of a job a tool call started, such as a `bash` call with
+`background: true`), and `producer_message_accepted` may carry
+`retained_output` naming the job's captured output artifacts.
 
-Protocol 32 stops storing tool output that fits its preview anywhere but the
-result output. `RetainedToolStream.reference` and `sha256` become optional and
-are absent for such a stream, and `RetainedToolOutput.reference` is absent when
-no stream needed an artifact. `RetainedToolStream` also gains `dropped_bytes`,
-present when output past the 128 MiB capture limit was not retained. Older
-clients require the now-optional fields, so the version moves.
-
-Protocol 33 stops sending a tool result's display twice. When `display` occurs
-verbatim in `output`, `PersistedToolResult` carries `display_span`, the
-`[start, end)` byte range of `output`, in its place. Older clients reject the
-unknown field, so the version moves.
+Tool output that fits its preview is stored only in the result's output:
+`RetainedToolStream.reference` and `sha256` are absent for such a stream, and
+`RetainedToolOutput.reference` is absent when no stream needed an artifact.
+`RetainedToolStream.dropped_bytes` is present when output past the 128 MiB
+capture limit was not retained. When a result's `display` is one text block
+that occurs verbatim in `output`, `PersistedToolResult` carries
+`display_span`, the `[start, end)` byte range of `output`, in its place.
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

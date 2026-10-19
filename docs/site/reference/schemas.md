@@ -10,25 +10,33 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 50 | 50 |
+| Client protocol | 0.51.0 | 0.51.x |
 | Plugin protocol | 0.5.0 | 0.5.x |
 | Runtime protocol | 0.8.0 | 0.8.x |
-| Events and session JSONL | versionless | versionless |
+| Session history (events JSONL) | history format 1 | format 1; older formats are converted |
 | Session metadata | unversioned | unversioned current shape |
-| Runtime snapshot | 6 | 6 |
 | Catalog cache | 2 | 2 |
 | Provider store | 3 | 3 |
 | Family recipe registry | 1 | 1 |
 | In-memory model manifest (recorded run bindings) | 1 | 1 |
 
-The three protocols are moving to semver versions, as the
-[compatibility specification](../specs/compatibility-v1.md) describes. The
-plugin and runtime handshakes send `PLUGIN_PROTOCOL_VERSION` and
-`RUNTIME_PROTOCOL_VERSION` and accept a peer of the same major and, before
-`1.0.0`, the same minor. Until the client handshake switches, its exact
-number above stays on the wire; the semver constant `CLIENT_PROTOCOL_VERSION`
-(`0.50.0`) is what its baseline records. The versions stay `0.x` until the
-protocols freeze at `1.0.0`.
+The three protocols have semver versions, as the
+[compatibility specification](../specs/compatibility-v1.md) describes: the
+client protocol `CLIENT_PROTOCOL_VERSION` (`0.51.0`), the plugin protocol
+`PLUGIN_PROTOCOL_VERSION` (`0.5.0`), and the runtime protocol
+`RUNTIME_PROTOCOL_VERSION` (`0.8.0`), all in `cookie_agent_protocol`. Each
+handshake sends its side's version and accepts a peer of the same major and,
+before `1.0.0`, the same minor; the patch never matters. The versions stay
+`0.x` until the protocols freeze at `1.0.0`. The client protocol's versions
+are listed in its [changelog](protocol-changelog.md).
+
+Session history is versioned apart from the protocols, by the
+`history_format` that `session_created` records (format 1 in this build). It
+bumps only when a change cannot follow the additive rules of
+[Events](events.md#history-formats); a log of a lower format is converted when
+a newer build opens it, and one of a higher format opens only to be viewed.
+The catalog view that `runtime.snapshot.get` returns carries no schema
+version, only one opaque `revision`.
 
 Agent snapshots embedded in events are read in their current shape only
 (`schema` 7); earlier shapes are rejected. Delegation lifecycle records are
@@ -37,11 +45,12 @@ schema versions are not read.
 
 ## Published schemas
 
-The plugin and runtime protocols' schemas are published with this
-documentation, exactly as `crates/protocol/compat/` commits them (see below):
+The three protocols' schemas are published with this documentation, exactly
+as `crates/protocol/compat/` commits them (see below):
 
 | Surface | Methods | Schemas | Version |
 |---|---|---|---|
+| Client protocol | [`methods.json`](../schemas/client/methods.json) | `schemas/client/schemas/<Root>.schema.json`, such as [`RuntimeSnapshotResult`](../schemas/client/schemas/RuntimeSnapshotResult.schema.json) | [`version`](../schemas/client/version) |
 | Plugin protocol | [`methods.json`](../schemas/plugin/methods.json) | `schemas/plugin/schemas/<Root>.schema.json`, such as [`PrepareResult`](../schemas/plugin/schemas/PrepareResult.schema.json) | [`version`](../schemas/plugin/version) |
 | Runtime protocol | [`methods.json`](../schemas/runtime/methods.json) | `schemas/runtime/schemas/<Root>.schema.json`, such as [`ExecuteResult`](../schemas/runtime/schemas/ExecuteResult.schema.json) | [`version`](../schemas/runtime/version) |
 
@@ -49,6 +58,8 @@ documentation, exactly as `crates/protocol/compat/` commits them (see below):
 holds its schema and its definitions (`$defs`). A plugin or runtime written
 in any language can validate what it sends against them. The
 [reference plugin](../development/plugins.md#reference-plugin) does so in CI.
+The client protocol's error data is not described by schemas: the
+[error reference](errors.md) lists every code and its fields.
 
 ## Baselines and the checker
 
@@ -61,7 +72,7 @@ protocols both deliver; its `version` records the client version). Each holds:
   or `from_daemon`), its kind (`request` or `notification`), the names of its
   params and result schema roots, and `params_role` (`command` or
   `information`), plus `information`: roots that flow as information without a
-  method of their own, such as error data;
+  method of their own, such as the stored event set;
 - `schemas/<Root>.schema.json`: the JSON Schema of every root.
 
 `cargo run -p cookie_agent_protocol --example generate -- --output <directory>`
