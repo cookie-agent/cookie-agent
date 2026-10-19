@@ -940,3 +940,126 @@ async fn an_uploaded_image_reaches_the_model_forks_with_its_session_and_goes_aft
     assert!(fork_path.is_file(), "the fork still references its copy");
     fixture.engine.shutdown().await;
 }
+
+/// [`media_fixture`] with images on `group/model` and text only on
+/// `group/fallback`.
+async fn image_then_text_fixture(endpoint: &str) -> (Fixture, RunSelection) {
+    use cookie_agent_models::{ModelManager, ProviderDefinition, provider_store::ProviderStore};
+    let (mut fixture, selection) = media_fixture(endpoint, IMAGE_CAPABILITIES);
+    fixture.engine.shutdown().await;
+    let provider_id = cookie_agent_protocol::ProviderId::new("custom.test").unwrap();
+    let Some(ProviderDefinition::Custom(provider)) =
+        fixture.config.runtime.providers.get_mut(&provider_id)
+    else {
+        panic!("the custom test provider");
+    };
+    let fallback = provider
+        .models
+        .get_mut(&cookie_agent_protocol::ProviderModelId::new("group/fallback").unwrap())
+        .unwrap();
+    fallback
+        .capabilities
+        .input
+        .remove(&cookie_agent_models::authoring::Modality::Image);
+    fallback.capabilities.media.clear();
+    let current = fixture.manager.current();
+    let manager = std::sync::Arc::new(
+        ModelManager::new(
+            fixture.config.runtime.providers.clone(),
+            std::sync::Arc::clone(current.catalog()),
+            ProviderStore::open(fixture._directory.path().join("provider-store")).unwrap(),
+        )
+        .unwrap(),
+    );
+    fixture.engine = crate::Engine::open(crate::EngineOptions {
+        data_dir: fixture._directory.path().join("data"),
+        cwd: fixture._directory.path().to_owned(),
+        config: fixture.config.clone(),
+        model_manager: std::sync::Arc::clone(&manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path()),
+    })
+    .unwrap();
+    fixture.manager = manager;
+    (fixture, selection)
+}
+
+#[tokio::test]
+async fn an_image_in_history_reaches_a_text_only_model_as_a_placeholder() {
+    let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
+        vec![
+            anthropic_usage_body("a pixel", 1, 0, 0),
+            anthropic_usage_body("still a pixel", 1, 0, 0),
+        ],
+        usize::MAX,
+    )
+    .await;
+    let (fixture, selection) = image_then_text_fixture(&endpoint).await;
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap();
+    let bytes = png(2, 2, 32);
+    let artifact = upload(&fixture, session.session_id, &bytes, "pixel.png")
+        .await
+        .artifact;
+    engine
+        .start_run(
+            start(
+                session.session_id,
+                &selection,
+                "with-image",
+                with_file("what is this?", &artifact),
+            ),
+            origin(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(engine, session.session_id).await;
+
+    // The next run goes to the text-only model, with the image in history.
+    let text_only = RunSelection {
+        model: cookie_agent_protocol::ModelSelection {
+            model: "custom.test/group/fallback".parse().unwrap(),
+            variant: None,
+        },
+        ..selection.clone()
+    };
+    engine
+        .start_run(
+            start(
+                session.session_id,
+                &text_only,
+                "text-only",
+                "and now?".into(),
+            ),
+            origin(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(engine, session.session_id).await;
+    assert_eq!(
+        engine.get_session(session.session_id).unwrap().status,
+        cookie_agent_protocol::SessionStatus::Completed
+    );
+    let requests = with_watchdog("captured requests", captured).await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let first = request_body(&requests[0]);
+    assert!(first.to_string().contains("\"type\":\"image\""), "{first}");
+    let second = request_body(&requests[1]);
+    assert!(
+        !second.to_string().contains("\"type\":\"image\""),
+        "{second}"
+    );
+    let placeholder = format!(
+        "[image omitted: custom.test/group/fallback does not accept images (pixel.png, {} B)]",
+        bytes.len()
+    );
+    let user = &second["messages"][0];
+    assert!(
+        user["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|part| part["text"] == placeholder),
+        "{user}"
+    );
+    fixture.engine.shutdown().await;
+}

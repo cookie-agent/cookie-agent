@@ -72,6 +72,7 @@ nav:
       - Installation: install.md
       - Run: guide/run.md
       - Sessions: guide/sessions.md
+      - Attaching Media: guide/media.md
       - Compaction: guide/compaction.md
       - Goal Mode: guide/goals.md
       - Usage and Cost: guide/usage.md

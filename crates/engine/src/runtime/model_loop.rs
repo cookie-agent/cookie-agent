@@ -1781,7 +1781,17 @@ impl Engine {
                 let mut request = ModelRequest::new(context.history)
                     .with_tools(tools.clone())
                     .with_header_context(self.model_header_context(session)?);
-                // Elide before plugins and prompt-cache placement see the request.
+                // Fit and elide before plugins and prompt-cache placement see
+                // the request: media this attempt's model does not take
+                // becomes a placeholder, then the counts apply to what is left.
+                let user_media =
+                    policy::user_input_media(binding.descriptor.adapter_id.as_str(), &capabilities);
+                crate::media::fit_media(
+                    &mut request.history,
+                    &binding.selection.model,
+                    &user_media,
+                    &turn_context.input_media,
+                );
                 crate::media::elide_excess_media(&mut request.history, &capabilities)
                     .map_err(ModelError::invalid_request)?;
                 request.inference.max_output_tokens =
@@ -1896,6 +1906,12 @@ impl Engine {
                 request = model.apply_prompt_cache_strategy(request, cache_strategy.as_ref());
                 request.header_context = self.model_header_context(session)?;
                 // Re-applied after interception in case a plugin added media; a no-op otherwise.
+                crate::media::fit_media(
+                    &mut request.history,
+                    &binding.selection.model,
+                    &user_media,
+                    &turn_context.input_media,
+                );
                 crate::media::elide_excess_media(&mut request.history, &capabilities)
                     .map_err(ModelError::invalid_request)?;
                 let prompt_fingerprint = request_fingerprint(&request)?;

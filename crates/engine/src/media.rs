@@ -1,10 +1,148 @@
-//! Request-side media handling: per-request media counts on outgoing model
-//! requests. Recognizing, validating, and gating tool attachments lives in
+//! Request-side media handling: fitting history's media to the attempt's
+//! model, and per-request media counts on outgoing model requests.
+//! Recognizing, validating, and gating tool attachments lives in
 //! `cookie_agent_runtime_api::media`.
 
 use std::collections::BTreeMap;
 
-use cookie_agent_protocol::{MediaKind as CapabilityMediaKind, ModelCapabilities};
+use cookie_agent_protocol::{
+    InputMedia, MediaKind as CapabilityMediaKind, ModelCapabilities, ModelKey, human_bytes,
+    runtime_protocol::{MediaDelivery, ToolInputMedia},
+};
+use cookie_agent_runtime_api::media::mime_type_matches;
+
+/// Replaces every file part of `history` that `model` cannot take with a
+/// placeholder, so a model switch or a fallback to a model without that kind
+/// sends a request the model accepts instead of failing it
+/// (`docs/site/specs/compatibility-v1.md` section 11.5). `user` is what the
+/// model accepts in a user turn, which holds for user input, tool-emitted
+/// user messages, and assistant files; `tool` is what it accepts from a
+/// tool, of which only what its adapter carries in a tool result counts for
+/// a tool result. A part fits when the model accepts its kind and media type
+/// within the byte limit.
+///
+/// The placeholder names the reason, the model, and the file, as one of:
+///
+/// ```text
+/// [image omitted: provider/model does not accept images (screenshot.png, 471 KB)]
+/// [image omitted: provider/model does not accept image/webp (screenshot.png, 471 KB)]
+/// [image omitted: larger than the 3.8 MB provider/model accepts (screenshot.png, 9.1 MB)]
+/// [image omitted: provider/model does not accept images in tool results (screenshot.png, 471 KB)]
+/// ```
+///
+/// It is a pure function of the history and the model, so a replay of the
+/// same history to the same model sends the same request and keeps the
+/// cached prompt prefix. It runs before [`elide_excess_media`], which then
+/// counts only what fits.
+pub(crate) fn fit_media(
+    history: &mut [oven_sdk::HistoryTurn],
+    model: &ModelKey,
+    user: &[InputMedia],
+    tool: &[ToolInputMedia],
+) {
+    let user = user
+        .iter()
+        .map(|media| {
+            (
+                media.kind.as_str(),
+                media.mime_types.as_slice(),
+                media.max_bytes,
+            )
+        })
+        .collect::<Vec<_>>();
+    let tool_result = tool
+        .iter()
+        .filter(|media| media.delivery == MediaDelivery::ToolResult)
+        .map(|media| {
+            (
+                media.kind.as_str(),
+                media.mime_types.as_slice(),
+                media.max_bytes,
+            )
+        })
+        .collect::<Vec<_>>();
+    visit_media_parts(history, |_, kind, slot| {
+        let (file, accepted, in_tool_result) = match &slot {
+            MediaSlot::Input(oven_sdk::InputPart::File(file))
+            | MediaSlot::Assistant(oven_sdk::AssistantPart::File(file)) => (file, &user, false),
+            MediaSlot::Tool(oven_sdk::ContentValue::File(file)) => (file, &tool_result, true),
+            _ => return,
+        };
+        let Some(placeholder) = misfit(file, kind, model, accepted, in_tool_result) else {
+            return;
+        };
+        match slot {
+            MediaSlot::Input(part) => {
+                *part = oven_sdk::InputPart::Text(oven_sdk::TextPart::new(placeholder));
+            }
+            MediaSlot::Assistant(part) => {
+                *part = oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new(placeholder));
+            }
+            MediaSlot::Tool(value) => *value = oven_sdk::ContentValue::Text(placeholder),
+        }
+    });
+}
+
+/// The placeholder of a file `model` does not take, or `None` when it fits.
+fn misfit(
+    file: &oven_sdk::FilePart,
+    kind: CapabilityMediaKind,
+    model: &ModelKey,
+    accepted: &[(&str, &[String], u64)],
+    in_tool_result: bool,
+) -> Option<String> {
+    let label = media_label(kind);
+    let size = match &file.source {
+        oven_sdk::FileSource::Bytes(bytes) => Some(bytes.len() as u64),
+        oven_sdk::FileSource::Text(text) => Some(text.len() as u64),
+        oven_sdk::FileSource::Url(_) | oven_sdk::FileSource::ProviderReference { .. } => None,
+    };
+    let reason = match accepted.iter().find(|(of, _, _)| *of == kind_label(kind)) {
+        None if in_tool_result => {
+            format!("{model} does not accept {} in tool results", plural(kind))
+        }
+        None => format!("{model} does not accept {}", plural(kind)),
+        Some((_, mime_types, _))
+            if !mime_types
+                .iter()
+                .any(|accepted| mime_type_matches(accepted, &file.media_type)) =>
+        {
+            format!("{model} does not accept {}", file.media_type)
+        }
+        Some((_, _, max_bytes)) if size.is_some_and(|size| size > *max_bytes) => {
+            format!(
+                "larger than the {} {model} accepts",
+                human_bytes(*max_bytes)
+            )
+        }
+        Some(_) => return None,
+    };
+    let about = match (file.filename.as_deref(), size) {
+        (Some(name), Some(size)) => format!(" ({name}, {})", human_bytes(size)),
+        (Some(name), None) => format!(" ({name})"),
+        (None, Some(size)) => format!(" ({})", human_bytes(size)),
+        (None, None) => String::new(),
+    };
+    Some(format!("[{label} omitted: {reason}{about}]"))
+}
+
+const fn kind_label(kind: CapabilityMediaKind) -> &'static str {
+    match kind {
+        CapabilityMediaKind::Image => cookie_agent_protocol::MediaKindLabel::IMAGE,
+        CapabilityMediaKind::Audio => cookie_agent_protocol::MediaKindLabel::AUDIO,
+        CapabilityMediaKind::Pdf => cookie_agent_protocol::MediaKindLabel::PDF,
+        CapabilityMediaKind::Video => cookie_agent_protocol::MediaKindLabel::VIDEO,
+    }
+}
+
+fn plural(kind: CapabilityMediaKind) -> &'static str {
+    match kind {
+        CapabilityMediaKind::Image => "images",
+        CapabilityMediaKind::Audio => "audio",
+        CapabilityMediaKind::Pdf => "PDFs",
+        CapabilityMediaKind::Video => "videos",
+    }
+}
 
 /// Enforces each media kind's per-request `max_count` on an outgoing request.
 ///
@@ -298,6 +436,162 @@ mod tests {
             }
         }
         (kept, placeholders)
+    }
+
+    fn named_image(media_type: &str, tag: &'static [u8], name: &str) -> oven_sdk::FilePart {
+        let mut file = oven_sdk::FilePart::image(
+            media_type,
+            oven_sdk::FileSource::Bytes(bytes::Bytes::from_static(tag)),
+        );
+        file.filename = Some(name.into());
+        file
+    }
+
+    fn user_turn(files: Vec<oven_sdk::FilePart>) -> oven_sdk::HistoryTurn {
+        let mut content = vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new("look"))];
+        content.extend(files.into_iter().map(oven_sdk::InputPart::File));
+        oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(content))
+    }
+
+    fn texts(history: &[oven_sdk::HistoryTurn]) -> Vec<String> {
+        let mut texts = Vec::new();
+        for turn in history {
+            match turn {
+                oven_sdk::HistoryTurn::User(message) => {
+                    for part in &message.content {
+                        if let oven_sdk::InputPart::Text(text) = part {
+                            texts.push(text.text.clone());
+                        }
+                    }
+                }
+                oven_sdk::HistoryTurn::Tool(message) => {
+                    for result in &message.results {
+                        if let oven_sdk::ToolContent::Mixed(values) = &result.content {
+                            for value in values {
+                                if let oven_sdk::ContentValue::Text(text) = value {
+                                    texts.push(text.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        texts
+    }
+
+    fn input_media(
+        kind: &str,
+        mime_types: &[&str],
+        max_bytes: u64,
+    ) -> cookie_agent_protocol::InputMedia {
+        cookie_agent_protocol::InputMedia {
+            kind: cookie_agent_protocol::MediaKindLabel::new(kind).unwrap(),
+            mime_types: mime_types.iter().map(|value| (*value).to_owned()).collect(),
+            max_bytes,
+            max_dimension: None,
+            max_pixels: None,
+            max_count: 20,
+        }
+    }
+
+    fn tool_media(
+        kind: &str,
+        delivery: cookie_agent_protocol::runtime_protocol::MediaDelivery,
+    ) -> cookie_agent_protocol::runtime_protocol::ToolInputMedia {
+        cookie_agent_protocol::runtime_protocol::ToolInputMedia {
+            kind: cookie_agent_protocol::MediaKindLabel::new(kind).unwrap(),
+            mime_types: vec!["image/png".into()],
+            max_bytes: 1024,
+            delivery,
+        }
+    }
+
+    #[test]
+    fn media_a_model_does_not_take_becomes_a_placeholder_naming_why() {
+        use cookie_agent_protocol::runtime_protocol::MediaDelivery;
+        let model: cookie_agent_protocol::ModelKey = "acme/text-only".parse().unwrap();
+        let history =
+            vec![
+                user_turn(vec![
+                    named_image("image/png", b"png bytes", "shot.png"),
+                    named_image("image/webp", b"webp", "shot.webp"),
+                ]),
+                oven_sdk::HistoryTurn::tool(oven_sdk::ToolMessage::new(vec![
+                    oven_sdk::ToolResultPart::new(
+                        "call",
+                        oven_sdk::ToolContent::Mixed(vec![oven_sdk::ContentValue::File(
+                            named_image("image/png", b"tool png", "read.png"),
+                        )]),
+                    ),
+                ])),
+            ];
+
+        // No images at all.
+        let mut fitted = history.clone();
+        super::fit_media(&mut fitted, &model, &[], &[]);
+        assert_eq!(
+            texts(&fitted),
+            [
+                "look",
+                "[image omitted: acme/text-only does not accept images (shot.png, 9 B)]",
+                "[image omitted: acme/text-only does not accept images (shot.webp, 4 B)]",
+                "[image omitted: acme/text-only does not accept images in tool results (read.png, 8 B)]",
+            ]
+        );
+        // The same history fits to the same request.
+        let mut again = history.clone();
+        super::fit_media(&mut again, &model, &[], &[]);
+        assert_eq!(again, fitted);
+
+        // PNG only, up to 8 bytes, and images only in user turns.
+        let mut fitted = history.clone();
+        super::fit_media(
+            &mut fitted,
+            &model,
+            &[input_media("image", &["image/png"], 8)],
+            &[tool_media("image", MediaDelivery::UserMessage)],
+        );
+        assert_eq!(
+            texts(&fitted),
+            [
+                "look",
+                "[image omitted: larger than the 8 B acme/text-only accepts (shot.png, 9 B)]",
+                "[image omitted: acme/text-only does not accept image/webp (shot.webp, 4 B)]",
+                "[image omitted: acme/text-only does not accept images in tool results (read.png, 8 B)]",
+            ]
+        );
+
+        // What fits is left as it is.
+        let mut fitted = history.clone();
+        super::fit_media(
+            &mut fitted,
+            &model,
+            &[input_media("image", &["image/*"], 1024)],
+            &[tool_media("image", MediaDelivery::ToolResult)],
+        );
+        assert_eq!(fitted, history);
+    }
+
+    #[test]
+    fn fitting_runs_before_the_count_so_only_media_that_fits_counts() {
+        let model: cookie_agent_protocol::ModelKey = "acme/png-only".parse().unwrap();
+        let mut history = vec![
+            user_turn(vec![named_image("image/webp", b"w", "old.webp")]),
+            user_turn(vec![named_image("image/png", b"p", "new.png")]),
+        ];
+        super::fit_media(
+            &mut history,
+            &model,
+            &[input_media("image", &["image/png"], 1024)],
+            &[],
+        );
+        // One image is left for a limit of one: nothing more is elided.
+        elide_excess_media(&mut history, &image_capabilities(1)).unwrap();
+        let (kept, placeholders) = summarize(&history);
+        assert_eq!(kept, [b"p".to_vec()]);
+        assert_eq!(placeholders, 0);
     }
 
     #[test]

@@ -145,6 +145,21 @@ when that message alone attaches more parts than the limit. Media parts do not
 contribute to context fit estimates, except video, which carries a flat
 conservative cost.
 
+Before the count applies, every file part in the outgoing request that the
+attempt's model cannot take is replaced by a placeholder: user attachments,
+tool results' attachments, and emitted user messages alike. That covers a
+session that moved to another model, and a fallback to a model without the
+kind. A part fits when the model accepts its kind and media type within its
+byte limit, in a user turn for user and emitted messages and in a tool result
+for a tool result's attachment (the [delivery matrix](#media-delivery)). The
+placeholder says why, for example
+`[image omitted: acme/text-model does not accept images (screenshot.png, 471 KB)]`,
+`[image omitted: acme/model does not accept image/webp (…)]`,
+`[image omitted: larger than the 3.8 MB acme/model accepts (…)]`, or
+`[image omitted: acme/model does not accept images in tool results (…)]`. It
+depends only on the history and the model, so the prompt prefix stays
+cacheable; the saved history keeps the files.
+
 MCP media blocks (images, audio, embedded resource blobs) follow the same gate
 and delivery selection. Blob resources without a declared MIME type are
 retained under the sniffed type. Results that would exceed the combined

@@ -1067,6 +1067,15 @@ pub(crate) fn tool_input_media(
     cookie_agent_runtime_api::media::tool_input_media(tool_adapter_family(adapter), capabilities)
 }
 
+/// The media a model of `capabilities` behind a frozen binding's protocol
+/// adapter `adapter` accepts in a user turn.
+pub(crate) fn user_input_media(
+    adapter: &str,
+    capabilities: &protocol::ModelCapabilities,
+) -> Vec<protocol::InputMedia> {
+    cookie_agent_runtime_api::media::user_input_media(tool_adapter_family(adapter), capabilities)
+}
+
 /// The adapter family of a frozen binding's protocol adapter, for media
 /// delivery.
 fn tool_adapter_family(value: &str) -> cookie_agent_runtime_api::AdapterFamily {

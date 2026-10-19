@@ -540,14 +540,19 @@ impl Engine {
                 let mut request = ModelRequest::new(context.history.clone())
                     .with_tools(input.tools.to_vec())
                     .with_header_context(self.model_header_context(input.session)?);
-                crate::media::elide_excess_media(
+                let capabilities = input
+                    .owner_policy
+                    .model_capabilities(input.binding)
+                    .ok_or(EngineError::NoRunnableModel)?;
+                let adapter = input.binding.descriptor.adapter_id.as_str();
+                crate::media::fit_media(
                     &mut request.history,
-                    &input
-                        .owner_policy
-                        .model_capabilities(input.binding)
-                        .ok_or(EngineError::NoRunnableModel)?,
-                )
-                .map_err(ModelError::invalid_request)?;
+                    &input.binding.selection.model,
+                    &policy::user_input_media(adapter, &capabilities),
+                    &policy::tool_input_media(adapter, &capabilities),
+                );
+                crate::media::elide_excess_media(&mut request.history, &capabilities)
+                    .map_err(ModelError::invalid_request)?;
                 if let Some(native_context) = context.native_context.clone() {
                     request = request.with_native_context(native_context);
                 }

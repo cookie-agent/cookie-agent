@@ -346,7 +346,10 @@ it lists (`media_type_unsupported`), within its byte and image limits
 limits), and the parts of one kind must not outnumber `max_count`
 (`media_limit_exceeded`). These are the model's
 [`input_media`](#the-catalog-view); a client that checks them first never
-meets these errors. A refused input records nothing.
+meets these errors. A refused input records nothing. A model the input does
+not reach this way, such as a fallback or a model the session moves to later,
+sees a placeholder for each file it does not accept
+([Media reads](tools.md#media-reads) describes the wording).
 
 **`artifact.read`** `{ session_id, sha256, offset, length }` returns
 `{ data, total_bytes, media_type }`: up to `length` (at most 1 MiB) bytes
