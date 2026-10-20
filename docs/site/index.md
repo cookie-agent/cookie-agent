@@ -1,11 +1,13 @@
 # cookie agent
 
-cookie agent is a subagent-first coding harness. A local daemon owns provider
-connections, sessions, model execution, permissions, and persistence; the
-terminal UI communicates with it over the versioned JSON-RPC protocol.
+cookie agent is a subagent-first coding harness. A daemon owns provider
+connections, sessions, agents, model execution, permissions, memory, and
+persistence; runtimes provide its tools, and clients (the terminal UI, the web
+client, and the command line) communicate with it over the versioned JSON-RPC
+client protocol.
 
-Session history uses versionless events with best-effort reading; other
-persisted and wire surfaces remain current-only.
+The client, plugin, and runtime protocols and session history are frozen
+semver surfaces; see [Compatibility](reference/compatibility.md).
 [Architecture](architecture.md) describes how the pieces fit together; this site
 turns that implementation into task-oriented guides and reference material.
 
