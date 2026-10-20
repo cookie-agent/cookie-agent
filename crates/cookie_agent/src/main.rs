@@ -102,10 +102,11 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the cookie-agent client protocol 1.4 JSON-RPC WebSocket daemon on localhost.
+    /// Run the daemon: serve the client protocol, dial-in runtimes, and the
+    /// web page on loopback at `[server] port`, or on `--listen`.
     Daemon {
-        /// Localhost port to bind. `0` selects an ephemeral port; the ready line
-        /// reports the real one.
+        /// Loopback port to bind instead of `[server] port`. `0` selects an
+        /// ephemeral port; the ready line reports the real one.
         #[arg(long, conflicts_with = "listen")]
         port: Option<u16>,
         /// Address and port to bind, such as `0.0.0.0:7419`, for clients and
