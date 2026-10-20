@@ -412,4 +412,5 @@ jobs:
 
           publish_if_missing cookie_agent_identity
           publish_if_missing cookie_agent_protocol
+          publish_if_missing cookie_agent_client_state
           publish_if_missing cookie_agent_plugin_sdk

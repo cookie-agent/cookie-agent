@@ -4,7 +4,7 @@ Stable releases start from a GitHub release published by hand. cargo-dist
 builds five Linux and macOS targets plus Windows x86_64 and ARM64 MSVC targets,
 creates tar or ZIP archives and SHA256 checksums, generates shell and PowerShell
 installers, and attaches those files to the published release. The workflow
-also publishes the three public Rust crates when `CARGO_REGISTRY_TOKEN` is
+also publishes the four public Rust crates when `CARGO_REGISTRY_TOKEN` is
 configured in the repository's Actions secrets.
 
 ## Stable release
@@ -26,8 +26,8 @@ the upload finishes. The tag's own push event does not start CI: pushes run for
 branches only.
 
 The workflow publishes crates in dependency order:
-`cookie_agent_identity`, `cookie_agent_protocol`, then
-`cookie_agent_plugin_sdk`. It waits for each dependency version to appear in
+`cookie_agent_identity`, `cookie_agent_protocol`,
+`cookie_agent_client_state`, then `cookie_agent_plugin_sdk`. It waits for each dependency version to appear in
 the crates.io sparse index before publishing the dependent crate. Publication
 finishes before the artifacts are uploaded. Each crate is skipped when its exact
 version is already indexed, so rerunning a partially completed release resumes

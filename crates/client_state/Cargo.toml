@@ -1,0 +1,29 @@
+[package]
+name = "cookie_agent_client_state"
+version = "0.3.0"
+description = "Client state reduced from cookie agent protocol events, shared by its clients"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+homepage = "https://cookie-agent.github.io/cookie-agent/"
+
+[features]
+# Helpers for clients' tests that build state by hand.
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
+foldhash.workspace = true
+jiff.workspace = true
+pulldown-cmark.workspace = true
+serde_json.workspace = true
+# `std::time::Instant` on native targets; the browser's clock on wasm32,
+# where `std`'s panics.
+web-time = "1.1.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+jiff = { workspace = true, features = ["js"] }

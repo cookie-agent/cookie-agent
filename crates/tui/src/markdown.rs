@@ -2,7 +2,7 @@
 
 use std::{
     any::TypeId,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     hash::BuildHasher,
     mem::{size_of, size_of_val},
     sync::{Arc, Mutex},
@@ -11,9 +11,7 @@ use std::{
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use pulldown_cmark::{
-    BrokenLink, CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -25,31 +23,13 @@ use syntect::{
     util::LinesWithEndings,
 };
 
+pub use cookie_agent_client_state::markdown::{MarkdownBlock, MarkdownBlockKind, MarkdownDocument};
+
 use crate::theme::{Theme, ThemeKey, ThemeKind};
 
 const HIGHLIGHT_CACHE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const HIGHLIGHT_CACHE_ENTRY_OVERHEAD_BYTES: usize = 256;
 const HIGHLIGHT_CACHE_ALLOCATION_OVERHEAD_BYTES: usize = 16;
-
-#[derive(Clone, Debug, Default)]
-pub struct MarkdownDocument {
-    source: String,
-    stable_prefix_len: usize,
-    stable_blocks: Vec<MarkdownBlock>,
-    tail_blocks: Vec<MarkdownBlock>,
-    stable_reference_definitions: BTreeMap<String, ReferenceDefinition>,
-    reference_definitions: BTreeMap<String, ReferenceDefinition>,
-    stable_reference_dependencies: BTreeSet<String>,
-    /// Render every source newline as a line break instead of joining soft
-    /// breaks with a space: typed text means its newlines.
-    hard_breaks: bool,
-    /// No more text follows: the open tail renders and caches like the
-    /// stable prefix. Cleared by [`Self::append`].
-    finished: bool,
-    parse_passes: u64,
-    parsed_bytes: u64,
-    reference_reparses: u64,
-}
 
 #[derive(Debug)]
 struct HighlightCache {
@@ -185,18 +165,19 @@ fn highlight_entry_bytes(key: &HighlightCacheKey, source: &str, lines: &[Line<'s
             .sum::<usize>()
 }
 
-#[derive(Clone, Debug)]
-pub struct MarkdownBlock {
-    kind: MarkdownBlockKind,
-    events: Vec<Event<'static>>,
-    source: Arc<str>,
-    content_hash: u64,
-    content_len: usize,
-    rendered: Arc<Mutex<Option<RenderedBlockCacheEntry>>>,
+/// What the TUI derives from one settled block, kept in the block's
+/// [`cookie_agent_client_state::markdown::RendererCache`].
+#[derive(Debug, Default)]
+pub(crate) struct BlockRenderCache {
+    rendered: Mutex<Option<RenderedBlockCacheEntry>>,
     /// Width-independent highlighted code of this settled block, by code
     /// block ordinal, so a re-render at a new width never re-highlights —
     /// whatever the shared highlight cache has evicted meanwhile.
-    highlights: Arc<Mutex<Vec<BlockHighlight>>>,
+    highlights: Mutex<Vec<BlockHighlight>>,
+}
+
+fn block_cache(block: &MarkdownBlock) -> Arc<BlockRenderCache> {
+    block.renderer_cache().get_or_default::<BlockRenderCache>()
 }
 
 #[derive(Clone, Debug)]
@@ -224,25 +205,6 @@ struct RenderedBlockCacheEntry {
     lines: Arc<[MarkdownLine]>,
 }
 
-impl MarkdownBlock {
-    pub const fn kind(&self) -> MarkdownBlockKind {
-        self.kind
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MarkdownBlockKind {
-    Paragraph,
-    Heading,
-    Quote,
-    Code,
-    List,
-    Table,
-    Html,
-    ThematicBreak,
-    Other,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum MarkdownLineKind {
     #[default]
@@ -258,301 +220,6 @@ pub(crate) enum MarkdownLineKind {
 pub(crate) struct MarkdownLine {
     pub(crate) line: Line<'static>,
     pub(crate) kind: MarkdownLineKind,
-}
-
-impl MarkdownDocument {
-    pub fn new(source: String) -> Self {
-        let mut document = Self {
-            source,
-            ..Self::default()
-        };
-        document.reparse_open_tail();
-        document
-    }
-
-    /// A document whose soft line breaks render as hard breaks, for text a
-    /// person typed (user messages) rather than prose a model reflowed.
-    pub fn with_hard_breaks(source: String) -> Self {
-        let mut document = Self {
-            source,
-            hard_breaks: true,
-            ..Self::default()
-        };
-        document.reparse_open_tail();
-        document
-    }
-
-    pub fn append(&mut self, delta: &str) {
-        self.source.push_str(delta);
-        self.finished = false;
-        self.reparse_open_tail();
-    }
-
-    /// Mark the document complete, so its last block — never promoted to
-    /// the stable prefix, since more text could still extend it — renders
-    /// through the stable block and highlight caches instead of being
-    /// re-rendered and re-highlighted on every layout.
-    #[must_use]
-    pub fn finished(mut self) -> Self {
-        self.finished = true;
-        self
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.source
-    }
-
-    pub fn stable_prefix_len(&self) -> usize {
-        self.stable_prefix_len
-    }
-
-    pub fn parse_passes(&self) -> u64 {
-        self.parse_passes
-    }
-
-    pub fn parsed_bytes(&self) -> u64 {
-        self.parsed_bytes
-    }
-
-    pub fn reference_reparses(&self) -> u64 {
-        self.reference_reparses
-    }
-
-    pub fn blocks(&self) -> impl Iterator<Item = &MarkdownBlock> {
-        self.stable_blocks.iter().chain(&self.tail_blocks)
-    }
-
-    fn reparse_open_tail(&mut self) {
-        let tail = self.source[self.stable_prefix_len..].to_owned();
-        let parsed = self.parse(&tail);
-        let effective_definitions = self.effective_definitions(&parsed.definitions);
-        let references_changed = self
-            .stable_reference_dependencies
-            .iter()
-            .any(|label| self.reference_definitions.get(label) != effective_definitions.get(label));
-        if references_changed {
-            self.reference_reparses = self.reference_reparses.wrapping_add(1);
-            self.stable_prefix_len = 0;
-            self.stable_blocks.clear();
-            self.tail_blocks.clear();
-            self.stable_reference_definitions.clear();
-            self.reference_definitions.clear();
-            self.stable_reference_dependencies.clear();
-            let source = self.source.clone();
-            let parsed = self.parse(&source);
-            self.reference_definitions = self.effective_definitions(&parsed.definitions);
-            self.apply_parsed(parsed);
-            return;
-        }
-        self.reference_definitions = effective_definitions;
-        self.apply_parsed(parsed);
-    }
-
-    fn parse(&mut self, source: &str) -> ParsedDocument {
-        self.parse_passes = self.parse_passes.wrapping_add(1);
-        self.parsed_bytes = self.parsed_bytes.wrapping_add(source.len() as u64);
-        parse_document(source, self.hard_breaks)
-    }
-
-    fn effective_definitions(
-        &self,
-        tail_definitions: &[ParsedReferenceDefinition],
-    ) -> BTreeMap<String, ReferenceDefinition> {
-        let mut definitions = self.stable_reference_definitions.clone();
-        for definition in tail_definitions {
-            definitions
-                .entry(definition.label.clone())
-                .or_insert_with(|| definition.definition.clone());
-        }
-        definitions
-    }
-
-    fn apply_parsed(&mut self, parsed: ParsedDocument) {
-        let split = parsed.blocks.last().map_or(0, |block| block.range.start);
-        self.stable_reference_dependencies.extend(
-            parsed
-                .blocks
-                .iter()
-                .filter(|block| block.range.end <= split)
-                .flat_map(|block| block.reference_dependencies.iter().cloned()),
-        );
-        self.stable_blocks.extend(
-            parsed
-                .blocks
-                .iter()
-                .filter(|block| block.range.end <= split)
-                .map(|block| block.block.clone()),
-        );
-        self.tail_blocks = parsed
-            .blocks
-            .into_iter()
-            .filter(|block| block.range.start >= split)
-            .map(|block| block.block)
-            .collect();
-        for definition in parsed.definitions {
-            if definition.span.end <= split {
-                self.stable_reference_definitions
-                    .entry(definition.label)
-                    .or_insert(definition.definition);
-            }
-        }
-        self.stable_prefix_len += split;
-    }
-}
-
-fn markdown_options() -> Options {
-    Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TABLES
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_GFM
-}
-
-struct ParsedBlock {
-    block: MarkdownBlock,
-    range: std::ops::Range<usize>,
-    reference_dependencies: BTreeSet<String>,
-}
-
-struct ParsedDocument {
-    blocks: Vec<ParsedBlock>,
-    definitions: Vec<ParsedReferenceDefinition>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReferenceDefinition {
-    destination: String,
-    title: Option<String>,
-}
-
-struct ParsedReferenceDefinition {
-    label: String,
-    definition: ReferenceDefinition,
-    span: std::ops::Range<usize>,
-}
-
-fn parse_document(source: &str, hard_breaks: bool) -> ParsedDocument {
-    let (definitions, events, broken_references) = {
-        let mut broken_references = Vec::new();
-        let mut broken_link_callback = |broken: BrokenLink<'_>| {
-            broken_references.push((
-                broken.span,
-                normalize_reference_label(broken.reference.as_ref()),
-            ));
-            None
-        };
-        let parser = Parser::new_with_broken_link_callback(
-            source,
-            markdown_options(),
-            Some(&mut broken_link_callback),
-        );
-        let definitions = parser
-            .reference_definitions()
-            .iter()
-            .map(|(label, definition)| ParsedReferenceDefinition {
-                label: normalize_reference_label(label),
-                definition: ReferenceDefinition {
-                    destination: definition.dest.to_string(),
-                    title: definition.title.as_ref().map(ToString::to_string),
-                },
-                span: definition.span.clone(),
-            })
-            .collect::<Vec<_>>();
-        let events = parser.into_offset_iter().collect::<Vec<_>>();
-        (definitions, events, broken_references)
-    };
-    let mut blocks = Vec::new();
-    let mut current = Vec::new();
-    let mut current_kind = MarkdownBlockKind::Other;
-    let mut current_start = 0;
-    let mut depth = 0usize;
-
-    for (event, range) in events {
-        if depth == 0 && current.is_empty() {
-            current_start = range.start;
-            current_kind = block_kind(&event);
-        }
-        let current_end = range.end;
-        match &event {
-            Event::Start(_) => depth += 1,
-            Event::End(_) => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        current.push(match event {
-            Event::SoftBreak if hard_breaks => Event::HardBreak,
-            event => event.into_static(),
-        });
-        if depth == 0 {
-            let range = current_start..current_end;
-            blocks.push(ParsedBlock {
-                block: MarkdownBlock {
-                    kind: current_kind,
-                    events: std::mem::take(&mut current),
-                    source: Arc::from(&source[range.clone()]),
-                    content_hash: foldhash::fast::FixedState::default()
-                        .hash_one(&source[range.clone()]),
-                    content_len: range.len(),
-                    rendered: Arc::new(Mutex::new(None)),
-                    highlights: Arc::new(Mutex::new(Vec::new())),
-                },
-                range,
-                reference_dependencies: BTreeSet::new(),
-            });
-        }
-    }
-    for block in &mut blocks {
-        for event in &block.block.events {
-            let Event::Start(Tag::Link { link_type, id, .. } | Tag::Image { link_type, id, .. }) =
-                event
-            else {
-                continue;
-            };
-            if matches!(
-                link_type,
-                LinkType::Reference
-                    | LinkType::ReferenceUnknown
-                    | LinkType::Collapsed
-                    | LinkType::CollapsedUnknown
-                    | LinkType::Shortcut
-                    | LinkType::ShortcutUnknown
-            ) {
-                block
-                    .reference_dependencies
-                    .insert(normalize_reference_label(id.as_ref()));
-            }
-        }
-        block.reference_dependencies.extend(
-            broken_references
-                .iter()
-                .filter(|(span, _)| span.start >= block.range.start && span.end <= block.range.end)
-                .map(|(_, label)| label.clone()),
-        );
-    }
-    ParsedDocument {
-        blocks,
-        definitions,
-    }
-}
-
-fn normalize_reference_label(label: &str) -> String {
-    label
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-fn block_kind(event: &Event<'_>) -> MarkdownBlockKind {
-    match event {
-        Event::Start(Tag::Paragraph) => MarkdownBlockKind::Paragraph,
-        Event::Start(Tag::Heading { .. }) => MarkdownBlockKind::Heading,
-        Event::Start(Tag::BlockQuote(_)) => MarkdownBlockKind::Quote,
-        Event::Start(Tag::CodeBlock(_)) => MarkdownBlockKind::Code,
-        Event::Start(Tag::List(_)) => MarkdownBlockKind::List,
-        Event::Start(Tag::Table(_)) => MarkdownBlockKind::Table,
-        Event::Start(Tag::HtmlBlock) | Event::Html(_) => MarkdownBlockKind::Html,
-        Event::Rule => MarkdownBlockKind::ThematicBreak,
-        _ => MarkdownBlockKind::Other,
-    }
 }
 
 pub trait Highlighter: Send + Sync + 'static {
@@ -1345,23 +1012,23 @@ pub(crate) fn render_markdown_blocks_width(
     width: u16,
 ) -> Vec<Arc<[MarkdownLine]>> {
     let highlighter_key = highlighter.cache_key();
-    let stable_tail = if document.finished {
-        document.tail_blocks.as_slice()
+    let stable_tail = if document.is_finished() {
+        document.tail_blocks()
     } else {
         &[]
     };
     let mut blocks = document
-        .stable_blocks
+        .stable_blocks()
         .iter()
         .chain(stable_tail)
         .map(|block| render_stable_block(block, theme, highlighter, highlighter_key, width))
         .collect::<Vec<_>>();
     // The streaming tail renders block by block like the stable prefix, so a
     // block looks the same before and after it settles.
-    if !document.finished {
+    if !document.is_finished() {
         blocks.extend(
             document
-                .tail_blocks
+                .tail_blocks()
                 .iter()
                 .map(|block| render_block(block, false, theme, highlighter, width).into()),
         );
@@ -1380,29 +1047,30 @@ fn render_stable_block(
     width: u16,
 ) -> Arc<[MarkdownLine]> {
     let key = RenderedBlockCacheKey {
-        content_hash: block.content_hash,
-        code_len: block.content_len,
+        content_hash: block.content_hash(),
+        code_len: block.content_len(),
         width,
         theme: theme.key(),
         quote_depth: 0,
         highlighter: highlighter_key,
     };
-    let cached = block
+    let cache = block_cache(block);
+    let cached = cache
         .rendered
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
-        .filter(|entry| entry.key == key && entry.source == block.source)
+        .filter(|entry| entry.key == key && entry.source == *block.source())
         .map(|entry| Arc::clone(&entry.lines));
     cached.unwrap_or_else(|| {
         let rendered: Arc<[MarkdownLine]> =
             render_block(block, true, theme, highlighter, width).into();
-        *block
+        *cache
             .rendered
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RenderedBlockCacheEntry {
             key,
-            source: Arc::clone(&block.source),
+            source: Arc::clone(block.source()),
             lines: Arc::clone(&rendered),
         });
         rendered
@@ -1416,13 +1084,14 @@ fn render_block(
     highlighter: &dyn Highlighter,
     width: u16,
 ) -> Vec<MarkdownLine> {
+    let cache = stable.then(|| block_cache(block));
     let mut renderer = MarkdownRenderer::new(theme, highlighter);
     renderer.width = usize::from(width);
     renderer.begin_block(stable);
-    if stable {
-        renderer.block_highlights = Some((&block.highlights, highlighter.cache_key()));
+    if let Some(cache) = &cache {
+        renderer.block_highlights = Some((&cache.highlights, highlighter.cache_key()));
     }
-    for event in &block.events {
+    for event in block.events() {
         renderer.event(event);
     }
     // Stable blocks render independently for cacheability. This flush is

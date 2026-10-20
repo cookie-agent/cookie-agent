@@ -27,6 +27,7 @@ fn collect_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
 
 const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/identity/Cargo.toml",
+    "crates/client_state/Cargo.toml",
     "crates/config/Cargo.toml",
     "crates/coding_runtime/Cargo.toml",
     "crates/cookie_agent/Cargo.toml",
@@ -45,6 +46,7 @@ const PHASE1_MANIFESTS: &[&str] = &[
     "crates/models/Cargo.toml",
 ];
 const PUBLISHED_CRATES: &[&str] = &[
+    "cookie_agent_client_state",
     "cookie_agent_identity",
     "cookie_agent_plugin_sdk",
     "cookie_agent_protocol",

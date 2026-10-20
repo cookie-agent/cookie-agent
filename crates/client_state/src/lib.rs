@@ -1,4 +1,7 @@
-//! Disposable UI projections reduced from protocol-10 stored events.
+//! The client state every cookie agent client shares: disposable projections
+//! reduced from the protocol's stored and transient events, independent of
+//! how a client renders them. The TUI and the web client both keep a
+//! [`StateStore`]; it builds for `wasm32-unknown-unknown` too.
 //!
 //! Assistant attribution is derived only from the frozen `RunStarted` plus
 //! `ModelAttemptStarted`/`ModelTurnCommitted` ownership — never from the
@@ -6,11 +9,12 @@
 //! assistant header projects the canonical `Agent • Model[variant]`, with the
 //! model's display name (looked up at render time) ahead of its id.
 
+pub mod markdown;
 mod model_names;
 mod reduce;
 mod runtime;
 
-pub(crate) use reduce::approval_state_from_record;
+pub use reduce::approval_state_from_record;
 use reduce::*;
 
 pub use model_names::{ModelDisplayNames, variant_label};
@@ -19,8 +23,10 @@ pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use web_time::Instant;
 
 use cookie_agent_protocol::{
     AgentId, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation, ApprovalFinalOutcome,
@@ -33,7 +39,9 @@ use cookie_agent_protocol::{
     StreamedOutputKind, ToolCallId, ToolTerminationOutcome, TransientEvent, Usage, VariantId,
 };
 
-use crate::{ClientDelivery, markdown::MarkdownDocument};
+use cookie_agent_protocol::ClientDelivery;
+
+use crate::markdown::MarkdownDocument;
 
 /// The visible state of a tool invocation, reduced from the exact protocol-10
 /// termination outcome. Failed, cancelled, and interrupted stay distinct.
@@ -121,8 +129,8 @@ pub const MAX_FULL_CONTENT_BYTES: u64 = cookie_agent_protocol::ARTIFACT_CHUNK_BY
 
 /// Applies one live progress update to a running call, as a
 /// `tool_call_progress` transient does.
-#[cfg(test)]
-pub(crate) fn reduce_live_progress_for_test(
+#[cfg(any(test, feature = "test-support"))]
+pub fn reduce_live_progress_for_test(
     state: &mut SessionState,
     tool_call_id: ToolCallId,
     message: &str,
@@ -203,7 +211,7 @@ impl ToolCallState {
     }
 
     /// The failure and the shown display as text, for tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn shown_text(&self) -> String {
         let display = cookie_agent_protocol::display_text(self.shown_display());
         match &self.failure {
@@ -238,7 +246,7 @@ pub struct ApprovalState {
 impl ApprovalState {
     /// User-visible/respondable approvals must have a durable escalation and
     /// must still be within their response lifetime.
-    pub(crate) fn is_visible_user_escalation(&self) -> bool {
+    pub fn is_visible_user_escalation(&self) -> bool {
         self.escalated
             && self
                 .constraints
@@ -305,7 +313,7 @@ impl FrozenAssistantAttribution {
 }
 
 /// A file part as one line: `📎 name · type · size`.
-pub(crate) fn attachment_chip(artifact: &cookie_agent_protocol::ArtifactRef) -> String {
+pub fn attachment_chip(artifact: &cookie_agent_protocol::ArtifactRef) -> String {
     format!(
         "📎 {} · {} · {}",
         artifact.display_name(),
@@ -317,7 +325,7 @@ pub(crate) fn attachment_chip(artifact: &cookie_agent_protocol::ArtifactRef) -> 
 /// The text a person reads for `content`: text parts as they are and each
 /// file part as its [`attachment_chip`], one part per line. A part of a kind
 /// this build does not know reads as its tag.
-pub(crate) fn user_content_text(content: &cookie_agent_protocol::UserContent) -> String {
+pub fn user_content_text(content: &cookie_agent_protocol::UserContent) -> String {
     use cookie_agent_protocol::{Open, UserContentPart};
     if let [Open::Known(UserContentPart::Text { text })] = content.parts() {
         return text.clone();
@@ -632,13 +640,13 @@ impl AssistantChild {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AssistantPartKind {
+pub enum AssistantPartKind {
     Text,
     Thinking,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct OpenAssistantProjection {
+pub struct OpenAssistantProjection {
     item_id: u64,
     part_id: u64,
     kind: AssistantPartKind,
@@ -685,7 +693,7 @@ impl TranscriptItem {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn user(text: impl Into<String>) -> Self {
         Self::User {
             id: 1,
@@ -697,7 +705,7 @@ impl TranscriptItem {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn internal(text: impl Into<String>) -> Self {
         Self::Event {
             id: 1,
@@ -711,7 +719,7 @@ impl TranscriptItem {
 
 /// One live streaming attempt, owning one assistant item.
 #[derive(Clone, Debug)]
-pub(crate) struct AttemptProjection {
+pub struct AttemptProjection {
     item_id: u64,
     run_id: Option<RunId>,
     /// Retained independently of the currently open run segment so a later
@@ -728,11 +736,11 @@ pub(crate) struct AttemptProjection {
 
 /// The assistant item accumulating attempts until the run's next input boundary.
 #[derive(Clone, Debug)]
-pub(crate) struct RunAssistantProjection {
-    pub(crate) run_id: RunId,
+pub struct RunAssistantProjection {
+    pub run_id: RunId,
     pub(crate) item_id: u64,
-    pub(crate) committed_prefix: usize,
-    pub(crate) current_model: ResolvedModelRef,
+    pub committed_prefix: usize,
+    pub current_model: ResolvedModelRef,
     /// An event row interleaved after this block while a turn was in flight.
     /// The part streaming at that moment finishes in this block, but the
     /// next new segment (a part of another kind, a tool call, or a new
@@ -746,12 +754,12 @@ pub(crate) struct RunAssistantProjection {
 /// generation), plus the total context occupied at the end of the last
 /// committed turn (its `input_tokens + output_tokens`).
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct AssistantTurnMetrics {
-    pub(crate) timed_output_tokens: u64,
-    pub(crate) generation: Duration,
-    pub(crate) timed_turns: u32,
-    pub(crate) context_tokens: Option<u64>,
-    pub(crate) estimated_cost_pico_usd: Option<u64>,
+pub struct AssistantTurnMetrics {
+    pub timed_output_tokens: u64,
+    pub generation: Duration,
+    pub timed_turns: u32,
+    pub context_tokens: Option<u64>,
+    pub estimated_cost_pico_usd: Option<u64>,
     cost_unpriced: bool,
 }
 
@@ -775,7 +783,7 @@ impl AssistantTurnMetrics {
 /// A tool start buffered until its committed placeholder exists, linked by
 /// the owning turn's exact content index.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PendingToolRow {
+pub struct PendingToolRow {
     /// Durable time of the tool's start event.
     started_at: jiff::Timestamp,
     turn_seq: u64,
@@ -784,7 +792,7 @@ pub(crate) struct PendingToolRow {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct IndexedToolCall {
+pub struct IndexedToolCall {
     arguments: String,
 }
 
@@ -792,7 +800,7 @@ pub(crate) struct IndexedToolCall {
 /// protocol values. History indices are deliberately excluded so one logical
 /// compatibility transition warns once without altering durable evidence.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum ReplayContextTransition {
+pub enum ReplayContextTransition {
     Adapter {
         found: SafeCode,
         expected: SafeCode,
@@ -815,7 +823,7 @@ pub(crate) enum ReplayContextTransition {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ProducerMessageProjection {
+pub struct ProducerMessageProjection {
     transcript_index: usize,
     producer_owner: ProducerOwner,
     reminder: Option<GoalReminderIdentity>,
@@ -829,8 +837,8 @@ pub(crate) struct ProducerMessageProjection {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ProducerClaimProjection {
-    pub(crate) run_id: RunId,
+pub struct ProducerClaimProjection {
+    pub run_id: RunId,
     pub(crate) message_ids: Vec<ProducerMessageId>,
 }
 
@@ -842,9 +850,9 @@ pub struct SessionState {
     pub generation: u64,
     pub last_seq: u64,
     /// Creation-event time, used as the deterministic sibling-order fallback.
-    pub(crate) created_at: Option<jiff::Timestamp>,
+    pub created_at: Option<jiff::Timestamp>,
     /// Latest user submission or delegate/steer tool start in this session.
-    pub(crate) last_agent_activity: Option<jiff::Timestamp>,
+    pub last_agent_activity: Option<jiff::Timestamp>,
     pub active_run: Option<RunId>,
     pub cwd_identity: Option<cookie_agent_protocol::CwdIdentity>,
     /// Total context occupied at the end of the latest committed turn
@@ -876,7 +884,7 @@ pub struct SessionState {
     /// as aggregated descendant warnings merge into a viewed transcript by
     /// this time, so mid-conversation breaks render at their chronological
     /// position instead of the bottom.
-    pub(crate) item_times: HashMap<u64, jiff::Timestamp>,
+    pub item_times: HashMap<u64, jiff::Timestamp>,
     /// The engine's pending-input lane for this session, reduced purely
     /// from admission/promotion/recall events: steered messages the model
     /// has not seen yet. Source of the queue strip between the conversation
@@ -884,62 +892,62 @@ pub struct SessionState {
     pub pending_inputs: VecDeque<PendingInput>,
     /// Runs whose initial (non-lane) input has already been submitted.
     /// Later submissions for the same run are pending-lane promotions.
-    pub(crate) initial_input_submitted: HashSet<RunId>,
+    pub initial_input_submitted: HashSet<RunId>,
     /// Pending inputs the engine voided at run end (no per-entry events),
     /// parked here until the UI restores their text into the composer —
     /// user text is never silently lost. Drained by the UI on sight.
     pub voided_inputs: Vec<VoidedInput>,
     /// Inputs queued behind the running run, from every client.
     pub queued_inputs: cookie_agent_protocol::QueuedInputs,
-    pub(crate) next_transcript_id: u64,
+    pub next_transcript_id: u64,
     /// Ids handed to parts opened by live-only output, which has no durable
     /// sequence to derive one from. See [`LIVE_PART_ID_BASE`].
-    pub(crate) next_live_part_id: u64,
-    pub(crate) open_assistant: Option<OpenAssistantProjection>,
+    pub next_live_part_id: u64,
+    pub open_assistant: Option<OpenAssistantProjection>,
     /// Elapsed thinking time per sealed thinking part, keyed by
     /// `(item_id, part_id)` and derived from durable event timestamps.
     pub thinking_durations: HashMap<(u64, u64), Duration>,
     /// When each unfinished attempt's streamed parts began, from its durable
     /// `ModelOutputStarted` marks. Its commit times its thinking from these,
     /// identically live and on replay, where the deltas themselves are gone.
-    pub(crate) stream_marks: HashMap<AttemptId, Vec<(StreamedOutputKind, jiff::Timestamp)>>,
+    pub stream_marks: HashMap<AttemptId, Vec<(StreamedOutputKind, jiff::Timestamp)>>,
     /// Durable event timestamps by sequence, pruned at each committed
     /// turn's input boundary; backs replay-exact generation durations.
-    pub(crate) event_timestamps: BTreeMap<u64, jiff::Timestamp>,
+    pub event_timestamps: BTreeMap<u64, jiff::Timestamp>,
     /// Generation metrics per assistant item, accumulated from committed
     /// turns, for the subordinate footer row at the end of the block.
-    pub(crate) assistant_metrics: HashMap<u64, AssistantTurnMetrics>,
-    pub(crate) open_run_assistant: Option<RunAssistantProjection>,
+    pub assistant_metrics: HashMap<u64, AssistantTurnMetrics>,
+    pub open_run_assistant: Option<RunAssistantProjection>,
     /// Assistant blocks whose run ended in `RunInterrupted`; their footer
     /// reads `… · interrupted`.
-    pub(crate) interrupted_assistant_items: HashSet<u64>,
-    pub(crate) attempts: HashMap<AttemptId, AttemptProjection>,
+    pub interrupted_assistant_items: HashSet<u64>,
+    pub attempts: HashMap<AttemptId, AttemptProjection>,
     /// The latest attempt until its first delta, commit, or abandonment.
-    pub(crate) pending_attempt: Option<AttemptId>,
+    pub pending_attempt: Option<AttemptId>,
     pub tools: HashMap<ToolCallId, ToolCallState>,
     /// The session's background calls, as the daemon last reported them.
     pub background_calls: Vec<cookie_agent_protocol::BackgroundCall>,
     /// Buffered tool rows awaiting their committed placeholder, keyed by
     /// the owning turn's content index so starts/completions cannot reorder.
-    pub(crate) pending_tool_rows: Vec<PendingToolRow>,
+    pub pending_tool_rows: Vec<PendingToolRow>,
     /// Durable tool input indexed from committed turn content:
     /// (model_turn_seq, model_call_id) → arguments JSON, for expanded rows.
-    pub(crate) turn_tool_index: HashMap<(u64, String), IndexedToolCall>,
+    pub turn_tool_index: HashMap<(u64, String), IndexedToolCall>,
     /// The assistant item owning each committed model-turn sequence.
-    pub(crate) turn_items: HashMap<u64, u64>,
+    pub turn_items: HashMap<u64, u64>,
     /// User-visible replay compatibility transitions already projected for a
     /// run. Durable replay/reconnect and later tool-loop attempts may repeat
     /// request diagnostics without creating another logical transition.
-    pub(crate) replay_context_warnings: HashSet<(RunId, Sha256Digest, ReplayContextTransition)>,
+    pub replay_context_warnings: HashSet<(RunId, Sha256Digest, ReplayContextTransition)>,
     /// Adapter warnings already surfaced for a run. After a model fallback the
     /// same reconstruction warnings regenerate on every committed turn; each
     /// distinct warning text is shown only once per run.
-    pub(crate) model_turn_warnings: HashSet<(RunId, String)>,
-    pub(crate) goal_revisions: HashMap<GoalId, u64>,
-    pub(crate) producer_messages: HashMap<ProducerMessageId, ProducerMessageProjection>,
-    pub(crate) producer_dedup: HashMap<(ProducerOwner, ProducerIdempotencyKey), ProducerMessageId>,
-    pub(crate) producer_claims: HashMap<u64, ProducerClaimProjection>,
-    pub(crate) terminal_runs: HashSet<RunId>,
+    pub model_turn_warnings: HashSet<(RunId, String)>,
+    pub goal_revisions: HashMap<GoalId, u64>,
+    pub producer_messages: HashMap<ProducerMessageId, ProducerMessageProjection>,
+    pub producer_dedup: HashMap<(ProducerOwner, ProducerIdempotencyKey), ProducerMessageId>,
+    pub producer_claims: HashMap<u64, ProducerClaimProjection>,
+    pub terminal_runs: HashSet<RunId>,
     pub approvals: Vec<ApprovalState>,
     /// AGENTS.md entries loaded by the latest run and by the run before it,
     /// per attachment (events without one count as `local`). A run loads
@@ -947,8 +955,8 @@ pub struct SessionState {
     /// only when an attachment's context differs from its previous run's,
     /// so turning AGENTS.md off and back on shows again even when the files
     /// are unchanged.
-    pub(crate) agent_md_latest_run: AgentMdByAttachment,
-    pub(crate) agent_md_previous_run: AgentMdByAttachment,
+    pub agent_md_latest_run: AgentMdByAttachment,
+    pub agent_md_previous_run: AgentMdByAttachment,
 }
 
 /// AGENTS.md entries keyed by the attachment that loaded them.
@@ -1025,7 +1033,7 @@ impl SessionState {
     }
 
     /// Durable insertion time of one transcript item, when tracked.
-    pub(crate) fn item_time(&self, item_id: u64) -> Option<jiff::Timestamp> {
+    pub fn item_time(&self, item_id: u64) -> Option<jiff::Timestamp> {
         self.item_times.get(&item_id).copied()
     }
 

@@ -594,6 +594,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie_agent_client_state"
+version = "0.3.0"
+dependencies = [
+ "cookie_agent_protocol",
+ "foldhash",
+ "jiff",
+ "pulldown-cmark",
+ "serde_json",
+ "web-time",
+]
+
+[[package]]
 name = "cookie_agent_coding_runtime"
 version = "0.3.0"
 dependencies = [
@@ -855,6 +867,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "cookie_agent_client_state",
  "cookie_agent_config",
  "cookie_agent_engine",
  "cookie_agent_models",

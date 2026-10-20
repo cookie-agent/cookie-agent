@@ -2571,7 +2571,7 @@ pub(super) fn approval_outcome_label(outcome: ApprovalFinalOutcome) -> &'static 
     }
 }
 
-pub(crate) fn approval_state_from_record(record: ApprovalRecord) -> Option<ApprovalState> {
+pub fn approval_state_from_record(record: ApprovalRecord) -> Option<ApprovalState> {
     match record.status {
         ApprovalStatus::Escalated => {}
         ApprovalStatus::Pending
@@ -2765,7 +2765,7 @@ pub(super) fn replay_context_warning_key(
     })
 }
 
-pub(super) struct ReplayContextWarningKey {
+pub struct ReplayContextWarningKey {
     selection_fingerprint: Sha256Digest,
     transition: ReplayContextTransition,
 }

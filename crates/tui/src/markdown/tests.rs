@@ -308,7 +308,7 @@ fn stable_markdown_blocks_keep_their_render_cache_while_the_tail_grows() {
     let theme = Theme::default();
     let highlighter = PlainHighlighter;
     render_markdown(&document, &theme, &highlighter);
-    let cached = document.stable_blocks[0]
+    let cached = super::block_cache(&document.stable_blocks()[0])
         .rendered
         .lock()
         .unwrap()
@@ -319,7 +319,7 @@ fn stable_markdown_blocks_keep_their_render_cache_while_the_tail_grows() {
 
     document.append(" grows");
     render_markdown(&document, &theme, &highlighter);
-    let reused = document.stable_blocks[0]
+    let reused = super::block_cache(&document.stable_blocks()[0])
         .rendered
         .lock()
         .unwrap()
@@ -350,7 +350,8 @@ fn stable_block_cache_invalidates_for_width_theme_and_source() {
     assert_ne!(light_narrow[0], dark_narrow[0]);
     assert_ne!(light_wide[0], dark_wide[0]);
 
-    let mut cached = document.stable_blocks[0].rendered.lock().unwrap();
+    let cache = super::block_cache(&document.stable_blocks()[0]);
+    let mut cached = cache.rendered.lock().unwrap();
     let entry = cached.as_mut().expect("stable block render");
     entry.source = Arc::from("same-length collision");
     entry.lines = vec![super::MarkdownLine {
