@@ -238,7 +238,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.permission.preview` | Run selection, optional overlay `rules` | Effective permissions a session created with them would have; creates nothing |
 | `session.runtime.attach` | Session ID, `runtime_id`, optional `capability`, `workspace` when the capability takes one | The new `attachment` and the session's `runtimes` |
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
-| `runtimes.list` | Empty object | Runtime `templates` and live `instances` with status |
+| `runtimes.list` | Empty object | Every `runtimes` entry (built-in, configured, and dial-in, with lifetime, connection, capabilities, and machine) and the opened `instances` with status (see [Runtimes](#runtimes)) |
 | `runtimes.reconnect` | `runtime_id`, optional `capability`, `workspace` when the capability takes one | The `instance` afterwards, as `runtimes.list` reports it |
 | `machines.list` | Empty object | Every `machines` entry, in name order (see [Machines](#machines)) |
 | `machines.rename` | `machine`, new `name` | The `machines` afterwards; the machine's memory folder moves with it |
@@ -415,9 +415,12 @@ name is the name the instance reports (`global`, or
 an instance a session already has is an error. A capability that takes a
 workspace requires `workspace`, except `local`'s `coding`, which opens at the
 daemon's working directory without one; a capability that takes none
-refuses one. Attaching a runtime ID without a template is an
-`unknown runtime` error. Besides `global` and `local`, the runtimes are the
-configured [`[runtimes.<id>]`](../daemon/runtimes.md) tables. The daemon passes `workspace`
+refuses one. Besides `global` and `local`, the runtimes are the configured
+[`[runtimes.<id>]`](../daemon/runtimes.md) tables and the
+[dial-in runtimes](../daemon/runtimes.md#runtimes-that-dial-in) that have
+connected since the daemon started; attaching any other runtime ID is an
+`unknown runtime` error, and attaching a dial-in runtime that is not
+connected now fails. The daemon passes `workspace`
 to the runtime exactly as given; the attachment records the canonical path
 the runtime reported, and two spellings of one workspace share an instance.
 
@@ -811,7 +814,7 @@ connection's subscriptions:
 | Notification | `failures` entry |
 |---|---|
 | `mcp.changed` | `runtime_id` hosting the server (`global` for top-level `[mcp]`), `workspace` of the hosting instance when its runtime has one, `server`, `reason`, `session_ids` |
-| `runtimes.changed` | `runtime_id`, `workspace` when the template takes one, `reason`, `session_ids` |
+| `runtimes.changed` | `runtime_id`, `capability`, `workspace` when the capability takes one, `reason`, `session_ids` |
 
 Subscribing to a session also sends the failures that already affect it, so a
 client that opens a session after its servers failed still learns why their
