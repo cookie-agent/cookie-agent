@@ -2,7 +2,8 @@
 
 It answers `POST /v1/chat/completions` with a streamed reply chosen by the
 last message: a tool result gets a short final answer, a request without
-tools (a compaction) a summary; otherwise the last user text decides.
+tools (a compaction) a summary, and a background call's report "ok";
+otherwise the last user text decides.
 
 - containing "markdown": a streamed markdown answer with a code block;
 - containing "tool": a `bash` call to `printf`;
@@ -71,6 +72,9 @@ def reply(request):
         # A compaction or other tool-less request: a summary.
         return text_reply(["A short summary of the conversation."])
     text = last_text(messages).lower()
+    if "<background_result" in text:
+        # A stopped background call's report: nothing more to do.
+        return text_reply(["ok"])
     if "markdown" in text:
         return text_reply(
             [
