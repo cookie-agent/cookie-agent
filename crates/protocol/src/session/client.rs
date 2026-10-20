@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use super::rt;
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientEvent, ClientHello, ClientIdentity, ClientKind, ClientSubscriptionMessage, EventOrigin,
@@ -376,7 +377,7 @@ pub struct Client {
     origin: Arc<StdMutex<Option<EventOrigin>>>,
     /// The daemon's client protocol version, from the handshake response.
     daemon_version: Arc<StdMutex<Option<crate::SemVer>>>,
-    #[cfg(test)]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pending_command_count: Arc<AtomicUsize>,
 }
 
@@ -409,7 +410,7 @@ impl Client {
         let (control_sender, control_rx) = mpsc::unbounded_channel();
         let pending_command_count = Arc::new(AtomicUsize::new(0));
         let shutdown = Arc::new(ClientShutdown(tokio_util::sync::CancellationToken::new()));
-        tokio::spawn(connection_task(
+        rt::spawn(connection_task(
             transport,
             ConnectionTask {
                 commands: command_rx,
@@ -429,7 +430,7 @@ impl Client {
             shutdown,
             origin: Arc::new(StdMutex::new(None)),
             daemon_version: Arc::new(StdMutex::new(None)),
-            #[cfg(test)]
+            #[cfg(all(test, not(target_arch = "wasm32")))]
             pending_command_count,
         };
         spawn_recovery_worker(
@@ -1090,7 +1091,7 @@ impl Client {
         let commands = self.commands.clone();
         let subscriptions = self.subscriptions.clone();
         let recovery = self.recovery.clone();
-        tokio::spawn(async move {
+        rt::spawn(async move {
             let result = request_replay(&commands, request, cursor, None).await;
             if result.is_err() {
                 abort_replay(&subscriptions, session_id).await;
@@ -1187,7 +1188,7 @@ impl Client {
         Ok(serde_json::from_str(result.get())?)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     fn pending_command_count(&self) -> usize {
         self.pending_command_count.load(Ordering::Relaxed)
     }
@@ -1315,7 +1316,7 @@ async fn request_replay_with_timeout(
             written: Some(written),
             response,
         };
-        tokio::time::timeout(REPLAY_QUEUE_TIMEOUT, async {
+        rt::timeout(REPLAY_QUEUE_TIMEOUT, async {
             commands
                 .send(command)
                 .await
@@ -1326,7 +1327,7 @@ async fn request_replay_with_timeout(
         })
         .await
         .map_err(|_| ClientError::ReplayTimedOut)??;
-        let next = tokio::time::timeout(timeout, receiver)
+        let next = rt::timeout(timeout, receiver)
             .await
             .map_err(|_| ClientError::ReplayTimedOut)?
             .map_err(|_| ClientError::Closed)??;
@@ -1410,7 +1411,7 @@ fn spawn_recovery_worker(
     replay_timeout: Duration,
 ) {
     let weak_recovery = Arc::downgrade(&recovery);
-    tokio::spawn(async move {
+    rt::spawn(async move {
         while let Some((mut full_replay, mut only_session)) = receiver.recv().await {
             loop {
                 for attempt in 0..RECOVERY_ATTEMPTS {
@@ -1436,7 +1437,7 @@ fn spawn_recovery_worker(
                                 break;
                             }
                             let delay = 50_u64.saturating_mul(1_u64 << attempt).min(5_000);
-                            tokio::time::sleep(Duration::from_millis(delay)).await;
+                            rt::sleep(Duration::from_millis(delay)).await;
                         }
                     }
                 }
@@ -1546,8 +1547,7 @@ where
     let mut pending = HashMap::new();
     let mut failure = None;
     // Drops calls whose callers stopped waiting; it only runs while calls are pending.
-    let mut prune = tokio::time::interval(Duration::from_millis(100));
-    prune.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut prune = rt::interval(Duration::from_millis(100));
     loop {
         tokio::select! {
             () = task.shutdown.cancelled() => break,
@@ -2296,5 +2296,5 @@ async fn finish_ready_replay(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

@@ -10,9 +10,15 @@ homepage = "https://cookie-agent.github.io/cookie-agent/"
 
 [features]
 test-support = []
-# Client-side WebSocket transport for reaching a cookie daemon.
-websocket = ["dep:tokio-tungstenite", "dep:url"]
-# Client-side loopback listener for MCP OAuth redirects.
+# Client-side WebSocket transport for reaching a cookie daemon: tungstenite
+# natively, the browser's `WebSocket` on wasm32.
+websocket = [
+    "dep:tokio-tungstenite",
+    "dep:url",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+]
+# Client-side loopback listener for MCP OAuth redirects (native only).
 oauth-callback = []
 
 [lints]
@@ -32,15 +38,38 @@ serde_json = { workspace = true, features = ["raw_value"] }
 serde_path_to_error.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tokio-util = { workspace = true, features = ["codec"] }
-tokio-tungstenite = { workspace = true, optional = true }
+tokio-util.workspace = true
 url = { workspace = true, optional = true }
 uuid.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
+tokio-tungstenite = { workspace = true, optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
-[dev-dependencies]
+# On wasm32 the crate is the wire types and the client: tokio only for its
+# channels and `select!`, the browser for randomness, the clock, timers, and
+# the WebSocket.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+jiff = { workspace = true, features = ["js"] }
+tokio = { version = "1.53.1", default-features = false, features = ["sync", "macros"] }
+uuid = { workspace = true, features = ["js"] }
+wasm-bindgen = { version = "0.2.126", optional = true }
+wasm-bindgen-futures = "0.4.76"
+web-sys = { version = "0.3.103", optional = true, features = [
+    "BinaryType",
+    "CloseEvent",
+    "MessageEvent",
+    "WebSocket",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 insta.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.76"

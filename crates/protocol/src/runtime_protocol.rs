@@ -257,6 +257,7 @@ impl RuntimeMachine {
 
     /// This machine: [`crate::paths::machine_id`] and
     /// [`crate::paths::host_name`]. `None` when it has no machine ID.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn this_machine() -> Option<Self> {
         let host_name = crate::paths::host_name();

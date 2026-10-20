@@ -3,6 +3,10 @@
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
 //! the few that keep versionless session event history readable.
+//!
+//! It also builds for `wasm32-unknown-unknown`, as the wire types and the
+//! [`Client`] only: the server, the stdio peer, [`paths`], and the other
+//! native-only parts are left out there.
 
 use std::borrow::Cow;
 
@@ -174,7 +178,7 @@ mod attachment;
 mod bindings;
 mod config;
 mod content;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub mod corpus;
 pub mod diagnostics;
 mod display;
@@ -187,10 +191,12 @@ mod input_lanes;
 mod manifest;
 mod memory;
 mod model;
-#[cfg(feature = "oauth-callback")]
+#[cfg(all(feature = "oauth-callback", not(target_arch = "wasm32")))]
 pub mod oauth_callback;
 mod open;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod paths;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 mod producer;
 mod provider;
@@ -201,6 +207,7 @@ mod semver;
 mod session;
 mod session_model;
 mod setup_value;
+#[cfg(not(target_arch = "wasm32"))]
 mod stop;
 mod stored_display;
 pub mod strict;
@@ -239,12 +246,15 @@ pub use semver::*;
 pub use session::*;
 pub use session_model::*;
 pub use setup_value::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub use stop::StopSignals;
 pub use uploads::*;
 
-#[cfg(test)]
+// The crate's own tests run natively; on wasm32 the browser tests in
+// `tests/browser.rs` cover the client.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod corpus_tests;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod goal_producer_tests;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

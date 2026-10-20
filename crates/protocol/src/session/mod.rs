@@ -1,12 +1,19 @@
 mod client;
+#[cfg(feature = "websocket")]
+mod daemon_url;
+mod rt;
+#[cfg(not(target_arch = "wasm32"))]
 mod server;
 mod transport;
-#[cfg(feature = "websocket")]
+#[cfg(all(feature = "websocket", not(target_arch = "wasm32")))]
 mod websocket;
 
 pub use client::{Client, ClientDelivery, ClientError};
-#[cfg(feature = "test-support")]
+#[cfg(feature = "websocket")]
+pub use daemon_url::{WebSocketUrlError, runtime_dial_in_url, validate_websocket_url};
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use server::test_server_context;
+#[cfg(not(target_arch = "wasm32"))]
 pub use server::{
     AUTHENTICATION_DEADLINE, Authentication, ServerContext, ServerFault, ServerProtocol, serve,
 };
@@ -14,7 +21,5 @@ pub use transport::{
     InProcessStream, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, Transport,
     TransportError, in_process_pair,
 };
-#[cfg(feature = "websocket")]
-pub use websocket::{
-    WebSocketTransport, WebSocketUrlError, runtime_dial_in_url, validate_websocket_url,
-};
+#[cfg(all(feature = "websocket", not(target_arch = "wasm32")))]
+pub use websocket::WebSocketTransport;
