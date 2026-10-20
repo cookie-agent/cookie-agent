@@ -146,7 +146,7 @@ jobs:
           toolchain: 1.88.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Run tests
-        run: cargo test --locked --workspace -- --nocapture
+        run: cargo test --locked --workspace --no-fail-fast -- --nocapture
         timeout-minutes: 60
         env:
           RUST_BACKTRACE: 1

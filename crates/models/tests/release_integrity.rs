@@ -476,6 +476,7 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "e815130ea95983e162ae91843b48d3a3ce991735635fce83a647afde21e09f7e  geckodriver.tar.gz",
         "scripts/test-wasm-client.sh",
         "scripts/test-web-page.sh",
+        "cargo test --locked --workspace --no-fail-fast -- --nocapture",
         "cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_web --all-targets -- -D warnings",
         "scripts/build-web.sh",
         "needs: [stable, msrv, wasm, web, windows, release-targets]",
