@@ -75,7 +75,8 @@ address bar.
   - **Panels:** these open as a sheet on the right. They cover approvals,
     the agent, model, and preset pickers, usage, the diagnostics filter,
     the goal, background calls, skills, permissions, a message's actions,
-    and the command menu.
+    runtimes and machines, MCP servers, providers, the configuration,
+    memory, plugins, and the command menu.
   - **Narrow windows such as a phone:** the session list and every panel
     open full screen. Long lines in code, diffs, and terminal output scroll
     inside their block.
@@ -129,7 +130,9 @@ address bar.
   - `/usage`, `/cancel`, `/events`;
   - `/goal`, `/compact`, `/background` (also `/bg`), `/skills`,
     `/permissions` (also `/perms`), `/attach` (also `/file`, `/image`);
-  - `/agent-panel show`, `/agent-panel hide`, `/agent-panel auto`.
+  - `/agent-panel show`, `/agent-panel hide`, `/agent-panel auto`;
+  - `/runtime` (also `/runtimes`), `/mcp`, `/connect`, `/config`,
+    `/memory` (also `/memories`), `/plugins` (also `/plugin`).
 
   The ☰ button lists them all.
 - **Approvals.** When a tool call needs an answer, the status bar says so.
@@ -168,6 +171,51 @@ address bar.
   the session's cost (click for `/usage`), and its context size.
 - **Diagnostics.** `/events` picks which diagnostic rows the transcript
   shows; the choice stays in the browser.
+- **Messages from producers** (goal control and reminders, background-call
+  reports, delegation reports, plugins) show as one folded line with their
+  summary; click one to read it whole.
+
+## Managing the daemon
+
+- **Runtimes.** `/runtime` lists the session's attached runtimes with their
+  status: **Attach a runtime** searches every runtime's capabilities and asks
+  for a workspace when one is needed, **Detach** removes one (the daemon
+  refuses while the session runs), and **Retry** restarts a failed
+  instance.
+  - While a new session is composed, the list is the runtimes it will
+  attach: `global` and `local`'s `coding` at its directory to start with.
+  Each starts at once, so a runtime that cannot start says why before the
+  session exists.
+  - The open panel reads the runtimes again every second.
+- **Machines.** The **Machines** tab of `/runtime` lists each machine with
+  its runtimes. Rename or forget a machine, merge it into another (its
+  memories move too), move a runtime to a machine, or unpin it.
+- **MCP servers.** `/mcp` lists every runtime's servers with their state,
+  tools, and last error. The global runtime's servers can be added, edited,
+  enabled or disabled, removed, and kept in your `config.toml`; a coding
+  runtime's come from its template. **Reconnect** works for any server.
+  - A server that needs authorization says so. The page cannot sign in to
+    it: run `cookie mcp auth <server>` on a machine with a browser, or
+    authorize it from the TUI.
+- **Providers.** `/connect` lists the catalog's providers. Pick one to
+  connect it, or to update or disconnect its stored connection. Credentials
+  are typed into password fields, read once when you connect, and never
+  kept by the page; closing the form clears them.
+- **Configuration.** `/config` lists `config.toml` and the agent documents.
+  Open one to edit it in the page and **Apply** it. A change the daemon
+  refuses stays open with the reason, to be fixed and applied again; a
+  document that changed meanwhile is reloaded instead. Create an agent
+  document, delete one, or **Reload from disk** after editing files by
+  hand.
+- **Memory.** `/memory` lists the memories by layer, grouped by machine and
+  project, with the files that are not valid memories. Open one to edit it,
+  create one at a URL (clicking a layer or group fills in its prefix), or
+  delete one. A memory that changed since you opened it is never
+  overwritten silently: you choose to reload it, overwrite it, or drop your
+  edit.
+- **Plugins.** `/plugins` lists each plugin with its state, tools, hooks,
+  and why it last failed, and restarts one. A plugin's events show in the
+  status bar.
 
 ## Reaching the daemon from elsewhere
 
@@ -204,7 +252,7 @@ A `cookie` built from a fresh checkout serves a placeholder page.
 - it needs `trunk` 0.21.14 and the `wasm32-unknown-unknown` target;
 - it writes the page to `crates/web_assets/bundle/`, which the next build
   of `cookie` embeds;
-- it fails when the page, gzipped, is over its budget of 1.6 MB.
+- it fails when the page, gzipped, is over its budget of 1.7 MB.
 
 The daemon sends the page gzip-compressed to browsers that accept it, under a
 Content-Security-Policy that allows only the page's own scripts and

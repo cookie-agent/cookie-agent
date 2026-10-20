@@ -1240,3 +1240,104 @@ Session depth landed as specified, with no wire change.
       another process would, opening as a read-only snapshot.
 
     All pass, and the screenshots were checked.
+
+### Phase W4 (2026-10-20)
+
+Management landed as specified, with no wire change.
+
+- **Moved into `cookie_agent_client_state`, with the TUI switched over:**
+  - `runtimes`: attachment rows matched to their instances, a new session's
+    draft runtimes, the attach choices and their search, the attach and
+    retry requests, the machines view's rows, the machine actions each row
+    offers, the changes they make, and their status lines.
+  - `mcp`: the server order, which servers `mcp.server.*` edits, a server
+    form as text and the definition it makes (`McpFields`), and the labels.
+  - `providers`: a provider row's state, the model-availability and catalog
+    lines, the setup values and credentials a connect sends, and the
+    store-contention policy. Credentials are serialized once from the
+    caller's buffers into a zeroized buffer (`credential_values`), as the
+    TUI did.
+  - `config`: the document rows, a new agent's template and path rules,
+    and what an apply or reload answered and what the panel says about it.
+  - `memory`: the rows by layer and group, a new memory's template and URL
+    rules, what a write answered, and a refused delete's message.
+  - `plugins`: a plugin's state and details, and its events' status line.
+  - `tool_header` and `rows`: a tool call's header text, which drops an
+    argument its title already names, the hint icons, and the producer and
+    goal row labels.
+- **The page** (`crates/web/src/workspace/manage.rs`,
+  `crates/web/src/views/manage.rs`):
+  - **`/runtime`:** the session's attachments with their status, attach
+    (search, then a workspace when needed), detach, and retry
+    (`runtimes.reconnect`). In a new session, the draft's runtimes start as
+    `global` and `local`'s `coding` at the chosen directory (else where the
+    daemon's own `coding` instance works, from `runtimes.list`). Each opens
+    at once, and `session.create` attaches them. The **Machines** tab
+    renames, merges, forgets, assigns, and unassigns. The panel re-reads
+    `runtimes.list` and `machines.list` every second while open, as the TUI
+    polls, and on `runtimes.changed` and `machines.changed`.
+  - **`/mcp`:** the servers in the TUI's order with state, tools, source,
+    and error, and add, edit, enable or disable, remove, reconnect, and
+    persist. A server that needs authorization says to run
+    `cookie mcp auth <server>` or use the TUI. Polled every second while
+    open, and on `mcp.changed`.
+  - **`/connect`:** the catalog's providers with their state, a connect
+    form per auth method with password fields for credentials, and
+    disconnect with its confirmation. Connects go through
+    `connect_provider_retrying`, and disconnects retry once on store
+    contention, as in the TUI.
+  - **`/config`:** the documents, an in-page monospace editor, `config.apply`
+    at the revision and fingerprint read, refused edits kept to fix,
+    conflicts dropped and reloaded, new agent documents, delete, and
+    `config.reload`.
+  - **`/memory`:** the memories by layer, an in-page editor, writes at the
+    revision read, the invalid and changed outcomes with their choices
+    (edit again, reload, overwrite, drop), create, and delete with its
+    revision. It refreshes on `memory.changed` and `machines.changed`.
+  - **`/plugins`:** state and details, restart, `plugins.changed`, and
+    `events.plugin` status lines for the viewed session.
+- **From the W3 review:** producer messages (goal control and reminders,
+  background-call and subagent reports) render as the TUI renders them. A
+  claimed or consumed one is a folded line with its summary that opens to
+  its owner, delivery, and body. A pending or admitted one does not show
+  yet, and a discarded one shows only at the debug level. Goal activations
+  show as their `/goal` action and goal states as the objective, status,
+  and checklist. Plugin messages, AGENTS.md, loaded skills, and compactions
+  fold as in the TUI. Tool titles use the TUI's header text, so a title
+  that names its argument does not repeat it.
+- **Size.** `Client::call` now serializes its parameters before awaiting
+  one shared request future instead of one per parameter type, which saved
+  16 KB gzipped. The wasm is 3.63 MB (1.37 MB gzipped), and the bundle
+  4.04 MB (1.62 MB gzipped). Most of the W4 growth is each RPC's request
+  and answer code. The budget in `scripts/build-web.sh` is raised to
+  1,700,000 bytes gzipped, with that reason recorded beside it.
+- **Deviations.**
+  - **Editors are in the page.** `/config` and `/memory` edit in a text area
+    (section 6) instead of `$EDITOR`. A refused config edit stays open in
+    the editor rather than reopening on the next edit.
+  - **Provider rows** say their state in words, without the TUI's key
+    hints.
+  - **The TUI's copy changed slightly** where it now shares the web's text:
+    a refused config edit says "Not applied; edit config.toml again.", and
+    an existing new-agent or new-memory path says "exists; edit it
+    instead".
+- **Tests.**
+  - **Native:** `client_state` tests for the runtime, machine, config,
+    memory, MCP, and provider rules, the producer summary, and the tool
+    header; web tests for the folded producer rows and the new commands.
+  - **`scripts/test-web-page.sh`** now configures a runtime template that
+    never starts (`[runtimes.box]`) and the reference plugin. The scenarios
+    add:
+    - a draft runtime that fails, is retried, and is removed;
+    - a session's `local` coding attachment detached and attached again;
+    - a machine renamed;
+    - an MCP server that cannot start added, disabled, and removed;
+    - a provider connected with an API key (which never shows on the page)
+      and disconnected;
+    - a config edit with an unknown key refused, then a valid edit applied;
+    - a memory refused as invalid, created, overwritten after a change on
+      disk, and deleted;
+    - the reference plugin restarted;
+    - goal-control and background-report rows folded, and one opened.
+
+    All pass, and the screenshots were checked.
