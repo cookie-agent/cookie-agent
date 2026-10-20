@@ -53,7 +53,16 @@ pub(crate) async fn native_compaction_server(
             let (mut socket, _) = listener.accept().await.expect("native compaction accept");
             let mut request = Vec::new();
             let mut buffer = [0_u8; 8192];
+            // The whole request, body included: a socket closed with unread
+            // bytes is reset on Windows, and the client then loses the
+            // answer it was sent.
+            let mut expected = None;
             loop {
+                if let Some(expected) = expected
+                    && request.len() >= expected
+                {
+                    break;
+                }
                 let read = socket
                     .read(&mut buffer)
                     .await
@@ -62,8 +71,16 @@ pub(crate) async fn native_compaction_server(
                     break;
                 }
                 request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
+                if expected.is_none()
+                    && let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    expected = Some(end + 4 + length);
                 }
             }
             let response = if index == 0 {
@@ -121,6 +138,7 @@ pub(crate) async fn native_compaction_server(
                 .write_all(response.as_bytes())
                 .await
                 .expect("native compaction response");
+            let _ = socket.shutdown().await;
             requests.push(String::from_utf8(request).expect("UTF-8 request"));
         }
         requests
