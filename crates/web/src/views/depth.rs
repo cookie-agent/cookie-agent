@@ -65,6 +65,7 @@ pub fn TreePanel(workspace: Workspace) -> impl IntoView {
                                         type="button"
                                         class=ROW
                                         class:bg-toasted=current
+                                        class:dark:bg-ember=current
                                         data-tree-session=session_id.to_string()
                                         on:click=move |_| workspace.open_session(session_id)
                                     >
@@ -468,7 +469,8 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                         <button
                             type="button"
                             class=ROW
-                            class:bg-toasted=current
+                            class:bg-toasted=current.clone()
+                            class:dark:bg-ember=current
                             data-skill=skill.name.clone()
                             on:click=move |_| workspace.skill_pick.set(Some(picked.clone()))
                         >

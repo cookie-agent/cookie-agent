@@ -53,6 +53,8 @@ pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
             if let AssistantChild::Tool { call_id } = child {
                 let id = call_id.to_string();
                 view.expanded.contains(&id).hash(&mut hasher);
+                // Raw arguments show only at `info` and below.
+                (view.minimum_level <= EventLevel::Info).hash(&mut hasher);
                 if let Some(tool) = view.state.tools.get(call_id) {
                     tool.revision.hash(&mut hasher);
                 }
@@ -457,7 +459,13 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     if expanded {
         html.push_str("<div class=\"flex flex-col gap-1 px-2 pb-2\">");
         if tool.presentation.arguments.is_empty() {
-            if !tool.arguments.is_empty() {
+            // As in the TUI: a presentation with a preview is complete as
+            // given, and raw arguments are diagnostic detail at `info` and
+            // below.
+            if !tool.arguments.is_empty()
+                && tool.presentation.preview.is_empty()
+                && view.minimum_level <= EventLevel::Info
+            {
                 html.push_str(&format!(
                     "<pre class=\"overflow-x-auto whitespace-pre-wrap font-mono text-xs\">{}</pre>",
                     escape(&tool.arguments)
@@ -494,7 +502,70 @@ mod tests {
         EventLevel, ModelDisplayNames, ProducerMessageStatus, SessionState, TranscriptItem,
     };
 
-    use super::{TranscriptView, item_html, item_key};
+    use super::{TranscriptView, item_html, item_key, tool_html};
+
+    /// A completed call with raw `arguments`, presented with `presentation`.
+    fn tool(
+        presentation: cookie_agent_protocol::PreparedPresentation,
+        arguments: &str,
+    ) -> cookie_agent_client_state::ToolCallState {
+        let name = presentation.title.to_string();
+        let presentation = cookie_agent_protocol::ToolPresentation::new(
+            presentation,
+            cookie_agent_protocol::ToolIdentity {
+                name: name.clone(),
+                published_name: name,
+                source: None,
+            },
+        );
+        let owner = cookie_agent_protocol::AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new("call-1").expect("call ID"),
+            provider_item_id: None,
+        };
+        let mut tool = cookie_agent_client_state::ToolCallState::started(
+            cookie_agent_protocol::ToolCallId::new_v7(),
+            owner,
+            presentation,
+            arguments.into(),
+        );
+        tool.status = cookie_agent_client_state::ToolStatus::Completed;
+        tool
+    }
+
+    #[test]
+    fn raw_arguments_show_only_without_blocks_or_a_preview_at_info() {
+        let state = SessionState::default();
+        let names = ModelDisplayNames::default();
+        let plain = tool(
+            cookie_agent_protocol::PreparedPresentation::new(
+                cookie_agent_protocol::SafeDisplayText::new("Lookup").expect("title"),
+                None,
+            ),
+            r#"{"query":"raw-marker"}"#,
+        );
+        let previewed = tool(
+            cookie_agent_protocol::PreparedPresentation::new(
+                cookie_agent_protocol::SafeDisplayText::new("Edit a.rs").expect("title"),
+                None,
+            )
+            .with_preview([cookie_agent_protocol::DisplayBlock::text("the preview")]),
+            r#"{"filePath":"a.rs","newString":"raw-marker"}"#,
+        );
+        let expanded = HashSet::from([plain.id.to_string(), previewed.id.to_string()]);
+        let view = |minimum_level| TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state: &state,
+            names: &names,
+            minimum_level,
+            expanded: &expanded,
+        };
+        assert!(tool_html(&view(EventLevel::Info), &plain).contains("raw-marker"));
+        assert!(!tool_html(&view(EventLevel::Warning), &plain).contains("raw-marker"));
+        let previewed_html = tool_html(&view(EventLevel::Debug), &previewed);
+        assert!(!previewed_html.contains("raw-marker"), "{previewed_html}");
+    }
 
     #[test]
     fn rows_below_the_event_level_are_hidden_and_text_is_escaped() {

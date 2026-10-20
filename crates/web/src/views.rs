@@ -164,6 +164,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                                 type="button"
                                 class=ROW
                                 class:bg-toasted=current
+                                class:dark:bg-ember=current
                                 data-session=session_id.to_string()
                                 on:click=move |_| workspace.open_session(session_id)
                             >
