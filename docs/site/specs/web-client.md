@@ -666,7 +666,7 @@ Each phase lands as focused commits and is pushed when its gates pass.
 | **W2** | Core chat: sessions, transcript and every display block, composer, approvals, model and agent pickers, permission mode, usage, `/events` |
 | **W3** | Session depth: subagent tree, fork, revert, compact, goal, background, media, skills, permission overrides |
 | **W4** | Management: runtimes, machines, MCP, providers, configuration, memory, plugins |
-| **W5** | Phone polish, manifest, end-to-end suite, `guide/web.md`, server and CLI references, specs index status |
+| **W5** | Phone polish, manifest, end-to-end suite, `clients/web.md`, server and CLI references, specs index status |
 
 ## 15. Open questions
 
@@ -1411,9 +1411,9 @@ documentation. There is no wire change.
   these gates, and `AGENTS.md` lists the two suites.
 - **Size.** The bundle is 4.07 MB, 1.64 MB gzipped, within the 1.7 MB
   budget; the manifest and icons add 23 KB.
-- **Docs.** `guide/web.md` is the complete guide (phones, the home screen,
+- **Docs.** `clients/web.md` is the complete guide (phones, the home screen,
   and what the page does not do, besides every panel and command);
-  `engine/server.md`, `guide/run.md`, `architecture.md`, and the README
+  `engine/server.md`, `clients/tui.md`, `architecture.md`, and the README
   describe the web client as it is; sections 1 to 14 of this spec now
   match what landed.
 

@@ -4,7 +4,7 @@ Status: implemented on 2026-09-21. This document records the decision to move
 cross-process session ownership from a per-session lock to a single lock per
 root session tree. It amends the ownership rules described in
 [Architecture](../architecture.md) and the session guarantees in
-[Sessions](../guide/sessions.md); it does not touch the `~/.cookie-agent` store
+[Sessions](../sessions/index.md); it does not touch the `~/.cookie-agent` store
 locks covered by [Store lock retention](store-lock-retention.md).
 
 ## Problem

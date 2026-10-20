@@ -16,17 +16,17 @@ user layer in `~/.cookie-agent/`. Within it, `config.toml` and the `agents/`
 directory are optional. There is no workspace layer: a
 `<cwd>/.cookie-agent/config.toml` or `<cwd>/.cookie-agent/agents/` directory is
 never opened, so a leftover file there is ignored without a warning. The
-working directory still supplies [AGENTS.md context](agents.md#agentsmd-context)
-and project [skills](skills.md), which are context, not configuration.
+working directory still supplies [AGENTS.md context](../extend/agents.md#agentsmd-context)
+and project [skills](../extend/skills.md), which are context, not configuration.
 
 An authored settings table replaces the built-in table as a whole. Omitted
 fields in it use defaults. For example, the snippet above leaves
 `overload_retries` and `backoff_ceiling_ms` at their defaults. An omitted table
-keeps the defaults unchanged. Global [headers](../engine/headers.md) are the
+keeps the defaults unchanged. Global [headers](headers.md) are the
 exception: names merge with the built-in headers and empty values delete them.
 Model and variant sparse inheritance happens within one provider definition.
 
-Agents are separate [Markdown documents](agents.md); [skills](skills.md) have
+Agents are separate [Markdown documents](../extend/agents.md); [skills](../extend/skills.md) have
 their own discovery rules. The client loads [tui.toml](../tui/configuration.md)
 independently.
 
@@ -36,24 +36,24 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 
 | Key | Canonical settings page |
 |---|---|
-| `server` | [Server](../engine/server.md): where the daemon listens, its token, and the web origins (`allowed_origins`) whose pages may connect |
-| `tool_output` | [Tool Output](../engine/tool_output.md) |
-| `subagent_output` | [Subagent Output](../engine/subagent_output.md) |
-| `agent_md` | [AGENTS.md Context](../engine/agent_md.md) |
-| `loop_warning` | [Loop Warning](../engine/loop_warning.md) |
-| `approval` | [Approval](../engine/approval.md) |
-| `model_retry` | [Model Retry](../engine/model_retry.md) |
-| `context_compaction` | [Context Compaction](../engine/context_compaction.md) |
-| `session_title` | [Session Title](../engine/session_title.md) |
-| `delegation` | [Delegation](../engine/delegation.md) |
-| `messaging` | [Agent Messaging](../engine/messaging.md) |
-| `producers` | [External Producers](../engine/producers.md) |
-| `memory` | [Memory](../engine/memory.md) |
-| `headers` | [Request Header](../engine/headers.md) |
-| `providers` | [Providers](providers.md) |
-| `mcp` | [MCP](mcp.md) |
-| `plugins` | [Plugins](plugins.md) |
-| `runtimes` | [Runtimes](runtimes.md) |
+| `server` | [Server](server.md): where the daemon listens, its token, and the web origins (`allowed_origins`) whose pages may connect |
+| `tool_output` | [Tool Output](tool_output.md) |
+| `subagent_output` | [Subagent Output](subagent_output.md) |
+| `agent_md` | [AGENTS.md Context](agent_md.md) |
+| `loop_warning` | [Loop Warning](loop_warning.md) |
+| `approval` | [Approval](approval.md) |
+| `model_retry` | [Model Retry](model_retry.md) |
+| `context_compaction` | [Context Compaction](context_compaction.md) |
+| `session_title` | [Session Title](session_title.md) |
+| `delegation` | [Delegation](delegation.md) |
+| `messaging` | [Agent Messaging](messaging.md) |
+| `producers` | [External Producers](producers.md) |
+| `memory` | [Memory](memory.md) |
+| `headers` | [Request Header](headers.md) |
+| `providers` | [Providers](../extend/providers.md) |
+| `mcp` | [MCP](../extend/mcp.md) |
+| `plugins` | [Plugins](../extend/plugins.md) |
+| `runtimes` | [Runtimes](../daemon/runtimes.md) |
 
 Every key above is a **top-level** table: write `[messaging]`, `[delegation]`,
 and so on, never `[runtime.messaging]` or another nested spelling. Older docs

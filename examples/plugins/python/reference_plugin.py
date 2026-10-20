@@ -12,7 +12,7 @@ plugin is likely to use, in plain Python with no dependencies.
 - A producer: once a `word_count` call has finished, it queues a message for
   the session's next run.
 
-Configure it as a plugin named `reference` (docs/site/guide/plugins.md):
+Configure it as a plugin named `reference` (docs/site/extend/plugins.md):
 
     [plugins.reference]
     command = ["python3", "examples/plugins/python/reference_plugin.py"]

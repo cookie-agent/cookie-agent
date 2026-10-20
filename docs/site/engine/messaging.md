@@ -17,7 +17,7 @@ documents, not from this table; messaging is deny-by-default even when this
 feature is enabled. See [Agent Messaging](../specs/agent-messaging.md). An
 omitted table inherits; an authored table replaces the lower table and uses
 defaults for omitted fields. Unknown fields fail; see
-[config.toml](../guide/configuration.md).
+[config.toml](configuration.md).
 
 All delivery is producer-backed: running recipients receive mail at their next
 safe model-request boundary, and idle or finished recipients wake through the

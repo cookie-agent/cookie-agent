@@ -68,21 +68,30 @@ markdown_extensions:
       alternate_style: true
 
 nav:
-  - Guide:
-      - Installation: install.md
-      - Run: guide/run.md
-      - Web: guide/web.md
-      - Sessions: guide/sessions.md
-      - Attaching Media: guide/media.md
-      - Compaction: guide/compaction.md
-      - Goal Mode: guide/goals.md
-      - Usage and Cost: guide/usage.md
-      - Tools: guide/tools.md
-      - Memory: guide/memory.md
-  - Engine Configuration:
-      - Agent: guide/agents.md
-      - Skill: guide/skills.md
-      - config.toml: guide/configuration.md
+  - Home: index.md
+  - Get started:
+      - Install: install.md
+  - Clients:
+      - Terminal UI: clients/tui.md
+      - Web: clients/web.md
+  - Run a daemon:
+      - Runtimes: daemon/runtimes.md
+      - Security: daemon/security.md
+  - Working with sessions:
+      - Sessions: sessions/index.md
+      - Attaching media: sessions/media.md
+      - Compaction: sessions/compaction.md
+      - Goal mode: sessions/goals.md
+      - Memory: sessions/memory.md
+      - Usage and cost: sessions/usage.md
+  - Extend:
+      - Agents and presets: extend/agents.md
+      - Skills: extend/skills.md
+      - Providers: extend/providers.md
+      - MCP servers: extend/mcp.md
+      - Plugins: extend/plugins.md
+  - Configuration:
+      - config.toml: engine/configuration.md
       - 'Server [server]': engine/server.md
       - 'Tool Output [tool_output]': engine/tool_output.md
       - 'Subagent Output [subagent_output]': engine/subagent_output.md
@@ -97,50 +106,51 @@ nav:
       - 'External Producers [producers]': engine/producers.md
       - 'Memory [memory]': engine/memory.md
       - 'Request Header [headers]': engine/headers.md
-      - 'Providers [providers]': guide/providers.md
-      - 'MCP [mcp]': guide/mcp.md
-      - 'Plugins [plugins]': guide/plugins.md
-      - 'Runtimes [runtimes]': guide/runtimes.md
-  - TUI Configuration:
-      - tui.toml: tui/configuration.md
-      - 'Minimum Event Level [minimum_event_level]': tui/minimum_event_level.md
-      - 'Theme [theme]': tui/theme.md
-  - Development:
+      - tui.toml:
+          - tui.toml: tui/configuration.md
+          - 'Minimum Event Level [minimum_event_level]': tui/minimum_event_level.md
+          - 'Theme [theme]': tui/theme.md
+  - Reference:
+      - Tools: reference/tools.md
+      - Tools as sent to the model: guide/tools.md
+      - System prompt: reference/system-prompt.md
+      - Client protocol: reference/protocol.md
+      - Protocol changelog: reference/protocol-changelog.md
+      - Events: reference/events.md
+      - Errors: reference/errors.md
+      - Runtime protocol: reference/runtime-protocol.md
+      - Schemas: reference/schemas.md
+      - Compatibility: reference/compatibility.md
+  - Build on cookie:
       - Architecture: architecture.md
       - Building and testing: development/building.md
       - Plugin development: development/plugins.md
       - Rust API: reference/api.md
   - Specs:
       - Status and scope: specs/index.md
-      - Web client and local daemon use: specs/web-client.md
-      - Memory: specs/memory.md
-      - Runtimes: specs/runtimes.md
-      - Background tool calls: specs/background-tools.md
-      - External producers: specs/external-producers.md
-      - Persistent daemon and runtime capabilities: specs/runtime-capabilities.md
-      - Live engine configuration: specs/engine-configuration.md
-      - Plugins (tools, hooks, events, producers): specs/plugins-v1.md
-      - Compatibility v1: specs/compatibility-v1.md
-      - Tool output streams: specs/tool-output-streams.md
-      - Agent messaging: specs/agent-messaging.md
-      - Model configuration: specs/model-configuration.md
-      - Tree-scoped session ownership lock: specs/tree-ownership-lock.md
-      - Tree-local sessions: specs/tree-local-sessions.md
-      - Documentation overhaul: specs/documentation-overhaul.md
-      - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
-      - Refactor phase 2 (dependencies, CI): specs/refactor-phase-2-dependencies-ci.md
-      - Refactor phase 3 (module splits): specs/refactor-phase-3-module-splits.md
-      - Goal mode and producers: development/goal-mode.md
-      - System prompt: reference/system-prompt.md
-      - Protocol: reference/protocol.md
-      - Protocol changelog: reference/protocol-changelog.md
-      - Errors: reference/errors.md
-      - Runtime protocol: reference/runtime-protocol.md
-      - Events: reference/events.md
-      - Tools: reference/tools.md
-      - Schemas: reference/schemas.md
-      - Compatibility: reference/compatibility.md
-      - Security boundaries: guide/security.md
+      - Implemented:
+          - Web client and local daemon use: specs/web-client.md
+          - Memory: specs/memory.md
+          - Runtimes: specs/runtimes.md
+          - Background tool calls: specs/background-tools.md
+          - External producers: specs/external-producers.md
+          - Persistent daemon and runtime capabilities: specs/runtime-capabilities.md
+          - Live engine configuration: specs/engine-configuration.md
+          - Plugins (tools, hooks, events, producers): specs/plugins-v1.md
+          - Compatibility v1: specs/compatibility-v1.md
+          - Goal mode and producers: specs/goal-mode.md
+          - Tool output streams: specs/tool-output-streams.md
+          - Agent messaging: specs/agent-messaging.md
+          - Tree-scoped session ownership lock: specs/tree-ownership-lock.md
+          - Tree-local sessions: specs/tree-local-sessions.md
+          - Store lock retention: specs/store-lock-retention.md
+      - Drafts and records:
+          - Subagent handles: specs/subagent-handles.md
+          - Model configuration: specs/model-configuration.md
+          - Documentation overhaul: specs/documentation-overhaul.md
+          - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
+          - Refactor phase 2 (dependencies, CI): specs/refactor-phase-2-dependencies-ci.md
+          - Refactor phase 3 (module splits): specs/refactor-phase-3-module-splits.md
 
 extra:
   homepage: https://cookie-agent.github.io/

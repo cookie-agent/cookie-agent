@@ -9,14 +9,14 @@ enabled = false
 
 An omitted table inherits; an authored table replaces the lower table and uses
 defaults for omitted fields. Unknown fields fail. See
-[config.toml](../guide/configuration.md).
+[config.toml](configuration.md).
 
 Repository-authored context is untrusted input. Review it before running in an
 unfamiliar workspace; admission is independent of tool read permissions. See
-[security boundaries](../guide/security.md#agentsmd-context-files).
+[security boundaries](../daemon/security.md#agentsmd-context-files).
 
 Controls root-run `AGENTS.md` discovery documented in
-[Agents](../guide/agents.md#agentsmd-context). This is the global default; an
+[Agents](../extend/agents.md#agentsmd-context). This is the global default; an
 agent document may set `agent_md: true` or `agent_md: false` to override it for
 that agent, for example to keep a lean agent's context free of repository
 instructions:

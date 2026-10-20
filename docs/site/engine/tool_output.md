@@ -12,7 +12,7 @@ tail_lines = 100
 
 An omitted table inherits. An authored table replaces the lower table, with
 defaults for omitted fields; unknown fields fail. See
-[config.toml](../guide/configuration.md) and the
+[config.toml](configuration.md) and the
 [retained-output contract](../reference/tools.md#retained-tool-output).
 
 Controls each output stream's inline preview. A stream within both `max_lines`

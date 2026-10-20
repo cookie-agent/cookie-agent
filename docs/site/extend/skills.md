@@ -77,7 +77,7 @@ does not execute a shell.
 The model uses `skill({"name":"release-check","args":"v1.2.0"})`. The tool is
 absent when policy leaves no skill effectively usable, and skills with
 `disable-model-invocation: true` are omitted from the model listing. In the TUI, users
-choose `/skills` in the [command palette](run.md#command-palette), search for a
+choose `/skills` in the [command palette](../clients/tui.md#command-palette), search for a
 `user-invocable` skill, press Enter, and type optional arguments such as
 `v1.2.0` into the prompt that follows. The highlighted skill's source,
 permission effect, and location show under the list. Headless runs use

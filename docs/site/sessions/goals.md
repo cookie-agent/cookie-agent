@@ -4,13 +4,13 @@ Goal mode lets you give a root session a durable objective and a checklist the
 agent maintains while it works. It is activated explicitly: the engine never
 infers a goal from prompt content, and only root sessions can have one.
 
-The [goal mode design spec](../development/goal-mode.md) describes the runtime,
+The [goal mode design spec](../specs/goal-mode.md) describes the runtime,
 plugin, and persistence contracts behind this workflow.
 
 ## Activation and goal bar
 
 Activate goal mode in the root session by choosing `/goal` in the
-[command palette](run.md#command-palette) and entering the objective in the
+[command palette](../clients/tui.md#command-palette) and entering the objective in the
 prompt that follows. An empty objective is refused in place, and Esc returns to
 the command list. Outside a root session, or in a read-only one, the palette
 explains why instead of prompting.
@@ -175,8 +175,8 @@ of a repeated attempt are the producer's own concern.
 
 ## See also
 
-- [Sessions](sessions.md) — session persistence, revert, and fork
+- [Sessions](index.md) — session persistence, revert, and fork
 - [Compaction](compaction.md) — how history checkpoints interact with durable
   goal state
-- [Goal mode design spec](../development/goal-mode.md) — the governing
+- [Goal mode design spec](../specs/goal-mode.md) — the governing
   technical specification

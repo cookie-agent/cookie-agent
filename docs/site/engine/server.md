@@ -1,6 +1,6 @@
 # Server [server]
 
-Configure the separate [server/client mode](../guide/run.md#separate-server-and-client).
+Configure the separate [server/client mode](../clients/tui.md#separate-server-and-client).
 Complete `config.toml`:
 
 ```toml
@@ -13,7 +13,7 @@ allowed_origins = []
 ```
 
 Omission keeps the defaults. An authored table replaces them completely;
-omitted fields use the defaults below. See [config.toml](../guide/configuration.md).
+omitted fields use the defaults below. See [config.toml](configuration.md).
 Unknown fields fail. The port accepts `0` through `65535`; `0` asks the OS for
 an available port, so clients must use the actual bound port. `cookie daemon
 --port <N>` overrides the configured port for that run (including `--port 0`).
@@ -25,12 +25,12 @@ across restarts. It also prints it in its first stdout line
 (`daemon-ready {"url":...,"token":...}`). Clients and dial-in runtimes on this
 machine read it from the same `config.toml`; elsewhere, pass `--token`, set
 `COOKIE_DAEMON_TOKEN`, or copy it into that machine's `[server] token`. See the
-[security contract](../guide/security.md#daemon-authentication-token).
+[security contract](../daemon/security.md#daemon-authentication-token).
 
 Plain `cookie` on this machine uses a daemon listening at
 `ws://<host>:<port>/ws` of this table, when `token` is set, instead of
 starting an engine of its own; it never reads `url` for that. See
-[A daemon already running](../guide/run.md#a-daemon-already-running).
+[A daemon already running](../clients/tui.md#a-daemon-already-running).
 
 For clients and runtimes on other machines, `cookie daemon` takes:
 
@@ -39,7 +39,7 @@ For clients and runtimes on other machines, `cookie daemon` takes:
 | `--listen <addr:port>` | Bind this address instead, such as `0.0.0.0:7419`. Without TLS the token crosses the network in the clear, so a plaintext listener belongs on a private network such as a VPN. Conflicts with `--port`. |
 | `--tls-cert <path>`, `--tls-key <path>` | Serve `wss` with this PEM certificate chain and private key; the ready line then shows a `wss://` URL. Both or neither. |
 
-The daemon serves clients on `/ws` and [dial-in runtimes](../guide/runtimes.md#runtimes-that-dial-in)
+The daemon serves clients on `/ws` and [dial-in runtimes](../daemon/runtimes.md#runtimes-that-dial-in)
 on `/runtime?id=<runtime ID>`. Both present the same bearer token: a runtime
 in the `Authorization` header, a client there or in its
 [handshake](../reference/protocol.md#handshake-and-authentication). A request
@@ -58,7 +58,7 @@ that origin (on `/runtime`, always).
 
 ## The web page
 
-The daemon serves the [web client](../guide/web.md) on its listener, over
+The daemon serves the [web client](../clients/web.md) on its listener, over
 TLS when it serves `wss`. The page needs no token: it holds no secret, and
 the connection it opens authenticates in its handshake.
 
@@ -84,7 +84,7 @@ carries the page's `Content-Security-Policy`:
 The page includes a web app manifest and its icons, so a phone can add it to
 the home screen; it has no service worker. A
 `cookie` built without the page (see
-[Building the page](../guide/web.md#building-the-page)) serves a
+[Building the page](../clients/web.md#building-the-page)) serves a
 placeholder `index.html` that says how to build it. After its ready line,
 the daemon prints the page's address. While `allowed_origins` is empty, it
 also says that the page cannot connect until its origin is listed.

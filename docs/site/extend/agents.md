@@ -56,8 +56,8 @@ Review the requested change and report concrete findings.
 | `enabled` | boolean | *(required)* | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
 | `models` | array | *(required)* | Ordered model chain; must be nonempty for `primary`. Other modes may declare `[]`. |
 | `limits` | table | defaults below | Timeouts and token bounds. |
-| `permissions` | table | `{}` | Ordered action permission map; see [Permissions](agents.md#permissions). At most 256 rules. |
-| `agent_md` | boolean | *(unset)* | Load [AGENTS.md context](agents.md#agentsmd-context) for this agent's root runs. Unset follows `[agent_md] enabled`; a value overrides it. Rejected on `subagent` and `internal` agents, which never load AGENTS.md. |
+| `permissions` | table | `{}` | Ordered action permission map; see [Permissions](#permissions). At most 256 rules. |
+| `agent_md` | boolean | *(unset)* | Load [AGENTS.md context](#agentsmd-context) for this agent's root runs. Unset follows `[agent_md] enabled`; a value overrides it. Rejected on `subagent` and `internal` agents, which never load AGENTS.md. |
 
 `max_output_tokens` applies in every mode and defaults to `0` in all of them. A
 nonzero value caps each request at the smaller of the document value and the
@@ -87,7 +87,7 @@ counts, even if a competing deny wins at execution time — and unmatched
 resources deny by default, so approval requires an explicit `ask` rule. `edit`
 uses the `write` action. Delegation tools additionally require a `delegate` map
 naming at least one eligible target. See
-[Permissions](agents.md#tool-availability-and-delegation).
+[Permissions](#tool-availability-and-delegation).
 
 The former `tools` field is removed. Documents that still declare it fail
 with an error naming `tools` and directing the author to `permissions`; remove
@@ -166,7 +166,7 @@ as system-prompt text.
 
 Repository-controlled `AGENTS.md` content enters model context automatically.
 Treat it as untrusted instructions when opening unfamiliar workspaces and review
-the [security guidance](security.md#agentsmd-context-files). Configure limits in
+the [security guidance](../daemon/security.md#agentsmd-context-files). Configure limits in
 [`[agent_md]`](../engine/agent_md.md).
 
 ## Subagent tools
@@ -591,7 +591,7 @@ Tool providers publish a static permission name and an optional resource label:
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
 operations: `cat .env` is controlled by `bash`, not `read`, and a pattern such
 as `git *` also matches a longer command beginning with `git`. See
-[Security guarantees](security.md) for the platform-specific filesystem and
+[Security guarantees](../daemon/security.md) for the platform-specific filesystem and
 process boundaries behind these tools.
 
 Path resource labels are normalized lexically from the single path requested by

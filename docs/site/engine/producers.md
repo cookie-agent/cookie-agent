@@ -14,7 +14,7 @@ the daemon derives `source` from the connection (`plugin:<name>` or
 producer it registers. See the [external producers
 spec](../specs/external-producers.md). An omitted table inherits; an authored
 table replaces the lower table and uses defaults for omitted fields. Unknown
-fields fail; see [config.toml](../guide/configuration.md).
+fields fail; see [config.toml](configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|

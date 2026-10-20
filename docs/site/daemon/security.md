@@ -30,7 +30,7 @@ prepared for an absent path replaces a file created there in the meantime.
 Permission matching is deliberately separate: it uses only the normalized
 lexical path requested by the caller, even when that alias leads outside the
 workspace. The resolved destination does not receive a second permission check.
-See [Permissions](agents.md#resource-labels).
+See [Permissions](../extend/agents.md#resource-labels).
 
 ### Unix
 
@@ -143,7 +143,7 @@ Any process that can read your `config.toml` can therefore connect to the
 daemon; keep the file private, and replace the token (delete the line and
 restart the daemon) if it leaks. Plain `cookie` sends the token to whatever
 listens at `[server] host` and `port` when it looks for a running daemon (see
-[A daemon already running](run.md#a-daemon-already-running)), as
+[A daemon already running](../clients/tui.md#a-daemon-already-running)), as
 `cookie attach` with default settings does; it looks only when the token is
 set. The daemon also prints the token in its first stdout line:
 
@@ -163,7 +163,7 @@ cannot grant permissions or bypass tool preparation. A malicious repository can
 still influence model behavior within permissions. Review or disable AGENTS.md
 context before running unfamiliar workspaces, avoid placing secrets in these
 files, and use restrictive tool permissions. See
-[AGENTS.md context](agents.md#agentsmd-context).
+[AGENTS.md context](../extend/agents.md#agentsmd-context).
 
 ### Retained tool output
 

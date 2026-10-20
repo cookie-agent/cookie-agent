@@ -26,7 +26,7 @@ is never read, so a repository cannot add MCP servers.
 
 ## Where servers run
 
-An MCP server belongs to the [runtime](runtimes.md) that hosts it, and runs
+An MCP server belongs to the [runtime](../daemon/runtimes.md) that hosts it, and runs
 on that runtime's machine:
 
 - **Top-level `[mcp.servers.<name>]`** servers belong to the daemon's global
@@ -278,7 +278,7 @@ degrade the remainder to inline notes.
 ## Accepted fields
 
 These are the complete fields under `[mcp.servers.<name>]`. File precedence is
-described in [config.toml](configuration.md).
+described in [config.toml](../engine/configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -303,7 +303,7 @@ written automatically.
 Explicit MCP write-back (`mcp.server.persist`) replaces only
 `[mcp.servers.<name>]` in the user `config.toml`, or removes it for a runtime
 removal, using a format-preserving TOML document edit, as a
-[configuration change](configuration.md#changes-while-the-daemon-runs). Unrelated
+[configuration change](../engine/configuration.md#changes-while-the-daemon-runs). Unrelated
 keys, tables, and comments are retained. The complete candidate, with the agent documents beside it, is
 passed through the strict configuration loader before an atomic replacement;
 an existing unknown field, type conflict, or malformed table fails without

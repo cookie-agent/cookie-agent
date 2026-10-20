@@ -11,10 +11,10 @@ idle_eviction_after = "1h"
 ```
 
 These limits do not authorize delegation. Configure eligible targets and tool
-access in [Agent permissions](../guide/agents.md#tool-availability-and-delegation).
+access in [Agent permissions](../extend/agents.md#tool-availability-and-delegation).
 An omitted table inherits; an authored table replaces the lower table and uses
 defaults for omitted fields. Unknown fields fail; see
-[config.toml](../guide/configuration.md).
+[config.toml](configuration.md).
 
 `max_resident_subagents` accepts zero. Duration values are a nonnegative integer
 followed by one supported unit, without spaces or compound units; `"0s"` is

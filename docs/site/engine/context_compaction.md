@@ -13,10 +13,10 @@ keep_recent_tokens = 16384
 For fixed headroom, replace `trigger` with `{ buffer_tokens = 33000 }`.
 An omitted table inherits; an authored table replaces the lower table completely
 and uses defaults for omitted fields. Unknown fields fail; see
-[config.toml](../guide/configuration.md).
+[config.toml](configuration.md).
 
 Controls the automatic context-limit behavior documented in
-[Compaction](../guide/compaction.md).
+[Compaction](../sessions/compaction.md).
 
 The built-in compaction agent has a flat 3-minute timeout. An authored
 `compaction.md` can override `limits.timeout_ms`, which is honored exactly;
@@ -55,7 +55,7 @@ alongside pinned context.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `auto` | boolean | `true` | Enable automatic compaction signals (post-check usage and predictive pre-send estimation). Manual `/compact` and context-overflow recovery compaction remain available when `false`. |
-| `trigger` | inline table | `{ percent = 70 }` | Trigger threshold selection. `{ percent = N }` uses `N%` of the model's input budget, where `N` must be from 1 through 99. `{ buffer_tokens = N }` subtracts positive `N` from the input budget, saturating at zero. The input budget is the model's input limit when it declares one, otherwise its context limit less `min(output cap, 32000, context / 2)` (see [compaction](../guide/compaction.md#the-trigger-threshold)). |
+| `trigger` | inline table | `{ percent = 70 }` | Trigger threshold selection. `{ percent = N }` uses `N%` of the model's input budget, where `N` must be from 1 through 99. `{ buffer_tokens = N }` subtracts positive `N` from the input budget, saturating at zero. The input budget is the model's input limit when it declares one, otherwise its context limit less `min(output cap, 32000, context / 2)` (see [compaction](../sessions/compaction.md#the-trigger-threshold)). |
 | `buffer_tokens` | integer | unset | Legacy alias for `trigger = { buffer_tokens = N }`. Must be greater than zero and cannot be set together with `trigger`. |
 | `max_summary_bytes` | integer | `262144` (`256 * 1024`) | Hard byte limit for a compaction summary produced by the internal `compaction` agent. Must be greater than zero and at most `2 * 1024 * 1024` (2 MiB). |
 | `keep_recent_tokens` | integer (`u64`) | `16384` | Nonnegative token budget for recent original messages retained unchanged after an internal summary. The summarizer receives only the messages before them. `0` disables retention, so the summary covers the whole active history. The effective target is at most `min(keep_recent_tokens, input_budget / 4)`, further limited by actual post-checkpoint available space. Complete tool-call/result groups are never split; an oversized newest indivisible group leaves no recent messages retained. Configuration does not clamp the requested value. Native windows receive no independent recent messages. |

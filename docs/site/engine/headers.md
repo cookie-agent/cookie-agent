@@ -12,7 +12,7 @@ This key accepts a map of header names to string values, with no fixed nested
 field names. Invalid names, values, forbidden ownership, or limits fail loading.
 Unlike settings tables, the user header map merges with the shipped one by
 normalized name; an omitted name inherits and an empty value deletes it. See
-[config.toml](../guide/configuration.md#environment-interpolation) for templates.
+[config.toml](configuration.md#environment-interpolation) for templates.
 
 Global request headers are merged with provider, model, and variant `headers`
 tables. Names are case-insensitive and later values win:

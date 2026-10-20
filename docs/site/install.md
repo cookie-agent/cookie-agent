@@ -65,6 +65,6 @@ cookie
 ```
 
 No configuration file is required. When no provider is available, the TUI opens
-in setup mode. Use `/connect` to choose a [managed provider](guide/providers.md#managed-providers)
+in setup mode. Use `/connect` to choose a [managed provider](extend/providers.md#managed-providers)
 and enter its setup and credentials, or configure a
-[custom model](guide/providers.md#custom-model-example) in `config.toml`.
+[custom model](extend/providers.md#custom-model-example) in `config.toml`.

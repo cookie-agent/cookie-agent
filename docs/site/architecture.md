@@ -22,7 +22,7 @@ has six top-level subcommands plus a default mode:
 | `disconnect [provider_id] --token` | Interactive durable managed-provider disconnection (TTY only) |
 | `mcp --token list` | List the MCP servers of every runtime with their state and hosting runtime |
 | `mcp --token auth <server>` | Start OAuth authorization for a remote MCP server |
-| `config edit [path]`, `config set <key> <value>`, `config unset <key>`, `config remove <path>`, `config reload`, `config status` | Read and change the daemon's `config.toml` and agent documents; see [config.toml](guide/configuration.md#changes-while-the-daemon-runs) |
+| `config edit [path]`, `config set <key> <value>`, `config unset <key>`, `config remove <path>`, `config reload`, `config status` | Read and change the daemon's `config.toml` and agent documents; see [config.toml](engine/configuration.md#changes-while-the-daemon-runs) |
 
 The daemon authenticates every WebSocket with a bearer token kept in
 `[server] token` of `config.toml`, which it writes at its first start when
@@ -33,11 +33,11 @@ the TUI, so the CLI keeps working even when built without the `tui` feature.
 
 Tools run in *runtimes* (see the [runtimes specification](specs/runtimes.md)).
 The daemon itself hosts the base layer and the global runtime (MCP servers,
-plugins, and [memory](guide/memory.md)). The `local` coding runtime, with `read`, `write`, `edit`, `bash`,
+plugins, and [memory](sessions/memory.md)). The `local` coding runtime, with `read`, `write`, `edit`, `bash`,
 and `webfetch` in the daemon's working directory, runs on a task of the daemon
 process and is reached over the [runtime protocol](reference/runtime-protocol.md)
 through an in-memory frame pair. A configured
-[`[runtimes.<id>]`](guide/runtimes.md) template starts runtimes in child
+[`[runtimes.<id>]`](daemon/runtimes.md) template starts runtimes in child
 processes (typically `cookie runtime serve --stdio` on another machine over
 ssh) that speak the same protocol over stdio.
 
@@ -46,7 +46,7 @@ session's events live, can submit input to any of them, and is told of the
 others' changes (see [the protocol](reference/protocol.md#daemon-wide-changes)).
 Plain `cookie` uses a daemon already listening at `[server]` on its machine
 and otherwise keeps an in-process daemon private to its own TUI (see
-[A daemon already running](guide/run.md#a-daemon-already-running)). An
+[A daemon already running](clients/tui.md#a-daemon-already-running)). An
 attached TUI that
 loses its connection redials the daemon with backoff under the same client
 identity, then rebuilds the viewed session from a full replay, which also
@@ -94,7 +94,7 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`; messaging: `send_message`; `skill`; goals; `read_artifact`; `stop_background`), background calls (`runtime/background_tasks.rs`), subagent reports (`runtime/subagent_reports.rs`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), instance reconnects, and the global runtime's `McpRegistry` with the TUI's runtime-layer MCP edits and their write-back (`config_store`). |
 | `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime serve --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
-| `web` | The browser client: a Leptos page rendered client-side, built with Trunk and styled with Tailwind, over `protocol`'s browser transport and `client_state`, with the TUI's features (see [Web](guide/web.md)), a web app manifest for phones, and no service worker. Compiles natively too, so the workspace builds without the wasm target; its native tests cover the pure logic, and headless-Firefox scenarios (`scripts/test-web-page.sh`) cover the page against a real daemon. Not published. |
+| `web` | The browser client: a Leptos page rendered client-side, built with Trunk and styled with Tailwind, over `protocol`'s browser transport and `client_state`, with the TUI's features (see [Web](clients/web.md)), a web app manifest for phones, and no service worker. Compiles natively too, so the workspace builds without the wasm target; its native tests cover the pure logic, and headless-Firefox scenarios (`scripts/test-web-page.sh`) cover the page against a real daemon. Not published. |
 | `web_assets` | The built page (`scripts/build-web.sh` writes `crates/web_assets/bundle/`), embedded at compile time for `server` to serve, with a content type, cache rule, and `ETag` per file; a placeholder page when no bundle was built. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow, rendering and highlighting the shared markdown. Keeps its state in `client_state` and runs over a `protocol::Client` it is handed. |
 | `cookie_agent` | CLI and composition root wiring every crate together, `cookie runtime serve --stdio`, which serves a coding runtime to a daemon without reading any configuration, and `cookie sessions upgrade`, which converts session history to this build's format. The only binary. |
@@ -207,8 +207,8 @@ files and project skills. Unknown keys, leftover schema/version fields, wrong
 types, and malformed values are rejected without migration or silent ignores.
 The TUI additionally reads an independent `~/.cookie-agent/tui.toml`.
 
-See [Configuration](guide/configuration.md) and the
-[configuration reference](guide/configuration.md) for every key.
+See [Configuration](engine/configuration.md) and the
+[configuration reference](engine/configuration.md) for every key.
 
 ## Provider and model runtime
 
@@ -270,7 +270,7 @@ reasoning requires equal known effective wire model IDs and target support;
 required continuation evidence survives persistence so missing native state
 cannot silently normalize away. Integrity markers alone do not establish a
 required continuation. Native-compaction scopes are a separate contract. See
-[Providers](guide/providers.md#replay-and-cancellation) for operational effects.
+[Providers](extend/providers.md#replay-and-cancellation) for operational effects.
 
 ## Engine
 
@@ -289,9 +289,9 @@ session and drive the run loop:
   exhausted, the loop advances to the next fallback and emits
   `model_fallback`; the fallback position is sticky. Before each
   request the loop compacts when the latest turn's reported usage reaches the
-  threshold (see [Compaction](guide/compaction.md)).
+  threshold (see [Compaction](sessions/compaction.md)).
 - **Permissions.** Every prepared tool call is matched against the agent's
-  ordered permission rules (see [Permissions](guide/agents.md#permissions)), and
+  ordered permission rules (see [Permissions](extend/agents.md#permissions)), and
   unmatched checks deny by default. Tool visibility is gated the same way: a
   tool is advertised to the model only when its action has an `allow` or `ask`
   rule in the agent document or session overlay. The
@@ -397,7 +397,7 @@ session and drive the run loop:
 - **Internal agents.** The approval, context-compaction, and session-title
   agents run with no tools and a strict text-only output contract, normally on
   the parent run's model via `${parent_model}`. See
-  [Internal agents](guide/agents.md#internal-agents).
+  [Internal agents](extend/agents.md#internal-agents).
 
 ## Sessions and persistence
 
@@ -590,7 +590,7 @@ is aborted. Plugin
 publish contexts are expiring one-shot grants activated at outbound delivery,
 so a token cannot be replayed or retargeted to another session.
 
-See [Plugins](guide/plugins.md) for installation and configuration, and
+See [Plugins](extend/plugins.md) for installation and configuration, and
 [Plugin development](development/plugins.md) for SDK and extension-protocol
 details.
 

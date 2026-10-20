@@ -9,9 +9,9 @@ generate_on_first_turn = false
 
 An omitted table inherits. An authored table replaces the lower table, with
 defaults for omitted fields. Unknown fields fail; see
-[config.toml](../guide/configuration.md). Title workflows belong to
-[Sessions](../guide/sessions.md#titles), and the model prompt belongs to the
-[internal title agent](../guide/agents.md#internal-agents).
+[config.toml](configuration.md). Title workflows belong to
+[Sessions](../sessions/index.md#titles), and the model prompt belongs to the
+[internal title agent](../extend/agents.md#internal-agents).
 
 Controls automatic session titles generated from the first user message.
 

@@ -51,7 +51,7 @@ image's pixels against the model's limits before it uploads, and shows the
 limit when a file is refused, by the TUI or the daemon; it does not downscale.
 Attachments show on the composer's border as `📎 name · type · size`, and
 Backspace at the start of the draft removes the newest. See
-[Run](run.md#attachments).
+[Run](../clients/tui.md#attachments).
 
 ## When the model changes
 

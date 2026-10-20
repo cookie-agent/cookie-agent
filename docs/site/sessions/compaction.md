@@ -27,7 +27,7 @@ an explicit deployment.
 
 This deployment-metadata requirement is specific to native compaction, not
 ordinary Azure replay. Native windows retain their exact scope checks; the
-[portable-block replay rules](providers.md#replay-and-cancellation) do not permit
+[portable-block replay rules](../extend/providers.md#replay-and-cancellation) do not permit
 moving a compaction window to an incompatible provider or deployment.
 
 A native checkpoint stores a bounded opaque provider window rather than summary
@@ -54,7 +54,7 @@ Catalog models take the input limit from models.dev `limit.input` when it is
 narrower than the context window (for example `gpt-5`: 400,000 context,
 272,000 input); custom models declare it as `capabilities.input_tokens`.
 `max_output_tokens` is the output cap the run sends (see
-[agent limits](agents.md)), by default the model's full output limit. The
+[agent limits](../extend/agents.md)), by default the model's full output limit. The
 reserve is capped at 32,000 tokens so a large output limit does not claim a big
 share of the window, and at half the context so a model whose output limit
 equals its context window keeps a usable budget.
@@ -138,13 +138,13 @@ retries.
    change the original saved log or the retained recent messages, even if the
    retry fails.
 5. **Summary.** The internal `compaction` agent (see
-   [Internal agents](agents.md#internal-agents)) writes a structured checkpoint
+   [Internal agents](../extend/agents.md#internal-agents)) writes a structured checkpoint
    with fixed sections (objective, requirements, decisions, work state, files,
    commands and errors, next step, important context). When the replaced span
    starts with an earlier internal summary, the prompt asks it to merge that
    summary into one updated checkpoint instead of starting fresh. An authored
    `compaction.md` can extend or replace this prompt with
-   [placeholders](agents.md#internal-agent-prompt-placeholders), and the user's
+   [placeholders](../extend/agents.md#internal-agent-prompt-placeholders), and the user's
    focus text is added to it. It must return summary text only, at most
    `max_summary_bytes` (256 KiB by default); non-text output is rejected. The
    built-in compaction document sets no output cap of its own, so it inherits the
@@ -186,7 +186,7 @@ trigger forms, and inheritance.
 
 ## Manual compaction
 
-Choosing `/compact` in the [command palette](run.md#command-palette) forces a
+Choosing `/compact` in the [command palette](../clients/tui.md#command-palette) forces a
 checkpoint for the selected idle session. The palette then asks for an
 optional focus, for example:
 

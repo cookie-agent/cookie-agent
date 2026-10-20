@@ -11,7 +11,7 @@ backoff_ceiling_ms = 60000
 
 An omitted table inherits; an authored table replaces it completely, with
 defaults for omitted fields. Unknown fields fail. See
-[config.toml](../guide/configuration.md) for layer precedence.
+[config.toml](configuration.md) for layer precedence.
 
 Controls retries on the current model before the engine advances through its
 fallback chain. Values count retries after the initial attempt. Zero disables

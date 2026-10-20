@@ -12,7 +12,7 @@ tail_lines = 20
 
 An omitted table inherits. An authored table replaces the lower table, with
 defaults for omitted fields; unknown fields fail. See
-[config.toml](../guide/configuration.md).
+[config.toml](configuration.md).
 
 Controls the preview of a subagent's final message in the `delegate_subagent`
 result and in the `<subagent_report>` each finished turn sends its parent. It

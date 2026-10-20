@@ -9,7 +9,7 @@ enabled = false
 
 An omitted table inherits; an authored table replaces the lower table and uses
 defaults for omitted fields. Unknown fields fail. See
-[config.toml](../guide/configuration.md).
+[config.toml](configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|

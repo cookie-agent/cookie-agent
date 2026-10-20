@@ -13,7 +13,7 @@ snapshot_index_bytes = 4096
 Memory is a folder of Markdown notes, `~/.cookie-agent/memory`; see the
 [memory spec](../specs/memory.md). An omitted table inherits; an authored
 table replaces the lower table and uses defaults for omitted fields. Unknown
-fields fail; see [config.toml](../guide/configuration.md).
+fields fail; see [config.toml](configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|

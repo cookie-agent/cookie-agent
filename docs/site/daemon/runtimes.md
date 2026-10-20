@@ -55,7 +55,7 @@ name and tools.
 
 | Runtime | Capability | Workspace | Offers |
 |---|---|---|---|
-| `global` | `global` | none | top-level MCP servers, plugins, the [memory](memory.md) tools, the fallback `webfetch` |
+| `global` | `global` | none | top-level MCP servers, plugins, the [memory](../sessions/memory.md) tools, the fallback `webfetch` |
 | `local` | `coding` | any directory on the daemon's machine; the daemon's own directory when none is named | `read`, `write`, `edit`, `bash`, `webfetch`, project skills, `AGENTS.md` |
 | `cookie runtime serve` | `coding` | any directory on its machine, or under its `--root` directories | the same |
 
@@ -86,7 +86,7 @@ name and tools.
 - **Environment.** The process inherits the daemon's environment, which `ssh`
   needs for `SSH_AUTH_SOCK` and similar variables, plus `env`. Names must be
   nonempty without `=` or NUL.
-- **MCP servers** are parsed with the [MCP server schema](mcp.md), and a
+- **MCP servers** are parsed with the [MCP server schema](../extend/mcp.md), and a
   server that enables OAuth (`oauth = true` or an `oauth` table) is rejected:
   OAuth credentials live on the daemon and are available to top-level `[mcp]`
   servers only. Static-header HTTP servers are allowed. See
@@ -124,7 +124,7 @@ command = "docs-mcp"
   servers that start slowly. A server that fails publishes no tools, and
   clients viewing a session attached to the instance get an error naming it.
 - **Tools.** The servers' tools are the instance's tools, named
-  `<server>_<tool>` like any [MCP tool](mcp.md#tool-names-and-permissions)
+  `<server>_<tool>` like any [MCP tool](../extend/mcp.md#tool-names-and-permissions)
   and gated by the `mcp` permission. When another attachment offers the same
   name, they are prefixed with the attachment name like the built-in tools.
 - **Drops and retries.** The runtime restarts a dropped server (1 s, 2 s,
@@ -237,14 +237,14 @@ cookie runtime serve --daemon
   lists; when it dials in again, the daemon reopens them over the new
   connection. `runtimes.list` shows it with lifetime `dial_in`. It stops
   on a stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), so it runs as a
-  service; see [Running as a service](run.md#running-as-a-service).
+  service; see [Running as a service](../clients/tui.md#running-as-a-service).
 - **MCP servers.** It hosts its own machine's MCP servers: those of
   `[runtimes.local.mcp]` in that machine's `config.toml`.
 - **Roots.** `--root` limits its workspaces, as for `--stdio`.
 - **Clients on its machine.** Plain `cookie` and `cookie attach` on the
   runtime's machine use it for their directory when the daemon runs
   elsewhere, such as in a container; see
-  [A daemon already running](run.md#a-daemon-already-running).
+  [A daemon already running](../clients/tui.md#a-daemon-already-running).
 
 ## Machines
 
@@ -281,7 +281,7 @@ machine names from their next run.
 
 Each machine has its own memories, `machine://<machine>/<name>`, in the
 folder `~/.cookie-agent/memory/machines/<machine>` (see
-[Memory](memory.md)): renaming a machine moves its folder, merging moves its
+[Memory](../sessions/memory.md)): renaming a machine moves its folder, merging moves its
 memories into the other machine's and fails when both have a memory of one
 name, and a machine can be forgotten only once its folder is empty. A
 session's model sees an index of the memories of the machines its

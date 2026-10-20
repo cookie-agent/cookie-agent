@@ -1171,8 +1171,8 @@ the version constants stay `0.x` and change freely.
   `development/plugins.md`, `events.md` (the class column, the history
   format, conversion), `schemas.md`, and `tools.md` (display blocks per
   tool).
-- **`guide/configuration.md`:** `[server] allowed_origins`.
-- **`guide/sessions.md`:** `cookie sessions upgrade`.
+- **`engine/configuration.md`:** `[server] allowed_origins`.
+- **`sessions/index.md`:** `cookie sessions upgrade`.
 
 ## 15. Implementation notes
 
@@ -2224,7 +2224,7 @@ Step 2: user media input (11.1 to 11.5). `CLIENT_PROTOCOL_VERSION` is
 - **Docs.** `protocol.md` has sections on user content and media (uploads,
   leases, admission, reads) and the methods in its table; the catalog view
   describes `input_media`; `tools.md` describes the placeholders; `events.md`
-  says submitted content is kept alive like attachments; `guide/media.md` is
+  says submitted content is kept alive like attachments; `sessions/media.md` is
   new and in the nav; `errors.md` is regenerated with the three codes.
 - **Left for later.** The TUI's attach UX (`/attach`, pasted paths, chips,
   attachments in the draft and restored on recall or void, hiding kinds the
@@ -2448,9 +2448,9 @@ Step 2: the TUI renders by block kind and hint (12.6) and attaches files
   `ToolProvider::presentation`, so a `bash`, `read`, or `webfetch` call (and an
   `edit` or `write` that failed to prepare) reached clients as its bare name
   with no hint or argument blocks; it now forwards to each tool.
-- **Docs.** The TUI's behavior is documented in `guide/run.md` (composer,
+- **Docs.** The TUI's behavior is documented in `clients/tui.md` (composer,
   attachments, Ctrl+Z, palette, transcript details, approvals, live output)
-  and `guide/media.md`; the `docs/site/tui/` pages cover `tui.toml` only and
+  and `sessions/media.md`; the `docs/site/tui/` pages cover `tui.toml` only and
   gained nothing.
 - **For phase H.** The TUI tests build display blocks, presentations, and
   attachment flows from protocol types (`tests/display_blocks.rs`,

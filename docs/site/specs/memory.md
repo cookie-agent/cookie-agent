@@ -807,7 +807,7 @@ Each phase is committed and pushed on its own.
    rules, client and plugin protocols 1.2.0.
 4. **Client surface:** `memory.*` RPCs, the TUI `/memory` panel, `cookie
    memory`.
-5. **Docs:** `guide/memory.md` (machines included), the configuration
+5. **Docs:** `sessions/memory.md` (machines included), the configuration
    reference for `[memory]`, the tools and events references.
 
 ## 15. Open questions
@@ -1212,18 +1212,18 @@ Deviations and readings of the spec:
 
 ### 16.5 Phase 5: docs
 
-Landed 2026-10-19. The [memory guide](../guide/memory.md) describes the
+Landed 2026-10-19. The [memory guide](../sessions/memory.md) describes the
 client surface (`/memory` and `cookie memory`) and links machine management
-in the [runtimes guide](../guide/runtimes.md#machines), which in turn
+in the [runtimes guide](../daemon/runtimes.md#machines), which in turn
 describes each machine's memories; its capability table and the
 [architecture overview](../architecture.md) now list memory under `global`,
 which they had left out. The [protocol reference](../reference/protocol.md#memory)
 has the `memory.*` methods and `memory.changed`, the
 [changelog](../reference/protocol-changelog.md) client protocol 1.4.0,
 the [error reference](../reference/errors.md) the `memory_*` codes, and
-[Run](../guide/run.md#command-palette) the `/memory` command. The configuration
+[Run](../clients/tui.md#command-palette) the `/memory` command. The configuration
 reference for `[memory]` ([Memory](../engine/memory.md)), the
 [Tools](../guide/tools.md) page, the [Events](../reference/events.md)
 reference for `memory_loaded`, the [system prompt reference](../reference/system-prompt.md),
-and [Agents](../guide/agents.md) were checked against the code and needed no
+and [Agents](../extend/agents.md) were checked against the code and needed no
 change beyond what is listed here. No deviations.

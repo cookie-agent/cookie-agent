@@ -91,7 +91,7 @@ when it next takes one.
 The `machine` layer is keyed by machine names, the computers runtimes run on,
 which the daemon assigns on its own and you can rename, merge, and forget from
 the Machines view of `/runtime` or with `cookie machine` (see
-[Machines](runtimes.md#machines)). A machine's memories live in
+[Machines](../daemon/runtimes.md#machines)). A machine's memories live in
 `memory/machines/<machine>/` and move with it when it is renamed or merged
 into another; `machines.list` and `cookie machine list` count them.
 
@@ -112,7 +112,7 @@ to the files reach open sessions at those points, and new sessions at once.
 
 ## Tools
 
-The `global` runtime offers five tools ([Tools](tools.md#memory_search)):
+The `global` runtime offers five tools ([Tools](../guide/tools.md#memory_search)):
 
 | Tool | Does |
 |---|---|
@@ -130,7 +130,7 @@ deleting. An agent document that names neither gets defaults by mode:
 `primary` and `all` agents may read and write all memory, `subagent` agents
 may read all memory and write their own `agent://` file, and internal agents
 get none. A declared key replaces the default, so `memory: deny` turns memory
-off for an agent. See [Memory defaults](agents.md#memory-defaults).
+off for an agent. See [Memory defaults](../extend/agents.md#memory-defaults).
 
 ```yaml
 permissions:

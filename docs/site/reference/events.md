@@ -128,7 +128,7 @@ each a function from the old log's JSON lines to the new one's:
   does each original become `events.jsonl.v<N>.bak` (`N` its old format) and
   the new file take its place, and `subagents/index.json` is rebuilt by the
   next tree load. A failure leaves every original untouched.
-- [`cookie sessions upgrade`](../guide/sessions.md#history-formats) converts
+- [`cookie sessions upgrade`](../sessions/index.md#history-formats) converts
   the trees on disk up front.
 
 Backups are kept until you delete them. The format bumps only for a change
@@ -760,7 +760,7 @@ after the summary; the two do not overlap. Active history is the currently assem
 not a reload of events replaced by earlier checkpoints. The original saved log
 is preserved; retained recent messages are replayed from it. System and tool
 context comes first, followed by pinned `AGENTS.md`, the latest memory
-snapshot, loaded skills, the summary, and the recent messages. See [Compaction](../guide/compaction.md) for selection
+snapshot, loaded skills, the summary, and the recent messages. See [Compaction](../sessions/compaction.md) for selection
 and fit rules.
 
 The retention fields:

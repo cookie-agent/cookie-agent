@@ -2,7 +2,7 @@
 
 Use `/connect` for a catalog-backed provider, or define a custom endpoint and
 model below. Provider configuration lives under `[providers.<id>]` in
-[config.toml](configuration.md). The authored map defaults to empty; managed
+[config.toml](../engine/configuration.md). The authored map defaults to empty; managed
 providers can still be available through the catalog and user provider store.
 
 ## Managed providers
@@ -460,7 +460,7 @@ can still reject ciphertext or signatures, even for that ID. A provider HTTP 400
 is not automatically recovered by stripping reasoning and resending. Errors
 follow the normal [retry and fallback policy](../engine/model_retry.md).
 Replay neither enables prompt caching nor guarantees cache hits or live backend
-acceptance. Cache policy and [native compaction](compaction.md#native-provider-compaction)
+acceptance. Cache policy and [native compaction](../sessions/compaction.md#native-provider-compaction)
 retain their separate scope and validation rules.
 
 ## Generation options

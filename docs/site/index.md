@@ -25,9 +25,9 @@ Credentials are checked when the provider is first used, not during the connect
 flow.
 
 The [installation guide](install.md#connect-a-model) ends with provider setup;
-[Run](guide/run.md) covers interactive and headless operation. See [Providers](guide/providers.md) for managed and custom
-provider options, [Plugins](guide/plugins.md) for executable extensions, and
-[Configuration](guide/configuration.md) for every configurable item.
+[Run](clients/tui.md) covers interactive and headless operation. See [Providers](extend/providers.md) for managed and custom
+provider options, [Plugins](extend/plugins.md) for executable extensions, and
+[Configuration](engine/configuration.md) for every configurable item.
 
 !!! warning "Keep credentials out of Git"
     Prefer `/connect` or `${env:NAME}` interpolation. Do not commit `.env`, a

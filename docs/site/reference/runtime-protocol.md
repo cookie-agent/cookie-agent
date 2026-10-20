@@ -4,7 +4,7 @@ The runtime protocol connects the daemon to a *runtime*: a source of tools and
 workspace context that runs outside the engine (see the
 [runtimes specification](../specs/runtimes.md)). The daemon's built-in `local`
 coding runtime speaks it on a task of the daemon's own process over an
-in-memory frame pair; a configured [`[runtimes.<id>]`](../guide/runtimes.md)
+in-memory frame pair; a configured [`[runtimes.<id>]`](../daemon/runtimes.md)
 template runs a command, typically `ssh host cookie runtime serve --stdio`,
 and speaks it over the child's stdin and stdout. The
 local and remote paths are one code path. The global runtime does not speak
@@ -236,7 +236,7 @@ ignored.
 | `runtime_id` | The runtime's ID, `[a-z][a-z0-9_]{0,31}`. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
-| `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../guide/mcp.md#accepted-fields) reads it. Each instance of a capability that hosts MCP servers runs them in its workspace. |
+| `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../extend/mcp.md#accepted-fields) reads it. Each instance of a capability that hosts MCP servers runs them in its workspace. |
 
 A runtime rejects settings it does not support with `initialize_rejected`; a runtime that
 hosts no MCP servers rejects a nonempty `mcp_servers`. A coding runtime

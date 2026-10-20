@@ -22,7 +22,7 @@ Every clickable element highlights under the mouse pointer; text fields, such
 as the composer and picker searches, show their caret instead.
 
 Useful first commands, from the [command palette](#command-palette), are
-`/sessions`, `/new`, `/model`, `/compact`, and `/cancel`. [Agent](agents.md) covers authored prompts and permissions.
+`/sessions`, `/new`, `/model`, `/compact`, and `/cancel`. [Agent](../extend/agents.md) covers authored prompts and permissions.
 
 Model fallback progress is local to the session. For a chain `[A, B, C]`, once B
 commits a successful model turn after fallback, later turns and runs continue
@@ -117,7 +117,7 @@ of its own beside a running daemon opens the daemon's sessions as
 read-only snapshots. A daemon running as another OS user is not told apart:
 it reports the same machine, so its `local` runtime serves the directory
 with that user's file permissions. Use `--standalone` or a
-[runtime that dials in](runtimes.md#runtimes-that-dial-in) with such a
+[runtime that dials in](../daemon/runtimes.md#runtimes-that-dial-in) with such a
 daemon.
 
 The daemon, `cookie runtime serve`, and the TUI stop cleanly on a stop
@@ -147,7 +147,7 @@ WantedBy=default.target
 ```
 
 On a machine whose `config.toml` names the daemon (`[server] url` and
-`token`; see [Runtimes that dial in](runtimes.md#runtimes-that-dial-in)),
+`token`; see [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in)),
 `~/.config/systemd/user/cookie-runtime.service`:
 
 ```ini
@@ -184,7 +184,7 @@ for the directory the same way, first match first:
    ID, or either side reports none): its `local` runtime.
 2. A connected runtime of the daemon runs on this machine (the daemon
    places it on a machine whose IDs include this one's; see
-   [Machines](runtimes.md#machines)) and offers a capability that takes a
+   [Machines](../daemon/runtimes.md#machines)) and offers a capability that takes a
    workspace: new sessions attach that capability
    at the directory. With several, the lowest runtime ID wins. An example
    is a daemon in a container with `cookie runtime serve --daemon` running
@@ -202,7 +202,7 @@ Configured plugins and eager MCP servers, which come only from the user
 approved. Repository `AGENTS.md` files and project skills still enter model
 context, so open unfamiliar workspaces with care.
 Allowed shell commands run without a filesystem sandbox; see the
-[security contract](security.md#process-boundary).
+[security contract](../daemon/security.md#process-boundary).
 
 ## Composer
 
@@ -235,7 +235,7 @@ continued.
 ### Attachments
 
 When the selected model accepts files (images, PDFs, audio, or video; see
-[Attaching media](media.md)), `/attach` asks for the path of a file and
+[Attaching media](../sessions/media.md)), `/attach` asks for the path of a file and
 attaches it to the next message. Pasting text that is exactly the path of one
 existing file, as a terminal pastes a file dropped on it, asks whether to
 attach that file; Cancel pastes the path as text instead. The TUI uploads the
@@ -266,23 +266,23 @@ intact.
 | Command | Action |
 |---|---|
 | `/new` | Choose the next root-run agent |
-| `/preset` | Select the preset for the next root run and future new sessions; see [Agent presets](agents.md#agent-presets) |
+| `/preset` | Select the preset for the next root run and future new sessions; see [Agent presets](../extend/agents.md#agent-presets) |
 | `/agent` | Choose the agent for the next run |
 | `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models |
 | `/connect` | Connect or update a managed provider |
-| `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
+| `/mcp` | Manage MCP servers; see [MCP servers](../extend/mcp.md) |
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes, or choose a new session's before its first prompt; see [Runtimes panel](#runtimes-panel) |
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
-| `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, and reload hand edits; see [config.toml](configuration.md#changes-while-the-daemon-runs) |
-| `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](memory.md#managing-memory) |
-| `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](plugins.md#status-and-restarts) |
-| `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
+| `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, and reload hand edits; see [config.toml](../engine/configuration.md#changes-while-the-daemon-runs) |
+| `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](../sessions/memory.md#managing-memory) |
+| `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](../extend/plugins.md#status-and-restarts) |
+| `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](../extend/agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session |
-| `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](skills.md) |
+| `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed only when the selected model accepts files; see [Attachments](#attachments) |
 | `/usage` | Show selected-session and session-tree usage |
 | `/cancel` | Cancel the active run |
-| `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](goals.md) |
+| `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](../sessions/goals.md) |
 | `/compact` | Prompt for an optional focus, then compact the selected idle session |
 | `/events` | Pick the diagnostic event filter from a list |
 | `/agent-panel show`, `/agent-panel hide`, `/agent-panel auto` | Pin the agent panel shown or hidden for the current root session, or return it to following delegated agents (the default) |
@@ -566,7 +566,7 @@ The permission mode appears in the bottom bar. Click it to cycle
 subsequent approvals throughout the selected session tree, including delegated
 descendants. While a new-session draft is open, the mode shown and cycled is the
 draft's own, applied when its first prompt creates the session. Hard policy denies and doom-loop rejection still win in every
-mode. See [Permissions](agents.md#permissions).
+mode. See [Permissions](../extend/agents.md#permissions).
 
 When pricing is available, the bottom bar also shows the selected session's
 estimated cost between the permission mode and context usage. Click the cost to
@@ -600,7 +600,7 @@ path next (Enter attaches, Esc returns to the list). A runtime that has not
 connected yet is one entry: attaching it connects it and takes its only
 capability, its workspace is optional, and the details show why its last
 connection failed. The path is passed to the runtime as typed and resolved on its
-machine (see [Runtimes](runtimes.md)). Press `d` to detach the selected
+machine (see [Runtimes](../daemon/runtimes.md)). Press `d` to detach the selected
 attachment, and `r` to retry its instance now, for example after fixing why it
 failed (`runtimes.reconnect`). The daemon refuses both
 while the session has an active run, and refuses attaching an instance the
@@ -619,7 +619,7 @@ fails without a session when one of them cannot start.
 When an MCP server or runtime instance a session uses fails to connect, or
 drops and does not reconnect, the TUI adds an error row to each affected
 session naming the server or runtime and the reason (see
-[MCP connection lifecycle](mcp.md#connection-lifecycle)).
+[MCP connection lifecycle](../extend/mcp.md#connection-lifecycle)).
 
 ## Usage dashboard
 
@@ -638,7 +638,7 @@ Use Up/Down, Page Up/Page Down, or the mouse wheel to scroll when needed, and
 Esc to close. Clicking the selected session cost in the bottom bar still opens
 this panel.
 
-See [Usage and cost](usage.md) for recording and pricing semantics.
+See [Usage and cost](../sessions/usage.md) for recording and pricing semantics.
 
 ## Headless runs
 
@@ -673,7 +673,7 @@ coherent runtime before a session starts.
 `--resume-session <id>` continues an existing session and defaults to its
 creation preset. Supplying `--preset` selects a different preset for that run
 without rewriting the session's creation selection. See
-[Agent presets](agents.md#agent-presets) for resolution and persistence details.
+[Agent presets](../extend/agents.md#agent-presets) for resolution and persistence details.
 `--data-dir <path>` selects the session and artifact store. `--max-turns` and
 `--timeout` are positive guards and default to 100 root model turns and 600
 seconds. Reaching either guard cancels the run and waits for its terminal event.

@@ -160,7 +160,7 @@ steering, separate from the goal controller's continuation reminders. The
 destination is fixed at registration and checked on every send.
 
 Plugins declare the `producer_messaging` capability to register producers
-(see [Plugin development](plugins.md#producers)). Only **live, owned**
+(see [Plugin development](../development/plugins.md#producers)). Only **live, owned**
 registrations authorize post-turn model-message sends. `plugin/emit`
 publishes to the bus only; content that enters model history requires an
 explicitly supplied live producer registration, and the engine never creates
@@ -461,7 +461,7 @@ History transforms:
   `producer/discard`, and `producer/recovery/complete` requests, and the
   deadline-free `producer/recovery/start` notification, shared with the
   runtime protocol. The SDK exposes explicit producer handles. See
-  [Plugin development](plugins.md#producers) for the public contract.
+  [Plugin development](../development/plugins.md#producers) for the public contract.
 - **Permissions**: `goal_get`/`goal_update` declare no permission. They are
   root-only by construction and published only while the session has an
   active or paused goal, which the user set; they act on that goal alone, so

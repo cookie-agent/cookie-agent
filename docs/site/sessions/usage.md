@@ -37,7 +37,7 @@ Cost is always optional. Managed models use the selected models.dev catalog
 price tier for each request's reported input-token context size. Model-specific
 entries under `[providers.<provider>.models.<model>.pricing]` supply
 prices for custom models or override catalog prices, as described in the
-[model pricing reference](providers.md#model-pricing).
+[model pricing reference](../extend/providers.md#model-pricing).
 The precedence is config override, catalog, then no cost. An aggregate remains
 unpriced when any used model lacks a required rate or when a provider omits a
 usage split needed to apply a distinct cache or reasoning price.

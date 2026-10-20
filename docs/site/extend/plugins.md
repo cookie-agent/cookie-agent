@@ -27,7 +27,7 @@ shutdown_grace_ms = 3000
 ```
 
 `command` is the program and its arguments, as for a
-[runtime](runtimes.md). The plugin's process inherits the daemon's
+[runtime](../daemon/runtimes.md). The plugin's process inherits the daemon's
 environment, like an MCP stdio server, and `env` adds to it, overriding
 inherited variables of the same name. A plugin therefore also sees provider
 API keys and other secrets the daemon reads from its environment.
@@ -136,4 +136,4 @@ Plugin commands are trusted local code, not a sandbox. A plugin runs with
 your user's rights, sees the daemon's environment, and its hooks see and may
 change prompts, tool calls, and model requests. Tool permissions govern its
 tools, not its hooks. See
-[security boundaries](security.md#process-boundary).
+[security boundaries](../daemon/security.md#process-boundary).

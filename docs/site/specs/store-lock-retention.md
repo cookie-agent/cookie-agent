@@ -5,7 +5,7 @@ Status: implemented (D1-D9 with D6-correctness, landed across commits
 for how cookie-agent acquires and retains the cross-process advisory locks that
 guard its `~/.cookie-agent` secure stores, and for the deprecation of the
 localhost daemon bearer token. It amends the platform trust model described in
-[Security boundaries](../guide/security.md). All file references cite the
+[Security boundaries](../daemon/security.md). All file references cite the
 current tree and were verified against source at the time of writing.
 
 ## Problem
@@ -359,7 +359,7 @@ Mechanics:
      authoritative whenever it is used.
 
 Security posture, stated honestly against [Security
-boundaries](../guide/security.md):
+boundaries](../daemon/security.md):
 
 - **Stronger than the file:** nothing on disk; the secret dies with the run;
   a leaked token cannot outlive the daemon; two daemons can never share a

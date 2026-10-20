@@ -11,7 +11,7 @@ plugin can:
 - **produce** messages to any session.
 
 This page covers the Rust SDK and the plugin protocol. To install or
-configure a plugin, see the [user guide](../guide/plugins.md). The protocol's
+configure a plugin, see the [user guide](../extend/plugins.md). The protocol's
 design and history are in the [plugins spec](../specs/plugins-v1.md).
 
 ## Rust SDK

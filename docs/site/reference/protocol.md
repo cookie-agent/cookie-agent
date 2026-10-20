@@ -131,7 +131,7 @@ only on `data.code`, show `message` and then `hint`, and show `detail` on
 request; a code a client does not know reads as a generic error, whose
 `message` and `hint` are already readable. `JsonRpcError` Debug formatting
 redacts data. No request headers or credential dumps are added. See
-[Error details](../guide/run.md#error-details) for display and upstream limits.
+[Error details](../clients/tui.md#error-details) for display and upstream limits.
 
 ## Tool-emitted messages
 
@@ -415,7 +415,7 @@ workspace requires `workspace`, except `local`'s `coding`, which opens at the
 daemon's working directory without one; a capability that takes none
 refuses one. Attaching a runtime ID without a template is an
 `unknown runtime` error. Besides `global` and `local`, the runtimes are the
-configured [`[runtimes.<id>]`](../guide/runtimes.md) tables. The daemon passes `workspace`
+configured [`[runtimes.<id>]`](../daemon/runtimes.md) tables. The daemon passes `workspace`
 to the runtime exactly as given; the attachment records the canonical path
 the runtime reported, and two spellings of one workspace share an instance.
 
@@ -484,7 +484,7 @@ be read or written is `machine_store_failed`.
 The daemon's memory is Markdown files with `description` and `keywords`
 frontmatter, in four layers, each file addressed by a memory URL:
 `user://<category>`, `agent://<agent>`, `machine://<machine>/<name>`, and
-`project://<project>/<name>` (see the [memory guide](../guide/memory.md)
+`project://<project>/<name>` (see the [memory guide](../sessions/memory.md)
 and the [memory spec](../specs/memory.md#5-memory-urls)). The `memory.*`
 methods act on the files for the user, with no session; a change never
 refreshes the memory snapshot of an open session, which a later run takes
@@ -524,7 +524,7 @@ the data folder makes are not announced.
 
 ### Plugins
 
-`plugins.list` returns every configured [plugin](../guide/plugins.md) in the
+`plugins.list` returns every configured [plugin](../extend/plugins.md) in the
 order its hooks run. A `PluginInfo` is `{ name, state, reason?, tools,
 hooks, subscribe_events, subscribe_bus, publish_bus, producer_messaging,
 dropped_events, stderr? }`: its `state` (`disabled`, `starting`,
@@ -829,7 +829,7 @@ instance hosts from its template's `mcp` table. Each entry has the hosting
 dropped and is being restarted: its tools stay published and calls fail with
 the `runtime_unavailable` failure code until it reconnects or, after every
 attempt failed, becomes `failed` and its tools are dropped (see
-[MCP](../guide/mcp.md#connection-lifecycle)). The `mcp.server.*` mutations
+[MCP](../extend/mcp.md#connection-lifecycle)). The `mcp.server.*` mutations
 and `mcp.auth.*` act on servers of the global runtime. `mcp.server.reconnect
 { name, runtime_id?, workspace? }` reconnects a server of any runtime and
 waits for the attempt: without `runtime_id` (or with `global`) a top-level
