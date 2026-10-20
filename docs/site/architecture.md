@@ -17,6 +17,7 @@ has six top-level subcommands plus a default mode:
 | `run [options] <prompt>` | Run one prompt headlessly through the local engine |
 | `daemon [--port]` | Run only the daemon, listening on `ws://127.0.0.1:7419/ws` by default; `--port 0` picks an ephemeral port |
 | `attach [--url] --token` | Attach the TUI to an existing daemon WebSocket |
+| `web [--url] [--token] [--open]` | Print (or open) the daemon's web page with its token in the fragment |
 | `connect [provider_id] --token` | Interactive durable managed-provider connection (TTY only) |
 | `disconnect [provider_id] --token` | Interactive durable managed-provider disconnection (TTY only) |
 | `mcp --token list` | List the MCP servers of every runtime with their state and hosting runtime |
@@ -62,14 +63,15 @@ identity
   └─ protocol        (wire types + session layer: transports, client, serve)
        ├─ plugin_sdk
        ├─ client_state  (reducer and client policy; also builds for wasm32)
-       │    └─ tui      (never on the engine)
+       │    ├─ tui      (never on the engine)
+       │    └─ web      (browser client; wasm32, also compiles natively)
        ├─ runtime_api   (tool contract + runtime protocol; never on the engine)
        ├─ models
        │    └─ config
        │         └─ mcp     (also on runtime_api; never on the engine)
        │              ├─ coding_runtime  (never on the engine)
        │              └─ engine  (enables mcp's `oauth` feature)
-       │                   └─ server
+       │                   └─ server  (also on web_assets, the built page)
        └─ cookie_agent (binary: composes every layer)
 ```
 
@@ -92,6 +94,8 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`; messaging: `send_message`; `skill`; goals; `read_artifact`; `stop_background`), background calls (`runtime/background_tasks.rs`), subagent reports (`runtime/subagent_reports.rs`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), instance reconnects, and the global runtime's `McpRegistry` with the TUI's runtime-layer MCP edits and their write-back (`config_store`). |
 | `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime serve --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
+| `web` | The browser client: a Leptos page rendered client-side, built with Trunk and styled with Tailwind, over `protocol`'s browser transport and `client_state`. Compiles natively too, so the workspace builds without the wasm target; its native tests cover the pure logic. Not published. |
+| `web_assets` | The built page (`scripts/build-web.sh` writes `crates/web_assets/bundle/`), embedded at compile time for `server` to serve, with a content type, cache rule, and `ETag` per file; a placeholder page when no bundle was built. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow, rendering and highlighting the shared markdown. Keeps its state in `client_state` and runs over a `protocol::Client` it is handed. |
 | `cookie_agent` | CLI and composition root wiring every crate together, `cookie runtime serve --stdio`, which serves a coding runtime to a daemon without reading any configuration, and `cookie sessions upgrade`, which converts session history to this build's format. The only binary. |
 

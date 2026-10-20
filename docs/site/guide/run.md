@@ -81,7 +81,8 @@ cookie attach --url wss://laptop.example:7419/ws --token '<43-char base64url>'
 ```
 
 A daemon on another machine listens with `--listen`; see
-[Server](../engine/server.md). Unlike plain `cookie`, `cookie attach` never
+[Server](../engine/server.md). The daemon also serves a web client on its
+port; `cookie web` prints its address with the token (see [Web](web.md)). Unlike plain `cookie`, `cookie attach` never
 falls back to an engine of its own: a daemon it cannot reach or use is an
 error.
 

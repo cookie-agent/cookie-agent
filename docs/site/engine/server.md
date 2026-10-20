@@ -56,10 +56,30 @@ that origin (on `/runtime`, always).
 | `url` | string | `ws://<host>:<port>/ws` | The daemon clients and dial-in runtimes on this machine connect to when given no `--url` (or URL after `--daemon`): a `ws://` or `wss://` URL whose path is `/ws`. Set it on a machine whose daemon runs elsewhere. The daemon itself ignores it. |
 | `allowed_origins` | array of strings | `[]` | Web origins whose pages may connect to `/ws`: exact `scheme://host[:port]` origins as browsers send them, or the single entry `"*"` for any origin (see [Web clients](#web-clients)). Empty refuses every request with an `Origin` header; a request without one is unaffected. |
 
+## The web page
+
+The daemon serves the [web client](../guide/web.md) on its listener, over
+TLS when it serves `wss`. The page needs no token: it holds no secret, and
+the connection it opens authenticates in its handshake.
+
+| Path | Answer |
+|---|---|
+| `/` | `index.html`, `Cache-Control: no-cache` |
+| a file of the page | the file, with its content type; `Cache-Control: public, max-age=31536000, immutable` when its name carries a hash of its content, `no-cache` otherwise |
+| `/ws`, `/runtime` | the client and runtime endpoints, as below |
+| anything else | 404 |
+
+Every file carries an `ETag`, so a revalidated file costs no body. A
+`cookie` built without the page (see
+[Building the page](../guide/web.md#building-the-page)) serves a
+placeholder `index.html` that says how to build it. After its ready line,
+the daemon prints the page's address. While `allowed_origins` is empty, it
+also says that the page cannot connect until its origin is listed.
+
 ## Web clients
 
 A page in a browser connects with the token in its handshake, from an origin
-`allowed_origins` lists:
+`allowed_origins` lists. The daemon's own page is no exception:
 
 ```toml
 [server]
