@@ -155,6 +155,22 @@ impl Transport for WebSocketTransport {
             }
         }
     }
+
+    /// Sends a normal-closure close frame and waits for the daemon's
+    /// answer. When the daemon closed first, sending fails and reading on
+    /// sends the answer the socket queued.
+    async fn close(&mut self) {
+        let _ = self.socket.close(Some(normal_closure())).await;
+        while let Some(Ok(_)) = self.socket.next().await {}
+    }
+}
+
+/// A close frame with code 1000 (normal closure).
+fn normal_closure() -> tokio_tungstenite::tungstenite::protocol::CloseFrame {
+    tokio_tungstenite::tungstenite::protocol::CloseFrame {
+        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+        reason: "".into(),
+    }
 }
 
 fn authenticated_request(

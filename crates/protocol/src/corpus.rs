@@ -550,6 +550,10 @@ impl<T: Transport> Transport for RecordingTransport<T> {
         }
         Ok(frame)
     }
+
+    async fn close(&mut self) {
+        self.inner.close().await;
+    }
 }
 
 /// How long a replay waits for the peer's next message. A liveness bound,

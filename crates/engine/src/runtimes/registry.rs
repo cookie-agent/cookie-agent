@@ -607,14 +607,24 @@ impl RuntimeRegistry {
         }
     }
 
-    /// Signals a change when `client`'s connection ends, so listings show
-    /// the runtime disconnected.
-    pub(crate) fn watch_connection(self: &Arc<Self>, client: &super::RuntimeClient) {
+    /// Records why dial-in runtime `template`'s connection `client` ended,
+    /// when it does, and signals the change, so listings show the runtime
+    /// disconnected and why.
+    pub(crate) fn watch_connection(
+        self: &Arc<Self>,
+        template: &Arc<super::DialInTemplate>,
+        client: &super::RuntimeClient,
+    ) {
         let closed = client.closed();
         let registry = Arc::downgrade(self);
+        let template = Arc::downgrade(template);
+        let epoch = client.epoch();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                closed.await;
+                let reason = closed.await;
+                if let Some(template) = template.upgrade() {
+                    template.disconnected(epoch, &reason);
+                }
                 if let Some(registry) = registry.upgrade() {
                     registry.notify();
                 }
@@ -1139,8 +1149,16 @@ impl RuntimeRegistry {
             );
         }
         self.notify();
-        let message = format!("runtime `{}` exited: {reason}", key.runtime_id);
-        let Some(template) = self.template(&key.runtime_id) else {
+        let template = self.template(&key.runtime_id);
+        // A runtime that dialed in went away on its own; one the daemon
+        // runs exited.
+        let message = match &template {
+            Some(template) if template.lifetime() == RuntimeLifetime::DialIn => {
+                format!("runtime `{}` disconnected: {reason}", key.runtime_id)
+            }
+            _ => format!("runtime `{}` exited: {reason}", key.runtime_id),
+        };
+        let Some(template) = template else {
             self.fail_lost(&key, &instance, message);
             return;
         };

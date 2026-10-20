@@ -903,7 +903,8 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
 
 /// The real binary dials in to the daemon its machine's configuration names,
 /// with the token it holds, serves a session's workspace, stops cleanly on
-/// `SIGTERM`, and shows as disconnected once it exits.
+/// `SIGTERM` with a WebSocket close handshake, and shows as disconnected
+/// once it exits.
 #[tokio::test]
 async fn a_runtime_dials_in_and_serves_a_session() {
     let fixture = Fixture::new(30_000).await;
@@ -994,6 +995,47 @@ async fn a_runtime_dials_in_and_serves_a_session() {
     })
     .await
     .expect("the runtime shows disconnected");
+    // It closed the WebSocket with a close handshake: the daemon records a
+    // disconnect, not a reset connection.
+    let message = fixture
+        .engine
+        .runtime_templates()
+        .into_iter()
+        .find(|template| template.runtime_id == "labpc")
+        .and_then(|template| template.listing.message)
+        .expect("why labpc is not connected");
+    assert_eq!(
+        message,
+        "runtime `labpc` disconnected: the other end closed the connection"
+    );
+    // Its instance follows the reconnect timeline to `failed`, saying the
+    // runtime disconnected.
+    let labpc_instance = |engine: &Engine| {
+        engine
+            .runtime_instances()
+            .into_iter()
+            .find(|instance| instance.runtime_id == "labpc")
+    };
+    tokio::time::timeout(WAIT, async {
+        while labpc_instance(&fixture.engine)
+            .is_none_or(|instance| instance.status != RuntimeInstanceStatus::Failed)
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the instance fails once reconnecting finds no runtime");
+    let reason = labpc_instance(&fixture.engine)
+        .and_then(|instance| instance.message)
+        .expect("failure reason");
+    assert!(
+        reason.starts_with(
+            "runtime `labpc` disconnected: the other end closed the connection; reconnecting \
+             failed"
+        ),
+        "{reason}"
+    );
+    assert!(!reason.contains("reset"), "{reason}");
     server.shutdown();
     listening.wait().await;
     fixture.engine.shutdown().await;

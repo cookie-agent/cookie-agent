@@ -434,7 +434,7 @@ impl Engine {
             .map_err(|reason| {
                 EngineError::Runtime(format!("runtime `{runtime_id}` failed to start: {reason}"))
             })?;
-        registry.watch_connection(&client);
+        registry.watch_connection(&template, &client);
         registry.revive(runtime_id);
         Ok(())
     }

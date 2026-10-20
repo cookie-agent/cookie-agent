@@ -11,7 +11,9 @@
 //! connection.
 //!
 //! The transport's `recv` must be cancel-safe: the peer's I/O task selects
-//! between receiving and sending.
+//! between receiving and sending. When the connection ends, for whatever
+//! reason, the peer closes the transport ([`Transport::close`]) before it
+//! reports the connection ended, within [`CLOSE_GRACE`].
 
 use std::{
     collections::HashMap,
@@ -36,6 +38,10 @@ use tokio_util::{
 };
 
 use crate::{errors, runtime_protocol::MAX_FRAME_BYTES};
+
+/// How long a peer waits for its transport's orderly close, such as the
+/// other end's answer to a WebSocket close frame.
+pub const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Why a request failed.
 #[derive(Clone, Debug)]
@@ -557,6 +563,10 @@ async fn run_io(
     for (_, reply) in replies {
         let _ = reply.send(Err(RpcError::Closed(reason.clone())));
     }
+    // The other end learns the connection ended on purpose, and a process
+    // that exits once this peer has ended does not cut the handshake short.
+    let _ = tokio::time::timeout(CLOSE_GRACE, transport.close()).await;
+    drop(transport);
     shared.ended.cancel();
 }
 
@@ -724,5 +734,52 @@ where
             Some(Err(LinesCodecError::Io(error))) => Err(TransportError::Other(error.to_string())),
             None => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use async_trait::async_trait;
+
+    use super::Peer;
+    use crate::{MessageFrame, Transport, TransportError};
+
+    /// A transport that never delivers a frame and records its close.
+    struct Quiet {
+        closed: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Transport for Quiet {
+        async fn send(&mut self, _frame: MessageFrame) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
+            std::future::pending().await
+        }
+
+        async fn close(&mut self) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A peer closes its transport in an orderly way before it reports the
+    /// connection ended, so a process that exits then does not cut the
+    /// closing handshake short.
+    #[tokio::test]
+    async fn a_closing_peer_closes_its_transport_before_it_ends() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let (peer, _incoming) = Peer::start(Box::new(Quiet {
+            closed: Arc::clone(&closed),
+        }));
+        peer.close();
+        assert_eq!(peer.closed().await, "connection closed locally");
+        assert!(closed.load(Ordering::SeqCst));
     }
 }

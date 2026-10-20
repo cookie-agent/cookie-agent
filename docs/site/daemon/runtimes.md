@@ -252,9 +252,17 @@ cookie runtime serve --daemon
   1 s, 2 s, 4 s, and so on up to 30 s. While it is away, its instances go
   `reconnecting` and then `failed`, and their tools leave the sessions' tool
   lists; when it dials in again, the daemon reopens them over the new
-  connection. `runtimes.list` shows it with lifetime `dial_in`. It stops
+  connection. `runtimes.list` shows it with lifetime `dial_in`, and, while
+  it is away, why it disconnected. It stops
   on a stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), so it runs as a
   service; see [Running as a service](persistent.md#running-as-a-service).
+- **Stopping.** A stopping runtime closes its WebSocket with a close
+  handshake (normal closure). The daemon records that as
+  ``runtime `labpc` disconnected: the other end closed the connection``,
+  in `runtimes.list` and in its instances' reasons as they go `reconnecting`
+  and then `failed`; a runtime that vanished without one, such as one that
+  was killed or lost its network, shows the transport's error instead, for
+  example ``Connection reset without closing handshake``.
 - **MCP servers.** It hosts its own machine's MCP servers: those of
   `[runtimes.local.mcp]` in that machine's `config.toml`.
 - **Roots.** `--root` limits its workspaces, as for `--stdio`.

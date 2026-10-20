@@ -35,7 +35,12 @@ protocol over either:
   with an `Origin` header is refused with HTTP 403, and one without the
   right token with 401. A dial-in runtime gets 30 seconds to answer
   `runtime/initialize` and each `capability/open`, and 3 seconds to answer
-  `runtime/shutdown`.
+  `runtime/shutdown`. Either end that ends the connection sends a close
+  frame, normal closure (1000), and waits up to 2 seconds for the other's
+  answer; a runtime that stops does so before it exits. The daemon reads a
+  normal closure, going away (1001), or a close frame without a code as the
+  runtime disconnecting, and another code, or a connection that ended
+  without a close frame, as a failure with that code or error.
 
 ## Framing
 

@@ -104,6 +104,22 @@ impl DialInTemplate {
         Ok(client)
     }
 
+    /// Records that connection `epoch` ended for `reason`, unless a newer
+    /// connection took over meanwhile.
+    pub(crate) fn disconnected(&self, epoch: u64, reason: &str) {
+        let connection = lock(&self.connection);
+        if connection
+            .as_ref()
+            .is_some_and(|client| client.epoch() != epoch)
+        {
+            return;
+        }
+        lock(&self.offered).message = Some(format!(
+            "runtime `{}` disconnected: {reason}",
+            self.runtime_id
+        ));
+    }
+
     fn not_connected(&self) -> String {
         format!("runtime `{}` is not connected", self.runtime_id)
     }

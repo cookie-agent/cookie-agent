@@ -42,11 +42,50 @@ impl MessageStream for WebSocketStream {
                 Some(Ok(axum::extract::ws::Message::Text(text))) => {
                     return Ok(Some(MessageFrame::Bytes(text.into())));
                 }
-                Some(Ok(axum::extract::ws::Message::Close(_))) | None => return Ok(None),
+                Some(Ok(axum::extract::ws::Message::Close(frame))) => return closed(frame),
+                None => return Ok(None),
                 Some(Ok(_)) => {}
                 Some(Err(error)) => return Err(TransportError::Other(error.to_string())),
             }
         }
+    }
+
+    /// Sends a normal-closure close frame and waits for the other end's
+    /// answer. When the other end closed first, sending fails and reading
+    /// on sends the answer the socket queued.
+    async fn close(&mut self) {
+        let _ = self
+            .socket
+            .send(axum::extract::ws::Message::Close(Some(
+                axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::NORMAL,
+                    reason: "".into(),
+                },
+            )))
+            .await;
+        while let Some(Ok(_)) = self.socket.next().await {}
+    }
+}
+
+/// What a close frame the other end sent means: a normal closure (1000),
+/// going away (1001), or a frame without a code ends the connection
+/// cleanly; any other code ends it with that code and its reason.
+fn closed(
+    frame: Option<axum::extract::ws::CloseFrame>,
+) -> Result<Option<MessageFrame>, TransportError> {
+    use axum::extract::ws::close_code;
+    match frame {
+        None => Ok(None),
+        Some(frame) if matches!(frame.code, close_code::NORMAL | close_code::AWAY) => Ok(None),
+        Some(frame) if frame.reason.is_empty() => Err(TransportError::Other(format!(
+            "the other end closed the connection with code {}",
+            frame.code
+        ))),
+        Some(frame) => Err(TransportError::Other(format!(
+            "the other end closed the connection with code {}: {}",
+            frame.code,
+            frame.reason.as_str()
+        ))),
     }
 }
 

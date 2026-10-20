@@ -54,6 +54,13 @@ impl fmt::Debug for MessageFrame {
 pub trait Transport: Send {
     async fn send(&mut self, frame: MessageFrame) -> Result<(), TransportError>;
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError>;
+
+    /// Ends the connection in an orderly way once no more frames will be
+    /// sent, such as a WebSocket's close handshake, waiting briefly for the
+    /// other end. It may follow a failed `send` or `recv`, and errors are
+    /// ignored. Dropping the transport without it simply drops the
+    /// connection, which is all a stream without a closing handshake needs.
+    async fn close(&mut self) {}
 }
 
 pub use Transport as MessageStream;
