@@ -35,9 +35,14 @@ use cookie_agent_models::{
 };
 use cookie_agent_protocol::{
     Authentication, CLIENT_PROTOCOL_VERSION, CatalogRevision, Client, ClientDelivery,
-    ClientIdentity, ClientKind, MessageFrame, MessageStream, RUNTIME_PROTOCOL_VERSION, SessionId,
-    corpus::{self, CorpusFile, Recorded, Recording, Substitutions},
+    ClientIdentity, ClientKind, RUNTIME_PROTOCOL_VERSION, SessionId,
+    corpus::{self, Recorded, Recording},
     in_process_pair,
+};
+#[cfg(unix)]
+use cookie_agent_protocol::{
+    MessageFrame, MessageStream,
+    corpus::{CorpusFile, Substitutions},
 };
 use cookie_agent_runtime_api::{RuntimeConnection, RuntimeConnector};
 use jiff::Timestamp;
@@ -531,12 +536,15 @@ async fn record_the_client_and_runtime_corpora() {
 
 /// What a replay has received so far.
 #[derive(Default)]
+#[cfg(unix)]
 struct Received {
     replies: BTreeMap<String, Value>,
     /// Stored events by type, each counted once by session and sequence.
     events: BTreeMap<String, std::collections::BTreeSet<(String, u64)>>,
 }
 
+// Only the unix-only client corpus replay below uses this.
+#[cfg(unix)]
 impl Received {
     fn note_events(&mut self, events: &[Value]) {
         for event in events {
@@ -583,6 +591,8 @@ impl Received {
 }
 
 /// A replay of one client corpus file against a fresh daemon.
+// Only the unix-only client corpus replay below uses this.
+#[cfg(unix)]
 struct Replay<'a> {
     file: &'a CorpusFile,
     stream: cookie_agent_protocol::InProcessStream,
@@ -594,6 +604,8 @@ struct Replay<'a> {
     checked: std::collections::BTreeSet<String>,
 }
 
+// Only the unix-only client corpus replay below uses this.
+#[cfg(unix)]
 impl Replay<'_> {
     /// Receives until the replay has what the recording had received by
     /// then (`expected`), and compares the replies that arrived.
@@ -658,6 +670,7 @@ impl Replay<'_> {
 }
 
 /// Replays the client's requests of `file` against a fresh daemon.
+#[cfg(unix)]
 async fn replay(file: &CorpusFile) {
     let daemon = Daemon::open(None).await;
     let methods = file

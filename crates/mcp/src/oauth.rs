@@ -49,6 +49,9 @@ pub(crate) const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 #[cfg(test)]
 pub(crate) const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(any(unix, test))]
+// Only unix stores credentials in this file; the tests that read it are
+// unix-only too.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) const OAUTH_STORE_FILE: &str = "mcp-oauth.json";
 const OAUTH_STORE_LOCK_FILE: &str = "mcp-oauth.lock";
 const OAUTH_STORE_MAX_BYTES: u64 = 1024 * 1024;
