@@ -271,6 +271,10 @@ pub enum EventLevel {
 }
 
 impl EventLevel {
+    /// The lowest level a client shows unless the user picks another: the
+    /// TUI's `minimum_event_level` default, and the web client's `/events`.
+    pub const DEFAULT_MINIMUM: Self = Self::Warning;
+
     pub fn badge(self) -> &'static str {
         match self {
             Self::Debug => "[D]",

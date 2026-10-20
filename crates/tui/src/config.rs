@@ -52,7 +52,7 @@ impl ThemePreference {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            minimum_event_level: EventLevel::Warning,
+            minimum_event_level: EventLevel::DEFAULT_MINIMUM,
             theme: None,
         }
     }

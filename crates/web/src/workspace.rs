@@ -1422,13 +1422,30 @@ impl Workspace {
     }
 }
 
-/// The level a stored `/events` choice names; `info` otherwise.
+/// The level a stored `/events` choice names; the TUI's default without
+/// one.
 pub fn level_from_storage(stored: Option<&str>) -> EventLevel {
     match stored {
         Some("debug") => EventLevel::Debug,
+        Some("info") => EventLevel::Info,
         Some("warning") => EventLevel::Warning,
         Some("error") => EventLevel::Error,
-        _ => EventLevel::Info,
+        _ => EventLevel::DEFAULT_MINIMUM,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_client_state::EventLevel;
+
+    use super::level_from_storage;
+
+    #[test]
+    fn a_stored_level_wins_over_the_shared_default() {
+        assert_eq!(level_from_storage(Some("info")), EventLevel::Info);
+        assert_eq!(level_from_storage(Some("debug")), EventLevel::Debug);
+        assert_eq!(level_from_storage(None), EventLevel::DEFAULT_MINIMUM);
+        assert_eq!(level_from_storage(Some("loud")), EventLevel::DEFAULT_MINIMUM);
     }
 }
 
