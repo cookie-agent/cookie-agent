@@ -128,7 +128,7 @@ impl DelegationEventStore {
     }
 
     /// Folds delegation records harvested from child logs (§4.1.2), each as
-    /// [`harvested`] hands it over, returning the entries that changed so the
+    /// `harvested` hands it over, returning the entries that changed so the
     /// engine can rebuild only what moved.
     pub fn extend_from_payloads(
         &self,
