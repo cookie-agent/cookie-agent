@@ -49,11 +49,12 @@ impl ThemePreference {
     }
 
     /// The theme button's label.
-    pub const fn label(self) -> &'static str {
+    /// The preference's name, as the theme button says it.
+    pub const fn name(self) -> &'static str {
         match self {
-            Self::System => "Theme: system",
-            Self::Light => "Theme: light",
-            Self::Dark => "Theme: dark",
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
         }
     }
 }

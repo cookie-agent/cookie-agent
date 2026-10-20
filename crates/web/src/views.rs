@@ -41,8 +41,8 @@ use manage::{config_sheet, connect_sheet, mcp_sheet, memory_sheet, plugins_sheet
 /// How long a press on Send must last to queue instead of steer.
 const LONG_PRESS: Duration = Duration::from_millis(500);
 
-const BUTTON: &str = "min-h-11 rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
-const ROW: &str = "flex min-h-11 w-full flex-col items-start rounded px-3 py-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+const BUTTON: &str = "min-h-11 min-w-11 rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
+const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start rounded px-3 py-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
 
 /// The connected page.
 #[component]
@@ -250,7 +250,7 @@ fn Toolbar(workspace: Workspace) -> impl IntoView {
             >
                 "Sessions"
             </button>
-            <h1 class="min-w-0 flex-1 truncate font-bold" id="session-title">
+            <h1 class="min-w-0 flex-1 basis-40 truncate font-bold" id="session-title">
                 {title}
             </h1>
             <Show when=read_only>
@@ -597,12 +597,14 @@ fn Composer(workspace: Workspace) -> impl IntoView {
                     }}
                 </div>
             </Show>
-            <div class="flex items-end gap-2">
+            // On a phone the buttons go below a text field too narrow to
+            // write in.
+            <div class="flex flex-wrap items-end gap-2">
                 <textarea
                     node_ref=textarea
                     id="composer"
                     rows="2"
-                    class="min-h-11 flex-1 resize-y rounded border border-crust bg-cream px-3 py-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none disabled:opacity-60 dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple"
+                    class="min-h-11 min-w-[12rem] flex-1 resize-y rounded border border-crust bg-cream px-3 py-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none disabled:opacity-60 dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple"
                     placeholder="Message · / for commands"
                     disabled=move || !workspace.writable()
                     prop:value=move || workspace.composer.get()
@@ -618,6 +620,7 @@ fn Composer(workspace: Workspace) -> impl IntoView {
                         }
                     }
                 ></textarea>
+                <div class="ml-auto flex items-end gap-2">
                 <AttachButtons workspace=workspace />
                 <div class="relative flex">
                     <button
@@ -659,7 +662,7 @@ fn Composer(workspace: Workspace) -> impl IntoView {
                     <button
                         type="button"
                         aria-label="More ways to send"
-                        class="min-h-11 rounded-r border-l border-cream bg-espresso px-2 text-cream hover:bg-caramel active:bg-ink dark:border-night dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
+                        class="min-h-11 min-w-11 rounded-r border-l border-cream bg-espresso px-2 text-cream hover:bg-caramel active:bg-ink dark:border-night dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
                         on:click=move |_| menu_open.update(|open| *open = !*open)
                     >
                         "▾"
@@ -690,6 +693,7 @@ fn Composer(workspace: Workspace) -> impl IntoView {
                             </button>
                         </div>
                     </Show>
+                </div>
                 </div>
             </div>
         </div>
@@ -807,9 +811,9 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                 class=move || {
                     // The editors get the room a document needs.
                     if matches!(workspace.panel.get(), Some(Panel::Config | Panel::Memory)) {
-                        "fixed inset-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[48rem] md:border-l md:border-toasted dark:bg-night md:dark:border-ember"
+                        "sheet-frame fixed inset-x-0 top-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[48rem] md:border-l md:border-toasted dark:bg-night md:dark:border-ember"
                     } else {
-                        "fixed inset-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[28rem] md:border-l md:border-toasted dark:bg-night md:dark:border-ember"
+                        "sheet-frame fixed inset-x-0 top-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[28rem] md:border-l md:border-toasted dark:bg-night md:dark:border-ember"
                     }
                 }
             >

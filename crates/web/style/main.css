@@ -46,6 +46,31 @@
   font-display: swap;
 }
 
+/* The page's frame is as tall as the visual viewport (`--app-height`, kept
+   by the page), which a phone's on-screen keyboard shrinks, else the
+   dynamic viewport; it keeps clear of notches and home indicators. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+.app-frame {
+  height: var(--app-height, 100dvh);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+/* A sheet covers the frame on a phone, above the keyboard. */
+.sheet-frame {
+  height: var(--app-height, 100dvh);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@media (min-width: 48rem) {
+  .sheet-frame {
+    height: auto;
+  }
+}
+
 /* Markdown the transcript renders: the preflight resets these elements, so
    give them back their shape. */
 .markdown {

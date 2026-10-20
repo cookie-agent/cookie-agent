@@ -546,7 +546,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                             view! {
                                 <button
                                     type="button"
-                                    class="min-h-11 px-2 text-xs hover:bg-toasted active:bg-crust disabled:opacity-60 dark:hover:bg-ember dark:active:bg-smoke"
+                                    class="min-h-11 min-w-11 px-2 text-xs hover:bg-toasted active:bg-crust disabled:opacity-60 dark:hover:bg-ember dark:active:bg-smoke"
                                     class:font-bold=active
                                     class:underline=active
                                     aria-pressed=active.to_string()

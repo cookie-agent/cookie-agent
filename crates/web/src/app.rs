@@ -273,6 +273,7 @@ pub fn App() -> impl IntoView {
 
     let connection = Connection::new();
     browser::on_visible(move || connection.check());
+    browser::follow_visual_viewport();
     if connects_by_itself(
         Some(&connection.url.get_untracked()),
         Some(&connection.token.get_untracked()),
@@ -281,7 +282,7 @@ pub fn App() -> impl IntoView {
     }
 
     view! {
-        <div class="flex h-dvh flex-col overflow-hidden bg-cream text-espresso dark:bg-night dark:text-latte">
+        <div class="app-frame flex flex-col overflow-hidden bg-cream text-espresso dark:bg-night dark:text-latte">
             <Header connection=connection theme=theme />
             {move || {
                 let phase = connection.phase.get();
@@ -334,24 +335,27 @@ fn Header(connection: Connection, theme: RwSignal<ThemePreference>) -> impl Into
     };
     view! {
         <header class="flex items-center gap-3 border-b border-toasted bg-parchment px-4 py-1 dark:border-ember dark:bg-char">
-            <span class="font-mono font-bold">"cookie agent"</span>
+            <span class="font-mono font-bold whitespace-nowrap">"cookie agent"</span>
             <span class="min-w-0 flex-1 truncate font-mono text-xs text-ink dark:text-sand">{status}</span>
             <Show when=move || connection.attached.get()>
                 <button
                     type="button"
                     id="forget"
-                    class="min-h-11 rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                    class="min-h-11 min-w-11 whitespace-nowrap rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
                     on:click=move |_| connection.forget()
                 >
-                    "Forget this daemon"
+                    <span class="sm:hidden">"Forget"</span>
+                    <span class="hidden sm:inline">"Forget this daemon"</span>
                 </button>
             </Show>
             <button
                 type="button"
-                class="min-h-11 rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                class="min-h-11 min-w-11 whitespace-nowrap rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                aria-label="Theme"
                 on:click=move |_| theme.update(|preference| *preference = preference.next())
             >
-                {move || theme.get().label()}
+                <span class="hidden sm:inline">"Theme: "</span>
+                {move || theme.get().name()}
             </button>
         </header>
     }
@@ -425,7 +429,8 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                     class="rounded border border-crust px-4 py-2 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
                     on:click=move |_| connection.forget()
                 >
-                    "Forget this daemon"
+                    <span class="sm:hidden">"Forget"</span>
+                    <span class="hidden sm:inline">"Forget this daemon"</span>
                 </button>
             </div>
         </form>

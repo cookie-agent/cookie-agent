@@ -159,3 +159,41 @@ pub fn select_text(id: &str) {
         field.select();
     }
 }
+
+/// Keeps `--app-height` on `<html>` at the visual viewport's height, which a
+/// phone's on-screen keyboard shrinks while the layout viewport (and
+/// `100dvh`) may not, so the composer and an open sheet stay above the
+/// keyboard. The page's frame and sheets size themselves from it.
+pub fn follow_visual_viewport() {
+    let Some(window) = window() else {
+        return;
+    };
+    let Some(viewport) = window.visual_viewport() else {
+        return;
+    };
+    let update = {
+        let viewport = viewport.clone();
+        let window = window.clone();
+        move || {
+            let Some(root) = window
+                .document()
+                .and_then(|document| document.document_element())
+                .and_then(|root| root.dyn_into::<web_sys::HtmlElement>().ok())
+            else {
+                return;
+            };
+            let _ = root
+                .style()
+                .set_property("--app-height", &format!("{}px", viewport.height()));
+            // A browser that scrolled the page to show the focused field
+            // leaves the frame where it was; bring it back.
+            if viewport.offset_top() > 0.0 {
+                window.scroll_to_with_x_and_y(0.0, 0.0);
+            }
+        }
+    };
+    update();
+    let listener = Closure::<dyn Fn()>::new(update);
+    let _ = viewport.add_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
+    listener.forget();
+}

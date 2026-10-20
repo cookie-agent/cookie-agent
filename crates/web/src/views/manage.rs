@@ -27,7 +27,7 @@ use super::{BUTTON, ROW};
 use crate::workspace::{MemoryChoice, MemoryPending, PANEL_POLL, Workspace};
 
 const FIELD: &str = "min-h-11 w-full rounded border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
-const EDITOR: &str = "min-h-[50vh] w-full resize-y rounded border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const EDITOR: &str = "min-h-[40dvh] w-full resize-y rounded border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 const NOTE: &str = "text-xs text-ink dark:text-sand";
 const ERROR: &str = "text-sm text-red-700 whitespace-pre-wrap dark:text-red-400";
 const TAB: &str = "min-h-11 flex-1 rounded px-3 text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
