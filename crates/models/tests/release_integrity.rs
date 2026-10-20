@@ -463,7 +463,8 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "cargo test --locked -p cookie_agent_models --test release_integrity",
         "crates/protocol/scripts/check-schema-additive.sh",
         "release_binary_contains_no_secret_material -- --ignored --exact",
-        "needs: [stable, msrv, windows, release-targets]",
+        "cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol",
+        "needs: [stable, msrv, wasm, windows, release-targets]",
     ] {
         assert!(
             workflow.contains(required),
