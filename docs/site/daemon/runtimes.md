@@ -84,7 +84,13 @@ name and tools.
   expands a leading `~` in it.
 - **Environment.** The process inherits the daemon's environment, which `ssh`
   needs for `SSH_AUTH_SOCK` and similar variables, plus `env`. Names must be
-  nonempty without `=` or NUL.
+  nonempty without `=` or NUL. `ssh` finds its configuration, keys, and
+  `known_hosts` through that environment's `HOME`, so a daemon run with
+  another `HOME` (a scratch or service home) needs
+  `env = { HOME = "/home/me" }` in the template, or the files named on its
+  command line as absolute paths, since no shell expands `~` there:
+  `-F /home/me/.ssh/config`, `-i /home/me/.ssh/id_ed25519`, and
+  `-o UserKnownHostsFile=/home/me/.ssh/known_hosts`.
 - **MCP servers** are parsed with the [MCP server schema](../extend/mcp.md), and a
   server that enables OAuth (`oauth = true` or an `oauth` table) is rejected:
   OAuth credentials live on the daemon and are available to top-level `[mcp]`
@@ -156,8 +162,12 @@ asks for that path.
   reason. `runtimes.list` shows why the runtime last failed to connect.
 - **Diagnostics.** The process's standard error is captured into a bounded
   buffer (its last 32 lines, at most 4 KiB). Failure reasons end with that
-  tail, so an `ssh` or `cookie runtime` error shows up in the TUI. Nothing of
-  it is written to the daemon's own terminal.
+  tail, so an `ssh` or `cookie runtime` error shows up in the TUI. The
+  daemon does not copy the process's standard error to its own as it
+  arrives, but when a session is created, opened, or starts a run while one
+  of its attachments is unavailable, the daemon writes
+  ``cookie-agent: session <id>: runtime `<attachment>` is unavailable: <reason>``
+  to its standard error, and that reason ends with the tail.
 - **Drop.** When the process exits or its pipe closes, calls in flight fail
   with `runtime_unavailable` (a backgrounded call reports the failure as its
   background result), and the daemon starts the process again up to 3 times
