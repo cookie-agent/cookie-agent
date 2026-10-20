@@ -17,6 +17,7 @@ import json
 import os
 import random
 import re
+import signal
 import struct
 import sys
 import time
@@ -105,6 +106,21 @@ class Browser:
 
     def resize(self, width, height):
         call("POST", self.path("/window/rect"), {"width": width, "height": height})
+
+    def phone(self, width, height):
+        """Shows the page as a `width`×`height` screen: Firefox windows are
+        at least 500 px wide, so a narrower one is the 500 px window zoomed
+        in (geckodriver runs with --allow-system-access for the zoom)."""
+        zoom = max(1.0, 500 / width)
+        chrome = 86  # what the headless window keeps above the page
+        self.resize(max(width, 500), round(height * zoom) + chrome)
+        call("POST", self.path("/moz/context"), {"context": "chrome"})
+        try:
+            self.script("gBrowser.selectedBrowser.fullZoom = arguments[0]", zoom)
+        finally:
+            call("POST", self.path("/moz/context"), {"context": "content"})
+        size = self.script("return [innerWidth, innerHeight]")
+        assert abs(size[0] - width) <= 3, "the page is %s px wide, not %s" % (size[0], width)
 
     def close(self):
         call("DELETE", self.path(""))
@@ -242,15 +258,6 @@ def session_depth(browser):
     browser.click("#goal-bar [data-goal-action=pause]")
     browser.wait("the paused goal", lambda: count(browser, "#goal-bar [data-goal-action=resume]") == 1)
     print("set a goal and paused it")
-    browser.wait("the goal control row", lambda: "Goal paused" in browser.text("#transcript"))
-    assert "[engine goal control]" not in browser.text("#transcript"), "a producer message shows unfolded"
-    browser.script(
-        "const rows = [...document.querySelectorAll('#transcript [data-action=toggle-block]')]"
-        ".filter((row) => row.innerText.includes('Goal paused'));"
-        "rows[rows.length - 1].click()"
-    )
-    browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
-    print("goal control messages fold under their summary and open on a click")
     browser.shot("goal-paused")
     browser.wait("the goal run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
@@ -281,6 +288,16 @@ def session_depth(browser):
     )
     assert "<background_result" not in browser.text("#transcript"), "a background report shows unfolded"
     browser.shot("background-report")
+    # The paused goal's control message rode along with the next run.
+    browser.wait("the goal control row", lambda: "Goal paused" in browser.text("#transcript"))
+    assert "[engine goal control]" not in browser.text("#transcript"), "a producer message shows unfolded"
+    browser.script(
+        "const rows = [...document.querySelectorAll('#transcript [data-action=toggle-block]')]"
+        ".filter((row) => row.innerText.includes('Goal paused'));"
+        "rows[rows.length - 1].click()"
+    )
+    browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
+    print("goal control messages fold under their summary and open on a click")
     browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
     # Attach an image; one too large is offered downscaled.
@@ -563,6 +580,132 @@ def management(browser):
     close_sheet(browser)
 
 
+PHONES = [("phone-360", 360, 640), ("phone-390", 390, 844), ("phone-landscape", 844, 390)]
+
+# Every interactive element the page shows (except text links inside
+# rendered text) that the screen's edge cuts off or that is under the 44 px
+# a finger needs.
+SMALL_TARGETS = """
+const small = [];
+for (const element of document.querySelectorAll(
+    'button, select, textarea, input:not([type=hidden]):not([type=file]), summary, a[href]')) {
+  if (element.closest('.markdown') || element.offsetParent === null) continue;
+  const rect = element.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) continue;
+  // Cut off by the edge of the screen, which `overflow: hidden` hides.
+  if (rect.right > innerWidth + 1 || rect.left < -1) {
+    small.push('cut off: ' + element.tagName.toLowerCase() + ' "'
+      + (element.innerText || element.getAttribute('aria-label') || '').slice(0, 30) + '"');
+    continue;
+  }
+  const tooShort = rect.height < 44;
+  const tooNarrow = element.tagName === 'BUTTON' && rect.width < 44;
+  if (tooShort || tooNarrow) {
+    small.push(element.tagName.toLowerCase() + (element.id ? '#' + element.id : '') + ' "'
+      + (element.innerText || element.value || element.getAttribute('aria-label') || '').slice(0, 30)
+      + '" ' + Math.round(rect.width) + 'x' + Math.round(rect.height));
+  }
+}
+return [...new Set(small)];
+"""
+
+OVERFLOW = """
+const page = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+const sheet = document.querySelector('#sheet');
+return Math.max(page, sheet ? sheet.scrollWidth - sheet.clientWidth : 0);
+"""
+
+
+def phone_audit():
+    """Every view and sheet at phone sizes: no sideways scroll and touch
+    targets of at least 44 px. Returns what falls short."""
+    problems = []
+    phone = Browser()
+    try:
+        for name, width, height in PHONES:
+            phone.go(LINK)
+            phone.wait("the connection", lambda: phone.text("#connected") != "")
+            phone.phone(width, height)
+            # The most recent session, with tool calls, media, and producers:
+            # from the sidebar, or its sheet on a narrow screen.
+            if width >= 768:
+                phone.click("aside nav[aria-label=Sessions] button")
+            else:
+                phone.click("main button")
+                phone.wait("the sessions sheet", lambda: count(phone, "#sheet nav button") > 0)
+                phone.click("#sheet nav[aria-label=Sessions] button")
+            phone.wait("the transcript", lambda: phone.text("#transcript") != "")
+            time.sleep(1)
+            views = [("transcript", None)] + [
+                (command[1:], command)
+                for command in (
+                    "/sessions", "/agent", "/model", "/preset", "/approvals", "/usage",
+                    "/events", "/goal", "/skills", "/permissions", "/runtime", "/mcp",
+                    "/connect", "/config", "/memory", "/plugins",
+                )
+            ]
+            views.append(("commands", "menu"))
+            for view, command in views:
+                close_sheet(phone)
+                if command == "menu":
+                    phone.click("button[aria-label=Commands]")
+                elif command:
+                    send(phone, command)
+                time.sleep(1.2)
+                overflow = phone.script(OVERFLOW)
+                small = phone.script(SMALL_TARGETS)
+                if overflow > 0:
+                    problems.append("%s %s: scrolls sideways by %s px" % (name, view, overflow))
+                for target in small:
+                    problems.append("%s %s: small target %s" % (name, view, target))
+                phone.shot("%s-%s" % (name, view))
+            close_sheet(phone)
+    finally:
+        phone.close()
+    return problems
+
+
+def suspended_tab(browser):
+    """A phone suspends a background tab; when it shows again the page
+    checks its connection. A daemon that stopped answering (here, paused)
+    is reconnected to once it answers again."""
+    with open(os.path.join(HOME, "daemon.pid")) as file:
+        daemon = int(file.read())
+    visibility = (
+        "Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => arguments[0]});"
+        "document.dispatchEvent(new Event('visibilitychange'))"
+    )
+    os.kill(daemon, signal.SIGSTOP)
+    try:
+        browser.script(visibility, "hidden")
+        browser.script(visibility, "visible")
+        browser.wait("the reconnect", lambda: "stopped answering" in browser.text("#reconnecting"), timeout=20)
+        browser.shot("suspended-reconnecting")
+    finally:
+        os.kill(daemon, signal.SIGCONT)
+    browser.wait("the reconnection", lambda: browser.text("#connected") != "", timeout=60)
+    browser.wait("the restored session", lambda: "reconnected to the daemon" in browser.text("#status"), timeout=30)
+    print("a tab shown again after the daemon stopped answering reconnects")
+
+
+def home_screen():
+    """The page names a web app manifest whose icons the daemon serves, for
+    adding the page to a phone's home screen."""
+    base = LINK.split("#")[0]
+    with urllib.request.urlopen(base + "manifest.webmanifest") as response:
+        assert response.headers["Content-Type"] == "application/manifest+json"
+        manifest = json.load(response)
+    assert manifest["display"] == "standalone"
+    purposes = set()
+    for icon in manifest["icons"]:
+        with urllib.request.urlopen(base + icon["src"]) as response:
+            assert response.headers["Content-Type"] == icon["type"], icon
+            assert response.read(), icon
+        purposes.add(icon["purpose"])
+    assert purposes == {"any", "maskable"}, purposes
+    print("the manifest and its %d icons are served" % len(manifest["icons"]))
+
+
 def session_dir(session_id):
     for directory, children, _ in os.walk(HOME):
         if session_id in children:
@@ -599,6 +742,10 @@ def main():
         browser.wait("the connection", lambda: browser.text("#connected") != "")
         assert browser.script("return location.hash") == "", "the token stayed in the address bar"
         print("connected:", browser.text("#connected"))
+        assert browser.script(
+            "return document.querySelector('link[rel=manifest]').getAttribute('href')"
+        ) == "manifest.webmanifest"
+        home_screen()
 
         # A new session from the first message; streamed markdown.
         send(browser, "show me markdown")
@@ -656,6 +803,7 @@ def main():
 
         session_depth(browser)
         management(browser)
+        suspended_tab(browser)
         foreign_session(browser)
 
         # A phone-sized window: no sideways scroll, the sidebar becomes a sheet.
@@ -687,3 +835,9 @@ def main():
 
 
 main()
+# geckodriver runs one browser at a time: the phone sizes get theirs last.
+problems = phone_audit()
+for problem in problems:
+    print("phone:", problem)
+assert not problems or os.environ.get("PHONE_AUDIT_REPORT_ONLY"), "the phone layout falls short"
+print("every view fits the phone sizes with touch-sized targets")

@@ -67,6 +67,7 @@ start_daemon() {
     local home="$1"
     (cd "$home/workspace" && HOME="$home" exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
     pids+=("$!")
+    echo "$!" >"$home/daemon.pid"
     for _ in $(seq 1 200); do
         grep -q '^daemon-ready ' "$home/daemon.out" 2>/dev/null && break
         sleep 0.1
@@ -162,7 +163,8 @@ start_daemon "$scratch/refusing"
 refusing_link="$link"
 
 driver_port="$(free_port)"
-"$geckodriver" --port "$driver_port" >"$scratch/geckodriver.log" 2>&1 &
+# System access lets the phone audit zoom the page to a phone's width.
+"$geckodriver" --port "$driver_port" --allow-system-access >"$scratch/geckodriver.log" 2>&1 &
 pids+=("$!")
 
 python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$refusing_link" \
