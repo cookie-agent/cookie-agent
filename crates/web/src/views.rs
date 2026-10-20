@@ -5,19 +5,34 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use cookie_agent_client_state::{EventLevel, ToolStatus, session_actions::permission_mode_label};
-use cookie_agent_protocol::{ApprovalUserDecision, InputDelivery, ModelSelection, SessionMeta};
+use cookie_agent_client_state::{
+    EventLevel, ToolStatus,
+    permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
+    session_actions::permission_mode_label,
+};
+use cookie_agent_protocol::{
+    ApprovalUserDecision, InputDelivery, ModelSelection, PermissionAction, PermissionEffect,
+    PermissionRuleSource, SessionMeta,
+};
 use leptos::{ev, html, prelude::*};
 use wasm_bindgen::JsCast as _;
 
 use crate::{
-    commands::{COMMANDS, completions},
+    commands::{COMMANDS, Command, completions},
+    goal::{GoalCommand, action_label, goal_actions, status_name},
     keys::{ComposerAction, KeyPress, composer_action},
     render::{
         blocks::{BlockPlace, display_html},
         transcript::{TranscriptView, item_html, item_key},
     },
     workspace::{Panel, Workspace},
+};
+
+mod depth;
+
+use depth::{
+    AttachButtons, BackgroundBar, DraftFiles, GoalBar, TreePanel, background_sheet, goal_sheet,
+    message_sheet, permissions_sheet, skills_sheet,
 };
 
 /// How long a press on Send must last to queue instead of steer.
@@ -32,12 +47,28 @@ pub fn WorkspaceView(workspace: Workspace) -> impl IntoView {
     view! {
         <div class="flex min-h-0 flex-1">
             <aside class="hidden w-72 shrink-0 flex-col border-r border-toasted bg-parchment md:flex dark:border-ember dark:bg-char">
+                <TreePanel workspace=workspace />
                 <SessionList workspace=workspace />
             </aside>
-            <main class="flex min-w-0 flex-1 flex-col">
+            <main
+                class="flex min-w-0 flex-1 flex-col"
+                on:dragover=move |event: ev::DragEvent| event.prevent_default()
+                on:drop=move |event: ev::DragEvent| {
+                    event.prevent_default();
+                    let files = crate::files::files_of(
+                        event.data_transfer().and_then(|transfer| transfer.files()),
+                    );
+                    if !files.is_empty() {
+                        workspace.attach_files(files);
+                    }
+                }
+            >
                 <Toolbar workspace=workspace />
                 <Transcript workspace=workspace />
+                <GoalBar workspace=workspace />
+                <BackgroundBar workspace=workspace />
                 <QueueStrip workspace=workspace />
+                <DraftFiles workspace=workspace />
                 <Composer workspace=workspace />
                 <StatusBar workspace=workspace />
             </main>
@@ -88,7 +119,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <div class="flex flex-col gap-2 p-3">
-            <button type="button" class=BUTTON on:click=move |_| workspace.start_new_session()>
+            <button type="button" class=BUTTON data-new-session on:click=move |_| workspace.start_new_session()>
                 "New session"
             </button>
             <label class="flex flex-col gap-1 text-xs">
@@ -159,12 +190,28 @@ fn Toolbar(workspace: Workspace) -> impl IntoView {
             .selected
             .get()
             .and_then(|session_id| {
-                workspace.sessions.with(|sessions| {
-                    sessions
-                        .iter()
-                        .find(|session| session.session_id == session_id)
-                        .map(session_label)
-                })
+                workspace
+                    .sessions
+                    .with(|sessions| {
+                        sessions
+                            .iter()
+                            .find(|session| session.session_id == session_id)
+                            .map(session_label)
+                    })
+                    .or_else(|| {
+                        // A subagent's session is in the tree, not the list.
+                        workspace.tree.with(|tree| {
+                            tree.as_ref()
+                                .and_then(|tree| crate::tree::find(tree, session_id))
+                                .map(|session| {
+                                    format!(
+                                        "{} · {}",
+                                        session.creation_selection.agent,
+                                        session_label(session)
+                                    )
+                                })
+                        })
+                    })
             })
             .unwrap_or_else(|| "No session".into())
     };
@@ -251,6 +298,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 return Vec::new();
             };
             let view = TranscriptView {
+                session_id,
                 state,
                 names: &names,
                 minimum_level: level,
@@ -324,6 +372,19 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     workspace.toggle_full_content(call, block);
                 }
             }
+            "user-menu" => {
+                if let Some(seq) = target
+                    .get_attribute("data-seq")
+                    .and_then(|seq| seq.parse().ok())
+                {
+                    workspace.open_user_menu(seq);
+                }
+            }
+            "background" => {
+                if let Some(call) = call.and_then(|call| call.parse().ok()) {
+                    workspace.request_background(call);
+                }
+            }
             "open-session" => {
                 if let Some(session_id) = target
                     .get_attribute("data-session")
@@ -335,12 +396,21 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             _ => {}
         }
     };
-    let on_scroll = move |_| {
-        if let Some(element) = container.get() {
+    // Following stops only when the user scrolls away from the bottom
+    // (wheel, touch, or the scrollbar), never when an item's node is
+    // replaced or the box shrinks under a bar.
+    let near_bottom = move || {
+        container.get().is_some_and(|element| {
             let element: web_sys::Element = element.into();
-            following.set_value(
-                element.scroll_height() - element.scroll_top() - element.client_height() < 80,
-            );
+            element.scroll_height() - element.scroll_top() - element.client_height() < 80
+        })
+    };
+    let user_scrolling = StoredValue::new(false);
+    let on_scroll = move |_| {
+        if near_bottom() {
+            following.set_value(true);
+        } else if user_scrolling.get_value() {
+            following.set_value(false);
         }
     };
     view! {
@@ -350,6 +420,15 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             class="min-h-0 flex-1 overflow-y-auto px-3 py-2"
             on:click=on_click
             on:scroll=on_scroll
+            on:wheel=move |event: ev::WheelEvent| {
+                if event.delta_y() < 0.0 {
+                    following.set_value(false);
+                }
+            }
+            on:touchstart=move |_| user_scrolling.set_value(true)
+            on:touchend=move |_| user_scrolling.set_value(false)
+            on:pointerdown=move |_| user_scrolling.set_value(true)
+            on:pointerup=move |_| user_scrolling.set_value(false)
         >
             <Show when=move || workspace.new_session.get()>
                 <NewSessionCard workspace=workspace />
@@ -474,13 +553,23 @@ fn Composer(workspace: Workspace) -> impl IntoView {
                             .into_iter()
                             .map(|spec| {
                                 let command = spec.command;
+                                let name = spec.name;
+                                let takes_argument = spec.takes_argument;
                                 view! {
                                     <button
                                         type="button"
                                         class=ROW
                                         on:click=move |_| {
-                                            workspace.composer.set(String::new());
-                                            workspace.run_command(command);
+                                            if takes_argument {
+                                                // The argument follows, typed after the name.
+                                                workspace.composer.set(format!("/{name} "));
+                                                if let Some(textarea) = textarea.get() {
+                                                    let _ = textarea.focus();
+                                                }
+                                            } else {
+                                                workspace.composer.set(String::new());
+                                                workspace.run_command(command, String::new());
+                                            }
                                         }
                                     >
                                         <span class="font-mono text-sm">{format!("/{}", spec.name)}</span>
@@ -503,7 +592,17 @@ fn Composer(workspace: Workspace) -> impl IntoView {
                     prop:value=move || workspace.composer.get()
                     on:input=move |event| workspace.composer.set(event_target_value(&event))
                     on:keydown=on_keydown
+                    on:paste=move |event: ev::ClipboardEvent| {
+                        let files = crate::files::files_of(
+                            event.clipboard_data().and_then(|data| data.files()),
+                        );
+                        if !files.is_empty() {
+                            event.prevent_default();
+                            workspace.attach_files(files);
+                        }
+                    }
                 ></textarea>
+                <AttachButtons workspace=workspace />
                 <div class="relative flex">
                     <button
                         type="button"
@@ -646,7 +745,7 @@ fn StatusBar(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     class=BUTTON
-                    on:click=move |_| workspace.run_command(crate::commands::Command::Usage)
+                    on:click=move |_| workspace.run_command(Command::Usage, String::new())
                 >
                     {cost}
                 </button>
@@ -671,6 +770,11 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Usage) => "Usage",
         Some(Panel::Events) => "Events",
         Some(Panel::Commands) => "Commands",
+        Some(Panel::Goal) => "Goal",
+        Some(Panel::Background) => "Background calls",
+        Some(Panel::Skills) => "Skills",
+        Some(Panel::Permissions) => "Permissions",
+        Some(Panel::Message) => "Message",
         None => "",
     };
     view! {
@@ -688,7 +792,11 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                 </div>
                 <div class="flex flex-col gap-1 p-3">
                     {move || match workspace.panel.get() {
-                        Some(Panel::Sessions) => view! { <SessionList workspace=workspace /> }.into_any(),
+                        Some(Panel::Sessions) => view! {
+                            <TreePanel workspace=workspace />
+                            <SessionList workspace=workspace />
+                        }
+                            .into_any(),
                         Some(Panel::Agents) => agents_sheet(workspace).into_any(),
                         Some(Panel::Models) => models_sheet(workspace).into_any(),
                         Some(Panel::Presets) => presets_sheet(workspace).into_any(),
@@ -696,6 +804,11 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                         Some(Panel::Usage) => usage_sheet(workspace).into_any(),
                         Some(Panel::Events) => events_sheet(workspace).into_any(),
                         Some(Panel::Commands) => commands_sheet(workspace).into_any(),
+                        Some(Panel::Goal) => goal_sheet(workspace).into_any(),
+                        Some(Panel::Background) => background_sheet(workspace).into_any(),
+                        Some(Panel::Skills) => skills_sheet(workspace).into_any(),
+                        Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
+                        Some(Panel::Message) => message_sheet(workspace).into_any(),
                         None => ().into_any(),
                     }}
                 </div>
@@ -928,7 +1041,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
                     class=ROW
                     on:click=move |_| {
                         workspace.panel.set(None);
-                        workspace.run_command(command);
+                        workspace.run_command(command, String::new());
                     }
                 >
                     <span class="font-mono text-sm">{format!("/{}", spec.name)}</span>

@@ -32,7 +32,18 @@ use cookie_agent_protocol::{
 };
 use leptos::{prelude::*, task::spawn_local};
 
-use crate::{browser, connect::EVENT_LEVEL_KEY};
+use crate::{browser, connect::EVENT_LEVEL_KEY, tree::PanelMode};
+
+mod attachments;
+mod background;
+mod goal;
+mod history;
+mod permissions;
+mod skills;
+mod tree;
+
+pub use attachments::DownscaleOffer;
+pub use history::UserMenu;
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -48,6 +59,12 @@ pub enum Panel {
     Usage,
     Events,
     Commands,
+    Goal,
+    Background,
+    Skills,
+    Permissions,
+    /// A user message's actions: copy, revert, fork.
+    Message,
 }
 
 /// The `/usage` panel's content.
@@ -95,6 +112,29 @@ pub struct Workspace {
     pub composer: RwSignal<String>,
     pub status: RwSignal<String>,
     pub panel: RwSignal<Option<Panel>>,
+    /// The viewed session's tree (`session.tree` of its root).
+    pub tree: RwSignal<Option<cookie_agent_protocol::SessionTree>>,
+    pub tree_root: RwSignal<Option<SessionId>>,
+    pub panel_mode: RwSignal<PanelMode>,
+    pub collapsed: RwSignal<HashSet<SessionId>>,
+    tree_request: StoredValue<u64>,
+    pub user_menu: RwSignal<Option<UserMenu>>,
+    pub goal_draft: RwSignal<String>,
+    pub skills: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
+    pub skill_query: RwSignal<String>,
+    pub skill_pick: RwSignal<Option<cookie_agent_protocol::SkillDescriptor>>,
+    pub skill_args: RwSignal<String>,
+    /// The `/permissions` table's rules: the viewed session's, or the new
+    /// session draft's preview.
+    pub permissions:
+        RwSignal<Option<Result<Vec<cookie_agent_protocol::EffectivePermissionAction>, String>>>,
+    /// The rules a new session is created with.
+    pub draft_rules: RwSignal<Vec<cookie_agent_protocol::PermissionRule>>,
+    permission_request: StoredValue<u64>,
+    /// The files the next message attaches.
+    pub attachments: RwSignal<Vec<cookie_agent_protocol::ArtifactRef>>,
+    pub downscale_offer: RwSignal<Option<DownscaleOffer>>,
+    offer_bytes: StoredValue<Vec<u8>>,
     /// Bumped by every connection the page adopts, so work for an older one
     /// stops.
     connection: StoredValue<u64>,
@@ -139,6 +179,23 @@ impl Workspace {
             composer: RwSignal::new(String::new()),
             status: RwSignal::new(String::new()),
             panel: RwSignal::new(None),
+            tree: RwSignal::new(None),
+            tree_root: RwSignal::new(None),
+            panel_mode: RwSignal::new(PanelMode::default()),
+            collapsed: RwSignal::new(HashSet::new()),
+            tree_request: StoredValue::new(0),
+            user_menu: RwSignal::new(None),
+            goal_draft: RwSignal::new(String::new()),
+            skills: RwSignal::new(None),
+            skill_query: RwSignal::new(String::new()),
+            skill_pick: RwSignal::new(None),
+            skill_args: RwSignal::new(String::new()),
+            permissions: RwSignal::new(None),
+            draft_rules: RwSignal::new(Vec::new()),
+            permission_request: StoredValue::new(0),
+            attachments: RwSignal::new(Vec::new()),
+            downscale_offer: RwSignal::new(None),
+            offer_bytes: StoredValue::new(Vec::new()),
             connection: StoredValue::new(0),
         }
     }
@@ -271,7 +328,6 @@ impl Workspace {
             | ClientDelivery::PluginEvent(_)
             | ClientDelivery::McpChanged(_)
             | ClientDelivery::RuntimesChanged(_)
-            | ClientDelivery::BackgroundChanged(_)
             | ClientDelivery::PluginsChanged(_)
             | ClientDelivery::MachinesChanged(_)
             | ClientDelivery::MemoryChanged(_)
@@ -308,6 +364,19 @@ impl Workspace {
             ClientDelivery::ReplayEnd { session_id, .. } => Some(*session_id),
             _ => None,
         };
+        // A delegation's lifecycle is how a child's status reaches the
+        // tree; a link, a run end, or a finished replay can change it too.
+        let tree_changed = replay_ended.is_some_and(|session_id| self.in_viewed_tree(session_id))
+            || event.as_ref().is_some_and(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::ToolCallLinked { .. }
+                        | EventPayload::RunFinished { .. }
+                        | EventPayload::DelegationProgressed { .. }
+                        | EventPayload::DelegationFinished { .. }
+                        | EventPayload::DelegateChildTerminated { .. }
+                ) && self.in_viewed_tree(event.session_id)
+            });
         let outcome = self.update_store(|store| store.apply_delivery(delivery));
         if foreign_pick {
             self.draft_publish
@@ -335,6 +404,15 @@ impl Workspace {
             {
                 self.send_subscribe(subscribe);
             }
+        }
+        if tree_changed {
+            self.refresh_tree();
+        }
+        // The background sheet closes with its last call, as in the TUI.
+        if self.panel.get_untracked() == Some(Panel::Background)
+            && untrack(|| self.background_calls()).is_empty()
+        {
+            self.panel.set(None);
         }
         match outcome {
             DeliveryOutcome::Applied => {
@@ -611,6 +689,11 @@ impl Workspace {
     pub fn start_new_session(self) {
         self.new_session.set(true);
         self.selected.set(None);
+        self.tree_root.set(None);
+        self.tree.set(None);
+        self.attachments.set(Vec::new());
+        self.downscale_offer.set(None);
+        self.draft_rules.set(Vec::new());
         self.composer.set(String::new());
         if let Some(directory) = self.directory_filter.get_untracked() {
             self.new_directory.set(directory);
@@ -622,12 +705,18 @@ impl Workspace {
     /// Opens `session_id`: classifies who owns it, subscribes it, and reads
     /// its approvals and permission mode.
     pub fn open_session(self, session_id: SessionId) {
+        if self.selected.get_untracked() != Some(session_id) {
+            self.attachments.set(Vec::new());
+            self.downscale_offer.set(None);
+        }
         self.new_session.set(false);
         self.selected.set(Some(session_id));
         self.panel.set(None);
         self.usage.set(None);
+        self.user_menu.set(None);
         let generation = self.begin_ownership_classification(session_id);
         let connection = self.connection.get_value();
+        self.locate_tree(session_id);
         self.note_viewed(session_id);
         let owned = self.owned(session_id);
         if let Some(subscribe) = self
@@ -658,14 +747,16 @@ impl Workspace {
     /// sessions stay subscribed, and the tree this pushes out has its
     /// settled sessions released.
     fn note_viewed(self, session_id: SessionId) {
+        let root = self.tree_root.get_untracked().unwrap_or(session_id);
+        let tree = self.tree.get_untracked();
+        let root_of = |session: SessionId| match &tree {
+            Some(tree) if crate::tree::contains(tree, session) => tree.session.session_id,
+            _ => session,
+        };
         let released = self
             .subscriptions
             .try_update_value(|subscriptions| {
-                subscriptions.note_viewed_tree(
-                    session_id,
-                    |session| session,
-                    |session| self.is_settled(session),
-                )
+                subscriptions.note_viewed_tree(root, root_of, |session| self.is_settled(session))
             })
             .unwrap_or_default();
         for session in released {
@@ -778,7 +869,20 @@ impl Workspace {
         let connection = self.connection.get_value();
         spawn_local(async move {
             let outcome = match client.subscribe_events(session_id, cursor).await {
-                Ok(()) => SubscriptionOutcome::Established,
+                Ok(()) => {
+                    // Background calls are not in the event log: read them
+                    // once subscribed; `background.changed` follows.
+                    if let Ok(listed) = client.list_background(session_id).await {
+                        self.update_store(|store| {
+                            store
+                                .sessions
+                                .entry(session_id)
+                                .or_default()
+                                .background_calls = listed.calls;
+                        });
+                    }
+                    SubscriptionOutcome::Established
+                }
                 Err(ClientError::ReplayInProgress) => SubscriptionOutcome::ReplayInProgress,
                 Err(error) => SubscriptionOutcome::Failed(error.to_string()),
             };
@@ -867,12 +971,13 @@ impl Workspace {
     /// queueing behind a running run), or creating the new session first.
     pub fn submit(self, delivery: InputDelivery) {
         let text = self.composer.get_untracked();
-        if text.trim().is_empty() {
+        let files = self.attachments.get_untracked();
+        if text.trim().is_empty() && files.is_empty() {
             return;
         }
-        if let Some(command) = crate::commands::parse(&text) {
+        if let Some((command, argument)) = crate::commands::parse(&text) {
             self.composer.set(String::new());
-            self.run_command(command);
+            self.run_command(command, argument);
             return;
         }
         if !self.writable() {
@@ -880,21 +985,39 @@ impl Workspace {
                 .set("This session is owned by another cookie process; input is disabled.".into());
             return;
         }
-        let Some(client) = self.client() else {
+        let Some(content) = (ComposerInput {
+            text: text.clone(),
+            files: files.clone(),
+        })
+        .content() else {
             return;
         };
-        let Some(content) = ComposerInput::text(text.clone()).content() else {
+        self.composer.set(String::new());
+        self.attachments.set(Vec::new());
+        self.send_content(content, delivery, text, files);
+    }
+
+    /// Sends `content` to the viewed session, or creates the new session
+    /// with it. On failure `text` and `files` go back to an empty composer.
+    pub fn send_content(
+        self,
+        content: cookie_agent_protocol::UserContent,
+        delivery: InputDelivery,
+        text: String,
+        files: Vec<cookie_agent_protocol::ArtifactRef>,
+    ) {
+        let Some(client) = self.client() else {
             return;
         };
         let new_session = self.new_session.get_untracked();
         let selection = self.draft.get_untracked();
-        self.composer.set(String::new());
         spawn_local(async move {
             let session_id = if new_session {
                 match self.create_session(&client, selection.clone()).await {
                     Ok(session_id) => session_id,
                     Err(error) => {
                         self.composer.set(text);
+                        self.attachments.set(files);
                         self.status.set(error);
                         return;
                     }
@@ -928,6 +1051,11 @@ impl Workspace {
                             *composer = text;
                         }
                     });
+                    self.attachments.update(|attachments| {
+                        if attachments.is_empty() {
+                            *attachments = files;
+                        }
+                    });
                     self.status.set(error.to_string());
                 }
             }
@@ -956,6 +1084,7 @@ impl Workspace {
         let created = client
             .create_session(SessionCreateParams {
                 permission_mode: self.new_session_mode.get_untracked(),
+                permission_rules: self.draft_rules.get_untracked(),
                 cwd: directory,
                 runtimes,
                 ..SessionCreateParams::new(selection)
@@ -980,8 +1109,10 @@ impl Workspace {
             });
         }
         self.new_session_mode.set(None);
+        self.draft_rules.set(Vec::new());
         self.new_session.set(false);
         self.selected.set(Some(session_id));
+        self.reroot_tree(session_id);
         self.note_viewed(session_id);
         let subscribe = self
             .subscriptions
@@ -1120,7 +1251,11 @@ impl Workspace {
     /// Cancels the viewed session's running run (`run.cancel`).
     pub fn cancel(self) {
         let (Some(client), Some(run_id)) = (self.client(), self.active_run()) else {
-            self.status.set("nothing is running".into());
+            if self.compacting() {
+                self.cancel_compaction();
+            } else {
+                self.status.set("nothing is running".into());
+            }
             return;
         };
         spawn_local(async move {
@@ -1372,8 +1507,8 @@ impl Workspace {
         self.level.set(level);
     }
 
-    /// Runs a slash command or a menu entry.
-    pub fn run_command(self, command: crate::commands::Command) {
+    /// Runs a slash command or a menu entry with its argument.
+    pub fn run_command(self, command: crate::commands::Command, argument: String) {
         use crate::commands::Command;
         match command {
             Command::New => self.start_new_session(),
@@ -1389,6 +1524,15 @@ impl Workspace {
             }
             Command::Cancel => self.cancel(),
             Command::Events => self.panel.set(Some(Panel::Events)),
+            Command::Goal => self.goal_command(crate::goal::GoalCommand::parse(&argument)),
+            Command::Compact => self.compact(argument),
+            Command::Background => self.open_background(),
+            Command::Skills => self.open_skills(argument),
+            Command::Permissions => self.open_permissions(),
+            Command::Attach => crate::files::pick_files(false),
+            Command::AgentPanelShow => self.set_panel_mode(PanelMode::Shown),
+            Command::AgentPanelHide => self.set_panel_mode(PanelMode::Hidden),
+            Command::AgentPanelAuto => self.set_panel_mode(PanelMode::Auto),
         }
     }
 

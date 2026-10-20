@@ -16,6 +16,7 @@ cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = [
 foldhash.workspace = true
 futures-util.workspace = true
 gloo-timers = { version = "0.3.0", features = ["futures"] }
+jiff.workspace = true
 js-sys = "0.3.80"
 leptos = { version = "0.8.22", features = ["csr"] }
 pulldown-cmark.workspace = true
@@ -23,22 +24,40 @@ serde_json.workspace = true
 url.workspace = true
 uuid.workspace = true
 wasm-bindgen = "0.2.126"
+wasm-bindgen-futures = "0.4.76"
 web-sys = { version = "0.3.103", features = [
     "Blob",
     "BlobPropertyBag",
+    "CanvasRenderingContext2d",
+    "Clipboard",
+    "ClipboardEvent",
+    "DataTransfer",
+    "DataTransferItem",
+    "DataTransferItemList",
+    "DragEvent",
     "DomTokenList",
     "Document",
     "Element",
+    "File",
+    "FileList",
     "History",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlImageElement",
+    "HtmlInputElement",
     "HtmlTextAreaElement",
     "Location",
     "MediaQueryList",
+    "Navigator",
     "NodeList",
     "Storage",
+    "TouchEvent",
     "Url",
     "VisibilityState",
+    "WheelEvent",
     "Window",
 ] }
 
 [dev-dependencies]
+crc32fast.workspace = true
 cookie_agent_client_state = { version = "=0.3.0", path = "../client_state", features = ["test-support"] }

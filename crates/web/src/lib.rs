@@ -7,15 +7,20 @@
 //! wasm target; its tests cover the pure logic only.
 
 mod app;
+pub mod attach;
 pub mod browser;
 pub mod commands;
 pub mod connect;
 pub mod connection;
+mod files;
+pub mod goal;
 mod highlight;
 pub mod keys;
 mod media;
 pub mod render;
+pub mod skills;
 pub mod theme;
+pub mod tree;
 mod views;
 pub mod workspace;
 

@@ -11,16 +11,18 @@ use cookie_agent_client_state::{
     AssistantChild, EventLevel, ModelDisplayNames, SessionState, ToolCallState, ToolStatus,
     TranscriptItem,
 };
-use cookie_agent_protocol::ToolHint;
+use cookie_agent_protocol::{PersistedFileSource, ToolHint};
 
 use super::{
-    blocks::{BlockPlace, display_html},
+    blocks::{BlockPlace, display_html, media_html},
     escape,
     markdown::document_html,
 };
 
 /// What the page shows besides the projection itself.
 pub struct TranscriptView<'a> {
+    /// The session the projection is of: item IDs repeat across sessions.
+    pub session_id: cookie_agent_protocol::SessionId,
     pub state: &'a SessionState,
     pub names: &'a ModelDisplayNames,
     /// Diagnostic rows below this level are hidden (`/events`).
@@ -53,6 +55,7 @@ pub fn hint_icon(hint: Option<&str>) -> &'static str {
 /// revisions of the tool calls it shows, and their expansion.
 pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
     let mut hasher = foldhash::fast::FixedState::default().build_hasher();
+    view.session_id.hash(&mut hasher);
     item.id().hash(&mut hasher);
     item.version().hash(&mut hasher);
     std::mem::discriminant(item).hash(&mut hasher);
@@ -78,10 +81,30 @@ pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
 /// The item as HTML; `None` for a diagnostic row the level filter hides.
 pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<String> {
     Some(match item {
-        TranscriptItem::User { markdown, .. } => format!(
-            "<div class=\"ml-auto max-w-[90%] rounded-lg bg-toasted px-3 py-2 dark:bg-ember\"><div class=\"markdown\">{}</div></div>",
-            document_html(markdown)
-        ),
+        TranscriptItem::User { markdown, seq, .. } => {
+            let files = view
+                .state
+                .user_files
+                .get(seq)
+                .map(|files| {
+                    files
+                        .iter()
+                        .map(|file| {
+                            media_html(
+                                &file.sha256,
+                                &file.media_type,
+                                file.byte_length,
+                                file.filename.as_deref(),
+                            )
+                        })
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            format!(
+                "<div class=\"user-message group ml-auto flex max-w-[90%] items-start gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" class=\"min-h-11 min-w-11 rounded text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">⋯</button><div class=\"min-w-0 rounded-lg bg-toasted px-3 py-2 dark:bg-ember\"><div class=\"markdown\">{}</div>{files}</div></div>",
+                document_html(markdown)
+            )
+        }
         TranscriptItem::Assistant {
             attribution,
             children,
@@ -168,10 +191,27 @@ fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
             "<div class=\"{NOTE} font-mono\">🔨 {} (not started)</div>",
             escape(name.as_str())
         ),
-        AssistantChild::MediaFile { file, .. } => format!(
-            "<div class=\"{NOTE}\">{}</div>",
-            escape(&format!("media: {}", file.media_type))
-        ),
+        AssistantChild::MediaFile { file, .. } => match &file.source {
+            PersistedFileSource::Artifact {
+                byte_length,
+                sha256,
+                ..
+            } => media_html(
+                sha256.as_str(),
+                file.media_type.as_str(),
+                *byte_length,
+                file.filename.as_deref(),
+            ),
+            PersistedFileSource::Url { url } if super::safe_link(url) => format!(
+                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-caramel underline hover:text-espresso dark:text-maple dark:hover:text-latte\">{}</a>",
+                escape(url),
+                escape(file.filename.as_deref().unwrap_or(url))
+            ),
+            _ => format!(
+                "<div class=\"{NOTE}\">{}</div>",
+                escape(&format!("media: {}", file.media_type))
+            ),
+        },
         AssistantChild::Attribution { resolved_model } => format!(
             "<div class=\"{NOTE} font-mono\">→ {}</div>",
             escape(&view.names.selection_label(&resolved_model.selection))
@@ -195,8 +235,21 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         ToolStatus::Interrupted => ("interrupted", "text-ink dark:text-sand"),
     };
     let expanded = view.expanded.contains(&id) || tool.status == ToolStatus::Running;
+    // A running call the daemon can move to the background offers it, as
+    // the TUI's title-row button does.
+    let background = if tool.status == ToolStatus::Running
+        && tool.backgroundable
+        && !tool.backgrounded
+    {
+        format!(
+            "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"min-h-11 shrink-0 rounded px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">⇲ background</button>",
+            escape(&id)
+        )
+    } else {
+        String::new()
+    };
     let mut html = format!(
-        "<div class=\"rounded border border-toasted dark:border-ember\" data-tool=\"{}\"><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span>{}</span><span class=\"flex-1 truncate\">{}</span><span class=\"{class}\">{status}</span></button>",
+        "<div class=\"rounded border border-toasted dark:border-ember\" data-tool=\"{}\"><div class=\"flex items-center\"><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span>{}</span><span class=\"flex-1 truncate\">{}</span><span class=\"{class}\">{status}</span></button>{background}</div>",
         escape(&id),
         escape(&id),
         hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
@@ -257,7 +310,9 @@ mod tests {
         let state = SessionState::default();
         let names = ModelDisplayNames::default();
         let expanded = HashSet::new();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
         let view = |minimum_level| TranscriptView {
+            session_id,
             state: &state,
             names: &names,
             minimum_level,
@@ -274,6 +329,16 @@ mod tests {
         let user =
             item_html(&view(EventLevel::Info), &TranscriptItem::user("hi <b>")).expect("user");
         assert!(user.contains("hi &lt;b&gt;"), "{user}");
+        // Item IDs repeat across sessions: the same item of another session
+        // keys apart, so switching sessions never shows a stale row.
+        let other = TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            ..view(EventLevel::Info)
+        };
+        assert_ne!(
+            item_key(&view(EventLevel::Info), &row),
+            item_key(&other, &row)
+        );
     }
 
     #[test]

@@ -137,3 +137,25 @@ pub fn on_visible(shown: impl Fn() + 'static) {
         .add_event_listener_with_callback("visibilitychange", listener.as_ref().unchecked_ref());
     listener.forget();
 }
+
+/// Copies `text` with `navigator.clipboard`, which browsers offer only on
+/// a secure page (HTTPS or localhost); `false` when it did not copy.
+pub async fn copy_text(text: &str) -> bool {
+    let Some(window) = window().filter(web_sys::Window::is_secure_context) else {
+        return false;
+    };
+    let promise = window.navigator().clipboard().write_text(text);
+    wasm_bindgen_futures::JsFuture::from(promise).await.is_ok()
+}
+
+/// Selects the text of the text field `id`, for the user to copy.
+pub fn select_text(id: &str) {
+    if let Some(field) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(id))
+        .and_then(|element| element.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+    {
+        let _ = field.focus();
+        field.select();
+    }
+}

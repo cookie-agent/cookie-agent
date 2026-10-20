@@ -1067,9 +1067,11 @@ dependencies = [
  "base64 0.22.1",
  "cookie_agent_client_state",
  "cookie_agent_protocol",
+ "crc32fast",
  "foldhash",
  "futures-util",
  "gloo-timers",
+ "jiff",
  "js-sys",
  "leptos",
  "pulldown-cmark",
@@ -1077,6 +1079,7 @@ dependencies = [
  "url",
  "uuid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

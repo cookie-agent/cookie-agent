@@ -37,6 +37,20 @@ impl BlockPlace<'_> {
 const PRE: &str = "overflow-x-auto whitespace-pre rounded border border-toasted bg-cream p-2 font-mono text-sm dark:border-ember dark:bg-night";
 const NOTE: &str = "text-xs text-ink dark:text-sand";
 
+/// A stored file shown inline: a placeholder the page fills with the
+/// artifact's image, video, audio, or download link once it is read.
+pub fn media_html(sha256: &str, media_type: &str, byte_length: u64, label: Option<&str>) -> String {
+    format!(
+        "<div class=\"media\" data-media=\"{}\" data-media-type=\"{}\" data-alt=\"{}\"><span class=\"{NOTE}\">{} ({}, {})</span></div>",
+        escape(sha256),
+        escape(media_type),
+        escape(label.unwrap_or_default()),
+        escape(label.unwrap_or("media")),
+        escape(media_type),
+        escape(&cookie_agent_protocol::human_bytes(byte_length)),
+    )
+}
+
 /// Every block of a display, in order.
 pub fn display_html<'a>(
     blocks: &[Open<DisplayBlock>],
@@ -132,18 +146,11 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             "<pre class=\"{PRE}\"><code class=\"language-json\">{}</code></pre>",
             escape(&serde_json::to_string_pretty(value).unwrap_or_default())
         ),
-        DisplayBlock::Media { artifact, alt } => format!(
-            "<div class=\"media\" data-media=\"{}\" data-media-type=\"{}\" data-alt=\"{}\"><span class=\"{NOTE}\">{} ({}, {})</span></div>",
-            escape(&artifact.sha256),
-            escape(&artifact.media_type),
-            escape(alt.as_deref().unwrap_or_default()),
-            escape(
-                alt.as_deref()
-                    .or(artifact.filename.as_deref())
-                    .unwrap_or("media")
-            ),
-            escape(&artifact.media_type),
-            escape(&cookie_agent_protocol::human_bytes(artifact.byte_length)),
+        DisplayBlock::Media { artifact, alt } => media_html(
+            &artifact.sha256,
+            &artifact.media_type,
+            artifact.byte_length,
+            alt.as_deref().or(artifact.filename.as_deref()),
         ),
         DisplayBlock::Link { url, label } => {
             let text = escape(label.as_deref().unwrap_or(url));
