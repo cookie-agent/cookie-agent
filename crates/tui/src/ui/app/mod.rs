@@ -395,8 +395,7 @@ pub(super) struct DraftPermissions {
 impl DraftPermissions {
     /// Set a rule, replacing any rule for the same action and pattern.
     pub(super) fn set(&mut self, rule: PermissionRule) {
-        self.remove(&rule.action, &rule.resource);
-        self.rules.push(rule);
+        cookie_agent_client_state::permissions::set_draft_rule(&mut self.rules, rule);
     }
 
     pub(super) fn remove(
@@ -404,8 +403,11 @@ impl DraftPermissions {
         action: &PermissionAction,
         resource: &cookie_agent_protocol::WildcardPattern,
     ) {
-        self.rules
-            .retain(|rule| rule.action != *action || &rule.resource != resource);
+        cookie_agent_client_state::permissions::remove_draft_rule(
+            &mut self.rules,
+            action,
+            resource,
+        );
     }
 }
 

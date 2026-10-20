@@ -149,6 +149,7 @@ async fn upload_file(
         &bytes,
     )
     .await
+    .map_err(|failure| failure.message)
 }
 
 impl App {

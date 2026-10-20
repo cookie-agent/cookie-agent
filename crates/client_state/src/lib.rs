@@ -13,6 +13,7 @@ pub mod markdown;
 pub mod model_draft;
 mod model_names;
 pub mod ownership;
+pub mod permissions;
 mod reduce;
 mod runtime;
 pub mod session_actions;

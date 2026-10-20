@@ -120,6 +120,48 @@ pub fn upload_refusal(name: &str, error: &ClientError) -> String {
     format!("could not attach {name}: {error}")
 }
 
+/// The limits a `media_too_large` refusal names, so a client can offer to
+/// shrink the file to them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RefusedLimits {
+    pub max_bytes: Option<u64>,
+    pub max_dimension: Option<u32>,
+    pub max_pixels: Option<u64>,
+}
+
+impl RefusedLimits {
+    /// The limits of `error` when it is a `media_too_large` refusal.
+    pub fn of(error: &ClientError) -> Option<Self> {
+        if !error.is(&cookie_agent_protocol::errors::MEDIA_TOO_LARGE) {
+            return None;
+        }
+        let data = error.error_data()?;
+        let number = |field: &str| data.fields.get(field).and_then(serde_json::Value::as_u64);
+        Some(Self {
+            max_bytes: number("max_bytes"),
+            max_dimension: number("max_dimension").and_then(|side| u32::try_from(side).ok()),
+            max_pixels: number("max_pixels"),
+        })
+    }
+}
+
+/// Why an upload failed: the status line, and the limits when the daemon
+/// refused the file as too large.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UploadFailure {
+    pub message: String,
+    pub too_large: Option<RefusedLimits>,
+}
+
+impl UploadFailure {
+    fn of(name: &str, error: &ClientError) -> Self {
+        Self {
+            message: upload_refusal(name, error),
+            too_large: RefusedLimits::of(error),
+        }
+    }
+}
+
 /// Uploads `bytes` into `session_id`'s store in chunks sent one after
 /// another, as `filename` when given, returning the reference a `file` part
 /// names. A refusal says why in terms of `name`; a failed chunk cancels the
@@ -130,7 +172,7 @@ pub async fn upload(
     name: &str,
     filename: Option<String>,
     bytes: &[u8],
-) -> Result<ArtifactRef, String> {
+) -> Result<ArtifactRef, UploadFailure> {
     let begun = client
         .begin_upload(cookie_agent_protocol::ArtifactUploadBeginParams {
             session_id,
@@ -138,7 +180,7 @@ pub async fn upload(
             filename,
         })
         .await
-        .map_err(|error| upload_refusal(name, &error))?;
+        .map_err(|error| UploadFailure::of(name, &error))?;
     let chunk = usize::try_from(
         begun
             .chunk_bytes
@@ -161,7 +203,7 @@ pub async fn upload(
                     upload_id: begun.upload_id.clone(),
                 })
                 .await;
-            return Err(upload_refusal(name, &error));
+            return Err(UploadFailure::of(name, &error));
         }
         offset += piece.len();
     }
@@ -172,5 +214,5 @@ pub async fn upload(
         })
         .await
         .map(|finished| finished.artifact)
-        .map_err(|error| upload_refusal(name, &error))
+        .map_err(|error| UploadFailure::of(name, &error))
 }

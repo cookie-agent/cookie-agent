@@ -23,56 +23,21 @@ use super::super::{
 };
 use super::action_label;
 
+pub(in crate::ui) use cookie_agent_client_state::permissions::PermissionRow;
+use cookie_agent_client_state::permissions::{EFFECTS, effect_label, source_label};
+
 /// The actions a rule can name, in table order: the ones the daemon reports
 /// for the session, or the built-in actions until it has.
 pub(in crate::ui) fn permission_actions(
     result: Option<&SessionPermissionGetResult>,
 ) -> Vec<PermissionAction> {
-    result.map_or_else(
-        || PermissionAction::BUILT_IN.to_vec(),
-        |result| {
-            result
-                .permissions
-                .iter()
-                .map(|action| action.action.clone())
-                .collect()
-        },
+    cookie_agent_client_state::permissions::permission_actions(
+        result.map(|result| result.permissions.as_slice()),
     )
 }
 
-const EFFECTS: [PermissionEffect; 3] = [
-    PermissionEffect::Allow,
-    PermissionEffect::Ask,
-    PermissionEffect::Deny,
-];
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct PermissionRow {
-    pub(in crate::ui) action: PermissionAction,
-    pub(in crate::ui) resource: String,
-    pub(in crate::ui) effect: PermissionEffect,
-    pub(in crate::ui) source: PermissionRuleSource,
-}
-
 pub(in crate::ui) fn permission_rows(result: &SessionPermissionGetResult) -> Vec<PermissionRow> {
-    result
-        .permissions
-        .iter()
-        .flat_map(|action| {
-            std::iter::once(PermissionRow {
-                action: action.action.clone(),
-                resource: "*".into(),
-                effect: action.effect,
-                source: action.source,
-            })
-            .chain(action.patterns.iter().map(|rule| PermissionRow {
-                action: action.action.clone(),
-                resource: rule.resource.as_str().to_owned(),
-                effect: rule.effect,
-                source: rule.source,
-            }))
-        })
-        .collect()
+    cookie_agent_client_state::permissions::permission_rows(&result.permissions)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,14 +213,6 @@ pub(in crate::ui) fn step_effect(effect: PermissionEffect, backward: bool) -> Pe
     EFFECTS[next]
 }
 
-fn effect_label(effect: PermissionEffect) -> &'static str {
-    match effect {
-        PermissionEffect::Allow => "allow",
-        PermissionEffect::Ask => "ask",
-        PermissionEffect::Deny => "deny",
-    }
-}
-
 fn effect_glyph(effect: PermissionEffect) -> &'static str {
     match effect {
         PermissionEffect::Allow => "✓",
@@ -270,14 +227,6 @@ fn effect_style(effect: PermissionEffect, active: bool, theme: &Theme) -> Style 
         PermissionEffect::Deny => theme.decision(DecisionTone::Deny, active),
         PermissionEffect::Ask if active => theme.decision(DecisionTone::Neutral, true),
         PermissionEffect::Ask => theme.warning(),
-    }
-}
-
-fn source_label(source: PermissionRuleSource) -> &'static str {
-    match source {
-        PermissionRuleSource::SessionOverlay => "session",
-        PermissionRuleSource::AgentDocument => "agent",
-        PermissionRuleSource::Default => "default",
     }
 }
 
