@@ -30,7 +30,7 @@
         },
         {
           "const": "prefix",
-          "description": "Takes the bare name unless another source's tool already does; then\nit is published as `<source>_<name>`.",
+          "description": "Takes the bare name while no other tool claims it. It is published as\n`<source>_<name>` when a `prefix` tool of another source has the same\nname, when one `override` tool takes the name, or when the name is a\nbase-layer tool's.",
           "type": "string"
         }
       ],

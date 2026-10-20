@@ -378,7 +378,8 @@ pub struct PromptSectionDeclaration {
     pub body: String,
 }
 
-/// Skills a runtime contributes, read once at initialize.
+/// Skills a capability instance contributes, reported when `capability/open`
+/// opens it.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct RuntimeSkills {
     /// Skills that won precedence, by name.
@@ -804,8 +805,10 @@ pub enum ToolCollision {
     /// its own source's prefix (or hidden, if it is `fallback`). Two
     /// `override` tools with one name are both prefixed.
     Override,
-    /// Takes the bare name unless another source's tool already does; then
-    /// it is published as `<source>_<name>`.
+    /// Takes the bare name while no other tool claims it. It is published as
+    /// `<source>_<name>` when a `prefix` tool of another source has the same
+    /// name, when one `override` tool takes the name, or when the name is a
+    /// base-layer tool's.
     #[default]
     #[serde(other)]
     Prefix,
