@@ -6,12 +6,19 @@
 # and dark, at desktop and phone sizes. Run scripts/build-web.sh first so the
 # daemon embeds the real page.
 #
-# Usage: scripts/web-screenshots.sh <output-dir>
+# Usage: scripts/web-screenshots.sh [--all] <output-dir>
+# With --all it also photographs every panel, sheet, and menu, and the
+# connect screen, at both sizes and in both themes, under <output-dir>/all/.
 # Needs Firefox and geckodriver (on PATH, or set GECKODRIVER).
 set -euo pipefail
 
+mode=""
+if [[ "${1:-}" == "--all" ]]; then
+    mode="all"
+    shift
+fi
 if (($# != 1)); then
-    echo "usage: $0 <output-dir>" >&2
+    echo "usage: $0 [--all] <output-dir>" >&2
     exit 2
 fi
 mkdir -p "$1"
@@ -31,7 +38,7 @@ if [[ ! -f crates/web_assets/bundle/index.html ]]; then
 fi
 
 cargo build --locked -p cookie_agent
-cookie="$root/target/debug/cookie"
+cookie="${CARGO_TARGET_DIR:-$root/target}/debug/cookie"
 
 scratch="$(mktemp -d)"
 pids=()
@@ -119,4 +126,4 @@ driver_port="$(free_port)"
 # System access lets the driver zoom the page to a phone's width.
 "$geckodriver" --port "$driver_port" --allow-system-access >"$scratch/geckodriver.log" 2>&1 &
 pids+=("$!")
-python3 -I scripts/web-e2e/showcase.py "$driver_port" "$link" "$out"
+python3 -I scripts/web-e2e/showcase.py "$driver_port" "$link" "$out" $mode

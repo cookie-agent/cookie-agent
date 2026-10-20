@@ -24,7 +24,7 @@ if [[ ! -f crates/web_assets/bundle/index.html ]]; then
 fi
 
 cargo build --locked -p cookie_agent
-cookie="$root/target/debug/cookie"
+cookie="${CARGO_TARGET_DIR:-$root/target}/debug/cookie"
 
 scratch="$(mktemp -d)"
 pids=()
