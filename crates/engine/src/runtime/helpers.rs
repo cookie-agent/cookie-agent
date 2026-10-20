@@ -117,7 +117,8 @@ pub(super) fn session_depth(origin: &SessionOrigin) -> u32 {
 }
 
 pub(crate) fn cwd_identity(path: &Path) -> Result<cookie_agent_protocol::CwdIdentity, EngineError> {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let canonical =
+        cookie_agent_protocol::paths::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     cookie_agent_protocol::CwdIdentity::new(canonical.to_string_lossy()).map_err(|error| {
         EngineError::from(ModelError::invalid_request(format!(
             "invalid cwd identity: {error}"

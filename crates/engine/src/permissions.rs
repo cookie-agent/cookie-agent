@@ -669,9 +669,7 @@ fn absolute_resource(workspace: &Path, resource: &str) -> String {
 }
 
 fn canonical_workspace(workspace: &Path) -> PathBuf {
-    workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_owned())
+    cookie_agent_protocol::paths::canonicalize(workspace).unwrap_or_else(|_| workspace.to_owned())
 }
 
 fn normalized_path(path: &Path) -> String {

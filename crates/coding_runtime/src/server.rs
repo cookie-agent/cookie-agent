@@ -549,7 +549,7 @@ impl Server {
         })?;
         if !self.options.roots.is_empty()
             && !self.options.roots.iter().any(|root| {
-                root.canonicalize()
+                cookie_agent_protocol::paths::canonicalize(root)
                     .is_ok_and(|root| workspace.root().starts_with(root))
             })
         {

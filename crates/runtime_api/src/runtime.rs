@@ -41,7 +41,7 @@ impl WorkspaceContext {
     /// does not exist.
     pub fn new(path: &Path) -> std::io::Result<Self> {
         Ok(Self {
-            root: path.canonicalize()?,
+            root: cookie_agent_protocol::paths::canonicalize(path)?,
             platform: Some(std::env::consts::OS.to_owned()),
         })
     }

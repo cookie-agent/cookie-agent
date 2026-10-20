@@ -150,7 +150,13 @@ than embedded in text output.
 ### Display
 
 Paths are shown as the call's display argument shows them: relative to the
-workspace, or under `~`. The title and display argument already name the
+workspace, or under `~`. A path relative to the workspace (a display
+argument, an AGENTS.md file's name) separates its components with `/` on
+every platform. An absolute path (the workspace root a runtime reports, the
+path in a `read` page, a write's or an edit's result) is spelled the
+platform's way; on Windows it is the canonical long form without the `\\?\`
+verbatim prefix, which is kept only where the path needs it (longer than
+`MAX_PATH`, or naming a device such as `CON`). The title and display argument already name the
 file, so no argument block repeats the path, and an edit's or a write's new
 text shows in its preview `diff` rather than again as an argument. A diff's and an excerpt's `language` comes from the
 path's extension (`rs` is `rust`, `py` is `python`, and so on; an extension

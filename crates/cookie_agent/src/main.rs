@@ -737,8 +737,7 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
         .iter()
         .map(|root| {
             let expanded = cookie_agent_coding_runtime::server::expand_home(root);
-            let root = expanded
-                .canonicalize()
+            let root = cookie_agent_protocol::paths::canonicalize(&expanded)
                 .with_context(|| format!("root {} is unavailable", expanded.display()))?;
             anyhow::ensure!(root.is_dir(), "root {} is not a directory", root.display());
             Ok(root)
@@ -1007,7 +1006,7 @@ fn host_runtime_id(prefix: &str, host: &str) -> String {
 #[cfg(feature = "tui")]
 fn client_directory() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
+    let cwd = cookie_agent_protocol::paths::canonicalize(&cwd).unwrap_or(cwd);
     Some(cwd.to_string_lossy().into_owned())
 }
 

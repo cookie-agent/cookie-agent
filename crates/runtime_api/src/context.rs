@@ -123,9 +123,18 @@ fn skipped_agent_md_file(path: &Path, max_bytes: u64) -> Option<AgentMdSkipped> 
 /// Display path relative to the runtime's workspace when possible, so
 /// model-facing context (e.g. AGENTS.md `from=` attributes) reinforces
 /// workspace-relative path style.
+/// How an AGENTS.md file is named: relative to the workspace with `/`
+/// between components on every platform, as the model reads paths in the
+/// workspace; else its absolute path as the platform spells it.
 fn relative_display_path(path: &Path, workspace: &Path) -> String {
     path.strip_prefix(workspace).map_or_else(
         |_| path.to_string_lossy().into_owned(),
-        |rel| rel.display().to_string(),
+        |relative| {
+            relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        },
     )
 }

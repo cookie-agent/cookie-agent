@@ -328,7 +328,8 @@ pub fn load_user_skills() -> Result<SkillRegistry, ConfigError> {
 /// each directory from the repository root (the nearest ancestor with
 /// `.git`, else the workspace itself) down to the workspace, in that order.
 pub fn load_project_skills(workspace: &Path) -> Result<SkillRegistry, ConfigError> {
-    let workspace = workspace.canonicalize().map_err(ConfigError::Io)?;
+    let workspace =
+        cookie_agent_protocol::paths::canonicalize(workspace).map_err(ConfigError::Io)?;
     load_skill_roots(None, None, &project_skill_roots(&workspace))
 }
 

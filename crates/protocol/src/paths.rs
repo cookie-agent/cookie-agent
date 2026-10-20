@@ -4,7 +4,7 @@
 //! server, TUI, and tools already depend on that low-level crate. Placing it in
 //! `cookie_agent_config` would create a dependency cycle with models.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -109,8 +109,102 @@ fn user_machine_id() -> Option<String> {
     Some(id)
 }
 
+/// `path` canonicalized for showing and comparing: on Windows without the
+/// `\\?\` verbatim prefix `std::fs::canonicalize` adds, whenever the path
+/// means the same without it (see [`simplified`]); elsewhere exactly what
+/// `canonicalize` returns. Every canonical path a person or a model reads,
+/// such as a workspace root or a session's directory, comes from here, so
+/// they all compare equal.
+///
+/// # Errors
+///
+/// Fails as `canonicalize` does, for example when the path does not exist.
+pub fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    path.canonicalize().map(simplified)
+}
+
+/// `path` without the Windows verbatim prefix (`\\?\C:\…` becomes `C:\…`,
+/// `\\?\UNC\server\share\…` becomes `\\server\share\…`) when the path
+/// means the same without it: shorter than `MAX_PATH`, and with no component
+/// a non-verbatim path would read differently (a device name such as `CON`,
+/// or a name ending in a dot or a space). Other paths, and every path on
+/// other platforms, are returned unchanged.
+#[must_use]
+pub fn simplified(path: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return path;
+    }
+    match path.to_str().and_then(simplified_windows) {
+        Some(simple) => PathBuf::from(simple),
+        None => path,
+    }
+}
+
+/// The non-verbatim spelling of the Windows path `path`, when it has one
+/// that means the same.
+fn simplified_windows(path: &str) -> Option<String> {
+    const MAX_PATH: usize = 260;
+    let simple = if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        let rest = path.strip_prefix(r"\\?\")?;
+        let bytes = rest.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || &bytes[1..3] != b":\\" {
+            return None;
+        }
+        rest.to_owned()
+    };
+    if simple.len() >= MAX_PATH || simple.contains('/') {
+        return None;
+    }
+    let reserved = |name: &str| {
+        let stem = name
+            .split('.')
+            .next()
+            .unwrap_or(name)
+            .trim_end()
+            .to_ascii_uppercase();
+        matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit())
+    };
+    let components = simple
+        .trim_start_matches('\\')
+        .split('\\')
+        .skip(1)
+        .filter(|component| !component.is_empty());
+    for component in components {
+        if component.ends_with('.') || component.ends_with(' ') || reserved(component) {
+            return None;
+        }
+    }
+    Some(simple)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_verbatim_path_is_simplified_when_it_means_the_same() {
+        let simple = |path: &str| super::simplified_windows(path);
+        assert_eq!(
+            simple(r"\\?\C:\Users\me\work").as_deref(),
+            Some(r"C:\Users\me\work")
+        );
+        assert_eq!(
+            simple(r"\\?\UNC\server\share\work").as_deref(),
+            Some(r"\\server\share\work")
+        );
+        assert_eq!(simple(r"C:\Users\me"), None, "not verbatim");
+        assert_eq!(simple(r"\\?\C:\work\con.txt"), None, "a device name");
+        assert_eq!(simple(r"\\?\C:\work\trailing."), None, "a trailing dot");
+        assert_eq!(simple(r"\\?\Volume{0}\work"), None, "not a drive");
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(simple(&long), None, "longer than MAX_PATH");
+    }
+
     #[test]
     fn user_data_root_is_below_home() {
         let home = super::home_dir().expect("home directory");
