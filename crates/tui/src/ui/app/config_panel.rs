@@ -4,9 +4,12 @@
 
 use std::collections::HashMap;
 
+pub(in crate::ui) use cookie_agent_client_state::config::{ConfigApplyOutcome, ConfigRow};
+use cookie_agent_client_state::config::{
+    config_rows, document_text, new_agent_refusal, reload_status, restart_note,
+};
 use cookie_agent_protocol::{
-    ClientError, ConfigApplyErrorCode, ConfigApplyParams, ConfigChange, ConfigGetResult,
-    ConfigRestartPart, ConfigRevision, ConfigStatus,
+    ConfigApplyParams, ConfigChange, ConfigGetResult, ConfigRevision, ConfigStatus,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -18,9 +21,6 @@ use ratatui::{
 use super::{App, Modal, RpcUpdate, centered, paint_panel};
 use crate::ui::input::InputState;
 
-/// The text a new agent document starts from.
-pub(super) const NEW_AGENT: &str = "---\ndescription: \nmode: subagent\nenabled: true\nmodels: [{ model: \"\" }]\npermissions: {}\n---\n";
-
 /// A document to open in the editor; the event loop runs the editor and
 /// hands the result to [`App::finish_config_edit`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,47 +31,6 @@ pub(in crate::ui) struct EditorRequest {
     pub(in crate::ui) original: Option<String>,
     pub(in crate::ui) expected_fingerprint: Option<String>,
     pub(in crate::ui) revision: ConfigRevision,
-}
-
-/// What `config.apply` answered for an edit.
-#[derive(Debug)]
-pub(in crate::ui) enum ConfigApplyOutcome {
-    Applied(ConfigStatus),
-    /// `config_apply_refused`: why, and what the daemon says to fix.
-    Refused {
-        reason: ConfigApplyErrorCode,
-        detail: String,
-    },
-    Failed(String),
-}
-
-impl ConfigApplyOutcome {
-    fn from_result(result: Result<cookie_agent_protocol::ConfigApplyResult, ClientError>) -> Self {
-        match result {
-            Ok(result) => Self::Applied(result.status),
-            Err(error) if error.is(&cookie_agent_protocol::errors::CONFIG_APPLY_REFUSED) => {
-                let data = error.error_data().unwrap_or_default();
-                let reason = data
-                    .fields
-                    .get("reason")
-                    .and_then(|reason| serde_json::from_value(reason.clone()).ok())
-                    .unwrap_or(ConfigApplyErrorCode::InvalidChange);
-                Self::Refused {
-                    reason,
-                    detail: data.detail.unwrap_or_else(|| error.to_string()),
-                }
-            }
-            Err(error) => Self::Failed(error.to_string()),
-        }
-    }
-}
-
-/// One row: a document, or a preset heading.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct ConfigRow {
-    pub(in crate::ui) label: String,
-    pub(in crate::ui) path: Option<String>,
-    pub(in crate::ui) preset: Option<String>,
 }
 
 #[derive(Default)]
@@ -92,60 +51,7 @@ pub(in crate::ui) struct ConfigPanelState {
 
 impl ConfigPanelState {
     pub(in crate::ui) fn rows(&self) -> Vec<ConfigRow> {
-        let Some(config) = &self.config else {
-            return Vec::new();
-        };
-        let mut rows = vec![ConfigRow {
-            label: if config
-                .documents
-                .iter()
-                .any(|document| document.path == "config.toml")
-            {
-                "config.toml".into()
-            } else {
-                "config.toml (not created)".into()
-            },
-            path: Some("config.toml".into()),
-            preset: None,
-        }];
-        let agent = |path: &str| -> Option<(Option<String>, String)> {
-            let rest = path.strip_prefix("agents/")?.strip_suffix(".md")?;
-            Some(match rest.split_once('/') {
-                Some((preset, id)) => (Some(preset.to_owned()), id.to_owned()),
-                None => (None, rest.to_owned()),
-            })
-        };
-        let mut presets = std::collections::BTreeMap::<String, Vec<(String, String)>>::new();
-        for preset in &config.empty_presets {
-            presets.entry(preset.clone()).or_default();
-        }
-        for document in &config.documents {
-            match agent(&document.path) {
-                Some((None, id)) => rows.push(ConfigRow {
-                    label: format!("agent {id}"),
-                    path: Some(document.path.clone()),
-                    preset: None,
-                }),
-                Some((Some(preset), id)) => presets
-                    .entry(preset)
-                    .or_default()
-                    .push((id, document.path.clone())),
-                None => {}
-            }
-        }
-        for (preset, agents) in presets {
-            rows.push(ConfigRow {
-                label: format!("preset {preset}"),
-                path: None,
-                preset: Some(preset.clone()),
-            });
-            rows.extend(agents.into_iter().map(|(id, path)| ConfigRow {
-                label: format!("  agent {id}"),
-                path: Some(path),
-                preset: Some(preset.clone()),
-            }));
-        }
-        rows
+        self.config.as_ref().map(config_rows).unwrap_or_default()
     }
 
     fn selected_row(&self) -> Option<ConfigRow> {
@@ -204,13 +110,7 @@ impl App {
         let original = document.map(|document| document.text.clone());
         self.pending_editor = Some(EditorRequest {
             path: path.to_owned(),
-            text: original.clone().unwrap_or_else(|| {
-                if path.ends_with(".md") {
-                    NEW_AGENT.to_owned()
-                } else {
-                    String::new()
-                }
-            }),
+            text: document_text(config, path),
             original,
             expected_fingerprint: document.map(|document| document.fingerprint.clone()),
             revision: config.revision.clone(),
@@ -280,31 +180,22 @@ impl App {
         edit: Option<EditorRequest>,
         outcome: ConfigApplyOutcome,
     ) {
-        match outcome {
-            ConfigApplyOutcome::Applied(status) => {
+        let report = outcome.report(&path);
+        match edit {
+            Some(edit)
+                if report.keep_draft && !matches!(outcome, ConfigApplyOutcome::Failed(_)) =>
+            {
+                self.config_panel.drafts.insert(path.clone(), edit);
+            }
+            _ if !report.keep_draft => {
                 self.config_panel.drafts.remove(&path);
-                self.config_panel.error = None;
-                self.status = format!("Applied {path}.{}", restart_note(&status));
             }
-            ConfigApplyOutcome::Refused {
-                reason: ConfigApplyErrorCode::Conflict,
-                detail: message,
-            } => {
-                self.config_panel.drafts.remove(&path);
-                self.config_panel.error = Some(format!(
-                    "{path} was not changed: {message}. The list is reloaded; edit it again."
-                ));
-                self.status = format!("{path} changed meanwhile; edit it again");
-            }
-            ConfigApplyOutcome::Refused { detail, .. } => {
-                if let Some(edit) = edit {
-                    self.config_panel.drafts.insert(path.clone(), edit);
-                }
-                self.config_panel.error = Some(format!("{path} was not changed: {detail}"));
-                self.status = format!("Not applied; Enter edits {path} again.");
-            }
-            ConfigApplyOutcome::Failed(error) => self.status = error,
+            _ => {}
         }
+        if !matches!(outcome, ConfigApplyOutcome::Failed(_)) {
+            self.config_panel.error = report.error;
+        }
+        self.status = report.status;
         self.poll_config();
     }
 
@@ -315,17 +206,13 @@ impl App {
                 KeyCode::Enter => {
                     let path = input.as_str().trim().to_owned();
                     self.config_panel.new_path = None;
-                    let exists = self.config_panel.config.as_ref().is_some_and(|config| {
-                        config
-                            .documents
-                            .iter()
-                            .any(|document| document.path == path)
-                    });
-                    if !path.starts_with("agents/") || !path.ends_with(".md") {
-                        self.status =
-                            "a new agent is agents/<id>.md or agents/<preset>/<id>.md".into();
-                    } else if exists {
-                        self.status = format!("{path} exists; Enter edits it");
+                    let refusal = self
+                        .config_panel
+                        .config
+                        .as_ref()
+                        .and_then(|config| new_agent_refusal(config, &path));
+                    if let Some(refusal) = refusal {
+                        self.status = refusal;
                     } else {
                         self.begin_config_edit(&path);
                     }
@@ -411,10 +298,7 @@ impl App {
     }
 
     pub(super) fn install_config_reload(&mut self, status: ConfigStatus) {
-        self.status = match &status.error {
-            Some(error) => format!("Not reloaded: {error}"),
-            None => format!("Reloaded the configuration.{}", restart_note(&status)),
-        };
+        self.status = reload_status(&status);
         self.poll_config();
     }
 
@@ -528,24 +412,6 @@ impl App {
 fn short_revision(revision: &ConfigRevision) -> &str {
     let hex = revision.as_str().trim_start_matches("sha256:");
     &hex[..hex.len().min(12)]
-}
-
-/// " Restart the daemon to apply: …" when something needs it.
-fn restart_note(status: &ConfigStatus) -> String {
-    if status.restart_required.is_empty() {
-        return String::new();
-    }
-    let parts = status
-        .restart_required
-        .iter()
-        .map(|part| match part {
-            ConfigRestartPart::Server => "server",
-            ConfigRestartPart::Plugins => "plugins",
-            ConfigRestartPart::Runtimes => "runtimes",
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(" Restart the daemon to apply: {parts}.")
 }
 
 /// Runs the editor on `text`, the document `path`, with the terminal handed
