@@ -10,6 +10,7 @@ mod app;
 pub mod browser;
 pub mod connect;
 pub mod connection;
+pub mod render;
 pub mod theme;
 
 pub use app::App;

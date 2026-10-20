@@ -1065,9 +1065,11 @@ version = "0.3.0"
 dependencies = [
  "cookie_agent_client_state",
  "cookie_agent_protocol",
+ "foldhash",
  "futures-util",
  "gloo-timers",
  "leptos",
+ "pulldown-cmark",
  "serde_json",
  "url",
  "wasm-bindgen",
