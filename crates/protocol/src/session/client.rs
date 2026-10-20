@@ -1197,6 +1197,10 @@ impl Client {
         P: Serialize + ?Sized,
         R: DeserializeOwned,
     {
+        // Serialized here, so the request's future below is one type for
+        // every method rather than one per parameter type: a client of many
+        // methods (the browser's) would otherwise carry a copy of it each.
+        let params = serde_json::to_value(params)?;
         let result = send_command(&self.commands, method, params, None, false)
             .await
             .map_err(|error| too_old(method, error))?;
@@ -1370,20 +1374,17 @@ async fn request_replay_with_timeout(
     }
 }
 
-async fn send_command<P>(
+async fn send_command(
     commands: &mpsc::Sender<Command>,
     method: &str,
-    params: &P,
+    params: serde_json::Value,
     replay: Option<ReplayRequest>,
     sensitive: bool,
-) -> CommandResult
-where
-    P: Serialize + ?Sized,
-{
+) -> CommandResult {
     let (response, receiver) = oneshot::channel();
     let id = NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let params = SerializedParams {
-        value: serde_json::to_value(params)?,
+        value: params,
         sensitive,
     };
     commands
