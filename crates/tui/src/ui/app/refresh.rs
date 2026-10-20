@@ -1041,15 +1041,14 @@ impl App {
             .is_some_and(|event| matches!(&event.payload, EventPayload::ToolCallLinked { .. }));
         // Another client picked the viewed session's model: this view's own
         // unsent pick yields, so the draft follows the latest pick.
-        let foreign_model_pick = event.is_some_and(|event| {
-            matches!(&delivery, ClientDelivery::Live { .. })
-                && matches!(&event.payload, EventPayload::SessionModelSelected { .. })
-                && Some(event.session_id) == self.selected
-                && event.origin != self.client.origin()
-        });
+        let foreign_model_pick = cookie_agent_client_state::model_draft::is_foreign_model_pick(
+            &delivery,
+            self.selected,
+            self.client.origin().as_ref(),
+        );
         if foreign_model_pick {
             self.set_draft_reset_intent(false);
-            self.draft_publish_generation = self.draft_publish_generation.wrapping_add(1);
+            self.draft_publish.yield_to_foreign_pick();
         }
         // A run that ended in a session outside the view no longer needs its
         // live tail: releasing it lets the daemon evict the session.

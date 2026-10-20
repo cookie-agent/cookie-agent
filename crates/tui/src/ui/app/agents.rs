@@ -2,8 +2,7 @@
 
 use super::*;
 
-/// How long the draft must stay unchanged before it is shared.
-const DRAFT_PUBLISH_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+use cookie_agent_client_state::model_draft::DRAFT_PUBLISH_DELAY;
 
 /// How the TUI names the choice of no preset: the shared agents only.
 pub(super) const DEFAULT_PRESET: &str = "default";
@@ -583,8 +582,7 @@ impl App {
         let Some(session_id) = self.selected else {
             return;
         };
-        self.draft_publish_generation = self.draft_publish_generation.wrapping_add(1);
-        let generation = self.draft_publish_generation;
+        let generation = self.draft_publish.schedule();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             tokio::time::sleep(DRAFT_PUBLISH_DELAY).await;
@@ -596,7 +594,7 @@ impl App {
     }
 
     pub(super) fn finish_draft_publish(&mut self, session_id: SessionId, generation: u64) {
-        if generation != self.draft_publish_generation || self.selected != Some(session_id) {
+        if !self.draft_publish.is_current(generation) || self.selected != Some(session_id) {
             return;
         }
         let Some(selection) = self.draft.clone() else {

@@ -16,6 +16,7 @@ test-support = []
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
 foldhash.workspace = true
 jiff.workspace = true

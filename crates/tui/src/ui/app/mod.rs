@@ -63,7 +63,7 @@ use cookie_agent_protocol::{
     SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
     SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
     SessionPermissionGetResult, SessionPermissionPreviewParams, SessionPermissionSetParams,
-    SessionRecallInputParams, SessionRecallInputResult, SessionResumeParams, SessionRevertParams,
+    SessionRecallInputParams, SessionRecallInputResult, SessionRevertParams,
     SessionSetPermissionModeParams, SessionStatus, SessionSubmitInputParams,
     SessionSubmitInputResult, SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams,
     SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
@@ -182,9 +182,8 @@ impl RpcUpdate {
     }
 }
 
-pub(super) fn session_owned_by_another_process(error: &ClientError) -> bool {
-    error.is(&cookie_agent_protocol::errors::SESSION_OWNED_ELSEWHERE)
-}
+#[cfg(test)]
+pub(super) use cookie_agent_client_state::ownership::session_owned_by_another_process;
 
 /// Whether the daemon reported retryable store contention (`lock_contention`),
 /// covering both the bounded-lock budget and a lost commit-time CAS.
@@ -690,10 +689,10 @@ pub struct App {
     /// Roots of the trees viewed most recently, newest first. Their sessions
     /// stay subscribed so switching back is instant; older trees' settled
     /// sessions are released so the daemon can evict them.
-    pub(super) recent_trees: std::collections::VecDeque<SessionId>,
-    /// Bumped on every draft change; a debounced publish of the draft as the
-    /// session's model selection goes out only if no later change followed.
-    pub(super) draft_publish_generation: u64,
+    pub(super) recent_trees: cookie_agent_client_state::subscriptions::RecentTrees,
+    /// Which draft change a debounced publish of the draft as the session's
+    /// model selection may still send: only one no later change followed.
+    pub(super) draft_publish: cookie_agent_client_state::model_draft::DraftPublish,
     pub store: StateStore,
     pub(super) sessions: Vec<SessionMeta>,
     sessions_revision: u64,
@@ -1141,11 +1140,7 @@ struct PendingFallbackReset {
     replay_generation: Option<u64>,
 }
 
-pub(super) enum SessionOwnershipOutcome {
-    Owned(Box<SessionMeta>),
-    Foreign,
-    Failed(String),
-}
+pub(super) use cookie_agent_client_state::ownership::SessionOwnershipOutcome;
 
 /// An approval response captured at click time and currently in flight.
 /// How long approval hotkeys ignore keys after a request appears on top.
@@ -1350,8 +1345,8 @@ impl App {
             runtime_resync_in_flight: false,
             reconnector: None,
             reconnecting: false,
-            recent_trees: std::collections::VecDeque::new(),
-            draft_publish_generation: 0,
+            recent_trees: Default::default(),
+            draft_publish: Default::default(),
             store: StateStore::default(),
             sessions: Vec::new(),
             sessions_revision: 0,
@@ -1499,17 +1494,8 @@ impl App {
     /// other.
     pub(in crate::ui) async fn open_session(&mut self, session_id: SessionId) {
         let generation = self.begin_ownership_classification(session_id);
-        let outcome = match self
-            .client
-            .resume_session(SessionResumeParams { session_id })
-            .await
-        {
-            Ok(result) => SessionOwnershipOutcome::Owned(Box::new(result.session)),
-            Err(error) if session_owned_by_another_process(&error) => {
-                SessionOwnershipOutcome::Foreign
-            }
-            Err(error) => SessionOwnershipOutcome::Failed(error.to_string()),
-        };
+        let outcome =
+            cookie_agent_client_state::ownership::classify_session(&self.client, session_id).await;
         self.apply_ownership_classification(session_id, generation, outcome);
         self.select_session(session_id).await;
         if self.deliveries.is_some() {
@@ -1543,16 +1529,8 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let outcome = match client
-                .resume_session(SessionResumeParams { session_id })
-                .await
-            {
-                Ok(result) => SessionOwnershipOutcome::Owned(Box::new(result.session)),
-                Err(error) if session_owned_by_another_process(&error) => {
-                    SessionOwnershipOutcome::Foreign
-                }
-                Err(error) => SessionOwnershipOutcome::Failed(error.to_string()),
-            };
+            let outcome =
+                cookie_agent_client_state::ownership::classify_session(&client, session_id).await;
             let _ = updates.send(RpcUpdate::SessionOwnershipClassified {
                 session_id,
                 generation,

@@ -44,13 +44,9 @@ pub(in crate::ui) enum SubscriptionState {
     Recovering { owned: bool, resubscribe: bool },
 }
 
-/// First wait before redialing a dropped daemon; doubles per failure.
-const RECONNECT_FIRST_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-const RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
-/// Trees whose sessions stay subscribed after the view moves on.
-const RECENT_SUBSCRIBED_TREES: usize = 8;
-/// Wait before resubscribing a viewed session whose recovery gave up.
-const SUBSCRIPTION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+use cookie_agent_client_state::subscriptions::{
+    RECONNECT_FIRST_DELAY, SUBSCRIPTION_RETRY_DELAY, next_reconnect_delay,
+};
 
 /// Why the view asks for a session's subscription.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -298,29 +294,23 @@ impl App {
     /// sessions keep their subscriptions.
     pub(super) fn is_recently_viewed(&self, session_id: SessionId) -> bool {
         self.recent_trees
-            .contains(&self.permission_mode_root(session_id))
+            .contains(self.permission_mode_root(session_id))
     }
 
     /// Whether nothing in `session_id` is still owed to this view: no run, and
     /// no pending or queued input whose start or return it must see.
     pub(super) fn is_settled(&self, session_id: SessionId) -> bool {
-        self.store.sessions.get(&session_id).is_none_or(|state| {
-            state.active_run.is_none()
-                && state.pending_inputs.is_empty()
-                && state.queued_inputs.is_empty()
-        })
+        self.store
+            .sessions
+            .get(&session_id)
+            .is_none_or(crate::state::SessionState::is_settled)
     }
 
     /// Records `root` as the most recently viewed tree. The tree this pushes
     /// out of the recent set has its settled sessions released; ones still
     /// running are released when their run ends.
     pub(super) fn note_viewed_tree(&mut self, root: SessionId) {
-        self.recent_trees.retain(|recent| *recent != root);
-        self.recent_trees.push_front(root);
-        while self.recent_trees.len() > RECENT_SUBSCRIBED_TREES {
-            let Some(evicted) = self.recent_trees.pop_back() else {
-                break;
-            };
+        for evicted in self.recent_trees.note_viewed(root) {
             let released = self
                 .subscriptions
                 .keys()
@@ -367,7 +357,7 @@ impl App {
                         let _ = updates.send(RpcUpdate::Notice(format!(
                             "daemon disconnected — reconnecting ({error})"
                         )));
-                        delay = (delay * 2).min(RECONNECT_MAX_DELAY);
+                        delay = next_reconnect_delay(delay);
                     }
                 }
             }

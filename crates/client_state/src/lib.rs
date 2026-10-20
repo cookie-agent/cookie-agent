@@ -10,9 +10,13 @@
 //! model's display name (looked up at render time) ahead of its id.
 
 pub mod markdown;
+pub mod model_draft;
 mod model_names;
+pub mod ownership;
 mod reduce;
 mod runtime;
+pub mod subscriptions;
+pub mod uploads;
 
 pub use reduce::approval_state_from_record;
 use reduce::*;

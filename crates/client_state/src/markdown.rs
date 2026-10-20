@@ -424,3 +424,68 @@ fn block_kind(event: &Event<'_>) -> MarkdownBlockKind {
         _ => MarkdownBlockKind::Other,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{MarkdownBlockKind, MarkdownDocument};
+
+    #[test]
+    fn streamed_text_settles_blocks_and_keeps_the_open_tail_apart() {
+        let mut document = MarkdownDocument::new("# Title\n\nfirst".to_owned());
+        assert_eq!(document.stable_blocks().len(), 1);
+        assert_eq!(
+            document.stable_blocks()[0].kind(),
+            MarkdownBlockKind::Heading
+        );
+        assert_eq!(document.tail_blocks().len(), 1);
+        document.append(" paragraph\n\n```rust\nfn a() {}\n```\n");
+        assert_eq!(
+            document
+                .blocks()
+                .map(super::MarkdownBlock::kind)
+                .collect::<Vec<_>>(),
+            [
+                MarkdownBlockKind::Heading,
+                MarkdownBlockKind::Paragraph,
+                MarkdownBlockKind::Code,
+            ]
+        );
+        assert!(!document.is_finished());
+        assert!(document.clone().finished().is_finished());
+    }
+
+    #[test]
+    fn clones_of_a_block_share_the_renderer_cache() {
+        let document = MarkdownDocument::new("first\n\nsecond".to_owned());
+        let block = document.stable_blocks()[0].clone();
+        block
+            .renderer_cache()
+            .get_or_default::<Mutex<Vec<String>>>()
+            .lock()
+            .unwrap()
+            .push("rendered".to_owned());
+        let shared = document.stable_blocks()[0]
+            .renderer_cache()
+            .get_or_default::<Mutex<Vec<String>>>();
+        assert_eq!(*shared.lock().unwrap(), ["rendered"]);
+        // A renderer asking for another type gets a fresh, unshared value.
+        let other = block.renderer_cache().get_or_default::<Mutex<u8>>();
+        *other.lock().unwrap() = 7;
+        assert_eq!(
+            *block
+                .renderer_cache()
+                .get_or_default::<Mutex<u8>>()
+                .lock()
+                .unwrap(),
+            0
+        );
+        assert!(Arc::ptr_eq(
+            &shared,
+            &block
+                .renderer_cache()
+                .get_or_default::<Mutex<Vec<String>>>()
+        ));
+    }
+}

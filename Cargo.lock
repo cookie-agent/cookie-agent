@@ -597,6 +597,7 @@ dependencies = [
 name = "cookie_agent_client_state"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "cookie_agent_protocol",
  "foldhash",
  "jiff",
