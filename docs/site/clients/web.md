@@ -56,19 +56,24 @@ address bar.
   daemon's ready line.
 - **Connecting.** With both a URL and a token, the page connects without a
   click.
-- **Forget this daemon** deletes the stored token.
+- **Forget this daemon** deletes the stored token. Once connected, the
+  same button is in the connection panel (below), behind a confirmation.
 - **A refused connection.** A browser shows a page no reason when the daemon
   closes its connection before the handshake. The usual cause is an origin
   missing from `allowed_origins`, so the page quotes its own origin as the
   entry to add.
-- **Once connected**, the header shows the daemon's address and version.
+- **Once connected**, the header shows the connection's state: connected,
+  connecting, reconnecting, or offline. Hover over it for the daemon's
+  address and version, or click it for a panel with them and **Forget this
+  daemon**.
   - **Dropped connection.** The page redials with the TUI's backoff,
     500 ms rising to 10 s, under the same client identity.
   - **Background tab.** When it becomes visible again, the page checks the
     connection.
   - **Separate clients.** Each browser tab is its own client.
-- **Theme.** The theme button cycles through system, light, and dark. The
-  choice stays in the browser.
+- **Theme.** The theme button in the header cycles through system (a half
+  circle), light (a sun), and dark (a moon). The choice stays in the
+  browser.
 
 ## Sessions and chat
 
@@ -85,14 +90,19 @@ address bar.
     inside their block.
 - **Sessions.** The page has no directory of its own, so the list shows
   every directory's sessions, with a filter by directory.
+  - **Rows.** Each session shows its title, an icon for its status
+    (running, completed, failed, cancelled, interrupted, or idle), the name
+    of its directory, and how long ago it was last active. Hover over a row
+    for the directory's full path.
   - **New session** starts a draft in a directory you name; leave it empty
     for the daemon's own. The first message creates the session with the
     agent and model shown, and the permission mode the status bar shows.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
 - **Subagents.** The **Agents** panel above the session list shows the
-  viewed session's tree: each delegated agent with its task, `●` while it
-  runs. Click one to open it, and ▾ to fold its children. A session link in
+  viewed session's tree: each delegated agent with its task, with a turning
+  circle while it runs. Click one to open it, and the chevron beside it to
+  fold its children. A session link in
   a delegation's output opens the child too.
   - `/agent-panel auto` (the default) shows the panel while a delegated
     agent is live or a child session is open; `/agent-panel show` and
@@ -100,9 +110,12 @@ address bar.
 - **Transcript.** Markdown is rendered with any HTML in it shown as text.
   Links open in a new tab, but only `http`, `https`, and `mailto` links;
   images show as links.
-  - **Tool calls** show their title and status. Click one for its
-    arguments and output. A running call that can move to the background
-    offers **⇲ background**.
+  - **Tool calls** show an icon for the kind of tool (from its
+    presentation hint, never its name), their title, and their status: a
+    turning circle while running, a check when done, and a word with its
+    icon when it failed, was cancelled, or was interrupted. Click one for
+    its arguments and output. A running call that can move to the
+    background offers **background**.
   - **Output blocks** each have their own view: code highlighted by the
     bundled highlight.js, diffs with the file's line numbers, terminal
     output with its colours, tables, JSON, links, session links, and media
@@ -121,8 +134,8 @@ address bar.
   - **Up** in an empty composer takes back your newest pending or queued
     message.
 
-  On a phone, **Send** steers, and a long press on it, or its ▾ menu,
-  queues. The strip above the composer lists pending and queued messages;
+  The send button (a paper plane) steers, and a long press on it, or the
+  menu beside it, queues; the menu also cancels the run. The strip above the composer lists pending and queued messages;
   tap one of yours to take it back.
 - **Commands.** `/` starts a command:
   - `/new`;
@@ -137,7 +150,7 @@ address bar.
   - `/runtime` (also `/runtimes`), `/mcp`, `/connect`, `/config`,
     `/memory` (also `/memories`), `/plugins` (also `/plugin`).
 
-  The ☰ button lists them all.
+  The **Commands** button (⋮, beside the agent and model) lists them all.
 - **Approvals.** When a tool call needs an answer, the status bar says so.
   Open it to approve once, approve for the session tree, or reject.
 - **Compacting.** `/compact` compacts the session's context, and
@@ -152,9 +165,10 @@ address bar.
   background, a bar above the composer lists them. Click it, or use
   `/background`, to see how long each has run and stop one; a stopped call
   still reports to the model.
-- **Files.** Attach files with `/attach` or 📎 (the file picker), by dropping
-  them on the page, or by pasting them; on a phone, 📷 takes a photo. They
-  upload at once and wait on the draft as chips; × removes one.
+- **Files.** Attach files with `/attach` or the paperclip (the file
+  picker), by dropping them on the page, or by pasting them; on a phone,
+  the camera button takes a photo. They upload at once and wait on the
+  draft as chips; the × on a chip removes it.
   - Only the kinds of file the selected model takes are offered: the picker
     lists their types, and a model that takes none offers no attaching.
   - The page reads each file's type from its content, as the daemon does,
@@ -167,11 +181,16 @@ address bar.
   run it.
 - **Permissions.** `/permissions` shows the session's rules by action, and
   where each comes from: the agent, the default, or a session override.
-  Click an effect to override it, add a rule for a pattern, or × to remove
-  an override. While a new session is composed, the same table edits the
+  Click an effect to override it, add a rule for a pattern, or the × on an
+  override to remove it. While a new session is composed, the same table edits the
   rules it will be created with, previewed against its agent.
-- **Status bar.** It shows the permission mode (click it for the next one),
-  the session's cost (click for `/usage`), and its context size.
+- **Status bar.** Each indicator has an icon and says more on hover:
+  - the permission mode (click it for the next one);
+  - the approvals waiting, when there are any (click to answer them);
+  - **working…** while the session runs;
+  - the last status message;
+  - the context size, in tokens, of the last request;
+  - the session's cost (click for `/usage`).
 - **Diagnostics.** `/events` picks which diagnostic rows the transcript
   shows; the choice stays in the browser.
 - **Messages from producers** (goal control and reminders, background-call
@@ -249,6 +268,15 @@ address bar.
 - **Offer this machine as a runtime.** A browser has no workspace to share.
   The TUI's machine can attach as a runtime that dials in; the page uses the
   runtimes the daemon already has.
+
+## Credits
+
+The page's icons are [Font Awesome Free](https://fontawesome.com) by
+Fonticons, Inc., under the
+[CC BY 4.0 licence](https://fontawesome.com/license/free). The connect
+screen and the connection panel credit them. They are inline SVG in the
+page's code (from the `icondata` crate, shown through `leptos_icons`), not
+a web font.
 
 ## Hosting the page elsewhere
 

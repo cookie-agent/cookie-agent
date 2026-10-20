@@ -288,6 +288,11 @@ with them (`state/tests.rs`).
     its icons by path), so they are revalidated rather than cached forever
     (section 7.1).
   - JetBrains Mono for code. Fonts are bundled, not loaded from Google.
+  - Icons are Font Awesome Free (CC BY 4.0, credited on the connect screen
+    and in the connection panel) from the `icondata` crate, rendered by
+    `leptos_icons` as inline SVG that takes the text colour. Only the icons
+    the page names are in the bundle; there is no icon font. Icon-only
+    buttons have an `aria-label` and a tooltip.
 
 ## 7. Hosting and authentication
 
