@@ -6,10 +6,15 @@
 //! while it was open is never overwritten silently: the panel offers to
 //! reload it or to overwrite it.
 
-use cookie_agent_protocol::{
-    ClientError, MemoryIgnoredEntry, MemoryInfo, MemoryLayer, MemoryListParams, MemoryListResult,
-    errors,
+pub(in crate::ui) use cookie_agent_client_state::memory::{
+    MemoryRow, MemoryWriteOutcome, NEW_MEMORY,
 };
+use cookie_agent_client_state::memory::{
+    delete_refusal, layer_title, memory_name, memory_rows, message_of, new_memory_refusal,
+};
+#[cfg(test)]
+use cookie_agent_protocol::MemoryIgnoredEntry;
+use cookie_agent_protocol::{MemoryInfo, MemoryLayer, MemoryListParams, MemoryListResult, errors};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -20,9 +25,6 @@ use ratatui::{
 
 use super::{App, Modal, RpcUpdate, centered, keys::edit_plain_input, paint_panel};
 use crate::{theme::Theme, ui::input::InputState};
-
-/// The text a new memory starts from.
-pub(in crate::ui) const NEW_MEMORY: &str = "---\ndescription: \nkeywords: []\n---\n";
 
 /// A memory to open in the editor; the event loop runs the editor and
 /// hands the result to [`App::finish_memory_edit`].
@@ -49,32 +51,6 @@ pub(in crate::ui) enum PendingEdit {
     Changed { request: MemoryEditRequest },
 }
 
-/// What `memory.write` answered.
-#[derive(Debug)]
-pub(in crate::ui) enum MemoryWriteOutcome {
-    Saved,
-    Invalid(String),
-    Changed,
-    Failed(String),
-}
-
-impl MemoryWriteOutcome {
-    fn from_result(result: Result<cookie_agent_protocol::MemoryWriteResult, ClientError>) -> Self {
-        match result {
-            Ok(_) => Self::Saved,
-            Err(error) if error.is(&errors::MEMORY_INVALID) => Self::Invalid(message_of(&error)),
-            Err(error)
-                if error.is(&errors::MEMORY_REVISION_MISMATCH)
-                    || error.is(&errors::MEMORY_EXISTS)
-                    || error.is(&errors::MEMORY_NOT_FOUND) =>
-            {
-                Self::Changed
-            }
-            Err(error) => Self::Failed(message_of(&error)),
-        }
-    }
-}
-
 /// What to do with a memory once `memory.read` answers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::ui) enum ReadPurpose {
@@ -82,14 +58,6 @@ pub(in crate::ui) enum ReadPurpose {
     Edit,
     /// Write this text over whatever revision it has now.
     Overwrite(MemoryEditRequest),
-}
-
-/// The message of a daemon error, without its code.
-fn message_of(error: &ClientError) -> String {
-    match error {
-        ClientError::Rpc(rpc) => rpc.message.clone(),
-        error => error.to_string(),
-    }
 }
 
 /// An action the panel offers, by key or by button.
@@ -133,37 +101,6 @@ impl MemoryAction {
     }
 }
 
-/// One row of the panel.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum MemoryRow {
-    /// A layer's heading.
-    Layer(MemoryLayer),
-    /// A machine or project of the layer.
-    Group {
-        layer: MemoryLayer,
-        name: String,
-    },
-    Memory(MemoryInfo),
-    /// The heading of what is not a memory.
-    IgnoredHeading,
-    Ignored(MemoryIgnoredEntry),
-}
-
-impl MemoryRow {
-    /// The URL prefix a new memory started from this row gets.
-    fn new_prefix(&self) -> String {
-        match self {
-            Self::Layer(layer) => format!("{}://", layer.as_str()),
-            Self::Group { layer, name } => format!("{}://{name}/", layer.as_str()),
-            Self::Memory(memory) => match &memory.group {
-                Some(group) => format!("{}://{group}/", memory.layer.as_str()),
-                None => format!("{}://", memory.layer.as_str()),
-            },
-            Self::IgnoredHeading | Self::Ignored(_) => "project://".to_owned(),
-        }
-    }
-}
-
 /// Where the panel's clickable parts landed this frame.
 #[derive(Clone, Debug, Default)]
 pub(in crate::ui) struct MemoryHits {
@@ -190,35 +127,10 @@ impl MemoryPanelState {
     /// The rows: each layer's heading, its memories grouped by machine or
     /// project, then what is not a memory.
     pub(in crate::ui) fn rows(&self) -> Vec<MemoryRow> {
-        let Some(Ok(listing)) = &self.listing else {
-            return Vec::new();
-        };
-        let mut rows = Vec::new();
-        for layer in MemoryLayer::ALL {
-            rows.push(MemoryRow::Layer(layer));
-            let mut group: Option<&str> = None;
-            for memory in listing
-                .memories
-                .iter()
-                .filter(|memory| memory.layer == layer)
-            {
-                if let Some(name) = memory.group.as_deref()
-                    && group != Some(name)
-                {
-                    rows.push(MemoryRow::Group {
-                        layer,
-                        name: name.to_owned(),
-                    });
-                    group = Some(name);
-                }
-                rows.push(MemoryRow::Memory(memory.clone()));
-            }
+        match &self.listing {
+            Some(Ok(listing)) => memory_rows(listing),
+            _ => Vec::new(),
         }
-        if !listing.ignored.is_empty() {
-            rows.push(MemoryRow::IgnoredHeading);
-            rows.extend(listing.ignored.iter().cloned().map(MemoryRow::Ignored));
-        }
-        rows
     }
 
     pub(in crate::ui) fn selected_row(&self) -> Option<MemoryRow> {
@@ -447,13 +359,7 @@ impl App {
                 .delete_memory(url.clone(), revision)
                 .await
                 .map(|_| format!("Deleted {url}."))
-                .map_err(|error| {
-                    if error.is(&errors::MEMORY_REVISION_MISMATCH) {
-                        format!("{url} changed since it was listed; it was not deleted")
-                    } else {
-                        format!("{url} was not deleted: {}", message_of(&error))
-                    }
-                });
+                .map_err(|error| delete_refusal(&url, &error));
             let _ = updates.send(RpcUpdate::MemoryDeleted { result });
         });
     }
@@ -570,21 +476,10 @@ impl App {
 
     /// Opens a new memory at `url` in the editor, unless it exists.
     fn begin_new_memory(&mut self, url: String) {
-        let exists = matches!(
-            &self.memory_panel.listing,
-            Some(Ok(listing)) if listing.memories.iter().any(|memory| memory.url == url)
-        );
-        if exists {
-            self.status = format!("{url} exists; Enter edits it");
-            return;
-        }
-        let complete = url
-            .split_once("://")
-            .is_some_and(|(_, rest)| !rest.is_empty() && !rest.ends_with('/'));
-        if !complete {
-            self.status = "a memory URL is user://<category>, agent://<agent>, \
-                           machine://<machine>/<name>, or project://<project>/<name>"
-                .into();
+        if let Some(Ok(listing)) = &self.memory_panel.listing
+            && let Some(refusal) = new_memory_refusal(listing, &url)
+        {
+            self.status = refusal;
             return;
         }
         // The daemon checks the URL when the memory is saved.
@@ -695,25 +590,6 @@ fn render_memory(
         );
     }
     hits
-}
-
-fn layer_title(layer: MemoryLayer) -> &'static str {
-    match layer {
-        MemoryLayer::User => "User",
-        MemoryLayer::Agent => "Agents",
-        MemoryLayer::Machine => "Machines",
-        MemoryLayer::Project => "Projects",
-        MemoryLayer::Unknown => "Other",
-    }
-}
-
-/// The memory's own name: what its URL says after its layer and group.
-fn memory_name(memory: &MemoryInfo) -> &str {
-    let rest = memory
-        .url
-        .split_once("://")
-        .map_or(memory.url.as_str(), |(_, rest)| rest);
-    rest.rsplit_once('/').map_or(rest, |(_, name)| name)
 }
 
 fn row_line(row: &MemoryRow, theme: &Theme) -> Line<'static> {
