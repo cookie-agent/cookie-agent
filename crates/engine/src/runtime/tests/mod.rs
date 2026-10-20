@@ -34,6 +34,7 @@ mod providers;
 mod recovery;
 mod replay;
 mod runtimes;
+mod session_delete;
 mod sessions;
 mod skills;
 mod subagent_control;

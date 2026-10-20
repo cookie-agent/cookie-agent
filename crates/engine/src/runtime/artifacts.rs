@@ -1247,6 +1247,15 @@ impl ArtifactRouter {
         Ok(store)
     }
 
+    /// Drops the store handle of a tree that is being deleted, closing the
+    /// files it keeps open.
+    pub(crate) fn forget_tree(&self, tree: SessionId) {
+        self.roots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&tree);
+    }
+
     fn cached_tree_store(&self, tree: SessionId) -> Option<Arc<ArtifactStore>> {
         self.roots
             .lock()

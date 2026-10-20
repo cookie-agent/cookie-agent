@@ -461,7 +461,7 @@ impl Engine {
     }
 
     /// Forgets the in-memory state of sessions a revert deletes.
-    fn forget_deleted_sessions(&self, deleted: &HashSet<SessionId>) {
+    pub(super) fn forget_deleted_sessions(&self, deleted: &HashSet<SessionId>) {
         if deleted.is_empty() {
             return;
         }

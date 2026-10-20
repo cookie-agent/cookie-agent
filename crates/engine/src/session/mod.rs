@@ -2,6 +2,7 @@
 
 mod cache;
 mod convert;
+mod delete;
 mod fold;
 mod in_flight;
 mod tree_load;
@@ -171,6 +172,9 @@ pub enum SessionError {
     /// writers, or the load was retaken more times than the driver budget allows.
     #[error("tree load for session {0} keeps racing concurrent writers")]
     TreeContended(SessionId),
+    /// The tree rooted at this session is being adopted right now.
+    #[error("session tree {0} is being opened")]
+    TreeBusy(SessionId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -566,6 +570,9 @@ impl SessionStore {
         }
         write_layout_marker_if_absent(&v2_dir)?;
         write_workdir_cwd(&v2_dir, cwd)?;
+        // A deletion that stopped after moving its tree aside left a
+        // tombstone; nothing reads one, so it only has to go.
+        delete::sweep_tombstones(&v2_dir);
         let store = Arc::new(Self {
             data_root: data_root.to_owned(),
             workdir_dir: v2_dir,

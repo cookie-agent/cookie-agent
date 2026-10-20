@@ -119,6 +119,48 @@ pub(crate) struct Leases {
     pins: HashMap<TreeArtifact, usize>,
 }
 
+impl UploadState {
+    /// Drops the uploads in progress into `tree` and the leases of its
+    /// finished uploads, for a tree that is being deleted. A chunk being
+    /// written finishes first; its upload then goes with its last handle.
+    pub(crate) fn forget_tree(&self, tree: SessionId) {
+        let uploads = self
+            .in_progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(id, entry)| (id.clone(), Arc::clone(&entry.upload)))
+            .collect::<Vec<_>>();
+        let dropped = uploads
+            .into_iter()
+            .filter(|(_, upload)| {
+                upload
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .tree
+                    == tree
+            })
+            .map(|(id, _)| id)
+            .collect::<HashSet<_>>();
+        let removed = {
+            let mut in_progress = self
+                .in_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            dropped
+                .iter()
+                .filter_map(|id| in_progress.remove(id))
+                .collect::<Vec<_>>()
+        };
+        drop(removed);
+        self.leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expiry
+            .retain(|(of, _), _| *of != tree);
+    }
+}
+
 impl Leases {
     /// The digests of `tree` no sweep may delete: leased or pinned.
     pub(crate) fn held(&self, tree: SessionId) -> HashSet<String> {

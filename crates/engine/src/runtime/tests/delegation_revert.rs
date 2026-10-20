@@ -93,7 +93,7 @@ async fn held_background_child_server(
     )
 }
 
-async fn start_held_background_delegation(
+pub(super) async fn start_held_background_delegation(
     expect_wake: bool,
 ) -> (
     Fixture,

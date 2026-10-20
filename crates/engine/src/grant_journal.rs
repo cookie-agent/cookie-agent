@@ -76,6 +76,14 @@ impl GrantJournals {
         Ok(journal)
     }
 
+    /// Closes the journal of a tree that was deleted.
+    pub fn forget(&self, root: SessionId) {
+        self.journals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&root);
+    }
+
     /// Invalidated grant IDs of every tree whose journal is open.
     #[must_use]
     pub fn invalidated_ids(&self) -> HashSet<TreeApprovalGrantId> {

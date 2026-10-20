@@ -79,6 +79,7 @@ mod recovery;
 mod residency;
 mod runs;
 mod runtime_notes;
+mod session_delete;
 mod sessions;
 mod skills;
 mod submit;
@@ -202,6 +203,18 @@ pub enum EngineError {
     SessionRunning(SessionId),
     #[error("session {session_id} changed since it was viewed (now at seq {current_last_seq})")]
     StaleRevert {
+        session_id: SessionId,
+        current_last_seq: u64,
+    },
+    #[error("session {session_id} is a subagent of session {root_session_id}; delete the root")]
+    NotARootSession {
+        session_id: SessionId,
+        root_session_id: SessionId,
+    },
+    #[error("session {busy} of the tree rooted at {root} is running")]
+    SessionTreeRunning { root: SessionId, busy: SessionId },
+    #[error("session {session_id} changed since it was shown (now at seq {current_last_seq})")]
+    StaleDelete {
         session_id: SessionId,
         current_last_seq: u64,
     },
