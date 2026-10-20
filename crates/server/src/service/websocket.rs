@@ -858,7 +858,11 @@ mod authentication_tests {
         daemon.stop().await;
 
         // Listed, it connects and authenticates in its handshake.
-        let daemon = Daemon::start_on(port, AllowedOrigins::from_config(&[origin.clone()])).await;
+        let daemon = Daemon::start_on(
+            port,
+            AllowedOrigins::from_config(std::slice::from_ref(&origin)),
+        )
+        .await;
         let mut socket = daemon
             .connect("/ws", None, Some(&origin))
             .await
