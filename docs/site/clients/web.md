@@ -62,32 +62,56 @@ address bar.
   closes its connection before the handshake. The usual cause is an origin
   missing from `allowed_origins`, so the page quotes its own origin as the
   entry to add.
-- **Once connected**, the header shows the connection's state: connected,
-  connecting, reconnecting, or offline. Hover over it for the daemon's
-  address and version, or click it for a panel with them and **Forget this
-  daemon**.
+- **Once connected**, the foot of the rail (see [Layout](#layout)) shows
+  the connection's state: connected, connecting, reconnecting, or offline.
+  Hover over it for the daemon's address and version, or click it for a
+  panel with them and **Forget this daemon**. Settings › This browser has
+  **Forget this daemon** too.
   - **Dropped connection.** The page redials with the TUI's backoff,
     500 ms rising to 10 s, under the same client identity.
   - **Background tab.** When it becomes visible again, the page checks the
     connection.
   - **Separate clients.** Each browser tab is its own client.
-- **Theme.** The theme button in the header cycles through system (a half
-  circle), light (a sun), and dark (a moon). The choice stays in the
-  browser.
+- **Theme.** The theme button at the foot of the rail (in the header of
+  the connect screen) cycles through system (a half circle), light (a sun),
+  and dark (a moon). The choice stays in the browser.
+
+## Layout
+
+- **The rail.** An icon strip on the far left switches between five views;
+  each icon names itself in a tooltip, and the view shown is marked by a
+  bar at the rail's edge:
+  - **Chat** (the default): the sessions sidebar and the transcript;
+  - **Agents**: the agent documents and their presets;
+  - **Settings**: `config.toml`, providers, MCP servers, plugins, and this
+    browser's preferences;
+  - **Machines & runtimes**: the daemon's machines and its runtime
+    registry;
+  - **Memory**.
+
+  The connection and the theme button are at its foot. `/config`,
+  `/connect`, `/mcp`, `/plugins`, and `/memory` open their view; the
+  session's own commands open sheets.
+- **Chat.** The title bar has the sidebar button, the session's title, and
+  the ⋮ menu of the session's commands. Below the transcript are the
+  composer and the bottom bar.
+- **Widths.**
+  - **1024 px and wider:** the sessions sidebar is pinned beside the
+    transcript. The sidebar button hides and shows it, and the browser
+    remembers the choice.
+  - **640 to 1023 px:** the rail stays; the sidebar button slides the
+    sessions over the transcript.
+  - **Narrower, a phone:** see [Phones](#phones).
+- **Sheets.** The session's panels open as a sheet on the right (from the
+  bottom on a phone): approvals, the agent, model, and preset pickers,
+  usage, the diagnostics filter, the goal, background calls, skills,
+  permissions, a message's actions, the session's runtimes, and the ⋮
+  menu.
+- **Long lines** in code, diffs, and terminal output scroll inside their
+  block.
 
 ## Sessions and chat
 
-- **Layout.**
-  - **Wide windows:** the session list is on the left, the transcript in
-    the middle, and the composer and status bar at the bottom.
-  - **Panels:** these open as a sheet on the right. They cover approvals,
-    the agent, model, and preset pickers, usage, the diagnostics filter,
-    the goal, background calls, skills, permissions, a message's actions,
-    runtimes and machines, MCP servers, providers, the configuration,
-    memory, plugins, and the command menu.
-  - **Narrow windows such as a phone:** the session list and every panel
-    open full screen. Long lines in code, diffs, and terminal output scroll
-    inside their block.
 - **Sessions.** The page has no directory of its own, so the list shows
   every directory's sessions, with a filter by directory.
   - **Rows.** Each session shows its title, an icon for its status
@@ -96,10 +120,10 @@ address bar.
     for the directory's full path.
   - **New session** starts a draft in a directory you name; leave it empty
     for the daemon's own. The first message creates the session with the
-    agent and model shown, and the permission mode the status bar shows.
+    agent, model, and permission mode the bottom bar shows.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
-- **Subagents.** The **Agents** panel above the session list shows the
+- **Subagents.** The subagent tree above the session list shows the
   viewed session's tree: each delegated agent with its task, with a turning
   circle while it runs. Click one to open it, and the chevron beside it to
   fold its children. A session link in
@@ -150,8 +174,13 @@ address bar.
   - `/runtime` (also `/runtimes`), `/mcp`, `/connect`, `/config`,
     `/memory` (also `/memories`), `/plugins` (also `/plugin`).
 
-  The **Commands** button (⋮, beside the agent and model) lists them all.
-- **Approvals.** When a tool call needs an answer, the status bar says so.
+  The ⋮ menu in the title bar lists the session's own commands: `/runtime`,
+  `/permissions`, `/goal`, `/background`, `/usage`, `/compact`,
+  `/skills`, `/events`, `/preset`, and `/agent-panel`. The others have
+  their place in the page: the bottom bar picks the agent, model, and mode
+  and answers approvals; the composer attaches, sends, and cancels; the
+  sidebar starts and opens sessions; and the rail has the daemon's views.
+- **Approvals.** When a tool call needs an answer, the bottom bar says so.
   Open it to approve once, approve for the session tree, or reject.
 - **Compacting.** `/compact` compacts the session's context, and
   `/compact <focus>` says what the summary should keep. Escape, or
@@ -184,12 +213,15 @@ address bar.
   Click an effect to override it, add a rule for a pattern, or the × on an
   override to remove it. While a new session is composed, the same table edits the
   rules it will be created with, previewed against its agent.
-- **Status bar.** Each indicator has an icon and says more on hover:
-  - the permission mode (click it for the next one);
+- **Bottom bar.** Below the composer; each part has an icon and says more
+  on hover:
+  - the agent and the model, as chips that open their pickers;
+  - the permission mode, each with its own shield (click it for the next
+    one);
   - the approvals waiting, when there are any (click to answer them);
   - **working…** while the session runs;
   - the last status message;
-  - the context size, in tokens, of the last request;
+  - the context size, in tokens, of the last request (also in `/usage`);
   - the session's cost (click for `/usage`).
 - **Diagnostics.** `/events` picks which diagnostic rows the transcript
   shows; the choice stays in the browser.
@@ -199,7 +231,7 @@ address bar.
 
 ## Managing the daemon
 
-- **Runtimes.** `/runtime` lists the session's attached runtimes with their
+- **Runtimes.** `/runtime` (in the ⋮ menu) lists the session's attached runtimes with their
   status: **Attach a runtime** searches every runtime's capabilities and asks
   for a workspace when one is needed, **Detach** removes one (the daemon
   refuses while the session runs), and **Retry** restarts a failed
@@ -208,45 +240,78 @@ address bar.
   attach: `global` and `local`'s `coding` at its directory to start with.
   Each starts at once, so a runtime that cannot start says why before the
   session exists.
-  - The open panel reads the runtimes again every second.
-- **Machines.** The **Machines** tab of `/runtime` lists each machine with
+  - The open panel reads the runtimes again every second, and links to
+    the Machines & runtimes view.
+- **Machines.** The **Machines & runtimes** view lists each machine with
   its runtimes. Rename or forget a machine, merge it into another (its
-  memories move too), move a runtime to a machine, or unpin it.
-- **MCP servers.** `/mcp` lists every runtime's servers with their state,
+  memories move too), move a runtime to a machine, or unpin it. Under the
+  machines, the runtime registry lists every runtime: whether it is
+  connected, its machine and platform, its capabilities, and why it last
+  failed to connect.
+- **MCP servers.** Settings › MCP servers (`/mcp`) lists every runtime's servers with their state,
   tools, and last error. The global runtime's servers can be added, edited,
   enabled or disabled, removed, and kept in your `config.toml`; a coding
   runtime's come from its template. **Reconnect** works for any server.
   - A server that needs authorization says so. The page cannot sign in to
     it: run `cookie mcp auth <server>` on a machine with a browser, or
     authorize it from the TUI.
-- **Providers.** `/connect` lists the catalog's providers. Pick one to
+- **Providers.** Settings › Providers (`/connect`) lists the catalog's providers. Pick one to
   connect it, or to update or disconnect its stored connection. Credentials
   are typed into password fields, read once when you connect, and never
   kept by the page; closing the form clears them.
-- **Configuration.** `/config` lists `config.toml` and the agent documents.
+- **Configuration.** Settings › Configuration (`/config`) has
+  `config.toml`, and the **Agents** view the agent documents, by preset.
   Open one to edit it in the page and **Apply** it. A change the daemon
   refuses stays open with the reason, to be fixed and applied again; a
-  document that changed meanwhile is reloaded instead. Create an agent
-  document, delete one, or **Reload from disk** after editing files by
-  hand.
-- **Memory.** `/memory` lists the memories by layer, grouped by machine and
+  document that changed meanwhile is reloaded instead. The Agents view
+  creates an agent document or deletes one; both reload from disk after
+  editing files by hand.
+- **Memory.** The **Memory** view (`/memory`) lists the memories by layer, grouped by machine and
   project, with the files that are not valid memories. Open one to edit it,
   create one at a URL (clicking a layer or group fills in its prefix), or
   delete one. A memory that changed since you opened it is never
   overwritten silently: you choose to reload it, overwrite it, or drop your
   edit.
-- **Plugins.** `/plugins` lists each plugin with its state, tools, hooks,
+- **Plugins.** Settings › Plugins (`/plugins`) lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
-  status bar.
+  bottom bar.
+- **This browser.** Settings › This browser picks the diagnostics the
+  transcript shows (as `/events` does) and forgets the daemon.
 
 ## Phones
 
-- **Layout.** The page works from 360 px wide, in portrait and landscape.
-  The session list and every panel open full screen, buttons are at least
-  44 px, and long lines in code, diffs, and terminal output scroll inside
-  their block rather than the page.
+- **Size.** The page works from 360 px wide, in portrait and landscape.
+  Buttons are at least 44 px, and long lines in code, diffs, and terminal
+  output scroll inside their block rather than the page.
+- **Chat.**
+  - **Title bar:** the sidebar button, the session's title on one line,
+    and ⋮, which opens the session's commands as a sheet from the bottom.
+  - **Bottom bar:** one row. The model chip takes the room left and
+    shortens its name first; the agent chip shows only its icon below
+    about 380 px; the permission mode is its shield, and a tap says
+    "now: <mode>" for a moment; the cost shows to the cent ("$0.02") and
+    opens `/usage`, which also has the context size. Every picker opens
+    from the bottom.
+  - **Status line:** a thin line above the composer, only while the
+    session runs, while approvals wait (tap the badge to answer), or for a
+    few seconds after a status message.
+- **The drawer.** The sidebar button opens a drawer from the left over
+  the dimmed page: the rail as an icon strip, with the theme button at its
+  foot, beside the sessions. A tap outside, browser Back, or choosing a
+  session or a view closes it. It opens only from the button: a swipe from
+  the edge is the browser's Back.
+- **Other views** fill the screen under the same title bar. Lists open
+  their details one level at a time, such as a Settings section, then a
+  document: the back arrow in the title bar, or browser Back, goes up one
+  level. An editor fills the screen with **Apply** or **Save** and
+  **Cancel** at its foot. Only Chat has the composer and the bottom bar.
+- **On its side** (about 844×390), a phone gets the 640 px layout: the
+  rail stays, the sessions slide over, and the bottom bar sits beside the
+  composer.
 - **The on-screen keyboard.** The page sizes itself to what the keyboard
-  leaves visible, so the composer and an open panel stay above it.
+  leaves visible, so the composer and an open sheet stay above it. While
+  the composer has focus, the bottom bar steps aside, so only the composer
+  (and the status line, when it shows) sits above the keyboard.
 - **Home screen.** Add the page to the home screen from the browser's menu.
   It opens on its own, without the browser's address bar, with the cookie
   icon. The page keeps working only while it reaches the daemon: it stores
