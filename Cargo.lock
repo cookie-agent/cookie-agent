@@ -946,6 +946,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "cookie_agent_identity",
+ "crc32fast",
  "futures-util",
  "gloo-timers",
  "insta",

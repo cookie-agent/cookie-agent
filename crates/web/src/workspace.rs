@@ -1434,6 +1434,10 @@ pub fn level_from_storage(stored: Option<&str>) -> EventLevel {
     }
 }
 
+fn client_run_id() -> ClientRunId {
+    ClientRunId::new(format!("web-{}", uuid::Uuid::now_v7())).expect("a bounded client run id")
+}
+
 #[cfg(test)]
 mod tests {
     use cookie_agent_client_state::EventLevel;
@@ -1445,10 +1449,9 @@ mod tests {
         assert_eq!(level_from_storage(Some("info")), EventLevel::Info);
         assert_eq!(level_from_storage(Some("debug")), EventLevel::Debug);
         assert_eq!(level_from_storage(None), EventLevel::DEFAULT_MINIMUM);
-        assert_eq!(level_from_storage(Some("loud")), EventLevel::DEFAULT_MINIMUM);
+        assert_eq!(
+            level_from_storage(Some("loud")),
+            EventLevel::DEFAULT_MINIMUM
+        );
     }
-}
-
-fn client_run_id() -> ClientRunId {
-    ClientRunId::new(format!("web-{}", uuid::Uuid::now_v7())).expect("a bounded client run id")
 }

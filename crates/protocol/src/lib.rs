@@ -191,6 +191,7 @@ mod goal;
 mod identity;
 mod input_lanes;
 mod manifest;
+pub mod media_sniff;
 mod memory;
 mod model;
 #[cfg(all(feature = "oauth-callback", not(target_arch = "wasm32")))]

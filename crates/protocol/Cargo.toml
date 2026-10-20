@@ -28,6 +28,7 @@ workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 cookie_agent_identity = { version = "=0.3.0", path = "../identity" }
+crc32fast.workspace = true
 futures-util.workspace = true
 jiff.workspace = true
 oven-sdk.workspace = true
