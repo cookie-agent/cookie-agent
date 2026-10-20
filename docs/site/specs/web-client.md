@@ -797,3 +797,82 @@ no wire change.
 - **CI.** A `wasm` job checks the crate for wasm32 and runs clippy over it
   with `websocket` and its tests. The browser tests are not run in CI: they
   need Firefox, geckodriver, and `wasm-bindgen-test-runner`.
+
+### Phase W0b (2026-10-19)
+
+The second half of W0: the shared client state (section 5). There is no
+wire change, and the TUI's behaviour and tests are unchanged, except for
+paths that moved.
+
+- **New crate.** `crates/client_state` (`cookie_agent_client_state`) is
+  published with the other library crates, after `cookie_agent_protocol`.
+  - It depends on `cookie_agent_protocol` and plain crates only:
+    `pulldown-cmark`, `foldhash`, `jiff`, `serde_json`, `base64`, and
+    `web-time`. `web-time` gives the replay watchdog an `Instant` that
+    works in a browser, where `std`'s panics.
+  - Nothing in it renders, and it builds for wasm32.
+  - The TUI's `state` module is now a re-export of it.
+  - **Visibility.** `SessionState`'s bookkeeping fields became public,
+    because the TUI's tests build it with struct-update syntax.
+  - **Test helpers.** The few helpers the TUI's tests use sit behind a
+    `test-support` feature.
+- **Moved.**
+  - The reducer, `StateStore`, `SessionState`, the runtime snapshot chain,
+    model display names, and their tests.
+  - The markdown parse (`client_state::markdown`).
+  - `ownership`: classifying a `session.resume` result, with "owned by
+    another process" meaning a read-only snapshot.
+  - `model_draft`: the 300 ms publish debounce as a generation check, and
+    yielding to a live `session_model_selected` from another origin.
+  - `subscriptions`:
+    - the eight-tree recency set with its eviction;
+    - `SessionState::is_settled`;
+    - the 2 s retry wait;
+    - the redial backoff, 500 ms to 10 s.
+  - `uploads`: the model's accepted media, the chunked
+    `artifact.upload.*` exchange, and its refusal messages.
+
+  No timer runs in the crate: it returns the delays, and the client
+  sleeps them.
+- **Stayed in the TUI.**
+  - **The subscription state machine** (subscribing, live, recovering,
+    resubscribe-after-ownership). Its transitions start the TUI's RPC
+    tasks. It shares the ownership sets with the view, and it holds the
+    watch the session switch waits on. Moving it needs a command interface
+    better shaped with the web client as a second user (W2).
+  - **The ownership bookkeeping.** The generation map and the owned and
+    read-only sets are read across the view.
+  - **The draft's reset intent and fallback resets.**
+  - **Upload file handling.** Reading the file and sniffing its content
+    with `runtime_api`'s `validate_upload` stay in the TUI, because that
+    crate is not a plain dependency. The web client needs its own sniffing
+    or a move of that function.
+  - **Everything section 5 lists as staying.**
+- **Markdown: measured.** The release-mode `transcript_perf` harness ran on
+  150 runs: 632 items, 12,814 lines, 300 code blocks, 419 KB of reply
+  markdown. Before and after the move it measured:
+  - unchanged redraw: 0.60 ms (0.59 ms with descendant rows), the same as
+    before;
+  - streaming text delta and redraw: 1.06 ms;
+  - first draw: 1.7 to 1.8 s, the same within noise;
+  - resize: 92 ms.
+
+  Two further measurements:
+  - Parsing all 419 KB of reply markdown from source takes 1.26 ms, twice
+    an unchanged redraw.
+  - Streaming an eight-run reply in 909 deltas costs 1.16 ms when only the
+    open tail is re-parsed, and 33.9 ms when the whole reply is re-parsed
+    after every delta.
+- **Markdown: chosen.** The state keeps the source plus pulldown-cmark
+  events per top-level block, parsed incrementally, as the TUI already did.
+  - A source-only state would make each client re-implement the
+    incremental open-tail parse, about 30 times cheaper per streamed delta
+    than parsing the whole reply.
+  - It would also make each client cache its parse to keep redraws at
+    0.6 ms.
+  - The ratatui styling, the syntax highlighting, and the TUI's per-block
+    render and highlight caches stay in `crates/tui/src/markdown.rs`. They
+    live in each block's `RendererCache`, a slot that clones of a block
+    share, so no redraw re-renders what it did not before.
+- **CI.** The `wasm` job also checks `cookie_agent_client_state` and runs
+  clippy over it.
