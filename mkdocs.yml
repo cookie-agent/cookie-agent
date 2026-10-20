@@ -115,7 +115,6 @@ nav:
           - 'Theme [theme]': tui/theme.md
   - Reference:
       - Tools: reference/tools.md
-      - Tools as sent to the model: guide/tools.md
       - System prompt: reference/system-prompt.md
       - Client protocol: reference/protocol.md
       - Protocol changelog: reference/protocol-changelog.md

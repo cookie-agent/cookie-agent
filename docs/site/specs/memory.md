@@ -1050,7 +1050,7 @@ Where things are, for the later phases:
   exists (`OnceLock<Weak<Inner>>`). Composition
   (`Engine::compose_for_policy`) publishes its tools only when
   `memory_access` says the run has memory. `memory_tool_specs()` feeds the
-  generated [Tools](../guide/tools.md) page.
+  generated [Tools](../reference/tools.md) page.
 - **History** (`crates/engine/src/model_history.rs`): the latest
   `memory_loaded` of the log renders after the `AGENTS.md` turn and is
   pinned through compaction with it.
@@ -1223,7 +1223,7 @@ has the `memory.*` methods and `memory.changed`, the
 the [error reference](../reference/errors.md) the `memory_*` codes, and
 [Terminal UI](../clients/tui.md#command-palette) the `/memory` command. The configuration
 reference for `[memory]` ([Memory](../engine/memory.md)), the
-[Tools](../guide/tools.md) page, the [Events](../reference/events.md)
+[Tools](../reference/tools.md) page, the [Events](../reference/events.md)
 reference for `memory_loaded`, the [system prompt reference](../reference/system-prompt.md),
 and [Agents](../extend/agents.md) were checked against the code and needed no
 change beyond what is listed here. No deviations.

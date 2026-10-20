@@ -112,7 +112,7 @@ to the files reach open sessions at those points, and new sessions at once.
 
 ## Tools
 
-The `global` runtime offers five tools ([Tools](../guide/tools.md#memory_search)):
+The `global` runtime offers five tools ([Tools](../reference/tools.md#memory_search)):
 
 | Tool | Does |
 |---|---|

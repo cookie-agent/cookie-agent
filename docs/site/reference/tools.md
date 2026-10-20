@@ -1,8 +1,54 @@
-# Tool Reference
+<!-- The regions between the generated markers are rendered by
+crates/cookie_agent/tests/tool_reference.rs from the built-in tool specs. Do not
+edit them by hand; regenerate them with
+COOKIE_UPDATE_TOOL_DOCS=1 cargo test -p cookie_agent --test tool_reference -->
+
+# Tools
+
+This page shows each built-in tool exactly as Cookie Agent sends it to the model:
+its name, its description, and the JSON Schema of its parameters. Provider adapters
+place these three fields in their own request format but do not rewrite them. It
+also states each tool's contract: what a call does, its output, retention,
+limits, and how clients display it.
 
 Cookie Agent publishes tools according to the active agent's permissions and the
 capabilities of the selected model. Tool argument objects are strict: unknown
 fields and wrong types are rejected.
+
+A tool is sent only when the active agent has an `allow` or `ask` rule for the
+tool's permission. A tool whose permission is *none* needs no rule: it is always
+sent and every call is allowed. Some tools have further conditions, noted under
+each tool.
+MCP and plugin tools are described by their servers and plugins; this page
+covers only how clients display [MCP tools](#mcp-tools).
+
+To see which tools a real session sent with its latest request, expand the tools
+block under the system prompt in the TUI transcript.
+
+<!-- generated: tool-table -->
+
+| Tool | Permission |
+|---|---|
+| [`read`](#read) | `read` |
+| [`write`](#write) | `write` |
+| [`edit`](#edit) | `write` |
+| [`bash`](#bash) | `bash` |
+| [`webfetch`](#webfetch) | `webfetch` |
+| [`skill`](#skill) | `skill` |
+| [`delegate_subagent`](#delegate_subagent) | `delegate` |
+| [`get_subagent_result`](#get_subagent_result) | `delegate` |
+| [`send_message`](#send_message) | `message` |
+| [`goal_get`](#goal_get) | *none* |
+| [`goal_update`](#goal_update) | *none* |
+| [`read_artifact`](#read_artifact) | *none* |
+| [`stop_background`](#stop_background) | *none* |
+| [`memory_search`](#memory_search) | *none* |
+| [`memory_read`](#memory_read) | `memory` |
+| [`memory_write`](#memory_write) | `memory_write` |
+| [`memory_edit`](#memory_edit) | `memory_write` |
+| [`memory_delete`](#memory_delete) | `memory_write` |
+
+<!-- /generated -->
 
 ## Execution concurrency
 
@@ -72,70 +118,17 @@ reads are the same with or without it.
 The per-tool **Display** sections below list each tool's hint, arguments,
 preview, and result blocks.
 
-## Webfetch
-
-`webfetch` accepts `{"url":"https://docs.quantumcookie.xyz/", "raw":false}`.
-`url` is required; `raw` defaults to false. The URL must start with a lowercase
-`http://` or `https://` prefix; any other scheme is rejected with `invalid_url`
-before a request is sent. One permission check uses the initial URL including
-its query string. Without a matching rule the call is denied, and without any
-`allow` or `ask` rule for `webfetch` the tool is not advertised. Explicit `ask`
-rules still use the normal approval flow.
-
-Output starts with four header lines (`final_url`, `status_code`, `content_type`,
-and `truncated`), followed by a blank line and the text body verbatim. Body
-newlines are physical newlines, not JSON escapes. Structured `url`, `final_url`,
-`status_code`, `content_type`, and `truncated` fields remain in result metadata.
-HTML (`text/html` or `application/xhtml+xml`) is rendered by html2text at width
-80 unless `raw` is true. Text types, JSON, XML, JavaScript, form data, and
-`+json`/`+xml` types pass through as text; raw and non-HTML text use UTF-8 lossy
-decoding. Binary types are rejected, including in raw mode. Missing or invalid
-Content-Type is treated as `application/octet-stream` and rejected.
-
-The request has a 30-second overall timeout, inherits environment proxies, and
-uses reqwest's default redirect policy (10 hops). Redirect hops are not
-permission-checked. HTTP error statuses are returned with their text bodies.
-There are no additional SSRF, host/IP, DNS, or userinfo checks.
-
-Downloads are streamed to a fixed 16 MiB cap, or 4 MiB for HTML that is
-converted to text. Over-cap responses return the fetched prefix with
-`truncated: true`, not an error. The caps have no input or configuration
-parameter. Full results use the standard event log and result
-store. The standard Bounded policy retains oversized output and sends a preview
-to the model. `read_artifact` pages the retained header and body by physical
-line; its zero-based offset 5 starts at the body. Follow `next_offset` for
-successive pages. Metadata is separate and is not paged. `read_artifact` needs
-no permission rule.
-
-Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
-`transport_error`, and `unsupported_content_type` (which names the content type).
-`permission_denied` uses the standard policy-denial path and its structured
-`tool_denied` reason.
-
-### Display
-
-| | `webfetch` |
-|---|---|
-| Hint | `fetch` |
-| Title | `Fetch <url>` |
-| Arguments | `link` of the URL, plus `key_value` `raw: yes` when `raw` is set |
-| Preview | – |
-| Result | `key_value` of `status`, `content type`, and `final URL` (and `truncated: yes` for an over-cap body), then the body's first lines within 24 KiB as `markdown` for `text/markdown` and `text` otherwise, counting the rest in `omitted_lines` |
-
 ## Filesystem tools
 
-`read` accepts `filePath`, plus optional zero-based `offset` and positive
-`limit`. The defaults return at most 2,000 lines or directory entries. The path
-is resolved when the call is prepared; the content is read when it executes.
+`read`'s `limit` must be positive. The path is resolved when the call is prepared; the content is read when it executes.
 A text line longer than 4 KiB is cut and ends with a
 `[line truncated: N more bytes]` marker, and a page that would exceed the result
 size limit stops early with a `continue with offset=N` note (also reported as
 `next_offset` in the metadata). Media files are checked against the size limits
 before they are read in full.
 
-`write` accepts `filePath` and complete `content`. `edit` accepts `filePath`,
-`oldString`, and `newString`, and requires the old text to identify one
-unambiguous replacement. Preparation checks the replacement against the current
+`write` takes the file's complete `content`. `edit` requires `oldString` to
+identify one unambiguous replacement. Preparation checks the replacement against the current
 content so a mismatch fails before approval, but the edit itself is applied to
 the file's content at execution: changes made while an approval was pending are
 kept, and an `oldString` that no longer matches fails the call. Both tools
@@ -146,6 +139,164 @@ call order, so same-file edits in one turn apply on top of each other.
 Tool results may include image, PDF, audio, or video attachments. Attachments
 are validated, content-addressed, and supplied to models as file parts rather
 than embedded in text output.
+
+### `read`
+
+<!-- generated: tool read -->
+
+```text
+read(filePath: string, limit?: integer, offset?: integer)
+```
+
+Description sent to the model:
+
+```text
+Read a text/image/video file or a directory snapshot using a zero-based offset.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | `string` | yes | Path to the file or directory. Relative paths resolve against the session working directory. |
+| `limit` | `integer` | no | Maximum number of entries or lines to return. Defaults to 2000. |
+| `offset` | `integer` | no | Zero-based entry or line offset. Defaults to 0. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "filePath": {
+          "description": "Path to the file or directory. Relative paths resolve against the session working directory.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of entries or lines to return. Defaults to 2000.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Zero-based entry or line offset. Defaults to 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "filePath"
+      ],
+      "title": "ReadArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `write`
+
+<!-- generated: tool write -->
+
+```text
+write(content: string, filePath: string)
+```
+
+Description sent to the model:
+
+```text
+Write content to a file atomically, creating missing parent directories.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `content` | `string` | yes |  |
+| `filePath` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "filePath": {
+          "description": "Path to the file. Relative paths resolve against the session working directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "filePath",
+        "content"
+      ],
+      "title": "WriteArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `edit`
+
+<!-- generated: tool edit -->
+
+```text
+edit(filePath: string, newString: string, oldString: string, replaceAll?: boolean)
+```
+
+Description sent to the model:
+
+```text
+Replace oldString with newString in a file, atomically.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
+| `newString` | `string` | yes |  |
+| `oldString` | `string` | yes |  |
+| `replaceAll` | `boolean` | no | Default: `false`. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "filePath": {
+          "description": "Path to the file. Relative paths resolve against the session working directory.",
+          "type": "string"
+        },
+        "newString": {
+          "type": "string"
+        },
+        "oldString": {
+          "type": "string"
+        },
+        "replaceAll": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "filePath",
+        "oldString",
+        "newString"
+      ],
+      "title": "EditArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
 
 ### Display
 
@@ -267,10 +418,59 @@ accepts. The effective model must also declare the modality and limits.
 | Gemini, Vertex Gemini | User turn | User turn | User turn | User turn |
 | Cohere | User turn | No | No | No |
 
-## Bash
+## `bash`
 
-`bash` accepts a complete `command` and an optional `timeout` in
-milliseconds (default 120000; `0` never times out). It is
+<!-- generated: tool bash -->
+
+```text
+bash(command: string, timeout?: integer)
+```
+
+Description sent to the model on Linux and macOS:
+
+```text
+Execute one prepared shell command. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers.
+```
+
+Description sent to the model on Windows, where commands run in Git Bash:
+
+```text
+Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `command` | `string` | yes |  |
+| `timeout` | `integer` | no | Milliseconds before the command is killed; 0 never times out. Default: `120000`. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "timeout": {
+          "default": 120000,
+          "description": "Milliseconds before the command is killed; 0 never times out.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "title": "BashArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+`bash` takes one complete `command`. It is
 [background-capable](#background-calls): the host adds `background`
 (default `false`), and the timeout applies in the background too, so a
 command that keeps running, such as a dev server, needs `timeout: 0`.
@@ -307,6 +507,96 @@ in `omitted_lines`, and a cut block's `full` names the call's retained output:
 the first declared stream (`stdout`, then `stderr`) that outgrew its preview
 and was kept as an artifact. When neither stream was kept (both fit their
 previews), the model's output holds everything and `full` is absent.
+
+## `webfetch`
+
+<!-- generated: tool webfetch -->
+
+```text
+webfetch(raw?: boolean, url: string)
+```
+
+Description sent to the model:
+
+```text
+Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_artifact with the artifact a truncation hint names to page retained output, including the body.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `raw` | `boolean` | no | Default: `false`. |
+| `url` | `string` | yes |  |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "raw": {
+          "default": false,
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "WebfetchArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+A call looks like `{"url":"https://docs.quantumcookie.xyz/", "raw":false}`.
+The URL must start with a lowercase
+`http://` or `https://` prefix; any other scheme is rejected with `invalid_url`
+before a request is sent. One permission check uses the initial URL including
+its query string. Without a matching rule the call is denied. Explicit `ask`
+rules still use the normal approval flow.
+
+Output starts with four header lines (`final_url`, `status_code`, `content_type`,
+and `truncated`), followed by a blank line and the text body verbatim. Body
+newlines are physical newlines, not JSON escapes. Structured `url`, `final_url`,
+`status_code`, `content_type`, and `truncated` fields remain in result metadata.
+HTML (`text/html` or `application/xhtml+xml`) is rendered by html2text at width
+80 unless `raw` is true. Text types, JSON, XML, JavaScript, form data, and
+`+json`/`+xml` types pass through as text; raw and non-HTML text use UTF-8 lossy
+decoding. Binary types are rejected, including in raw mode. Missing or invalid
+Content-Type is treated as `application/octet-stream` and rejected.
+
+The request has a 30-second overall timeout, inherits environment proxies, and
+uses reqwest's default redirect policy (10 hops). Redirect hops are not
+permission-checked. HTTP error statuses are returned with their text bodies.
+There are no additional SSRF, host/IP, DNS, or userinfo checks.
+
+Downloads are streamed to a fixed 16 MiB cap, or 4 MiB for HTML that is
+converted to text. Over-cap responses return the fetched prefix with
+`truncated: true`, not an error. The caps have no input or configuration
+parameter. Full results use the standard event log and result
+store. The standard Bounded policy retains oversized output and sends a preview
+to the model. `read_artifact` pages the retained header and body by physical
+line; its zero-based offset 5 starts at the body. Follow `next_offset` for
+successive pages. Metadata is separate and is not paged.
+
+Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
+`transport_error`, and `unsupported_content_type` (which names the content type).
+`permission_denied` uses the standard policy-denial path and its structured
+`tool_denied` reason.
+
+### Display
+
+| | `webfetch` |
+|---|---|
+| Hint | `fetch` |
+| Title | `Fetch <url>` |
+| Arguments | `link` of the URL, plus `key_value` `raw: yes` when `raw` is set |
+| Preview | – |
+| Result | `key_value` of `status`, `content type`, and `final URL` (and `truncated: yes` for an over-cap body), then the body's first lines within 24 KiB as `markdown` for `text/markdown` and `text` otherwise, counting the rest in `omitted_lines` |
 
 ## Background calls
 
@@ -353,6 +643,46 @@ spec](../specs/background-tools.md) describes:
   parent's run does not reach its subagents: a foreground call it was
   waiting on ends cancelled with the detach note, and the subagent reports
   its turn as if the call had been moved to the background.
+
+### `stop_background`
+
+<!-- generated: tool stop_background -->
+
+```text
+stop_background(job: string)
+```
+
+Description sent to the model:
+
+```text
+Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status "stopped" and the output it produced. Given a subagent's handle, it cancels the turn the subagent is running; its <subagent_report> follows with status "cancelled", and the subagent can still be messaged or resumed.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `job` | `string` | yes | The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's handle. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "description": "The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's handle.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "title": "StopBackgroundArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
 
 ### Display
 
@@ -450,19 +780,77 @@ session of the tree runs or a capture is still publishing its terminal
 references. Artifacts orphaned any other way, such as by a crash or a cancelled
 capture, stay in the tree's `artifacts/` directory until the tree is deleted.
 
-Artifact lookup uses the `read_artifact` tool:
+### `read_artifact`
 
-| Argument | Meaning |
-|---|---|
-| `artifact` | The 64-character lowercase SHA-256 digest a hint names |
-| `stream` | Optional declared stream name of a named-output manifest |
-| `offset` | Optional zero-based line offset; default `0` |
-| `limit` | Optional line count; default and maximum `2000` |
+<!-- generated: tool read_artifact -->
 
-`read_artifact` is a base-layer tool. It needs no permission rule: it is always
-sent to the model and every call is allowed, whatever the agent's rules, because
-it can reach only artifacts stored in the calling session's own tree. A digest
-that names content another tree stored does not resolve. Digests are
+```text
+read_artifact(artifact: string, limit?: integer, offset?: integer, stream?: string)
+```
+
+Description sent to the model:
+
+```text
+Read retained tool output by line, using a zero-based offset. Truncated results and elided history name the artifact (and stream) to read in a read_artifact hint; continue from the offset it gives.
+```
+
+Always, whatever the agent's permission rules: it reads only output retained by the session's own tree.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `artifact` | `string` | yes | The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it. |
+| `limit` | `integer` | no | Maximum number of lines to return, at most 2000. Defaults to 2000. |
+| `offset` | `integer` | no | Zero-based line offset. Defaults to 0. |
+| `stream` | `string` | no | Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "description": "The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of lines to return, at most 2000. Defaults to 2000.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Zero-based line offset. Defaults to 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stream": {
+          "description": "Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "artifact"
+      ],
+      "title": "ReadArtifactArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+`read_artifact` is a base-layer tool. A digest that names content another tree stored does not resolve. Digests are
 content-addressed SHA-256 references, not random secrets. Malformed digests
 (bare `artifact://` URIs, the internal `sha256/` form, uppercase or short
 digests) and invalid stream names are rejected. `read` reads only the
@@ -520,9 +908,8 @@ actor serializes replacements, and the last accepted update wins. The tool has n
 `goal_id` or `expected_revision` parameter or lost-update protection. Its target is
 the current/latest session goal when the engine actor accepts the update, so an
 older run's update can intentionally affect a newly activated active or paused
-goal. Both tools are available
-only for root goals that are active or paused at run admission; lifecycle changes
-do not change an already-admitted run's tool set. Updates reject if the current
+goal. Lifecycle changes do not
+change an already-admitted run's tool set. Updates reject if the current
 goal is absent or terminal, even when the tool remains in an admitted run.
 Engine-owned goal IDs and revisions remain; `SessionGoalLifecycleParams.goal_id`
 and `expected_revision` apply to user lifecycle RPC controls, not model checklist
@@ -534,6 +921,98 @@ it even while paused. The root must verify evidence before marking items finishe
 return the full state without display truncation. Neither declares a
 permission: setting the goal is what publishes them, and they act on that goal
 alone, so permission rules do not govern them and every call is allowed.
+
+### `goal_get`
+
+<!-- generated: tool goal_get -->
+
+```text
+goal_get()
+```
+
+Description sent to the model:
+
+```text
+Read the root session's objective, lifecycle status, revision, and full checklist. The root checklist is authoritative; verify work directly or through subagents before treating an item as finished.
+```
+
+Only in a root session whose goal is active or paused when the run starts.
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "title": "GoalGetParams",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `goal_update`
+
+<!-- generated: tool goal_update -->
+
+```text
+goal_update(items: object[])
+```
+
+Description sent to the model:
+
+```text
+Replace the current root goal's full checklist. The current active or paused goal is selected when this update executes, even if the goal changed since this run started. The last accepted replacement wins. This cannot change the objective or issue lifecycle commands; a nonempty all-finished checklist completes the goal. Verify evidence directly or through subagents before marking items finished; the root checklist is authoritative over subagent self-reports.
+```
+
+Only in a root session whose goal is active or paused when the run starts.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `items` | `object[]` | yes |  |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$defs": {
+        "GoalItem": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "finished": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "description",
+            "finished"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`goal_update` replaces the current root goal's checklist at actor execution,\neven if the goal changed since the calling run started. It is never a lifecycle\ncommand. The engine rejects absent/terminal goals and blank descriptions.\nReplacements are serialized; the last accepted update wins. Duplicate descriptions\nare allowed. Empty items preserve active/paused status. A nonempty\nall-finished update completes even while paused, without scheduling a wake.",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/GoalItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "GoalUpdateParams",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
 
 ### Display
 
@@ -578,6 +1057,169 @@ metadata key and add `handle`. `resume_session_id` accepts the same two forms,
 and a terminal child woken by `send_message` reports as running until its new
 turn ends.
 
+### `skill`
+
+<!-- generated: tool skill -->
+
+```text
+skill(args?: string, name: string)
+```
+
+Description sent to the model:
+
+```text
+Load an available skill by name with optional arguments.
+```
+
+Only when at least one skill is visible to the session.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `args` | `string` | no | Default: `""`. |
+| `name` | `string` | yes |  |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SkillArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `delegate_subagent`
+
+<!-- generated: tool delegate_subagent -->
+
+```text
+delegate_subagent(agent_type: "<subagent id>", description: string, inherit_context?: boolean, prompt: string, resume_session_id?: string)
+```
+
+Description sent to the model:
+
+```text
+Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's handle. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its resume_session_id or send it a message.
+```
+
+Only when the agent can delegate to at least one subagent at this depth. The `agent_type` enum lists those subagents; this page shows a placeholder.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `agent_type` | `"<subagent id>"` | yes |  |
+| `description` | `string` | yes | Short (3-5 words) summary of the task |
+| `inherit_context` | `boolean` | no | Default: `false`. |
+| `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
+| `resume_session_id` | `string` | no | Optional. Handle or UUID of an existing subagent of yours to resume, e.g. "explore_1a2b3c4d". Only subagents you delegated are valid. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "agent_type": {
+          "enum": [
+            "<subagent id>"
+          ],
+          "type": "string"
+        },
+        "description": {
+          "description": "Short (3-5 words) summary of the task",
+          "type": "string"
+        },
+        "inherit_context": {
+          "default": false,
+          "type": "boolean"
+        },
+        "prompt": {
+          "description": "Full task brief with objective, context, and deliverable",
+          "type": "string"
+        },
+        "resume_session_id": {
+          "description": "Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "prompt",
+        "agent_type"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `get_subagent_result`
+
+<!-- generated: tool get_subagent_result -->
+
+```text
+get_subagent_result(limit?: integer, offset?: integer, session_id: string)
+```
+
+Description sent to the model:
+
+```text
+Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. "explore_1a2b3c4d". Only your own subagents are visible.
+```
+
+Only when the agent can delegate to at least one subagent at this depth.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `limit` | `integer` | no | Default: `2000`. |
+| `offset` | `integer` | no | Default: `0`. |
+| `session_id` | `string` | yes | Handle (agent_type + 8 hex, e.g. "coder_9f8e7d6b") or full UUID of one of your subagents. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 2000,
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "description": "Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
 ### Display
 
 | | `delegate_subagent` | `get_subagent_result` | `skill` |
@@ -600,13 +1242,64 @@ describes, which shows its output.
 `send_message` delivers a durable message to another session in the same
 delegation tree. It replaces the removed `steer_subagent` tool; see the
 [migration notes](../specs/agent-messaging.md#migration-notes). Its argument
-object is strict: `to` is the recipient handle or full session UUID, `body` is
-the markdown message text, and optional `mode` is `steer` (default) or `queue`.
-The recipient argument is named `to`; the earlier `recipient_session_id`
-spelling is not an alias and fails with `send_message:invalid_arguments`. A
+object is strict, and `body` is the markdown message text. The earlier
+`recipient_session_id` spelling of `to` is not an alias and fails with `send_message:invalid_arguments`. A
 non-UUID recipient is resolved as a handle in the sender's tree; if it matches
 no live peer the send fails with the self-repairing `unknown subagent reference`
 error rather than a `send_message:` code.
+
+### `send_message`
+
+<!-- generated: tool send_message -->
+
+```text
+send_message(body: string, mode?: "steer" | "queue", to: string)
+```
+
+Description sent to the model:
+
+```text
+Send a message to another agent in your session tree. Recipient accepts a subagent handle or a full UUID.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `body` | `string` | yes |  |
+| `mode` | `"steer" \| "queue"` | no | Default: `"steer"`. |
+| `to` | `string` | yes | Handle or full UUID of the recipient agent. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "mode": {
+          "default": "steer",
+          "enum": [
+            "steer",
+            "queue"
+          ],
+          "type": "string"
+        },
+        "to": {
+          "description": "Handle or full UUID of the recipient agent.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "body"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
 
 Calls use the `message` permission action. The resource label is the
 recipient's relationship to the sender — `parent`, `child`, `sibling`, or `*`
@@ -661,3 +1354,308 @@ the [agent messaging spec](../specs/agent-messaging.md) for the full contract.
 | Arguments | `key_value` of `to`, `mode`, and `body` |
 | Preview | – |
 | Result | the output as `text` |
+
+## Memory tools
+
+The memory tools search, read, and change the memories the `global` runtime
+keeps; see [Memory](../sessions/memory.md).
+
+### `memory_search`
+
+<!-- generated: tool memory_search -->
+
+```text
+memory_search(layer?: "user" | "agent" | "machine" | "project", limit?: integer, query: string)
+```
+
+Description sent to the model:
+
+```text
+Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, name, description, and body; results are ranked by keyword hits first. Results show each memory's URL, description, keywords, and up to three matching lines; a result you need approval to read shows only its URL and description. Search for the project a task belongs to by repository name, remote URL, or directory before starting work. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `layer` | `"user" \| "agent" \| "machine" \| "project"` | no | Only search this layer. |
+| `limit` | `integer` | no | The most results to return: 1 to 25. Defaults to 10. |
+| `query` | `string` | yes | Search terms, separated by whitespace: 1 to 200 characters. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$defs": {
+        "LayerArg": {
+          "description": "The layer a search narrows to.",
+          "enum": [
+            "user",
+            "agent",
+            "machine",
+            "project"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "layer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayerArg"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only search this layer."
+        },
+        "limit": {
+          "description": "The most results to return: 1 to 25. Defaults to 10.",
+          "format": "uint32",
+          "maximum": 25,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "Search terms, separated by whitespace: 1 to 200 characters.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "SearchArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `memory_read`
+
+<!-- generated: tool memory_read -->
+
+```text
+memory_read(url: string)
+```
+
+Description sent to the model:
+
+```text
+Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns its description, keywords, body, and revision; send the revision to memory_write, memory_edit, or memory_delete to change it.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "ReadArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `memory_write`
+
+<!-- generated: tool memory_write -->
+
+```text
+memory_write(body: string, description: string, keywords: string[], revision?: string, url: string)
+```
+
+Description sent to the model:
+
+```text
+Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. Writing the first memory of a project (project://<project>/<name>) creates the project. user:// categories cannot be created, only changed; agent://<agent> may be created only for an existing agent. Give each memory a one-line description and the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.
+```
+
+Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `body` | `string` | yes | The memory's Markdown body; may be empty. |
+| `description` | `string` | yes | One line, 1 to 200 characters, shown in indexes and search results. |
+| `keywords` | `string[]` | yes | Up to 32 keywords of 1 to 64 characters a later search would use. |
+| `revision` | `string` | no | The revision memory_read returned, to replace an existing memory; leave it out to create one. |
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The memory's Markdown body; may be empty.",
+          "type": "string"
+        },
+        "description": {
+          "description": "One line, 1 to 200 characters, shown in indexes and search results.",
+          "type": "string"
+        },
+        "keywords": {
+          "description": "Up to 32 keywords of 1 to 64 characters a later search would use.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "description": "The revision memory_read returned, to replace an existing memory;\nleave it out to create one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "description",
+        "keywords",
+        "body"
+      ],
+      "title": "WriteArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `memory_edit`
+
+<!-- generated: tool memory_edit -->
+
+```text
+memory_edit(new: string, old: string, revision: string, url: string)
+```
+
+Description sent to the model:
+
+```text
+Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. Never save secrets.
+```
+
+Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `new` | `string` | yes | Its replacement. |
+| `old` | `string` | yes | Text that occurs exactly once in the body. |
+| `revision` | `string` | yes | The revision memory_read returned. |
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "new": {
+          "description": "Its replacement.",
+          "type": "string"
+        },
+        "old": {
+          "description": "Text that occurs exactly once in the body.",
+          "type": "string"
+        },
+        "revision": {
+          "description": "The revision memory_read returned.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "old",
+        "new",
+        "revision"
+      ],
+      "title": "EditArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `memory_delete`
+
+<!-- generated: tool memory_delete -->
+
+```text
+memory_delete(revision: string, url: string)
+```
+
+Description sent to the model:
+
+```text
+Delete one machine:// or project:// memory at the revision memory_read returned. user:// and agent:// memories cannot be deleted. A project disappears with its last memory.
+```
+
+Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | `string` | yes | The revision memory_read returned. |
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "description": "The revision memory_read returned.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "revision"
+      ],
+      "title": "DeleteArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
