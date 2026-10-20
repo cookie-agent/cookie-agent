@@ -1,5 +1,7 @@
-//! The management sheets: `/runtime` with its machines, `/mcp`,
-//! `/connect`, `/config`, `/memory`, and `/plugins`.
+//! The management panels: the session's `/runtime` sheet, and the parts
+//! of the daemon-wide views: the machines and the runtime registry, `/mcp`,
+//! `/connect`, `/config` and the agent documents, `/memory`, and
+//! `/plugins`.
 
 use cookie_agent_client_state::{
     config::config_rows,
@@ -30,10 +32,13 @@ use crate::{
 };
 
 const FIELD: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
-const EDITOR: &str = "min-h-[40dvh] w-full resize-y rounded-md border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
-const TAB: &str = "min-h-11 flex-1 rounded-md px-3 text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+/// A document's text: it fills what its page leaves.
+const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-md border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 /// A small label for a thing's state.
 const STATE: &str = "shrink-0 rounded-full bg-toasted px-2 py-0.5 text-xs dark:bg-ember";
+/// An editor's page: the text fills it and the actions stay at its foot.
+const EDITOR_PAGE: &str = "flex min-h-full flex-1 flex-col gap-2";
+const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-toasted bg-cream px-3 py-2 dark:border-ember dark:bg-night";
 /// A confirmation before something cannot be undone.
 const CONFIRM: &str = "flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char";
 
@@ -60,40 +65,72 @@ fn field_value(id: &str) -> String {
 
 // ---- /runtime --------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeTab {
-    Attachments,
-    Machines,
-}
-
+/// The session's attached runtimes (`/runtime`); the daemon's machines and
+/// runtimes are a view of their own.
 pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
     poll_while_open(move || workspace.poll_runtimes());
-    let tab = RwSignal::new(RuntimeTab::Attachments);
-    let tab_button = move |which: RuntimeTab, label: &'static str, id: &'static str| {
-        view! {
-            <button
-                type="button"
-                id=id
-                class=TAB
-                class:font-bold=move || tab.get() == which
-                class:bg-cream=move || tab.get() == which
-                class:shadow-sm=move || tab.get() == which
-                class:dark:bg-night=move || tab.get() == which
-                aria-pressed=move || (tab.get() == which).to_string()
-                on:click=move |_| tab.set(which)
-            >
-                {label}
-            </button>
-        }
-    };
     view! {
-        <div class="flex gap-1 rounded-lg bg-parchment p-1 dark:bg-char" role="group" aria-label="Runtimes or machines">
-            {tab_button(RuntimeTab::Attachments, "Attached runtimes", "runtime-tab-attachments")}
-            {tab_button(RuntimeTab::Machines, "Machines", "runtime-tab-machines")}
-        </div>
-        {move || match tab.get() {
-            RuntimeTab::Attachments => attachments_view(workspace).into_any(),
-            RuntimeTab::Machines => machines_view(workspace).into_any(),
+        {attachments_view(workspace)}
+        <button
+            type="button"
+            id="runtime-open-machines"
+            class=format!("{BUTTON} mt-2 self-start")
+            on:click=move |_| workspace.open_view(crate::layout::View::Machines, None)
+        >
+            <Glyph icon=icondata::FaServerSolid />
+            "Machines & runtimes"
+        </button>
+    }
+}
+
+/// The daemon's machines and its runtime registry: the Machines &
+/// runtimes view.
+pub fn machines_page(workspace: Workspace) -> impl IntoView {
+    poll_while_open(move || workspace.poll_runtimes());
+    view! {
+        <h2 class="text-sm font-bold">"Machines"</h2>
+        {machines_view(workspace)}
+        <h2 class="mt-4 text-sm font-bold">"Runtimes"</h2>
+        {move || match workspace.runtimes.get() {
+            None => loading("Reading runtimes…").into_any(),
+            Some(listing) => listing
+                .runtimes
+                .into_iter()
+                .map(|runtime| {
+                    let lifetime = match runtime.lifetime {
+                        cookie_agent_protocol::RuntimeLifetime::Builtin => "built in",
+                        cookie_agent_protocol::RuntimeLifetime::DialIn => "dials in",
+                        cookie_agent_protocol::RuntimeLifetime::Spawned => "started by the daemon",
+                    };
+                    let capabilities = runtime
+                        .capabilities
+                        .iter()
+                        .map(|capability| capability.name.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let place = [
+                        runtime.machine.as_ref().map(|machine| format!("on {machine}")),
+                        runtime.platform.clone(),
+                        Some(lifetime.to_owned()),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                    view! {
+                        <div class="registry-row flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-runtime=runtime.runtime_id.to_string()>
+                            <div class="flex items-center gap-2">
+                                <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{runtime.runtime_id.to_string()}</span>
+                                <span class=STATE>{if runtime.connected { "connected" } else { "not connected" }}</span>
+                            </div>
+                            <span class=NOTE>{place}</span>
+                            {(!capabilities.is_empty()).then(|| view! { <span class=format!("font-mono {NOTE}")>{capabilities}</span> })}
+                            {runtime.message.clone().map(|message| view! { <span class=ERROR>{message}</span> })}
+                        </div>
+                    }
+                })
+                .collect_view()
+                .into_any(),
         }}
     }
 }
@@ -897,16 +934,36 @@ fn provider_view(
 
 // ---- /config ---------------------------------------------------------------
 
-pub fn config_sheet(workspace: Workspace) -> impl IntoView {
+/// Which documents a configuration list shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigScope {
+    /// `config.toml`: the Settings view's Configuration section.
+    Configuration,
+    /// The agent documents and their presets: the Agents view.
+    Agents,
+}
+
+impl ConfigScope {
+    fn holds(self, path: &str) -> bool {
+        (path == "config.toml") == (self == Self::Configuration)
+    }
+}
+
+pub fn config_sheet(workspace: Workspace, scope: ConfigScope) -> impl IntoView {
     let confirm_delete = RwSignal::new(None::<String>);
     move || {
-        if let Some(edit) = workspace.config_edit.get() {
+        if let Some(edit) = workspace
+            .config_edit
+            .get()
+            .filter(|edit| scope.holds(&edit.path))
+        {
             let path = edit.path.clone();
             return view! {
+                <div class=EDITOR_PAGE>
                 <p class="font-mono text-sm font-bold" id="config-path">{path}</p>
                 {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
                 <textarea id="config-text" class=EDITOR spellcheck="false">{edit.text.clone()}</textarea>
-                <div class="flex gap-2">
+                <div class=EDITOR_ACTIONS>
                     <button
                         type="button"
                         id="config-apply"
@@ -924,8 +981,9 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                         "Apply"
                     </button>
                     <button type="button" class=BUTTON on:click=move |_| workspace.config_edit.set(None)>
-                        "Close"
+                        "Cancel"
                     </button>
+                </div>
                 </div>
             }
             .into_any();
@@ -940,6 +998,11 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
         let drafts = workspace.config_drafts.get();
         let rows = config_rows(&config)
             .into_iter()
+            .filter(|row| match &row.path {
+                Some(path) => scope.holds(path),
+                // A preset's heading belongs with its agents.
+                None => scope == ConfigScope::Agents,
+            })
             .map(|row| match row.path.clone() {
                 None => view! { <h3 class="mt-3 px-3 text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">{row.label}</h3> }.into_any(),
                 Some(path) => {
@@ -1004,15 +1067,19 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                 }
             })}
             <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
-                <label class="flex flex-col gap-1 text-sm">
-                    <span class="font-bold">"New agent"</span>
-                    <input type="text" id="config-new-path" class=FIELD value="agents/" />
-                </label>
+                <Show when=move || scope == ConfigScope::Agents>
+                    <label class="flex flex-col gap-1 text-sm">
+                        <span class="font-bold">"New agent"</span>
+                        <input type="text" id="config-new-path" class=FIELD value="agents/" />
+                    </label>
+                </Show>
                 <div class="flex flex-wrap gap-2">
-                    <button type="button" id="config-new" class=PRIMARY on:click=move |_| workspace.new_agent(&field_value("config-new-path"))>
-                        <Glyph icon=icondata::FaPlusSolid />
-                        "Create"
-                    </button>
+                    <Show when=move || scope == ConfigScope::Agents>
+                        <button type="button" id="config-new" class=PRIMARY on:click=move |_| workspace.new_agent(&field_value("config-new-path"))>
+                            <Glyph icon=icondata::FaPlusSolid />
+                            "Create"
+                        </button>
+                    </Show>
                     <button type="button" id="config-reload" class=BUTTON on:click=move |_| workspace.reload_config()>
                         <Glyph icon=icondata::FaArrowsRotateSolid />
                         "Reload from disk"
@@ -1032,9 +1099,10 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
     move || {
         if let Some(edit) = workspace.memory_edit.get() {
             return view! {
+                <div class=EDITOR_PAGE>
                 <p class="font-mono text-sm font-bold" id="memory-url">{edit.url.clone()}</p>
                 <textarea id="memory-text" class=EDITOR spellcheck="false">{edit.text.clone()}</textarea>
-                <div class="flex gap-2">
+                <div class=EDITOR_ACTIONS>
                     <button
                         type="button"
                         id="memory-save"
@@ -1052,8 +1120,9 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                         "Save"
                     </button>
                     <button type="button" class=BUTTON on:click=move |_| workspace.memory_edit.set(None)>
-                        "Close"
+                        "Cancel"
                     </button>
+                </div>
                 </div>
             }
             .into_any();

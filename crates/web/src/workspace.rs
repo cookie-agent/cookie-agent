@@ -39,6 +39,7 @@ mod background;
 mod goal;
 mod history;
 mod manage;
+mod nav;
 mod permissions;
 mod skills;
 mod tree;
@@ -50,10 +51,11 @@ pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
 
-/// A side sheet the page shows.
+/// A sheet the chat view shows: on the right of a wide window, from the
+/// bottom of a phone's. The daemon-wide panels are views
+/// ([`crate::layout::View`]) instead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Panel {
-    Sessions,
     Agents,
     Models,
     Presets,
@@ -67,12 +69,8 @@ pub enum Panel {
     Permissions,
     /// A user message's actions: copy, revert, fork.
     Message,
+    /// The session's attached runtimes.
     Runtimes,
-    Mcp,
-    Connect,
-    Config,
-    Memory,
-    Plugins,
 }
 
 /// The `/usage` panel's content.
@@ -168,6 +166,23 @@ pub struct Workspace {
     /// A write that was not saved, waiting for the user's choice.
     pub memory_pending: RwSignal<Option<MemoryPending>>,
     pub plugins: RwSignal<Option<Result<Vec<cookie_agent_protocol::PluginInfo>, String>>>,
+    /// The view the rail shows.
+    pub view: RwSignal<crate::layout::View>,
+    /// The Settings section open; `None` for the section list on a phone,
+    /// the first section on a wider window.
+    pub settings_section: RwSignal<Option<crate::layout::SettingsSection>>,
+    /// The sessions over the page: a phone's drawer, or the sidebar sliding
+    /// over a tablet's transcript.
+    pub sidebar_open: RwSignal<bool>,
+    /// A desktop window shows the sessions sidebar; kept in the browser.
+    pub sidebar_pinned: RwSignal<bool>,
+    /// The window is phone-sized.
+    pub narrow: RwSignal<bool>,
+    /// The layers the browser's history holds an entry for, innermost last.
+    history: StoredValue<Vec<crate::layout::Layer>>,
+    /// The page went back in the history and waits for the browser to get
+    /// there.
+    traversing: StoredValue<bool>,
     /// Bumped by every connection the page adopts, so work for an older one
     /// stops.
     connection: StoredValue<u64>,
@@ -243,6 +258,15 @@ impl Workspace {
             memory_edit: RwSignal::new(None),
             memory_pending: RwSignal::new(None),
             plugins: RwSignal::new(None),
+            view: RwSignal::new(crate::layout::View::Chat),
+            settings_section: RwSignal::new(None),
+            sidebar_open: RwSignal::new(false),
+            sidebar_pinned: RwSignal::new(crate::connect::sidebar_shown(
+                browser::load(crate::connect::SIDEBAR_KEY).as_deref(),
+            )),
+            narrow: RwSignal::new(browser::matches(browser::PHONE_QUERY)),
+            history: StoredValue::new(Vec::new()),
+            traversing: StoredValue::new(false),
             connection: StoredValue::new(0),
         }
     }
@@ -759,6 +783,8 @@ impl Workspace {
         }
         self.draft.set(self.default_draft());
         self.panel.set(None);
+        self.sidebar_open.set(false);
+        self.view.set(crate::layout::View::Chat);
     }
 
     /// Opens `session_id`: classifies who owns it, subscribes it, and reads
@@ -771,6 +797,8 @@ impl Workspace {
         self.new_session.set(false);
         self.selected.set(Some(session_id));
         self.panel.set(None);
+        self.sidebar_open.set(false);
+        self.view.set(crate::layout::View::Chat);
         self.usage.set(None);
         self.user_menu.set(None);
         let generation = self.begin_ownership_classification(session_id);
@@ -1588,9 +1616,13 @@ impl Workspace {
     /// Runs a slash command or a menu entry with its argument.
     pub fn run_command(self, command: crate::commands::Command, argument: String) {
         use crate::commands::Command;
+        if let Some((view, section)) = crate::layout::command_view(command) {
+            self.open_view(view, section);
+            return;
+        }
         match command {
             Command::New => self.start_new_session(),
-            Command::Sessions => self.panel.set(Some(Panel::Sessions)),
+            Command::Sessions => self.show_sessions(),
             Command::Agent => self.panel.set(Some(Panel::Agents)),
             Command::Model => self.panel.set(Some(Panel::Models)),
             Command::Preset => self.panel.set(Some(Panel::Presets)),
@@ -1612,11 +1644,11 @@ impl Workspace {
             Command::AgentPanelHide => self.set_panel_mode(PanelMode::Hidden),
             Command::AgentPanelAuto => self.set_panel_mode(PanelMode::Auto),
             Command::Runtime => self.open_runtimes(),
-            Command::Mcp => self.open_mcp(),
-            Command::Connect => self.open_connect(),
-            Command::Config => self.open_config(),
-            Command::Memory => self.open_memory(),
-            Command::Plugins => self.open_plugins(),
+            Command::Mcp
+            | Command::Connect
+            | Command::Config
+            | Command::Memory
+            | Command::Plugins => {}
         }
     }
 

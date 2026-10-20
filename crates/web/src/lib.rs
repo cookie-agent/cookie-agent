@@ -18,6 +18,7 @@ pub mod goal;
 mod highlight;
 pub mod icons;
 pub mod keys;
+pub mod layout;
 mod media;
 pub mod render;
 pub mod skills;

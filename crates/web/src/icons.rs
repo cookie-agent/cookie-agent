@@ -128,12 +128,13 @@ pub fn session_status(status: SessionStatus) -> StatusMark {
 pub fn theme_icon(preference: ThemePreference) -> Icon {
     match preference {
         ThemePreference::System => icondata::FaCircleHalfStrokeSolid,
-        ThemePreference::Light => icondata::FaSunSolid,
+        ThemePreference::Light => icondata::FaSunRegular,
         ThemePreference::Dark => icondata::FaMoonSolid,
     }
 }
 
-/// The permission mode's icon and what it does, for the status bar.
+/// The permission mode's icon, a shield of its own for each mode (a
+/// phone's bottom bar shows only the icon), and what the mode does.
 pub fn permission_mode(mode: PermissionMode) -> (Icon, &'static str) {
     match mode {
         PermissionMode::AutoApprove => (
@@ -141,19 +142,19 @@ pub fn permission_mode(mode: PermissionMode) -> (Icon, &'static str) {
             "the classifier approves safe calls and asks you about the rest",
         ),
         PermissionMode::AutoApproveN => (
-            icondata::FaShieldHalvedSolid,
+            icondata::FaShieldSolid,
             "the classifier approves safe calls and rejects the rest without asking",
         ),
         PermissionMode::AutoApproveY => (
-            icondata::FaShieldHalvedSolid,
+            icondata::FaShieldHeartSolid,
             "the classifier approves safe calls and approves the rest without asking",
         ),
         PermissionMode::Ask => (
-            icondata::FaCircleQuestionRegular,
+            icondata::FaUserShieldSolid,
             "every call that needs approval asks you",
         ),
         PermissionMode::Yolo => (
-            icondata::FaBoltSolid,
+            icondata::FaShieldVirusSolid,
             "every call that would ask is approved",
         ),
     }
@@ -164,7 +165,24 @@ mod tests {
     use cookie_agent_client_state::ToolStatus;
     use cookie_agent_protocol::{SessionStatus, ToolHint};
 
-    use super::{hint_icon, session_status, svg, tool_status};
+    use super::{hint_icon, permission_mode, session_status, svg, tool_status};
+
+    #[test]
+    fn every_permission_mode_has_its_own_icon() {
+        use cookie_agent_protocol::PermissionMode;
+        let mut icons = [
+            PermissionMode::AutoApprove,
+            PermissionMode::AutoApproveN,
+            PermissionMode::AutoApproveY,
+            PermissionMode::Ask,
+            PermissionMode::Yolo,
+        ]
+        .map(|mode| permission_mode(mode).0.data)
+        .to_vec();
+        icons.sort_unstable();
+        icons.dedup();
+        assert_eq!(icons.len(), 5);
+    }
 
     #[test]
     fn every_documented_hint_has_its_own_icon_and_others_are_generic() {

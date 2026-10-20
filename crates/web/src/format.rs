@@ -1,5 +1,5 @@
 //! Short forms the page shows where room is tight: a directory's last
-//! component, how long ago something happened, and a token count.
+//! component, how long ago something happened, a token count, and a cost.
 
 use jiff::Timestamp;
 
@@ -51,11 +51,30 @@ fn tenths(count: u64, unit: u64, suffix: &str) -> String {
     }
 }
 
+/// A cost in US dollars to the cent, as a phone's bottom bar shows it; a
+/// cost under half a cent is "<$0.01" rather than nothing.
+pub fn compact_cost(cost: f64) -> String {
+    if cost > 0.0 && cost < 0.005 {
+        "<$0.01".to_owned()
+    } else {
+        format!("${cost:.2}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use jiff::{SignedDuration, Timestamp};
 
-    use super::{basename, compact_count, relative_time};
+    use super::{basename, compact_cost, compact_count, relative_time};
+
+    #[test]
+    fn costs_show_to_the_cent_and_a_fraction_of_one_is_not_zero() {
+        assert_eq!(compact_cost(0.0234), "$0.02");
+        assert_eq!(compact_cost(12.5), "$12.50");
+        assert_eq!(compact_cost(0.0), "$0.00");
+        assert_eq!(compact_cost(0.004), "<$0.01");
+        assert_eq!(compact_cost(0.005), "$0.01");
+    }
 
     #[test]
     fn the_basename_is_the_last_component() {

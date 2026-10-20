@@ -1,6 +1,6 @@
-//! The page: a header with the connection and the theme toggle, the connect
-//! screen (spec 7.2), and, once connected, the workspace: sessions, the
-//! transcript, and the composer.
+//! The page: the connect screen (spec 7.2) under a header with the
+//! connection and the theme toggle, and, once connected, the workspace,
+//! whose rail carries both instead.
 
 use cookie_agent_client_state::subscriptions::{RECONNECT_FIRST_DELAY, next_reconnect_delay};
 use cookie_agent_protocol::{Client, ClientDelivery, ClientError, ClientIdentity, ServerHello};
@@ -25,7 +25,7 @@ const VISIBLE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 /// Where the page's connection stands.
 #[derive(Clone, Debug, PartialEq)]
-enum Phase {
+pub(crate) enum Phase {
     /// Waiting for a URL and a token.
     Idle,
     Connecting,
@@ -47,7 +47,7 @@ enum Phase {
 
 /// The page's connection and its inputs, shared by the components.
 #[derive(Clone, Copy)]
-struct Connection {
+pub(crate) struct Connection {
     url: RwSignal<String>,
     token: RwSignal<String>,
     phase: RwSignal<Phase>,
@@ -219,7 +219,7 @@ impl Connection {
     }
 
     /// Deletes the stored token and disconnects.
-    fn forget(self) {
+    pub(crate) fn forget(self) {
         self.next_generation();
         self.drop_client();
         browser::forget(&token_key(self.url.get_untracked().trim()));
@@ -284,13 +284,12 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app-frame flex flex-col overflow-hidden bg-cream text-espresso dark:bg-night dark:text-latte">
-            <Header connection=connection theme=theme />
             {move || {
                 let phase = connection.phase.get();
                 let attached = connection.attached.get();
                 match phase {
                     Phase::Connected { .. } => {
-                        view! { <WorkspaceView workspace=connection.workspace /> }.into_any()
+                        view! { <WorkspaceView workspace=connection.workspace connection=connection theme=theme /> }.into_any()
                     }
                     Phase::Reconnecting { reason } if attached => {
                         view! {
@@ -298,12 +297,13 @@ pub fn App() -> impl IntoView {
                                 <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
                                 <span class="min-w-0 flex-1">{format!("Connection lost ({reason}); reconnecting…")}</span>
                             </div>
-                            <WorkspaceView workspace=connection.workspace />
+                            <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
                         }
                             .into_any()
                     }
                     phase => {
                         view! {
+                            <Header connection=connection theme=theme />
                             <main class="flex flex-1 items-start justify-center overflow-y-auto px-4 py-10">
                                 <ConnectScreen connection=connection phase=phase />
                             </main>
@@ -319,6 +319,7 @@ pub fn App() -> impl IntoView {
 /// An icon-only button in the header.
 const HEADER_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-ink hover:bg-toasted hover:text-espresso active:bg-crust dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
 
+/// The connect screen's header; once connected, the rail has these.
 #[component]
 fn Header(connection: Connection, theme: RwSignal<ThemePreference>) -> impl IntoView {
     view! {
@@ -327,28 +328,54 @@ fn Header(connection: Connection, theme: RwSignal<ThemePreference>) -> impl Into
                 <img src="icons/icon.svg" alt="" class="h-6 w-6 shrink-0" />
                 "cookie agent"
             </span>
-            <ConnectionStatus connection=connection />
-            <button
-                type="button"
-                class=HEADER_BUTTON
-                aria-label="Theme"
-                data-theme=move || theme.get().name()
-                title=move || {
-                    let preference = theme.get();
-                    format!("Theme: {} (click for {})", preference.name(), preference.next().name())
-                }
-                on:click=move |_| theme.update(|preference| *preference = preference.next())
-            >
-                <Glyph icon=Signal::derive(move || icons::theme_icon(theme.get())) class="text-lg" />
-            </button>
+            <ConnectionStatus connection=connection compact=false primary=true />
+            <ThemeToggle theme=theme class=HEADER_BUTTON />
         </header>
     }
 }
 
-/// The connection's state as a small indicator; a click shows the daemon's
-/// details, the way to forget it, and the page's credits.
+/// The theme button: it cycles system, light, and dark.
 #[component]
-fn ConnectionStatus(connection: Connection) -> impl IntoView {
+pub(crate) fn ThemeToggle(
+    theme: RwSignal<ThemePreference>,
+    class: &'static str,
+    /// The rail's: its tooltip is the rail's own, beside it.
+    #[prop(optional)]
+    in_rail: bool,
+) -> impl IntoView {
+    let tip = move || {
+        let preference = theme.get();
+        format!(
+            "Theme: {} (click for {})",
+            preference.name(),
+            preference.next().name()
+        )
+    };
+    view! {
+        <button
+            type="button"
+            class=class
+            aria-label="Theme"
+            data-theme=move || theme.get().name()
+            data-tip=move || in_rail.then(tip)
+            title=move || (!in_rail).then(tip)
+            on:click=move |_| theme.update(|preference| *preference = preference.next())
+        >
+            <Glyph icon=Signal::derive(move || icons::theme_icon(theme.get())) class="text-lg" />
+        </button>
+    }
+}
+
+/// The connection's state as a small indicator; a click shows the daemon's
+/// details, the way to forget it, and the page's credits. `compact` shows
+/// only the icon (the rail's); `primary` gives it the ids the page's
+/// scripts find it by, for the one instance that is always there.
+#[component]
+pub(crate) fn ConnectionStatus(
+    connection: Connection,
+    compact: bool,
+    primary: bool,
+) -> impl IntoView {
     let open = RwSignal::new(false);
     let confirming = RwSignal::new(false);
     let close = move || {
@@ -374,7 +401,12 @@ fn ConnectionStatus(connection: Connection) -> impl IntoView {
         };
         view! {
             <Glyph icon=icon class=class />
-            <span class="text-xs" id=(label == "connected").then_some("connected")>{label}</span>
+            <span
+                class=if compact { "sr-only" } else { "text-xs" }
+                id=(primary && label == "connected").then_some("connected")
+            >
+                {label}
+            </span>
         }
     };
     let tone = move || match connection.phase.get() {
@@ -408,8 +440,17 @@ fn ConnectionStatus(connection: Connection) -> impl IntoView {
         <div class="relative">
             <button
                 type="button"
-                id="connection"
-                class=move || format!("inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full px-3 hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke {}", tone())
+                id=primary.then_some("connection")
+                aria-label=move || {
+                    let state = match connection.phase.get() {
+                        Phase::Connected { .. } => "connected",
+                        Phase::Connecting => "connecting",
+                        Phase::Reconnecting { .. } => "reconnecting",
+                        Phase::Idle | Phase::Failed { .. } => "offline",
+                    };
+                    format!("Connection: {state}")
+                }
+                class=move || format!("inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke {} {}", if compact { "" } else { "px-3" }, tone())
                 aria-haspopup="dialog"
                 aria-expanded=move || open.get().to_string()
                 title=summary
@@ -425,7 +466,11 @@ fn ConnectionStatus(connection: Connection) -> impl IntoView {
                     id="connection-details"
                     role="dialog"
                     aria-label="Connection"
-                    class="absolute top-full right-0 z-40 mt-1 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-sm shadow-lg dark:border-ember dark:bg-night"
+                    class=if compact {
+                        "fixed bottom-3 left-3 z-40 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-sm shadow-lg sm:left-16 dark:border-ember dark:bg-night"
+                    } else {
+                        "absolute top-full right-0 z-40 mt-1 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-sm shadow-lg dark:border-ember dark:bg-night"
+                    }
                 >
                     <div class="flex items-center gap-2">
                         <p class="flex-1 font-bold">"Connection"</p>
@@ -454,46 +499,7 @@ fn ConnectionStatus(connection: Connection) -> impl IntoView {
                         }}
                     </dl>
                     <Show when=move || connection.attached.get()>
-                        <Show
-                            when=move || confirming.get()
-                            fallback=move || {
-                                view! {
-                                    <button
-                                        type="button"
-                                        id="forget"
-                                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-crust px-3 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
-                                        on:click=move |_| confirming.set(true)
-                                    >
-                                        <Glyph icon=icondata::FaRightFromBracketSolid />
-                                        "Forget this daemon"
-                                    </button>
-                                }
-                            }
-                        >
-                            <div class="flex flex-col gap-2 rounded-md border border-caramel p-2 dark:border-maple">
-                                <p>"Delete this daemon's token from the browser and disconnect? Connecting again takes a new link from `cookie web`."</p>
-                                <div class="flex flex-wrap gap-2">
-                                    <button
-                                        type="button"
-                                        id="forget-confirm"
-                                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-espresso px-3 font-bold text-cream hover:bg-caramel active:bg-ink dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
-                                        on:click=move |_| {
-                                            close();
-                                            connection.forget();
-                                        }
-                                    >
-                                        "Forget"
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="inline-flex min-h-11 items-center justify-center rounded-md border border-crust px-3 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
-                                        on:click=move |_| confirming.set(false)
-                                    >
-                                        "Keep it"
-                                    </button>
-                                </div>
-                            </div>
-                        </Show>
+                        <ForgetDaemon connection=connection confirming=confirming primary=primary on_forget=close />
                     </Show>
                     <Credits />
                 </div>
@@ -502,9 +508,64 @@ fn ConnectionStatus(connection: Connection) -> impl IntoView {
     }
 }
 
+/// **Forget this daemon**, behind a confirmation: the connection panel's
+/// and the Settings view's. `on_forget` runs before the page forgets.
+#[component]
+pub(crate) fn ForgetDaemon(
+    connection: Connection,
+    confirming: RwSignal<bool>,
+    primary: bool,
+    on_forget: impl Fn() + Copy + Send + Sync + 'static,
+) -> impl IntoView {
+    view! {
+        <Show
+            when=move || confirming.get()
+            fallback=move || {
+                view! {
+                    <button
+                        type="button"
+                        id=primary.then_some("forget")
+                        data-forget
+                        class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-crust px-3 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        on:click=move |_| confirming.set(true)
+                    >
+                        <Glyph icon=icondata::FaRightFromBracketSolid />
+                        "Forget this daemon"
+                    </button>
+                }
+            }
+        >
+            <div class="flex flex-col gap-2 rounded-md border border-caramel p-2 text-sm dark:border-maple">
+                <p>"Delete this daemon's token from the browser and disconnect? Connecting again takes a new link from `cookie web`."</p>
+                <div class="flex flex-wrap gap-2">
+                    <button
+                        type="button"
+                        id=primary.then_some("forget-confirm")
+                        data-forget-confirm
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-espresso px-3 font-bold text-cream hover:bg-caramel active:bg-ink dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
+                        on:click=move |_| {
+                            on_forget();
+                            connection.forget();
+                        }
+                    >
+                        "Forget"
+                    </button>
+                    <button
+                        type="button"
+                        class="inline-flex min-h-11 items-center justify-center rounded-md border border-crust px-3 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        on:click=move |_| confirming.set(false)
+                    >
+                        "Keep it"
+                    </button>
+                </div>
+            </div>
+        </Show>
+    }
+}
+
 /// The licence credit for the page's icons.
 #[component]
-fn Credits() -> impl IntoView {
+pub(crate) fn Credits() -> impl IntoView {
     view! {
         <p class="text-xs text-ink dark:text-sand">
             <a

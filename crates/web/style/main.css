@@ -8,6 +8,20 @@
    system setting or the user's override. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* `compact:` is a phone's layout: a window narrower than `sm`, or one too
+   short for the wide bottom bar (a phone on its side). `short:` is only
+   the latter, which puts the bottom bar beside the composer. */
+@custom-variant compact {
+  @media (width < 40rem), (height < 30rem) {
+    @slot;
+  }
+}
+@custom-variant short {
+  @media (height < 30rem) {
+    @slot;
+  }
+}
+
 /* Scrollbars and form controls follow the page's theme, not only the
    system's, when the user overrides it, in the palette's colours. */
 html {
@@ -32,6 +46,41 @@ html.dark {
   }
   :where(button:not(:disabled), summary, select, a[href]) {
     cursor: pointer;
+  }
+}
+
+/* The rail's tooltips: an icon button's name beside it on hover or
+   keyboard focus (its aria-label names it to assistive technology). */
+@layer components {
+  .rail [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: calc(100% + 0.5rem);
+    top: 50%;
+    z-index: 50;
+    transform: translateY(-50%);
+    white-space: nowrap;
+    border-radius: 0.375rem;
+    background: var(--color-espresso);
+    color: var(--color-cream);
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .dark .rail [data-tip]::after {
+    background: var(--color-latte);
+    color: var(--color-night);
+  }
+  @media (hover: hover) {
+    .rail [data-tip]:hover::after {
+      opacity: 1;
+    }
+  }
+  .rail [data-tip]:focus-visible::after {
+    opacity: 1;
   }
 }
 
@@ -92,7 +141,7 @@ body {
   height: var(--app-height, 100dvh);
   padding-bottom: env(safe-area-inset-bottom);
 }
-@media (min-width: 48rem) {
+@media (min-width: 40rem) {
   .sheet-frame {
     height: auto;
   }

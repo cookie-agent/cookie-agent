@@ -197,3 +197,62 @@ pub fn follow_visual_viewport() {
     let _ = viewport.add_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
     listener.forget();
 }
+
+/// The media query a phone matches: narrower than Tailwind's `sm`.
+pub const PHONE_QUERY: &str = "(max-width: 39.99rem)";
+
+/// The media query a desktop matches: Tailwind's `lg` and wider, where the
+/// sessions sidebar is pinned beside the transcript.
+pub const DESKTOP_QUERY: &str = "(min-width: 64rem)";
+
+fn media_query(query: &str) -> Option<web_sys::MediaQueryList> {
+    window()?.match_media(query).ok().flatten()
+}
+
+/// Whether the page matches the media `query` now.
+pub fn matches(query: &str) -> bool {
+    media_query(query).is_some_and(|list| list.matches())
+}
+
+/// Calls `changed` with whether the page matches `query` whenever that
+/// changes, for as long as the page lives.
+pub fn on_media_change(query: &str, changed: impl Fn(bool) + 'static) {
+    let Some(list) = media_query(query) else {
+        return;
+    };
+    let watched = list.clone();
+    let listener = Closure::<dyn Fn()>::new(move || changed(watched.matches()));
+    let _ = list.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
+    listener.forget();
+}
+
+/// Adds a history entry for the page as it is, carrying `depth`: how many
+/// of the page's layers are open with it. Browser Back then returns to the
+/// entry below instead of leaving the page.
+pub fn push_history(depth: usize) {
+    if let Some(history) = window().and_then(|window| window.history().ok()) {
+        let _ = history.push_state(&wasm_bindgen::JsValue::from(depth as f64), "");
+    }
+}
+
+/// Goes `steps` entries back in the history.
+pub fn history_back(steps: usize) {
+    if let Some(history) = window().and_then(|window| window.history().ok()) {
+        let _ = history.go_with_delta(-(steps as i32));
+    }
+}
+
+/// Calls `arrived` with the depth of the history entry the browser moved
+/// to (0 for one the page did not add), for as long as the page lives.
+pub fn on_history_move(arrived: impl Fn(usize) + 'static) {
+    let Some(window) = window() else {
+        return;
+    };
+    let listener =
+        Closure::<dyn Fn(web_sys::PopStateEvent)>::new(move |event: web_sys::PopStateEvent| {
+            let depth = event.state().as_f64().map_or(0, |depth| depth as usize);
+            arrived(depth);
+        });
+    let _ = window.add_event_listener_with_callback("popstate", listener.as_ref().unchecked_ref());
+    listener.forget();
+}

@@ -30,6 +30,7 @@ use cookie_agent_protocol::{
 use leptos::{prelude::*, task::spawn_local};
 
 use super::{Panel, Workspace};
+use crate::layout::{SettingsSection, View};
 
 /// How often an open `/runtime` or `/mcp` panel reads its list again, as the
 /// TUI polls.
@@ -71,25 +72,30 @@ impl Workspace {
     /// Reads again what the open panel shows after a `*.changed`
     /// notification.
     pub(super) fn refresh_open_panel(self, delivery: &ClientDelivery) {
-        let panel = self.panel.get_untracked();
+        let runtimes = self.panel.get_untracked() == Some(Panel::Runtimes)
+            || self.showing(View::Machines, None);
         match delivery {
-            ClientDelivery::RuntimesChanged(_) if panel == Some(Panel::Runtimes) => {
-                self.poll_runtimes();
-            }
+            ClientDelivery::RuntimesChanged(_) if runtimes => self.poll_runtimes(),
             ClientDelivery::MachinesChanged(_) => {
-                if panel == Some(Panel::Runtimes) {
+                if runtimes {
                     self.poll_runtimes();
                 }
                 // Renaming or merging a machine moves its memories too.
-                if panel == Some(Panel::Memory) {
+                if self.showing(View::Memory, None) {
                     self.poll_memory();
                 }
             }
-            ClientDelivery::McpChanged(_) if panel == Some(Panel::Mcp) => self.poll_mcp(),
-            ClientDelivery::MemoryChanged(_) if panel == Some(Panel::Memory) => {
+            ClientDelivery::McpChanged(_)
+                if self.showing(View::Settings, Some(SettingsSection::Mcp)) =>
+            {
+                self.poll_mcp();
+            }
+            ClientDelivery::MemoryChanged(_) if self.showing(View::Memory, None) => {
                 self.poll_memory();
             }
-            ClientDelivery::PluginsChanged(_) if panel == Some(Panel::Plugins) => {
+            ClientDelivery::PluginsChanged(_)
+                if self.showing(View::Settings, Some(SettingsSection::Plugins)) =>
+            {
                 self.poll_plugins();
             }
             _ => {}
@@ -461,11 +467,6 @@ impl Workspace {
 
     // ---- /mcp -------------------------------------------------------------
 
-    pub(super) fn open_mcp(self) {
-        self.panel.set(Some(Panel::Mcp));
-        self.poll_mcp();
-    }
-
     pub fn poll_mcp(self) {
         let Some(client) = self.client() else {
             return;
@@ -604,10 +605,6 @@ impl Workspace {
     }
 
     // ---- /connect ---------------------------------------------------------
-
-    pub(super) fn open_connect(self) {
-        self.panel.set(Some(Panel::Connect));
-    }
 
     /// The providers the catalog lists.
     pub fn providers(self) -> Vec<ProviderDescriptor> {
@@ -751,10 +748,11 @@ impl Workspace {
 
     // ---- /config ----------------------------------------------------------
 
+    /// Reads the configuration afresh for the Agents view or the
+    /// Configuration section, with no document open.
     pub(super) fn open_config(self) {
         self.config_edit.set(None);
         self.config_error.set(None);
-        self.panel.set(Some(Panel::Config));
         self.poll_config();
     }
 
@@ -924,7 +922,6 @@ impl Workspace {
     pub(super) fn open_memory(self) {
         self.memory_edit.set(None);
         self.memory_pending.set(None);
-        self.panel.set(Some(Panel::Memory));
         self.poll_memory();
     }
 
@@ -1096,11 +1093,6 @@ impl Workspace {
     }
 
     // ---- /plugins ---------------------------------------------------------
-
-    pub(super) fn open_plugins(self) {
-        self.panel.set(Some(Panel::Plugins));
-        self.poll_plugins();
-    }
 
     pub fn poll_plugins(self) {
         let Some(client) = self.client() else {

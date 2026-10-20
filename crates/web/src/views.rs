@@ -1,7 +1,8 @@
-//! The connected page: the session sidebar, the transcript, the queue strip,
-//! the composer, the status bar, and the side sheets. Wide screens show the
-//! sidebar beside the transcript and the sheets on the right; narrow ones
-//! show the sidebar and every sheet full screen.
+//! The connected page: the rail and its views. Chat is the sessions
+//! sidebar, the title bar, the transcript, the queue strip, the composer,
+//! the bottom bar, and the session's sheets; the other views are full
+//! pages ([`shell`]). Wide windows show the sheets on the right, phones
+//! from the bottom.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -18,8 +19,8 @@ use leptos::{ev, html, prelude::*};
 use wasm_bindgen::JsCast as _;
 
 use crate::{
-    commands::{COMMANDS, Command, completions},
-    format::{basename, compact_count, relative_time},
+    commands::{Command, completions},
+    format::{basename, compact_cost, compact_count, relative_time},
     goal::{GoalCommand, action_label, goal_actions, status_name},
     icons::{self, Glyph},
     keys::{ComposerAction, KeyPress, composer_action},
@@ -32,16 +33,27 @@ use crate::{
 
 mod depth;
 mod manage;
+mod shell;
 
 use depth::{
     AttachButtons, BackgroundBar, DraftFiles, GoalBar, TreePanel, background_sheet, goal_sheet,
     message_sheet, permissions_sheet, skills_sheet,
 };
 
-use manage::{config_sheet, connect_sheet, mcp_sheet, memory_sheet, plugins_sheet, runtimes_sheet};
+use manage::runtimes_sheet;
+use shell::{Drawer, PageView, Rail, SidebarButton};
+
+use crate::{
+    app::Connection,
+    layout::{View, session_menu},
+    theme::ThemePreference,
+};
 
 /// How long a press on Send must last to queue instead of steer.
 const LONG_PRESS: Duration = Duration::from_millis(500);
+
+/// How long after the composer loses focus a phone's bottom bar returns.
+const BAR_RETURN: Duration = Duration::from_millis(250);
 
 /// Every button is at least 44 px square, with a hover and a pressed state.
 /// A labelled button, bordered.
@@ -82,13 +94,55 @@ fn loading(text: &'static str) -> impl IntoView {
 
 /// The connected page.
 #[component]
-pub fn WorkspaceView(workspace: Workspace) -> impl IntoView {
+pub fn WorkspaceView(
+    workspace: Workspace,
+    connection: Connection,
+    theme: RwSignal<ThemePreference>,
+) -> impl IntoView {
+    crate::browser::on_media_change(crate::browser::PHONE_QUERY, move |narrow| {
+        workspace.narrow.set(narrow);
+    });
+    // A window that grows to a desktop's pins the sidebar instead.
+    crate::browser::on_media_change(crate::browser::DESKTOP_QUERY, move |desktop| {
+        if desktop {
+            workspace.sidebar_open.set(false);
+        }
+    });
+    workspace.follow_history();
+    let chat = move || workspace.view.get() == View::Chat;
     view! {
         <div class="flex min-h-0 flex-1">
-            <aside class="hidden w-72 shrink-0 flex-col border-r border-toasted bg-parchment md:flex dark:border-ember dark:bg-char">
-                <TreePanel workspace=workspace />
-                <SessionList workspace=workspace />
-            </aside>
+            <div class="hidden sm:flex">
+                <Rail workspace=workspace connection=connection theme=theme primary=true />
+            </div>
+            <div class="flex min-w-0 flex-1" class:hidden=move || !chat()>
+                <aside
+                    class="hidden w-72 shrink-0 flex-col border-r border-toasted bg-parchment dark:border-ember dark:bg-char"
+                    class:lg:flex=move || workspace.sidebar_pinned.get()
+                    id="sidebar"
+                >
+                    <TreePanel workspace=workspace />
+                    <SessionList workspace=workspace />
+                </aside>
+                <ChatView workspace=workspace />
+            </div>
+            <Show when=move || !chat()>
+                <PageView workspace=workspace connection=connection />
+            </Show>
+            <Drawer workspace=workspace connection=connection theme=theme />
+            <Sheet workspace=workspace />
+        </div>
+    }
+}
+
+/// The chat view's column: the title bar, the transcript, the bars above
+/// the composer, the composer, and the bottom bar.
+#[component]
+fn ChatView(workspace: Workspace) -> impl IntoView {
+    // A phone's keyboard leaves room for the composer only: the bottom bar
+    // hides while the composer has focus.
+    let composing = RwSignal::new(false);
+    view! {
             <main
                 class="flex min-w-0 flex-1 flex-col"
                 on:dragover=move |event: ev::DragEvent| event.prevent_default()
@@ -102,17 +156,21 @@ pub fn WorkspaceView(workspace: Workspace) -> impl IntoView {
                     }
                 }
             >
-                <Toolbar workspace=workspace />
+                <TitleBar workspace=workspace />
                 <Transcript workspace=workspace />
                 <GoalBar workspace=workspace />
                 <BackgroundBar workspace=workspace />
                 <QueueStrip workspace=workspace />
                 <DraftFiles workspace=workspace />
-                <Composer workspace=workspace />
-                <StatusBar workspace=workspace />
+                <StatusLine workspace=workspace />
+                // A short window (a phone on its side) puts the bottom bar
+                // beside the composer.
+                <div class="flex flex-col border-t border-toasted short:flex-row short:items-end dark:border-ember">
+                    <Composer workspace=workspace composing=composing />
+                    <BottomBar workspace=workspace composing=composing />
+                </div>
             </main>
-            <Sheet workspace=workspace />
-        </div>
+            <ModeToast workspace=workspace />
     }
 }
 
@@ -252,56 +310,47 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     }
 }
 
-#[component]
-fn Toolbar(workspace: Workspace) -> impl IntoView {
-    let title = move || {
-        if workspace.new_session.get() {
-            return "New session".to_owned();
-        }
-        workspace
-            .selected
-            .get()
-            .and_then(|session_id| {
-                workspace
-                    .sessions
-                    .with(|sessions| {
-                        sessions
-                            .iter()
-                            .find(|session| session.session_id == session_id)
-                            .map(session_label)
+/// The viewed session's name: the new session's draft, a listed session's
+/// title, or a subagent's agent and title.
+fn session_title(workspace: Workspace) -> String {
+    if workspace.new_session.get() {
+        return "New session".to_owned();
+    }
+    workspace
+        .selected
+        .get()
+        .and_then(|session_id| {
+            workspace
+                .sessions
+                .with(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|session| session.session_id == session_id)
+                        .map(session_label)
+                })
+                .or_else(|| {
+                    // A subagent's session is in the tree, not the list.
+                    workspace.tree.with(|tree| {
+                        tree.as_ref()
+                            .and_then(|tree| crate::tree::find(tree, session_id))
+                            .map(|session| {
+                                format!(
+                                    "{} · {}",
+                                    session.creation_selection.agent,
+                                    session_label(session)
+                                )
+                            })
                     })
-                    .or_else(|| {
-                        // A subagent's session is in the tree, not the list.
-                        workspace.tree.with(|tree| {
-                            tree.as_ref()
-                                .and_then(|tree| crate::tree::find(tree, session_id))
-                                .map(|session| {
-                                    format!(
-                                        "{} · {}",
-                                        session.creation_selection.agent,
-                                        session_label(session)
-                                    )
-                                })
-                        })
-                    })
-            })
-            .unwrap_or_else(|| "No session".into())
-    };
-    let agent = move || {
-        workspace
-            .draft
-            .get()
-            .map(|draft| draft.agent.to_string())
-            .unwrap_or_else(|| "agent".into())
-    };
-    let model = move || {
-        let draft = workspace.draft.get();
-        workspace.with_runtime(|runtime| {
-            draft
-                .map(|draft| runtime.model_names().selection_label(&draft.model))
-                .unwrap_or_else(|| "model".into())
+                })
         })
-    };
+        .unwrap_or_else(|| "No session".into())
+}
+
+/// The chat's title bar: the sidebar button, the session's title, and its
+/// ⋮ menu of session commands.
+#[component]
+fn TitleBar(workspace: Workspace) -> impl IntoView {
+    let title = move || session_title(workspace);
     let read_only = move || {
         workspace.selected.get().is_some_and(|session_id| {
             !workspace.new_session.get()
@@ -311,60 +360,29 @@ fn Toolbar(workspace: Workspace) -> impl IntoView {
         })
     };
     view! {
-        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-toasted px-3 py-2 dark:border-ember">
-            <button
-                type="button"
-                class=format!("{ICON_BUTTON} md:hidden")
-                aria-label="Sessions"
-                title="Sessions"
-                on:click=move |_| workspace.panel.set(Some(Panel::Sessions))
-            >
-                <Glyph icon=icondata::FaBarsSolid class="text-lg" />
-            </button>
-            <div class="flex min-w-0 flex-1 basis-40 items-center gap-2">
+        <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
+            <SidebarButton workspace=workspace />
+            <div class="flex min-w-0 flex-1 items-center gap-2 px-1">
                 <h1 class="min-w-0 truncate text-lg font-bold" id="session-title" title=title>
                     {title}
                 </h1>
                 <Show when=read_only>
-                    <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-toasted px-2 py-1 text-xs dark:bg-ember">
+                    <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-toasted px-2 py-1 text-xs dark:bg-ember" title="read-only snapshot">
                         <Glyph icon=icondata::FaLockSolid />
-                        "read-only snapshot"
+                        <span class="max-sm:sr-only">"read-only snapshot"</span>
                     </span>
                 </Show>
             </div>
-            <div class="flex min-w-0 items-center gap-2">
-                <button
-                    type="button"
-                    class=CHIP
-                    title=move || format!("Agent: {} (click to change)", agent())
-                    on:click=move |_| workspace.panel.set(Some(Panel::Agents))
-                >
-                    <Glyph icon=icondata::FaRobotSolid class="text-caramel dark:text-maple" />
-                    <span class="sr-only">"Agent: "</span>
-                    <span class="min-w-0 truncate">{agent}</span>
-                    <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60" />
-                </button>
-                <button
-                    type="button"
-                    class=CHIP
-                    title=move || format!("Model: {} (click to change)", model())
-                    on:click=move |_| workspace.panel.set(Some(Panel::Models))
-                >
-                    <Glyph icon=icondata::FaMicrochipSolid class="text-caramel dark:text-maple" />
-                    <span class="sr-only">"Model: "</span>
-                    <span class="min-w-0 truncate">{model}</span>
-                    <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60" />
-                </button>
-                <button
-                    type="button"
-                    class=ICON_BUTTON
-                    aria-label="Commands"
-                    title="Commands"
-                    on:click=move |_| workspace.panel.set(Some(Panel::Commands))
-                >
-                    <Glyph icon=icondata::FaEllipsisVerticalSolid class="text-lg" />
-                </button>
-            </div>
+            <button
+                type="button"
+                class=ICON_BUTTON
+                aria-label="Commands"
+                title="Session commands"
+                aria-haspopup="dialog"
+                on:click=move |_| workspace.panel.set(Some(Panel::Commands))
+            >
+                <Glyph icon=icondata::FaEllipsisVerticalSolid class="text-lg" />
+            </button>
         </div>
     }
 }
@@ -568,7 +586,7 @@ fn NewSessionCard(workspace: Workspace) -> impl IntoView {
                 />
             </label>
             <p class=NOTE>
-                "The first message creates the session with the agent and model above."
+                "The first message creates the session with the agent and model below."
             </p>
         </div>
     }
@@ -619,11 +637,12 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
 }
 
 #[component]
-fn Composer(workspace: Workspace) -> impl IntoView {
+fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let textarea = NodeRef::<html::Textarea>::new();
     let long_pressed = StoredValue::new(false);
     let press_timer = StoredValue::new(None::<TimeoutHandle>);
     let menu_open = RwSignal::new(false);
+    let blurred = StoredValue::new(0_u64);
     let completions = move || completions(&workspace.composer.get());
     let insert_newline = move || {
         let Some(textarea) = textarea.get() else {
@@ -656,7 +675,7 @@ fn Composer(workspace: Workspace) -> impl IntoView {
         event.prevent_default();
     };
     view! {
-        <div class="relative border-t border-toasted px-3 py-2 dark:border-ember">
+        <div class="relative min-w-0 px-3 pt-2 pb-1 short:flex-1 short:pb-2">
             <Show when=move || !completions().is_empty()>
                 <div class="absolute bottom-full left-3 z-20 mb-1 flex max-h-64 w-80 max-w-[calc(100%-1.5rem)] flex-col overflow-y-auto rounded-lg border border-crust bg-cream p-1 shadow-lg dark:border-smoke dark:bg-night">
                     {move || {
@@ -704,6 +723,24 @@ fn Composer(workspace: Workspace) -> impl IntoView {
                     disabled=move || !workspace.writable()
                     prop:value=move || workspace.composer.get()
                     on:input=move |event| workspace.composer.set(event_target_value(&event))
+                    on:focus=move |_| {
+                        blurred.update_value(|blurred| *blurred += 1);
+                        composing.set(true);
+                    }
+                    on:blur=move |_| {
+                        // Later, so a tap on Send lands before the bar
+                        // reappears and moves it.
+                        blurred.update_value(|blurred| *blurred += 1);
+                        let current = blurred.get_value();
+                        set_timeout(
+                            move || {
+                                if blurred.get_value() == current {
+                                    composing.set(false);
+                                }
+                            },
+                            BAR_RETURN,
+                        );
+                    }
                     on:keydown=on_keydown
                     on:paste=move |event: ev::ClipboardEvent| {
                         let files = crate::files::files_of(
@@ -816,31 +853,43 @@ fn Composer(workspace: Workspace) -> impl IntoView {
     }
 }
 
-#[component]
-fn StatusBar(workspace: Workspace) -> impl IntoView {
-    let running = move || {
-        workspace.selected.get().is_some_and(|session_id| {
-            workspace.with_store(|store| {
-                store.sessions.get(&session_id).is_some_and(|state| {
-                    state.active_run.is_some()
-                        || state
-                            .tools
-                            .values()
-                            .any(|tool| tool.status == ToolStatus::Running)
-                })
+/// Whether the viewed session runs: a run, or a call still running.
+fn running(workspace: Workspace) -> bool {
+    workspace.selected.get().is_some_and(|session_id| {
+        workspace.with_store(|store| {
+            store.sessions.get(&session_id).is_some_and(|state| {
+                state.active_run.is_some()
+                    || state
+                        .tools
+                        .values()
+                        .any(|tool| tool.status == ToolStatus::Running)
             })
         })
-    };
+    })
+}
+
+fn approvals_label(count: usize) -> String {
+    match count {
+        1 => "1 approval waiting".to_owned(),
+        count => format!("{count} approvals waiting"),
+    }
+}
+
+/// How long a phone's status line keeps a new status message.
+const STATUS_LIVE: Duration = Duration::from_secs(8);
+
+/// The bottom bar: the session's agent, model, permission mode, and cost.
+/// A wide window adds the approvals, the working spinner, the status
+/// message, and the context size; a phone shows those in the status line
+/// above the composer, and hides the bar while the composer has focus.
+#[component]
+fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let cost = move || {
-        workspace
-            .selected
-            .get()
-            .and_then(|session_id| {
-                workspace
-                    .costs
-                    .with(|costs| costs.get(&session_id).copied())
-            })
-            .map(|cost| format!("${cost:.4}"))
+        workspace.selected.get().and_then(|session_id| {
+            workspace
+                .costs
+                .with(|costs| costs.get(&session_id).copied())
+        })
     };
     let context = move || {
         workspace.selected.get().and_then(|session_id| {
@@ -852,14 +901,58 @@ fn StatusBar(workspace: Workspace) -> impl IntoView {
             })
         })
     };
+    let agent = move || {
+        workspace
+            .draft
+            .get()
+            .map(|draft| draft.agent.to_string())
+            .unwrap_or_else(|| "agent".into())
+    };
+    let model = move || {
+        let draft = workspace.draft.get();
+        workspace.with_runtime(|runtime| {
+            draft
+                .map(|draft| runtime.model_names().selection_label(&draft.model))
+                .unwrap_or_else(|| "model".into())
+        })
+    };
     let approvals = Memo::new(move |_| workspace.approvals().len());
     let mode = move || workspace.permission_mode();
     view! {
-        <div id="status-bar" class="flex flex-wrap items-center gap-x-1 border-t border-toasted bg-parchment px-2 text-xs dark:border-ember dark:bg-char">
+        <div
+            id="status-bar"
+            class="flex flex-wrap items-center gap-x-1 bg-parchment px-2 text-xs compact:flex-nowrap short:w-[22rem] short:shrink-0 short:bg-transparent dark:bg-char short:dark:bg-transparent"
+            class:compact:hidden=move || composing.get()
+        >
+            <button
+                type="button"
+                id="agent-chip"
+                class=CHIP.replace("min-w-0", "min-w-11 justify-center")
+                aria-label=move || format!("Agent: {}", agent())
+                title=move || format!("Agent: {} (click to change)", agent())
+                on:click=move |_| workspace.panel.set(Some(Panel::Agents))
+            >
+                <Glyph icon=icondata::FaRobotSolid class="text-caramel dark:text-maple" />
+                <span class="min-w-0 truncate max-[23.75rem]:sr-only">{agent}</span>
+                <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
+            </button>
+            <button
+                type="button"
+                id="model-chip"
+                class=format!("{CHIP} compact:max-w-none compact:flex-1")
+                aria-label=move || format!("Model: {}", model())
+                title=move || format!("Model: {} (click to change)", model())
+                on:click=move |_| workspace.panel.set(Some(Panel::Models))
+            >
+                <Glyph icon=icondata::FaMicrochipSolid class="text-caramel dark:text-maple" />
+                <span class="min-w-0 flex-1 truncate text-left">{model}</span>
+                <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
+            </button>
             <button
                 type="button"
                 id="permission-mode"
                 class=STATUS_BUTTON
+                aria-label=move || format!("Permission mode: {}", permission_mode_label(mode()))
                 title=move || {
                     let mode = mode();
                     format!(
@@ -870,32 +963,29 @@ fn StatusBar(workspace: Workspace) -> impl IntoView {
                 }
                 on:click=move |_| workspace.cycle_permission_mode()
             >
-                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-caramel dark:text-maple" />
-                <span class="font-mono">{move || permission_mode_label(mode())}</span>
+                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-base text-caramel dark:text-maple" />
+                <span class="font-mono compact:sr-only">{move || permission_mode_label(mode())}</span>
             </button>
             <Show when=move || { approvals.get() > 0 }>
                 <button
                     type="button"
                     id="approvals-badge"
-                    class="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full bg-caramel px-3 font-bold text-cream hover:bg-espresso active:bg-ink dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand"
+                    class="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full bg-caramel px-3 font-bold text-cream hover:bg-espresso active:bg-ink compact:hidden dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand"
                     title="Approvals waiting: click to answer"
                     on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
                 >
                     <Glyph icon=icondata::FaBellSolid />
-                    {move || match approvals.get() {
-                        1 => "1 approval waiting".to_owned(),
-                        count => format!("{count} approvals waiting"),
-                    }}
+                    {move || approvals_label(approvals.get())}
                 </button>
             </Show>
-            <Show when=running>
-                <span class="inline-flex min-h-11 items-center gap-1.5 px-2 font-bold text-caramel dark:text-maple" role="status">
+            <Show when=move || running(workspace)>
+                <span class="inline-flex min-h-11 items-center gap-1.5 px-2 font-bold text-caramel compact:hidden dark:text-maple" role="status">
                     <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
                     "working…"
                 </span>
             </Show>
             <span
-                class="min-w-[8rem] flex-1 truncate px-2 text-ink dark:text-sand"
+                class="min-w-[8rem] flex-1 truncate px-2 text-ink compact:hidden dark:text-sand"
                 id="status"
                 role="status"
                 title=move || workspace.status.get()
@@ -904,7 +994,7 @@ fn StatusBar(workspace: Workspace) -> impl IntoView {
             </span>
             {move || context().map(|tokens| view! {
                 <span
-                    class="inline-flex min-h-11 items-center gap-1.5 px-2 text-ink dark:text-sand"
+                    class="inline-flex min-h-11 items-center gap-1.5 px-2 text-ink compact:hidden dark:text-sand"
                     title=format!("Context: {tokens} tokens in the last request")
                 >
                     <Glyph icon=icondata::FaGaugeSimpleHighSolid />
@@ -914,95 +1004,202 @@ fn StatusBar(workspace: Workspace) -> impl IntoView {
             {move || cost().map(|cost| view! {
                 <button
                     type="button"
+                    id="cost"
                     class=STATUS_BUTTON
+                    aria-label=format!("Session cost {}: usage", cost_label(cost))
                     title="Session cost: click for usage"
                     on:click=move |_| workspace.run_command(Command::Usage, String::new())
                 >
-                    <Glyph icon=icondata::FaCoinsSolid class="text-caramel dark:text-maple" />
-                    <span class="font-mono">{cost}</span>
+                    <Glyph icon=icondata::FaCoinsSolid class="text-caramel dark:text-maple compact:hidden" />
+                    <span class="font-mono compact:hidden">{cost_label(cost)}</span>
+                    <span class="hidden font-mono compact:inline">{compact_cost(cost)}</span>
                 </button>
             })}
         </div>
     }
 }
 
+/// A phone's line above the composer: the approvals waiting, the working
+/// spinner, and a new status message for a few seconds; it shows only
+/// while one of them does. Wider windows have these in the bottom bar.
+#[component]
+fn StatusLine(workspace: Workspace) -> impl IntoView {
+    let live = RwSignal::new(false);
+    let generation = StoredValue::new(0_u64);
+    Effect::new(move |previous: Option<String>| {
+        let status = workspace.status.get();
+        if previous.is_some_and(|previous| previous != status) && !status.is_empty() {
+            generation.update_value(|generation| *generation += 1);
+            let current = generation.get_value();
+            live.set(true);
+            set_timeout(
+                move || {
+                    if generation.get_value() == current {
+                        live.set(false);
+                    }
+                },
+                STATUS_LIVE,
+            );
+        }
+        status
+    });
+    let approvals = Memo::new(move |_| workspace.approvals().len());
+    let shown = move || running(workspace) || approvals.get() > 0 || live.get();
+    view! {
+        <Show when=shown>
+            <div
+                id="status-line"
+                class="hidden min-h-11 items-center gap-1 border-t border-toasted px-2 text-xs compact:flex dark:border-ember"
+            >
+                <Show when=move || { approvals.get() > 0 }>
+                    <button
+                        type="button"
+                        data-approvals
+                        class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full bg-caramel px-3 font-bold text-cream hover:bg-espresso active:bg-ink dark:bg-maple dark:text-night dark:hover:bg-latte dark:active:bg-sand"
+                        title="Approvals waiting: tap to answer"
+                        on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
+                    >
+                        <Glyph icon=icondata::FaBellSolid />
+                        {move || approvals_label(approvals.get())}
+                    </button>
+                </Show>
+                <Show when=move || running(workspace)>
+                    <span class="inline-flex shrink-0 items-center gap-1.5 px-2 font-bold text-caramel dark:text-maple" role="status">
+                        <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
+                        "working…"
+                    </span>
+                </Show>
+                <Show when=move || live.get()>
+                    <span class="min-w-0 flex-1 truncate px-2 text-ink dark:text-sand" title=move || workspace.status.get()>
+                        {move || workspace.status.get()}
+                    </span>
+                </Show>
+            </div>
+        </Show>
+    }
+}
+
+/// How long the permission mode's toast shows.
+const TOAST: Duration = Duration::from_millis(2000);
+
+/// "now: <mode>" for a moment after the permission mode changes, on a phone
+/// whose bottom bar shows only the mode's icon.
+#[component]
+fn ModeToast(workspace: Workspace) -> impl IntoView {
+    let shown = RwSignal::new(None::<String>);
+    let generation = StoredValue::new(0_u64);
+    Effect::new(
+        move |previous: Option<(
+            Option<cookie_agent_protocol::SessionId>,
+            bool,
+            cookie_agent_protocol::PermissionMode,
+        )>| {
+            let now = (
+                workspace.selected.get(),
+                workspace.new_session.get(),
+                workspace.permission_mode(),
+            );
+            // Only a change of the same session's mode: not a session switch.
+            if let Some(previous) = previous
+                && previous.0 == now.0
+                && previous.1 == now.1
+                && previous.2 != now.2
+            {
+                generation.update_value(|generation| *generation += 1);
+                let current = generation.get_value();
+                shown.set(Some(format!("now: {}", permission_mode_label(now.2))));
+                set_timeout(
+                    move || {
+                        if generation.get_value() == current {
+                            shown.set(None);
+                        }
+                    },
+                    TOAST,
+                );
+            }
+            now
+        },
+    );
+    view! {
+        {move || shown.get().map(|text| view! {
+            <div
+                id="mode-toast"
+                role="status"
+                class="pointer-events-none fixed inset-x-0 bottom-28 z-30 hidden justify-center px-4 compact:flex"
+            >
+                <span class="rounded-full bg-espresso px-4 py-2 font-mono text-sm text-cream shadow-lg dark:bg-latte dark:text-night">
+                    {text}
+                </span>
+            </div>
+        })}
+    }
+}
+
+/// The session's cost as a wide window's bottom bar shows it.
+fn cost_label(cost: f64) -> String {
+    format!("${cost:.4}")
+}
+
 #[component]
 fn Sheet(workspace: Workspace) -> impl IntoView {
     let close = move |_| workspace.panel.set(None);
     let title = move || match workspace.panel.get() {
-        Some(Panel::Sessions) => "Sessions",
         Some(Panel::Agents) => "Agent",
         Some(Panel::Models) => "Model",
         Some(Panel::Presets) => "Preset",
         Some(Panel::Approvals) => "Approvals",
         Some(Panel::Usage) => "Usage",
         Some(Panel::Events) => "Events",
-        Some(Panel::Commands) => "Commands",
+        Some(Panel::Commands) => "Session commands",
         Some(Panel::Goal) => "Goal",
         Some(Panel::Background) => "Background calls",
         Some(Panel::Skills) => "Skills",
         Some(Panel::Permissions) => "Permissions",
         Some(Panel::Message) => "Message",
         Some(Panel::Runtimes) => "Runtimes",
-        Some(Panel::Mcp) => "MCP servers",
-        Some(Panel::Connect) => "Providers",
-        Some(Panel::Config) => "Configuration",
-        Some(Panel::Memory) => "Memory",
-        Some(Panel::Plugins) => "Plugins",
         None => "",
     };
     view! {
         <Show when=move || workspace.panel.get().is_some()>
-            <div class="fixed inset-0 z-10 bg-espresso/30 md:bg-espresso/10 dark:bg-night/60 md:dark:bg-night/30" on:click=close></div>
-            <section
-                id="sheet"
-                class=move || {
-                    // The editors get the room a document needs.
-                    if matches!(workspace.panel.get(), Some(Panel::Config | Panel::Memory)) {
-                        "sheet-frame fixed inset-x-0 top-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[48rem] md:border-l md:border-toasted md:shadow-xl dark:bg-night md:dark:border-ember"
-                    } else {
-                        "sheet-frame fixed inset-x-0 top-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[28rem] md:border-l md:border-toasted md:shadow-xl dark:bg-night md:dark:border-ember"
-                    }
-                }
-            >
-                <div class="sticky top-0 z-10 flex items-center gap-2 border-b border-toasted bg-parchment py-1 pr-1 pl-4 dark:border-ember dark:bg-char">
-                    <h2 class="flex-1 text-lg font-bold">{title}</h2>
-                    <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=close>
-                        <Glyph icon=icondata::FaXmarkSolid class="text-lg" />
-                    </button>
-                </div>
-                <div class="flex flex-col gap-2 p-3">
-                    {move || match workspace.panel.get() {
-                        // The list keeps its own padding, as in the sidebar.
-                        Some(Panel::Sessions) => view! {
-                            <div class="-m-3 flex flex-col">
-                                <TreePanel workspace=workspace />
-                                <SessionList workspace=workspace />
-                            </div>
-                        }
-                            .into_any(),
-                        Some(Panel::Agents) => agents_sheet(workspace).into_any(),
-                        Some(Panel::Models) => models_sheet(workspace).into_any(),
-                        Some(Panel::Presets) => presets_sheet(workspace).into_any(),
-                        Some(Panel::Approvals) => approvals_sheet(workspace).into_any(),
-                        Some(Panel::Usage) => usage_sheet(workspace).into_any(),
-                        Some(Panel::Events) => events_sheet(workspace).into_any(),
-                        Some(Panel::Commands) => commands_sheet(workspace).into_any(),
-                        Some(Panel::Goal) => goal_sheet(workspace).into_any(),
-                        Some(Panel::Background) => background_sheet(workspace).into_any(),
-                        Some(Panel::Skills) => skills_sheet(workspace).into_any(),
-                        Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
-                        Some(Panel::Message) => message_sheet(workspace).into_any(),
-                        Some(Panel::Runtimes) => runtimes_sheet(workspace).into_any(),
-                        Some(Panel::Mcp) => mcp_sheet(workspace).into_any(),
-                        Some(Panel::Connect) => connect_sheet(workspace).into_any(),
-                        Some(Panel::Config) => config_sheet(workspace).into_any(),
-                        Some(Panel::Memory) => memory_sheet(workspace).into_any(),
-                        Some(Panel::Plugins) => plugins_sheet(workspace).into_any(),
-                        None => ().into_any(),
-                    }}
-                </div>
-            </section>
+            <div class="fixed inset-0 z-10 bg-espresso/30 sm:bg-espresso/10 dark:bg-night/60 sm:dark:bg-night/30" on:click=close></div>
+            // A phone's sheet rises from the bottom of what the keyboard
+            // leaves; a wider window's stands on the right.
+            <div class="sheet-frame pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-col justify-end pt-12 sm:inset-y-0 sm:right-0 sm:left-auto sm:w-[28rem] sm:pt-0">
+                <section
+                    id="sheet"
+                    role="dialog"
+                    aria-label=title
+                    class="pointer-events-auto flex max-h-full flex-col overflow-y-auto rounded-t-2xl border-t border-toasted bg-cream shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l dark:border-ember dark:bg-night"
+                >
+                    <div class="sticky top-0 z-10 flex flex-col border-b border-toasted bg-parchment dark:border-ember dark:bg-char">
+                        <span class="mx-auto mt-1.5 h-1 w-10 rounded-full bg-crust sm:hidden dark:bg-smoke" aria-hidden="true"></span>
+                        <div class="flex items-center gap-2 py-1 pr-1 pl-4">
+                            <h2 class="flex-1 text-lg font-bold">{title}</h2>
+                            <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=close>
+                                <Glyph icon=icondata::FaXmarkSolid class="text-lg" />
+                            </button>
+                        </div>
+                    </div>
+                    <div class="flex flex-col gap-2 p-3">
+                        {move || match workspace.panel.get() {
+                            Some(Panel::Agents) => agents_sheet(workspace).into_any(),
+                            Some(Panel::Models) => models_sheet(workspace).into_any(),
+                            Some(Panel::Presets) => presets_sheet(workspace).into_any(),
+                            Some(Panel::Approvals) => approvals_sheet(workspace).into_any(),
+                            Some(Panel::Usage) => usage_sheet(workspace).into_any(),
+                            Some(Panel::Events) => events_sheet(workspace).into_any(),
+                            Some(Panel::Commands) => commands_sheet(workspace).into_any(),
+                            Some(Panel::Goal) => goal_sheet(workspace).into_any(),
+                            Some(Panel::Background) => background_sheet(workspace).into_any(),
+                            Some(Panel::Skills) => skills_sheet(workspace).into_any(),
+                            Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
+                            Some(Panel::Message) => message_sheet(workspace).into_any(),
+                            Some(Panel::Runtimes) => runtimes_sheet(workspace).into_any(),
+                            None => ().into_any(),
+                        }}
+                    </div>
+                </section>
+            </div>
         </Show>
     }
 }
@@ -1242,7 +1439,22 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
                     .into_any(),
                 Err(error) => view! { <p class="text-sm">{error.clone()}</p> }.into_any(),
             };
+            // The bottom bar of a phone has no room for the context size.
+            let context = workspace.selected.get_untracked().and_then(|session_id| {
+                workspace.with_store(|store| {
+                    store
+                        .sessions
+                        .get(&session_id)
+                        .and_then(|state| state.context_tokens)
+                })
+            });
             view! {
+                {context.map(|tokens| view! {
+                    <p class="flex items-center gap-2 text-sm" id="usage-context">
+                        <Glyph icon=icondata::FaGaugeSimpleHighSolid class="text-caramel dark:text-maple" />
+                        {format!("Context: {tokens} tokens in the last request")}
+                    </p>
+                })}
                 <h3 class="text-sm font-bold">"This session"</h3>
                 {session}
                 {tree}
@@ -1278,15 +1490,17 @@ fn events_sheet(workspace: Workspace) -> impl IntoView {
     .collect_view()
 }
 
+/// The session's ⋮ menu: its own commands, in rows a finger can hit.
 fn commands_sheet(workspace: Workspace) -> impl IntoView {
-    COMMANDS
-        .iter()
+    session_menu()
+        .into_iter()
         .map(|spec| {
             let command = spec.command;
             view! {
                 <button
                     type="button"
-                    class=ROW
+                    class=format!("{ROW} min-h-12")
+                    data-command=spec.name
                     on:click=move |_| {
                         workspace.panel.set(None);
                         workspace.run_command(command, String::new());

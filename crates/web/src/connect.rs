@@ -11,6 +11,16 @@ pub const DAEMON_URL_KEY: &str = "cookie.daemon_url";
 /// The `localStorage` key of the theme preference.
 pub const THEME_KEY: &str = "cookie.theme";
 
+/// The `localStorage` key of whether a desktop window shows the sessions
+/// sidebar: `hidden` once the user hid it, else shown.
+pub const SIDEBAR_KEY: &str = "cookie.sidebar";
+
+/// Whether a stored sidebar choice shows the sidebar: every value but
+/// `hidden`, so the sidebar shows until the user hides it.
+pub fn sidebar_shown(stored: Option<&str>) -> bool {
+    stored != Some("hidden")
+}
+
 /// The `localStorage` key of the lowest diagnostic level the transcript
 /// shows (`/events`).
 pub const EVENT_LEVEL_KEY: &str = "cookie.event_level";
@@ -139,6 +149,14 @@ mod tests {
         assert!(!connects_by_itself(None, Some("t")));
         assert!(!connects_by_itself(Some(" "), Some("t")));
         assert!(!connects_by_itself(Some("ws://h/ws"), Some("")));
+    }
+
+    #[test]
+    fn the_sidebar_shows_unless_the_user_hid_it() {
+        assert!(!sidebar_shown(Some("hidden")));
+        assert!(sidebar_shown(Some("shown")));
+        assert!(sidebar_shown(Some("other")));
+        assert!(sidebar_shown(None));
     }
 
     #[test]
