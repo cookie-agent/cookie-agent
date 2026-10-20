@@ -905,7 +905,7 @@ pub struct SessionState {
     pub queued_inputs: cookie_agent_protocol::QueuedInputs,
     pub next_transcript_id: u64,
     /// Ids handed to parts opened by live-only output, which has no durable
-    /// sequence to derive one from. See [`LIVE_PART_ID_BASE`].
+    /// sequence to derive one from. See `LIVE_PART_ID_BASE`.
     pub next_live_part_id: u64,
     pub open_assistant: Option<OpenAssistantProjection>,
     /// Elapsed thinking time per sealed thinking part, keyed by
