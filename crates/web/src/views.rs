@@ -372,6 +372,15 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     workspace.toggle_full_content(call, block);
                 }
             }
+            "toggle-block" => {
+                if let Some(key) = target.get_attribute("data-block-key") {
+                    workspace.expanded.update(|expanded| {
+                        if !expanded.remove(&key) {
+                            expanded.insert(key);
+                        }
+                    });
+                }
+            }
             "user-menu" => {
                 if let Some(seq) = target
                     .get_attribute("data-seq")
@@ -929,7 +938,7 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                         .and_then(|state| state.tools.get(&approval.tool_call_id))
                         .map(|tool| {
                             (
-                                tool.compact_title(),
+                                tool.header_text(),
                                 display_html(&tool.presentation.preview, BlockPlace::plain),
                             )
                         })

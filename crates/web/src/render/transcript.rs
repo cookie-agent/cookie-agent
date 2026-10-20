@@ -7,11 +7,16 @@ use std::{
     hash::{BuildHasher as _, Hash, Hasher as _},
 };
 
+pub use cookie_agent_client_state::tool_header::hint_icon;
 use cookie_agent_client_state::{
-    AssistantChild, EventLevel, ModelDisplayNames, SessionState, ToolCallState, ToolStatus,
-    TranscriptItem,
+    AssistantChild, CompactingSource, EventLevel, ModelDisplayNames, ProducerMessageStatus,
+    SessionState, ToolCallState, ToolStatus, TranscriptItem,
+    rows::{
+        display_line_count, goal_status_label, producer_mode_label, producer_owner_label,
+        producer_summary,
+    },
 };
-use cookie_agent_protocol::{PersistedFileSource, ToolHint};
+use cookie_agent_protocol::{ContextCheckpoint, ExtensionMessageRole, PersistedFileSource};
 
 use super::{
     blocks::{BlockPlace, display_html, media_html},
@@ -33,24 +38,6 @@ pub struct TranscriptView<'a> {
 
 const NOTE: &str = "text-xs text-ink dark:text-sand";
 
-/// The icon for a tool hint. Hints are open labels: one this build does not
-/// document, or none, gets the generic icon. The tool's name is never
-/// consulted.
-pub fn hint_icon(hint: Option<&str>) -> &'static str {
-    match hint.unwrap_or(ToolHint::GENERIC) {
-        ToolHint::SHELL => "💻",
-        ToolHint::FILE_READ => "📖",
-        ToolHint::FILE_WRITE | ToolHint::FILE_EDIT => "📝",
-        ToolHint::FETCH => "🌐",
-        ToolHint::SEARCH => "🔍",
-        ToolHint::DELEGATE => "🤖",
-        ToolHint::MESSAGE => "📨",
-        ToolHint::SKILL => "✨",
-        ToolHint::GOAL => "🎯",
-        _ => "🔨",
-    }
-}
-
 /// A key that changes whenever the item's HTML would: its version, the
 /// revisions of the tool calls it shows, and their expansion.
 pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
@@ -71,6 +58,12 @@ pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
                 }
             }
         }
+    }
+    if let Some(key) = block_key(item) {
+        view.expanded.contains(&key).hash(&mut hasher);
+    }
+    if let TranscriptItem::ProducerMessage { .. } = item {
+        (view.minimum_level == EventLevel::Debug).hash(&mut hasher);
     }
     if let TranscriptItem::Event { level, .. } = item {
         (*level >= view.minimum_level).hash(&mut hasher);
@@ -144,34 +137,230 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 escape(text)
             )
         }
-        TranscriptItem::Compacting { .. } => {
-            format!("<div class=\"{NOTE}\">compacting the context…</div>")
+        TranscriptItem::Compacting { source, .. } => {
+            let key = block_key(item).unwrap_or_default();
+            let body = match source {
+                CompactingSource::Summary { text, .. } if text.is_empty() => {
+                    "waiting for the summary".to_owned()
+                }
+                CompactingSource::Summary { text, .. } => text.clone(),
+                CompactingSource::Native { model } => {
+                    format!("calling native compaction endpoint ({model})")
+                }
+            };
+            collapsible(view, &key, "🧹", "compacting context…", None, &body)
         }
-        TranscriptItem::Compaction { .. } => {
-            format!("<div class=\"{NOTE}\">— context compacted —</div>")
+        TranscriptItem::Compaction { commit, .. } => {
+            let key = block_key(item).unwrap_or_default();
+            let (kind, body) = match &commit.checkpoint {
+                ContextCheckpoint::InternalSummary { checkpoint } => {
+                    ("internal summary", checkpoint.summary().to_owned())
+                }
+                ContextCheckpoint::NativeWindow { window } => {
+                    let scope = window.scope();
+                    (
+                        "native window",
+                        format!(
+                            "adapter: {}\nmodel: {}/{}\nresource: {}",
+                            window.adapter_id(),
+                            scope.provider_id,
+                            scope.model_id,
+                            scope.resource_id
+                        ),
+                    )
+                }
+            };
+            let header = format!(
+                "context compacted ({kind}, {}→{} tokens)",
+                commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
+            );
+            collapsible(view, &key, "🧹", &header, None, &body)
         }
-        TranscriptItem::PluginMessage { input, .. } => format!(
-            "<div class=\"{NOTE} whitespace-pre-wrap\">plugin message: {}</div>",
-            escape(input)
-        ),
-        TranscriptItem::AgentMd { entries, .. } => format!(
-            "<div class=\"{NOTE}\">AGENTS.md loaded ({} files)</div>",
-            entries.len()
-        ),
-        TranscriptItem::SkillLoaded { name, args, .. } => format!(
-            "<div class=\"{NOTE}\">skill {} loaded {}</div>",
-            escape(name),
-            escape(args)
-        ),
-        TranscriptItem::Goal { goal, .. } => format!(
-            "<div class=\"{NOTE}\">goal: {}</div>",
-            escape(&goal.objective)
-        ),
-        TranscriptItem::ProducerMessage { body, .. } => format!(
-            "<div class=\"{NOTE} whitespace-pre-wrap\">{}</div>",
-            escape(body)
-        ),
+        TranscriptItem::PluginMessage { role, input, .. } => {
+            let key = block_key(item).unwrap_or_default();
+            let role = match role {
+                ExtensionMessageRole::System => "system",
+                ExtensionMessageRole::User => "user",
+                ExtensionMessageRole::Assistant => "assistant",
+                ExtensionMessageRole::Tool => "tool",
+            };
+            let header = format!(
+                "plugin message ({role}, {} lines)",
+                display_line_count(input)
+            );
+            collapsible(view, &key, "🧩", &header, None, input)
+        }
+        TranscriptItem::AgentMd { entries, .. } => {
+            let key = block_key(item).unwrap_or_default();
+            let lines: usize = entries
+                .iter()
+                .map(|entry| display_line_count(&entry.content))
+                .sum();
+            let files = match entries.as_slice() {
+                [entry] => entry.source.as_str().to_owned(),
+                _ => format!("{} files", entries.len()),
+            };
+            let body = entries
+                .iter()
+                .map(|entry| {
+                    if entries.len() > 1 {
+                        format!("── {}\n{}", entry.source.as_str(), entry.content)
+                    } else {
+                        entry.content.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let header = format!("AGENTS.md · {files} ({lines} lines)");
+            collapsible(view, &key, "📘", &header, None, &body)
+        }
+        TranscriptItem::SkillLoaded {
+            name,
+            source_path,
+            args,
+            rendered_body,
+            ..
+        } => {
+            let key = block_key(item).unwrap_or_default();
+            let header = format!(
+                "skill loaded · {name} ({} lines)",
+                display_line_count(rendered_body)
+            );
+            let mut detail = format!("source: {source_path}");
+            if !args.is_empty() {
+                detail.push_str(&format!("\narguments: {args}"));
+            }
+            collapsible(view, &key, "📚", &header, Some(&detail), rendered_body)
+        }
+        TranscriptItem::Goal {
+            goal, activation, ..
+        } => {
+            if *activation {
+                // The canonical `/goal` action, rebuilt from the activation
+                // event: shown like a message, with no message menu.
+                format!(
+                    "<div class=\"goal-activation ml-auto max-w-[90%] rounded-lg border border-caramel px-3 py-2 font-mono text-sm whitespace-pre-wrap dark:border-maple\">{}</div>",
+                    escape(&format!("/goal {}", goal.objective))
+                )
+            } else {
+                let finished = goal.items.iter().filter(|item| item.finished).count();
+                let checklist = if goal.items.is_empty() {
+                    format!("<div class=\"{NOTE}\">checklist: empty</div>")
+                } else {
+                    goal.items
+                        .iter()
+                        .map(|item| {
+                            format!(
+                                "<div class=\"{NOTE}\">{} {}</div>",
+                                if item.finished { "[x]" } else { "[ ]" },
+                                escape(&item.description)
+                            )
+                        })
+                        .collect()
+                };
+                format!(
+                    "<div class=\"goal-state rounded border-l-4 border-caramel px-3 py-1 dark:border-maple\"><div class=\"text-sm whitespace-pre-wrap\">🎯 {}</div><div class=\"{NOTE}\">status: {} · {finished}/{} finished</div>{checklist}</div>",
+                    escape(&goal.objective),
+                    goal_status_label(goal.status),
+                    goal.items.len()
+                )
+            }
+        }
+        TranscriptItem::ProducerMessage {
+            producer_owner,
+            mode,
+            body,
+            summary,
+            status,
+            ..
+        } => match status {
+            // A claimed message is already in the running request, so it
+            // shows before the response; pending and admitted ones do not
+            // show yet, as in the TUI.
+            ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted => return None,
+            ProducerMessageStatus::Claimed | ProducerMessageStatus::Consumed => {
+                let key = block_key(item).unwrap_or_default();
+                let state = if *status == ProducerMessageStatus::Claimed {
+                    "claimed"
+                } else {
+                    "consumed"
+                };
+                let detail = format!(
+                    "{} · {} · {state}",
+                    producer_owner_label(producer_owner),
+                    producer_mode_label(*mode)
+                );
+                collapsible(
+                    view,
+                    &key,
+                    "◇",
+                    &producer_summary(producer_owner, *mode, summary.as_deref()),
+                    Some(&detail),
+                    body,
+                )
+            }
+            ProducerMessageStatus::Discarded if view.minimum_level == EventLevel::Debug => {
+                format!(
+                    "<div class=\"{NOTE} font-mono\">{}</div>",
+                    escape(&format!(
+                        "producer message discarded · {} · {}",
+                        producer_owner_label(producer_owner),
+                        producer_mode_label(*mode)
+                    ))
+                )
+            }
+            ProducerMessageStatus::Discarded => return None,
+        },
     })
+}
+
+/// The key under which a collapsible row's expansion is kept, shared with
+/// the tool calls' in the page's expanded set.
+fn block_key(item: &TranscriptItem) -> Option<String> {
+    Some(match item {
+        TranscriptItem::Compacting { seq, .. } => format!("compacting:{seq}"),
+        TranscriptItem::Compaction { seq, .. } => format!("compaction:{seq}"),
+        TranscriptItem::PluginMessage { seq, .. } => format!("plugin:{seq}"),
+        TranscriptItem::AgentMd { seq, .. } => format!("agent-md:{seq}"),
+        TranscriptItem::SkillLoaded { seq, .. } => format!("skill:{seq}"),
+        TranscriptItem::ProducerMessage { message_id, .. } => format!("producer:{message_id}"),
+        _ => return None,
+    })
+}
+
+/// A row that shows `header` and, once clicked open, `detail` and `body`.
+fn collapsible(
+    view: &TranscriptView<'_>,
+    key: &str,
+    icon: &str,
+    header: &str,
+    detail: Option<&str>,
+    body: &str,
+) -> String {
+    let expanded = view.expanded.contains(key);
+    let chevron = if expanded { "▾" } else { "▸" };
+    let mut html = format!(
+        "<div class=\"collapsible-row\" data-block-key=\"{}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span>{icon} {chevron}</span><span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
+        escape(key),
+        escape(key),
+        escape(header)
+    );
+    if expanded {
+        html.push_str("<div class=\"border-l border-toasted pl-3 dark:border-ember\">");
+        if let Some(detail) = detail {
+            html.push_str(&format!(
+                "<div class=\"{NOTE} whitespace-pre-wrap\">{}</div>",
+                escape(detail)
+            ));
+        }
+        html.push_str(&format!(
+            "<div class=\"{NOTE} whitespace-pre-wrap break-words\">{}</div>",
+            escape(body)
+        ));
+        html.push_str("</div>");
+    }
+    html.push_str("</div>");
+    html
 }
 
 fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
@@ -253,7 +442,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         escape(&id),
         escape(&id),
         hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
-        escape(&tool.compact_title()),
+        escape(&tool.header_text()),
     );
     if let Some(progress) = tool
         .progress
@@ -301,9 +490,11 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use cookie_agent_client_state::{EventLevel, ModelDisplayNames, SessionState, TranscriptItem};
+    use cookie_agent_client_state::{
+        EventLevel, ModelDisplayNames, ProducerMessageStatus, SessionState, TranscriptItem,
+    };
 
-    use super::{TranscriptView, hint_icon, item_html, item_key};
+    use super::{TranscriptView, item_html, item_key};
 
     #[test]
     fn rows_below_the_event_level_are_hidden_and_text_is_escaped() {
@@ -342,10 +533,46 @@ mod tests {
     }
 
     #[test]
-    fn icons_follow_the_hint_not_the_tool() {
-        assert_eq!(hint_icon(Some("shell")), "💻");
-        assert_eq!(hint_icon(Some("file_edit")), "📝");
-        assert_eq!(hint_icon(Some("bash")), "🔨");
-        assert_eq!(hint_icon(None), "🔨");
+    fn producer_messages_fold_under_their_summary_and_open_on_a_click() {
+        let state = SessionState::default();
+        let names = ModelDisplayNames::default();
+        let message_id = cookie_agent_protocol::ProducerMessageId::new_v7();
+        let row = |status| TranscriptItem::ProducerMessage {
+            id: 1,
+            seq: 4,
+            accepted_at: jiff::Timestamp::UNIX_EPOCH,
+            message_id,
+            producer_owner: cookie_agent_protocol::ProducerOwner::GoalControl {
+                goal_id: cookie_agent_protocol::GoalId::new_v7(),
+            },
+            mode: cookie_agent_protocol::ProducerDeliveryMode::Steer,
+            body: "[engine goal control]\nThe goal <x> was paused.".into(),
+            summary: None,
+            reminder: None,
+            status,
+        };
+        let collapsed = HashSet::new();
+        let opened = HashSet::from([format!("producer:{message_id}")]);
+        let view = |expanded| TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded,
+        };
+        let consumed = row(ProducerMessageStatus::Consumed);
+        let folded = item_html(&view(&collapsed), &consumed).expect("shown");
+        assert!(folded.contains("goal control · steer"), "{folded}");
+        assert!(!folded.contains("engine goal control"), "{folded}");
+        let open = item_html(&view(&opened), &consumed).expect("shown");
+        assert!(open.contains("The goal &lt;x&gt; was paused."), "{open}");
+        assert_eq!(
+            item_html(&view(&collapsed), &row(ProducerMessageStatus::Pending)),
+            None
+        );
+        assert_eq!(
+            item_html(&view(&collapsed), &row(ProducerMessageStatus::Discarded)),
+            None
+        );
     }
 }
