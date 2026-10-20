@@ -1020,13 +1020,4 @@ pub(in crate::ui) struct DescendantEvent {
     pub(in crate::ui) repeat: u32,
 }
 
-/// The bottom bar's mode cycle.
-fn next_permission_mode(mode: PermissionMode) -> PermissionMode {
-    match mode {
-        PermissionMode::AutoApprove => PermissionMode::AutoApproveN,
-        PermissionMode::AutoApproveN => PermissionMode::AutoApproveY,
-        PermissionMode::AutoApproveY => PermissionMode::Ask,
-        PermissionMode::Ask => PermissionMode::Yolo,
-        PermissionMode::Yolo => PermissionMode::AutoApprove,
-    }
-}
+use cookie_agent_client_state::session_actions::next_permission_mode;

@@ -15,6 +15,7 @@ mod model_names;
 pub mod ownership;
 mod reduce;
 mod runtime;
+pub mod session_actions;
 pub mod subscriptions;
 pub mod uploads;
 

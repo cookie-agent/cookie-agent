@@ -378,22 +378,8 @@ impl App {
                 block,
                 state,
             } => {
-                use crate::state::FullContentState;
                 if let Some(session) = self.store.sessions.get_mut(&session_id) {
-                    // A call that ended or was put away since keeps what it
-                    // shows now.
-                    let pending = session.tools.get(&call_id).is_some_and(|tool| {
-                        tool.full_content(block) == Some(&FullContentState::Loading)
-                    });
-                    if pending {
-                        session.update_tool(call_id, |tool| {
-                            if let Some(full) =
-                                tool.full.iter_mut().find(|full| full.block == block)
-                            {
-                                full.state = state;
-                            }
-                        });
-                    }
+                    session.finish_full_content(call_id, block, state);
                 }
             }
             RpcUpdate::InputNotStarted {

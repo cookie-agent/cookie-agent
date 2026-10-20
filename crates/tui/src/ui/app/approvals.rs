@@ -1096,23 +1096,7 @@ impl App {
         }
         session_ids.sort_unstable_by_key(ToString::to_string);
         session_ids.dedup();
-        for session_id in session_ids {
-            if let Some(state) = self.store.sessions.get_mut(&session_id) {
-                // The list refresh replaces only the user-visible queue.
-                // Preserve event-projected internal requests so a later,
-                // strictly ordered ApprovalEscalated can still reveal them.
-                state.approvals.retain(|approval| !approval.escalated);
-            }
-        }
-        for record in result.approvals {
-            if let Some(approval) = approval_state_from_record(record) {
-                let state = self.store.sessions.entry(approval.session_id).or_default();
-                state
-                    .approvals
-                    .retain(|candidate| candidate.approval_id != approval.approval_id);
-                state.approvals.push(approval);
-            }
-        }
+        self.store.apply_approval_list(&session_ids, result);
     }
 
     /// The selected session's running run, if any: what Ctrl-C interrupts.

@@ -1835,31 +1835,12 @@ impl App {
         call_id: cookie_agent_protocol::ToolCallId,
         block: usize,
     ) {
-        use crate::state::{FullContent, FullContentState, MAX_FULL_CONTENT_BYTES};
         let Some(state) = self.store.sessions.get_mut(&session_id) else {
             return;
         };
-        let Some(tool) = state.tools.get(&call_id) else {
+        let Some(read) = state.toggle_full_content(call_id, block) else {
             return;
         };
-        match tool.full_content(block) {
-            Some(FullContentState::Loading) => return,
-            Some(FullContentState::Loaded { .. }) => {
-                state.update_tool(call_id, |tool| tool.full.retain(|full| full.block != block));
-                return;
-            }
-            Some(FullContentState::Failed(_)) | None => {}
-        }
-        let Some(artifact) = display_full(tool.shown_display(), block).cloned() else {
-            return;
-        };
-        state.update_tool(call_id, |tool| {
-            tool.full.retain(|full| full.block != block);
-            tool.full.push(FullContent {
-                block,
-                state: FullContentState::Loading,
-            });
-        });
         self.expanded_blocks
             .entry(session_id)
             .or_default()
@@ -1870,27 +1851,17 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let length = artifact.byte_length.clamp(1, MAX_FULL_CONTENT_BYTES);
-            let result = client
-                .read_artifact(cookie_agent_protocol::ArtifactReadParams {
-                    session_id,
-                    sha256: artifact.sha256.clone(),
-                    offset: 0,
-                    length,
-                })
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|read| {
-                    use base64::Engine as _;
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(read.data)
-                        .map_err(|error| format!("the daemon sent malformed data: {error}"))?;
-                    Ok(FullContentState::Loaded {
-                        text: String::from_utf8_lossy(&bytes).into_owned(),
-                        truncated: read.total_bytes > bytes.len() as u64,
+            let result = crate::state::FullContentState::of_read(
+                client
+                    .read_artifact(cookie_agent_protocol::ArtifactReadParams {
+                        session_id,
+                        sha256: read.artifact.sha256.clone(),
+                        offset: 0,
+                        length: read.length,
                     })
-                })
-                .unwrap_or_else(FullContentState::Failed);
+                    .await
+                    .map_err(|error| error.to_string()),
+            );
             let _ = updates.send(super::app::RpcUpdate::FullContentLoaded {
                 session_id,
                 call_id,

@@ -96,7 +96,7 @@ use crate::{
     markdown::{Highlighter, SyntectHighlighter},
     state::{
         ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, EventLevel, RuntimePhase,
-        RuntimeState, StateStore, TranscriptItem, approval_state_from_record,
+        RuntimeState, StateStore, TranscriptItem,
     },
     theme::{DecisionTone, Theme},
 };
@@ -1721,15 +1721,7 @@ pub(super) fn format_cost_usd(cost: f64) -> String {
     }
 }
 
-pub(in crate::ui) const fn permission_mode_label(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::AutoApprove => "auto-approve",
-        PermissionMode::AutoApproveN => "auto-n",
-        PermissionMode::AutoApproveY => "auto-y",
-        PermissionMode::Ask => "ask",
-        PermissionMode::Yolo => "yolo",
-    }
-}
+pub(in crate::ui) use cookie_agent_client_state::session_actions::permission_mode_label;
 
 pub(super) fn truncate_with_ellipsis(value: &str, width: usize) -> String {
     if UnicodeWidthStr::width(value) <= width {

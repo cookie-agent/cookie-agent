@@ -141,20 +141,7 @@ pub(super) fn display_rows(
 }
 
 /// The `full` artifact a cut block names.
-fn block_full(block: &DisplayBlock) -> Option<&ArtifactRef> {
-    match block {
-        DisplayBlock::FileExcerpt { full, .. } | DisplayBlock::Terminal { full, .. } => {
-            full.as_ref()
-        }
-        DisplayBlock::Diff(diff) => diff.full.as_ref(),
-        _ => None,
-    }
-}
-
-/// The `full` artifact of display block `index` in `blocks`.
-pub(super) fn display_full(blocks: &[Open<DisplayBlock>], index: usize) -> Option<&ArtifactRef> {
-    blocks.get(index).and_then(Open::known).and_then(block_full)
-}
+use cookie_agent_client_state::session_actions::block_full;
 
 fn block_rows(
     block: &DisplayBlock,
