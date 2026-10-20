@@ -733,3 +733,67 @@ Landed as specified, with no wire change and no configuration key.
   - **Step 2 against a real daemon.** A test daemon reports the test
     process's own machine ID, so it cannot place a runtime on another
     machine. The pure function covers step 2.
+
+### Phase W0a (2026-10-19)
+
+The first half of W0: the protocol client on wasm32 (section 4). The
+`client_state` extraction and the markdown choice follow in W0b. There is
+no wire change.
+
+- **Gating.** On `wasm32` the crate builds as the wire types and the
+  `Client`. Gated out by target:
+  - the server (`session/server*`);
+  - `paths` and `peer` (the stdio peer and its codecs);
+  - `StopSignals`, `oauth_callback`, and the test corpus;
+  - `RuntimeMachine::this_machine`.
+
+  Tokio there is `sync` and `macros` only, in a target section of
+  `crates/protocol/Cargo.toml`, as are `gloo-timers`,
+  `wasm-bindgen(-futures)`, `web-sys`, and the `js` features of `uuid` and
+  `jiff`. No `getrandom` is pulled in. `oven-sdk` (unchanged pin) and
+  `cookie_agent_identity` build for wasm32 as they are.
+- **Executor shim.** `session/rt.rs` provides `spawn`, `timeout`, `sleep`,
+  and `interval`:
+  - natively it is tokio, with the old `Delay` missed-tick behaviour;
+  - on wasm, `spawn_local` and `gloo-timers`, with no `Send` bound.
+
+  The client's logic, limits, and tests stay one copy.
+- **Browser transport.** `BrowserWebSocketTransport` keeps the
+  `web_sys::WebSocket` in one local task that talks to the transport over
+  channels.
+  - **Size limit.** A text message over `MAX_WEBSOCKET_MESSAGE_BYTES` ends
+    the transport with an error.
+  - **Entry points.** A page calls `Client::connect_browser_websocket(url)`,
+    then the new `Client::handshake_with_token`. That sends the token in
+    `ClientHello.token`, serialized from wiping buffers like other secrets.
+- **Refusals before the handshake.** A socket that closes before it opens
+  fails with the new `ClientError::ConnectionRefusedBeforeHandshake { code,
+  reason }`. That covers a refused upgrade, such as an origin
+  `allowed_origins` does not list, and nothing listening.
+  - Firefox reports code 1006 and no HTTP status, so the client cannot tell
+    an origin refusal from other refusals.
+  - The page shows the `allowed_origins` hint for this whole error
+    (section 7.2).
+- **URLs.**
+  - The browser side checks the new `validate_page_websocket_url`: `ws://`
+    or `wss://`, with a path ending in `/ws` (`wss://abc.efg/cookie/ws`).
+  - Native clients keep `validate_websocket_url`, which requires the path
+    to be exactly `/ws`.
+  - Both moved to `session/daemon_url.rs`.
+- **Tests.**
+  - `crates/protocol/tests/browser.rs` runs in headless Firefox. It covers:
+    - handshake with the token, and a wrong token;
+    - an origin that is not allowed, and nothing listening;
+    - an invalid endpoint, and a subpath endpoint;
+    - a reconnect that keeps the identity and origin;
+    - a reconnect that replays across a gap in which another client
+      renamed the session.
+  - `scripts/test-wasm-client.sh` runs them against two real
+    `cookie daemon`s in scratch homes: one allowing `"*"` and one allowing
+    no origin. It passes their URLs and token in at compile time.
+  - Built without them, each test passes without connecting.
+  - Natively, a test covers `handshake_with_token` against a token-requiring
+    `serve`, and another covers the URL rules.
+- **CI.** A `wasm` job checks the crate for wasm32 and runs clippy over it
+  with `websocket` and its tests. The browser tests are not run in CI: they
+  need Firefox, geckodriver, and `wasm-bindgen-test-runner`.
