@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Photographs the web client for the landing page: a `cookie daemon` in a
+# scratch home with a scripted model (scripts/web-e2e/showcase-model.py)
+# answers one request with an edit, a `bash` check, and a markdown reply, and
+# scripts/web-e2e/showcase.py captures the page in headless Firefox, light
+# and dark, at desktop and phone sizes. Run scripts/build-web.sh first so the
+# daemon embeds the real page.
+#
+# Usage: scripts/web-screenshots.sh <output-dir>
+# Needs Firefox and geckodriver (on PATH, or set GECKODRIVER).
+set -euo pipefail
+
+if (($# != 1)); then
+    echo "usage: $0 <output-dir>" >&2
+    exit 2
+fi
+mkdir -p "$1"
+out="$(cd "$1" && pwd)"
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+geckodriver="${GECKODRIVER:-$(command -v geckodriver || true)}"
+if [[ -z "$geckodriver" ]]; then
+    echo "geckodriver is missing; install it or set GECKODRIVER" >&2
+    exit 1
+fi
+if [[ ! -f crates/web_assets/bundle/index.html ]]; then
+    echo "no web bundle; run scripts/build-web.sh first" >&2
+    exit 1
+fi
+
+cargo build --locked -p cookie_agent
+cookie="$root/target/debug/cookie"
+
+scratch="$(mktemp -d)"
+pids=()
+cleanup() {
+    for pid in "${pids[@]}"; do
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
+    rm -rf "$scratch"
+}
+trap cleanup EXIT
+
+free_port() {
+    python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+
+python3 -I scripts/web-e2e/showcase-model.py "$scratch/model.port" &
+pids+=("$!")
+for _ in $(seq 1 100); do
+    [[ -s "$scratch/model.port" ]] && break
+    sleep 0.1
+done
+model_port="$(cat "$scratch/model.port")"
+
+home="$scratch/home"
+workspace="$scratch/greeter"
+mkdir -p -m 700 "$home/.cookie-agent/agents" "$workspace"
+cat >"$home/.cookie-agent/agents/primary.md" <<'AGENT'
+---
+description: Coding agent
+mode: primary
+enabled: true
+models:
+  - { model: "openai/gpt-5", variant: null }
+permissions:
+  read: allow
+  write: allow
+  bash: allow
+---
+Help with the code in this workspace.
+AGENT
+cat >"$workspace/greet.py" <<'PY'
+def greet(name):
+    """Greets `name` by name."""
+    return "Hello " + name
+PY
+cat >"$workspace/test_greet.py" <<'PY'
+from greet import greet
+
+assert greet("Ada") == "Hello, Ada!", greet("Ada")
+print("ok: greet(\"Ada\") == \"Hello, Ada!\"")
+PY
+port="$(free_port)"
+cat >"$home/.cookie-agent/config.toml" <<TOML
+[server]
+port = $port
+allowed_origins = ["http://127.0.0.1:$port"]
+
+[providers."openai"]
+source = "custom"
+endpoint = "http://127.0.0.1:$model_port/v1"
+adaptor = "openai-compatible"
+auth = { method = "no-auth-v1", values = {} }
+
+[providers."openai".models.gpt-5]
+display_name = "GPT-5"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 400000, output_tokens = 128000, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+TOML
+chmod 600 "$home/.cookie-agent/config.toml"
+
+(cd "$workspace" && HOME="$home" exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
+pids+=("$!")
+for _ in $(seq 1 200); do
+    grep -q '^daemon-ready ' "$home/daemon.out" 2>/dev/null && break
+    sleep 0.1
+done
+if ! grep -q '^daemon-ready ' "$home/daemon.out"; then
+    echo "the daemon did not get ready:" >&2
+    cat "$home/daemon.err" >&2
+    exit 1
+fi
+link="$(HOME="$home" "$cookie" web)"
+
+driver_port="$(free_port)"
+# System access lets the driver zoom the page to a phone's width.
+"$geckodriver" --port "$driver_port" --allow-system-access >"$scratch/geckodriver.log" 2>&1 &
+pids+=("$!")
+python3 -I scripts/web-e2e/showcase.py "$driver_port" "$link" "$out"
