@@ -2,14 +2,16 @@
 
 Status: **implemented** (2026-10-20), in phases L and W0 to W5; what landed
 and where it differs from the plan is in
-[section 16](#16-implementation-notes), with a summary of the deviations at
+[section 17](#17-implementation-notes), with a summary of the deviations at
 its end. The decisions in [section 1](#1-goal-and-scope) come from the
 planning discussion of 2026-10-19, and no questions are open
 ([section 15](#15-open-questions)). The spec builds on the
 [compatibility spec](compatibility-v1.md), which froze the client protocol and
 added browser authentication, and on the
 [runtime capabilities spec](runtime-capabilities.md), which added the
-listening daemon.
+listening daemon. The addendum of 2026-10-21
+([section 16](#16-addendum-2026-10-21-web-layout-v2-and-session-deletion))
+adds web layout v2 and session deletion, decided and being implemented.
 
 ## 1. Goal and scope
 
@@ -685,7 +687,217 @@ None. Every choice was settled on 2026-10-19:
 - `allowed_origins` keeps its current rules with no special case for the
   embedded page.
 
-## 16. Implementation notes
+## 16. Addendum (2026-10-21): web layout v2 and session deletion
+
+Status: **decided** (2026-10-21) and being implemented. Session deletion
+(section 16.2) is a minor protocol addition, client protocol 1.5.0, built in
+the daemon and the TUI; the web client's layout (section 16.1) and its delete
+control build on it.
+
+### 16.1 Web layout v2
+
+**Decided 2026-10-21:**
+
+- **Bottom bar.** The agent, the model, the permission mode, and the cost
+  sit together in the bottom bar.
+- **Title bar.** Only the chat's title and a ⋮ menu of commands that act on
+  this session.
+- **Sidebar toggle.** The ☰ becomes a button that shows and hides the
+  sidebar, on desktop too.
+- **Icon rail.** A rail of icons on the left switches between the views:
+  - **Chat:** sessions and the transcript;
+  - **Agents:** agent documents and presets;
+  - **Settings:** `config.toml`, providers, MCP, plugins, and client
+    preferences;
+  - **Machines and runtimes;**
+  - **Memory.**
+- **Theme toggle.** At the bottom of the rail.
+- **Session panel.** Keeps only the commands and settings that belong to
+  the session.
+- **Deleting a session.** A trash icon appears on a session row on hover,
+  or on a long press on touch screens. It opens a confirmation, and only
+  the confirmation sends `session.delete`.
+
+### 16.2 Session deletion
+
+**Decided 2026-10-21:**
+
+- Users delete sessions from the TUI and from the web client.
+- **Deleting is a hard delete of the whole session tree from disk:** the
+  root session and every delegated subagent session under it, with their
+  events, metadata, and artifacts. Nothing is kept for undo.
+- A client sends the delete only after the user confirms it.
+- The daemon refuses while any session of the tree has an active run, and
+  while another process holds the tree's `owner.lock`.
+- A delete that succeeds sends the existing `sessions.changed` `removed`
+  change to every connection.
+- **TUI.** In the session picker (`/sessions`), Ctrl+D, or Delete while the
+  list has focus, asks to delete the highlighted session, inline in the
+  picker; `y` (or the Delete button) deletes and Esc (or Cancel) keeps it.
+  Ctrl+A switches the list between this directory's sessions and every
+  directory's. The picker's key hints name both.
+- **Web client.** Section 16.1's trash icon and confirmation.
+
+#### The method
+
+`session.delete` deletes one root session's tree.
+
+```json
+{ "jsonrpc": "2.0", "id": 7, "method": "session.delete", "params": {
+    "session_id": "<root session ID>", "expected_last_seq": 42 } }
+```
+
+- **`session_id`** names a root session. A delegated session is refused:
+  its tree is deleted through its root.
+- **`expected_last_seq`** is required, at least 1. It is the root's
+  `last_event_seq` from the `SessionMeta` the client showed the user
+  (`session.list`, `session.get`, or a `sessions.changed` `upserted`). A
+  root whose last event is now another one is refused, so a delete never
+  removes a turn the user has not seen, such as one another client just
+  added. Only the root's log is compared. A change elsewhere in the tree
+  happens during a run, and a running tree is refused anyway.
+- **Params are strict** like every command: an unknown member is
+  `unknown_field`.
+
+The result names every session that was deleted, the root first:
+
+```json
+{ "deleted": ["<root session ID>", "<subagent ID>", "…"] }
+```
+
+#### Errors
+
+All are `-32000` registry errors with `message`, `hint`, and `detail`.
+Three codes exist already, and three are new in 1.5.0:
+
+| `data.code` | Fields | When |
+|---|---|---|
+| `session_not_found` | `session_id` | No such session, or it was already deleted |
+| `not_a_root_session` (new) | `session_id`, `root_session_id` | The session is a delegated subagent. The hint says to delete its root |
+| `session_tree_running` (new) | `session_id`, optional `running_session_id` | A session of the tree has an active run, a compaction, or a subagent waiting for a slot. The hint says to wait for it or cancel it |
+| `session_owned_elsewhere` | `session_id` | Another cookie process holds the tree's `owner.lock` |
+| `session_changed` (new) | `session_id`, `current_last_seq` | `expected_last_seq` is no longer the root's last event. The hint says to look at the session again |
+| `engine_error` | none | The tree could not be moved aside on disk. Nothing was deleted, and `detail` says why |
+
+`session_running` is not reused: its message and hint speak of starting a
+run, which a delete does not do.
+
+#### What the daemon does
+
+1. **Checks.** It resolves `session_id`: an unknown session is
+   `session_not_found`, a delegated one `not_a_root_session`.
+2. **Ownership.** A tree this daemon holds is deleted on the root's session
+   actor, which orders the delete after every request already queued for
+   the root. A tree it does not hold is not adopted: adoption would repair
+   the tree and append events first. The daemon takes the tree's
+   `owner.lock` for the deletion itself, which fails with
+   `session_owned_elsewhere` when another process holds it. Neither path
+   writes an event.
+3. **Busy and stale checks.** In a held tree it refuses with
+   `session_tree_running` when:
+   - a run of any of the tree's sessions is active;
+   - a compaction holds one of them;
+   - a delegated child waits in the delegation queue;
+   - or a resident session's status is `running`.
+
+   A tree whose lock was free has no live run. A `running` status there is
+   what a crashed process left, so it does not refuse. Then
+   `expected_last_seq` is compared with the root's last event:
+   `session_changed`.
+4. **Quiescing.** The tree's background calls are stopped without a report.
+   Its uploads in progress are dropped. Every resident log of the tree
+   closes its append handle, so no handle stays open in the directory
+   (Windows cannot rename a directory with an open file).
+5. **Commit.** Under the session store's exclusive mutation lock, the root
+   directory `sessions/<workdirkey>/<root>/` is renamed in place to a
+   tombstone, `sessions/<workdirkey>/.deleted-<root>-<uuid>`, and the work
+   directory is synced. The rename is the commit point: from then on no
+   listing, lookup, or tree load finds the tree. A rename that fails changes
+   nothing and is `engine_error`. On Windows it is retried while another
+   program briefly holds a file open.
+6. **Forgetting.** The daemon drops what it holds for each session of the
+   tree. In the session store:
+   - locations;
+   - the lazy tree-load state and queued load products;
+   - resident projections, evicted summaries, and deferred metadata tips;
+   - ownership (the tree's entry, which drops its lock and write authority,
+     and each session's writable or adopting entry);
+   - live tails;
+   - cached read-only logs;
+   - per-tree gates.
+
+   In the engine:
+   - session actors, whose queued requests then fail with
+     `session_not_found`;
+   - producers and the goal and producer projections;
+   - skill grants and pending skill invocations;
+   - compaction state;
+   - delegation records and queue entries;
+   - delegation recovery claims;
+   - pending approvals;
+   - the tree's permission mode;
+   - the tree's grant journal, after which the visible tree grants are
+     rebuilt;
+   - the tree's artifact store handle;
+   - upload leases;
+   - fork idempotency keys whose source or fork was deleted;
+   - steer ordering.
+
+   Queued inputs and the goal live in the log, so they go with it.
+7. **Unlocking.** The tree lock is released. On Unix it is inside the
+   tombstone. On Windows it is the sidecar `<root>.owner.lock` beside the
+   tree, which is then removed.
+8. **Telling clients.** A `sessions.changed` `removed` change goes to every
+   connection for each deleted session, the root first.
+9. **Removal.** The tombstone is removed with everything in it. A failure is
+   logged and leaves only the tombstone. `SessionStore::open` removes every
+   `.deleted-*` entry of its work directory, so a daemon that crashed
+   between the rename and the removal cleans up at its next start.
+
+**What is removed on disk** is the root directory and everything in it:
+
+- `events.jsonl` and `metadata`;
+- `owner.lock` on Unix;
+- `grant-invalidations.jsonl`;
+- `artifacts/`: uploads, retained tool output, and attachments;
+- `subagents/index.json`;
+- `subagents/<child>/` with each child's `events.jsonl` and `metadata`;
+- any temporary files.
+
+On Windows the `<root>.owner.lock` sidecar goes too. The work directory's
+own files (`cwd`, `layout.json`, and the runtime revision index) are shared
+by every session and stay. A fork made earlier is not touched: it
+hard-linked its artifacts into its own tree.
+
+#### Subscribers
+
+`sessions.changed` `removed` is the only signal. No `events.subscription`
+message is added. When a tree is deleted:
+
+- the daemon drops the live tails of its sessions;
+- each connection forgets its subscriptions to them, so it sends nothing
+  further for them, and `events.unsubscribe` answers `false`;
+- a client viewing a deleted session treats `removed` as "this session is
+  gone": it leaves the view and drops the session's state.
+
+A connection that fell behind gets `resync` as before, and the deleted
+sessions are then absent from `session.list`.
+
+#### Clients
+
+- **Only from 1.5.** A client sends `session.delete` only to a daemon whose
+  handshake `protocol_version` has minor 5 or later. To an older daemon it
+  shows "The daemon is too old to delete sessions." without sending
+  anything. A `-32601` it gets anyway reads the same way.
+- **Shared helpers.** `cookie_agent_client_state` provides:
+  - whether the daemon's version supports deleting;
+  - the call that builds the params from the `SessionMeta` the user
+    confirmed;
+  - the outcome the TUI and the web client show.
+- **TUI.** The confirmation names the session's title and says how many
+  subagents go with it. Refusals show their registry message and hint.
+
+## 17. Implementation notes
 
 Filled in as phases land.
 
