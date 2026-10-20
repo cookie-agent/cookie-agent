@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the web client (crates/web) with Trunk and puts the bundle where
 # crates/web_assets embeds it, so the next `cookie` build serves the real
-# page. Prints the bundle's size.
+# page. Prints the bundle's size and fails when it is over its budget.
 #
 # Needs the wasm32-unknown-unknown target and trunk of the version below
 # (`cargo install trunk --version <it> --locked`). Trunk downloads the
@@ -10,6 +10,9 @@
 set -euo pipefail
 
 TRUNK_VERSION="0.21.14"
+# What a browser may download for the page, gzipped, in bytes: W2 measured
+# 1.65 MB; the budget leaves room to grow before someone looks at why.
+BUDGET_GZIPPED_BYTES=1900000
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -48,3 +51,8 @@ while IFS= read -r -d '' file; do
     printf '  %10d bytes  %10d gzipped  %s\n' "$bytes" "$gzipped" "${file#"$bundle"/}"
 done < <(find "$bundle" -type f -print0 | sort -z)
 printf '  %10d bytes  %10d gzipped  total\n' "$total" "$compressed"
+if ((compressed > BUDGET_GZIPPED_BYTES)); then
+    echo "the bundle is $compressed bytes gzipped, over its budget of $BUDGET_GZIPPED_BYTES" >&2
+    exit 1
+fi
+echo "  within the budget of $BUDGET_GZIPPED_BYTES bytes gzipped"
