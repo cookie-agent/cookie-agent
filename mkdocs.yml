@@ -71,6 +71,7 @@ nav:
   - Home: index.md
   - Get started:
       - Install: install.md
+      - Quickstart: quickstart.md
   - Clients:
       - Terminal UI: clients/tui.md
       - Web: clients/web.md

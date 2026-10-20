@@ -58,13 +58,5 @@ command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
 
 ## Connect a model
 
-Change to the workspace where the agent should operate and start the terminal UI:
-
-```sh
-cookie
-```
-
-No configuration file is required. When no provider is available, the TUI opens
-in setup mode. Use `/connect` to choose a [managed provider](extend/providers.md#managed-providers)
-and enter its setup and credentials, or configure a
-[custom model](extend/providers.md#custom-model-example) in `config.toml`.
+Run `cookie` in a project and connect a provider with `/connect`; the
+[quickstart](quickstart.md) walks through it and a first session.
