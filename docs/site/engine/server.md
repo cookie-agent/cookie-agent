@@ -69,7 +69,17 @@ the connection it opens authenticates in its handshake.
 | `/ws`, `/runtime` | the client and runtime endpoints, as below |
 | anything else | 404 |
 
-Every file carries an `ETag`, so a revalidated file costs no body. A
+Every file carries an `ETag`, so a revalidated file costs no body. A file
+that compresses is sent gzip-compressed to a browser whose `Accept-Encoding`
+takes gzip (`Vary: Accept-Encoding`, with its own `ETag`). Every response
+carries the page's `Content-Security-Policy`:
+
+- scripts only from the daemon, including WebAssembly and the page's
+  inline loader by hash;
+- WebSocket connections to any daemon (`ws:`, `wss:`), since the page may
+  name one on another host;
+- `blob:` media;
+- no framing. A
 `cookie` built without the page (see
 [Building the page](../guide/web.md#building-the-page)) serves a
 placeholder `index.html` that says how to build it. After its ready line,

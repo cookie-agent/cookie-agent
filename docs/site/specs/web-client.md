@@ -970,3 +970,135 @@ Landed as specified, with no wire change and no configuration change.
       to add.
   - **Not in CI.** The browser test is not a CI job yet, because it needs
     Firefox and geckodriver; W5's end-to-end suite adds them.
+
+### Phase W2 (2026-10-20)
+
+Core chat landed as specified, with no wire change.
+
+- **Moved into `cookie_agent_client_state`.**
+  - **The subscription state machine (`subscriptions::Subscriptions`).** It
+    covers subscribing, live, and recovering, a resubscribe once ownership
+    arrives, the recent-tree release, and recovery after a failure.
+    - Its methods return the `events.subscribe` requests to send (a
+      `Subscribe` with its attempt), and the client reports each outcome
+      back (`finish`, `note_replay_end`, `release`, `recovery_failed`).
+      The client owns the clock and the RPCs.
+    - The TUI drives it from `ui/app/subscriptions.rs`. The `watch` its
+      session switch waits on stays in the TUI, keyed by session.
+    - The TUI's tests are unchanged except that
+      `app.next_subscription_attempt` reads
+      `app.subscriptions.last_attempt()`.
+  - **`session_actions`, also switched over in the TUI:**
+    - installing an `approval.list` into the store;
+    - the permission-mode cycle and its labels;
+    - toggling and finishing the complete content of a cut block
+      (`toggle_full_content`, `finish_full_content`,
+      `FullContentState::of_read`, `block_full`).
+  - **Ownership bookkeeping stayed in each client (deviation).** The
+    generation map and the owned and read-only sets stayed, because the
+    TUI's tests read and write those `HashSet`s and `HashMap`s directly. The
+    web client keeps the same small bookkeeping over the shared
+    `ownership::classify_session`.
+- **The page** (`crates/web/src/{workspace,views}.rs`):
+  - **Sessions:** a list with a directory filter fed by the sessions'
+    `cwd_identity` (all directories by default) and live
+    `sessions.changed`.
+  - **New session:** a draft whose first message creates the session. It
+    attaches `global` and `local`'s `coding` at the named directory, or
+    takes the daemon's defaults, and applies the draft's mode.
+  - **Ownership:** read-only snapshots for sessions another process owns.
+  - **The shared reducer,** fed by every delivery, with voided input
+    restored to the composer.
+  - **Composer:**
+    - Enter, Alt+Enter, Shift+Enter, Ctrl+J, Escape, and Up, mapped by the
+      pure `keys::composer_action`;
+    - Send, with a long press or the ▾ menu to queue;
+    - the queue strip with recall;
+    - `run.cancel`;
+    - one `session.submit_input` per message.
+  - **Approvals:** answered at their revision and fingerprint, refreshed
+    on `approvals_changed`.
+  - **Pickers:** agent, model and variant, and preset, from the
+    `runtime.snapshot.get` / `runtime.changed` chain. The draft is
+    published after 300 ms and yields to another client's pick.
+  - **Status bar:** the permission mode and its cycle, the cost (from
+    `session.usage`, debounced 250 ms as in the TUI), the `/usage` panel
+    with the session and its tree, and the context size.
+  - **`/events`:** the level filter, kept in `localStorage`.
+  - **Commands:** the TUI's names and aliases for W2's commands (`/new`,
+    `/sessions` with `/resume`, `/load`, `/continue`, `/agent`, `/model`,
+    `/preset`, `/usage`, `/cancel`, `/events`), plus two with no TUI
+    command of the same name: `/approvals` (the TUI docks approvals over
+    the composer) and `/mode` (the TUI cycles the mode from its bottom
+    bar). The ☰ menu lists them all.
+- **Transcript HTML** (`crates/web/src/render/`): pure functions, tested
+  natively.
+  - **Markdown** comes from `MarkdownBlock` events. Raw HTML becomes text;
+    links are kept only for `http`, `https`, `mailto`, and relative URLs,
+    and open in a new tab without an opener; images become links.
+  - **Display blocks:** every kind has its own renderer, and none branches
+    on a tool name.
+    - Diffs number lines from the hunks' starts.
+    - Terminal SGR becomes spans: classes for the 16 standard colours in
+      both palettes, inline styles for 256-colour and RGB.
+    - Media blocks are read with `artifact.read` into `Blob` URLs.
+    - A block of a kind this build does not know renders nothing, as in
+      the TUI. The daemon already turns a newer kind into its `text`
+      fallback for an older client.
+  - **Interaction.** Interactive parts carry `data-action` attributes,
+    which one click handler dispatches.
+  - **Re-rendering.** The page re-renders only items whose `item_key` (the
+    item's version, its tools' revisions, expansion, and the level filter)
+    changed.
+- **Highlighting.** highlight.js 11.12.0 is vendored with its BSD-3-Clause
+  licence and checked against the npm `sha512` integrity, with no CDN.
+  - It is copied by Trunk and loaded on the first code block that names its
+    language, through `js_sys` calls.
+  - Its token colours come from the palette, light and dark.
+- **Serving.**
+  - `web_assets`' build script gzips each compressible file. The daemon
+    sends that copy when `Accept-Encoding` takes gzip, with
+    `Vary: Accept-Encoding` and an `ETag` of its own. Brotli is left out:
+    it would need another crate, and gzip covers every browser.
+  - **CSP.** Every response carries a Content-Security-Policy:
+    - `script-src 'self' 'wasm-unsafe-eval'` plus a hash of Trunk's inline
+      loader, computed at build time;
+    - `connect-src 'self' ws: wss:`;
+    - `img-src` and `media-src` with `blob:`;
+    - `style-src 'unsafe-inline'`, which inline terminal colours need;
+    - no objects, base URI, framing, or form targets.
+- **Size.** The bundle is 4.28 MB, 1.65 MB gzipped. Of that, the wasm is
+  3.88 MB (1.40 MB gzipped), highlight.js 43 KB gzipped, and the fonts
+  187 KB.
+  - `scripts/build-web.sh` now fails over a budget of 1,900,000 bytes
+    gzipped, which CI enforces in the `web` job.
+- **Tests.**
+  - **Native web tests:**
+    - every block kind's HTML;
+    - markdown sanitization (raw HTML escaped, `javascript:` links
+      neutralized, images as links, code language classes);
+    - SGR to spans;
+    - diff line numbers;
+    - the composer key mapping and the slash commands;
+    - the event-level filter and item keys.
+  - **`client_state` tests:** every transition of the subscription
+    machine, and the mode cycle.
+  - **Server tests:** gzip negotiation and revalidation of the compressed
+    copy, and the CSP on every response.
+  - **`scripts/test-web-page.sh`.** It now runs a scripted OpenAI-compatible
+    model (`scripts/web-e2e/mock-model.py`) behind a daemon whose agent asks
+    before `bash`. `scripts/web-e2e/scenarios.py` drives headless Firefox
+    through:
+    - connecting from the `cookie web` link;
+    - a new session with streamed, highlighted markdown;
+    - a tool call approved from the approvals sheet, with its terminal
+      output;
+    - steering a slow run, queueing behind it with Alt+Enter, and
+      cancelling it with Escape, after which the unsent messages return to
+      the composer;
+    - a 375 px window with no sideways scroll and the sessions sheet;
+    - the origin hint from a daemon that allows no origin.
+
+    All pass, and the screenshots were checked.
+  - **Not in CI yet.** The browser scenarios still need Firefox and
+    geckodriver in CI (W5).

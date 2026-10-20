@@ -2,8 +2,9 @@
 
 `cookie daemon` serves a web client on the same port as its client endpoint.
 Open it in a browser on the daemon's machine, or on a laptop or phone that
-reaches that port. This page covers opening it and connecting it. Later
-versions of the page add sessions and the rest of what the TUI does.
+reaches that port. It works the daemon's sessions as the TUI does. A later
+version adds what is still missing: subagents, fork and revert, goals,
+attachments, and the management panels.
 
 ## Opening the page
 
@@ -57,7 +58,7 @@ address bar.
   closes its connection before the handshake. The usual cause is an origin
   missing from `allowed_origins`, so the page quotes its own origin as the
   entry to add.
-- **Once connected**, the page shows the daemon's version.
+- **Once connected**, the header shows the daemon's address and version.
   - **Dropped connection.** The page redials with the TUI's backoff,
     500 ms rising to 10 s, under the same client identity.
   - **Background tab.** When it becomes visible again, the page checks the
@@ -65,6 +66,61 @@ address bar.
   - **Separate clients.** Each browser tab is its own client.
 - **Theme.** The theme button cycles through system, light, and dark. The
   choice stays in the browser.
+
+## Sessions and chat
+
+- **Layout.**
+  - **Wide windows:** the session list is on the left, the transcript in
+    the middle, and the composer and status bar at the bottom.
+  - **Panels:** these open as a sheet on the right. They cover approvals,
+    the agent, model, and preset pickers, usage, the diagnostics filter,
+    and the command menu.
+  - **Narrow windows such as a phone:** the session list and every panel
+    open full screen. Long lines in code, diffs, and terminal output scroll
+    inside their block.
+- **Sessions.** The page has no directory of its own, so the list shows
+  every directory's sessions, with a filter by directory.
+  - **New session** starts a draft in a directory you name; leave it empty
+    for the daemon's own. The first message creates the session with the
+    agent and model shown, and the permission mode the status bar shows.
+  - **Owned elsewhere.** A session another cookie process owns opens as a
+    read-only snapshot.
+- **Transcript.** Markdown is rendered with any HTML in it shown as text.
+  Links open in a new tab, but only `http`, `https`, and `mailto` links;
+  images show as links.
+  - **Tool calls** show their title and status. Click one for its
+    arguments and output.
+  - **Output blocks** each have their own view: code highlighted by the
+    bundled highlight.js, diffs with the file's line numbers, terminal
+    output with its colours, tables, JSON, links, session links, and media
+    shown inline.
+  - **Cut output** offers its complete content.
+- **Composer.** It works like the TUI's:
+  - **Enter** sends, steering a running run.
+  - **Alt+Enter** queues the message behind the run.
+  - **Shift+Enter or Ctrl+J** inserts a newline.
+  - **Escape** cancels the run.
+  - **Up** in an empty composer takes back your newest pending or queued
+    message.
+
+  On a phone, **Send** steers, and a long press on it, or its ▾ menu,
+  queues. The strip above the composer lists pending and queued messages;
+  tap one of yours to take it back.
+- **Commands.** `/` starts a command:
+  - `/new`;
+  - `/sessions` (also `/resume`, `/load`, `/continue`);
+  - `/agent`, `/model`, `/preset`;
+  - `/approvals`;
+  - `/mode` cycles the permission mode;
+  - `/usage`, `/cancel`, `/events`.
+
+  The ☰ button lists them all.
+- **Approvals.** When a tool call needs an answer, the status bar says so.
+  Open it to approve once, approve for the session tree, or reject.
+- **Status bar.** It shows the permission mode (click it for the next one),
+  the session's cost (click for `/usage`), and its context size.
+- **Diagnostics.** `/events` picks which diagnostic rows the transcript
+  shows; the choice stays in the browser.
 
 ## Reaching the daemon from elsewhere
 
@@ -100,4 +156,9 @@ A `cookie` built from a fresh checkout serves a placeholder page.
 
 - it needs `trunk` 0.21.14 and the `wasm32-unknown-unknown` target;
 - it writes the page to `crates/web_assets/bundle/`, which the next build
-  of `cookie` embeds.
+  of `cookie` embeds;
+- it fails when the page, gzipped, is over its budget of 1.9 MB.
+
+The daemon sends the page gzip-compressed to browsers that accept it, under a
+Content-Security-Policy that allows only the page's own scripts and
+WebSocket connections to daemons.
