@@ -3,7 +3,7 @@
 //! renders as nothing, as in the TUI (the daemon already sends an older
 //! client a newer kind as its `text` fallback).
 
-use cookie_agent_client_state::FullContentState;
+use cookie_agent_client_state::{FullContentState, session_actions::block_full};
 use cookie_agent_protocol::{
     DiffBlock, DiffChange, DiffLineOp, DisplayBlock, KeyValueEntry, Open, TerminalSegment,
     TerminalStream,
@@ -210,17 +210,6 @@ fn full_content_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             },
             action("Hide the complete output")
         ),
-    }
-}
-
-/// The artifact holding a cut block's complete content.
-pub fn block_full(block: &DisplayBlock) -> Option<&cookie_agent_protocol::ArtifactRef> {
-    match block {
-        DisplayBlock::FileExcerpt { full, .. } | DisplayBlock::Terminal { full, .. } => {
-            full.as_ref()
-        }
-        DisplayBlock::Diff(diff) => diff.full.as_ref(),
-        _ => None,
     }
 }
 
