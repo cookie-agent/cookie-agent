@@ -1023,12 +1023,59 @@ impl Engine {
                         publish_tool_progress(&engine, active.session, run, &progress);
                     }
                     _ = active.cancellation.cancelled() => {
-                        if let Some(detachable) = detach_watch.current().filter(|detachable| detachable.reports_itself) {
-                            // Work that reports itself outlives the run that
-                            // waited for it: stop waiting instead of cancelling.
-                            drop(invoke);
-                            hub.finalize();
-                            engine.retain_finalized_output_hub(call.id);
+                        // Work that reports itself outlives the run that
+                        // waited for it: stop waiting instead of cancelling.
+                        let mut self_reporting = detach_watch.current().filter(|detachable| detachable.reports_itself);
+                        let mut cleanup_timed_out = false;
+                        let mut delegate_result = None;
+                        if self_reporting.is_none() {
+                            tool_cancellation.cancel();
+                            let cleanup_deadline =
+                                tokio::time::Instant::now() + TOOL_CANCELLATION_CLEANUP_TIMEOUT;
+                            let cleanup = tokio::time::sleep_until(cleanup_deadline);
+                            tokio::pin!(cleanup);
+                            // A call may reach its detach point while it winds
+                            // down: a subagent whose start was still being
+                            // confirmed when the run was cancelled. It then
+                            // waits on its child, which only its own turn
+                            // ends, so stop waiting there as above rather
+                            // than at the deadline, which loses the handle.
+                            let mut watch_detach = true;
+                            loop {
+                                tokio::select! {
+                                    detachable = detach_watch.reached(), if watch_detach => {
+                                        if detachable.reports_itself {
+                                            self_reporting = Some(detachable);
+                                            break;
+                                        }
+                                        watch_detach = false;
+                                    }
+                                    result = &mut invoke => {
+                                        delegate_result = result.ok().filter(|result| {
+                                            engine.is_delegate_call_result(active.session, run, call.id, &result.result)
+                                        });
+                                        while let Ok(progress) = progress_rx.try_recv() {
+                                            publish_tool_progress(&engine, active.session, run, &progress);
+                                        }
+                                        break;
+                                    }
+                                    Some(progress) = progress_rx.recv() => {
+                                        publish_tool_progress(&engine, active.session, run, &progress);
+                                    }
+                                    () = &mut cleanup => {
+                                        cleanup_timed_out = true;
+                                        progress_rx.close();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        // Drop unsubmitted I/O admission waits before finalization. Jobs
+                        // already submitted own their permits and are drained by capture.
+                        drop(invoke);
+                        hub.finalize();
+                        engine.retain_finalized_output_hub(call.id);
+                        if let Some(detachable) = self_reporting {
                             let mut message = "tool call cancelled; its work keeps running and reports itself".to_owned();
                             if let Some(note) = detachable.note.as_deref().map(str::trim).filter(|note| !note.is_empty()) {
                                 message.push('\n');
@@ -1041,39 +1088,6 @@ impl Engine {
                                 partial_output,
                             });
                         }
-                        tool_cancellation.cancel();
-                        let cleanup_deadline =
-                            tokio::time::Instant::now() + TOOL_CANCELLATION_CLEANUP_TIMEOUT;
-                        let cleanup = tokio::time::sleep_until(cleanup_deadline);
-                        tokio::pin!(cleanup);
-                        let mut cleanup_timed_out = false;
-                        let mut delegate_result = None;
-                        loop {
-                            tokio::select! {
-                                result = &mut invoke => {
-                                    delegate_result = result.ok().filter(|result| {
-                                        engine.is_delegate_call_result(active.session, run, call.id, &result.result)
-                                    });
-                                    while let Ok(progress) = progress_rx.try_recv() {
-                                        publish_tool_progress(&engine, active.session, run, &progress);
-                                    }
-                                    break;
-                                }
-                                Some(progress) = progress_rx.recv() => {
-                                    publish_tool_progress(&engine, active.session, run, &progress);
-                                }
-                                () = &mut cleanup => {
-                                    cleanup_timed_out = true;
-                                    progress_rx.close();
-                                    break;
-                                }
-                            }
-                        }
-                        // Drop unsubmitted I/O admission waits before finalization. Jobs
-                        // already submitted own their permits and are drained by capture.
-                        drop(invoke);
-                        hub.finalize();
-                        engine.retain_finalized_output_hub(call.id);
                         if !cleanup_timed_out && let Some(result) = delegate_result {
                             return finalize_output(capture.as_ref(), result, true, result_truncation).await.map_err(ToolFailure::from);
                         }

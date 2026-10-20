@@ -559,6 +559,124 @@ async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting(
 }
 
 #[tokio::test]
+async fn cancelling_the_parent_while_its_child_starts_still_names_the_child() {
+    // The parent is cancelled after the child's run started but before the
+    // admission confirmed it, so the call reaches its detach point only
+    // while it winds down. It must still stop waiting at once and name the
+    // child it leaves running, not sit out the cleanup deadline.
+    let (endpoint, responses, server) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "start one child",
+            scripted_tool_body(
+                "starting-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Starting child",
+                    "prompt":"child keeps running"
+                }),
+            ),
+        ))
+        .expect("parent delegation response");
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }),
+    );
+    let (reached, mut child_started) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Barrier::new(2));
+    *fixture
+        .engine
+        .inner
+        .test_hooks
+        .admission_confirmation_hook
+        .lock()
+        .expect("admission confirmation hook") =
+        Some(Arc::new(crate::runtime::AdmissionConfirmationHook {
+            reached,
+            release: Arc::clone(&release),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("parent session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("cancel-starting-delegate").unwrap(),
+                selection,
+                content: "start one child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parent run")
+        .run_id;
+    with_watchdog("child run started", child_started.recv())
+        .await
+        .expect("admission confirmation reached");
+    fixture
+        .engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel parent");
+    with_watchdog("admission confirmation released", release.wait()).await;
+    let projection = await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "cancelled parent with its call ended",
+        |projection| {
+            projection.runs.get(&run).is_some_and(|run| {
+                run.status == SessionStatus::Cancelled && run.pending_calls.is_empty()
+            })
+        },
+    )
+    .await;
+
+    let children = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children");
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].status, SessionStatus::Running);
+    let handle = fixture
+        .engine
+        .session_short_id(children[0].session_id)
+        .expect("child handle");
+    let termination = projection
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } if event.run_id == Some(run) => {
+                Some(termination.clone())
+            }
+            _ => None,
+        })
+        .expect("call terminated");
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
+    assert!(
+        termination.error.as_ref().is_some_and(|error| {
+            let message = error.message.as_str();
+            message.contains("keeps running and reports itself")
+                && message.contains(&format!("[subagent session {handle}]"))
+        }),
+        "{termination:?}"
+    );
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool() {
     let (endpoint, responses, server) = scripted_channel_server(1).await;
     responses
