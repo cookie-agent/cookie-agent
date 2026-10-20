@@ -1,7 +1,10 @@
 # Persistent Daemon, Dial-in Runtimes, and Runtime Capabilities
 
 Status: **implemented** (decisions of 2026-10-16 below and
-in [Review](#10-review); see [Implementation notes](#11-implementation-notes)). This spec extends the [runtimes spec](runtimes.md);
+in [Review](#10-review); see [Implementation notes](#11-implementation-notes)).
+Checked by hand against labpc on 2026-10-20: an ssh template and a dial-in
+runtime, the daemon built from `85710393d` and the remote runtime from the
+`b2ddb9e72` musl release build; every check passed. This spec extends the [runtimes spec](runtimes.md);
 where they differ, this one governs.
 
 ## 1. Goal and scope
@@ -149,6 +152,10 @@ becomes `cookie runtime serve --stdio`, offering every built-in capability;
   their tools are absent; attachments stay, and a runtime that dials in
   again under the same ID gets them back. It keeps its own state across
   reconnects (background work it tracks, producer recovery).
+  *As implemented* (see [phase 3](#11-implementation-notes)), its instances
+  follow the reconnect policy instead: their tools stay published while
+  they are `reconnecting`, and leave the tool lists only once the instances
+  become `failed`, after about 7 seconds.
 
 ## 6. Client runtimes
 

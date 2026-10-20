@@ -1,8 +1,10 @@
 # Runtimes: Daemon, Global Runtime, and Coding Runtimes
 
 Status: **implemented** (all four phases, product decisions approved
-2026-10-15); the manual end-to-end check against labpc that phase 4 names is
-pending the author. This document is the governing specification for
+2026-10-15); the manual end-to-end check against labpc that phase 4 names
+passed on 2026-10-20: an ssh template and a dial-in runtime, the daemon
+built from `85710393d` and the remote runtime from the `b2ddb9e72` musl
+release build. This document is the governing specification for
 splitting tool execution and workspace context out of the engine into
 attachable *runtimes*. Section [Open questions](#14-open-questions) lists
 anything still undecided.
