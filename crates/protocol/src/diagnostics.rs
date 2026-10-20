@@ -1,8 +1,5 @@
 //! Bounded user-facing diagnostics. Preserve diagnostic content while removing
 //! terminal/format controls and truncating text to the display budget.
-use std::sync::LazyLock;
-
-use regex::Regex;
 use serde_json::Value;
 
 use crate::{DiagnosticText, ModelErrorSummary, SafeErrorMessage};
@@ -14,9 +11,18 @@ pub fn sanitize(value: &str, maximum: usize) -> String {
     } else {
         value.to_owned()
     };
-    static CONTROLS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[\p{Cc}\p{Cf}&&[^\n\t]]").unwrap());
-    text = CONTROLS.replace_all(&text, " ").into_owned();
+    if text.chars().any(is_terminal_control) {
+        text = text
+            .chars()
+            .map(|character| {
+                if is_terminal_control(character) {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect();
+    }
     if text.trim().is_empty() {
         text = "No error detail was supplied".into();
     }
@@ -30,6 +36,44 @@ pub fn sanitize(value: &str, maximum: usize) -> String {
         text.push_str(&MARKER[..MARKER.len().min(maximum)]);
     }
     text
+}
+
+/// Whether `character` is a control (`Cc`) or format (`Cf`) character other
+/// than newline and tab: what text shown in a terminal must not carry.
+#[must_use]
+pub fn is_terminal_control(character: char) -> bool {
+    character != '\n' && character != '\t' && (character.is_control() || is_format(character))
+}
+
+/// Whether `character` is in the Unicode general category `Cf` (format).
+fn is_format(character: char) -> bool {
+    const FORMAT: &[(u32, u32)] = &[
+        (0x00AD, 0x00AD),
+        (0x0600, 0x0605),
+        (0x061C, 0x061C),
+        (0x06DD, 0x06DD),
+        (0x070F, 0x070F),
+        (0x0890, 0x0891),
+        (0x08E2, 0x08E2),
+        (0x180E, 0x180E),
+        (0x200B, 0x200F),
+        (0x202A, 0x202E),
+        (0x2060, 0x2064),
+        (0x2066, 0x206F),
+        (0xFEFF, 0xFEFF),
+        (0xFFF9, 0xFFFB),
+        (0x110BD, 0x110BD),
+        (0x110CD, 0x110CD),
+        (0x13430, 0x1343F),
+        (0x1BCA0, 0x1BCA3),
+        (0x1D173, 0x1D17A),
+        (0xE0001, 0xE0001),
+        (0xE0020, 0xE007F),
+    ];
+    let code = u32::from(character);
+    FORMAT
+        .iter()
+        .any(|(first, last)| (*first..=*last).contains(&code))
 }
 
 pub fn detail(value: &str) -> DiagnosticText {
@@ -429,5 +473,23 @@ mod tests {
             data: None,
         };
         assert_eq!(rpc(&plain), "operation failed");
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod control_tests {
+    use super::is_terminal_control;
+
+    #[test]
+    fn the_control_table_matches_unicodes_cc_and_cf() {
+        let controls = regex::Regex::new(r"^[\p{Cc}\p{Cf}&&[^\n\t]]$").expect("control pattern");
+        for character in (0..=0x10FFFF).filter_map(char::from_u32) {
+            assert_eq!(
+                is_terminal_control(character),
+                controls.is_match(character.encode_utf8(&mut [0; 4])),
+                "U+{:04X}",
+                u32::from(character)
+            );
+        }
     }
 }

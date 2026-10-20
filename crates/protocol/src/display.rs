@@ -133,7 +133,20 @@ pub enum DisplayBlock {
     },
 }
 
-crate::open_enum!(tagged DisplayBlock, tag = "type");
+crate::open_enum!(tagged DisplayBlock, tag = "type", tags = [
+    "code",
+    "diff",
+    "file_excerpt",
+    "json",
+    "key_value",
+    "link",
+    "markdown",
+    "media",
+    "session_ref",
+    "table",
+    "terminal",
+    "text",
+]);
 
 /// A change to one file, with real file line numbers.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1260,7 +1273,10 @@ pub enum DisplayDelta {
     Replace { blocks: Vec<Open<DisplayBlock>> },
 }
 
-crate::open_enum!(tagged DisplayDelta, tag = "type");
+crate::open_enum!(tagged DisplayDelta, tag = "type", tags = [
+    "append",
+    "replace",
+]);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum DisplayDeltaError {
@@ -1525,7 +1541,12 @@ pub enum ToolSource {
     },
 }
 
-crate::open_enum!(tagged ToolSource, tag = "type");
+crate::open_enum!(tagged ToolSource, tag = "type", tags = [
+    "base",
+    "mcp",
+    "plugin",
+    "runtime",
+]);
 
 /// The tool a call goes to, as the daemon knows it.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

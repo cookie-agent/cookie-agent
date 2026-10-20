@@ -282,7 +282,10 @@ pub enum ExtensionToolOrigin {
     },
 }
 
-crate::open_enum!(tagged ExtensionToolOrigin, tag = "kind");
+crate::open_enum!(tagged ExtensionToolOrigin, tag = "kind", tags = [
+    "base",
+    "runtime",
+]);
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ExtensionToolBeforeCallParams {

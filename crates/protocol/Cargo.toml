@@ -31,7 +31,6 @@ cookie_agent_identity = { version = "=0.3.0", path = "../identity" }
 futures-util.workspace = true
 jiff.workspace = true
 oven-sdk.workspace = true
-regex = "1"
 schemars.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["raw_value"] }
@@ -70,6 +69,8 @@ web-sys = { version = "0.3.103", optional = true, features = [
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 insta.workspace = true
+# Checks the hand-written control-character table against Unicode's.
+regex = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.76"

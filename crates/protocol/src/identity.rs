@@ -445,10 +445,7 @@ string_wire_impl!(
     "Bounded diagnostic text permitting newlines and tabs.",
     |value: &str| {
         validate_bounded(value, DiagnosticText::MAX_BYTES)?;
-        static CONTROLS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"[\p{Cc}\p{Cf}&&[^\n\t]]").expect("control pattern")
-        });
-        if CONTROLS.is_match(value) {
+        if value.chars().any(crate::diagnostics::is_terminal_control) {
             return Err(WireStringError::Invalid(
                 "must not contain terminal controls",
             ));

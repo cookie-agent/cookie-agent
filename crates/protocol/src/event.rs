@@ -2811,7 +2811,73 @@ pub enum EventPayload {
 
 // Plugins receive events as `Open<EventPayload>`: an event type a plugin
 // does not know reaches it as `Unknown`.
-crate::open_enum!(tagged EventPayload, tag = "type");
+crate::open_enum!(tagged EventPayload, tag = "type", tags = [
+    "agent_md_loaded",
+    "approval_finalized",
+    "approval_requested",
+    "approval_step",
+    "attempt_abandoned",
+    "context_checkpoint_committed",
+    "delegate_child_terminated",
+    "delegated_context_seeded",
+    "delegation_finished",
+    "delegation_progressed",
+    "delegation_reserved",
+    "diagnostic",
+    "goal_activated",
+    "goal_checklist_revised",
+    "goal_lifecycle_changed",
+    "internal_agent_fallback",
+    "internal_agent_finished",
+    "internal_agent_started",
+    "internal_agent_text_delta",
+    "internal_agent_usage_recorded",
+    "memory_loaded",
+    "message_injected",
+    "model_attempt_started",
+    "model_fallback",
+    "model_output_started",
+    "model_replay_evaluated",
+    "model_request_prepared",
+    "model_tools_published",
+    "model_turn_committed",
+    "model_usage_recorded",
+    "native_compaction_finished",
+    "native_compaction_started",
+    "producer_message_accepted",
+    "producer_message_admitted",
+    "producer_message_consumed",
+    "producer_message_discarded",
+    "producer_messages_claimed",
+    "producer_messages_released",
+    "reasoning_delta",
+    "record_omitted",
+    "run_finished",
+    "run_started",
+    "runtime_attached",
+    "runtime_detached",
+    "session_created",
+    "session_model_selected",
+    "session_permission_overlay_set",
+    "session_title_committed",
+    "skill_invocation_noted",
+    "skill_loaded",
+    "text_delta",
+    "tool_call_linked",
+    "tool_call_progress",
+    "tool_call_started",
+    "tool_call_terminated",
+    "tool_output_elided",
+    "tree_approval_grant_committed",
+    "user_input_admitted",
+    "user_input_applied",
+    "user_input_queue_recalled",
+    "user_input_queue_voided",
+    "user_input_queued",
+    "user_input_recalled",
+    "user_input_submitted",
+    "user_input_transformed",
+]);
 impl EventPayload {
     /// A `run_finished` with `outcome`.
     #[must_use]
@@ -2900,10 +2966,7 @@ impl EventPayload {
     /// Whether `tag` is the `type` of an event this build knows.
     #[must_use]
     pub fn is_known_tag(tag: &str) -> bool {
-        static TAGS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
-            std::sync::OnceLock::new();
-        TAGS.get_or_init(|| crate::schema_tags::<Self>("type"))
-            .contains(tag)
+        <Self as crate::OpenTagged>::known_tags().contains(tag)
     }
 
     /// Whether this payload is an audit event rather than a state event.
@@ -4004,8 +4067,18 @@ impl<'de> Deserialize<'de> for ClientEvent {
     }
 }
 
-crate::open_enum!(tagged EventSubscriptionMessage, tag = "type");
-crate::open_enum!(tagged ClientSubscriptionMessage, tag = "type");
+crate::open_enum!(tagged EventSubscriptionMessage, tag = "type", tags = [
+    "event",
+    "gap",
+    "rewound",
+    "transient",
+]);
+crate::open_enum!(tagged ClientSubscriptionMessage, tag = "type", tags = [
+    "event",
+    "gap",
+    "rewound",
+    "transient",
+]);
 
 const MAX_DEGRADED_FIELDS: usize = 8;
 

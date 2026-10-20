@@ -286,7 +286,7 @@ macro_rules! open_enum {
                 static TAGS: ::std::sync::OnceLock<
                     ::std::collections::BTreeSet<::std::string::String>,
                 > = ::std::sync::OnceLock::new();
-                TAGS.get_or_init(|| $crate::schema_tags::<$name>($tag))
+                TAGS.get_or_init(|| [$($value),+].into_iter().map(::std::borrow::ToOwned::to_owned).collect())
             }
 
             fn tag(&self) -> ::std::string::String {
@@ -294,6 +294,18 @@ macro_rules! open_enum {
                     $(Self::$variant { .. } => $value,)+
                 }
                 .to_owned()
+            }
+        }
+    };
+    (tagged $name:ty, tag = $tag:literal, tags = [$($value:literal),+ $(,)?]) => {
+        impl $crate::OpenTagged for $name {
+            const TAG: &'static str = $tag;
+
+            fn known_tags() -> &'static ::std::collections::BTreeSet<::std::string::String> {
+                static TAGS: ::std::sync::OnceLock<
+                    ::std::collections::BTreeSet<::std::string::String>,
+                > = ::std::sync::OnceLock::new();
+                TAGS.get_or_init(|| [$($value),+].into_iter().map(::std::borrow::ToOwned::to_owned).collect())
             }
         }
     };
@@ -491,5 +503,35 @@ mod tests {
             json!("stopped")
         );
         assert!(serde_json::from_value::<State>(json!(1)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod listed_tag_tests {
+    use crate::OpenTagged;
+
+    /// The tags each open enum lists are exactly the ones its schema
+    /// declares, so a new variant cannot be left out of the list.
+    #[test]
+    fn listed_tags_match_the_schemas() {
+        fn check<T: OpenTagged + schemars::JsonSchema>() {
+            assert_eq!(
+                T::known_tags(),
+                &crate::schema_tags::<T>(T::TAG),
+                "{}",
+                std::any::type_name::<T>()
+            );
+        }
+        check::<crate::UserContentPart>();
+        check::<crate::SessionsChangedNotification>();
+        check::<crate::SessionSubmitInputResult>();
+        check::<crate::SessionRecallInputResult>();
+        check::<crate::ExtensionToolOrigin>();
+        check::<crate::DisplayBlock>();
+        check::<crate::DisplayDelta>();
+        check::<crate::ToolSource>();
+        check::<crate::EventPayload>();
+        check::<crate::EventSubscriptionMessage>();
+        check::<crate::ClientSubscriptionMessage>();
     }
 }

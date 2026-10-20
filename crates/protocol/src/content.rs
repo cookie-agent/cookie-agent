@@ -113,7 +113,10 @@ pub enum UserContentPart {
     File { artifact: ArtifactRef },
 }
 
-crate::open_enum!(tagged UserContentPart, tag = "type");
+crate::open_enum!(tagged UserContentPart, tag = "type", tags = [
+    "file",
+    "text",
+]);
 
 /// A user's input: a nonempty list of parts. An unknown part, from a newer
 /// client, is kept as is and is never sent to a model.

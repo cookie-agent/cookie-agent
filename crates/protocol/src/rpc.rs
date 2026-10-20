@@ -1484,7 +1484,13 @@ pub enum SessionsChangedNotification {
     /// refetch `session.list`, approvals, and permission modes.
     Resync,
 }
-crate::open_enum!(tagged SessionsChangedNotification, tag = "change");
+crate::open_enum!(tagged SessionsChangedNotification, tag = "change", tags = [
+    "approvals_changed",
+    "permission_mode_changed",
+    "removed",
+    "resync",
+    "upserted",
+]);
 
 /// MCP server configuration or status changed; refetch `mcp.server.list`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1558,7 +1564,12 @@ pub enum SessionSubmitInputResult {
     /// A plugin handled the input; nothing was submitted.
     Handled { reason: String },
 }
-crate::open_enum!(tagged SessionSubmitInputResult, tag = "outcome");
+crate::open_enum!(tagged SessionSubmitInputResult, tag = "outcome", tags = [
+    "handled",
+    "queued",
+    "started",
+    "steered",
+]);
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRecallInputParams {
@@ -1582,7 +1593,11 @@ pub enum SessionRecallInputResult {
     /// Another client submitted the input; only its author can recall it.
     NotOwner,
 }
-crate::open_enum!(tagged SessionRecallInputResult, tag = "outcome");
+crate::open_enum!(tagged SessionRecallInputResult, tag = "outcome", tags = [
+    "gone",
+    "not_owner",
+    "recalled",
+]);
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunCancelParams {
