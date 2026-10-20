@@ -1,7 +1,8 @@
 //! Render-path timings over a synthetic long session: replay, first draw,
 //! unchanged redraws, a streaming text delta, a tool progress delta, an
 //! animation step with a running tool, and a resize — with and without
-//! descendant warnings spliced into the view. Run in release:
+//! descendant warnings spliced into the view — and what parsing its markdown
+//! from source costs. Run in release:
 //!
 //! ```sh
 //! cargo test --release -p cookie_agent_tui transcript_perf -- --ignored --nocapture
@@ -509,6 +510,67 @@ async fn scenario(with_descendants: bool) {
     report("switch back + redraw", samples, &app, before);
 }
 
+/// What keeping only the markdown source in the shared state would add:
+/// parsing every reply of the long session again, as a client rebuilding a
+/// view with no parse at hand must, and a streamed reply parsed whole after
+/// every delta instead of only its open tail.
+fn markdown_parse_cost() {
+    use crate::markdown::MarkdownDocument;
+
+    let runs: usize = env_or("PERF_RUNS", 150);
+    let repeat: usize = env_or("PERF_REPEAT", 30);
+    let replies = (0..runs).map(reply_markdown).collect::<Vec<_>>();
+    let bytes = replies.iter().map(String::len).sum::<usize>();
+    let samples = (0..repeat)
+        .map(|_| {
+            let start = Instant::now();
+            for reply in &replies {
+                std::hint::black_box(MarkdownDocument::new(reply.clone()).finished());
+            }
+            start.elapsed()
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "markdown: {runs} replies, {bytes} bytes\n  parse every reply                  median {:>9.3} ms",
+        median(samples).as_secs_f64() * 1000.0
+    );
+    let reply = (0..8).map(reply_markdown).collect::<String>();
+    let deltas = reply
+        .as_bytes()
+        .chunks(24)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect::<Vec<_>>();
+    let incremental = (0..repeat)
+        .map(|_| {
+            let start = Instant::now();
+            let mut document = MarkdownDocument::new(String::new());
+            for delta in &deltas {
+                document.append(delta);
+            }
+            std::hint::black_box(document);
+            start.elapsed()
+        })
+        .collect::<Vec<_>>();
+    let whole = (0..repeat)
+        .map(|_| {
+            let start = Instant::now();
+            let mut source = String::new();
+            for delta in &deltas {
+                source.push_str(delta);
+                std::hint::black_box(MarkdownDocument::new(source.clone()));
+            }
+            start.elapsed()
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "  stream {} deltas, open tail        median {:>9.3} ms\n  stream {} deltas, whole reply     median {:>9.3} ms",
+        deltas.len(),
+        median(incremental).as_secs_f64() * 1000.0,
+        deltas.len(),
+        median(whole).as_secs_f64() * 1000.0
+    );
+}
+
 #[tokio::test]
 #[ignore = "manual performance measurement; run in release"]
 async fn transcript_perf() {
@@ -523,4 +585,5 @@ async fn transcript_perf() {
     );
     scenario(false).await;
     scenario(true).await;
+    markdown_parse_cost();
 }
