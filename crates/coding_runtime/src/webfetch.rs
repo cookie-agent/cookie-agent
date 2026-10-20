@@ -652,7 +652,7 @@ mod tests {
         let prepared = crate::identified(
             &WebfetchTool::coding(),
             "webfetch",
-            std::path::Path::new("/tmp"),
+            &std::env::temp_dir(),
             prepared,
         );
         assert_eq!(prepared.operation().resources().len(), 1);
@@ -683,7 +683,7 @@ mod tests {
                 policy,
                 prepared.operation(),
                 prepared.policy_labels(),
-                Some(std::path::Path::new("/tmp")),
+                Some(std::env::temp_dir().as_path()),
             )
         };
         assert_eq!(decide(&policy).effect, PermissionEffect::Deny);

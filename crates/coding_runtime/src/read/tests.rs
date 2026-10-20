@@ -597,7 +597,7 @@ async fn prepared_read_exposes_lexical_normalized_arguments_not_raw_traversal() 
         .get("filePath")
         .and_then(serde_json::Value::as_str)
         .expect("normalized file path");
-    let expected = root.path().join(".env");
+    let expected = crate::shown_root(root.path()).join(".env");
     assert_eq!(Path::new(normalized), expected);
     assert!(
         !prepared
@@ -900,7 +900,10 @@ async fn a_text_read_shows_an_excerpt_with_file_line_numbers() {
         result.output,
         format!(
             "<path>{}</path>\n<type>file</type>\n<content>\n2: two\n3: three\n</content>",
-            root.path().join("src/lib.rs").display()
+            crate::shown_root(root.path())
+                .join("src")
+                .join("lib.rs")
+                .display()
         )
     );
 }

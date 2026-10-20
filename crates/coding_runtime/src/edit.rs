@@ -939,7 +939,10 @@ mod tests {
         assert_eq!(result.metadata, serde_json::json!({"replacements": 1}));
         assert_eq!(
             result.title.as_str(),
-            format!("Edited {}", root.path().join("value.rs").display())
+            format!(
+                "Edited {}",
+                crate::shown_root(root.path()).join("value.rs").display()
+            )
         );
     }
 

@@ -33,6 +33,13 @@ pub(crate) fn test_workspace(path: impl AsRef<Path>) -> WorkspaceContext {
     WorkspaceContext::new(path.as_ref()).expect("test workspace")
 }
 
+/// `path` as the coding runtime shows it once it is a workspace root:
+/// canonical, and on Windows in its long form without the verbatim prefix.
+#[cfg(test)]
+pub(crate) fn shown_root(path: impl AsRef<Path>) -> PathBuf {
+    cookie_agent_protocol::paths::canonicalize(path.as_ref()).expect("canonical root")
+}
+
 /// Origin of a tool of a coding runtime at `path`, for tests.
 #[cfg(test)]
 pub(crate) fn test_coding_origin(path: impl AsRef<Path>) -> cookie_agent_runtime_api::ToolOrigin {

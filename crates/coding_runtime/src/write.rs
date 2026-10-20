@@ -759,7 +759,7 @@ mod tests {
             ]
         );
         // The model sees what it always saw.
-        let path = root.path().join("new.rs");
+        let path = crate::shown_root(root.path()).join("new.rs");
         assert_eq!(
             result.output,
             format!("Wrote 4 bytes to {}", path.display())

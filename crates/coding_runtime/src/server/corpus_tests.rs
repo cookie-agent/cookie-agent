@@ -55,7 +55,15 @@ fn workspace() -> (tempfile::TempDir, Substitutions) {
 /// with the workspace written as recorded.
 async fn replay(file: &CorpusFile, transform: impl Fn(Value) -> Value) -> Vec<(String, Value)> {
     let (directory, mut substitutions) = workspace();
-    let scratch = directory.path().to_string_lossy().into_owned();
+    // The runtime reports its workspace canonical, and a reply is compared
+    // as JSON text, where a Windows path's backslashes are escaped.
+    let scratch = serde_json::to_string(
+        &cookie_agent_protocol::paths::canonicalize(directory.path())
+            .expect("canonical scratch directory")
+            .to_string_lossy(),
+    )
+    .expect("JSON string");
+    let scratch = scratch.trim_matches('"').to_owned();
     let (daemon, runtime) = in_process_pair(64);
     let server = tokio::spawn(serve(Box::new(runtime), ServeOptions::default()));
     let played = corpus::play(file, "daemon", daemon, transform, &mut substitutions).await;
