@@ -821,3 +821,30 @@ async fn params_refuse_unknown_members_inside_types_history_reads_tolerantly() {
         assert_eq!(reply["error"]["data"]["field"], field, "{reply}");
     }
 }
+
+#[tokio::test]
+async fn a_client_authenticates_with_the_token_in_its_handshake() {
+    let connect = || {
+        let (client, server) = crate::in_process_pair(8);
+        tokio::spawn(serve(
+            Arc::new(StubServer::default()),
+            server,
+            CancellationToken::new(),
+            Authentication::Token(Arc::new(zeroize::Zeroizing::new(TOKEN.to_owned()))),
+        ));
+        crate::Client::connect_stream(client)
+    };
+    let identity =
+        crate::ClientIdentity::generate(crate::ClientKind::new("web").expect("client kind"));
+    let client = connect();
+    let hello = client
+        .handshake_with_token(identity.clone(), crate::HandshakeToken::new(TOKEN))
+        .await
+        .expect("handshake with the token");
+    assert_eq!(hello.origin, identity.origin());
+    let refused = connect()
+        .handshake_with_token(identity, crate::HandshakeToken::new("wrong"))
+        .await
+        .expect_err("a wrong token is refused");
+    assert_eq!(refused.error_code(), Some("unauthenticated"), "{refused}");
+}

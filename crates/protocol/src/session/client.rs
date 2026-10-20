@@ -16,17 +16,17 @@ use super::rt;
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientEvent, ClientHello, ClientIdentity, ClientKind, ClientSubscriptionMessage, EventOrigin,
-    EventsSubscribeParams, JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams,
-    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams,
-    McpAuthCompleteResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
-    McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
-    McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame, RunCancelParams,
-    RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult, ServerHello,
-    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
-    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
-    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
-    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
-    SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    EventsSubscribeParams, HandshakeToken, JsonRpcError, JsonRpcId, JsonRpcVersion,
+    McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult,
+    McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
+    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
+    McpServerPersistParams, McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame,
+    RunCancelParams, RunCancelResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
+    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
+    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
     SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
     SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
@@ -142,6 +142,12 @@ pub enum ClientError {
     Rpc(JsonRpcError),
     #[error("websocket error: {0}")]
     WebSocket(String),
+    /// The connection closed before the daemon answered its handshake, as
+    /// when the daemon refuses the WebSocket upgrade. A browser shows a page
+    /// no HTTP status for that: a page whose origin `[server]
+    /// allowed_origins` does not list sees only this, with `code` 1006.
+    #[error("{}", refused_before_handshake(*.code, .reason))]
+    ConnectionRefusedBeforeHandshake { code: u16, reason: String },
     #[error("a subscription replay is already in progress")]
     ReplayInProgress,
     #[error("subscription replay response timed out")]
@@ -152,6 +158,14 @@ pub enum ClientError {
     /// The daemon does not know a method this client expected it to have.
     #[error("the daemon is too old for {method}")]
     DaemonTooOld { method: String },
+}
+
+fn refused_before_handshake(code: u16, reason: &str) -> String {
+    let mut message = format!("the connection closed before the handshake (code {code})");
+    if !reason.is_empty() {
+        message.push_str(&format!(": {reason}"));
+    }
+    message
 }
 
 impl ClientError {
@@ -456,17 +470,35 @@ impl Client {
 
     /// Complete the versioned protocol handshake as `client`. The transport
     /// is expected to have presented the daemon's token (the WebSocket
-    /// transport sends it in `Authorization`); [`Self::handshake_with`]
+    /// transport sends it in `Authorization`); [`Self::handshake_with_token`]
     /// sends it in the handshake instead.
     pub async fn handshake_as(&self, client: ClientIdentity) -> Result<ServerHello, ClientError> {
         self.handshake_with(ClientHello::new(client)).await
     }
 
+    /// Complete the versioned protocol handshake as `client`, authenticating
+    /// with the daemon's `token` in the handshake, as a browser must: it
+    /// cannot set `Authorization` on a WebSocket.
+    pub async fn handshake_with_token(
+        &self,
+        client: ClientIdentity,
+        token: HandshakeToken,
+    ) -> Result<ServerHello, ClientError> {
+        let mut hello = ClientHello::new(client);
+        hello.token = Some(token);
+        self.handshake_with(hello).await
+    }
+
     /// Complete the protocol handshake with `hello`. A daemon of another
     /// client protocol version refuses it with `unsupported_protocol`, and
     /// a daemon whose version this build cannot speak with is refused here.
+    /// A hello carrying a token is sent from wiping buffers.
     pub async fn handshake_with(&self, hello: ClientHello) -> Result<ServerHello, ClientError> {
-        let raw: Value = self.call("handshake", &hello).await?;
+        let raw: Value = if hello.token.is_some() {
+            self.call_sensitive("handshake", hello).await?
+        } else {
+            self.call("handshake", &hello).await?
+        };
         crate::negotiate_version(crate::CLIENT_PROTOCOL_VERSION, &raw)
             .map_err(|refusal| ClientError::Rpc(refusal.to_rpc_error()))?;
         let hello: ServerHello = serde_json::from_value(raw)?;

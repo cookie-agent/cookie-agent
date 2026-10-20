@@ -6,7 +6,9 @@
 //!
 //! It also builds for `wasm32-unknown-unknown`, as the wire types and the
 //! [`Client`] only: the server, the stdio peer, [`paths`], and the other
-//! native-only parts are left out there.
+//! native-only parts are left out there. With the `websocket` feature a page
+//! connects with `Client::connect_browser_websocket` and authenticates with
+//! [`Client::handshake_with_token`].
 
 use std::borrow::Cow;
 
