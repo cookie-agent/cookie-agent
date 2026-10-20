@@ -1,43 +1,100 @@
 # cookie agent
 
-cookie agent is a subagent-first coding harness. A daemon owns provider
-connections, sessions, agents, model execution, permissions, memory, and
-persistence; runtimes provide its tools, and clients (the terminal UI, the web
-client, and the command line) communicate with it over the versioned JSON-RPC
-client protocol.
+cookie agent is a subagent-first coding harness. A daemon owns your provider
+connections, sessions, agents, permissions, and memory, and runs the models.
+Runtimes give its sessions their tools: the files and shell of a workspace on
+this machine or another one. Clients, the terminal UI, the web page, and the
+command line, all speak one versioned protocol to the daemon, so several of
+them can work in the same session at once.
 
-The client, plugin, and runtime protocols and session history are frozen
-semver surfaces; see [Compatibility](reference/compatibility.md).
-[Architecture](architecture.md) describes how the pieces fit together; this site
-turns that implementation into task-oriented guides and reference material.
+```mermaid
+flowchart LR
+    subgraph clients [Clients]
+        tui[Terminal UI]
+        web[Web page]
+        cli[Command line]
+    end
+    daemon["Daemon<br/>sessions, agents, providers,<br/>permissions, memory"]
+    subgraph runtimes [Runtimes]
+        global["global<br/>memory, MCP servers, plugins"]
+        local["local<br/>coding on this machine"]
+        remote["templates and dial-in<br/>coding on other machines"]
+    end
+    tui <-->|client protocol| daemon
+    web <-->|client protocol| daemon
+    cli <-->|client protocol| daemon
+    daemon <-->|tools| global
+    daemon <-->|tools| local
+    daemon <-->|runtime protocol| remote
+```
 
-## Quickstart
+[Concepts](concepts/daemon.md) explains each piece, and
+[Architecture](architecture.md) shows how the code implements them.
 
-First [install cookie agent](install.md), then run it from the workspace where it
-should operate:
+## Three ways to start
+
+**Just run it in a project.** [Install](install.md) cookie, change to the
+repository, and run `cookie`. With no daemon running it starts one inside the
+process, opens the terminal UI, and works on that directory. The
+[quickstart](quickstart.md) walks through a first session.
 
 ```sh
+cd ~/src/my-project
 cookie
 ```
 
-No configuration file is needed to start. If no provider is available, the TUI
-opens in setup mode; type `/connect` to store a managed provider connection.
-Provider setup and credentials are per-user and shared across workspaces.
-Credentials are checked when the provider is first used, not during the connect
-flow.
+**Keep a daemon running.** `cookie daemon` serves its sessions until you stop
+it, for example as a service. A plain `cookie` in any directory on the same
+machine then opens the terminal UI on it, and `cookie web --open` opens the
+same sessions in a browser once the page's origin is allowed. See
+[Persistent daemon](daemon/persistent.md) and [Web](clients/web.md).
 
-The [installation guide](install.md#connect-a-model) ends with provider setup;
-[Terminal UI](clients/tui.md) and [Command line](clients/cli.md) cover interactive and headless operation. See [Providers](extend/providers.md) for managed and custom
-provider options, [Plugins](extend/plugins.md) for executable extensions, and
-[Configuration](engine/configuration.md) for every configurable item.
+```sh
+cookie daemon          # in one terminal, or as a service
+cookie                 # in any project: the TUI on that daemon
+cookie web --open      # the browser client, with the token
+```
+
+**Use tools on another machine.** A `[runtimes.<id>]` template starts
+`cookie runtime serve --stdio` on another machine over ssh, so a session can
+read, edit, and run commands in a repository there; or that machine dials in
+with `cookie runtime serve --daemon`. See [Runtimes](daemon/runtimes.md).
+
+```toml
+[runtimes.labpc]
+command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "serve", "--stdio"]
+```
 
 !!! warning "Keep credentials out of Git"
     Prefer `/connect` or `${env:NAME}` interpolation. Do not commit `.env`, a
     credential-bearing config, or provider-store data.
 
-## Development
+## Where to go next
 
-See [Building and testing](development/building.md) for the Rust toolchain and
-required gates, [Plugin development](development/plugins.md) for extension
-authoring, and the [Rust API documentation](reference/api.md) for public
-workspace interfaces.
+- **[Get started](quickstart.md):** install, then a first session end to end.
+- **[Concepts](concepts/daemon.md):** the daemon, clients, runtimes, machines,
+  sessions, agents, permissions, and memory, and how they relate.
+- **Clients:** the [terminal UI](clients/tui.md), the [web page](clients/web.md),
+  and the [command line](clients/cli.md), with every command.
+- **Run a daemon:** [as its own process](daemon/persistent.md),
+  [reached from elsewhere](daemon/remote-access.md), with
+  [runtimes](daemon/runtimes.md), and its [security](daemon/security.md)
+  boundaries.
+- **[Working with sessions](sessions/index.md):** media, compaction, goal mode,
+  memory, and usage.
+- **Extend:** [agents and presets](extend/agents.md), [skills](extend/skills.md),
+  [providers](extend/providers.md), [MCP servers](extend/mcp.md), and
+  [plugins](extend/plugins.md).
+- **[Configuration](engine/configuration.md):** every key of `config.toml` and
+  `tui.toml`.
+- **Reference:** [tools](reference/tools.md), the
+  [client protocol](reference/protocol.md), [events](reference/events.md),
+  [errors](reference/errors.md), and the
+  [compatibility](reference/compatibility.md) promise: the client, plugin, and
+  runtime protocols and session history are frozen semver surfaces.
+- **Build on cookie:** [architecture](architecture.md),
+  [building and testing](development/building.md),
+  [writing a client](development/clients.md),
+  [writing a runtime](development/runtimes.md),
+  [plugin development](development/plugins.md), and the
+  [Rust API](reference/api.md).
