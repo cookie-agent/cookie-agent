@@ -304,9 +304,12 @@ impl Engine {
                 Some(descriptor)
             })
             .collect::<Vec<_>>();
+        // By name, the skill that wins its name first, then by location:
+        // the order does not depend on how the platform spells paths.
         skills.sort_by(|left, right| {
             left.name
                 .cmp(&right.name)
+                .then_with(|| right.precedence_winner.cmp(&left.precedence_winner))
                 .then_with(|| left.location.cmp(&right.location))
         });
         Ok(SkillsListResult { skills })
