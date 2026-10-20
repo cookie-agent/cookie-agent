@@ -2,7 +2,7 @@
 
 `cookie daemon` serves a web client on the same port as its client endpoint.
 Open it in a browser on the daemon's machine, or on a laptop or phone that
-reaches that port. It does what the TUI does with the daemon's sessions and
+reaches that port (see [Remote access](../daemon/remote-access.md)). It does what the TUI does with the daemon's sessions and
 the daemon itself: chat, approvals, subagents, history edits, goals,
 attachments, skills, permissions, runtimes and machines, MCP servers,
 providers, the configuration, memory, and plugins. Two things stay in the
@@ -12,7 +12,7 @@ TUI and the CLI; see [What the page does not do](#what-the-page-does-not-do).
 
 Allow the page's origin first. A browser connection is accepted only from
 an origin `[server] allowed_origins` lists (see
-[Web clients](../engine/server.md#web-clients)), and the page is no
+[Web clients](../daemon/remote-access.md#web-clients)), and the page is no
 exception. For a daemon on the default port, opened on the same machine:
 
 ```toml
@@ -235,7 +235,8 @@ address bar.
 - **Background tabs.** A phone suspends a tab it does not show. When the tab
   shows again, the page checks its connection, reconnects if the daemon
   stopped answering, and catches up on what happened meanwhile.
-- **Reaching the daemon** from a phone takes one of the ways below. Without
+- **Reaching the daemon** from a phone takes one of the ways in
+  [Forwarding and tunnels](../daemon/remote-access.md#forwarding-and-tunnels). Without
   TLS the token crosses the network in the clear.
 
 ## What the page does not do
@@ -248,26 +249,6 @@ address bar.
 - **Offer this machine as a runtime.** A browser has no workspace to share.
   The TUI's machine can attach as a runtime that dials in; the page uses the
   runtimes the daemon already has.
-
-## Reaching the daemon from elsewhere
-
-The page and `/ws` share one port, so forwarding that port forwards both.
-The page then finds the daemon at its own address.
-
-- **An SSH tunnel:** `ssh -L 7419:127.0.0.1:7419 host`. Open
-  `http://127.0.0.1:7419/` and allow `http://127.0.0.1:7419`.
-- **Tailscale or a LAN.** Run `cookie daemon --listen 0.0.0.0:7419` and
-  allow the address you open, such as `http://100.101.102.103:7419`.
-  Without TLS the token crosses the network in the clear, so keep this to a
-  private network.
-- **A tunnel such as cloudflared** gives an HTTPS address. Point it at the
-  daemon's port, and allow the tunnel's origin, such as
-  `https://cookie.example.com`.
-  - A page served over HTTPS connects with `wss://`. The tunnel provides
-    that.
-  - A proxy may serve the daemon under a subpath, such as
-    `https://example.com/cookie/`. The page then connects to
-    `wss://example.com/cookie/ws`.
 
 ## Hosting the page elsewhere
 

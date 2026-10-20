@@ -124,7 +124,7 @@ a plaintext `ws://` connection carries the token in the clear. Anyone holding
 the token is a fully trusted client and may also offer a runtime.
 
 **Web pages.** A request with a browser `Origin` header is refused unless
-`[server] allowed_origins` lists that origin (see [Server](../engine/server.md)).
+`[server] allowed_origins` lists that origin (see [Web clients](remote-access.md#web-clients)).
 The default list is empty, so no web page can open a connection. Listing an
 origin lets that site's pages try; they still need the token. With `"*"`, any
 page in any browser on a machine that can reach the daemon can open a

@@ -352,7 +352,7 @@ both open on one connect screen.
 - **Relative paths.** The bundle uses relative paths only, so it works from
   any path on any static host.
 - **HTTPS pages.** A page served over HTTPS can only reach `wss://`
-  daemons. The [web clients](../engine/server.md#web-clients) section
+  daemons. The [web clients](../daemon/remote-access.md#web-clients) section
   already says so, and the fill keeps the page's scheme.
 - **Version skew** between page and daemon is handled by the handshake:
   same major required, and the page gates methods on the daemon's minor.

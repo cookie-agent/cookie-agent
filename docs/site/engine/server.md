@@ -32,19 +32,8 @@ Plain `cookie` on this machine uses a daemon listening at
 starting an engine of its own; it never reads `url` for that. See
 [A daemon already running](../daemon/persistent.md#a-daemon-already-running).
 
-For clients and runtimes on other machines, `cookie daemon` takes:
-
-| Option | Meaning |
-|---|---|
-| `--listen <addr:port>` | Bind this address instead, such as `0.0.0.0:7419`. Without TLS the token crosses the network in the clear, so a plaintext listener belongs on a private network such as a VPN. Conflicts with `--port`. |
-| `--tls-cert <path>`, `--tls-key <path>` | Serve `wss` with this PEM certificate chain and private key; the ready line then shows a `wss://` URL. Both or neither. |
-
-The daemon serves clients on `/ws` and [dial-in runtimes](../daemon/runtimes.md#runtimes-that-dial-in)
-on `/runtime?id=<runtime ID>`. Both present the same bearer token: a runtime
-in the `Authorization` header, a client there or in its
-[handshake](../reference/protocol.md#handshake-and-authentication). A request
-carrying a browser `Origin` header is refused unless `allowed_origins` lists
-that origin (on `/runtime`, always).
+For clients and runtimes on other machines, `cookie daemon` takes `--listen`
+and TLS options; see [Remote access](../daemon/remote-access.md).
 
 ## Keys
 
@@ -54,7 +43,7 @@ that origin (on `/runtime`, always).
 | `port` | integer | `7419` | TCP port for the WebSocket daemon. |
 | `token` | string | *(none)* | The daemon's bearer token, exactly 43 base64url characters. The daemon writes a fresh one here when there is none; clients and dial-in runtimes on this machine use it when given no `--token`. |
 | `url` | string | `ws://<host>:<port>/ws` | The daemon clients and dial-in runtimes on this machine connect to when given no `--url` (or URL after `--daemon`): a `ws://` or `wss://` URL whose path is `/ws`. Set it on a machine whose daemon runs elsewhere. The daemon itself ignores it. |
-| `allowed_origins` | array of strings | `[]` | Web origins whose pages may connect to `/ws`: exact `scheme://host[:port]` origins as browsers send them, or the single entry `"*"` for any origin (see [Web clients](#web-clients)). Empty refuses every request with an `Origin` header; a request without one is unaffected. |
+| `allowed_origins` | array of strings | `[]` | Web origins whose pages may connect to `/ws`: exact `scheme://host[:port]` origins as browsers send them, or the single entry `"*"` for any origin (see [Web clients](../daemon/remote-access.md#web-clients)). Empty refuses every request with an `Origin` header; a request without one is unaffected. |
 
 ## The web page
 
@@ -66,7 +55,7 @@ the connection it opens authenticates in its handshake.
 |---|---|
 | `/` | `index.html`, `Cache-Control: no-cache` |
 | a file of the page | the file, with its content type; `Cache-Control: public, max-age=31536000, immutable` when its name carries a hash of its content, `no-cache` otherwise |
-| `/ws`, `/runtime` | the client and runtime endpoints, as below |
+| `/ws`, `/runtime` | the client and runtime endpoints; see [Listening on other addresses](../daemon/remote-access.md#listening-on-other-addresses) |
 | anything else | 404 |
 
 Every file carries an `ETag`, so a revalidated file costs no body. A file
@@ -88,22 +77,3 @@ the home screen; it has no service worker. A
 placeholder `index.html` that says how to build it. After its ready line,
 the daemon prints the page's address. While `allowed_origins` is empty, it
 also says that the page cannot connect until its origin is listed.
-
-## Web clients
-
-A page in a browser connects with the token in its handshake, from an origin
-`allowed_origins` lists. The daemon's own page is no exception:
-
-```toml
-[server]
-allowed_origins = ["https://cookie.example", "http://localhost:5173"]
-# or: allowed_origins = ["*"]
-```
-
-Each entry is an origin exactly as a browser sends it in its `Origin` header:
-a lowercase `scheme://host`, with `:port` only when the port is not the
-scheme's default, and no path or trailing slash. The single entry `"*"` allows
-any origin, and combining it with other entries is a configuration error.
-With `"*"`, any page can open a connection, and the token is the only
-protection. A page served over HTTPS can only connect with `wss://`, so it
-needs the daemon's TLS options. Changing the list takes a daemon restart.

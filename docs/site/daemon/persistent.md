@@ -4,8 +4,9 @@ This page covers running the daemon as a process of its own: starting it and
 attaching clients to it, how plain `cookie` finds a daemon already running on
 the machine, and running the daemon and its runtimes as services. Its clients
 are the [terminal UI](../clients/tui.md), the [web client](../clients/web.md),
-and the [command line](../clients/cli.md); [Runtimes](runtimes.md) covers the
-runtimes it uses, and [Security](security.md) its trust boundaries.
+and the [command line](../clients/cli.md); [Remote access](remote-access.md)
+covers reaching it from other machines, [Runtimes](runtimes.md) the runtimes
+it uses, and [Security](security.md) its trust boundaries.
 
 ## Separate server and client
 
@@ -50,7 +51,7 @@ cookie attach --url wss://laptop.example:7419/ws --token '<43-char base64url>'
 ```
 
 A daemon on another machine listens with `--listen`; see
-[Server](../engine/server.md). The daemon also serves a web client on its
+[Remote access](remote-access.md). The daemon also serves a web client on its
 port; `cookie web` prints its address with the token (see [Web](../clients/web.md)). Unlike plain `cookie`, `cookie attach` never
 falls back to an engine of its own: a daemon it cannot reach or use is an
 error.
