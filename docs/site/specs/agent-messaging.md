@@ -161,8 +161,9 @@ of delivering twice (existing producer dedup behavior).
 queued child durably accepts the message and it is claimed when the child's
 run starts; finished children, unreachable by `steer_subagent`, are reachable
 via wake. The model-visible `steer_subagent` tool is removed from
-`DelegateToolProvider`; `delegate_subagent`, `get_subagent_result`, and
-`cancel_subagent` remain. The engine's `steer_subagent` method is gone too;
+`DelegateToolProvider`; `delegate_subagent` and `get_subagent_result` remain.
+(`cancel_subagent` remained too until 0975445c1 removed it; `stop_background`
+given a subagent's handle now stops its turn.) The engine's `steer_subagent` method is gone too;
 user steering (`run.steer`) keeps its own admission path, which `send_message`
 does not use.
 Consequences:

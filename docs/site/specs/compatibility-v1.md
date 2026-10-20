@@ -3,8 +3,10 @@
 Status: **implemented** (decisions of 2026-10-17 below; phases A to H landed
 by 2026-10-19, see section 15). This spec governs compatibility for the
 client protocol, the plugin protocol, the runtime protocol, and session
-history, all frozen at `1.0.0` and history format 1. Where earlier specs or
-references disagree, this one wins.
+history. The protocols froze at `1.0.0` and have since grown only by minor
+versions, and history at format 1; [Schemas](../reference/schemas.md#published-schemas)
+links each protocol's current version. Where earlier specs or references
+disagree, this one wins.
 
 ## 1. Goal and scope
 
