@@ -72,6 +72,15 @@ nav:
   - Get started:
       - Install: install.md
       - Quickstart: quickstart.md
+  - Concepts:
+      - The daemon: concepts/daemon.md
+      - Clients: concepts/clients.md
+      - Runtimes and capabilities: concepts/runtimes.md
+      - Machines: concepts/machines.md
+      - Sessions: concepts/sessions.md
+      - Agents and presets: concepts/agents.md
+      - Permissions: concepts/permissions.md
+      - Memory: concepts/memory.md
   - Clients:
       - Terminal UI: clients/tui.md
       - Web: clients/web.md
@@ -127,6 +136,8 @@ nav:
   - Build on cookie:
       - Architecture: architecture.md
       - Building and testing: development/building.md
+      - Write a client: development/clients.md
+      - Write a runtime: development/runtimes.md
       - Plugin development: development/plugins.md
       - Rust API: reference/api.md
   - Specs:
