@@ -9,12 +9,52 @@ use cookie_agent_protocol::{
 
 use super::{Engine, EngineError, Event};
 use crate::{
+    DialInRefusal,
     runtimes::{
         RuntimeInstance, RuntimeInstanceSummary, RuntimeTemplate, RuntimeTemplateSummary,
         SourcedProvider,
     },
     session::SessionProjection,
 };
+
+/// A runtime ID reserved for one runtime dialing in, from
+/// [`Engine::claim_dial_in_runtime`] until it is accepted or dropped.
+pub struct DialInClaim {
+    engine: Engine,
+    template: Arc<crate::runtimes::DialInTemplate>,
+}
+
+impl DialInClaim {
+    /// Takes the runtime that dialed in over `transport`: initializes it,
+    /// makes it the runtime of the claimed ID, and reopens the instances
+    /// its sessions use.
+    pub async fn accept(
+        self,
+        transport: Box<dyn cookie_agent_protocol::Transport>,
+    ) -> Result<(), DialInRefusal> {
+        let inner = &self.engine.inner;
+        let runtime_id = crate::runtimes::RuntimeTemplate::runtime_id(self.template.as_ref());
+        let settings = crate::runtimes::runtime_settings(&inner.config.load(), runtime_id);
+        let client = self
+            .template
+            .connect(
+                cookie_agent_runtime_api::RuntimeConnection::new(transport),
+                &settings,
+                Some(Arc::clone(&inner.mcp_hub)),
+            )
+            .await
+            .map_err(|reason| DialInRefusal::Initialize(runtime_id.to_owned(), reason))?;
+        inner.runtimes.watch_connection(&self.template, &client);
+        inner.runtimes.revive(runtime_id);
+        Ok(())
+    }
+}
+
+impl Drop for DialInClaim {
+    fn drop(&mut self) {
+        self.template.release();
+    }
+}
 
 /// One capability a new session attaches.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -407,36 +447,30 @@ impl Engine {
         self.inner.runtimes.register_template(template)
     }
 
-    /// Takes a runtime that dialed in as `runtime_id` over `transport`:
-    /// initializes it, makes it the runtime of that ID, and reopens the
-    /// instances its sessions use. An ID the daemon configures, or one whose
-    /// runtime is connected, is refused.
+    /// Reserves `runtime_id` for a runtime dialing in, before its
+    /// connection is accepted, so a refusal can be answered while the
+    /// request is still plain HTTP. A malformed or reserved ID, one the
+    /// daemon configures, and one whose runtime is connected or being
+    /// accepted are refused.
+    pub fn claim_dial_in_runtime(&self, runtime_id: &str) -> Result<DialInClaim, DialInRefusal> {
+        let template = self.inner.runtimes.dial_in_template(runtime_id)?;
+        template.claim()?;
+        Ok(DialInClaim {
+            engine: self.clone(),
+            template,
+        })
+    }
+
+    /// Claims `runtime_id` ([`Self::claim_dial_in_runtime`]) and accepts
+    /// the runtime that dialed in over `transport` ([`DialInClaim::accept`]).
     pub async fn accept_dial_in_runtime(
         &self,
         runtime_id: &str,
         transport: Box<dyn cookie_agent_protocol::Transport>,
-    ) -> Result<(), EngineError> {
-        let registry = &self.inner.runtimes;
-        let template = registry.dial_in_template(runtime_id)?;
-        if template.is_connected() {
-            return Err(EngineError::Runtime(format!(
-                "runtime `{runtime_id}` is already connected"
-            )));
-        }
-        let settings = crate::runtimes::runtime_settings(&self.inner.config.load(), runtime_id);
-        let client = template
-            .connect(
-                cookie_agent_runtime_api::RuntimeConnection::new(transport),
-                &settings,
-                Some(std::sync::Arc::clone(&self.inner.mcp_hub)),
-            )
+    ) -> Result<(), DialInRefusal> {
+        self.claim_dial_in_runtime(runtime_id)?
+            .accept(transport)
             .await
-            .map_err(|reason| {
-                EngineError::Runtime(format!("runtime `{runtime_id}` failed to start: {reason}"))
-            })?;
-        registry.watch_connection(&template, &client);
-        registry.revive(runtime_id);
-        Ok(())
     }
 
     /// Every registered runtime template.

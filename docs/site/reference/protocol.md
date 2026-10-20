@@ -69,7 +69,9 @@ A connection that authenticated with the header but has not handshaken gets
 client) is unaffected. One with an `Origin` header is refused with HTTP 403
 unless [`[server] allowed_origins`](../engine/server.md) allows that origin.
 Dial-in runtimes on `/runtime` always authenticate with the header, and a
-request there with an `Origin` header is refused.
+request there with an `Origin` header is refused. Refusals there name their
+reason in the response body or the close frame (see
+[Dial-in refusals](runtime-protocol.md#dial-in-refusals)).
 
 ## Decoding
 
@@ -434,7 +436,10 @@ its `lifetime` (`builtin` for `global` and `local`, `spawned` for a
 template, `dial_in` for a runtime that connected on its own); whether the daemon is `connected` to it now; its `capabilities`
 (`name`, `kind`, `takes_workspace`, `description`), empty until it has
 connected once; its `platform`; its `machine` (see [Machines](#machines));
-and a `message` saying why its last attempt to connect failed. Each instance has its `runtime_id`, `capability`, reported
+and a `message` saying why its last attempt to connect failed, or, for a
+dial-in runtime that went away, ``runtime `<id>` disconnected: <reason>``,
+where a runtime that stopped cleanly gives `the other end closed the
+connection`. Each instance has its `runtime_id`, `capability`, reported
 `attachment_name`, `kind`, `workspace`, and `platform` once started, its
 `status` (`starting`, `ready`, `reconnecting`, `failed`, or `stopped`), and a
 failure `message`.

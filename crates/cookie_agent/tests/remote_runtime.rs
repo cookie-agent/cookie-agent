@@ -1040,3 +1040,157 @@ async fn a_runtime_dials_in_and_serves_a_session() {
     listening.wait().await;
     fixture.engine.shutdown().await;
 }
+
+/// `cookie runtime serve --daemon` dialing in to a daemon serving `fixture`
+/// at `address` as `id` with `token`, its standard error piped.
+fn dial_in_command(
+    fixture: &Fixture,
+    address: std::net::SocketAddr,
+    id: &str,
+    token: &str,
+) -> tokio::process::Child {
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_cookie"))
+        .args(["runtime", "serve", "--daemon"])
+        .arg(format!("ws://{address}/ws"))
+        .args(["--id", id, "--token", token])
+        .env("HOME", &fixture.remote_home)
+        .env_remove("COOKIE_DAEMON_TOKEN")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn the dialing runtime")
+}
+
+/// Waits for `runtime` to exit and returns whether it succeeded and what it
+/// wrote to standard error.
+async fn exited(runtime: tokio::process::Child) -> (bool, String) {
+    let output = tokio::time::timeout(WAIT, runtime.wait_with_output())
+        .await
+        .expect("the runtime exits")
+        .expect("runtime output");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// A daemon refuses a runtime dialing in under an ID it configures, or with
+/// a wrong token, for good: the runtime prints the daemon's reason and exits
+/// with an error instead of dialing in again. A reserved ID fails before
+/// dialing. An ID a connected runtime holds is refused for now: the runtime
+/// prints why and keeps trying.
+#[tokio::test]
+async fn a_refused_dial_in_prints_the_reason_and_stops_when_it_is_permanent() {
+    let fixture = Fixture::new(30_000).await;
+    let token = cookie_agent_server::generate_token().expect("token");
+    let server = Arc::new(cookie_agent_server::Server::new(fixture.engine.clone()));
+    let listening = server
+        .clone()
+        .serve(0, token.clone())
+        .await
+        .expect("serve the daemon");
+    let address = listening.address();
+
+    // `remote` is a configured template.
+    let (success, stderr) =
+        exited(dial_in_command(&fixture, address, "remote", token.as_str())).await;
+    assert!(!success, "{stderr}");
+    assert!(
+        stderr.contains(
+            "the daemon refused the runtime (HTTP 403): runtime `remote` is configured on the \
+             daemon ([runtimes.remote]) and cannot dial in"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("connected to"), "{stderr}");
+    assert!(!stderr.contains("retrying"), "{stderr}");
+
+    // A well-formed token that is not the daemon's.
+    let wrong = cookie_agent_server::generate_token().expect("another token");
+    let (success, stderr) =
+        exited(dial_in_command(&fixture, address, "labpc", wrong.as_str())).await;
+    assert!(!success, "{stderr}");
+    assert!(
+        stderr.contains(
+            "the daemon refused the runtime (HTTP 401): the daemon token is missing or wrong"
+        ),
+        "{stderr}"
+    );
+
+    // Reserved IDs never reach the daemon.
+    for reserved in ["global", "local"] {
+        let (success, stderr) =
+            exited(dial_in_command(&fixture, address, reserved, token.as_str())).await;
+        assert!(!success, "{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "runtime ID `{reserved}` is reserved for the daemon's built-in runtime"
+            )),
+            "{stderr}"
+        );
+    }
+    assert!(
+        fixture
+            .engine
+            .runtime_templates()
+            .iter()
+            .all(|template| template.runtime_id != "labpc"),
+        "refused runtimes leave nothing behind"
+    );
+
+    // A second runtime under a connected runtime's ID waits its turn.
+    let mut first = dial_in_command(&fixture, address, "labpc", token.as_str());
+    tokio::time::timeout(WAIT, async {
+        while !fixture
+            .engine
+            .runtime_templates()
+            .iter()
+            .any(|template| template.runtime_id == "labpc" && template.listing.connected)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the first runtime dials in");
+    let mut second = dial_in_command(&fixture, address, "labpc", token.as_str());
+    let mut lines = tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(
+        second.stderr.take().expect("stderr"),
+    ));
+    let mut next_refusal = async || {
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("stderr line")
+                    .expect("the second runtime keeps running");
+                if line.contains("cannot dial in") {
+                    return line;
+                }
+            }
+        })
+        .await
+        .expect("the second runtime reports the refusal")
+    };
+    let refused = next_refusal().await;
+    assert!(
+        refused.contains(
+            "the daemon refused the runtime (HTTP 409): runtime `labpc` is already connected; \
+             retrying in 1 s"
+        ),
+        "{refused}"
+    );
+    let retried = next_refusal().await;
+    assert!(retried.contains("retrying in 2 s"), "{retried}");
+    assert!(
+        second.try_wait().expect("status").is_none(),
+        "it keeps trying"
+    );
+    second.kill().await.expect("stop the second runtime");
+    first.kill().await.expect("stop the first runtime");
+    server.shutdown();
+    listening.wait().await;
+    fixture.engine.shutdown().await;
+}

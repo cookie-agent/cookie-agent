@@ -30,17 +30,42 @@ protocol over either:
   `/runtime?id=<runtime ID>` endpoint with the daemon's bearer token in an
   `Authorization: Bearer` header, one message per text frame. The daemon
   then sends `runtime/initialize` exactly as for a spawned runtime, with no
-  MCP servers: a dial-in runtime hosts its own. An ID the daemon configures,
-  or one already connected, is refused by closing the connection. A request
-  with an `Origin` header is refused with HTTP 403, and one without the
-  right token with 401. A dial-in runtime gets 30 seconds to answer
-  `runtime/initialize` and each `capability/open`, and 3 seconds to answer
-  `runtime/shutdown`. Either end that ends the connection sends a close
+  MCP servers: a dial-in runtime hosts its own. A dial-in runtime gets 30
+  seconds to answer `runtime/initialize` and each `capability/open`, and 3
+  seconds to answer `runtime/shutdown`. See [Dial-in refusals](#dial-in-refusals)
+  for how the daemon refuses one. Either end that ends the connection sends a close
   frame, normal closure (1000), and waits up to 2 seconds for the other's
   answer; a runtime that stops does so before it exits. The daemon reads a
   normal closure, going away (1001), or a close frame without a code as the
   runtime disconnecting, and another code, or a connection that ended
   without a close frame, as a failure with that code or error.
+
+### Dial-in refusals
+
+Since 1.2.0 the daemon says why it refuses a runtime that dials in, and
+whether dialing in again can succeed (`runtime_protocol::dial_in`). A
+request it can refuse from the request alone is answered before the
+WebSocket upgrade with an HTTP status and the reason as the plain-text body:
+
+| Status | Reason | Permanent |
+|---|---|---|
+| 400 | The runtime ID does not match `[a-z][a-z0-9_]{0,31}`. | yes |
+| 401 | The bearer token is missing or wrong. | yes |
+| 403 | The ID is reserved (`global`, `local`) or names a `[runtimes.<id>]` template the daemon configures, or the request carries an `Origin` header. | yes |
+| 409 | A runtime is connected under the ID, or being accepted under it, now. The daemon may not have noticed yet that an earlier connection of the same runtime ended. | no |
+
+A runtime that fails `runtime/initialize` after the upgrade, such as one of
+another major version or one that does not answer in time, sees the daemon
+close the connection with code 1011 and the reason as the close frame's
+reason, cut to the frame's 123 bytes. That refusal is not permanent.
+
+A runtime stops dialing in after a permanent refusal and dials in again,
+after a wait, after any other, including a status this table does not list,
+such as one a proxy answers with. `cookie runtime serve --daemon` prints the
+reason either way, exits with an error on a permanent refusal, and checks
+its own ID first, so a malformed or reserved one never reaches the daemon.
+A daemon before 1.2.0 closes the connection after the upgrade without a
+reason for an ID it refuses, which a runtime can only treat as transient.
 
 ## Framing
 
@@ -104,7 +129,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.1.0**
+The protocol version is a semver string, currently **1.2.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -143,7 +168,11 @@ adapter family and model capabilities with `turn.model` (see
 [`tool/prepare`](#toolprepare)). 1.0.0 froze the protocol: no `0.x` build
 connects to a 1.x one. 1.1.0 added the optional `machine` of
 `runtime/initialize`'s result, which the daemon groups runtimes into
-machines by.
+machines by. 1.2.0 made the daemon's answers to a refused dial-in part of
+the protocol: HTTP statuses with the reason before the upgrade, close code
+1011 with the reason after it, and which of them are permanent (see
+[Dial-in refusals](#dial-in-refusals)). Its messages did not change; the
+version records the contract a runtime may now rely on to stop dialing in.
 
 ## Capabilities and instances
 

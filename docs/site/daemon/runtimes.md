@@ -248,6 +248,26 @@ cookie runtime serve --daemon
   a letter). It must not be `global`, `local`, or a configured
   `[runtimes.<id>]`, and only one runtime may be connected under an ID at a
   time.
+- **Refusals.** The daemon says why it refuses a runtime, and the runtime
+  prints it. A refusal that retrying cannot fix, a configured or reserved
+  ID or a wrong token, ends `cookie runtime serve --daemon` with an error:
+
+  ```text
+  cookie: cannot dial in to ws://laptop:7419/ws as `labpc`: the daemon refused the runtime (HTTP 403): runtime `labpc` is configured on the daemon ([runtimes.labpc]) and cannot dial in
+  ```
+
+  Any other, such as an ID a runtime is still connected under (the daemon
+  may not have noticed yet that an earlier connection dropped), is printed
+  and retried with the same backoff as a drop:
+
+  ```text
+  cookie runtime: cannot dial in to ws://laptop:7419/ws as `labpc`: the daemon refused the runtime (HTTP 409): runtime `labpc` is already connected; retrying in 1 s
+  ```
+
+  A dropped connection prints the reason too, such as
+  ``disconnected from ws://laptop:7419/ws: the daemon closed the connection with code 1011: runtime `labpc` failed to start: …``
+  for a runtime of an incompatible version. See
+  [Dial-in refusals](../reference/runtime-protocol.md#dial-in-refusals).
 - **Reconnecting.** The runtime reconnects after every drop, waiting
   1 s, 2 s, 4 s, and so on up to 30 s. While it is away, its instances go
   `reconnecting` and then `failed`, and their tools leave the sessions' tool

@@ -46,6 +46,7 @@ mod remote;
 pub(crate) use builtin::{GlobalTemplate, LocalTemplate};
 pub(crate) use composition::{ComposedTool, Composition, compose};
 pub(crate) use cookie_agent_runtime_api::reconnect::{ReconnectOutcome, ReconnectPolicy};
+pub use dial_in::DialInRefusal;
 pub(crate) use dial_in::DialInTemplate;
 pub(crate) use mcp_hub::McpHub;
 pub use mcp_hub::McpServerFailure;

@@ -53,6 +53,33 @@ impl Client {
     }
 }
 
+/// Why a runtime could not dial in to a daemon.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct DialInError {
+    message: String,
+    permanent: bool,
+}
+
+impl DialInError {
+    fn permanent(message: String) -> Self {
+        Self {
+            message,
+            permanent: true,
+        }
+    }
+
+    /// Whether dialing in again cannot succeed until the runtime's ID, its
+    /// token, or the daemon's configuration changes: a malformed URL or
+    /// token, or a refusal the runtime protocol calls permanent
+    /// ([`crate::runtime_protocol::dial_in::is_permanent_status`]). An
+    /// unreachable daemon and an ID that is still connected are not.
+    #[must_use]
+    pub fn is_permanent(&self) -> bool {
+        self.permanent
+    }
+}
+
 /// Tokio WebSocket transport for protocol clients.
 pub struct WebSocketTransport {
     socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
@@ -66,15 +93,44 @@ impl WebSocketTransport {
     }
 
     /// Dial in to the daemon whose client endpoint is `url` as runtime
-    /// `runtime_id`, with the daemon's bearer token.
+    /// `runtime_id`, with the daemon's bearer token. The error says
+    /// whether dialing in again can succeed.
     pub async fn connect_runtime(
         url: &str,
         token: &str,
         runtime_id: &str,
-    ) -> Result<Self, TransportError> {
+    ) -> Result<Self, DialInError> {
         let url = runtime_dial_in_url(url, runtime_id)
-            .map_err(|error| TransportError::Other(error.to_string()))?;
-        Self::connect_request(&url, token).await
+            .map_err(|error| DialInError::permanent(error.to_string()))?;
+        let request = authenticated_request(&url, token)
+            .map_err(|error| DialInError::permanent(error.to_string()))?;
+        match tokio_tungstenite::connect_async_with_config(request, Some(websocket_config()), false)
+            .await
+        {
+            Ok((socket, _)) => Ok(Self { socket }),
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                let status = response.status();
+                let body = response
+                    .body()
+                    .as_deref()
+                    .map(|body| diagnostics::sanitize(String::from_utf8_lossy(body).trim(), 4096))
+                    .filter(|body| !body.is_empty())
+                    .unwrap_or_else(|| status.canonical_reason().unwrap_or("").to_owned());
+                Err(DialInError {
+                    message: format!(
+                        "the daemon refused the runtime (HTTP {}): {body}",
+                        status.as_u16()
+                    ),
+                    permanent: crate::runtime_protocol::dial_in::is_permanent_status(
+                        status.as_u16(),
+                    ),
+                })
+            }
+            Err(error) => Err(DialInError {
+                message: websocket_error(&error).to_string(),
+                permanent: false,
+            }),
+        }
     }
 
     /// Upgrade `stream`, an open TCP connection to the host of the `ws://`
@@ -147,7 +203,8 @@ impl Transport for WebSocketTransport {
                 Some(Ok(Message::Text(text))) => {
                     return Ok(Some(MessageFrame::Bytes(text.into())));
                 }
-                Some(Ok(Message::Close(_))) | None => return Ok(None),
+                Some(Ok(Message::Close(frame))) => return closed(frame),
+                None => return Ok(None),
                 Some(Ok(_)) => {}
                 Some(Err(error)) => {
                     return Err(websocket_error(&error));
@@ -162,6 +219,29 @@ impl Transport for WebSocketTransport {
     async fn close(&mut self) {
         let _ = self.socket.close(Some(normal_closure())).await;
         while let Some(Ok(_)) = self.socket.next().await {}
+    }
+}
+
+/// What a close frame the daemon sent means: a normal closure, going away,
+/// or a frame without a code ends the connection cleanly; another code,
+/// such as a dial-in runtime that did not initialize, ends it with the
+/// daemon's reason.
+fn closed(
+    frame: Option<tokio_tungstenite::tungstenite::protocol::CloseFrame>,
+) -> Result<Option<MessageFrame>, TransportError> {
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    match frame {
+        None => Ok(None),
+        Some(frame) if matches!(frame.code, CloseCode::Normal | CloseCode::Away) => Ok(None),
+        Some(frame) => {
+            let code = u16::from(frame.code);
+            let reason = diagnostics::sanitize(frame.reason.as_str(), 4096);
+            Err(TransportError::Other(if reason.is_empty() {
+                format!("the daemon closed the connection with code {code}")
+            } else {
+                format!("the daemon closed the connection with code {code}: {reason}")
+            }))
+        }
     }
 }
 

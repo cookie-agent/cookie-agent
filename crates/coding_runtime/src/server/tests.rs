@@ -67,7 +67,7 @@ async fn open(harness: &Harness, workspace: &std::path::Path) -> CapabilityOpenR
 /// and recorded.
 struct Harness {
     daemon: Peer,
-    server: tokio::task::JoinHandle<()>,
+    server: tokio::task::JoinHandle<String>,
     progress: tokio::sync::mpsc::UnboundedReceiver<ToolProgressParams>,
 }
 

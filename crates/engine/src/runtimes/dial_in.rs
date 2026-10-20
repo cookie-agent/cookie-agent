@@ -10,7 +10,10 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -30,11 +33,45 @@ pub(crate) const DIAL_IN_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a stopping dial-in runtime gets to answer `runtime/shutdown`.
 const DIAL_IN_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
+/// Why the daemon refused a runtime that dialed in.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum DialInRefusal {
+    /// The ID is not a runtime ID.
+    #[error("invalid runtime ID `{0}`: it must match [a-z][a-z0-9_]{{0,31}}")]
+    InvalidId(String),
+    /// The ID is a built-in runtime's.
+    #[error("runtime ID `{0}` is reserved for the daemon's built-in runtime")]
+    Reserved(String),
+    /// The daemon configures a runtime of the ID itself.
+    #[error("runtime `{0}` is configured on the daemon ([runtimes.{0}]) and cannot dial in")]
+    Configured(String),
+    /// A runtime is connected under the ID now.
+    #[error("runtime `{0}` is already connected")]
+    Connected(String),
+    /// The runtime did not complete `runtime/initialize`.
+    #[error("runtime `{0}` failed to start: {1}")]
+    Initialize(String, String),
+}
+
+impl DialInRefusal {
+    /// Whether dialing in again under the ID cannot succeed until the
+    /// runtime's ID or the daemon's configuration changes.
+    #[must_use]
+    pub fn is_permanent(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidId(_) | Self::Reserved(_) | Self::Configured(_)
+        )
+    }
+}
+
 /// A runtime that dials in.
 pub(crate) struct DialInTemplate {
     runtime_id: String,
     /// The connection, while the runtime is connected.
     connection: Mutex<Option<RuntimeClient>>,
+    /// Whether a runtime dialing in under the ID is being accepted now.
+    claimed: AtomicBool,
     /// What the runtime offered when it last connected.
     offered: Mutex<RuntimeListingState>,
 }
@@ -50,8 +87,30 @@ impl DialInTemplate {
         Self {
             runtime_id: runtime_id.to_owned(),
             connection: Mutex::new(None),
+            claimed: AtomicBool::new(false),
             offered: Mutex::default(),
         }
+    }
+
+    /// Reserves the ID for one runtime dialing in, until
+    /// [`Self::release`]: refused while a runtime is connected under it or
+    /// another is being accepted.
+    pub(crate) fn claim(&self) -> Result<(), DialInRefusal> {
+        // Checked under the connection's lock: an accepted runtime's
+        // connection is set before its claim is released.
+        let connection = lock(&self.connection);
+        let connected = connection
+            .as_ref()
+            .is_some_and(|client| !client.is_closed());
+        if connected || self.claimed.swap(true, Ordering::AcqRel) {
+            return Err(DialInRefusal::Connected(self.runtime_id.clone()));
+        }
+        Ok(())
+    }
+
+    /// Ends a claim [`Self::claim`] made.
+    pub(crate) fn release(&self) {
+        self.claimed.store(false, Ordering::Release);
     }
 
     /// The live connection, if the runtime is connected.

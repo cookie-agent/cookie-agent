@@ -172,8 +172,8 @@ pub async fn serve_stdio(options: ServeOptions) {
 
 /// Serves one daemon over `transport` until it sends `runtime/shutdown`,
 /// the transport ends, or [`ServeOptions::stop`] is cancelled. Calls still
-/// running are cancelled when it returns.
-pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
+/// running are cancelled when it returns. Returns why the connection ended.
+pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> String {
     let (peer, mut incoming) = Peer::start(transport);
     let stop = options.stop.child_token();
     let server = Arc::new(Server {
@@ -189,11 +189,11 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
         next_prepared: AtomicU64::new(1),
         stop,
     });
-    loop {
+    let stopped = loop {
         tokio::select! {
-            () = server.stop.cancelled() => break,
+            () = server.stop.cancelled() => break true,
             message = incoming.recv() => match message {
-                None => break,
+                None => break false,
                 Some(Incoming::Request(request)) => {
                     // An execution is registered in arrival order, so a
                     // `tool/cancel` sent after it finds it.
@@ -206,7 +206,10 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
                 }
             },
         }
-    }
+    };
+    // Stopped without being told to stop: the daemon sent
+    // `runtime/shutdown`.
+    let shut_down = stopped && !server.options.stop.is_cancelled();
     server.stop.cancel();
     lock(&server.prepared).clear();
     let instances = lock(&server.instances).drain().collect::<Vec<_>>();
@@ -219,7 +222,14 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
     // The reply to `runtime/shutdown` is still queued: wait until it is
     // written, since a process serving stdio exits as soon as this returns.
     // A daemon that stopped reading cannot hold the exit up for long.
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), peer.closed()).await;
+    let reason = tokio::time::timeout(std::time::Duration::from_secs(5), peer.closed())
+        .await
+        .unwrap_or_else(|_| "the connection did not close in time".to_owned());
+    if shut_down {
+        "the daemon asked the runtime to shut down".to_owned()
+    } else {
+        reason
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

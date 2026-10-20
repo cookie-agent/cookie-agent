@@ -38,6 +38,43 @@ pub const MAX_INLINE_MEDIA_BYTES: u64 = 25 * 1024 * 1024;
 /// The most calls one `tool/prepare` request carries.
 pub const MAX_PREPARE_BATCH: usize = 256;
 
+/// How the daemon refuses a runtime that dials in on
+/// `/runtime?id=<runtime ID>`, since protocol 1.2.0. A refusal before the
+/// WebSocket upgrade is an HTTP status whose body is the reason in plain
+/// text; one after it is a close frame whose reason is the reason. A
+/// runtime stops dialing in on a permanent refusal and dials in again,
+/// after a wait, on any other.
+pub mod dial_in {
+    /// HTTP 400: the runtime ID is malformed. Permanent.
+    pub const STATUS_INVALID_ID: u16 = 400;
+    /// HTTP 401: the bearer token is missing or wrong. Permanent.
+    pub const STATUS_UNAUTHORIZED: u16 = 401;
+    /// HTTP 403: the runtime ID is reserved (`global`, `local`) or
+    /// configured on the daemon, or the request carries an `Origin` header.
+    /// Permanent.
+    pub const STATUS_FORBIDDEN: u16 = 403;
+    /// HTTP 409: a runtime is connected, or being accepted, under the ID.
+    /// Transient: the daemon may not have noticed yet that an earlier
+    /// connection of the same runtime ended.
+    pub const STATUS_CONNECTED: u16 = 409;
+    /// Close code 1000, normal closure: the end that closes is done with
+    /// the connection, such as a runtime that stops.
+    pub const CLOSE_NORMAL: u16 = 1000;
+    /// Close code 1011: the runtime did not complete `runtime/initialize`,
+    /// such as one of an incompatible version or one that did not answer in
+    /// time. Transient.
+    pub const CLOSE_INITIALIZE_FAILED: u16 = 1011;
+
+    /// Whether a refusal with HTTP `status` is permanent.
+    #[must_use]
+    pub const fn is_permanent_status(status: u16) -> bool {
+        matches!(
+            status,
+            STATUS_INVALID_ID | STATUS_UNAUTHORIZED | STATUS_FORBIDDEN
+        )
+    }
+}
+
 /// Method names.
 pub mod method {
     /// daemon → runtime: version, identity, and settings; returns the

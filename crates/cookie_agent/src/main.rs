@@ -747,15 +747,14 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
     if !stdio && let Some(daemon) = daemon {
         let DaemonTarget { url: daemon, token } = daemon_target(daemon, token)?;
         let id = id.unwrap_or_else(|| host_runtime_id("", &host_name()));
-        cookie_agent_protocol::RuntimeId::new(id.as_str())
-            .map_err(|_| anyhow::anyhow!("invalid runtime ID `{id}`"))?;
+        dial_in_id(&id)?;
         cookie_agent_protocol::runtime_dial_in_url(&daemon, &id)?;
         // A runtime that dials in hosts its own machine's MCP servers: those
         // of `[runtimes.local.mcp]` in its configuration.
         let mcp_servers = local_runtime_mcp_servers()?;
         let stop = CancellationToken::new();
         stop_on_signal(stop.clone())?;
-        dial_in(
+        return dial_in(
             &daemon,
             &token,
             &id,
@@ -767,7 +766,6 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
             },
         )
         .await;
-        return Ok(());
     }
     let stop = CancellationToken::new();
     stop_on_signal(stop.clone())?;
@@ -1156,7 +1154,10 @@ fn start_dial_in(url: &str, token: &str, id: &str, cwd: Option<&str>) -> anyhow:
         ..Default::default()
     };
     let (url, token, id) = (url.to_owned(), token.to_owned(), id.to_owned());
-    tokio::spawn(async move { dial_in(&url, &token, &id, options).await });
+    tokio::spawn(async move {
+        // A refusal is reported where this process reports dial-in drops.
+        let _ = dial_in(&url, &token, &id, options).await;
+    });
     Ok(())
 }
 
@@ -1852,41 +1853,65 @@ fn local_runtime_mcp_servers()
         .unwrap_or_default())
 }
 
+/// Checks `id` as a runtime ID a runtime may dial in under: well formed
+/// and not a built-in runtime's, which the daemon refuses.
+fn dial_in_id(id: &str) -> anyhow::Result<()> {
+    let runtime_id = cookie_agent_protocol::RuntimeId::new(id).map_err(|_| {
+        anyhow::anyhow!("invalid runtime ID `{id}`: it must match [a-z][a-z0-9_]{{0,31}}")
+    })?;
+    anyhow::ensure!(
+        !runtime_id.is_reserved(),
+        "runtime ID `{id}` is reserved for the daemon's built-in runtime; choose another with --id"
+    );
+    Ok(())
+}
+
 /// Dials in to the daemon at `daemon` as runtime `id` and serves it,
-/// connecting again after every drop with a growing wait, until stopped.
+/// connecting again after every drop or refusal for now with a growing
+/// wait, until stopped. A refusal for good, such as a configured or
+/// reserved ID or a wrong token, ends it with the daemon's reason.
 async fn dial_in(
     daemon: &str,
     token: &str,
     id: &str,
     options: cookie_agent_coding_runtime::server::ServeOptions,
-) {
+) -> anyhow::Result<()> {
     const LONGEST_WAIT: Duration = Duration::from_secs(30);
     let stop = options.stop.clone();
     let mut wait = Duration::from_secs(1);
     loop {
         let connected = tokio::select! {
-            () = stop.cancelled() => return,
+            () = stop.cancelled() => return Ok(()),
             connected = cookie_agent_protocol::WebSocketTransport::connect_runtime(daemon, token, id) => connected,
         };
         match connected {
             Ok(transport) => {
                 eprintln!("cookie runtime: connected to {daemon} as `{id}`");
                 let started = std::time::Instant::now();
-                cookie_agent_coding_runtime::server::serve(Box::new(transport), options.clone())
-                    .await;
+                let reason = cookie_agent_coding_runtime::server::serve(
+                    Box::new(transport),
+                    options.clone(),
+                )
+                .await;
                 if stop.is_cancelled() {
-                    return;
+                    return Ok(());
                 }
-                eprintln!("cookie runtime: disconnected from {daemon}");
+                eprintln!("cookie runtime: disconnected from {daemon}: {reason}");
                 if started.elapsed() > LONGEST_WAIT {
                     wait = Duration::from_secs(1);
                 }
             }
-            Err(error) => eprintln!("cookie runtime: cannot reach {daemon}: {error}"),
+            Err(error) if error.is_permanent() => {
+                anyhow::bail!("cannot dial in to {daemon} as `{id}`: {error}");
+            }
+            Err(error) => eprintln!(
+                "cookie runtime: cannot dial in to {daemon} as `{id}`: {error}; retrying in {} s",
+                wait.as_secs()
+            ),
         }
         tokio::select! {
             () = tokio::time::sleep(wait) => {}
-            () = stop.cancelled() => return,
+            () = stop.cancelled() => return Ok(()),
         }
         wait = (wait * 2).min(LONGEST_WAIT);
     }

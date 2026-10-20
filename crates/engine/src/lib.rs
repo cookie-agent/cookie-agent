@@ -39,7 +39,7 @@ pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use machines::MachineError;
 pub use memory_tools::memory_tool_specs;
 pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
-pub use runtime::attachments::{SessionRuntimeRequest, SessionRuntimes};
+pub use runtime::attachments::{DialInClaim, SessionRuntimeRequest, SessionRuntimes};
 pub use runtime::configuration::{
     ConfigChange, ConfigDocumentText, ConfigDocuments, ConfigurationStatus, RestartRequiredPart,
 };
@@ -60,7 +60,7 @@ pub use runtime::{
 };
 pub use runtime_snapshot::PublishedRuntime;
 pub use runtimes::{
-    McpServerFailure, RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary,
+    DialInRefusal, McpServerFailure, RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary,
     RuntimeListingState, RuntimeTemplate, RuntimeTemplateSummary, StartError, StartedRuntime,
     ToolLayer,
 };

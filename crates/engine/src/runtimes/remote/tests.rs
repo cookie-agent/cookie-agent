@@ -1773,15 +1773,53 @@ async fn a_dial_in_runtime_serves_sessions_and_comes_back_after_a_drop() {
     assert!(listing().listing.connected);
     assert_eq!(listing().listing.capabilities[0].name.as_str(), "coding");
 
-    // One connection per ID; configured IDs cannot dial in.
+    // One connection per ID, refused for now; reserved, configured, and
+    // malformed IDs are refused for good.
     let error = dial_in().await.expect_err("already connected");
-    assert!(error.to_string().contains("already connected"), "{error}");
-    let connection = connector.connect().await.unwrap();
-    let error = engine
-        .accept_dial_in_runtime("local", connection.transport)
-        .await
-        .expect_err("local is built in");
-    assert!(error.to_string().contains("cannot dial in"), "{error}");
+    assert_eq!(error, crate::DialInRefusal::Connected("labpc".into()));
+    assert_eq!(error.to_string(), "runtime `labpc` is already connected");
+    assert!(!error.is_permanent());
+    register_remote(&fixture, &connector);
+    for (runtime_id, refusal, message) in [
+        (
+            "local",
+            crate::DialInRefusal::Reserved("local".into()),
+            "runtime ID `local` is reserved for the daemon's built-in runtime",
+        ),
+        (
+            "global",
+            crate::DialInRefusal::Reserved("global".into()),
+            "runtime ID `global` is reserved for the daemon's built-in runtime",
+        ),
+        (
+            "remote",
+            crate::DialInRefusal::Configured("remote".into()),
+            "runtime `remote` is configured on the daemon ([runtimes.remote]) and cannot dial in",
+        ),
+        (
+            "Lab-PC",
+            crate::DialInRefusal::InvalidId("Lab-PC".into()),
+            "invalid runtime ID `Lab-PC`: it must match [a-z][a-z0-9_]{0,31}",
+        ),
+    ] {
+        let error = engine
+            .claim_dial_in_runtime(runtime_id)
+            .err()
+            .unwrap_or_else(|| panic!("`{runtime_id}` cannot dial in"));
+        assert_eq!(error, refusal);
+        assert_eq!(error.to_string(), message);
+        assert!(error.is_permanent(), "{error}");
+    }
+    // A claim holds the ID while its runtime is being accepted.
+    let claim = engine
+        .claim_dial_in_runtime("devbox")
+        .expect("devbox claims");
+    assert_eq!(
+        engine.claim_dial_in_runtime("devbox").err(),
+        Some(crate::DialInRefusal::Connected("devbox".into()))
+    );
+    drop(claim);
+    drop(engine.claim_dial_in_runtime("devbox").expect("released"));
 
     let session = engine.create_session(selection).unwrap().session_id;
     let origin = cookie_agent_protocol::EventOrigin::new("user").unwrap();

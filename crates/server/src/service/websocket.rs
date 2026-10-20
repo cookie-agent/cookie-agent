@@ -25,6 +25,57 @@ use cookie_agent_protocol::{
 
 struct WebSocketStream {
     socket: axum::extract::ws::WebSocket,
+    /// The close frame this end closes with, once its handler has chosen
+    /// it; a normal closure when there is none.
+    closing: Option<tokio::sync::watch::Receiver<Option<axum::extract::ws::CloseFrame>>>,
+}
+
+/// How long a closing stream waits for its handler to choose the close
+/// frame.
+const CLOSE_CHOICE_WAIT: Duration = Duration::from_secs(1);
+
+impl WebSocketStream {
+    /// A stream that closes with a normal closure.
+    fn new(socket: axum::extract::ws::WebSocket) -> Self {
+        Self {
+            socket,
+            closing: None,
+        }
+    }
+
+    /// A stream that closes with the frame sent on the returned sender,
+    /// for a handler that learns how the connection ends only after the
+    /// stream is handed on.
+    fn choosing_close(
+        socket: axum::extract::ws::WebSocket,
+    ) -> (
+        Self,
+        tokio::sync::watch::Sender<Option<axum::extract::ws::CloseFrame>>,
+    ) {
+        let (choice, closing) = tokio::sync::watch::channel(None);
+        (
+            Self {
+                socket,
+                closing: Some(closing),
+            },
+            choice,
+        )
+    }
+
+    /// The frame this end closes with.
+    async fn close_frame(&mut self) -> axum::extract::ws::CloseFrame {
+        let normal = axum::extract::ws::CloseFrame {
+            code: axum::extract::ws::close_code::NORMAL,
+            reason: "".into(),
+        };
+        let Some(closing) = &mut self.closing else {
+            return normal;
+        };
+        match tokio::time::timeout(CLOSE_CHOICE_WAIT, closing.wait_for(Option::is_some)).await {
+            Ok(Ok(chosen)) => chosen.clone().unwrap_or(normal),
+            _ => normal,
+        }
+    }
 }
 
 #[async_trait]
@@ -50,18 +101,15 @@ impl MessageStream for WebSocketStream {
         }
     }
 
-    /// Sends a normal-closure close frame and waits for the other end's
-    /// answer. When the other end closed first, sending fails and reading
-    /// on sends the answer the socket queued.
+    /// Sends a close frame, a normal closure unless the handler chose
+    /// another, and waits for the other end's answer. When the other end
+    /// closed first, sending fails and reading on sends the answer the
+    /// socket queued.
     async fn close(&mut self) {
+        let frame = self.close_frame().await;
         let _ = self
             .socket
-            .send(axum::extract::ws::Message::Close(Some(
-                axum::extract::ws::CloseFrame {
-                    code: axum::extract::ws::close_code::NORMAL,
-                    reason: "".into(),
-                },
-            )))
+            .send(axum::extract::ws::Message::Close(Some(frame)))
             .await;
         while let Some(Ok(_)) = self.socket.next().await {}
     }
@@ -295,13 +343,39 @@ struct WebSocketState {
 }
 
 /// Refuses a runtime's request that carries a browser `Origin` or lacks the
-/// daemon's token in `Authorization`. The token is the only gate: the daemon
-/// listens where it is told to.
+/// daemon's token in `Authorization`, saying why in the body. The token is
+/// the only gate: the daemon listens where it is told to.
 fn refused(headers: &HeaderMap, token: &str) -> Option<Response> {
     if headers.contains_key(header::ORIGIN) {
-        return Some(StatusCode::FORBIDDEN.into_response());
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                "a runtime's request must not carry an Origin header",
+            )
+                .into_response(),
+        );
     }
-    (!authorized(headers, token)).then(|| StatusCode::UNAUTHORIZED.into_response())
+    (!authorized(headers, token)).then(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "the daemon token is missing or wrong",
+        )
+            .into_response()
+    })
+}
+
+/// The HTTP status a refused dial-in is answered with; see
+/// `cookie_agent_protocol::runtime_protocol::dial_in`.
+fn dial_in_status(refusal: &cookie_agent_engine::DialInRefusal) -> StatusCode {
+    use cookie_agent_engine::DialInRefusal;
+    use cookie_agent_protocol::runtime_protocol::dial_in;
+    let status = match refusal {
+        DialInRefusal::InvalidId(_) => dial_in::STATUS_INVALID_ID,
+        DialInRefusal::Reserved(_) | DialInRefusal::Configured(_) => dial_in::STATUS_FORBIDDEN,
+        // A claim never fails to initialize: that comes after the upgrade.
+        DialInRefusal::Connected(_) | DialInRefusal::Initialize(..) => dial_in::STATUS_CONNECTED,
+    };
+    StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN)
 }
 
 /// How a client's upgrade request authenticates: with the token in
@@ -341,7 +415,7 @@ async fn websocket_upgrade(
         .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let _ = server
-                .serve_stream(WebSocketStream { socket }, authentication)
+                .serve_stream(WebSocketStream::new(socket), authentication)
                 .await;
         })
 }
@@ -351,8 +425,11 @@ struct RuntimeQuery {
     id: String,
 }
 
-/// A runtime dialing in as `id`: the daemon initializes it and makes it the
-/// runtime of that ID. A refused runtime sees its connection close.
+/// A runtime dialing in as `id`: the daemon claims the ID, then initializes
+/// the runtime and makes it the runtime of that ID. An ID it cannot take is
+/// refused before the upgrade, with an HTTP status and the reason as the
+/// body; a runtime that does not initialize sees the connection close with
+/// code 1011 and the reason.
 async fn runtime_upgrade(
     State(state): State<WebSocketState>,
     Query(query): Query<RuntimeQuery>,
@@ -362,19 +439,46 @@ async fn runtime_upgrade(
     if let Some(refused) = refused(&headers, state.token.as_str()) {
         return refused;
     }
-    let server = state.server;
+    let claim = match state.server.engine.claim_dial_in_runtime(&query.id) {
+        Ok(claim) => claim,
+        Err(refusal) => {
+            eprintln!("cookie-agent: refused a runtime dialing in: {refusal}");
+            return (dial_in_status(&refusal), refusal.to_string()).into_response();
+        }
+    };
     upgrade
         .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
-            if let Err(error) = server
-                .engine
-                .accept_dial_in_runtime(&query.id, Box::new(WebSocketStream { socket }))
-                .await
-            {
-                eprintln!("cookie-agent: {error}");
-            }
+            let (stream, choice) = WebSocketStream::choosing_close(socket);
+            let frame = match claim.accept(Box::new(stream)).await {
+                Ok(()) => axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::NORMAL,
+                    reason: "".into(),
+                },
+                Err(refusal) => {
+                    eprintln!("cookie-agent: {refusal}");
+                    axum::extract::ws::CloseFrame {
+                        code: cookie_agent_protocol::runtime_protocol::dial_in::CLOSE_INITIALIZE_FAILED,
+                        reason: close_reason(&refusal.to_string()).into(),
+                    }
+                }
+            };
+            let _ = choice.send(Some(frame));
         })
+}
+
+/// `reason` cut to fit a close frame, whose reason holds at most 123 bytes.
+fn close_reason(reason: &str) -> String {
+    const MAX_BYTES: usize = 123;
+    if reason.len() <= MAX_BYTES {
+        return reason.to_owned();
+    }
+    let mut end = MAX_BYTES - '…'.len_utf8();
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &reason[..end])
 }
 
 pub(crate) fn authorized(headers: &HeaderMap, expected: &str) -> bool {
@@ -947,6 +1051,128 @@ mod authentication_tests {
         )
         .await;
         assert!(reply["result"]["origin"].is_string(), "{reply}");
+        daemon.stop().await;
+    }
+
+    /// A close frame's reason holds at most 123 bytes: a longer one is cut
+    /// at a character boundary and marked.
+    #[test]
+    fn a_long_close_reason_is_cut_to_fit() {
+        assert_eq!(super::close_reason("short"), "short");
+        let fits = "a".repeat(123);
+        assert_eq!(super::close_reason(&fits), fits);
+        let cut = super::close_reason(&"é".repeat(100));
+        assert!(cut.len() <= 123, "{}", cut.len());
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(cut.starts_with("éé"), "{cut}");
+    }
+
+    /// The status and body of a refused upgrade.
+    fn refusal(error: tokio_tungstenite::tungstenite::Error) -> (u16, String) {
+        let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+            panic!("an HTTP refusal, not {error}");
+        };
+        (
+            response.status().as_u16(),
+            String::from_utf8_lossy(response.body().as_deref().unwrap_or_default()).into_owned(),
+        )
+    }
+
+    /// A runtime dialing in under an ID the daemon cannot give it is refused
+    /// before the upgrade with a status and the reason; one that does not
+    /// initialize sees the connection close with code 1011 and the reason,
+    /// and the ID is free again.
+    #[tokio::test]
+    async fn a_refused_dial_in_learns_why() {
+        let daemon = Daemon::start(AllowedOrigins::None).await;
+        let token = Some(daemon.token.as_str());
+        for (path, status, reason) in [
+            (
+                "/runtime?id=global",
+                403,
+                "runtime ID `global` is reserved for the daemon's built-in runtime",
+            ),
+            (
+                "/runtime?id=Dev-Box",
+                400,
+                "invalid runtime ID `Dev-Box`: it must match [a-z][a-z0-9_]{0,31}",
+            ),
+        ] {
+            let error = daemon
+                .connect(path, token, None)
+                .await
+                .expect_err("refused");
+            assert_eq!(refusal(error), (status, reason.to_owned()), "{path}");
+        }
+        let error = daemon
+            .connect("/runtime?id=devbox", Some("wrong"), None)
+            .await
+            .expect_err("a wrong token");
+        assert_eq!(
+            refusal(error),
+            (401, "the daemon token is missing or wrong".to_owned())
+        );
+
+        // A runtime of another major version does not initialize.
+        let mut socket = daemon
+            .connect("/runtime?id=devbox", token, None)
+            .await
+            .expect("upgraded");
+        let initialize = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect("initialize in time")
+            .expect("a frame")
+            .expect("a readable frame");
+        let Message::Text(initialize) = initialize else {
+            panic!("initialize is text: {initialize:?}");
+        };
+        let initialize: Value = serde_json::from_str(&initialize).unwrap();
+        assert_eq!(initialize["method"], "runtime/initialize");
+        // Held by the runtime being accepted.
+        let error = daemon
+            .connect("/runtime?id=devbox", token, None)
+            .await
+            .expect_err("being accepted");
+        assert_eq!(
+            refusal(error),
+            (409, "runtime `devbox` is already connected".to_owned())
+        );
+        socket
+            .send(Message::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": initialize["id"],
+                    "result": {"protocol_version": "99.0.0", "capabilities": []},
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let close = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+                .await
+                .expect("the daemon closes in time")
+            {
+                Some(Ok(Message::Close(frame))) => break frame.expect("a close frame"),
+                Some(Ok(_)) => {}
+                other => panic!("a close frame, not {other:?}"),
+            }
+        };
+        assert_eq!(u16::from(close.code), 1011);
+        assert!(
+            close
+                .reason
+                .starts_with("runtime `devbox` failed to start: "),
+            "{}",
+            close.reason
+        );
+        assert!(close.reason.len() <= 123);
+        drop(socket);
+        daemon
+            .connect("/runtime?id=devbox", token, None)
+            .await
+            .expect("the ID is free again");
         daemon.stop().await;
     }
 }

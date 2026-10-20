@@ -46,7 +46,7 @@ The daemon sends `runtime/initialize` first, with its `protocol_version`, the
 machine, and your capabilities:
 
 ```json
-{"protocol_version":"1.1.0","platform":"linux",
+{"protocol_version":"1.2.0","platform":"linux",
  "machine":{"id":"3f9a…","host_name":"buildbox"},
  "capabilities":[{"name":"console","kind":"database","takes_workspace":false,
                   "description":"A SQL console on the reporting replica"}]}
@@ -148,7 +148,7 @@ prepared = {}
 def handle(method, params):
     if method == "runtime/initialize":
         # A real runtime refuses another major with -32002 (see Version).
-        return {"protocol_version": "1.1.0", "capabilities": [{
+        return {"protocol_version": "1.2.0", "capabilities": [{
             "name": "clock", "kind": "clock", "takes_workspace": False,
             "description": "The build server's clock"}]}
     if method == "capability/open":

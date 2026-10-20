@@ -549,9 +549,12 @@ impl RuntimeRegistry {
     pub(crate) fn dial_in_template(
         &self,
         runtime_id: &str,
-    ) -> Result<Arc<super::DialInTemplate>, EngineError> {
-        cookie_agent_protocol::RuntimeId::new(runtime_id)
-            .map_err(|_| EngineError::Runtime(format!("invalid runtime ID `{runtime_id}`")))?;
+    ) -> Result<Arc<super::DialInTemplate>, super::DialInRefusal> {
+        let id = cookie_agent_protocol::RuntimeId::new(runtime_id)
+            .map_err(|_| super::DialInRefusal::InvalidId(runtime_id.to_owned()))?;
+        if id.is_reserved() {
+            return Err(super::DialInRefusal::Reserved(runtime_id.to_owned()));
+        }
         let mut templates = self
             .templates
             .lock()
@@ -564,9 +567,7 @@ impl RuntimeRegistry {
             return Ok(Arc::clone(template));
         }
         if templates.contains_key(runtime_id) {
-            return Err(EngineError::Runtime(format!(
-                "runtime `{runtime_id}` is configured on the daemon and cannot dial in"
-            )));
+            return Err(super::DialInRefusal::Configured(runtime_id.to_owned()));
         }
         let template = Arc::new(super::DialInTemplate::new(runtime_id));
         templates.insert(runtime_id.to_owned(), template.clone());
