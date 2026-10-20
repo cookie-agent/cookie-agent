@@ -6,7 +6,9 @@ yanked = "deny"
 # serde_yaml 0.9 (agent and skill front matter) requires unsafe-libyaml;
 # RUSTSEC-2024-0449 is likewise an unmaintained notice until the config crate
 # moves to another YAML parser.
-ignore = ["RUSTSEC-2025-0141", "RUSTSEC-2024-0449"]
+# Leptos (the web client, crates/web) requires paste 1.0; RUSTSEC-2024-0436 is
+# an unmaintained notice for a macro-only crate with no safe upgrade.
+ignore = ["RUSTSEC-2025-0141", "RUSTSEC-2024-0449", "RUSTSEC-2024-0436"]
 
 [bans]
 multiple-versions = "warn"
@@ -27,6 +29,12 @@ allow = [
     "Unlicense",
     "Zlib",
 ]
+
+# base16 (through Leptos's wasm_split_macros, in the web client) is dedicated
+# to the public domain under CC0-1.0; allowed for that crate only.
+[[licenses.exceptions]]
+crate = "base16"
+allow = ["CC0-1.0"]
 
 # Our own unpublished crates use the Cookie Agent License (see LICENSE);
 # dependencies still need an allowed license.
