@@ -74,6 +74,7 @@ address bar.
     the middle, and the composer and status bar at the bottom.
   - **Panels:** these open as a sheet on the right. They cover approvals,
     the agent, model, and preset pickers, usage, the diagnostics filter,
+    the goal, background calls, skills, permissions, a message's actions,
     and the command menu.
   - **Narrow windows such as a phone:** the session list and every panel
     open full screen. Long lines in code, diffs, and terminal output scroll
@@ -85,16 +86,29 @@ address bar.
     agent and model shown, and the permission mode the status bar shows.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
+- **Subagents.** The **Agents** panel above the session list shows the
+  viewed session's tree: each delegated agent with its task, `●` while it
+  runs. Click one to open it, and ▾ to fold its children. A session link in
+  a delegation's output opens the child too.
+  - `/agent-panel auto` (the default) shows the panel while a delegated
+    agent is live or a child session is open; `/agent-panel show` and
+    `/agent-panel hide` always show or hide it.
 - **Transcript.** Markdown is rendered with any HTML in it shown as text.
   Links open in a new tab, but only `http`, `https`, and `mailto` links;
   images show as links.
   - **Tool calls** show their title and status. Click one for its
-    arguments and output.
+    arguments and output. A running call that can move to the background
+    offers **⇲ background**.
   - **Output blocks** each have their own view: code highlighted by the
     bundled highlight.js, diffs with the file's line numbers, terminal
     output with its colours, tables, JSON, links, session links, and media
     shown inline.
   - **Cut output** offers its complete content.
+  - **Your messages** show the files they attached. Their **⋯** menu copies
+    the message, **reverts** to before it (it and every later turn are
+    removed, and its text comes back into the composer), or **forks** a new
+    session with the conversation up to it. A revert is refused when another
+    client added to the session since the menu opened.
 - **Composer.** It works like the TUI's:
   - **Enter** sends, steering a running run.
   - **Alt+Enter** queues the message behind the run.
@@ -112,11 +126,44 @@ address bar.
   - `/agent`, `/model`, `/preset`;
   - `/approvals`;
   - `/mode` cycles the permission mode;
-  - `/usage`, `/cancel`, `/events`.
+  - `/usage`, `/cancel`, `/events`;
+  - `/goal`, `/compact`, `/background` (also `/bg`), `/skills`,
+    `/permissions` (also `/perms`), `/attach` (also `/file`, `/image`);
+  - `/agent-panel show`, `/agent-panel hide`, `/agent-panel auto`.
 
   The ☰ button lists them all.
 - **Approvals.** When a tool call needs an answer, the status bar says so.
   Open it to approve once, approve for the session tree, or reject.
+- **Compacting.** `/compact` compacts the session's context, and
+  `/compact <focus>` says what the summary should keep. Escape, or
+  `/cancel`, cancels a compaction in progress.
+- **Goal.** `/goal <objective>` sets the root session's goal with the agent
+  and model shown; `/goal pause`, `/goal resume`, and `/goal cancel` control
+  it, and `/goal` alone shows it. The goal bar above the composer shows the
+  objective with the controls its state allows. Goals belong to root
+  sessions; a child session or a read-only snapshot offers none.
+- **Background calls.** While the session has calls running in the
+  background, a bar above the composer lists them. Click it, or use
+  `/background`, to see how long each has run and stop one; a stopped call
+  still reports to the model.
+- **Files.** Attach files with `/attach` or 📎 (the file picker), by dropping
+  them on the page, or by pasting them; on a phone, 📷 takes a photo. They
+  upload at once and wait on the draft as chips; × removes one.
+  - Only the kinds of file the selected model takes are offered: the picker
+    lists their types, and a model that takes none offers no attaching.
+  - The page reads each file's type from its content, as the daemon does,
+    and says why it cannot attach one the model does not take.
+  - An image too large for the model or the daemon is offered as
+    **Downscale and attach**: the page redraws it smaller and attaches that.
+    Video is never downscaled.
+- **Skills.** `/skills` lists the skills you can run, searched as you type
+  (`/skills <search>` starts the search). Pick one, give its arguments, and
+  run it.
+- **Permissions.** `/permissions` shows the session's rules by action, and
+  where each comes from: the agent, the default, or a session override.
+  Click an effect to override it, add a rule for a pattern, or × to remove
+  an override. While a new session is composed, the same table edits the
+  rules it will be created with, previewed against its agent.
 - **Status bar.** It shows the permission mode (click it for the next one),
   the session's cost (click for `/usage`), and its context size.
 - **Diagnostics.** `/events` picks which diagnostic rows the transcript
@@ -157,7 +204,7 @@ A `cookie` built from a fresh checkout serves a placeholder page.
 - it needs `trunk` 0.21.14 and the `wasm32-unknown-unknown` target;
 - it writes the page to `crates/web_assets/bundle/`, which the next build
   of `cookie` embeds;
-- it fails when the page, gzipped, is over its budget of 1.9 MB.
+- it fails when the page, gzipped, is over its budget of 1.6 MB.
 
 The daemon sends the page gzip-compressed to browsers that accept it, under a
 Content-Security-Policy that allows only the page's own scripts and

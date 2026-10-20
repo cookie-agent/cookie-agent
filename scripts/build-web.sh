@@ -11,9 +11,10 @@ set -euo pipefail
 
 TRUNK_VERSION="0.21.14"
 # What a browser may download for the page, gzipped, in bytes: W3 measured
-# 1.30 MB once regex and runtime schema generation left the wasm; the budget
-# leaves room to grow before someone looks at why.
-BUDGET_GZIPPED_BYTES=1500000
+# 1.45 MB with its features, after regex and runtime schema generation left
+# the wasm (1.64 MB before); the budget leaves room to grow before someone
+# looks at why.
+BUDGET_GZIPPED_BYTES=1600000
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"

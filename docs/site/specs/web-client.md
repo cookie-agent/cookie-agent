@@ -1102,3 +1102,141 @@ Core chat landed as specified, with no wire change.
     All pass, and the screenshots were checked.
   - **Not in CI yet.** The browser scenarios still need Firefox and
     geckodriver in CI (W5).
+
+### Phase W3 (2026-10-20)
+
+Session depth landed as specified, with no wire change.
+
+- **Moved into shared crates.**
+  - **`cookie_agent_protocol::media_sniff`.** Recognizing and validating
+    media from its content (`validate_upload`, the image, PDF, audio, and
+    video checks, the caps) moved out of `runtime_api::media`, which
+    re-exports it. The page sniffs a file exactly as the daemon will.
+  - **`client_state::permissions`:** the `/permissions` table rows
+    (`permission_rows`, `permission_actions`, the effect and source labels)
+    and a draft's rules (`set_draft_rule`, `remove_draft_rule`). The TUI
+    uses them.
+  - **`client_state::uploads`.** `upload` now returns an `UploadFailure`
+    whose `too_large` carries the limits a `media_too_large` refusal names
+    (`RefusedLimits`), so the page can offer a downscale to them. The TUI
+    keeps showing the message.
+  - **`SessionState::user_files`:** the files each user message attached,
+    by its sequence, for inline display.
+- **The page** (`crates/web/src/workspace/`, `views/depth.rs`):
+  - **Subagents.** The Agents panel in the sidebar (and the sessions
+    sheet) shows the viewed session's `session.tree`, foldable per session,
+    with `/agent-panel show|hide|auto` as in the TUI: `auto` shows it while
+    a delegate is live or a child is viewed.
+    - The tree is re-read on `tool_call_linked`, `run_finished`,
+      `delegation_progressed`, `delegation_finished`,
+      `delegate_child_terminated`, and a finished replay of any session in
+      it.
+    - Its live sessions are subscribed, sharing the root's ownership.
+    - A `session_ref` or tree row opens the child. Its root comes from the
+      shown tree, the session list, or `session.get`'s origin.
+  - **History edits.** A user message's ⋯ menu copies it
+    (`navigator.clipboard`, else the text is selected), reverts to before
+    it (`session.revert` with `expected_last_seq`, confirmed first; the
+    `rewound` notification rebuilds the transcript and the text returns to
+    the composer; `stale_revert` is explained), or forks at it
+    (`session.fork` with a `client_fork_id`, then opens the fork).
+    `/compact [focus]` compacts; Escape and `/cancel` cancel a compaction
+    outside a run (`session.compact.cancel`).
+  - **Goal.** The goal bar shows the root's goal with the actions its
+    status allows. `/goal <objective>` sets it with the draft's selection;
+    `/goal pause|resume|cancel` reads `session.goal.get` and changes it at
+    its revision. Goals are root-only and read-only snapshots offer none.
+    Only `goal_*` events change the bar.
+  - **Background.** A running call with `backgroundable` offers
+    "⇲ background" (`run.tool_background`). `session.background.list`
+    is read after each subscribe and `background.changed` keeps it
+    current. The bar and the `/background` sheet list the calls with their
+    age and stop one (`session.background.stop`); the sheet closes with
+    the last call.
+  - **Media.** `/attach` and 📎 open a file input whose `accept` lists the
+    selected model's `input_media` types; 📷 (narrow screens, image models
+    only) opens one with `capture`. Drop and paste attach too. Nothing is
+    offered for a model without input media.
+    - Each file is sniffed and checked against the model
+      (`attach::assess`), then uploaded at once through the shared chunked
+      `upload` (a new session is created first, as in the TUI), and shown
+      as a chip.
+    - An image over the model's or the daemon's limits, or refused by the
+      daemon as `media_too_large`, is offered "Downscale and attach?". It
+      is decoded and redrawn through a canvas, as JPEG when the model takes
+      it (else PNG), at the size `attach::downscale_target` computes, and
+      smaller again until it fits. Video is never re-encoded.
+    - Attachments of user messages and `media_file` parts of assistant
+      messages render inline through the same `artifact.read` → `Blob`
+      placeholders as media blocks.
+  - **Skills.** `/skills [search]` lists `skills.list`, ranked as the TUI
+    ranks them (`skills::matching_skills`). Running one checks it with
+    `skills.get`, then submits `encode_skill_submission`.
+  - **Permissions.** `/permissions` shows the effective rules by action
+    with their source. An effect click or the new-rule form sets an
+    override (`session.permission.set`), and × clears one. While a new
+    session is composed, the same table edits the draft's rules, previewed
+    with `session.permission.preview` and sent as `permission_rules` on
+    `session.create`.
+  - **`/events` default.** The level the page starts with is the TUI's
+    (`EventLevel::DEFAULT_MINIMUM`, warnings), so `[I]` rows are hidden by
+    default; a stored choice still wins.
+- **Fixes found on the way.**
+  - **Item keys include the session.** Item IDs repeat across sessions, so
+    switching between two sessions of the same shape showed the first
+    one's cached rows.
+  - **Following the transcript.** It stops only when the user scrolls up
+    (wheel, touch, or the scrollbar), not when a re-rendered row or a new
+    bar briefly moves the scroll position.
+- **Deviations.**
+  - **`/goal pause|resume|cancel`** are typed arguments. The TUI's palette
+    asks only for an objective and puts the controls on the bar; the page
+    has both.
+  - **The skill arguments, compaction focus, and goal objective** are typed
+    after the command (`/skills gre`, `/compact keep the API notes`), or in
+    the sheet, instead of a palette step.
+  - **Fork and revert** are offered on any user message the session's
+    owner can edit, child sessions included, as the daemon decides what is
+    allowed.
+- **Size.** Profiled with `twiggy` on an unstripped `web` build, the wasm
+  was mostly serde code, plus two things the page never needed:
+  - `regex`, used only for the control-character table in
+    `diagnostics`. It is now a hand-written table, checked against the
+    regex in a native test.
+  - Runtime schema generation, used by `open_enum!` to list a tagged
+    enum's tags. The tags are now listed in each `open_enum!` and checked
+    against the schema in a native test.
+
+  Together they were about 1 MB of the wasm: before W3 it was 3.88 MB
+  (1.40 MB gzipped), and without them 2.85 MB (1.06 MB gzipped). With all of W3 it is 3.19 MB (1.20 MB
+  gzipped), and the bundle 3.60 MB (1.45 MB gzipped). The budget in
+  `scripts/build-web.sh` is now 1,600,000 bytes gzipped (from 1,900,000).
+- **Tests.**
+  - **Native:** tree rows and folding and the `auto` panel; `/goal`
+    arguments and the bar's actions; skill ranking; the `accept` list, the
+    assessment of a file (attach, downscale, refuse), downscale targets
+    and refused-limit tightening; attachment names; the permission rows
+    and draft rules; `user_files`; session-scoped item keys; the slash
+    commands with arguments.
+  - **`scripts/test-web-page.sh`** now gives the daemon a model that takes
+    images, a `helper` subagent, a `greet` skill, an image in the
+    workspace, and a session made by `cookie run` before the daemon
+    started. The scenarios add:
+    - a delegation shown in the Agents panel (`/agent-panel show`), its
+      `session_ref` opening the child, and folding;
+    - a fork at the first message and a revert of the last, with its text
+      back in the composer;
+    - `/compact` with a focus;
+    - `/goal` set, then paused from the bar;
+    - a slow `bash` call approved, moved to the background, listed with
+      `/background`, and stopped;
+    - an image attached from the file input, and one too large downscaled
+      on acceptance, both shown inline in the sent message;
+    - a `read` of an image whose media block shows inline;
+    - `/skills` search and run;
+    - a session permission override added and removed, and a draft rule
+      previewed for a new session;
+    - the `cookie run` session, whose owner lock the scenario holds as
+      another process would, opening as a read-only snapshot.
+
+    All pass, and the screenshots were checked.
