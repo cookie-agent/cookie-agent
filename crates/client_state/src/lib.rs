@@ -24,6 +24,7 @@ pub mod rows;
 mod runtime;
 pub mod runtimes;
 pub mod session_actions;
+pub mod session_delete;
 pub mod subscriptions;
 pub mod tool_header;
 pub mod uploads;
