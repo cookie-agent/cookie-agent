@@ -143,11 +143,11 @@ nav:
           - Goal mode and producers: specs/goal-mode.md
           - Tool output streams: specs/tool-output-streams.md
           - Agent messaging: specs/agent-messaging.md
+          - Subagent handles: specs/subagent-handles.md
           - Tree-scoped session ownership lock: specs/tree-ownership-lock.md
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - Subagent handles: specs/subagent-handles.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md
           - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md

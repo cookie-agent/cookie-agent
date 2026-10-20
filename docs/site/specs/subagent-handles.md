@@ -1,6 +1,14 @@
 # Subagent Handles (Short Session References)
 
-Status: draft proposal. Not implemented. This document records the design
+Status: implemented (871530302, 2026-09-17), with later changes to the tools
+around it: `cancel_subagent` was removed and a subagent's turn is stopped with
+`stop_background` given its handle; `send_message` names its recipient `to`;
+subagents report in `<subagent_report handle="…">` rather than
+`<subagent_notification>`; `short_id` on `session_created` became required with
+history format 1; and get_subagent_result, resume, and stop resolve only the
+caller's direct children, while `send_message` resolves any peer in the tree.
+The [tool reference](../reference/tools.md#delegation-and-skills) states the
+current contract. This document records the design
 decisions for replacing raw 36-character UUID session references in the
 model-facing delegation tools with short, tree-unique **handles**. It amends
 the addressing contract in [Agent messaging](agent-messaging.md) and the tool
