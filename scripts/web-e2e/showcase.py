@@ -9,9 +9,11 @@ It starts a session, sends one request the scripted model
 reply, opens both tool calls, and saves `web-light.png` and `web-dark.png`
 at 1280×800, and `web-phone-light.png` and `web-phone-dark.png` at 390×844.
 
-With `all`, it also opens every panel, sheet, and menu at both sizes and
-saves each in light and dark under `<output-dir>/all/`, then the connect
-screen, for reviewing the page's look as a whole.
+With `all`, it also opens every view of the rail, every Settings section,
+an editor, every sheet and menu, and the phone's drawer, at desktop,
+phone, and phone-landscape sizes, and saves each in light and dark under
+`<output-dir>/all/`, then the connect screen, for reviewing the page's look
+as a whole.
 """
 
 import base64
@@ -169,29 +171,40 @@ for theme in ("light", "dark"):
     )
     browser.shot("web-phone-%s.png" % theme)
 
-# Every panel, sheet, and menu: a slash command typed in the composer, or a
-# click, which works on any version of the page.
+# Every sheet and menu of the chat view: a slash command typed in the
+# composer, or a click.
 COMMANDS = [
-    "/sessions", "/agent", "/model", "/preset", "/approvals", "/usage", "/events",
-    "/goal", "/background", "/skills", "/permissions", "/runtime", "/mcp", "/connect",
-    "/config", "/memory", "/plugins",
+    "/agent", "/model", "/preset", "/approvals", "/usage", "/events",
+    "/goal", "/background", "/skills", "/permissions", "/runtime",
 ]
 CLICKS = [
     ("commands", "button[aria-label=Commands]"),
     ("message-menu", "#transcript [data-action=user-menu]"),
     ("send-menu", "button[aria-label='More ways to send']"),
-    ("connection", "#connection"),
+    ("connection", "[data-rail] button[aria-haspopup=dialog]"),
     ("composer-completions", None),
+    ("drawer", "main [data-sidebar-toggle]"),
 ]
+# The rail's views, and the Settings sections.
+VIEWS = ["agents", "settings", "machines", "memory"]
+SECTIONS = ["configuration", "providers", "mcp", "plugins", "browser"]
+
+
+def view(name):
+    browser.script("document.querySelector('[data-rail] [data-view=%s]').click()" % name)
+    time.sleep(1.2)
 
 
 def close_all():
     browser.script(
         "const s = document.querySelector('#sheet h2 ~ button'); if (s) s.click();"
         "const c = document.querySelector('#connection-close'); if (c) c.click();"
+        "const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click();"
         "if (document.querySelector('#queue-send'))"
         "  document.querySelector(\"button[aria-label='More ways to send']\").click();"
     )
+    time.sleep(0.3)
+    view("chat")
     browser.script(
         "const c = document.querySelector('#composer'); c.value = '';"
         "c.dispatchEvent(new Event('input')); c.blur()"
@@ -205,8 +218,10 @@ def both_themes(name):
         browser.shot("all/%s-%s.png" % (name, theme))
 
 
+SIZES = (("desktop", (1280, 800)), ("phone", (390, 844)), ("landscape", (844, 390)))
+
 if ALL:
-    for size, (width, height) in (("desktop", (1280, 800)), ("phone", (390, 844))):
+    for size, (width, height) in SIZES:
         browser.size(width, height)
         time.sleep(1)
         close_all()
@@ -217,14 +232,26 @@ if ALL:
             browser.type("#composer", ENTER)
             time.sleep(1.2)
             both_themes("%s-%s" % (size, command[1:]))
+        for name in VIEWS:
+            close_all()
+            view(name)
+            both_themes("%s-view-%s" % (size, name))
+        for section in SECTIONS:
+            close_all()
+            view("settings")
+            browser.script("document.querySelector('[data-section=%s]').click()" % section)
+            time.sleep(1.2)
+            both_themes("%s-settings-%s" % (size, section))
+        # An editor: config.toml, then a memory.
         close_all()
-        browser.type("#composer", "/runtime")
-        browser.type("#composer", ENTER)
+        view("settings")
+        browser.script("document.querySelector('[data-section=configuration]').click()")
         time.sleep(1)
-        if browser.count("#runtime-tab-machines"):
-            browser.script("document.querySelector('#runtime-tab-machines').click()")
-            time.sleep(1)
-            both_themes("%s-machines" % size)
+        browser.script("document.querySelector('[data-config-path=\"config.toml\"] button').click()")
+        time.sleep(1)
+        both_themes("%s-editor-config" % size)
+        browser.script("history.back()")
+        time.sleep(0.5)
         for name, selector in CLICKS:
             close_all()
             if selector is None:
@@ -232,6 +259,9 @@ if ALL:
                     "const c = document.querySelector('#composer'); c.value = '/m';"
                     "c.dispatchEvent(new Event('input')); c.focus()"
                 )
+            elif name == "drawer" and width >= 1024:
+                # A desktop pins the sidebar instead (photographed below).
+                continue
             elif browser.count(selector):
                 browser.script("document.querySelector(arguments[0]).click()", selector)
             else:
@@ -240,12 +270,18 @@ if ALL:
             both_themes("%s-%s" % (size, name))
         close_all()
         # A new session's card.
-        if width >= 768:
+        if width >= 1024:
             browser.script("document.querySelector('aside [data-new-session]').click()")
             time.sleep(1)
             both_themes("%s-new-session" % size)
             browser.script("document.querySelector('aside nav[aria-label=Sessions] button').click()")
             time.sleep(1)
+            # The sidebar hidden.
+            browser.script("document.querySelector('main [data-sidebar-toggle]').click()")
+            time.sleep(0.5)
+            both_themes("%s-sidebar-hidden" % size)
+            browser.script("document.querySelector('main [data-sidebar-toggle]').click()")
+            time.sleep(0.5)
     # The connect screen, once the page holds no token.
     browser.size(1280, 800)
     browser.script("localStorage.clear()")
