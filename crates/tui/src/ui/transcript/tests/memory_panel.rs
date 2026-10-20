@@ -135,8 +135,10 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
     assert_eq!(request.text, "---\ndescription: \n---\n");
     let valid = "---\ndescription: Build conventions\n---\nRun the gates.\n";
     app.finish_memory_edit(request, Ok(valid.into()));
+    // The new row can arrive with the daemon's change notice before the
+    // save's own answer, which sets the status.
     pump_until(&mut app, &mut deliveries, |app| {
-        memory_row(app, "project://web/build").is_some()
+        memory_row(app, "project://web/build").is_some() && !app.status.starts_with("saving")
     })
     .await;
     assert_eq!(app.status, "Created project://web/build.");
