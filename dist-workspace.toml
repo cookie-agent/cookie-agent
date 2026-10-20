@@ -24,6 +24,10 @@ github-attestations = false
 precise-builds = true
 allow-dirty = ["ci"]
 release-branch = "main"
+# The binary inherits `license-file` from the workspace, which dist 0.32
+# resolves against the wrong directory; ship the license explicitly instead.
+auto-includes = false
+include = ["LICENSE"]
 
 [dist.binaries]
 "*" = ["cookie"]
