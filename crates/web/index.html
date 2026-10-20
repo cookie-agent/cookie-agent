@@ -2,9 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbf4e6" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#201c16" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="cookie" />
     <title>cookie agent</title>
+    <!-- Home screen: the manifest names its icons by path, so they are
+         copied as they are (no service worker; see the web client spec). -->
+    <link data-trunk rel="copy-file" href="assets/manifest.webmanifest" />
+    <link data-trunk rel="copy-dir" href="assets/icons" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
     <link data-trunk rel="tailwind-css" href="style/main.css" />
     <link data-trunk rel="copy-dir" href="assets/fonts" />
     <!-- highlight.js 11.12.0 (@highlightjs/cdn-assets, sha512-KvOKXODaiFmId9xaq3xc5xCL66wVLUuOngDbO9B/kewbFTqdGbn2nJxNhN3H5R1cgDTVj6R8vH0zgiNDEGjpDw==),
