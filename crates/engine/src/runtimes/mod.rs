@@ -52,7 +52,7 @@ pub use mcp_hub::McpServerFailure;
 pub(crate) use process::ProcessConnector;
 pub use registry::{
     RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeListingState,
-    RuntimeTemplate, RuntimeTemplateSummary, StartedRuntime,
+    RuntimeTemplate, RuntimeTemplateSummary, StartError, StartedRuntime,
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
 pub(crate) use remote::{

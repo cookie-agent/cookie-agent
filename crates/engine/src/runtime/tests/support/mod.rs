@@ -140,17 +140,19 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
         &self,
         _capability: &cookie_agent_protocol::CapabilityName,
         workspace: Option<&std::path::Path>,
-    ) -> Result<crate::StartedRuntime, String> {
+    ) -> Result<crate::StartedRuntime, crate::StartError> {
+        let refused = |reason: String| crate::StartError::Open(reason);
         let path = workspace
             .or(self.fixed_workspace.as_deref())
-            .ok_or("no workspace")?;
-        let workspace = crate::WorkspaceContext::new(path).map_err(|error| error.to_string())?;
+            .ok_or_else(|| refused("no workspace".into()))?;
+        let workspace =
+            crate::WorkspaceContext::new(path).map_err(|error| refused(error.to_string()))?;
         self.starts.fetch_add(1, Ordering::SeqCst);
         Ok(crate::StartedRuntime {
             info: cookie_agent_runtime_api::RuntimeInfo::coding(self.id, workspace.clone()),
             providers: (self.tools)(&workspace),
             skills: cookie_agent_config::load_project_skills(workspace.root())
-                .map_err(|error| error.to_string())?,
+                .map_err(|error| refused(error.to_string()))?,
             connection: None,
         })
     }

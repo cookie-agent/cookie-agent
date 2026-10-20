@@ -1282,14 +1282,13 @@ async fn initialize_fake_with(
     .await
     .map_err(|error| error.to_string());
     let opened = match initialized {
-        Ok((client, _)) => {
-            client
-                .open(
-                    &cookie_agent_protocol::CapabilityName::new("browse").unwrap(),
-                    None,
-                )
-                .await
-        }
+        Ok((client, _)) => client
+            .open(
+                &cookie_agent_protocol::CapabilityName::new("browse").unwrap(),
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string()),
         Err(error) => Err(error),
     };
     drop(fake.await.unwrap());

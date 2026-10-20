@@ -16,7 +16,7 @@ use cookie_agent_runtime_api::{
     ToolProvider, WorkspaceContext,
 };
 
-use super::registry::{RuntimeListingState, RuntimeTemplate, StartedRuntime};
+use super::registry::{RuntimeListingState, RuntimeTemplate, StartError, StartedRuntime};
 
 /// The `global` capability: the daemon's MCP servers, plugins, and global
 /// tools, with no workspace.
@@ -72,8 +72,10 @@ impl RuntimeTemplate for GlobalTemplate {
         &self,
         _capability: &CapabilityName,
         _workspace: Option<&Path>,
-    ) -> Result<StartedRuntime, String> {
-        Err("the global runtime starts with the daemon".into())
+    ) -> Result<StartedRuntime, StartError> {
+        Err(StartError::Open(
+            "the global runtime starts with the daemon".into(),
+        ))
     }
 }
 
@@ -155,11 +157,13 @@ impl RuntimeTemplate for LocalTemplate {
         &self,
         _capability: &CapabilityName,
         workspace: Option<&Path>,
-    ) -> Result<StartedRuntime, String> {
+    ) -> Result<StartedRuntime, StartError> {
         let workspace = match workspace {
-            Some(path) => WorkspaceContext::new(path).map_err(|error| error.to_string())?,
+            Some(path) => {
+                WorkspaceContext::new(path).map_err(|error| StartError::Open(error.to_string()))?
+            }
             None => self.workspace.clone(),
         };
-        self.open(&workspace)
+        self.open(&workspace).map_err(StartError::Open)
     }
 }

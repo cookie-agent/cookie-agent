@@ -628,11 +628,12 @@ async fn failed_starts_name_the_reason_and_the_runtime_stderr() {
         .await
         .expect_err("no such workspace");
     let error = error.to_string();
-    assert!(error.contains("failed to start"), "{error}");
-    assert!(error.contains("missing"), "{error}");
-    let failure = failures.recv().await.expect("failure");
-    assert_eq!(failure.workspace.as_deref(), Some("~/missing"));
-    // Nothing was attached.
+    assert!(
+        error.contains("could not open `coding` for workspace `~/missing`"),
+        "{error}"
+    );
+    assert!(!error.contains("failed to start"), "{error}");
+    // Nothing was attached or recorded: no session uses the instance.
     assert!(
         !fixture
             .engine
@@ -641,6 +642,8 @@ async fn failed_starts_name_the_reason_and_the_runtime_stderr() {
             .iter()
             .any(|attachment| attachment.runtime_id.as_str() == "remote")
     );
+    assert_eq!(fixture.remote_status(), None);
+    assert!(failures.try_recv().is_err());
     fixture.engine.shutdown().await;
 
     // A runtime that does not answer `runtime/initialize` in time.
@@ -673,6 +676,131 @@ async fn failed_starts_name_the_reason_and_the_runtime_stderr() {
             .is_some_and(|message| message.contains("did not start within 1 ms")),
         "{remote:?}"
     );
+    fixture.engine.shutdown().await;
+}
+
+/// A runtime serving only some directories refuses a workspace outside
+/// them: attaching it, creating a session with it, and retrying it say the
+/// capability could not open there and give the runtime's reason, and
+/// leave no instance behind. The runtime itself stays connected.
+#[tokio::test]
+async fn a_workspace_outside_the_runtime_roots_is_refused_and_records_nothing() {
+    let served = tempfile::tempdir().expect("served directory");
+    let root = served.path().to_string_lossy().into_owned();
+    let command = serde_json::to_string(&[
+        env!("CARGO_BIN_EXE_cookie"),
+        "runtime",
+        "serve",
+        "--stdio",
+        "--root",
+        root.as_str(),
+    ])
+    .unwrap();
+    let fixture = Fixture::with_config(
+        30_000,
+        &format!("\n[runtimes.rooted]\ncommand = {command}\nstartup_timeout_ms = 30000\n"),
+    )
+    .await;
+    let outside = fixture.web.canonicalize().unwrap();
+    let session = fixture
+        .engine
+        .create_session(Fixture::selection())
+        .expect("session")
+        .session_id;
+    let mut failures = fixture.engine.subscribe_runtime_failures();
+    let rooted_recorded = |engine: &Engine| {
+        engine
+            .runtime_instances()
+            .into_iter()
+            .any(|instance| instance.runtime_id == "rooted")
+    };
+    let refused = |error: String| {
+        assert!(
+            error.contains(&format!(
+                "runtime `rooted` could not open `coding` for workspace `{}`",
+                outside.display()
+            )),
+            "{error}"
+        );
+        assert!(
+            error.contains("outside the directories this runtime serves"),
+            "{error}"
+        );
+        assert!(!error.contains("failed to start"), "{error}");
+    };
+
+    let error = fixture
+        .engine
+        .attach_runtime(
+            session,
+            "rooted",
+            None,
+            Some(outside.clone()),
+            EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect_err("outside the roots");
+    refused(error.to_string());
+    assert!(!rooted_recorded(&fixture.engine));
+    assert!(
+        !fixture
+            .engine
+            .session_runtimes(session)
+            .unwrap()
+            .iter()
+            .any(|attachment| attachment.runtime_id.as_str() == "rooted")
+    );
+    // The runtime itself is up.
+    let rooted = fixture
+        .engine
+        .runtime_templates()
+        .into_iter()
+        .find(|template| template.runtime_id == "rooted")
+        .expect("rooted");
+    assert!(rooted.listing.connected, "{rooted:?}");
+
+    let error = fixture
+        .engine
+        .create_session_with_permissions(
+            Fixture::selection(),
+            None,
+            Vec::new(),
+            SessionRuntimes {
+                runtimes: Some(vec![SessionRuntimeRequest {
+                    runtime_id: "rooted".into(),
+                    capability: Some("coding".into()),
+                    workspace: Some(outside.clone()),
+                }]),
+                global: true,
+                cwd: None,
+            },
+        )
+        .await
+        .expect_err("a session outside the roots");
+    refused(error.to_string());
+    assert!(!rooted_recorded(&fixture.engine));
+
+    let error = fixture
+        .engine
+        .reconnect_runtime("rooted", Some("coding"), Some(outside.clone()))
+        .await
+        .expect_err("a retry outside the roots");
+    refused(error.to_string());
+    assert!(!rooted_recorded(&fixture.engine));
+    assert!(failures.try_recv().is_err());
+
+    // A workspace under the roots still opens.
+    fixture
+        .engine
+        .attach_runtime(
+            session,
+            "rooted",
+            None,
+            Some(served.path().to_owned()),
+            EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("inside the roots");
     fixture.engine.shutdown().await;
 }
 

@@ -402,12 +402,17 @@ directory as it names it: the session records it as its `cwd_identity`, so
 one daemon serves sessions of many directories and `session.list` with a
 `cwd_identity` shows one directory's. An empty `runtimes` list creates a
 session with no coding runtime. Instances that are not running are started
-first, and a failure creates no session.
+first, and a failure creates no session and records no instance.
 
 `session.runtime.attach` and `session.runtime.detach` are rejected while the
 session has an active run (`session running`). Attach connects the runtime
 and opens the capability's instance when needed, and records nothing when
-that fails. Without `capability` it attaches the runtime's only capability;
+that fails: neither an attachment nor, for an instance that never opened, a
+`failed` instance in `runtimes.list`. The error says which step failed:
+``runtime `<id>` failed to start: <reason>`` when the runtime could not be
+reached, and ``runtime `<id>` could not open `<capability>` for workspace
+`<workspace>`: <reason>`` with the runtime's own reason when it refused the
+workspace, such as one outside the directories it serves. Without `capability` it attaches the runtime's only capability;
 a runtime that offers several asks for one, naming them. The attachment's
 name is the name the instance reports (`global`, or
 `<runtime ID>_<workspace basename>` for a `coding` instance), suffixed `_2`,
@@ -439,7 +444,9 @@ again, under a new generation, and keeps its identity; an instance that is not
 running is started; a `ready` or `reconnecting` one is left as it is.
 `capability` and `workspace` follow the attach rule, and for a failed instance it is the
 `workspace` that `runtimes.list` reports. A start that fails is an error with
-the reason, and is also reported in `runtimes.changed`. Retrying `global`
+the reason, worded as for attach. An instance `runtimes.list` already showed
+stays `failed` with the new reason, which `runtimes.changed` reports; one it
+did not show stays unrecorded. Retrying `global`
 also retries its failed MCP servers.
 
 ### Machines

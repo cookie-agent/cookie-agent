@@ -52,6 +52,7 @@ async fn start_error(template: &ProtocolTemplate, workspace: &str) -> String {
         .await
         .err()
         .expect("the runtime does not start")
+        .to_string()
 }
 
 #[tokio::test]

@@ -160,6 +160,14 @@ asks for that path.
   `startup_timeout_ms` publishes no tools; the attach is rejected, and clients
   viewing an affected session get an error naming the runtime and the
   reason. `runtimes.list` shows why the runtime last failed to connect.
+- **Refused workspaces.** A runtime that is up can still refuse to open a
+  capability, for example for a workspace outside its `--root` directories.
+  The error then reads
+  ``runtime `labpc` could not open `coding` for workspace `/tmp`: workspace /tmp is outside the directories this runtime serves``
+  rather than saying the runtime failed to start. Attaching, creating a
+  session, and retrying (`runtimes.reconnect`) record nothing when the
+  instance never opened: no attachment, and no `failed` instance in
+  `runtimes.list`.
 - **Diagnostics.** The process's standard error is captured into a bounded
   buffer (its last 32 lines, at most 4 KiB). Failure reasons end with that
   tail, so an `ssh` or `cookie runtime` error shows up in the TUI. The

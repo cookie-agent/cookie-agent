@@ -68,16 +68,44 @@ pub trait RuntimeTemplate: Send + Sync {
     /// capability takes one and is the path a session asked for, exactly as
     /// given: the runtime resolves it and reports the canonical workspace.
     /// One connection serves every instance; a template whose connection
-    /// dropped connects again. The error is a human-readable reason.
+    /// dropped connects again. The error says whether the runtime could not
+    /// be reached or did not open the capability.
     async fn start(
         &self,
         capability: &CapabilityName,
         workspace: Option<&Path>,
-    ) -> Result<StartedRuntime, String>;
+    ) -> Result<StartedRuntime, StartError>;
 
     /// Lets go of the template's connection as the daemon stops; the
     /// daemon shuts it down through the instances that use it.
     fn disconnect(&self) {}
+}
+
+/// Why [`RuntimeTemplate::start`] failed, with a human-readable reason.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StartError {
+    /// The runtime could not be reached: connecting to it or initializing
+    /// it failed, or its connection ended.
+    Connect(String),
+    /// The runtime is up but did not open the capability, such as for a
+    /// workspace outside the directories it serves.
+    Open(String),
+}
+
+impl StartError {
+    /// The reason, without saying which step failed.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Connect(reason) | Self::Open(reason) => reason,
+        }
+    }
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.reason())
+    }
 }
 
 /// What [`RuntimeTemplate::listing`] reports.
@@ -327,6 +355,26 @@ impl InstanceKey {
                 .map(|workspace| workspace.root().to_owned()),
         }
     }
+}
+
+/// What was recorded for an instance before a start, as
+/// [`RuntimeRegistry::begin_start`] found it.
+struct Previous {
+    /// Whether the registry had recorded the instance at all.
+    recorded: bool,
+    /// The instance that ran there before it failed, for the start to
+    /// revive.
+    instance: Option<Arc<RuntimeInstance>>,
+}
+
+/// Whether a failed start is recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Record {
+    /// Only for an instance the registry already recorded: a request that
+    /// is refused, such as an attach, leaves nothing behind.
+    Known,
+    /// Always, for an attachment a session records.
+    Always,
 }
 
 enum InstanceSlot {
@@ -778,7 +826,8 @@ impl RuntimeRegistry {
 
     /// The instance of `capability` of `runtime_id` (the runtime's only
     /// capability when `None`) for `workspace`, opened when it is not
-    /// running. `workspace` must be given exactly when the capability takes
+    /// running, as attaching it, creating a session with it, or retrying it
+    /// does. `workspace` must be given exactly when the capability takes
     /// one, unless the template has a default workspace for it; an unknown
     /// runtime ID is an error.
     ///
@@ -786,11 +835,30 @@ impl RuntimeRegistry {
     /// on another machine, so the daemon never resolves it. The instance is
     /// keyed by the canonical workspace the runtime reports, so two spellings
     /// of one workspace share an instance.
+    ///
+    /// A request for an instance the registry has never recorded records
+    /// nothing when it fails: no session uses it, so it does not show in
+    /// `runtimes.list`. One that failed before stays failed with the new
+    /// reason.
     pub(crate) async fn ensure(
         self: &Arc<Self>,
         runtime_id: &str,
         capability: Option<&str>,
         workspace: Option<&Path>,
+    ) -> Result<Arc<RuntimeInstance>, EngineError> {
+        self.open(runtime_id, capability, workspace, Record::Known)
+            .await
+    }
+
+    /// [`Self::ensure`], recording a failed start as `record` says: always
+    /// for an attachment a session records, so clients viewing the session
+    /// see why it publishes no tools.
+    async fn open(
+        self: &Arc<Self>,
+        runtime_id: &str,
+        capability: Option<&str>,
+        workspace: Option<&Path>,
+        record: Record,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
         let template = self
             .template(runtime_id)
@@ -807,7 +875,7 @@ impl RuntimeRegistry {
                         workspace: workspace.map(Path::to_owned),
                     };
                     let previous = self.begin_start(&key);
-                    self.fail_start(key, error.to_string(), previous);
+                    self.fail_start(key, error.to_string(), previous, record);
                 }
                 return Err(error);
             }
@@ -855,7 +923,7 @@ impl RuntimeRegistry {
                 if started.info.id() == runtime_id
                     && started.info.capability() == &offered.name =>
             {
-                Ok(self.install(&requested, &pending, started, previous))
+                Ok(self.install(&requested, &pending, started, previous.instance))
             }
             Ok(started) => {
                 let message = format!(
@@ -864,28 +932,53 @@ impl RuntimeRegistry {
                     started.info.id(),
                     offered.name
                 );
-                self.fail_start(pending, message.clone(), previous);
+                self.fail_start(pending, message.clone(), previous, record);
                 Err(EngineError::Runtime(message))
             }
-            Err(reason) => {
-                let message = format!("runtime `{runtime_id}` failed to start: {reason}");
-                self.fail_start(pending, message.clone(), previous);
+            Err(error) => {
+                let message = match &error {
+                    StartError::Connect(reason) => {
+                        format!("runtime `{runtime_id}` failed to start: {reason}")
+                    }
+                    StartError::Open(reason) => match workspace {
+                        Some(workspace) => format!(
+                            "runtime `{runtime_id}` could not open `{}` for workspace `{}`: \
+                             {reason}",
+                            offered.name,
+                            workspace.display()
+                        ),
+                        None => format!(
+                            "runtime `{runtime_id}` could not open `{}`: {reason}",
+                            offered.name
+                        ),
+                    },
+                };
+                self.fail_start(pending, message.clone(), previous, record);
                 Err(EngineError::Runtime(message))
             }
         }
     }
 
-    /// Marks `key` starting and returns the instance that ran there before
-    /// it failed, if any, for the start to revive.
-    fn begin_start(&self, key: &InstanceKey) -> Option<Arc<RuntimeInstance>> {
+    /// Marks `key` starting and returns what was recorded there before.
+    fn begin_start(&self, key: &InstanceKey) -> Previous {
         let previous = {
             let mut slots = self
                 .slots
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             match slots.insert(key.clone(), InstanceSlot::Starting) {
-                Some(InstanceSlot::Failed { instance, .. }) => instance,
-                _ => None,
+                Some(InstanceSlot::Failed { instance, .. }) => Previous {
+                    recorded: true,
+                    instance,
+                },
+                Some(_) => Previous {
+                    recorded: true,
+                    instance: None,
+                },
+                None => Previous {
+                    recorded: false,
+                    instance: None,
+                },
             }
         };
         self.notify();
@@ -978,10 +1071,11 @@ impl RuntimeRegistry {
         if let Some(instance) = self.instance(attachment) {
             return Ok(instance);
         }
-        self.ensure(
+        self.open(
             attachment.runtime_id.as_str(),
             Some(attachment.capability.as_str()),
             attachment.workspace.as_deref().map(Path::new),
+            Record::Always,
         )
         .await
     }
@@ -1064,7 +1158,10 @@ impl RuntimeRegistry {
                 let capability = capability.clone();
                 let instance = Arc::clone(&instance);
                 async move {
-                    let started = template.start(&capability, workspace.as_deref()).await?;
+                    let started = template
+                        .start(&capability, workspace.as_deref())
+                        .await
+                        .map_err(|error| error.to_string())?;
                     if instance.same_identity(&started.info) {
                         return Ok(started);
                     }
@@ -1156,9 +1253,19 @@ impl RuntimeRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
     }
 
-    /// Records a failed start and reports it to clients. `previous` is the
-    /// instance that ran there before, which a later start still revives.
-    fn fail_start(&self, key: InstanceKey, reason: String, previous: Option<Arc<RuntimeInstance>>) {
+    /// Records a failed start and reports it to clients. An instance the
+    /// registry had not recorded before is forgotten instead when `record`
+    /// is [`Record::Known`]: nothing uses it. The instance that ran there
+    /// before, if any, is kept for a later start to revive.
+    fn fail_start(&self, key: InstanceKey, reason: String, previous: Previous, record: Record) {
+        if record == Record::Known && !previous.recorded {
+            self.slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&key);
+            self.notify();
+            return;
+        }
         let failure = RuntimeFailure {
             runtime_id: key.runtime_id.clone(),
             capability: key.capability.clone(),
@@ -1172,7 +1279,7 @@ impl RuntimeRegistry {
             key,
             InstanceSlot::Failed {
                 reason,
-                instance: previous,
+                instance: previous.instance,
             },
         );
         let _ = self.failures.send(failure);

@@ -20,7 +20,7 @@ use cookie_agent_runtime_api::protocol::RuntimeSettings;
 
 use super::{
     McpHub, RuntimeClient,
-    registry::{RuntimeListingState, RuntimeTemplate, StartedRuntime},
+    registry::{RuntimeListingState, RuntimeTemplate, StartError, StartedRuntime},
 };
 
 /// How long a dial-in runtime gets to answer `runtime/initialize` and each
@@ -138,15 +138,17 @@ impl RuntimeTemplate for DialInTemplate {
         &self,
         capability: &CapabilityName,
         workspace: Option<&Path>,
-    ) -> Result<StartedRuntime, String> {
-        let client = self.current().ok_or_else(|| self.not_connected())?;
+    ) -> Result<StartedRuntime, StartError> {
+        let client = self
+            .current()
+            .ok_or_else(|| StartError::Connect(self.not_connected()))?;
         tokio::time::timeout(DIAL_IN_TIMEOUT, client.open(capability, workspace))
             .await
             .unwrap_or_else(|_| {
-                Err(format!(
+                Err(StartError::Open(format!(
                     "the runtime did not open `{capability}` within {} s",
                     DIAL_IN_TIMEOUT.as_secs()
-                ))
+                )))
             })
     }
 

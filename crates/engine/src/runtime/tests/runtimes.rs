@@ -750,8 +750,10 @@ impl crate::RuntimeTemplate for UnreachableTemplate {
         &self,
         _capability: &cookie_agent_protocol::CapabilityName,
         _workspace: Option<&std::path::Path>,
-    ) -> Result<crate::StartedRuntime, String> {
-        Err("ssh: connect to host labpc: Connection refused".into())
+    ) -> Result<crate::StartedRuntime, crate::StartError> {
+        Err(crate::StartError::Connect(
+            "ssh: connect to host labpc: Connection refused".into(),
+        ))
     }
 }
 
@@ -1066,11 +1068,12 @@ impl crate::RuntimeTemplate for TwoCapabilityTemplate {
         &self,
         capability: &cookie_agent_protocol::CapabilityName,
         workspace: Option<&std::path::Path>,
-    ) -> Result<crate::StartedRuntime, String> {
+    ) -> Result<crate::StartedRuntime, crate::StartError> {
         let info = match workspace {
             Some(path) => cookie_agent_runtime_api::RuntimeInfo::coding(
                 "devbox",
-                crate::WorkspaceContext::new(path).map_err(|error| error.to_string())?,
+                crate::WorkspaceContext::new(path)
+                    .map_err(|error| crate::StartError::Open(error.to_string()))?,
             ),
             None => cookie_agent_runtime_api::RuntimeInfo::new(
                 "devbox",

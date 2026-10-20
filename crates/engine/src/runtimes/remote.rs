@@ -57,7 +57,7 @@ use tokio::sync::Notify;
 use super::{
     McpHub, McpServerFailure,
     process::ProcessConnector,
-    registry::{RuntimeListingState, RuntimeRegistry, RuntimeTemplate, StartedRuntime},
+    registry::{RuntimeListingState, RuntimeRegistry, RuntimeTemplate, StartError, StartedRuntime},
 };
 use crate::EngineError;
 
@@ -241,21 +241,27 @@ impl RuntimeTemplate for ProtocolTemplate {
         &self,
         capability: &CapabilityName,
         workspace: Option<&Path>,
-    ) -> Result<StartedRuntime, String> {
-        let client = self.connected().await?;
+    ) -> Result<StartedRuntime, StartError> {
+        let client = self.connected().await.map_err(StartError::Connect)?;
         let open = client.open(capability, workspace);
+        // A runtime that answered gave its reason; otherwise what it last
+        // wrote outside the protocol may say why.
         let result = match self.startup_timeout {
-            Some(timeout) => tokio::time::timeout(timeout, open)
-                .await
-                .unwrap_or_else(|_| {
-                    Err(format!(
+            Some(timeout) => match tokio::time::timeout(timeout, open).await {
+                Ok(result) => result,
+                Err(_) => {
+                    return Err(StartError::Open(client.inner.annotate(&format!(
                         "the runtime did not open `{capability}` within {} ms",
                         timeout.as_millis()
-                    ))
-                }),
+                    ))));
+                }
+            },
             None => open.await,
         };
-        result.map_err(|reason| client.inner.annotate(&reason))
+        result.map_err(|error| match error {
+            StartError::Connect(reason) => StartError::Connect(client.inner.annotate(&reason)),
+            refused @ StartError::Open(_) => refused,
+        })
     }
 
     fn disconnect(&self) {
@@ -883,17 +889,20 @@ impl RuntimeClient {
     }
 
     /// Opens `capability` for `workspace` and returns the instance. The
-    /// error is a human-readable reason.
+    /// error is the runtime's reason when it answered, and a lost
+    /// connection otherwise.
     pub(crate) async fn open(
         &self,
         capability: &CapabilityName,
         workspace: Option<&Path>,
-    ) -> Result<StartedRuntime, String> {
+    ) -> Result<StartedRuntime, StartError> {
         let offered = self
             .capabilities()
             .into_iter()
             .find(|offered| &offered.name == capability)
-            .ok_or_else(|| format!("the runtime offers no capability `{capability}`"))?;
+            .ok_or_else(|| {
+                StartError::Open(format!("the runtime offers no capability `{capability}`"))
+            })?;
         let result: CapabilityOpenResult = self
             .inner
             .peer
@@ -905,17 +914,26 @@ impl RuntimeClient {
                 },
             )
             .await
-            .map_err(|error| format!("{}: {error}", self.inner.peer_name()))?;
+            .map_err(|error| match error {
+                // The runtime's own reason says more than the registry's
+                // message for `capability_open_failed`.
+                RpcError::Remote { .. } => StartError::Open(
+                    error
+                        .detail()
+                        .map_or_else(|| error.to_string(), str::to_owned),
+                ),
+                lost => StartError::Connect(format!("{}: {lost}", self.inner.peer_name())),
+            })?;
         let attachment_name = cookie_agent_protocol::AttachmentName::new(
             result.attachment_name.as_str(),
         )
         .map_err(|_| {
-            format!(
+            StartError::Open(format!(
                 "the runtime reported invalid attachment name `{}`",
                 result.attachment_name
-            )
+            ))
         })?;
-        let skills = skill_registry(result.skills)?;
+        let skills = skill_registry(result.skills).map_err(StartError::Open)?;
         let platform = self.platform();
         let workspace = result
             .workspace
