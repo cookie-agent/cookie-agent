@@ -1,8 +1,10 @@
 # Web Client and Local Daemon Use
 
-Status: **approved** (2026-10-19), being implemented. The decisions in
-[section 1](#1-goal-and-scope) come from the planning discussion of
-2026-10-19, and no questions are open
+Status: **implemented** (2026-10-20), in phases L and W0 to W5; what landed
+and where it differs from the plan is in
+[section 16](#16-implementation-notes), with a summary of the deviations at
+its end. The decisions in [section 1](#1-goal-and-scope) come from the
+planning discussion of 2026-10-19, and no questions are open
 ([section 15](#15-open-questions)). The spec builds on the
 [compatibility spec](compatibility-v1.md), which froze the client protocol and
 added browser authentication, and on the
@@ -11,7 +13,7 @@ listening daemon.
 
 ## 1. Goal and scope
 
-Today the TUI is the only interactive client. This spec adds a browser client
+Before this spec the TUI was the only interactive client. This spec adds a browser client
 that does everything the TUI does that a browser can do. It works on a phone
 and on a desktop, against a daemon on the same machine or on another one.
 
@@ -158,16 +160,17 @@ side only.
     [protocol reference](../reference/protocol.md#handshake-and-authentication)
     describes.
   - A close before the handshake reply is reported like a refused native
-    upgrade. A 403 caused by the origin check is shown as "this page's
-    origin is not in `[server] allowed_origins`" when the browser exposes
-    enough to tell. Otherwise it is shown as a generic connection failure
-    with that hint.
+    upgrade. A browser exposes no HTTP status for a refused upgrade (Firefox
+    reports close code 1006), so an origin refusal cannot be told from
+    others: the page shows every refusal before the handshake with the
+    `allowed_origins` hint naming its own origin.
 - **Reconnect** uses the same backoff (500 ms rising to 10 s) and the same
   `ClientIdentity` across reconnects, so this tab's origin stays stable. The
   instance id lives in `sessionStorage`, so each tab is its own client, the
   same as each TUI process.
 - **CI.** A job runs `cargo check --target wasm32-unknown-unknown` for
-  `cookie_agent_protocol` (client features) and `cookie_agent_client_state`.
+  `cookie_agent_protocol` (client features) and `cookie_agent_client_state`,
+  and clippy over them; the `web` job runs the browser tests (section 12).
 
 ## 5. Shared client state
 
@@ -280,8 +283,10 @@ with them (`state/tests.rs`).
     `crates/tui/src/theme.rs`. Light and dark variants use Tailwind's
     `dark:` variant, following the system setting or the user's override.
   - Other web assets come in through Trunk's standard asset pipeline too:
-    the highlighter script, fonts, icons, and the manifest are Trunk assets
-    with hashed names, not hand-copied files.
+    the highlighter script, fonts, icons, and the manifest are copied by
+    Trunk, not by hand. Copied files keep their names (the manifest names
+    its icons by path), so they are revalidated rather than cached forever
+    (section 7.1).
   - JetBrains Mono for code. Fonts are bundled, not loaded from Google.
 
 ## 7. Hosting and authentication
@@ -293,9 +298,13 @@ with them (`state/tests.rs`).
   - `GET /` returns `index.html`.
   - The bundle's files are served at their paths.
   - `/ws` and `/runtime` keep their meaning, and any other path is a 404.
-  - Bundle files have hashed names and are sent with
-    `Cache-Control: immutable`. `index.html` is sent with `no-cache`, so a
-    restarted daemon's page always matches its own build.
+  - Files whose names carry Trunk's content hash (the WebAssembly module,
+    its glue, the stylesheet) are sent with `Cache-Control: immutable`.
+    `index.html` and the files Trunk copies under their own names (fonts,
+    highlighter, manifest, icons) are sent with `no-cache` and an `ETag`, so
+    a restarted daemon's page always matches its own build.
+  - A compressible file is sent gzip-compressed to a browser that takes
+    gzip; there is no Brotli.
 - **Serving the page needs no token.** The page holds no secret. Every
   connection it opens still authenticates in the handshake.
 - **One listener for both.** The page and `/ws` share the daemon's TCP
@@ -316,8 +325,9 @@ with them (`state/tests.rs`).
     "add `"<location.origin>"` to `[server] allowed_origins` in the
     daemon's `config.toml` and restart it". It quotes its own origin
     exactly.
-  - When `allowed_origins` is empty, the daemon's ready line says the web
-    page needs an entry before it can connect.
+  - When `allowed_origins` is empty, the daemon says, in a log line after
+    its ready line, that the web page needs an entry before it can
+    connect.
 - **Plain `cookie`** opens no port and serves nothing.
 
 ### 7.2 The connect screen
@@ -364,8 +374,8 @@ both open on one connect screen.
   reads `#token=`, stores the token in `localStorage` under the daemon URL,
   and removes the fragment from the address bar.
 - **Fallback:** a paste box on the connect screen.
-- **The daemon's ready line** also prints the page URL, without the token.
-  The token is already printed separately.
+- **The daemon's ready line** is unchanged, since supervisors parse it. The
+  page URL, without the token, follows it as a log line.
 - **Forget:** a "Forget this daemon" action deletes the stored token.
 
 ## 8. Feature parity
@@ -411,10 +421,14 @@ where each feature lands.
   44 px, nothing scrolls sideways, and long lines in code, diff, and
   terminal blocks scroll inside their block.
 - **Home screen.**
-  - The bundle has a web app manifest and icons, so it can be added to the
-    home screen.
+  - The bundle has a web app manifest and icons (any and maskable, 192 and
+    512 px, an SVG, and an Apple touch icon), `display: standalone`, and a
+    theme colour for light and dark, so it can be added to the home screen.
   - A service worker is not part of this spec. It would need a secure
     context and adds caching the daemon's version matching does not want.
+- **On-screen keyboard.** The page's frame and sheets take the visual
+  viewport's height, which the keyboard shrinks, so the composer and an
+  open sheet stay above it; the frame keeps clear of safe-area insets.
 - **Background tabs.**
   - A phone suspends background tabs. On `visibilitychange` to visible,
     the client checks its connection and reconnects through the shared
@@ -431,11 +445,12 @@ where each feature lands.
   - runs `trunk build --release` for `crates/web`, with `wasm-opt` for
     size;
   - copies the result to `crates/web_assets/bundle/`, which git ignores;
-  - is pinned to the trunk and `wasm-bindgen` versions in `Cargo.lock`, and
-    to the Tailwind version in `Trunk.toml`. Trunk downloads that Tailwind
-    CLI on first use, so CI caches Trunk's tool directory.
-- **Bundle size.** The budget is tracked in CI and reported, not enforced,
-  in phase W1, with a limit set once W2 shows a realistic size.
+  - is pinned to trunk 0.21.14, to the `wasm-bindgen` version in
+    `Cargo.lock`, and to the Tailwind version in `Trunk.toml`. Trunk
+    downloads its tools on first use, so CI caches Trunk's tool directory.
+- **Bundle size.** `scripts/build-web.sh` fails when the bundle, gzipped,
+  is over its budget of 1,700,000 bytes; CI reports the sizes in the job
+  summary.
 - **Regular gates** (`cargo build/test/clippy --workspace`, both
   toolchains) build the native side only and use the placeholder page.
   If the chosen Leptos release needs a Rust newer than 1.88, phase W1
@@ -443,9 +458,11 @@ where each feature lands.
   Clippy gate in CI and `AGENTS.md`, so `crates/web` is checked like
   every other crate.
 - **New CI jobs:**
-  - the wasm `cargo check` of section 4;
-  - `scripts/build-web.sh`;
-  - headless browser tests (section 12).
+  - `wasm`: the wasm `cargo check` and clippy of section 4;
+  - `web`: wasm clippy of the page, `scripts/build-web.sh`, and both
+    headless-Firefox suites (section 12) with pinned Firefox, geckodriver,
+    and `wasm-bindgen-test-runner`, keeping the scenario screenshots of a
+    failure.
 - **Release.**
   - The release workflow builds the bundle before cargo-dist builds
     `cookie`, so every release binary embeds the real page.
@@ -480,15 +497,19 @@ where each feature lands.
   the TUI's rendering snapshots stay, and new web rendering tests cover
   each display block kind's HTML.
 - **Protocol client on wasm.**
-  - `wasm-bindgen-test` in headless Chrome and Firefox covers the browser
-    transport: handshake with token, refused origin, reconnect, and replay
-    across a gap.
+  - `wasm-bindgen-test` in headless Firefox (`scripts/test-wasm-client.sh`)
+    covers the browser transport: handshake with token, refused origin,
+    reconnect, and replay across a gap. Chrome is not run.
   - It runs against a real `cookie daemon` started by the test harness
     with a scripted provider.
-- **End-to-end.** A small set of headless browser scenarios covers:
-  connect via `#token=`, start a run, approve a tool, steer, queue,
-  cancel, attach an image, fork, and open a subagent. A narrow viewport
-  variant covers the phone layout.
+- **End-to-end.** Headless-Firefox scenarios (`scripts/test-web-page.sh`)
+  against real daemons and a scripted model cover connecting via
+  `#token=`, runs, approvals, steering, queueing, cancelling, subagents,
+  fork and revert, compaction, goals, background calls, attachments and
+  media, skills, permissions, every management panel, a suspended tab's
+  reconnect, read-only snapshots, the refused origin, and the manifest.
+  Every view is audited at 360 and 390 px portrait and a landscape phone
+  size for sideways scroll, clipped controls, and touch targets.
 - **Server.**
   - Bundle serving: paths, cache headers, the 404 rule.
   - `/ws` and `/runtime` precedence.
@@ -500,11 +521,11 @@ where each feature lands.
 
 ## 13. Plain `cookie` and a local daemon
 
-Today plain `cookie` always starts a private daemon inside its own process,
-even when `cookie daemon` is already running on the machine. That private
-daemon cannot open a session the other one owns: it shows the session as a
-read-only snapshot. Its own sessions are invisible to the web client and to
-every other client of the running daemon.
+Before this change, plain `cookie` always started a private daemon inside its
+own process, even when `cookie daemon` was already running on the machine.
+That private daemon could not open a session the other one owned: it showed
+the session as a read-only snapshot. Its own sessions were invisible to the
+web client and to every other client of the running daemon.
 
 From this change, plain `cookie` follows the decisions in section 1:
 
@@ -1341,3 +1362,81 @@ Management landed as specified, with no wire change.
     - goal-control and background-report rows folded, and one opened.
 
     All pass, and the screenshots were checked.
+
+### Phase W5 (2026-10-20)
+
+Phone polish, the home screen, the end-to-end suites in CI, and the
+documentation. There is no wire change.
+
+- **Phones.** A new audit in `scripts/test-web-page.sh` opens every view
+  and sheet (the transcript, sessions, every picker, and every panel) at
+  360 × 640 and 390 × 844 portrait and 844 × 390 landscape. It fails on
+  sideways scroll, a control the screen's edge cuts off, or a target under
+  44 px. Firefox windows are at least 500 px wide, so a narrower screen is
+  that window with the page zoomed in, which needs geckodriver's
+  `--allow-system-access`. It found, and the page now fixes:
+  - the composer's Send button cut off at 360 px: the text field could not
+    shrink. The composer now wraps its buttons below the field when the
+    field would be narrower than 12rem;
+  - buttons narrower than 44 px (attach, camera, the command menu, the
+    send menu, the permission effects): every button has a 44 px minimum
+    width;
+  - session rows squeezed into each other in a short landscape sidebar:
+    rows no longer shrink;
+  - the header wrapping its title and buttons over three lines: shorter
+    labels ("Forget", the theme's name) below the `sm` breakpoint.
+- **The on-screen keyboard.** The page keeps `--app-height` at the visual
+  viewport's height, which a phone's keyboard shrinks while `100dvh` may
+  not, and sizes its frame and sheets from it; the viewport meta asks for
+  `interactive-widget=resizes-content` and `viewport-fit=cover`, and the
+  frame pads by the safe-area insets. Firefox cannot raise a keyboard, so
+  this is checked by reading, not by a scenario.
+- **Background tabs.** A scenario pauses the daemon (`SIGSTOP`), hides and
+  shows the tab, sees the page give up on the silent connection, resumes
+  the daemon, and sees the page reconnect and restore its session.
+- **Home screen.** `crates/web/assets/manifest.webmanifest`
+  (`display: standalone`, relative `start_url` and `scope`), icons drawn
+  from the logo by `scripts/web-icons.py` (any and maskable 192 and
+  512 px PNGs, the SVG, and an Apple touch icon, palette-reduced to 22 KB
+  together), and `theme-color` for light and dark. Trunk copies them under
+  their own names; the daemon serves them with `no-cache`, and the CSP's
+  `default-src 'self'` already covers the manifest. A scenario checks the
+  manifest's content type and that every icon it names is served.
+- **CI.** The `web` job now also installs Firefox 157.0.1
+  (`browser-actions/setup-firefox`), geckodriver 0.37.1 (checked by
+  SHA-256), and `wasm-bindgen-test-runner` 0.2.126 (`install-action`,
+  matching `Cargo.lock`; the suite checks the match), then runs
+  `scripts/test-wasm-client.sh` and `scripts/test-web-page.sh`, uploading
+  the scenario screenshots when a step fails. `release_integrity` pins
+  these gates, and `AGENTS.md` lists the two suites.
+- **Size.** The bundle is 4.07 MB, 1.64 MB gzipped, within the 1.7 MB
+  budget; the manifest and icons add 23 KB.
+- **Docs.** `guide/web.md` is the complete guide (phones, the home screen,
+  and what the page does not do, besides every panel and command);
+  `engine/server.md`, `guide/run.md`, `architecture.md`, and the README
+  describe the web client as it is; sections 1 to 14 of this spec now
+  match what landed.
+
+### Deviations across the phases
+
+- **Notices of plain `cookie`** render as rows below the transcript, not in
+  the status row (L).
+- **Refused connections** cannot be told apart in a browser (close code
+  1006, no HTTP status), so every refusal before the handshake shows the
+  `allowed_origins` hint (W0a, W1).
+- **Browser tests run in Firefox only,** not Chrome (W0a, W5).
+- **Caching:** only files whose names carry Trunk's hash are immutable;
+  copied files are revalidated (W1).
+- **The ready line is unchanged;** the page address and the
+  empty-`allowed_origins` warning follow it as log lines (W1).
+- **Gzip only,** no Brotli (W2).
+- **Shared code:** the subscription machine, panel rules, and labels moved
+  to `client_state` over the phases; the ownership bookkeeping stayed in
+  each client (W2–W4).
+- **Commands:** `/approvals` and `/mode` exist only in the page; `/goal
+  pause|resume|cancel` and typed arguments replace palette steps (W2, W3).
+- **Editors** are in-page text areas, and a refused config edit stays open
+  (W4).
+- **The budget** is 1.7 MB gzipped: 1.9 MB in W2, 1.5 MB after W3's size
+  work, then 1.6 MB with W3's features and 1.7 MB with W4's panels, each
+  raise with its reason recorded (W2–W4).
