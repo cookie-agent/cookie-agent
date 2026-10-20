@@ -3722,3 +3722,34 @@ fn unknown_events_advance_the_sequence_and_show_only_in_the_debug_view() {
         .collect::<Vec<_>>();
     assert_eq!(rows, [EventLevel::Debug, EventLevel::Debug]);
 }
+
+#[test]
+fn a_user_messages_files_are_kept_by_its_sequence() {
+    let session_id = SessionId::new_v7();
+    let artifact: cookie_agent_protocol::ArtifactRef = serde_json::from_value(serde_json::json!({
+        "sha256": "b".repeat(64),
+        "byte_length": 3,
+        "media_type": "image/png",
+        "filename": "dot.png",
+    }))
+    .expect("artifact");
+    let content = cookie_agent_protocol::UserContent::new(vec![
+        cookie_agent_protocol::Open::Known(cookie_agent_protocol::UserContentPart::Text {
+            text: "look".into(),
+        }),
+        cookie_agent_protocol::Open::Known(cookie_agent_protocol::UserContentPart::File {
+            artifact: artifact.clone(),
+        }),
+    ])
+    .expect("content");
+    let mut state = SessionState::default();
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        7,
+        jiff::Timestamp::new(7, 0).expect("timestamp"),
+        EventPayload::UserInputSubmitted { content },
+    );
+    assert_eq!(state.user_files.get(&7), Some(&vec![artifact]));
+}

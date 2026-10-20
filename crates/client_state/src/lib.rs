@@ -902,6 +902,9 @@ pub struct SessionState {
     /// Runs whose initial (non-lane) input has already been submitted.
     /// Later submissions for the same run are pending-lane promotions.
     pub initial_input_submitted: HashSet<RunId>,
+    /// The files each submitted user message attached, by the message's
+    /// `seq`, for clients that show them.
+    pub user_files: HashMap<u64, Vec<cookie_agent_protocol::ArtifactRef>>,
     /// Pending inputs the engine voided at run end (no per-entry events),
     /// parked here until the UI restores their text into the composer —
     /// user text is never silently lost. Drained by the UI on sight.

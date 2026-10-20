@@ -456,6 +456,10 @@ pub(super) fn reduce_event_from(
                 // exactly like the engine's own replay.
                 state.pending_inputs.pop_front();
             }
+            let files = content.files().cloned().collect::<Vec<_>>();
+            if !files.is_empty() {
+                state.user_files.insert(sequence, files);
+            }
             push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,
