@@ -8,6 +8,18 @@
    system setting or the user's override. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Scrollbars and form controls follow the page's theme, not only the
+   system's, when the user overrides it, in the palette's colours. */
+html {
+  color-scheme: light;
+  scrollbar-color: var(--color-crust) var(--color-parchment);
+}
+
+html.dark {
+  color-scheme: dark;
+  scrollbar-color: var(--color-smoke) var(--color-char);
+}
+
 /* The landing site's palette, which is the TUI's (crates/tui/src/theme.rs). */
 @theme {
   --color-cream: #fbf4e6;
