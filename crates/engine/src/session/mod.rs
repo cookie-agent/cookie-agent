@@ -3609,7 +3609,7 @@ mod windows_tests {
                 Some(run_id),
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputSubmitted {
-                    input: "persist me".into(),
+                    content: "persist me".into(),
                 },
             )
             .expect("persist first input");

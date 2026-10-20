@@ -354,13 +354,13 @@ async fn windows_short_workspace_spelling_roundtrips_prepared_resources() {
     std::fs::write(workspace.join("value.txt"), "value").expect("fixture");
     let long = workspace.canonicalize().expect("long workspace spelling");
     let short = windows_short_path(&long);
-    let tool = ReadTool::new(&long);
+    let tool = ReadTool::new(&crate::test_workspace(&long));
     let prepared = tool
         .prepare(
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                origin: crate::test_coding_origin(short),
+                origin: crate::test_coding_origin(&short),
                 turn_context: crate::test_turn_context(),
             },
             ToolCall {
