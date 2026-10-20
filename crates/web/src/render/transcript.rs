@@ -7,7 +7,6 @@ use std::{
     hash::{BuildHasher as _, Hash, Hasher as _},
 };
 
-pub use cookie_agent_client_state::tool_header::hint_icon;
 use cookie_agent_client_state::{
     AssistantChild, CompactingSource, EventLevel, ModelDisplayNames, ProducerMessageStatus,
     SessionState, ToolCallState, ToolStatus, TranscriptItem,
@@ -23,6 +22,7 @@ use super::{
     escape,
     markdown::document_html,
 };
+use crate::icons::{self, Icon, svg};
 
 /// What the page shows besides the projection itself.
 pub struct TranscriptView<'a> {
@@ -96,7 +96,8 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 })
                 .unwrap_or_default();
             format!(
-                "<div class=\"user-message group ml-auto flex max-w-[90%] items-start gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" class=\"min-h-11 min-w-11 rounded text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">⋯</button><div class=\"min-w-0 rounded-lg bg-toasted px-3 py-2 dark:bg-ember\"><div class=\"markdown\">{}</div>{files}</div></div>",
+                "<div class=\"user-message group ml-auto flex max-w-[90%] items-start gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-toasted px-3 py-2 dark:bg-ember\"><div class=\"markdown\">{}</div>{files}</div></div>",
+                svg(icondata::FaEllipsisSolid, ""),
                 document_html(markdown)
             )
         }
@@ -150,7 +151,14 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                     format!("calling native compaction endpoint ({model})")
                 }
             };
-            collapsible(view, &key, "🧹", "compacting context…", None, &body)
+            collapsible(
+                view,
+                &key,
+                icondata::FaBroomSolid,
+                "compacting context…",
+                None,
+                &body,
+            )
         }
         TranscriptItem::Compaction { commit, .. } => {
             let key = block_key(item).unwrap_or_default();
@@ -176,7 +184,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 "context compacted ({kind}, {}→{} tokens)",
                 commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
             );
-            collapsible(view, &key, "🧹", &header, None, &body)
+            collapsible(view, &key, icondata::FaBroomSolid, &header, None, &body)
         }
         TranscriptItem::PluginMessage { role, input, .. } => {
             let key = block_key(item).unwrap_or_default();
@@ -190,7 +198,14 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 "plugin message ({role}, {} lines)",
                 display_line_count(input)
             );
-            collapsible(view, &key, "🧩", &header, None, input)
+            collapsible(
+                view,
+                &key,
+                icondata::FaPuzzlePieceSolid,
+                &header,
+                None,
+                input,
+            )
         }
         TranscriptItem::AgentMd { entries, .. } => {
             let key = block_key(item).unwrap_or_default();
@@ -214,7 +229,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 .collect::<Vec<_>>()
                 .join("\n");
             let header = format!("AGENTS.md · {files} ({lines} lines)");
-            collapsible(view, &key, "📘", &header, None, &body)
+            collapsible(view, &key, icondata::FaBookSolid, &header, None, &body)
         }
         TranscriptItem::SkillLoaded {
             name,
@@ -232,7 +247,14 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             if !args.is_empty() {
                 detail.push_str(&format!("\narguments: {args}"));
             }
-            collapsible(view, &key, "📚", &header, Some(&detail), rendered_body)
+            collapsible(
+                view,
+                &key,
+                icondata::FaWandMagicSparklesSolid,
+                &header,
+                Some(&detail),
+                rendered_body,
+            )
         }
         TranscriptItem::Goal {
             goal, activation, ..
@@ -252,16 +274,25 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                     goal.items
                         .iter()
                         .map(|item| {
+                            let (icon, state) = if item.finished {
+                                (icondata::FaSquareCheckRegular, "finished")
+                            } else {
+                                (icondata::FaSquareRegular, "open")
+                            };
                             format!(
-                                "<div class=\"{NOTE}\">{} {}</div>",
-                                if item.finished { "[x]" } else { "[ ]" },
+                                "<div class=\"flex items-start gap-2 {NOTE}\">{}<span class=\"sr-only\">{state}:</span><span>{}</span></div>",
+                                svg(icon, "mt-0.5"),
                                 escape(&item.description)
                             )
                         })
                         .collect()
                 };
                 format!(
-                    "<div class=\"goal-state rounded border-l-4 border-caramel px-3 py-1 dark:border-maple\"><div class=\"text-sm whitespace-pre-wrap\">🎯 {}</div><div class=\"{NOTE}\">status: {} · {finished}/{} finished</div>{checklist}</div>",
+                    "<div class=\"goal-state rounded border-l-4 border-caramel px-3 py-1 dark:border-maple\"><div class=\"flex items-start gap-2 text-sm whitespace-pre-wrap\">{}<span>{}</span></div><div class=\"{NOTE}\">status: {} · {finished}/{} finished</div>{checklist}</div>",
+                    svg(
+                        icondata::FaBullseyeSolid,
+                        "mt-1 text-caramel dark:text-maple"
+                    ),
                     escape(&goal.objective),
                     goal_status_label(goal.status),
                     goal.items.len()
@@ -295,7 +326,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 collapsible(
                     view,
                     &key,
-                    "◇",
+                    icondata::FaInboxSolid,
                     &producer_summary(producer_owner, *mode, summary.as_deref()),
                     Some(&detail),
                     body,
@@ -334,17 +365,23 @@ fn block_key(item: &TranscriptItem) -> Option<String> {
 fn collapsible(
     view: &TranscriptView<'_>,
     key: &str,
-    icon: &str,
+    icon: Icon,
     header: &str,
     detail: Option<&str>,
     body: &str,
 ) -> String {
     let expanded = view.expanded.contains(key);
-    let chevron = if expanded { "▾" } else { "▸" };
+    let chevron = if expanded {
+        icondata::FaChevronDownSolid
+    } else {
+        icondata::FaChevronRightSolid
+    };
     let mut html = format!(
-        "<div class=\"collapsible-row\" data-block-key=\"{}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span>{icon} {chevron}</span><span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
+        "<div class=\"collapsible-row\" data-block-key=\"{}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}{}<span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
         escape(key),
         escape(key),
+        svg(chevron, "text-[0.625rem] opacity-70"),
+        svg(icon, ""),
         escape(header)
     );
     if expanded {
@@ -371,7 +408,8 @@ fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
             format!("<div class=\"markdown\">{}</div>", document_html(markdown))
         }
         AssistantChild::Thinking { text, .. } => format!(
-            "<details class=\"{NOTE}\"><summary class=\"cursor-pointer hover:text-espresso dark:hover:text-latte\">thinking</summary><div class=\"whitespace-pre-wrap\">{}</div></details>",
+            "<details class=\"{NOTE}\"><summary class=\"inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-md px-2 hover:bg-toasted hover:text-espresso active:bg-crust dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke\">{}thinking</summary><div class=\"border-l border-toasted pl-3 whitespace-pre-wrap dark:border-ember\">{}</div></details>",
+            svg(icondata::FaLightbulbRegular, ""),
             escape(text)
         ),
         AssistantChild::Tool { call_id } => match view.state.tools.get(call_id) {
@@ -379,7 +417,8 @@ fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
             None => String::new(),
         },
         AssistantChild::CommittedTool { name, .. } => format!(
-            "<div class=\"{NOTE} font-mono\">🔨 {} (not started)</div>",
+            "<div class=\"flex items-center gap-2 {NOTE} font-mono\">{}{} (not started)</div>",
+            svg(icondata::FaHammerSolid, ""),
             escape(name.as_str())
         ),
         AssistantChild::MediaFile { file, .. } => match &file.source {
@@ -415,16 +454,20 @@ fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
 
 fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     let id = tool.id.to_string();
-    let (status, class) = match tool.status {
-        ToolStatus::Running if tool.backgrounded => {
-            ("in the background", "text-ink dark:text-sand")
-        }
-        ToolStatus::Running => ("running", "text-caramel dark:text-maple"),
-        ToolStatus::Completed => ("done", "text-green-700 dark:text-green-400"),
-        ToolStatus::Failed => ("failed", "text-red-700 dark:text-red-400"),
-        ToolStatus::Cancelled => ("cancelled", "text-ink dark:text-sand"),
-        ToolStatus::Interrupted => ("interrupted", "text-ink dark:text-sand"),
+    let mark = icons::tool_status(&tool.status, tool.backgrounded);
+    // A finished or running call says so with its icon alone; one that
+    // stopped short says why in words too.
+    let label_class = match tool.status {
+        ToolStatus::Completed | ToolStatus::Running if !tool.backgrounded => "sr-only",
+        _ => "",
     };
+    let status = format!(
+        "<span class=\"inline-flex shrink-0 items-center gap-1 text-xs {}\" title=\"{}\">{}<span class=\"{label_class}\">{}</span></span>",
+        mark.tone,
+        mark.label,
+        svg(mark.icon, if mark.spins { "animate-spin" } else { "" }),
+        mark.label
+    );
     let expanded = view.expanded.contains(&id) || tool.status == ToolStatus::Running;
     // A running call the daemon can move to the background offers it, as
     // the TUI's title-row button does.
@@ -433,17 +476,21 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         && !tool.backgrounded
     {
         format!(
-            "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"min-h-11 shrink-0 rounded px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">⇲ background</button>",
-            escape(&id)
+            "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}background</button>",
+            escape(&id),
+            svg(icondata::FaLayerGroupSolid, "")
         )
     } else {
         String::new()
     };
     let mut html = format!(
-        "<div class=\"rounded border border-toasted dark:border-ember\" data-tool=\"{}\"><div class=\"flex items-center\"><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\"><span>{}</span><span class=\"flex-1 truncate\">{}</span><span class=\"{class}\">{status}</span></button>{background}</div>",
+        "<div class=\"rounded-lg border border-toasted dark:border-ember\" data-tool=\"{}\"><div class=\"flex items-center\"><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left font-mono text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}<span class=\"flex-1 truncate\">{}</span>{status}</button>{background}</div>",
         escape(&id),
         escape(&id),
-        hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
+        svg(
+            icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
+            "text-caramel dark:text-maple"
+        ),
         escape(&tool.header_text()),
     );
     if let Some(progress) = tool

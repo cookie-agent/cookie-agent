@@ -8,20 +8,21 @@ use cookie_agent_client_state::attachment_chip;
 use leptos::{ev, prelude::*};
 
 use super::{
-    BUTTON, Command, EFFECTS, GoalCommand, PermissionAction, PermissionEffect,
-    PermissionRuleSource, ROW, action_label, effect_label, goal_actions, permission_actions,
-    permission_rows, source_label, status_name,
+    BUTTON, Command, EFFECTS, GoalCommand, ICON_BUTTON, NOTE, PRIMARY, PermissionAction,
+    PermissionEffect, PermissionRuleSource, ROW, action_label, effect_label, empty_state,
+    goal_actions, loading, permission_actions, permission_rows, source_label, status_name,
 };
 use crate::{
     attach::{accept_attribute, accepts_images},
     files::{CAMERA_INPUT, FILE_INPUT, files_of, pick_files},
+    icons::Glyph,
     tree::tree_rows,
     workspace::Workspace,
 };
 
 const BAR: &str =
     "flex flex-wrap items-center gap-2 border-t border-toasted px-3 py-1 text-sm dark:border-ember";
-const FIELD: &str = "min-h-11 rounded border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 
 /// The viewed session's tree, folded where the user folded it, shown as
 /// `/agent-panel` says.
@@ -37,7 +38,10 @@ pub fn TreePanel(workspace: Workspace) -> impl IntoView {
     view! {
         <Show when=move || workspace.tree_panel_visible()>
             <nav id="agent-tree" class="flex max-h-72 flex-col gap-1 overflow-y-auto border-b border-toasted p-2 dark:border-ember" aria-label="Subagents">
-                <p class="px-2 text-xs font-bold">"Agents"</p>
+                <p class="flex items-center gap-2 px-2 text-xs font-bold text-ink uppercase tracking-wide dark:text-sand">
+                    <Glyph icon=icondata::FaRobotSolid />
+                    "Agents"
+                </p>
                 {move || {
                     rows()
                         .into_iter()
@@ -49,12 +53,16 @@ pub fn TreePanel(workspace: Workspace) -> impl IntoView {
                                 view! {
                                     <button
                                         type="button"
-                                        class="min-h-11 min-w-11 rounded hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                                        class=ICON_BUTTON
                                         aria-label="Fold"
+                                        title=if row.collapsed { "Show its subagents" } else { "Hide its subagents" }
                                         aria-expanded=(!row.collapsed).to_string()
                                         on:click=move |_| workspace.toggle_folded(session_id)
                                     >
-                                        {if row.collapsed { "▸" } else { "▾" }}
+                                        <Glyph
+                                            icon=if row.collapsed { icondata::FaChevronRightSolid } else { icondata::FaChevronDownSolid }
+                                            class="text-xs"
+                                        />
                                     </button>
                                 }
                             });
@@ -69,9 +77,12 @@ pub fn TreePanel(workspace: Workspace) -> impl IntoView {
                                         data-tree-session=session_id.to_string()
                                         on:click=move |_| workspace.open_session(session_id)
                                     >
-                                        <span class="w-full truncate text-sm">
-                                            {if row.running { "● " } else { "" }}
-                                            {row.label.clone()}
+                                        <span class="flex w-full items-center gap-2 text-sm">
+                                            {row.running.then(|| view! {
+                                                <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-xs text-caramel dark:text-maple" />
+                                                <span class="sr-only">"running: "</span>
+                                            })}
+                                            <span class="min-w-0 flex-1 truncate">{row.label.clone()}</span>
                                         </span>
                                     </button>
                                 </div>
@@ -126,7 +137,10 @@ pub fn GoalBar(workspace: Workspace) -> impl IntoView {
                                 class=format!("{ROW} min-w-0 flex-1 justify-center")
                                 on:click=move |_| workspace.panel.set(Some(crate::workspace::Panel::Goal))
                             >
-                                <span class="w-full truncate">{format!("🎯 {summary}")}</span>
+                                <span class="flex w-full items-center gap-2">
+                                    <Glyph icon=icondata::FaBullseyeSolid class="text-caramel dark:text-maple" />
+                                    <span class="min-w-0 flex-1 truncate">{summary}</span>
+                                </span>
                             </button>
                             {controls}
                         </div>
@@ -148,7 +162,9 @@ pub fn BackgroundBar(workspace: Workspace) -> impl IntoView {
                     class=format!("{ROW} min-w-0 flex-1 justify-center")
                     on:click=move |_| workspace.run_command(Command::Background, String::new())
                 >
-                    <span class="w-full truncate">
+                    <span class="flex w-full items-center gap-2">
+                    <Glyph icon=icondata::FaHourglassHalfSolid class="text-caramel dark:text-maple" />
+                    <span class="min-w-0 flex-1 truncate">
                         {move || {
                             let calls = calls.get();
                             let summary = calls
@@ -163,8 +179,9 @@ pub fn BackgroundBar(workspace: Workspace) -> impl IntoView {
                                 })
                                 .collect::<Vec<_>>()
                                 .join(" · ");
-                            format!("⏳ {} in background: {summary}", calls.len())
+                            format!("{} in background: {summary}", calls.len())
                         }}
+                    </span>
                     </span>
                 </button>
             </div>
@@ -184,13 +201,14 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                 .map(|offer| {
                     view! {
                         <div id="downscale-offer" class=format!("{BAR} bg-parchment dark:bg-char")>
+                            <Glyph icon=icondata::FaTriangleExclamationSolid class="text-caramel dark:text-maple" />
                             <span class="min-w-0 flex-1">
                                 {format!("{}. Downscale and attach?", offer.reason.trim_end_matches('.'))}
                             </span>
                             <button
                                 type="button"
                                 id="downscale-accept"
-                                class=BUTTON
+                                class=PRIMARY
                                 on:click=move |_| workspace.accept_downscale()
                             >
                                 "Downscale and attach"
@@ -212,15 +230,17 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                         .map(|artifact| {
                             let sha256 = artifact.sha256.clone();
                             view! {
-                                <span class="attachment-chip flex items-center gap-1 rounded bg-toasted pl-2 font-mono text-xs dark:bg-ember">
+                                <span class="attachment-chip flex items-center gap-1 rounded-full bg-toasted pl-3 font-mono text-xs dark:bg-ember">
+                                    <Glyph icon=icondata::FaPaperclipSolid class="opacity-70" />
                                     {attachment_chip(&artifact)}
                                     <button
                                         type="button"
-                                        class="min-h-11 min-w-11 rounded hover:bg-crust active:bg-smoke dark:hover:bg-smoke dark:active:bg-night"
+                                        class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full hover:bg-crust active:bg-smoke dark:hover:bg-smoke dark:active:bg-night"
                                         aria-label="Remove"
+                                        title="Remove"
                                         on:click=move |_| workspace.remove_attachment(&sha256)
                                     >
-                                        "×"
+                                        <Glyph icon=icondata::FaXmarkSolid />
                                     </button>
                                 </span>
                             }
@@ -275,13 +295,13 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
             <button
                 type="button"
                 id="attach"
-                class=format!("{BUTTON} disabled:opacity-60")
+                class=ICON_BUTTON
                 aria-label="Attach a file"
                 title="Attach a file"
                 disabled=move || !workspace.writable()
                 on:click=move |_| pick_files(false)
             >
-                "📎"
+                <Glyph icon=icondata::FaPaperclipSolid class="text-lg" />
             </button>
             <Show when=move || accepts_images(&media.get())>
                 <input
@@ -294,12 +314,13 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
                 />
                 <button
                     type="button"
-                    class=format!("{BUTTON} disabled:opacity-60 md:hidden")
+                    class=format!("{ICON_BUTTON} md:hidden")
                     aria-label="Take a photo"
+                    title="Take a photo"
                     disabled=move || !workspace.writable()
                     on:click=move |_| pick_files(true)
                 >
-                    "📷"
+                    <Glyph icon=icondata::FaCameraSolid class="text-lg" />
                 </button>
             </Show>
         </Show>
@@ -315,18 +336,29 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                     .items
                     .iter()
                     .map(|item| {
-                        let mark = if item.finished { "☑" } else { "☐" };
-                        view! { <li>{format!("{mark} {}", item.description)}</li> }
+                        view! {
+                            <li class="flex items-start gap-2">
+                                <Glyph
+                                    icon=if item.finished { icondata::FaSquareCheckRegular } else { icondata::FaSquareRegular }
+                                    class="mt-0.5"
+                                />
+                                <span class="sr-only">{if item.finished { "finished: " } else { "open: " }}</span>
+                                <span>{item.description.clone()}</span>
+                            </li>
+                        }
                     })
                     .collect_view();
                 view! {
-                    <p class="text-sm font-bold">{format!("Goal ({})", status_name(goal.status))}</p>
+                    <p class="flex items-center gap-2 text-sm font-bold">
+                        <Glyph icon=icondata::FaBullseyeSolid class="text-caramel dark:text-maple" />
+                        {format!("Goal ({})", status_name(goal.status))}
+                    </p>
                     <p id="goal-objective" class="text-sm whitespace-pre-wrap">{goal.objective.clone()}</p>
-                    <ul class="list-none text-xs">{items}</ul>
+                    <ul class="flex list-none flex-col gap-1 text-xs">{items}</ul>
                 }
                     .into_any()
             }
-            None => view! { <p class="text-sm">"No goal is set."</p> }.into_any(),
+            None => empty_state(icondata::FaBullseyeSolid, "No goal is set.").into_any(),
         };
         let controls = goal.map(|goal| {
             goal_actions(goal.status, !workspace.writable())
@@ -362,7 +394,7 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     id="goal-set"
-                    class=BUTTON
+                    class=PRIMARY
                     on:click=move |_| {
                         let objective = workspace.goal_draft.get_untracked();
                         if objective.trim().is_empty() {
@@ -378,7 +410,7 @@ pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
                 </button>
             </Show>
             <Show when=move || !workspace.viewing_root()>
-                <p class="text-xs">"Goals belong to root sessions."</p>
+                <p class=NOTE>"Goals belong to root sessions."</p>
             </Show>
         }
     }
@@ -409,8 +441,11 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
     move || {
         let calls = workspace.background_calls();
         if calls.is_empty() {
-            return view! { <p class="text-sm">"No calls are running in the background."</p> }
-                .into_any();
+            return empty_state(
+                icondata::FaHourglassHalfSolid,
+                "No calls are running in the background.",
+            )
+            .into_any();
         }
         calls
             .into_iter()
@@ -421,7 +456,7 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
                     <div class="background-call flex items-center gap-2 border-b border-toasted py-2 dark:border-ember">
                         <div class="min-w-0 flex-1">
                             <p class="truncate font-mono text-sm">{format!("{} · {}", call.job, call.tool)}</p>
-                            <p class="truncate text-xs">
+                            <p class=format!("truncate {NOTE}")>
                                 {call.display.clone().unwrap_or_default()}
                                 {format!(" · {}", elapsed_label(elapsed))}
                             </p>
@@ -432,6 +467,7 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
                             data-stop=call.job.clone()
                             on:click=move |_| workspace.stop_background(job.clone())
                         >
+                            <Glyph icon=icondata::FaCircleStopSolid />
                             "Stop"
                         </button>
                     </div>
@@ -444,8 +480,8 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
 
 pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
     let list = move || match workspace.skills.get() {
-        None => view! { <p class="text-sm">"Reading skills…"</p> }.into_any(),
-        Some(Err(error)) => view! { <p class="text-sm">{error}</p> }.into_any(),
+        None => loading("Reading skills…").into_any(),
+        Some(Err(error)) => view! { <p class=super::ERROR>{error}</p> }.into_any(),
         Some(Ok(skills)) => {
             let query = workspace.skill_query.get();
             let shown = crate::skills::matching_skills(&skills, &query)
@@ -453,7 +489,8 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                 .cloned()
                 .collect::<Vec<_>>();
             if shown.is_empty() {
-                return view! { <p class="text-sm">"No matching skill."</p> }.into_any();
+                return empty_state(icondata::FaWandMagicSparklesSolid, "No matching skill.")
+                    .into_any();
             }
             shown
                 .into_iter()
@@ -475,7 +512,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                             on:click=move |_| workspace.skill_pick.set(Some(picked.clone()))
                         >
                             <span class="font-mono text-sm font-bold">{skill.name.clone()}</span>
-                            <span class="text-xs text-ink dark:text-sand">{skill.description.clone()}</span>
+                            <span class=NOTE>{skill.description.clone()}</span>
                         </button>
                     }
                 })
@@ -516,7 +553,8 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                                     }
                                 }
                             />
-                            <button type="button" id="skill-run" class=BUTTON on:click=move |_| workspace.run_skill()>
+                            <button type="button" id="skill-run" class=PRIMARY on:click=move |_| workspace.run_skill()>
+                                <Glyph icon=icondata::FaPlaySolid />
                                 "Run the skill"
                             </button>
                         </div>
@@ -531,8 +569,8 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
     let new_pattern = RwSignal::new(String::new());
     let new_effect = RwSignal::new(PermissionEffect::Ask);
     let table = move || match workspace.permissions.get() {
-        None => view! { <p class="text-sm">"Reading permissions…"</p> }.into_any(),
-        Some(Err(error)) => view! { <p class="text-sm">{error}</p> }.into_any(),
+        None => loading("Reading permissions…").into_any(),
+        Some(Err(error)) => view! { <p class=super::ERROR>{error}</p> }.into_any(),
         Some(Ok(permissions)) => {
             let editable = workspace.writable();
             let rows = permission_rows(&permissions)
@@ -548,9 +586,10 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                             view! {
                                 <button
                                     type="button"
-                                    class="min-h-11 min-w-11 px-2 text-xs hover:bg-toasted active:bg-crust disabled:opacity-60 dark:hover:bg-ember dark:active:bg-smoke"
+                                    class="min-h-11 min-w-11 px-2 text-xs hover:bg-toasted active:bg-crust disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-ember dark:active:bg-smoke"
                                     class:font-bold=active
-                                    class:underline=active
+                                    class:bg-toasted=active
+                                    class:dark:bg-ember=active
                                     aria-pressed=active.to_string()
                                     data-effect=effect_label(effect)
                                     disabled=!editable
@@ -571,12 +610,13 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                         view! {
                             <button
                                 type="button"
-                                class="min-h-11 min-w-11 rounded text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                                class=ICON_BUTTON
                                 aria-label="Remove the override"
+                                title="Remove the override"
                                 data-remove=format!("{} {}", row.action, row.resource)
                                 on:click=move |_| workspace.clear_permission(action.clone(), &resource)
                             >
-                                "×"
+                                <Glyph icon=icondata::FaXmarkSolid />
                             </button>
                         }
                     });
@@ -584,8 +624,12 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                         <tr class="permission-row border-b border-toasted dark:border-ember" data-rule=format!("{} {}", row.action, row.resource)>
                             <td class="py-1 pr-2 font-mono text-xs">{row.action.to_string()}</td>
                             <td class="py-1 pr-2 font-mono text-xs break-all">{row.resource.clone()}</td>
-                            <td class="py-1"><div class="flex">{segments}</div></td>
-                            <td class="py-1 text-xs">{source_label(row.source)}</td>
+                            <td class="py-1">
+                                <div class="inline-flex overflow-hidden rounded-md border border-crust dark:border-smoke" role="group" aria-label="Effect">
+                                    {segments}
+                                </div>
+                            </td>
+                            <td class=format!("py-1 pl-2 {NOTE}")>{source_label(row.source)}</td>
                             <td>{remove}</td>
                         </tr>
                     }
@@ -594,12 +638,12 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
             view! {
                 <table class="w-full text-left">
                     <thead>
-                        <tr class="text-xs">
-                            <th>"Action"</th>
-                            <th>"Pattern"</th>
-                            <th>"Effect"</th>
-                            <th>"From"</th>
-                            <th></th>
+                        <tr class="border-b border-crust text-xs text-ink dark:border-smoke dark:text-sand">
+                            <th class="py-1 pr-2 font-bold">"Action"</th>
+                            <th class="py-1 pr-2 font-bold">"Pattern"</th>
+                            <th class="py-1 font-bold">"Effect"</th>
+                            <th class="py-1 pl-2 font-bold">"From"</th>
+                            <th><span class="sr-only">"Remove"</span></th>
                         </tr>
                     </thead>
                     <tbody>{rows}</tbody>
@@ -620,7 +664,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <Show when=move || workspace.permissions_draft()>
-            <p class="text-xs">"Rules for the new session, previewed against its agent; the first message creates the session with them."</p>
+            <p class=NOTE>"Rules for the new session, previewed against its agent; the first message creates the session with them."</p>
         </Show>
         {table}
         <Show when=move || workspace.writable()>
@@ -659,7 +703,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                     prop:value=move || new_pattern.get()
                     on:input=move |event| new_pattern.set(event_target_value(&event))
                 />
-                <div class="flex">
+                <div class="inline-flex self-start overflow-hidden rounded-md border border-crust dark:border-smoke" role="group" aria-label="Effect">
                     {EFFECTS
                         .iter()
                         .map(|effect| {
@@ -667,8 +711,10 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                             view! {
                                 <button
                                     type="button"
-                                    class=BUTTON
+                                    class="min-h-11 min-w-11 px-3 text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
                                     class:font-bold=move || new_effect.get() == effect
+                                    class:bg-toasted=move || new_effect.get() == effect
+                                    class:dark:bg-ember=move || new_effect.get() == effect
                                     aria-pressed=move || (new_effect.get() == effect).to_string()
                                     data-new-effect=effect_label(effect)
                                     on:click=move |_| new_effect.set(effect)
@@ -682,7 +728,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     id="permission-add"
-                    class=BUTTON
+                    class=PRIMARY
                     on:click=move |_| {
                         let Some(action) = new_action.get_untracked() else {
                             return;
@@ -696,6 +742,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                         workspace.set_permission(action, &pattern, new_effect.get_untracked());
                     }
                 >
+                    <Glyph icon=icondata::FaPlusSolid />
                     "Add the rule"
                 </button>
             </div>
@@ -712,11 +759,12 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
         let actions = if menu.confirming_revert {
             view! {
                 <p class="text-sm font-bold">"Revert to before this message?"</p>
-                <p class="text-xs">
+                <p class=NOTE>
                     "This message and everything after it will be removed from the conversation. Its text goes back into the composer so you can edit and resend. To keep both versions, fork instead."
                 </p>
                 <div class="flex flex-wrap gap-2">
-                    <button type="button" id="revert-confirm" class=BUTTON on:click=move |_| workspace.revert()>
+                    <button type="button" id="revert-confirm" class=PRIMARY on:click=move |_| workspace.revert()>
+                        <Glyph icon=icondata::FaArrowRotateLeftSolid />
                         "Revert"
                     </button>
                     <button type="button" class=BUTTON on:click=move |_| workspace.confirm_revert(false)>
@@ -728,17 +776,26 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
         } else {
             view! {
                 <button type="button" id="message-copy" class=ROW on:click=move |_| workspace.copy_message()>
-                    <span class="text-sm font-bold">"Copy"</span>
-                    <span class="text-xs">"copy the message text"</span>
+                    <span class="flex items-center gap-2 text-sm font-bold">
+                        <Glyph icon=icondata::FaCopyRegular />
+                        "Copy"
+                    </span>
+                    <span class=format!("pl-6 {NOTE}")>"copy the message text"</span>
                 </button>
                 <Show when=move || writable>
                     <button type="button" id="message-revert" class=ROW on:click=move |_| workspace.confirm_revert(true)>
-                        <span class="text-sm font-bold">"Revert"</span>
-                        <span class="text-xs">"remove this message and every later turn; edit and resend it"</span>
+                        <span class="flex items-center gap-2 text-sm font-bold">
+                            <Glyph icon=icondata::FaArrowRotateLeftSolid />
+                            "Revert"
+                        </span>
+                        <span class=format!("pl-6 {NOTE}")>"remove this message and every later turn; edit and resend it"</span>
                     </button>
                     <button type="button" id="message-fork" class=ROW on:click=move |_| workspace.fork()>
-                        <span class="text-sm font-bold">"Fork"</span>
-                        <span class="text-xs">"a new session with the conversation up to this message"</span>
+                        <span class="flex items-center gap-2 text-sm font-bold">
+                            <Glyph icon=icondata::FaCodeBranchSolid />
+                            "Fork"
+                        </span>
+                        <span class=format!("pl-6 {NOTE}")>"a new session with the conversation up to this message"</span>
                     </button>
                 </Show>
             }

@@ -20,6 +20,21 @@ html.dark {
   scrollbar-color: var(--color-smoke) var(--color-char);
 }
 
+/* Keyboard focus shows on every control in the palette's accent; text
+   fields keep their border highlight. Controls that act show a pointer. */
+@layer base {
+  :where(button, a[href], summary, select, input[type="checkbox"]):focus-visible {
+    outline: 2px solid var(--color-caramel);
+    outline-offset: 2px;
+  }
+  .dark :where(button, a[href], summary, select, input[type="checkbox"]):focus-visible {
+    outline-color: var(--color-maple);
+  }
+  :where(button:not(:disabled), summary, select, a[href]) {
+    cursor: pointer;
+  }
+}
+
 /* The landing site's palette, which is the TUI's (crates/tui/src/theme.rs). */
 @theme {
   --color-cream: #fbf4e6;

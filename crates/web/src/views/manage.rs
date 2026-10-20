@@ -23,14 +23,19 @@ use cookie_agent_protocol::{McpServerState, ProviderDescriptor, RuntimeInstanceS
 use leptos::{ev, prelude::*};
 use wasm_bindgen::JsCast as _;
 
-use super::{BUTTON, ROW};
-use crate::workspace::{MemoryChoice, MemoryPending, PANEL_POLL, Workspace};
+use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading};
+use crate::{
+    icons::Glyph,
+    workspace::{MemoryChoice, MemoryPending, PANEL_POLL, Workspace},
+};
 
-const FIELD: &str = "min-h-11 w-full rounded border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
-const EDITOR: &str = "min-h-[40dvh] w-full resize-y rounded border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
-const NOTE: &str = "text-xs text-ink dark:text-sand";
-const ERROR: &str = "text-sm text-red-700 whitespace-pre-wrap dark:text-red-400";
-const TAB: &str = "min-h-11 flex-1 rounded px-3 text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+const FIELD: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const EDITOR: &str = "min-h-[40dvh] w-full resize-y rounded-md border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+const TAB: &str = "min-h-11 flex-1 rounded-md px-3 text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+/// A small label for a thing's state.
+const STATE: &str = "shrink-0 rounded-full bg-toasted px-2 py-0.5 text-xs dark:bg-ember";
+/// A confirmation before something cannot be undone.
+const CONFIRM: &str = "flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char";
 
 /// Reads `poll` every second while the sheet is open, as the TUI polls its
 /// open `/runtime` and `/mcp` panels.
@@ -71,7 +76,10 @@ pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
                 id=id
                 class=TAB
                 class:font-bold=move || tab.get() == which
-                class:underline=move || tab.get() == which
+                class:bg-cream=move || tab.get() == which
+                class:shadow-sm=move || tab.get() == which
+                class:dark:bg-night=move || tab.get() == which
+                aria-pressed=move || (tab.get() == which).to_string()
                 on:click=move |_| tab.set(which)
             >
                 {label}
@@ -79,7 +87,7 @@ pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
         }
     };
     view! {
-        <div class="flex gap-1">
+        <div class="flex gap-1 rounded-lg bg-parchment p-1 dark:bg-char" role="group" aria-label="Runtimes or machines">
             {tab_button(RuntimeTab::Attachments, "Attached runtimes", "runtime-tab-attachments")}
             {tab_button(RuntimeTab::Machines, "Machines", "runtime-tab-machines")}
         </div>
@@ -114,7 +122,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">
                                 {format!("{} · {}", row.attachment.name, row.attachment.kind)}
                             </span>
-                            <span class="text-xs" class:text-red-700=failed class:dark:text-red-400=failed>
+                            <span class=STATE class:text-red-700=failed class:dark:text-red-400=failed>
                                 {status_label(status)}
                             </span>
                         </div>
@@ -134,9 +142,11 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         {message.map(|message| view! { <span class=ERROR>{message}</span> })}
                         <div class="flex gap-2">
                             <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone(), index)>
+                                <Glyph icon=icondata::FaArrowsRotateSolid />
                                 "Retry"
                             </button>
                             <button type="button" class=BUTTON data-detach on:click=move |_| workspace.detach_runtime(detach_name.clone(), index)>
+                                <Glyph icon=icondata::FaLinkSlashSolid />
                                 "Detach"
                             </button>
                         </div>
@@ -171,7 +181,8 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
         <Show
             when=move || attaching.get()
             fallback=move || view! {
-                <button type="button" id="runtime-attach" class=BUTTON on:click=move |_| attaching.set(true)>
+                <button type="button" id="runtime-attach" class=PRIMARY on:click=move |_| attaching.set(true)>
+                    <Glyph icon=icondata::FaPlusSolid />
                     "Attach a runtime"
                 </button>
             }
@@ -238,7 +249,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                             <button
                                 type="button"
                                 id="runtime-attach-confirm"
-                                class=BUTTON
+                                class=PRIMARY
                                 on:click=move |_| attach(choice.clone(), field_value("runtime-workspace"))
                             >
                                 "Attach"
@@ -267,7 +278,7 @@ fn machines_view(workspace: Workspace) -> impl IntoView {
     move || {
         let listing = workspace.machines.get();
         let machines = match &listing {
-            None => return view! { <p class="text-sm">"Reading machines…"</p> }.into_any(),
+            None => return loading("Reading machines…").into_any(),
             Some(Err(error)) => return view! { <p class=ERROR>{error.clone()}</p> }.into_any(),
             Some(Ok(listing)) => listing.clone(),
         };
@@ -357,7 +368,7 @@ fn machines_view(workspace: Workspace) -> impl IntoView {
                                     />
                                 </label>
                                 <div class="flex gap-2">
-                                    <button type="button" id="machine-apply" class=BUTTON on:click=move |_| submit()>
+                                    <button type="button" id="machine-apply" class=PRIMARY on:click=move |_| submit()>
                                         "Apply"
                                     </button>
                                     <button type="button" class=BUTTON on:click=move |_| form.set(None)>
@@ -383,10 +394,10 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let list = move || {
         match workspace.mcp_servers.get() {
-        None => view! { <p class="text-sm">"Reading MCP servers…"</p> }.into_any(),
+        None => loading("Reading MCP servers…").into_any(),
         Some(Err(message)) => view! { <p class=ERROR>{message}</p> }.into_any(),
         Some(Ok(servers)) if servers.is_empty() => {
-            view! { <p class="text-sm">"No MCP servers are configured."</p> }.into_any()
+            empty_state(icondata::FaServerSolid, "No MCP servers are configured.").into_any()
         }
         Some(Ok(servers)) => servers
             .into_iter()
@@ -403,7 +414,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                     <div class="mcp-server flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-server=name.clone()>
                         <div class="flex items-center gap-2">
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{name.clone()}</span>
-                            <span class="mcp-state text-xs">{mcp_state_label(server.state)}</span>
+                            <span class=format!("mcp-state {STATE}")>{mcp_state_label(server.state)}</span>
                         </div>
                         <span class=NOTE>
                             {format!(
@@ -465,12 +476,13 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     id="mcp-new"
-                    class=BUTTON
+                    class=PRIMARY
                     on:click=move |_| {
                         error.set(None);
                         form.set(Some((McpFields::add(), None)));
                     }
                 >
+                    <Glyph icon=icondata::FaPlusSolid />
                     "New server"
                 </button>
             }
@@ -571,7 +583,7 @@ fn mcp_form(
         </label>
         {move || error.get().map(|message| view! { <p class=ERROR>{message}</p> })}
         <div class="flex gap-2">
-            <button type="button" id="mcp-save" class=BUTTON on:click=move |_| submit()>
+            <button type="button" id="mcp-save" class=PRIMARY on:click=move |_| submit()>
                 "Save"
             </button>
             <button type="button" class=BUTTON on:click=move |_| form.set(None)>
@@ -638,7 +650,12 @@ pub fn connect_sheet(workspace: Workspace) -> impl IntoView {
                                         open.set(Some(picked.clone()));
                                     }
                                 >
-                                    <span class="text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</span>
+                                    <span class="flex w-full items-center gap-2">
+                                        <span class="min-w-0 flex-1 truncate text-sm font-bold">{format!("{} ({})", provider.display_name, provider.id)}</span>
+                                        {(state == ProviderRowState::ConnectedReconnect).then(|| view! {
+                                            <Glyph icon=icondata::FaPlugSolid class="text-green-700 dark:text-green-400" />
+                                        })}
+                                    </span>
                                     <span class=NOTE>{detail}</span>
                                     {note.map(|note| view! { <span class=NOTE>{note}</span> })}
                                 </button>
@@ -845,7 +862,8 @@ fn provider_view(
             .collect_view()}
         {move || error.get().map(|message| view! { <p class=ERROR id="provider-error">{message}</p> })}
         <div class="flex flex-wrap gap-2">
-            <button type="button" id="provider-connect" class=BUTTON on:click=move |_| submit()>
+            <button type="button" id="provider-connect" class=PRIMARY on:click=move |_| submit()>
+                <Glyph icon=icondata::FaPlugSolid />
                 {if reconnect { "Reconnect" } else { "Connect" }}
             </button>
             <button type="button" class=BUTTON on:click=back>"Cancel"</button>
@@ -856,10 +874,10 @@ fn provider_view(
             </Show>
         </div>
         <Show when=move || confirm_disconnect.get()>
-            <div class="flex flex-col gap-2 rounded border border-caramel p-2 dark:border-maple">
+            <div class=CONFIRM>
                 <p class="text-sm">"Remove the stored connection and its credentials?"</p>
                 <div class="flex gap-2">
-                    <button type="button" id="provider-disconnect-confirm" class=BUTTON on:click={
+                    <button type="button" id="provider-disconnect-confirm" class=PRIMARY on:click={
                         let provider = provider.clone();
                         move |_| {
                             confirm_disconnect.set(false);
@@ -892,7 +910,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                     <button
                         type="button"
                         id="config-apply"
-                        class=BUTTON
+                        class=PRIMARY
                         on:click=move |_| {
                             let text = web_sys::window()
                                 .and_then(|window| window.document())
@@ -914,7 +932,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
         }
         let config = match workspace.config.get() {
             None => {
-                return view! { <p class="text-sm">"Reading the configuration…"</p> }.into_any();
+                return loading("Reading the configuration…").into_any();
             }
             Some(Err(error)) => return view! { <p class=ERROR>{error}</p> }.into_any(),
             Some(Ok(config)) => config,
@@ -923,7 +941,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
         let rows = config_rows(&config)
             .into_iter()
             .map(|row| match row.path.clone() {
-                None => view! { <p class="mt-2 text-sm font-bold">{row.label}</p> }.into_any(),
+                None => view! { <h3 class="mt-3 px-3 text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">{row.label}</h3> }.into_any(),
                 Some(path) => {
                     let draft = drafts.contains_key(&path);
                     let opened = path.clone();
@@ -932,15 +950,25 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                     view! {
                         <div class="flex items-center gap-2" data-config-path=path.clone()>
                             <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_config(&opened)>
-                                <span class="font-mono text-sm whitespace-pre">{row.label.clone()}</span>
+                                <span class="flex items-center gap-2 font-mono text-sm whitespace-pre">
+                                    <Glyph icon=icondata::FaFileLinesRegular class="opacity-70" />
+                                    {row.label.clone()}
+                                </span>
                                 {draft.then(|| view! { <span class="text-xs text-caramel dark:text-maple">"not applied"</span> })}
                             </button>
                             <Show when=move || deletable>
-                                <button type="button" class=BUTTON data-config-delete on:click={
-                                    let deleted = deleted.clone();
-                                    move |_| confirm_delete.set(Some(deleted.clone()))
-                                }>
-                                    "Delete"
+                                <button
+                                    type="button"
+                                    class=ICON_BUTTON
+                                    aria-label="Delete"
+                                    title="Delete"
+                                    data-config-delete
+                                    on:click={
+                                        let deleted = deleted.clone();
+                                        move |_| confirm_delete.set(Some(deleted.clone()))
+                                    }
+                                >
+                                    <Glyph icon=icondata::FaTrashCanRegular />
                                 </button>
                             </Show>
                         </div>
@@ -956,10 +984,10 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
             {move || confirm_delete.get().map(|path| {
                 let deleted = path.clone();
                 view! {
-                    <div class="flex flex-col gap-2 rounded border border-caramel p-2 dark:border-maple">
+                    <div class=CONFIRM>
                         <p class="text-sm">{format!("Delete {path}?")}</p>
                         <div class="flex gap-2">
-                            <button type="button" id="config-delete-confirm" class=BUTTON on:click=move |_| {
+                            <button type="button" id="config-delete-confirm" class=PRIMARY on:click=move |_| {
                                 confirm_delete.set(None);
                                 workspace.delete_config(deleted.clone());
                             }>
@@ -977,14 +1005,16 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
             })}
             <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
                 <label class="flex flex-col gap-1 text-sm">
-                    <span>"New agent"</span>
+                    <span class="font-bold">"New agent"</span>
                     <input type="text" id="config-new-path" class=FIELD value="agents/" />
                 </label>
                 <div class="flex flex-wrap gap-2">
-                    <button type="button" id="config-new" class=BUTTON on:click=move |_| workspace.new_agent(&field_value("config-new-path"))>
+                    <button type="button" id="config-new" class=PRIMARY on:click=move |_| workspace.new_agent(&field_value("config-new-path"))>
+                        <Glyph icon=icondata::FaPlusSolid />
                         "Create"
                     </button>
                     <button type="button" id="config-reload" class=BUTTON on:click=move |_| workspace.reload_config()>
+                        <Glyph icon=icondata::FaArrowsRotateSolid />
                         "Reload from disk"
                     </button>
                 </div>
@@ -1008,7 +1038,7 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                     <button
                         type="button"
                         id="memory-save"
-                        class=BUTTON
+                        class=PRIMARY
                         on:click=move |_| {
                             let text = web_sys::window()
                                 .and_then(|window| window.document())
@@ -1057,7 +1087,7 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
             };
         }
         let listing = match workspace.memory.get() {
-            None => return view! { <p class="text-sm">"Reading memories…"</p> }.into_any(),
+            None => return loading("Reading memories…").into_any(),
             Some(Err(error)) => return view! { <p class=ERROR>{error}</p> }.into_any(),
             Some(Ok(listing)) => listing,
         };
@@ -1067,14 +1097,27 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                 let prefix = row.new_prefix();
                 match row {
                     MemoryRow::Layer(layer) => view! {
-                        <button type="button" class=format!("{ROW} mt-2") on:click=move |_| new_url.set(prefix.clone())>
-                            <span class="text-sm font-bold">{layer_title(layer)}</span>
+                        <button
+                            type="button"
+                            class=format!("{ROW} mt-2")
+                            title="Create a memory in this layer"
+                            on:click=move |_| new_url.set(prefix.clone())
+                        >
+                            <span class="text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">{layer_title(layer)}</span>
                         </button>
                     }
                     .into_any(),
                     MemoryRow::Group { name, .. } => view! {
-                        <button type="button" class=format!("{ROW} pl-6") on:click=move |_| new_url.set(prefix.clone())>
-                            <span class="font-mono text-sm">{name}</span>
+                        <button
+                            type="button"
+                            class=format!("{ROW} pl-6")
+                            title="Create a memory in this group"
+                            on:click=move |_| new_url.set(prefix.clone())
+                        >
+                            <span class="flex items-center gap-2 font-mono text-sm">
+                                <Glyph icon=icondata::FaFolderSolid class="opacity-70" />
+                                {name}
+                            </span>
                         </button>
                     }
                     .into_any(),
@@ -1089,8 +1132,15 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                                     <span class=NOTE>{description}</span>
                                     {memory.invalid.clone().map(|reason| view! { <span class=ERROR>{reason}</span> })}
                                 </button>
-                                <button type="button" class=BUTTON data-memory-delete on:click=move |_| confirm_delete.set(Some(deleted.clone()))>
-                                    "Delete"
+                                <button
+                                    type="button"
+                                    class=ICON_BUTTON
+                                    aria-label="Delete"
+                                    title="Delete"
+                                    data-memory-delete
+                                    on:click=move |_| confirm_delete.set(Some(deleted.clone()))
+                                >
+                                    <Glyph icon=icondata::FaTrashCanRegular />
                                 </button>
                             </div>
                         }
@@ -1109,10 +1159,10 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
             {move || confirm_delete.get().map(|(url, revision)| {
                 let deleted = (url.clone(), revision);
                 view! {
-                    <div class="flex flex-col gap-2 rounded border border-caramel p-2 dark:border-maple">
+                    <div class=CONFIRM>
                         <p class="text-sm">{format!("Delete {url}?")}</p>
                         <div class="flex gap-2">
-                            <button type="button" id="memory-delete-confirm" class=BUTTON on:click=move |_| {
+                            <button type="button" id="memory-delete-confirm" class=PRIMARY on:click=move |_| {
                                 confirm_delete.set(None);
                                 workspace.delete_memory(deleted.0.clone(), deleted.1.clone());
                             }>
@@ -1130,7 +1180,7 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
             })}
             <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
                 <label class="flex flex-col gap-1 text-sm">
-                    <span>"New memory"</span>
+                    <span class="font-bold">"New memory"</span>
                     <input
                         type="text"
                         id="memory-new-url"
@@ -1139,7 +1189,8 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                         on:input=move |event| new_url.set(event_target_value(&event))
                     />
                 </label>
-                <button type="button" id="memory-new" class=BUTTON on:click=move |_| workspace.new_memory(&new_url.get_untracked())>
+                <button type="button" id="memory-new" class=PRIMARY on:click=move |_| workspace.new_memory(&new_url.get_untracked())>
+                    <Glyph icon=icondata::FaPlusSolid />
                     "Create"
                 </button>
             </div>
@@ -1153,11 +1204,12 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
 pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
     move || {
         match workspace.plugins.get() {
-        None => view! { <p class="text-sm">"Loading plugins…"</p> }.into_any(),
+        None => loading("Reading plugins…").into_any(),
         Some(Err(error)) => view! { <p class=ERROR>{error}</p> }.into_any(),
-        Some(Ok(plugins)) if plugins.is_empty() => view! {
-            <p class="text-sm">"No plugins are configured. Add one under [plugins.<name>] in the config."</p>
-        }
+        Some(Ok(plugins)) if plugins.is_empty() => empty_state(
+            icondata::FaPuzzlePieceSolid,
+            "No plugins are configured. Add one under [plugins.<name>] in the config.",
+        )
         .into_any(),
         Some(Ok(plugins)) => plugins
             .into_iter()
@@ -1167,10 +1219,11 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
                     <div class="plugin flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-plugin=plugin.name.clone()>
                         <div class="flex items-center gap-2">
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{plugin.name.clone()}</span>
-                            <span class="plugin-state text-xs">{plugin_state_label(plugin.state)}</span>
+                            <span class=format!("plugin-state {STATE}")>{plugin_state_label(plugin.state)}</span>
                         </div>
                         <pre class=format!("{NOTE} whitespace-pre-wrap font-mono")>{plugin_detail(&plugin)}</pre>
-                        <button type="button" class=BUTTON data-plugin-restart on:click=move |_| workspace.restart_plugin(name.clone())>
+                        <button type="button" class=format!("{BUTTON} self-start") data-plugin-restart on:click=move |_| workspace.restart_plugin(name.clone())>
+                            <Glyph icon=icondata::FaArrowsRotateSolid />
                             "Restart"
                         </button>
                     </div>
