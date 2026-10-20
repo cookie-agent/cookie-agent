@@ -1,8 +1,6 @@
-use std::collections::BTreeMap;
-
 use cookie_agent_protocol::{
-    McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup,
-    PermissionAction, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
+    McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction,
+    SessionTreeUsageResult, SessionUsageResult, UsageRollup,
 };
 use ratatui::{
     Frame,
@@ -20,33 +18,11 @@ use super::{
     input::InputState,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum McpTransport {
-    Stdio,
-    Http,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PersistChoice {
-    Runtime,
-    User,
-}
-
-impl PersistChoice {
-    pub(super) const fn target(self) -> Option<McpConfigTarget> {
-        match self {
-            Self::Runtime => None,
-            Self::User => Some(McpConfigTarget::UserFile),
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Runtime => "runtime only",
-            Self::User => "user config.toml",
-        }
-    }
-}
+use cookie_agent_client_state::mcp::{
+    McpFields, definition_display, edit_refusal, new_definition, runtime_label, sort_servers,
+    source_label, state_label as mcp_state_label,
+};
+pub(super) use cookie_agent_client_state::mcp::{McpTransport, PersistChoice, is_global};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum McpFormFocus {
@@ -90,50 +66,22 @@ impl McpForm {
             enabled: true,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
-            base: McpServerDefinition {
-                command: Some(String::new()),
-                args: Vec::new(),
-                env: BTreeMap::new(),
-                cwd: None,
-                url: None,
-                headers: BTreeMap::new(),
-                oauth: None,
-                enabled: true,
-                timeout_ms: None,
-            },
+            base: new_definition(),
         }
     }
 
     pub(super) fn edit(server: &McpServerInfo) -> Self {
-        let transport = if server.definition.command.is_some() {
-            McpTransport::Stdio
-        } else {
-            McpTransport::Http
-        };
-        let endpoint = server
-            .definition
-            .command
-            .as_ref()
-            .or(server.definition.url.as_ref())
-            .cloned()
-            .unwrap_or_default();
-        let extras = match transport {
-            McpTransport::Stdio => serde_json::to_string(&server.definition.args),
-            McpTransport::Http => serde_json::to_string(&server.definition.headers),
-        }
-        .unwrap_or_default();
+        let fields = McpFields::edit(server);
         Self {
             editing: true,
             original_name: Some(server.name.clone()),
-            name: json_input(&server.name),
-            transport,
-            endpoint: json_input(&endpoint),
-            extras: json_input(&extras),
-            environment: json_input(
-                &serde_json::to_string(&server.definition.env).unwrap_or_default(),
-            ),
-            cwd: json_input(server.definition.cwd.as_deref().unwrap_or_default()),
-            enabled: server.definition.enabled,
+            name: json_input(&fields.name),
+            transport: fields.transport,
+            endpoint: json_input(&fields.endpoint),
+            extras: json_input(&fields.extras),
+            environment: json_input(&fields.environment),
+            cwd: json_input(&fields.cwd),
+            enabled: fields.enabled,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
             base: server.definition.clone(),
@@ -211,39 +159,16 @@ impl McpForm {
     }
 
     pub(super) fn definition(&self) -> Result<(String, McpServerDefinition), String> {
-        let name = self.name.as_str().trim().to_owned();
-        if name.is_empty() {
-            return Err("server name is required".into());
+        McpFields {
+            name: self.name.as_str().to_owned(),
+            transport: self.transport,
+            endpoint: self.endpoint.as_str().to_owned(),
+            extras: self.extras.as_str().to_owned(),
+            environment: self.environment.as_str().to_owned(),
+            cwd: self.cwd.as_str().to_owned(),
+            enabled: self.enabled,
         }
-        let endpoint = self.endpoint.as_str().trim().to_owned();
-        if endpoint.is_empty() {
-            return Err("command or URL is required".into());
-        }
-        let mut definition = self.base.clone();
-        definition.enabled = self.enabled;
-        match self.transport {
-            McpTransport::Stdio => {
-                definition.command = Some(endpoint);
-                definition.url = None;
-                definition.headers.clear();
-                definition.args = serde_json::from_str(self.extras.as_str())
-                    .map_err(|error| format!("args must be a JSON string array: {error}"))?;
-                definition.env = serde_json::from_str(self.environment.as_str())
-                    .map_err(|error| format!("env must be a JSON string object: {error}"))?;
-                let cwd = self.cwd.as_str().trim();
-                definition.cwd = (!cwd.is_empty()).then(|| cwd.to_owned());
-            }
-            McpTransport::Http => {
-                definition.command = None;
-                definition.args.clear();
-                definition.env.clear();
-                definition.cwd = None;
-                definition.url = Some(endpoint);
-                definition.headers = serde_json::from_str(self.extras.as_str())
-                    .map_err(|error| format!("headers must be a JSON string object: {error}"))?;
-            }
-        }
-        Ok((name, definition))
+        .definition(&self.base)
     }
 }
 
@@ -280,21 +205,7 @@ impl Drop for AuthListener {
 
 impl McpPanel {
     pub(super) fn install(&mut self, mut servers: Vec<McpServerInfo>) {
-        // Grouped by runtime instance, the editable global servers first.
-        servers.sort_by(|left, right| {
-            (
-                !is_global(left),
-                left.runtime_id.as_str(),
-                &left.workspace,
-                &left.name,
-            )
-                .cmp(&(
-                    !is_global(right),
-                    right.runtime_id.as_str(),
-                    &right.workspace,
-                    &right.name,
-                ))
-        });
+        sort_servers(&mut servers);
         self.servers = servers;
         self.refresh_in_flight = false;
         if self.auth.as_ref().is_some_and(|auth| {
@@ -314,11 +225,11 @@ impl McpPanel {
     /// from its template.
     pub(super) fn selected_editable(&self) -> Result<Option<&McpServerInfo>, String> {
         match self.selected() {
-            Some(server) if !is_global(server) => Err(format!(
-                "MCP server `{}` belongs to runtime `{}`; edit its [runtimes.{}.mcp] template",
-                server.name, server.runtime_id, server.runtime_id
-            )),
-            selected => Ok(selected),
+            Some(server) => match edit_refusal(server) {
+                Some(refusal) => Err(refusal),
+                None => Ok(Some(server)),
+            },
+            None => Ok(None),
         }
     }
 
@@ -1023,60 +934,6 @@ fn format_hit_rate(rate: Option<f64>) -> String {
 
 fn format_cost(cost: Option<f64>) -> String {
     cost.map_or_else(|| "unpriced".to_owned(), format_cost_usd)
-}
-
-/// The runtime hosting `server`, with the instance's workspace when it has
-/// one, so two instances of one runtime read apart.
-fn runtime_label(server: &McpServerInfo) -> String {
-    match &server.workspace {
-        Some(workspace) => format!("{} at {workspace}", server.runtime_id),
-        None => server.runtime_id.to_string(),
-    }
-}
-
-pub(super) fn is_global(server: &McpServerInfo) -> bool {
-    server.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL
-}
-
-const fn source_label(source: cookie_agent_protocol::McpConfigSource) -> &'static str {
-    match source {
-        cookie_agent_protocol::McpConfigSource::UserFile => "user config",
-        cookie_agent_protocol::McpConfigSource::Runtime => "runtime only",
-    }
-}
-
-fn definition_display(definition: &McpServerDefinition) -> String {
-    if let Some(command) = &definition.command {
-        let mut parts = vec![command.clone()];
-        parts.extend(definition.args.clone());
-        let mut value = parts.join(" ");
-        if let Some(cwd) = &definition.cwd {
-            value.push_str(&format!("\ncwd: {cwd}"));
-        }
-        for (name, item) in &definition.env {
-            value.push_str(&format!("\nenv {name}={item}"));
-        }
-        value
-    } else {
-        let mut value = definition.url.clone().unwrap_or_default();
-        for (name, item) in &definition.headers {
-            value.push_str(&format!("\n{name}: {item}"));
-        }
-        value
-    }
-}
-
-fn mcp_state_label(state: cookie_agent_protocol::McpServerState) -> &'static str {
-    match state {
-        cookie_agent_protocol::McpServerState::Connected => "connected",
-        cookie_agent_protocol::McpServerState::Connecting => "connecting",
-        cookie_agent_protocol::McpServerState::Reconnecting => "reconnecting",
-        cookie_agent_protocol::McpServerState::Failed => "failed",
-        cookie_agent_protocol::McpServerState::NeedsAuth => "needs_auth",
-        cookie_agent_protocol::McpServerState::Disabled => "disabled",
-        cookie_agent_protocol::McpServerState::Disconnected => "disconnected",
-        cookie_agent_protocol::McpServerState::Unknown => "unknown",
-    }
 }
 
 pub(super) fn action_label(action: &PermissionAction) -> &str {

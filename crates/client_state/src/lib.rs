@@ -11,6 +11,7 @@
 
 pub mod config;
 pub mod markdown;
+pub mod mcp;
 pub mod memory;
 pub mod model_draft;
 mod model_names;
