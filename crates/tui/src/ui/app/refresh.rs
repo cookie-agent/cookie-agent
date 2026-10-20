@@ -988,7 +988,7 @@ impl App {
         }
         if let ClientDelivery::PluginEvent(event) = &delivery {
             if Some(event.session_id) == self.selected {
-                self.status = format!("plugin {}: {}", event.plugin, event.name);
+                self.status = cookie_agent_client_state::plugins::plugin_event_status(event);
             }
             return;
         }

@@ -184,30 +184,9 @@ impl RpcUpdate {
 #[cfg(test)]
 pub(super) use cookie_agent_client_state::ownership::session_owned_by_another_process;
 
-/// Whether the daemon reported retryable store contention (`lock_contention`),
-/// covering both the bounded-lock budget and a lost commit-time CAS.
-pub(super) fn is_store_contention(error: &ClientError) -> bool {
-    error.is(&cookie_agent_protocol::errors::LOCK_CONTENTION)
-}
-
-/// Provider disconnect resubmit policy: the first contention-class failure
-/// gets exactly one automatic resubmission of the identical request (same
-/// client request id, so the daemon's replay path answers a commit whose
-/// response was lost); a second consecutive contention surfaces to the user.
-/// Connect follows the same policy through `Client::connect_provider_retrying`.
-pub(super) fn retry_store_contention_once(attempt: usize, error: &ClientError) -> bool {
-    attempt == 0 && is_store_contention(error)
-}
-
-/// Renders the spec's store-contention copy when the daemon reports
-/// `lock_contention`; `store` is the human noun for the error site.
-pub(super) fn store_contention_message(error: &ClientError, store: &str) -> String {
-    if is_store_contention(error) {
-        format!("Another cookie-agent process is writing the {store} — try again.")
-    } else {
-        error.to_string()
-    }
-}
+pub(super) use cookie_agent_client_state::providers::{
+    retry_store_contention_once, store_contention_message,
+};
 
 /// Where copied text goes: the terminal's OSC 52 clipboard escape in
 /// production, a shared capture buffer in tests.

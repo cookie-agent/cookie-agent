@@ -761,8 +761,10 @@ dependencies = [
  "foldhash",
  "jiff",
  "pulldown-cmark",
+ "serde",
  "serde_json",
  "web-time",
+ "zeroize",
 ]
 
 [[package]]

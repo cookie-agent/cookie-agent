@@ -17,6 +17,8 @@ pub mod model_draft;
 mod model_names;
 pub mod ownership;
 pub mod permissions;
+pub mod plugins;
+pub mod providers;
 mod reduce;
 pub mod rows;
 mod runtime;

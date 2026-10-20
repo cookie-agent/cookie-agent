@@ -21,10 +21,12 @@ cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
 foldhash.workspace = true
 jiff.workspace = true
 pulldown-cmark.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 # `std::time::Instant` on native targets; the browser's clock on wasm32,
 # where `std`'s panics.
 web-time = "1.1.0"
+zeroize.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 jiff = { workspace = true, features = ["js"] }
