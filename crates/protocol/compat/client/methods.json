@@ -476,6 +476,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.delete",
+      "params": "SessionDeleteParams",
+      "params_role": "command",
+      "result": "SessionDeleteResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.fork",
       "params": "SessionForkParams",
       "params_role": "command",

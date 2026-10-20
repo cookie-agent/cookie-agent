@@ -1884,3 +1884,135 @@ async fn memory_is_listed_read_written_and_deleted_through_rpc() {
     assert_eq!(code(&gone), "memory_not_found");
     harness.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_deleted_session_is_removed_for_every_connection() {
+    let mut catalog = (*openai_catalog()).clone();
+    Arc::make_mut(&mut catalog.providers)
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let harness = harness_with_catalog(Arc::new(catalog), |_| {});
+    let mut viewer = connect(Arc::clone(&harness.server)).await;
+    let mut deleter = connect(Arc::clone(&harness.server)).await;
+    let code = |reply: &Value| {
+        reply["error"]["data"]["code"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    };
+    let (connected, _) = request(
+        &mut deleter,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"delete-rpc-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+    let (created, _) = request(
+        &mut deleter,
+        3,
+        "session.create",
+        json!({
+            "selection": {
+                "agent": "default",
+                "model": { "model": "openai/gpt-5-mini", "variant": null }
+            },
+            "runtimes": [],
+            "global": false
+        }),
+    )
+    .await;
+    let session = created["result"]["session"].clone();
+    let session_id = session["session_id"].clone();
+    let last = session["last_event_seq"].as_u64().expect("last event seq");
+    let (subscribed, _) = request(
+        &mut viewer,
+        2,
+        "events.subscribe",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert!(subscribed.get("result").is_some(), "{subscribed}");
+
+    // Commands stay strict, and the guard and the session are checked.
+    let (unknown, _) = request(
+        &mut deleter,
+        4,
+        "session.delete",
+        json!({ "session_id": session_id, "expected_last_seq": last, "force": true }),
+    )
+    .await;
+    assert_eq!(code(&unknown), "unknown_field", "{unknown}");
+    let (stale, _) = request(
+        &mut deleter,
+        5,
+        "session.delete",
+        json!({ "session_id": session_id, "expected_last_seq": last + 1 }),
+    )
+    .await;
+    assert_eq!(code(&stale), "session_changed", "{stale}");
+    assert_eq!(stale["error"]["data"]["current_last_seq"], json!(last));
+    assert!(stale["error"]["data"]["hint"].is_string(), "{stale}");
+    let (missing, _) = request(
+        &mut deleter,
+        6,
+        "session.delete",
+        json!({
+            "session_id": "0192f3a4-5b6c-7d8e-9f00-aabbccddeeff",
+            "expected_last_seq": 1
+        }),
+    )
+    .await;
+    assert_eq!(code(&missing), "session_not_found", "{missing}");
+
+    let (deleted, early) = request(
+        &mut deleter,
+        7,
+        "session.delete",
+        json!({ "session_id": session_id, "expected_last_seq": last }),
+    )
+    .await;
+    assert_eq!(
+        deleted["result"],
+        json!({ "deleted": [session_id] }),
+        "{deleted}"
+    );
+    let removed =
+        |change: &Value| change["change"] == "removed" && change["session_id"] == session_id;
+    if !early
+        .iter()
+        .any(|frame| frame["method"] == "sessions.changed" && removed(&frame["params"]))
+    {
+        notification_where(&mut deleter, "sessions.changed", removed).await;
+    }
+    notification_where(&mut viewer, "sessions.changed", removed).await;
+    // The viewer's subscription ended with the session.
+    let (unsubscribed, _) = request(
+        &mut viewer,
+        3,
+        "events.unsubscribe",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert_eq!(
+        unsubscribed["result"]["unsubscribed"],
+        json!(false),
+        "{unsubscribed}"
+    );
+    let (listed, _) = request(&mut viewer, 4, "session.list", json!({})).await;
+    assert_eq!(listed["result"]["sessions"], json!([]), "{listed}");
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
+}

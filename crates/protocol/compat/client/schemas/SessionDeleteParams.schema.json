@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Deletes a root session's whole tree from disk: the root, every delegated\nsession under it, their events, metadata, and artifacts.",
+  "properties": {
+    "expected_last_seq": {
+      "description": "The root's `last_event_seq` the user saw before confirming. A root\nwhose last event is now another one is refused with\n`session_changed`, so a delete never removes what the user has not\nseen.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "session_id": {
+      "description": "A root session. A delegated session is refused with\n`not_a_root_session`: its tree is deleted through its root.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "expected_last_seq"
+  ],
+  "title": "SessionDeleteParams",
+  "type": "object"
+}

@@ -324,6 +324,39 @@ error_codes! {
         hint: Some("Reload the session and choose the point to revert to again."),
         description: "A revert named an expected last event that is no longer the last.",
     }
+    NOT_A_ROOT_SESSION {
+        code: "not_a_root_session",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("session_id", "The session."),
+            required("root_session_id", "The root of its tree."),
+        ],
+        message: "This session is a subagent of another session, and only a whole session tree can be deleted.",
+        hint: Some("Delete its root session, which deletes its subagents with it."),
+        description: "`session.delete` named a delegated session instead of a root.",
+    }
+    SESSION_TREE_RUNNING {
+        code: "session_tree_running",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("session_id", "The root session."),
+            optional("running_session_id", "The session of the tree that is busy."),
+        ],
+        message: "This session or one of its subagents is running, so it cannot be deleted.",
+        hint: Some("Wait for it to finish, or cancel it, then delete the session."),
+        description: "`session.delete` on a tree with an active run, a compaction, or a subagent waiting for a slot.",
+    }
+    SESSION_CHANGED {
+        code: "session_changed",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("session_id", "The session."),
+            required("current_last_seq", "The session's last event now."),
+        ],
+        message: "The session changed after it was shown, so it was not deleted.",
+        hint: Some("Look at the session again, then delete it if you still want to."),
+        description: "`session.delete` named an expected last event that is no longer the root's last.",
+    }
     SESSION_REQUIRES_NEWER_ENGINE {
         code: "session_requires_newer_engine",
         rpc: APPLICATION_ERROR,
@@ -1386,6 +1419,9 @@ mod tests {
         for code in [
             "no_runnable_model",
             "session_owned_elsewhere",
+            "not_a_root_session",
+            "session_tree_running",
+            "session_changed",
             "tree_usage_session_missing",
             "tree_usage_delegation_corrupt",
             "config_apply_refused",

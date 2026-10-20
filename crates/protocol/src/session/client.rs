@@ -688,6 +688,15 @@ impl Client {
         self.call("session.revert", &params).await
     }
 
+    /// Deletes a root session's whole tree (client protocol 1.5). A daemon
+    /// older than 1.5 answers [`ClientError::DaemonTooOld`].
+    pub async fn delete_session(
+        &self,
+        params: crate::SessionDeleteParams,
+    ) -> Result<crate::SessionDeleteResult, ClientError> {
+        self.call(crate::SESSION_DELETE_METHOD, &params).await
+    }
+
     pub async fn fork_session(
         &self,
         params: SessionForkParams,

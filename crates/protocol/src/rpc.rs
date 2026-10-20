@@ -1334,6 +1334,28 @@ pub struct SessionRevertResult {
     pub instructions_override: Option<String>,
 }
 
+pub const SESSION_DELETE_METHOD: &str = "session.delete";
+/// Deletes a root session's whole tree from disk: the root, every delegated
+/// session under it, their events, metadata, and artifacts.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionDeleteParams {
+    /// A root session. A delegated session is refused with
+    /// `not_a_root_session`: its tree is deleted through its root.
+    pub session_id: SessionId,
+    /// The root's `last_event_seq` the user saw before confirming. A root
+    /// whose last event is now another one is refused with
+    /// `session_changed`, so a delete never removes what the user has not
+    /// seen.
+    #[schemars(range(min = 1))]
+    pub expected_last_seq: u64,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct SessionDeleteResult {
+    /// Every session that was deleted, the root first.
+    pub deleted: Vec<SessionId>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionForkParams {

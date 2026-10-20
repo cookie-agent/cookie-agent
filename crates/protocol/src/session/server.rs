@@ -404,6 +404,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: SessionRevertParams,
         context: &ServerContext,
     ) -> Result<SessionRevertResult, ServerFault>;
+    async fn delete_session(
+        &self,
+        params: crate::SessionDeleteParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionDeleteResult, ServerFault>;
     async fn fork_session(
         &self,
         params: SessionForkParams,
@@ -994,6 +999,9 @@ async fn dispatch<S: ServerProtocol>(
         "skills.get" => value(server.get_skill(decode(params)?).await?),
         "session.compact" => value(server.compact_session(decode(params)?, context).await?),
         "session.revert" => value(server.revert_session(decode(params)?, context).await?),
+        crate::SESSION_DELETE_METHOD => {
+            value(server.delete_session(decode(params)?, context).await?)
+        }
         crate::SESSION_COMPACT_CANCEL_METHOD => {
             value(server.cancel_compaction(decode(params)?, context).await?)
         }

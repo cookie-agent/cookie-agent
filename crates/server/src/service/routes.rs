@@ -314,6 +314,18 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn delete_session(
+        &self,
+        params: cookie_agent_protocol::SessionDeleteParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionDeleteResult> {
+        self.engine
+            .delete_session(params.session_id, params.expected_last_seq)
+            .await
+            .map(|deleted| cookie_agent_protocol::SessionDeleteResult { deleted })
+            .map_err(protocol_fault)
+    }
+
     async fn cancel_compaction(
         &self,
         params: cookie_agent_protocol::SessionCompactCancelParams,

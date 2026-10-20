@@ -202,6 +202,13 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SessionRevertResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn delete_session(
+        &self,
+        _: crate::SessionDeleteParams,
+        _context: &ServerContext,
+    ) -> Result<crate::SessionDeleteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn fork_session(
         &self,
         _: crate::SessionForkParams,

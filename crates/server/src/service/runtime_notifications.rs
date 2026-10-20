@@ -68,6 +68,13 @@ impl Server {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
                 };
+                // A deleted session's subscription ends with it: nothing more
+                // is forwarded for it, and its failures no longer name it.
+                if let cookie_agent_protocol::SessionsChangedNotification::Removed { session_id } =
+                    &change
+                {
+                    context.unregister_session_subscription(*session_id);
+                }
                 if context
                     .notify(cookie_agent_protocol::SESSIONS_CHANGED_METHOD, &change)
                     .await

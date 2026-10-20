@@ -5,6 +5,18 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.5.0
+
+- Session deletion: `session.delete { session_id, expected_last_seq }`
+  deletes a root session's whole tree from disk and returns the `deleted`
+  session IDs, the root first; every connection gets `sessions.changed`
+  `removed` for each (see [Delete](protocol.md#delete)). It comes with the
+  error codes `not_a_root_session`, `session_tree_running`, and
+  `session_changed`, besides the existing `session_not_found` and
+  `session_owned_elsewhere`. A 1.4 client sees only the `removed` changes; a
+  1.5 client calling `session.delete` on a 1.4 daemon gets
+  `method_not_found`.
+
 ## 1.4.0
 
 - Memory for clients: `memory.list`, `memory.read`, `memory.write`, and

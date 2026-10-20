@@ -325,6 +325,24 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             .error()
             .field("session_id", session_id)
             .field("current_last_seq", current_last_seq),
+        EngineError::NotARootSession {
+            session_id,
+            root_session_id,
+        } => errors::NOT_A_ROOT_SESSION
+            .error()
+            .field("session_id", session_id)
+            .field("root_session_id", root_session_id),
+        EngineError::SessionTreeRunning { root, busy } => errors::SESSION_TREE_RUNNING
+            .error()
+            .field("session_id", root)
+            .field("running_session_id", busy),
+        EngineError::StaleDelete {
+            session_id,
+            current_last_seq,
+        } => errors::SESSION_CHANGED
+            .error()
+            .field("session_id", session_id)
+            .field("current_last_seq", current_last_seq),
         EngineError::ForkIdempotencyConflict
         | EngineError::RunIdempotencyConflict
         | EngineError::RenameConflict => errors::IDEMPOTENCY_CONFLICT.error(),

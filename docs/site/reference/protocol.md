@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.4.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.5.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.4.0",
+    "protocol_version": "1.5.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.4.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.5.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -260,6 +260,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
 | `session.compact.cancel` | Session ID | Whether a running manual compaction was cancelled |
 | `session.revert` | Session ID, positive `through_seq`, `expected_last_seq` | Updated session metadata |
+| `session.delete` | Root session ID, positive `expected_last_seq` | `deleted`: every session removed, the root first (see [Delete](#delete)) |
 | `session.fork` | Session ID, positive `through_seq`, `client_fork_id` | New session ID |
 | `run.start` | Session ID, client run ID, selection, [`content`](#user-content) | Run ID |
 | `run.steer` | Run ID, [`content`](#user-content) | `accepted` boolean, admission `user_input_seq` |
@@ -760,6 +761,41 @@ contains a submitted user message. The fork copies that prefix exactly under a
 new session ID, closes any copied in-flight run locally, appends ` (fork)` to
 the title, and continues with new physical sequences.
 
+## Delete
+
+`session.delete { session_id, expected_last_seq }` deletes a root session's
+whole tree from disk: the root, every delegated session under it, their
+events and metadata, and the tree's artifacts. Nothing is kept for undo, so
+clients ask the user first. It is new in 1.5.0: a client sends it only to a
+daemon of minor 5 or later, and reads `-32601` as "the daemon is too old to
+delete sessions".
+
+`expected_last_seq` is the root's `last_event_seq` from the metadata the user
+confirmed. The delete is refused, changing nothing, when:
+
+- the session does not exist (`session_not_found`);
+- it is a delegated session (`not_a_root_session`, with its
+  `root_session_id`): a tree is deleted through its root;
+- a session of the tree has an active run, a compaction, or a subagent
+  waiting for a slot (`session_tree_running`, with the busy
+  `running_session_id`);
+- another cookie process holds the tree's `owner.lock`
+  (`session_owned_elsewhere`);
+- the root's last event is no longer `expected_last_seq`
+  (`session_changed`, with `current_last_seq`).
+
+A tree this daemon does not hold is deleted under its lock without being
+opened, so nothing is appended to it first. The tree's background calls are
+stopped without a report and its uploads in progress are dropped. The daemon
+moves the tree's directory aside to a `.deleted-<root>-<id>` tombstone in the
+work directory, which commits the delete, forgets the tree, sends
+`sessions.changed` `removed` for each deleted session (the root first) to
+every connection, and removes the tombstone; a daemon that stopped in between
+removes the tombstone when it next opens the directory. Each connection's
+subscriptions to the deleted sessions end with them: no further
+`events.subscription` arrives for them and `events.unsubscribe` answers
+`false`. The result is `{ "deleted": [<root>, <descendants>…] }`.
+
 ## Notifications
 
 | Notification | Payload |
@@ -796,7 +832,7 @@ notification methods they do not know.
 | `change` | Fields | Sent when |
 |---|---|---|
 | `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status or title changes |
-| `removed` | `session_id` | A revert deleted a delegated session |
+| `removed` | `session_id` | A revert deleted a delegated session, or `session.delete` deleted a session of a tree; the connection's subscription to it has ended |
 | `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
 | `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |
 | `resync` | none | This connection fell more than 256 changes behind and missed some; refetch `session.list`, approvals, and permission modes |

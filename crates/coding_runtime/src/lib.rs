@@ -1,4 +1,4 @@
-//! The coding runtime's tools for cookie-agent client protocol 1.4: `read`, `write`,
+//! The coding runtime's tools for cookie-agent client protocol 1.5: `read`, `write`,
 //! `edit`, `bash`, and `webfetch`, prepared against the workspace of the
 //! runtime that offers them. They implement the `cookie_agent_runtime_api`
 //! contract and never depend on the engine.
