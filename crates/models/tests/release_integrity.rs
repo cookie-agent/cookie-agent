@@ -27,6 +27,8 @@ fn collect_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
 
 const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/identity/Cargo.toml",
+    "crates/web/Cargo.toml",
+    "crates/web_assets/Cargo.toml",
     "crates/client_state/Cargo.toml",
     "crates/config/Cargo.toml",
     "crates/coding_runtime/Cargo.toml",
@@ -50,6 +52,7 @@ const PUBLISHED_CRATES: &[&str] = &[
     "cookie_agent_identity",
     "cookie_agent_plugin_sdk",
     "cookie_agent_protocol",
+    "cookie_agent_web_assets",
 ];
 
 fn cargo_metadata() -> serde_json::Value {
@@ -466,7 +469,10 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "crates/protocol/scripts/check-schema-additive.sh",
         "release_binary_contains_no_secret_material -- --ignored --exact",
         "cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_client_state",
-        "needs: [stable, msrv, wasm, windows, release-targets]",
+        "tool: trunk@0.21.14",
+        "cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_web --all-targets -- -D warnings",
+        "scripts/build-web.sh",
+        "needs: [stable, msrv, wasm, web, windows, release-targets]",
     ] {
         assert!(
             workflow.contains(required),

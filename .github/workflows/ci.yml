@@ -77,6 +77,39 @@ jobs:
       - run: cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_client_state
       - run: cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol --features websocket -p cookie_agent_client_state --all-targets -- -D warnings
 
+  web:
+    name: Web client bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install trunk
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: trunk@0.21.14
+      # Trunk downloads the pinned wasm-bindgen, wasm-opt, and Tailwind CLIs
+      # here on first use.
+      - name: Cache Trunk's tools
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/trunk
+          key: trunk-tools-${{ hashFiles('crates/web/Trunk.toml') }}
+      - run: cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_web --all-targets -- -D warnings
+      - name: Build the bundle and report its size
+        run: |
+          scripts/build-web.sh | tee build-web.txt
+          {
+            echo '### Web bundle'
+            echo '```'
+            sed -n '/^web bundle in /,$p' build-web.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   windows:
     name: Windows MSVC (x86_64)
     timeout-minutes: 90
@@ -135,7 +168,7 @@ jobs:
 
   release:
     name: Release validated commit
-    needs: [stable, msrv, wasm, windows, release-targets]
+    needs: [stable, msrv, wasm, web, windows, release-targets]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
     permissions:
       contents: write

@@ -61,6 +61,14 @@ cargo +stable clippy --locked --workspace --all-targets -- -D warnings
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
 ```
 
+Check the browser side for `wasm32-unknown-unknown` and build the web client
+bundle (`scripts/build-web.sh` needs trunk 0.21.14):
+
+```sh
+cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol --features websocket -p cookie_agent_client_state -p cookie_agent_web --all-targets -- -D warnings
+scripts/build-web.sh
+```
+
 Check the protocol compatibility baselines, documentation, and dependency policy:
 
 ```sh
