@@ -843,8 +843,11 @@ or a gap indicating that the subscriber must rebuild its disposable projection:
 
 Stored sequences stay gap-free across a streamed turn, so replay cursors only
 ever point at durable events. A transient event belongs right after the durable
-event `after_seq`: it never advances the cursor, is never replayed, and is
-never a reason to recover. The shared client delivers one only when its
+event `after_seq`: it never advances the cursor, is never stored, and is
+never a reason to recover. A subscriber that starts from the beginning (no
+cursor, or `0`) first receives the output streaming at that moment, coalesced
+into `transient` messages after the durable tip; one resuming from a cursor
+does not, since it may already hold part of it. The shared client delivers one only when its
 `after_seq` equals the subscription cursor, including output buffered while a
 replay is in flight; anything else is stale or outruns a durable event the view
 has not seen, and is dropped. The engine drops transient output for a

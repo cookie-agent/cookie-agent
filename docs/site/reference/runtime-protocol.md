@@ -31,7 +31,11 @@ protocol over either:
   `Authorization: Bearer` header, one message per text frame. The daemon
   then sends `runtime/initialize` exactly as for a spawned runtime, with no
   MCP servers: a dial-in runtime hosts its own. An ID the daemon configures,
-  or one already connected, is refused by closing the connection.
+  or one already connected, is refused by closing the connection. A request
+  with an `Origin` header is refused with HTTP 403, and one without the
+  right token with 401. A dial-in runtime gets 30 seconds to answer
+  `runtime/initialize` and each `capability/open`, and 3 seconds to answer
+  `runtime/shutdown`.
 
 ## Framing
 
@@ -196,7 +200,9 @@ published before the restart fails as `operation_changed`. When every
 attempt fails, the instance becomes `failed`, its tools leave the session's
 tool list, and clients are told the reason. A failed instance starts again
 when a session that uses it is created or opened, or on
-`runtimes.reconnect`. Calls are never retried transparently.
+`runtimes.reconnect`. A runtime that dials in is not dialed by the daemon:
+an attempt succeeds only once the runtime has connected again, and a runtime
+that dials in after its instances failed reopens them. Calls are never retried transparently.
 
 ## Methods
 

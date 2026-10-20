@@ -36,7 +36,7 @@ The reply:
   member the daemon's version includes.
 - **`client.kind`** names the client program: a lowercase letter followed by
   up to 15 lowercase letters, digits, or hyphens (the shipped clients use
-  `tui` and `cli`). **`client.instance_id`** is a UUID identifying one running
+  `tui`, `cli`, and `web`). **`client.instance_id`** is a UUID identifying one running
   client; a client keeps it across reconnects so it can recognize events it
   caused. Any number of clients may connect to one daemon at once.
 - **`origin`** is `client:<kind>-<id>`, where `<id>` is the instance id as 32
@@ -90,7 +90,9 @@ The daemon and its clients read what they receive by its role (see the
 - **A notification a client cannot read is dropped.** The shared client
   reports it as `ClientDelivery::Diagnostic`, and no call in flight fails. A
   response it cannot read fails only its own call. A frame that is not JSON,
-  or not a request, notification, or reply, ends the connection.
+  or not a request, notification, or reply, ends the shared client's
+  connection; the daemon instead answers such a frame with `parse_error` or
+  `invalid_request` and reads on.
 - **Events.** A client reads stored events with an open payload: an event of
   a type this build does not know, or one it cannot read, is delivered in its
   place as `ClientDelivery::UnknownEvent`, which advances the session's
@@ -714,7 +716,7 @@ reduce the queue with `cookie_agent_protocol::QueuedInputs`, as the daemon does.
 by its seq. Only the client whose origin admitted it may do so: another client
 gets `{ "outcome": "not_owner" }`. A pending input is withdrawn with
 `user_input_recalled` and a queued one with `user_input_queue_recalled`; both
-return `{ "outcome": "recalled", "input" }`. An input that was already promoted,
+return `{ "outcome": "recalled", "content" }`, the input's content for editing. An input that was already promoted,
 started, or voided returns `{ "outcome": "gone" }`.
 
 `run.start` on a session whose run is active fails with code `-32602` and

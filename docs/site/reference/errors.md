@@ -18,7 +18,7 @@ codes are the standard `-32700`, `-32600`, `-32601`, `-32602`, and
 
 | `data.code` | JSON-RPC | Meaning | Message | Hint | Fields |
 |---|---|---|---|---|---|
-| `parse_error` | `-32700` | A frame that is not JSON; the connection closes. | A message could not be read because it is not valid JSON. | – | – |
+| `parse_error` | `-32700` | A frame that is not JSON; the daemon answers it and reads on, while the shared client closes its connection. | A message could not be read because it is not valid JSON. | – | – |
 | `invalid_request` | `-32600` | A frame that is not a JSON-RPC request, notification, or reply. | A message is not a valid request. | – | – |
 | `request_id_required` | `-32600` | A method that only works as a request arrived as a notification. | {method} must be sent as a request with an ID. | – | `method`: The method that was sent as a notification. |
 | `method_not_found` | `-32601` | A method the receiver does not know. | The other side does not know the method {method}. | Update the older of the two programs. | `method`: The method name. |

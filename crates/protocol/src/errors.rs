@@ -155,7 +155,7 @@ error_codes! {
         fields: [],
         message: "A message could not be read because it is not valid JSON.",
         hint: None,
-        description: "A frame that is not JSON; the connection closes.",
+        description: "A frame that is not JSON; the daemon answers it and reads on, while the shared client closes its connection.",
     }
     INVALID_MESSAGE {
         code: "invalid_request",

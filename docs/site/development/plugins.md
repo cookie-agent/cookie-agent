@@ -154,7 +154,7 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":"0.5.0","engine_version":"0.3.0",
+  "protocol_version":"1.2.0","engine_version":"0.3.0",
   "features":["producer_messaging"],"interception_timeout_ms":2000}}
 ```
 
