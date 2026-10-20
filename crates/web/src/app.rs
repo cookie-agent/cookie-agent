@@ -1,6 +1,6 @@
 //! The page: a header with the connection and the theme toggle, the connect
-//! screen (spec 7.2), and, once connected, the main area (sessions come in
-//! phase W2).
+//! screen (spec 7.2), and, once connected, the workspace: sessions, the
+//! transcript, and the composer.
 
 use cookie_agent_client_state::subscriptions::{RECONNECT_FIRST_DELAY, next_reconnect_delay};
 use cookie_agent_protocol::{Client, ClientDelivery, ClientError, ClientIdentity, ServerHello};
@@ -14,6 +14,8 @@ use crate::{
     },
     connection,
     theme::ThemePreference,
+    views::WorkspaceView,
+    workspace::Workspace,
 };
 
 /// How long a check of the connection after the tab became visible may take
@@ -53,6 +55,10 @@ struct Connection {
     /// Bumped by every connect and forget, so a superseded attempt or
     /// watcher stops.
     generation: StoredValue<u64>,
+    /// What the page shows of the daemon; it outlives a redial.
+    workspace: Workspace,
+    /// The workspace has had a connection, so a redial keeps it on screen.
+    attached: RwSignal<bool>,
 }
 
 impl Connection {
@@ -77,6 +83,8 @@ impl Connection {
             identity: StoredValue::new(connection::tab_identity()),
             client: StoredValue::new(None),
             generation: StoredValue::new(0),
+            workspace: Workspace::new(),
+            attached: RwSignal::new(false),
         }
     }
 
@@ -122,7 +130,9 @@ impl Connection {
     /// Makes `client` the page's connection and watches it for a drop.
     fn adopt(self, generation: u64, url: &str, client: Client, hello: &ServerHello) {
         let deliveries = client.subscribe_deliveries();
-        self.client.set_value(Some(client));
+        self.client.set_value(Some(client.clone()));
+        self.workspace.adopt(client);
+        self.attached.set(true);
         self.phase.set(Phase::Connected {
             address: url.to_owned(),
             engine_version: hello.engine_version.clone(),
@@ -135,6 +145,9 @@ impl Connection {
             let reason = loop {
                 match deliveries.recv().await {
                     Some(ClientDelivery::Disconnected { error }) => break error.to_string(),
+                    Some(delivery) if self.is_current(generation) => {
+                        self.workspace.handle(delivery);
+                    }
                     Some(_) => {}
                     None => break "the connection closed".to_owned(),
                 }
@@ -149,6 +162,7 @@ impl Connection {
     /// until it connects or the user connects or forgets anew.
     fn reconnect(self, generation: u64, reason: String) {
         self.drop_client();
+        self.workspace.disconnected();
         self.phase.set(Phase::Reconnecting { reason });
         let url = self.url.get_untracked();
         let token = self.token.get_untracked();
@@ -209,6 +223,7 @@ impl Connection {
         self.drop_client();
         browser::forget(&token_key(self.url.get_untracked().trim()));
         self.token.set(String::new());
+        self.attached.set(false);
         self.phase.set(Phase::Idle);
     }
 
@@ -266,43 +281,74 @@ pub fn App() -> impl IntoView {
     }
 
     view! {
-        <div class="flex min-h-screen flex-col bg-cream text-espresso dark:bg-night dark:text-latte">
+        <div class="flex h-dvh flex-col overflow-hidden bg-cream text-espresso dark:bg-night dark:text-latte">
             <Header connection=connection theme=theme />
-            <main class="flex flex-1 items-start justify-center px-4 py-10">
-                {move || match connection.phase.get() {
-                    Phase::Connected { address, engine_version, protocol_version } => {
+            {move || {
+                let phase = connection.phase.get();
+                let attached = connection.attached.get();
+                match phase {
+                    Phase::Connected { .. } => {
+                        view! { <WorkspaceView workspace=connection.workspace /> }.into_any()
+                    }
+                    Phase::Reconnecting { reason } if attached => {
                         view! {
-                            <Connected
-                                connection=connection
-                                address=address
-                                engine_version=engine_version
-                                protocol_version=protocol_version
-                            />
+                            <div id="reconnecting" class="border-b border-caramel bg-toasted px-3 py-1 text-sm dark:border-maple dark:bg-ember">
+                                {format!("Connection lost ({reason}); reconnecting…")}
+                            </div>
+                            <WorkspaceView workspace=connection.workspace />
                         }
                             .into_any()
                     }
-                    phase => view! { <ConnectScreen connection=connection phase=phase /> }.into_any(),
-                }}
-            </main>
+                    phase => {
+                        view! {
+                            <main class="flex flex-1 items-start justify-center overflow-y-auto px-4 py-10">
+                                <ConnectScreen connection=connection phase=phase />
+                            </main>
+                        }
+                            .into_any()
+                    }
+                }
+            }}
         </div>
     }
 }
 
 #[component]
 fn Header(connection: Connection, theme: RwSignal<ThemePreference>) -> impl IntoView {
-    let status = move || match connection.phase.get() {
-        Phase::Idle | Phase::Failed { .. } => "not connected".to_owned(),
-        Phase::Connecting => "connecting…".to_owned(),
-        Phase::Connected { address, .. } => format!("connected to {address}"),
-        Phase::Reconnecting { .. } => "reconnecting…".to_owned(),
+    let status = move || {
+        match connection.phase.get() {
+        Phase::Idle | Phase::Failed { .. } => view! { <span>"not connected"</span> }.into_any(),
+        Phase::Connecting => view! { <span>"connecting…"</span> }.into_any(),
+        Phase::Connected {
+            address,
+            engine_version,
+            protocol_version,
+        } => view! {
+            <span id="connected">
+                {format!("{address} · cookie {engine_version} · client protocol {protocol_version}")}
+            </span>
+        }
+            .into_any(),
+        Phase::Reconnecting { .. } => view! { <span>"reconnecting…"</span> }.into_any(),
+    }
     };
     view! {
-        <header class="flex items-center gap-3 border-b border-toasted bg-parchment px-4 py-2 dark:border-ember dark:bg-char">
+        <header class="flex items-center gap-3 border-b border-toasted bg-parchment px-4 py-1 dark:border-ember dark:bg-char">
             <span class="font-mono font-bold">"cookie agent"</span>
-            <span class="flex-1 truncate font-mono text-sm text-ink dark:text-sand">{status}</span>
+            <span class="min-w-0 flex-1 truncate font-mono text-xs text-ink dark:text-sand">{status}</span>
+            <Show when=move || connection.attached.get()>
+                <button
+                    type="button"
+                    id="forget"
+                    class="min-h-11 rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                    on:click=move |_| connection.forget()
+                >
+                    "Forget this daemon"
+                </button>
+            </Show>
             <button
                 type="button"
-                class="rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                class="min-h-11 rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
                 on:click=move |_| theme.update(|preference| *preference = preference.next())
             >
                 {move || theme.get().label()}
@@ -383,38 +429,5 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                 </button>
             </div>
         </form>
-    }
-}
-
-#[component]
-fn Connected(
-    connection: Connection,
-    address: String,
-    engine_version: String,
-    protocol_version: String,
-) -> impl IntoView {
-    view! {
-        <section
-            id="connected"
-            class="flex w-full max-w-xl flex-col gap-2 rounded-lg border border-toasted bg-parchment p-6 dark:border-ember dark:bg-char"
-        >
-            <h1 class="text-xl font-bold">"Connected"</h1>
-            <p class="font-mono text-sm">{address}</p>
-            <p class="text-sm text-ink dark:text-sand">
-                "cookie " {engine_version} " · client protocol " {protocol_version}
-            </p>
-            <p class="text-sm text-ink dark:text-sand">
-                "Sessions arrive in a later version of this page."
-            </p>
-            <div>
-                <button
-                    type="button"
-                    class="mt-2 rounded border border-crust px-4 py-2 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
-                    on:click=move |_| connection.forget()
-                >
-                    "Forget this daemon"
-                </button>
-            </div>
-        </section>
     }
 }

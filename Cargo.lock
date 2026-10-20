@@ -1063,15 +1063,18 @@ dependencies = [
 name = "cookie_agent_web"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "cookie_agent_client_state",
  "cookie_agent_protocol",
  "foldhash",
  "futures-util",
  "gloo-timers",
+ "js-sys",
  "leptos",
  "pulldown-cmark",
  "serde_json",
  "url",
+ "uuid",
  "wasm-bindgen",
  "web-sys",
 ]

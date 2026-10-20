@@ -11,6 +11,10 @@ pub const DAEMON_URL_KEY: &str = "cookie.daemon_url";
 /// The `localStorage` key of the theme preference.
 pub const THEME_KEY: &str = "cookie.theme";
 
+/// The `localStorage` key of the lowest diagnostic level the transcript
+/// shows (`/events`).
+pub const EVENT_LEVEL_KEY: &str = "cookie.event_level";
+
 /// The `sessionStorage` key of this tab's client identity: each tab is its
 /// own client, kept across reloads and reconnects.
 pub const IDENTITY_KEY: &str = "cookie.identity";

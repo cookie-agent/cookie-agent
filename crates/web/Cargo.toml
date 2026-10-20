@@ -10,24 +10,32 @@ license-file.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 cookie_agent_client_state = { version = "=0.3.0", path = "../client_state" }
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["websocket"] }
 foldhash.workspace = true
 futures-util.workspace = true
 gloo-timers = { version = "0.3.0", features = ["futures"] }
+js-sys = "0.3.80"
 leptos = { version = "0.8.22", features = ["csr"] }
 pulldown-cmark.workspace = true
 serde_json.workspace = true
 url.workspace = true
+uuid.workspace = true
 wasm-bindgen = "0.2.126"
 web-sys = { version = "0.3.103", features = [
+    "Blob",
+    "BlobPropertyBag",
     "DomTokenList",
     "Document",
     "Element",
     "History",
+    "HtmlTextAreaElement",
     "Location",
     "MediaQueryList",
+    "NodeList",
     "Storage",
+    "Url",
     "VisibilityState",
     "Window",
 ] }

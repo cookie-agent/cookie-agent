@@ -8,10 +8,16 @@
 
 mod app;
 pub mod browser;
+pub mod commands;
 pub mod connect;
 pub mod connection;
+mod highlight;
+pub mod keys;
+mod media;
 pub mod render;
 pub mod theme;
+mod views;
+pub mod workspace;
 
 pub use app::App;
 
