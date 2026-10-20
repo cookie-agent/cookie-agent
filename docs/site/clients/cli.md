@@ -1,11 +1,346 @@
 # Command line
 
-This page covers headless runs with `cookie run`: its prompt input, agent and
-model selection, permissions, skills, output, failure diagnostics, and exit
-codes. Interactive work happens in the [terminal UI](tui.md) or the
-[web client](web.md), and
-[Persistent daemon](../daemon/persistent.md) covers `cookie daemon`,
-`cookie attach`, and the other commands that reach a running daemon.
+This page is the reference for the `cookie` command: every subcommand and
+option, how commands find a daemon, and how they exit, then headless runs with
+`cookie run` in detail. Interactive work happens in the
+[terminal UI](tui.md) or the [web client](web.md), and
+[Persistent daemon](../daemon/persistent.md) covers running `cookie daemon` and
+attaching clients to it.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| [`cookie`](#cookie) | The terminal UI, on a daemon already running on this machine or in this process |
+| [`cookie run`](#cookie-run) | Run one prompt without the TUI |
+| [`cookie daemon`](#cookie-daemon) | Serve the client protocol, the web page, and dial-in runtimes |
+| [`cookie attach`](#cookie-attach) | The terminal UI on a running daemon, here or elsewhere |
+| [`cookie web`](#cookie-web) | Print the daemon's web page address with its token |
+| [`cookie connect`](#cookie-connect), [`cookie disconnect`](#cookie-disconnect) | Store or remove a managed provider connection |
+| [`cookie runtime serve`](#cookie-runtime-serve) | Serve this machine's `coding` runtime over stdio or by dialing in |
+| [`cookie config`](#cookie-config) | Read and change the daemon's `config.toml` and agent documents |
+| [`cookie machine`](#cookie-machine) | List and regroup the machines the daemon's runtimes run on |
+| [`cookie memory`](#cookie-memory) | List, edit, and delete the daemon's memories |
+| [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
+| [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
+
+`cookie --help`, and `--help` after any subcommand, prints clap's usage;
+`cookie --version` prints the version.
+
+### Global options
+
+| Option | Meaning |
+|---|---|
+| `--error-details` | Accepted by every command. When the daemon refuses a request, also print the technical detail of its error, such as the upstream cause or a path (see [Error details](tui.md#error-details)). |
+| `--standalone` | Plain `cookie` only: run the engine in this process, without looking for a running daemon. With a subcommand it is a usage error. |
+
+### Reaching a daemon
+
+`attach`, `web`, `connect`, `disconnect`, `config`, `machine`, `memory`,
+`mcp`, and `runtime serve --daemon` talk to a running daemon. Each takes
+`--url` and `--token`; for `config`, `machine`, and `memory` the two may also
+follow the nested subcommand. They resolve the daemon this way:
+
+- **URL:** `--url`, else `[server] url` in this machine's `config.toml`, else
+  the local daemon that table describes, `ws://<host>:<port>/ws`. The URL must
+  be `ws://` or `wss://` with the path `/ws`.
+- **Token:** `--token`, else the `COOKIE_DAEMON_TOKEN` environment variable,
+  else `[server] token`. With none of them the command fails with
+  `no daemon token`.
+
+When both `--url` and a token are given, `config.toml` is not read. See
+[Server](../engine/server.md) for the `[server]` keys and
+[Remote access](../daemon/remote-access.md) for daemons on other machines.
+
+### Exit status
+
+A command that succeeds exits `0`. One that fails prints `cookie: ` and the
+error on standard error and exits `1`; when the error is a daemon refusal
+that has technical detail, it adds that detail with `--error-details`, or a
+line saying to run again with it. Command-line usage errors, such as an
+unknown option or a missing argument, exit `2` with clap's message.
+`cookie run` has its own [exit codes](#exit-codes).
+
+## Command reference
+
+### `cookie`
+
+```text
+cookie [--standalone] [--error-details]
+```
+
+Opens the terminal UI for the current directory. Unless `--standalone` is
+given, it first looks for a daemon on this machine, as
+[A daemon already running](../daemon/persistent.md#a-daemon-already-running)
+describes, and opens the TUI on it; otherwise it runs the engine in this
+process and the TUI with it. Quitting the TUI exits `0`. See
+[Terminal UI](tui.md).
+
+### `cookie run`
+
+```text
+cookie run [OPTIONS] <PROMPT | -p PROMPT | -f PATH>
+```
+
+Runs one prompt through an engine in this process, without the TUI, and
+never looks for a running daemon. [Headless runs](#headless-runs) below
+describes each option.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `PROMPT`, `-p`, `--prompt <PROMPT>` | | The prompt; `-` reads standard input. Exactly one prompt source is required. |
+| `-f`, `--prompt-file <PATH>` | | Read the prompt from a file; `-` reads standard input. |
+| `-a`, `--agent <AGENT>` | see [Selection and limits](#selection-and-limits) | Root-runnable agent ID. |
+| `--preset <PRESET>` | | Agent preset for a new session. |
+| `-m`, `--model <MODEL>` | see [Selection and limits](#selection-and-limits) | `provider/model` to run. |
+| `--variant <VARIANT>` | | Named model variant, or `base` for none. |
+| `--permission-mode <MODE>` | `auto-approve` | `auto-approve`, `auto-approve-n`, `auto-approve-y`, `ask`, or `yolo`; the underscore spellings are aliases. |
+| `--allowed-tools <ACTION,...>` | | Permission actions, or `skill:<name>`, to allow; repeatable and comma-delimited. |
+| `--skill <NAME>` | | Load a user-invocable skill before the prompt. |
+| `--skill-args <TEXT>` | | Arguments of `--skill`; requires it. |
+| `--max-turns <N>` | `100` | Most committed root model turns, at least 1. |
+| `--timeout <SECONDS>` | `600` | Run timeout, at least 1. |
+| `--resume-session <ID>` | | Continue this session instead of creating one. |
+| `--data-dir <PATH>` | `~/.cookie-agent` | Session and artifact store. |
+| `-o`, `--output <FORMAT>` | `text` | `text`, `json`, or `none`. |
+| `--json` | | Alias for `--output json`; conflicts with `--output`. |
+| `--output-file <PATH>` | | Write output to a file; not with `--output none`. |
+| `--verbose` | | Progress on standard error and, in JSON mode, tool-output records. |
+
+### `cookie daemon`
+
+```text
+cookie daemon [--port <PORT> | --listen <ADDR:PORT>] [--tls-cert <PATH> --tls-key <PATH>]
+```
+
+Serves the client protocol on `/ws`, the web page, and dial-in runtimes on
+`/runtime`, for sessions of any directory; the sessions are stored for the
+directory it starts in. It prints the ready line, then its address and client
+protocol version and the web page's address, and runs until a stop signal.
+Without a `[server] token` it writes a fresh one to `config.toml` first. See
+[Persistent daemon](../daemon/persistent.md#separate-server-and-client).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--port <PORT>` | `[server] port` | Loopback port to bind; `0` lets the OS pick one, which the ready line reports. Conflicts with `--listen`. |
+| `--listen <ADDR:PORT>` | `127.0.0.1`, the port above | Address and port to bind, such as `0.0.0.0:7419`, for clients and runtimes on other machines. |
+| `--tls-cert <PATH>` | | PEM certificate chain to serve `wss` with; requires `--tls-key`. |
+| `--tls-key <PATH>` | | PEM private key of `--tls-cert`; requires `--tls-cert`. |
+
+See [Remote access](../daemon/remote-access.md#listening-on-other-addresses)
+before listening off loopback.
+
+### `cookie attach`
+
+```text
+cookie attach [--url <URL>] [--token <TOKEN>]
+```
+
+Opens the terminal UI on a running daemon, found as
+[Reaching a daemon](#reaching-a-daemon) says. It never runs an engine of its
+own: a daemon it cannot reach or use is an error. A dropped connection is
+redialed, and quitting leaves the daemon running. See
+[Persistent daemon](../daemon/persistent.md#separate-server-and-client).
+
+### `cookie web`
+
+```text
+cookie web [--url <URL>] [--token <TOKEN>] [--open]
+```
+
+Prints the daemon's web page with the token in its fragment,
+`http://127.0.0.1:7419/#token=<token>`: the client URL with `ws` turned into
+`http` (`wss` into `https`) and the final `ws` dropped. It does not contact
+the daemon. `--open` also opens the page in the system browser (`open` on
+macOS, `start` on Windows, `xdg-open` elsewhere). See [Web](web.md).
+
+### `cookie connect`
+
+```text
+cookie connect [PROVIDER_ID] [--url <URL>] [--token <TOKEN>]
+```
+
+Creates or updates the daemon's durable, global connection to a managed
+provider: pick the provider (or name it), confirm, choose the auth method,
+then type its setup values and credentials. It needs an interactive terminal
+on standard input, output, and error: credentials are never accepted as
+arguments. Answering anything but `y` or `yes` to the confirmation cancels it
+with an error. See [Providers](../extend/providers.md).
+
+### `cookie disconnect`
+
+```text
+cookie disconnect [PROVIDER_ID] [--url <URL>] [--token <TOKEN>]
+```
+
+Removes a managed provider connection after a `[y/N]` confirmation; it needs
+an interactive terminal like `connect`.
+
+### `cookie runtime serve`
+
+```text
+cookie runtime serve --stdio [--root <DIR>]...
+cookie runtime serve --daemon [<URL>] [--id <RUNTIME_ID>] [--token <TOKEN>] [--root <DIR>]...
+```
+
+Serves this machine's runtime, the `coding` capability (`read`, `write`,
+`edit`, `bash`, `webfetch`), over the runtime protocol. It needs no provider
+configuration. One of `--stdio` and `--daemon` is required.
+
+| Option | Meaning |
+|---|---|
+| `--stdio` | Speak the runtime protocol on standard input and output, one JSON-RPC message per line, as a [`[runtimes.<id>]` template](../daemon/runtimes.md) starts it. Exits when the daemon sends `runtime/shutdown` or closes standard input. |
+| `--daemon [<URL>]` | Dial in to a daemon and stay connected: this client URL, or, without one, the daemon [Reaching a daemon](#reaching-a-daemon) finds. After a drop it connects again, waiting 1 second, doubling up to 30 seconds. Its machine's `[runtimes.local.mcp]` servers come along. |
+| `--id <RUNTIME_ID>` | The runtime ID to dial in as; this machine's host name, sanitized, when omitted. Not with `--stdio`. |
+| `--token <TOKEN>` | The daemon's token, for `--daemon`; also `COOKIE_DAEMON_TOKEN`. |
+| `--root <DIR>` | Limit `coding` to workspaces under this directory; repeat for several. A leading `~` is expanded; a root that is not a directory is an error. Any workspace when omitted. |
+
+It runs until a stop signal. See
+[Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in).
+
+### `cookie config`
+
+```text
+cookie config <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Reads and changes the daemon's configuration documents, `config.toml` and the
+agent documents, through the daemon, which applies each change live or says
+what needs a restart. See
+[config.toml](../engine/configuration.md#changes-while-the-daemon-runs).
+
+#### `cookie config edit`
+
+`cookie config edit [PATH]` opens a document in `$VISUAL`, else `$EDITOR`,
+else `vi`: `config.toml` by default, or `agents/<id>.md` or
+`agents/<preset>/<id>.md`. A path that does not exist yet is created, an agent
+document from a template. It needs an interactive terminal. Saving it
+unchanged does nothing; a change the daemon refuses as invalid offers to edit
+again.
+
+#### `cookie config set`
+
+`cookie config set <KEY> <VALUE>` sets one dotted key of `config.toml`, such
+as `cookie config set loop_warning.enabled false`. The value is TOML; text
+that does not parse as TOML is a string.
+
+#### `cookie config unset`
+
+`cookie config unset <KEY>` removes one key of `config.toml`.
+
+#### `cookie config remove`
+
+`cookie config remove <PATH>` removes an agent document; a preset's last one
+removes the preset.
+
+#### `cookie config reload`
+
+`cookie config reload` re-reads the configuration files and applies them,
+after editing them by hand.
+
+#### `cookie config status`
+
+`cookie config status` shows whether the applied configuration matches the
+files, why the last reload failed, and what needs a restart.
+
+### `cookie machine`
+
+```text
+cookie machine <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Manages the machines the daemon's runtimes run on. See
+[Machines](../daemon/runtimes.md#machines).
+
+#### `cookie machine list`
+
+Lists each machine with its machine IDs, pinned and connected runtimes,
+platform, and memories.
+
+#### `cookie machine rename`
+
+`cookie machine rename <MACHINE> <NAME>` renames a machine; its memory folder
+moves with it.
+
+#### `cookie machine assign`
+
+`cookie machine assign <RUNTIME> <MACHINE>` pins a runtime ID to a machine,
+created when the name is new.
+
+#### `cookie machine unassign`
+
+`cookie machine unassign <RUNTIME>` removes a runtime's pin, so that it
+follows the machine ID it reports.
+
+#### `cookie machine merge`
+
+`cookie machine merge <FROM> <INTO>` moves one machine's IDs, pins, and
+memories into another and removes it.
+
+#### `cookie machine forget`
+
+`cookie machine forget <MACHINE>` removes a machine that has no connected
+runtimes and no memories.
+
+### `cookie memory`
+
+```text
+cookie memory <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Manages the daemon's memories. See
+[Memory](../sessions/memory.md#managing-memory).
+
+#### `cookie memory list`
+
+`cookie memory list [LAYER]` lists the memories of every layer, or of one:
+`user`, `agent`, `machine`, or `project`. Invalid files and entries that are
+not memories are listed with the reason.
+
+#### `cookie memory edit`
+
+`cookie memory edit <URL>` opens a memory, frontmatter included, in
+`$VISUAL`, else `$EDITOR`, else `vi`, such as `project://web/build`; a memory
+that does not exist yet is created. Text that is not a valid memory, or a
+memory that changed since it was opened, offers to edit again.
+
+#### `cookie memory rm`
+
+`cookie memory rm <URL> [-y | --yes]` deletes a memory, asking first unless
+`--yes`.
+
+### `cookie sessions upgrade`
+
+```text
+cookie sessions upgrade [--all]
+```
+
+Converts the sessions of the current directory, or with `--all` of every
+directory, in `~/.cookie-agent` to this build's history format, as opening
+each one would. The originals stay beside them as `events.jsonl.v<N>.bak`,
+and a session tree another cookie process holds is skipped. It works on the
+files directly, without a daemon. It prints a line per tree it converted or
+could not convert and a summary, and exits `1` when any session could not be
+converted. See [Sessions](../sessions/index.md).
+
+### `cookie mcp`
+
+```text
+cookie mcp <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+#### `cookie mcp list`
+
+Lists every runtime's MCP servers, one per line: the name, its tool count,
+its state, and the runtime (with its workspace) that hosts it.
+
+#### `cookie mcp auth`
+
+`cookie mcp auth <SERVER>` authorizes a remote MCP server of the `global`
+runtime that needs OAuth. It prints the authorization URL and waits for the
+browser to return to a callback on this machine's loopback; when the browser
+runs on another machine, paste the URL it was redirected to. A stop signal
+cancels the authorization. See [MCP](../extend/mcp.md).
 
 ## Headless runs
 
@@ -60,11 +395,12 @@ escalation is rejected and cancels the root run with exit code `3`. In
 automatically. Other escalations anywhere in the session tree are rejected;
 the runner cancels the root run and waits for the matching terminal event.
 
-`--allowed-tools` may be repeated or comma-delimited and accepts `read`,
-`write`, `bash`, `delegate`, `mcp`, `plugin`, `plugin:<name>`, and
-`skill:<name>` — each entry adds an `allow` overlay rule (resource `*`, or the
-given name). It does not deny omitted actions or replace existing agent policy.
-`webfetch` is not accepted; grant web access in the agent document.
+`--allowed-tools` may be repeated or comma-delimited and accepts any
+permission action, such as `read`, `write`, `bash`, `webfetch`, `delegate`, or
+`mcp` (a lowercase letter, then lowercase letters, digits, or `_`, at most 32
+bytes), and `skill:<name>` — each entry adds an `allow` overlay rule (resource
+`*`, or the given skill name). It does not deny omitted actions or replace
+existing agent policy.
 
 ### Skills
 

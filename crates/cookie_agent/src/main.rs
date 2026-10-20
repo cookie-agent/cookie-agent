@@ -721,7 +721,7 @@ fn run_sessions(command: SessionsCommand, workspace: &Path) -> anyhow::Result<()
     Ok(())
 }
 
-/// `cookie runtime coding --stdio`: serves one coding runtime for the
+/// `cookie runtime serve --stdio`: serves one coding runtime for the
 /// workspace over this process's stdio until the daemon sends
 /// `runtime/shutdown` or closes standard input. Standard output carries only
 /// protocol messages; errors go to standard error.
@@ -2035,6 +2035,9 @@ mod config_command;
 mod local_daemon;
 mod machine_command;
 mod memory_command;
+
+#[cfg(test)]
+mod cli_reference;
 
 #[cfg(test)]
 #[path = "../../../test-support/config_harness.rs"]
