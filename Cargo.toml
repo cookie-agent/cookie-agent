@@ -12,6 +12,8 @@ members = [
     "crates/models",
     "crates/server",
     "crates/tui",
+    "crates/web",
+    "crates/web_assets",
     "crates/cookie_agent",
 ]
 resolver = "2"
@@ -98,3 +100,12 @@ lto = "thin"
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+
+# The web client (scripts/build-web.sh): smallest code over speed, as the
+# browser downloads it.
+[profile.web]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

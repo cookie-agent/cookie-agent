@@ -32,3 +32,8 @@ __pycache__/
 /site/
 /docs/site/api/
 /docs/site/schemas/
+
+# The built web client, embedded by crates/web_assets (scripts/build-web.sh)
+/crates/web_assets/bundle/
+# Trunk output
+/crates/web/dist/

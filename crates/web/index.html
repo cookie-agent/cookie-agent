@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>cookie agent</title>
+    <link data-trunk rel="tailwind-css" href="style/main.css" />
+    <link data-trunk rel="copy-dir" href="assets/fonts" />
+    <link
+      data-trunk
+      rel="rust"
+      data-bin="cookie_agent_web"
+      data-cargo-profile="web"
+      data-wasm-opt="z"
+      data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue"
+    />
+  </head>
+  <body></body>
+</html>

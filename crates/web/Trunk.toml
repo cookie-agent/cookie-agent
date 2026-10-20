@@ -1,0 +1,14 @@
+# Built by scripts/build-web.sh; the versions below are pinned so every
+# build of the page is the same. wasm-bindgen matches Cargo.lock.
+
+[build]
+target = "index.html"
+dist = "dist"
+# Relative URLs, so the page works from any path on any static host.
+public_url = "./"
+filehash = true
+
+[tools]
+wasm_bindgen = "0.2.126"
+wasm_opt = "version_131"
+tailwindcss = "4.3.3"

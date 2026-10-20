@@ -1,0 +1,31 @@
+[package]
+name = "cookie_agent_web"
+version = "0.3.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cookie_agent_client_state = { version = "=0.3.0", path = "../client_state" }
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["websocket"] }
+futures-util.workspace = true
+gloo-timers = { version = "0.3.0", features = ["futures"] }
+leptos = { version = "0.8.22", features = ["csr"] }
+serde_json.workspace = true
+url.workspace = true
+wasm-bindgen = "0.2.126"
+web-sys = { version = "0.3.103", features = [
+    "DomTokenList",
+    "Document",
+    "Element",
+    "History",
+    "Location",
+    "MediaQueryList",
+    "Storage",
+    "VisibilityState",
+    "Window",
+] }

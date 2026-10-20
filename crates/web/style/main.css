@@ -1,0 +1,47 @@
+/* The page's styles: Tailwind utilities from the class names in src, the
+   palette as theme tokens, and the bundled fonts. */
+
+@import "tailwindcss" source(none);
+@source "../src";
+
+/* `dark:` follows the `dark` class the page sets on <html> from the
+   system setting or the user's override. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* The landing site's palette, which is the TUI's (crates/tui/src/theme.rs). */
+@theme {
+  --color-cream: #fbf4e6;
+  --color-parchment: #f2e5cc;
+  --color-toasted: #e6ce9e;
+  --color-crust: #c9ae85;
+  --color-espresso: #46301f;
+  --color-ink: #625240;
+  --color-caramel: #9c5a10;
+
+  --color-night: #201c16;
+  --color-char: #29251d;
+  --color-ember: #393326;
+  --color-smoke: #63563b;
+  --color-latte: #edc7ab;
+  --color-sand: #c9b59c;
+  --color-maple: #e78c33;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
