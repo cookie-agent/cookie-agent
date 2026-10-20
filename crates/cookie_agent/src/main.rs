@@ -131,6 +131,21 @@ enum Command {
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
         token: Option<String>,
     },
+    /// Print the daemon's web page with its token, `#token=<token>`, for a
+    /// browser to open.
+    Web {
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// Also open the page in the system browser.
+        #[arg(long)]
+        open: bool,
+    },
     /// Securely create or update a durable global managed-provider connection.
     Connect {
         /// Exact runtime provider ID. Omit to choose interactively.
@@ -530,6 +545,15 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             let target = daemon_target(url, token)?;
             run_disconnect(&target.url, &target.token, provider_id).await
         }
+        Some(Command::Web { url, token, open }) => {
+            let target = daemon_target(url, token)?;
+            let link = web_link(&target.url, &target.token)?;
+            println!("{}", link.as_str());
+            if open {
+                open_in_browser(&link)?;
+            }
+            Ok(())
+        }
         Some(Command::Mcp {
             command,
             url,
@@ -613,6 +637,7 @@ fn local_workspace(
         command,
         Some(
             Command::Attach { .. }
+                | Command::Web { .. }
                 | Command::Connect { .. }
                 | Command::Disconnect { .. }
                 | Command::Mcp { .. }
@@ -1867,6 +1892,63 @@ async fn dial_in(
     }
 }
 
+/// The daemon's web page with `token` in its fragment, for the daemon whose
+/// client endpoint is `url`: `ws`→`http`, `wss`→`https`, the endpoint's
+/// `ws` dropped. The fragment never reaches a server or its logs.
+fn web_link(url: &str, token: &str) -> anyhow::Result<Zeroizing<String>> {
+    let page = cookie_agent_server::page_url(url)
+        .with_context(|| format!("{url} is not a daemon client URL ending in /ws"))?;
+    Ok(Zeroizing::new(format!("{page}#token={token}")))
+}
+
+/// Opens `link` in the system browser.
+fn open_in_browser(link: &str) -> anyhow::Result<()> {
+    let mut command = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]);
+        command
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    let status = command
+        .arg(link)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("open the system browser")?;
+    anyhow::ensure!(
+        status.success(),
+        "the system browser did not open ({status})"
+    );
+    Ok(())
+}
+
+/// What the daemon prints after its ready line about its web page: where
+/// it is, and, while `[server] allowed_origins` is empty, that the page
+/// cannot connect until its origin is listed.
+fn web_page_lines(client_url: &str, origins_empty: bool) -> Vec<String> {
+    let Some(page) = cookie_agent_server::page_url(client_url) else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!(
+        "web page at {page} (`cookie web` prints it with the token)"
+    )];
+    if origins_empty {
+        let origin = page.split_once("://").map_or_else(
+            || page.clone(),
+            |(scheme, rest)| format!("{scheme}://{}", rest.split('/').next().unwrap_or(rest)),
+        );
+        lines.push(format!(
+            "the web page cannot connect until [server] allowed_origins lists the origin it is \
+             opened from, such as \"{origin}\""
+        ));
+    }
+    lines
+}
+
 /// Where and how `cookie daemon` listens.
 struct DaemonListen {
     port: Option<u16>,
@@ -1912,6 +1994,13 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
         "cookie daemon listening on {url} (client protocol {})",
         cookie_agent_protocol::CLIENT_PROTOCOL_VERSION
     );
+    let origins_empty = matches!(
+        runtime.allowed_origins,
+        cookie_agent_server::AllowedOrigins::None
+    );
+    for line in web_page_lines(&url, origins_empty) {
+        println!("{line}");
+    }
     signals.recv().await;
     exit_on_next_stop(signals);
     runtime.server.shutdown();

@@ -598,6 +598,11 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
             url: None,
             token: Some(TEST_TOKEN.into()),
         },
+        Command::Web {
+            url: None,
+            token: Some(TEST_TOKEN.into()),
+            open: false,
+        },
         Command::Connect {
             provider_id: None,
             url: None,
@@ -2523,4 +2528,58 @@ async fn a_daemon_on_another_machine_gets_a_dial_in_runtime_for_the_directory() 
     );
     drop(found);
     daemon.stop().await;
+}
+
+#[test]
+fn cookie_web_prints_the_page_with_the_token_in_its_fragment() {
+    assert_eq!(
+        Cli::try_parse_from([
+            "cookie",
+            "web",
+            "--open",
+            "--url",
+            "wss://lab.example/cookie/ws"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Web {
+            url: Some("wss://lab.example/cookie/ws".into()),
+            token: None,
+            open: true,
+        })
+    );
+    assert_eq!(
+        web_link("ws://127.0.0.1:7419/ws", TEST_TOKEN)
+            .unwrap()
+            .as_str(),
+        format!("http://127.0.0.1:7419/#token={TEST_TOKEN}")
+    );
+    assert_eq!(
+        web_link("wss://lab.example/cookie/ws", TEST_TOKEN)
+            .unwrap()
+            .as_str(),
+        format!("https://lab.example/cookie/#token={TEST_TOKEN}")
+    );
+    assert!(web_link("ws://127.0.0.1:7419/runtime", TEST_TOKEN).is_err());
+}
+
+#[test]
+fn the_daemon_names_its_page_and_the_origin_entry_it_still_needs() {
+    assert_eq!(
+        web_page_lines("ws://127.0.0.1:7419/ws", false),
+        ["web page at http://127.0.0.1:7419/ (`cookie web` prints it with the token)"]
+    );
+    let lines = web_page_lines("wss://lab.example:8443/ws", true);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with("web page at https://lab.example:8443/ "),
+        "{lines:?}"
+    );
+    assert!(lines[1].contains("allowed_origins"), "{lines:?}");
+    assert!(
+        lines[1].contains("\"https://lab.example:8443\""),
+        "{lines:?}"
+    );
+    // The ready line itself carries no page and no change.
+    assert!(!lines.iter().any(|line| line.contains("token=")));
 }
