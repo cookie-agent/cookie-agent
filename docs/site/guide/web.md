@@ -2,9 +2,11 @@
 
 `cookie daemon` serves a web client on the same port as its client endpoint.
 Open it in a browser on the daemon's machine, or on a laptop or phone that
-reaches that port. It works the daemon's sessions as the TUI does. A later
-version adds what is still missing: subagents, fork and revert, goals,
-attachments, and the management panels.
+reaches that port. It does what the TUI does with the daemon's sessions and
+the daemon itself: chat, approvals, subagents, history edits, goals,
+attachments, skills, permissions, runtimes and machines, MCP servers,
+providers, the configuration, memory, and plugins. Two things stay in the
+TUI and the CLI; see [What the page does not do](#what-the-page-does-not-do).
 
 ## Opening the page
 
@@ -34,7 +36,8 @@ cookie web --open   # also opens it in the system browser
 - then `[server] url` and `[server] token` in this machine's `config.toml`.
 
 The page is the client URL with `ws` turned into `http` (`wss` into
-`https`) and the final `/ws` dropped.
+`https`) and the final `/ws` dropped. The daemon also prints the page's
+address, without the token, after its ready line.
 
 The token travels in the address's fragment (`#token=`), which a browser
 never sends to a server. The page keeps the token in the browser's
@@ -216,6 +219,35 @@ address bar.
 - **Plugins.** `/plugins` lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
   status bar.
+
+## Phones
+
+- **Layout.** The page works from 360 px wide, in portrait and landscape.
+  The session list and every panel open full screen, buttons are at least
+  44 px, and long lines in code, diffs, and terminal output scroll inside
+  their block rather than the page.
+- **The on-screen keyboard.** The page sizes itself to what the keyboard
+  leaves visible, so the composer and an open panel stay above it.
+- **Home screen.** Add the page to the home screen from the browser's menu.
+  It opens on its own, without the browser's address bar, with the cookie
+  icon. The page keeps working only while it reaches the daemon: it stores
+  nothing for offline use.
+- **Background tabs.** A phone suspends a tab it does not show. When the tab
+  shows again, the page checks its connection, reconnects if the daemon
+  stopped answering, and catches up on what happened meanwhile.
+- **Reaching the daemon** from a phone takes one of the ways below. Without
+  TLS the token crosses the network in the clear.
+
+## What the page does not do
+
+- **Sign in to an MCP server.** Authorizing a remote MCP server needs a
+  callback on the machine's loopback address, which a page in a browser
+  cannot offer. `/mcp` marks such a server as needing authorization: run
+  `cookie mcp auth <server>` on a machine with a browser, or authorize it
+  from the TUI.
+- **Offer this machine as a runtime.** A browser has no workspace to share.
+  The TUI's machine can attach as a runtime that dials in; the page uses the
+  runtimes the daemon already has.
 
 ## Reaching the daemon from elsewhere
 

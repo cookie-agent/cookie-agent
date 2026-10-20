@@ -7,7 +7,7 @@ Simple and mighty coding agent.
 [![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io-blue)](https://cookie-agent.github.io/doc/)
 
 cookie agent is a Rust-powered terminal coding agent. The surface stays
-minimalistic — a daemon, a TUI, a headless runner — while the batteries are
+minimalistic — a daemon, a TUI, a web client, a headless runner — while the batteries are
 included underneath: providers, permissions, delegation, sessions, plugins,
 and observability are all built in.
 
@@ -33,6 +33,9 @@ and observability are all built in.
   model and user invocation, turn-scoped tool grants, and forked skill context.
 - **Observability** — per-session token usage, prompt-cache hit rates, and
   estimated cost rollups.
+- **Web client** — the daemon serves a browser client on its own port that
+  does what the TUI does, phones included; `cookie web` prints its address
+  with the token.
 - **Headless runs** — `cookie run` executes a prompt without the TUI, suitable
   for CI and scripting.
 - **Durable sessions** — versionless persisted history with best-effort reading

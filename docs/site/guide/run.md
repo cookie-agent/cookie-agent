@@ -69,8 +69,8 @@ requires it:
 cookie attach
 ```
 
-`attach`, `connect`, `disconnect`, and `mcp` find the daemon in this
-machine's `config.toml`: `[server] url`, else the local daemon the same
+`attach`, `web`, `connect`, `disconnect`, `mcp`, `config`, `machine`, and
+`memory` find the daemon in this machine's `config.toml`: `[server] url`, else the local daemon the same
 table describes (`ws://127.0.0.1:<port>/ws`), and `[server] token`. Flags
 override either: `--url` (any host, `ws://` or `wss://` with the exact `/ws`
 path) and `--token` (or `COOKIE_DAEMON_TOKEN`), so a local `cookie attach`

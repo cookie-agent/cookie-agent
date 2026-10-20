@@ -79,7 +79,10 @@ carries the page's `Content-Security-Policy`:
 - WebSocket connections to any daemon (`ws:`, `wss:`), since the page may
   name one on another host;
 - `blob:` media;
-- no framing. A
+- no framing.
+
+The page includes a web app manifest and its icons, so a phone can add it to
+the home screen; it has no service worker. A
 `cookie` built without the page (see
 [Building the page](../guide/web.md#building-the-page)) serves a
 placeholder `index.html` that says how to build it. After its ready line,
