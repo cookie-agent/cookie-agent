@@ -250,16 +250,31 @@ def session_depth(browser):
     print("compact:", browser.text("#status"))
     browser.shot("compact")
 
-    # A goal, then pause it.
-    send(browser, "/goal finish the scenario")
+    # A goal, paused while its run streams. The engine tells the agent of a
+    # pause only while the session runs (an idle one has no one to tell), so
+    # the objective makes the scripted model answer slowly, and the pause
+    # waits for that answer to stream: pausing between the goal's runs would
+    # send no control message.
+    send(browser, "/goal finish the scenario slowly")
     browser.wait("the goal bar", lambda: "finish the scenario" in browser.text("#goal-bar"))
     browser.shot("goal")
     browser.wait("the pause control", lambda: count(browser, "#goal-bar [data-goal-action=pause]") == 1)
+    browser.wait("the goal run's answer", lambda: "word3" in browser.text("#transcript"))
     browser.click("#goal-bar [data-goal-action=pause]")
     browser.wait("the paused goal", lambda: count(browser, "#goal-bar [data-goal-action=resume]") == 1)
     print("set a goal and paused it")
     browser.shot("goal-paused")
     browser.wait("the goal run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+    # The pause's control message rode along with the goal's run.
+    browser.wait("the goal control row", lambda: "Goal paused" in browser.text("#transcript"))
+    assert "[engine goal control]" not in browser.text("#transcript"), "a producer message shows unfolded"
+    browser.script(
+        "const rows = [...document.querySelectorAll('#transcript [data-action=toggle-block]')]"
+        ".filter((row) => row.innerText.includes('Goal paused'));"
+        "rows[rows.length - 1].click()"
+    )
+    browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
+    print("goal control messages fold under their summary and open on a click")
 
     # Move a slow call to the background, list it, and stop it.
     send(browser, "be sleepy")
@@ -288,16 +303,6 @@ def session_depth(browser):
     )
     assert "<background_result" not in browser.text("#transcript"), "a background report shows unfolded"
     browser.shot("background-report")
-    # The paused goal's control message rode along with the next run.
-    browser.wait("the goal control row", lambda: "Goal paused" in browser.text("#transcript"))
-    assert "[engine goal control]" not in browser.text("#transcript"), "a producer message shows unfolded"
-    browser.script(
-        "const rows = [...document.querySelectorAll('#transcript [data-action=toggle-block]')]"
-        ".filter((row) => row.innerText.includes('Goal paused'));"
-        "rows[rows.length - 1].click()"
-    )
-    browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
-    print("goal control messages fold under their summary and open on a click")
     browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
     # Attach an image; one too large is offered downscaled.

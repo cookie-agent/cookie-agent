@@ -15,6 +15,9 @@ otherwise the last user text decides.
   block;
 - anything else: "ok".
 
+A goal control message (a paused or cancelled goal) gets "ok" whatever its
+objective says.
+
 Run: python3 -I mock-model.py <port-file>; it writes the port it listens on.
 """
 
@@ -72,8 +75,9 @@ def reply(request):
         # A compaction or other tool-less request: a summary.
         return text_reply(["A short summary of the conversation."])
     text = last_text(messages).lower()
-    if "<background_result" in text:
-        # A stopped background call's report: nothing more to do.
+    if "<background_result" in text or "[engine goal control]" in text:
+        # A stopped background call's report or a paused goal: nothing more
+        # to do.
         return text_reply(["ok"])
     if "markdown" in text:
         return text_reply(
