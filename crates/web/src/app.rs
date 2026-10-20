@@ -13,6 +13,7 @@ use crate::{
         refused_before_handshake_hint, token_from_fragment, token_key,
     },
     connection,
+    icons::{self, Glyph},
     theme::ThemePreference,
     views::WorkspaceView,
     workspace::Workspace,
@@ -293,8 +294,9 @@ pub fn App() -> impl IntoView {
                     }
                     Phase::Reconnecting { reason } if attached => {
                         view! {
-                            <div id="reconnecting" class="border-b border-caramel bg-toasted px-3 py-1 text-sm dark:border-maple dark:bg-ember">
-                                {format!("Connection lost ({reason}); reconnecting…")}
+                            <div id="reconnecting" role="status" class="flex items-center gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember">
+                                <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
+                                <span class="min-w-0 flex-1">{format!("Connection lost ({reason}); reconnecting…")}</span>
                             </div>
                             <WorkspaceView workspace=connection.workspace />
                         }
@@ -314,52 +316,210 @@ pub fn App() -> impl IntoView {
     }
 }
 
+/// An icon-only button in the header.
+const HEADER_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-ink hover:bg-toasted hover:text-espresso active:bg-crust dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
+
 #[component]
 fn Header(connection: Connection, theme: RwSignal<ThemePreference>) -> impl IntoView {
-    let status = move || {
-        match connection.phase.get() {
-        Phase::Idle | Phase::Failed { .. } => view! { <span>"not connected"</span> }.into_any(),
-        Phase::Connecting => view! { <span>"connecting…"</span> }.into_any(),
-        Phase::Connected {
-            address,
-            engine_version,
-            protocol_version,
-        } => view! {
-            <span id="connected">
-                {format!("{address} · cookie {engine_version} · client protocol {protocol_version}")}
-            </span>
-        }
-            .into_any(),
-        Phase::Reconnecting { .. } => view! { <span>"reconnecting…"</span> }.into_any(),
-    }
-    };
     view! {
-        <header class="flex items-center gap-3 border-b border-toasted bg-parchment px-4 py-1 dark:border-ember dark:bg-char">
-            <span class="font-mono font-bold whitespace-nowrap">"cookie agent"</span>
-            <span class="min-w-0 flex-1 truncate font-mono text-xs text-ink dark:text-sand">{status}</span>
-            <Show when=move || connection.attached.get()>
-                <button
-                    type="button"
-                    id="forget"
-                    class="min-h-11 min-w-11 whitespace-nowrap rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
-                    on:click=move |_| connection.forget()
-                >
-                    <span class="sm:hidden">"Forget"</span>
-                    <span class="hidden sm:inline">"Forget this daemon"</span>
-                </button>
-            </Show>
+        <header class="flex items-center gap-2 border-b border-toasted bg-parchment px-3 dark:border-ember dark:bg-char">
+            <span class="flex min-w-0 flex-1 items-center gap-2 font-mono font-bold whitespace-nowrap">
+                <img src="icons/icon.svg" alt="" class="h-6 w-6 shrink-0" />
+                "cookie agent"
+            </span>
+            <ConnectionStatus connection=connection />
             <button
                 type="button"
-                class="min-h-11 min-w-11 whitespace-nowrap rounded border border-crust px-3 py-1 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                class=HEADER_BUTTON
                 aria-label="Theme"
+                data-theme=move || theme.get().name()
+                title=move || {
+                    let preference = theme.get();
+                    format!("Theme: {} (click for {})", preference.name(), preference.next().name())
+                }
                 on:click=move |_| theme.update(|preference| *preference = preference.next())
             >
-                <span class="hidden sm:inline">"Theme: "</span>
-                {move || theme.get().name()}
+                <Glyph icon=Signal::derive(move || icons::theme_icon(theme.get())) class="text-lg" />
             </button>
         </header>
     }
 }
+
+/// The connection's state as a small indicator; a click shows the daemon's
+/// details, the way to forget it, and the page's credits.
+#[component]
+fn ConnectionStatus(connection: Connection) -> impl IntoView {
+    let open = RwSignal::new(false);
+    let confirming = RwSignal::new(false);
+    let close = move || {
+        open.set(false);
+        confirming.set(false);
+    };
+    let indicator = move || {
+        let (icon, label, class) = match connection.phase.get() {
+            Phase::Connected { .. } => (icondata::FaCircleSolid, "connected", "text-[0.5rem]"),
+            Phase::Connecting => (
+                icondata::FaCircleNotchSolid,
+                "connecting",
+                "animate-spin text-sm",
+            ),
+            Phase::Reconnecting { .. } => (
+                icondata::FaArrowsRotateSolid,
+                "reconnecting",
+                "animate-spin text-sm",
+            ),
+            Phase::Idle | Phase::Failed { .. } => {
+                (icondata::FaPlugCircleXmarkSolid, "offline", "text-sm")
+            }
+        };
+        view! {
+            <Glyph icon=icon class=class />
+            <span class="text-xs" id=(label == "connected").then_some("connected")>{label}</span>
+        }
+    };
+    let tone = move || match connection.phase.get() {
+        Phase::Connected { .. } => "text-green-700 dark:text-green-400",
+        Phase::Connecting | Phase::Reconnecting { .. } => "text-caramel dark:text-maple",
+        Phase::Idle | Phase::Failed { .. } => "text-ink dark:text-sand",
+    };
+    let details = move || match connection.phase.get() {
+        Phase::Connected {
+            address,
+            engine_version,
+            protocol_version,
+        } => vec![
+            ("Daemon", address),
+            ("Version", format!("cookie {engine_version}")),
+            ("Client protocol", protocol_version),
+        ],
+        Phase::Connecting => vec![("State", "connecting…".to_owned())],
+        Phase::Reconnecting { reason } => vec![("Connection lost", reason)],
+        Phase::Idle => vec![("State", "not connected".to_owned())],
+        Phase::Failed { message, .. } => vec![("Connecting failed", message)],
+    };
+    let summary = move || {
+        details()
+            .into_iter()
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    view! {
+        <div class="relative">
+            <button
+                type="button"
+                id="connection"
+                class=move || format!("inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full px-3 hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke {}", tone())
+                aria-haspopup="dialog"
+                aria-expanded=move || open.get().to_string()
+                title=summary
+                on:click=move |_| {
+                    if open.get_untracked() { close() } else { open.set(true) }
+                }
+            >
+                {indicator}
+            </button>
+            <Show when=move || open.get()>
+                <div class="fixed inset-0 z-30" on:click=move |_| close()></div>
+                <div
+                    id="connection-details"
+                    role="dialog"
+                    aria-label="Connection"
+                    class="absolute top-full right-0 z-40 mt-1 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col gap-3 rounded-lg border border-toasted bg-cream p-3 text-sm shadow-lg dark:border-ember dark:bg-night"
+                >
+                    <div class="flex items-center gap-2">
+                        <p class="flex-1 font-bold">"Connection"</p>
+                        <button
+                            type="button"
+                            id="connection-close"
+                            class=HEADER_BUTTON
+                            aria-label="Close"
+                            title="Close"
+                            on:click=move |_| close()
+                        >
+                            <Glyph icon=icondata::FaXmarkSolid />
+                        </button>
+                    </div>
+                    <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                        {move || {
+                            details()
+                                .into_iter()
+                                .map(|(name, value)| {
+                                    view! {
+                                        <dt class="text-ink dark:text-sand">{name}</dt>
+                                        <dd class="min-w-0 font-mono text-xs break-all">{value}</dd>
+                                    }
+                                })
+                                .collect_view()
+                        }}
+                    </dl>
+                    <Show when=move || connection.attached.get()>
+                        <Show
+                            when=move || confirming.get()
+                            fallback=move || {
+                                view! {
+                                    <button
+                                        type="button"
+                                        id="forget"
+                                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-crust px-3 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                                        on:click=move |_| confirming.set(true)
+                                    >
+                                        <Glyph icon=icondata::FaRightFromBracketSolid />
+                                        "Forget this daemon"
+                                    </button>
+                                }
+                            }
+                        >
+                            <div class="flex flex-col gap-2 rounded-md border border-caramel p-2 dark:border-maple">
+                                <p>"Delete this daemon's token from the browser and disconnect? Connecting again takes a new link from `cookie web`."</p>
+                                <div class="flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        id="forget-confirm"
+                                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-espresso px-3 font-bold text-cream hover:bg-caramel active:bg-ink dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
+                                        on:click=move |_| {
+                                            close();
+                                            connection.forget();
+                                        }
+                                    >
+                                        "Forget"
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="inline-flex min-h-11 items-center justify-center rounded-md border border-crust px-3 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                                        on:click=move |_| confirming.set(false)
+                                    >
+                                        "Keep it"
+                                    </button>
+                                </div>
+                            </div>
+                        </Show>
+                    </Show>
+                    <Credits />
+                </div>
+            </Show>
+        </div>
+    }
+}
+
+/// The licence credit for the page's icons.
+#[component]
+fn Credits() -> impl IntoView {
+    view! {
+        <p class="text-xs text-ink dark:text-sand">
+            <a
+                href=icons::CREDIT_URL
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex min-h-11 items-center underline decoration-crust underline-offset-2 hover:text-caramel dark:decoration-smoke dark:hover:text-maple"
+            >
+                {icons::CREDIT}
+            </a>
+        </p>
+    }
+}
+
+const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 py-2 font-mono text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple";
 
 #[component]
 fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
@@ -372,67 +532,89 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
         _ => None,
     };
     view! {
-        <form
-            class="flex w-full max-w-xl flex-col gap-4 rounded-lg border border-toasted bg-parchment p-6 dark:border-ember dark:bg-char"
-            on:submit=move |event| {
-                event.prevent_default();
-                connection.connect();
-            }
-        >
-            <h1 class="text-xl font-bold">"Connect to a cookie daemon"</h1>
-            <label class="flex flex-col gap-1 text-sm">
-                <span>"Daemon URL"</span>
-                <input
-                    type="url"
-                    class="rounded border border-crust bg-cream px-3 py-2 font-mono text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
-                    placeholder="wss://host:7419/ws"
-                    prop:value=move || connection.url.get()
-                    on:input=move |event| {
-                        let url = event_target_value(&event);
-                        connection
-                            .token
-                            .set(browser::load(&token_key(url.trim())).unwrap_or_default());
-                        connection.url.set(url);
-                    }
-                />
-            </label>
-            <label class="flex flex-col gap-1 text-sm">
-                <span>"Token"</span>
-                <input
-                    type="password"
-                    autocomplete="off"
-                    class="rounded border border-crust bg-cream px-3 py-2 font-mono text-espresso hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple dark:focus:border-maple"
-                    placeholder="paste the token, or open the link `cookie web` prints"
-                    prop:value=move || connection.token.get()
-                    on:input=move |event| connection.token.set(event_target_value(&event))
-                />
-            </label>
-            {notice
-                .map(|(message, hint)| {
-                    view! {
-                        <div class="rounded border border-caramel p-3 text-sm dark:border-maple">
-                            <p>{message}</p>
-                            {hint.map(|hint| view! { <p class="mt-2 font-mono">{hint}</p> })}
-                        </div>
-                    }
-                })}
-            <div class="flex flex-wrap gap-3">
-                <button
-                    type="submit"
-                    disabled=busy
-                    class="rounded bg-espresso px-4 py-2 font-bold text-cream hover:bg-caramel active:bg-ink disabled:opacity-60 dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
-                >
-                    {if busy { "Connecting…" } else { "Connect" }}
-                </button>
-                <button
-                    type="button"
-                    class="rounded border border-crust px-4 py-2 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
-                    on:click=move |_| connection.forget()
-                >
-                    <span class="sm:hidden">"Forget"</span>
-                    <span class="hidden sm:inline">"Forget this daemon"</span>
-                </button>
-            </div>
-        </form>
+        <div class="flex w-full max-w-xl flex-col gap-3">
+            <form
+                class="flex flex-col gap-4 rounded-lg border border-toasted bg-parchment p-6 dark:border-ember dark:bg-char"
+                on:submit=move |event| {
+                    event.prevent_default();
+                    connection.connect();
+                }
+            >
+                <div class="flex items-center gap-3">
+                    <img src="icons/icon.svg" alt="" class="h-10 w-10 shrink-0" />
+                    <div>
+                        <h1 class="text-xl font-bold">"Connect to a cookie daemon"</h1>
+                        <p class="text-sm text-ink dark:text-sand">
+                            "Open the link `cookie web` prints, or enter the daemon's URL and token."
+                        </p>
+                    </div>
+                </div>
+                <label class="flex flex-col gap-1 text-sm">
+                    <span class="font-bold">"Daemon URL"</span>
+                    <input
+                        type="url"
+                        class=FIELD
+                        placeholder="wss://host:7419/ws"
+                        prop:value=move || connection.url.get()
+                        on:input=move |event| {
+                            let url = event_target_value(&event);
+                            connection
+                                .token
+                                .set(browser::load(&token_key(url.trim())).unwrap_or_default());
+                            connection.url.set(url);
+                        }
+                    />
+                </label>
+                <label class="flex flex-col gap-1 text-sm">
+                    <span class="font-bold">"Token"</span>
+                    <input
+                        type="password"
+                        autocomplete="off"
+                        class=FIELD
+                        placeholder="paste the token, or open the link `cookie web` prints"
+                        prop:value=move || connection.token.get()
+                        on:input=move |event| connection.token.set(event_target_value(&event))
+                    />
+                </label>
+                {notice
+                    .map(|(message, hint)| {
+                        view! {
+                            <div role="alert" class="flex gap-2 rounded-md border border-caramel bg-cream p-3 text-sm dark:border-maple dark:bg-night">
+                                <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 text-caramel dark:text-maple" />
+                                <div class="min-w-0">
+                                    <p>{message}</p>
+                                    {hint.map(|hint| view! { <p class="mt-2 font-mono break-words">{hint}</p> })}
+                                </div>
+                            </div>
+                        }
+                    })}
+                <div class="flex flex-wrap gap-3">
+                    <button
+                        type="submit"
+                        disabled=busy
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-espresso px-4 font-bold text-cream hover:bg-caramel active:bg-ink disabled:cursor-not-allowed disabled:opacity-50 dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
+                    >
+                        <Glyph
+                            icon=if busy { icondata::FaCircleNotchSolid } else { icondata::FaPlugSolid }
+                            class=if busy { "animate-spin" } else { "" }
+                        />
+                        {if busy { "Connecting…" } else { "Connect" }}
+                    </button>
+                    <button
+                        type="button"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-crust px-4 hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                        title="Delete the stored token for this URL"
+                        on:click=move |_| connection.forget()
+                    >
+                        <Glyph icon=icondata::FaRightFromBracketSolid />
+                        <span class="sm:hidden">"Forget"</span>
+                        <span class="hidden sm:inline">"Forget this daemon"</span>
+                    </button>
+                </div>
+            </form>
+            <footer class="px-2 text-center">
+                <Credits />
+            </footer>
+        </div>
     }
 }
