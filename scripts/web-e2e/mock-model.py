@@ -1,13 +1,17 @@
 """A scripted OpenAI-compatible model for the web client's browser scenarios.
 
 It answers `POST /v1/chat/completions` with a streamed reply chosen by the
-last message: a tool result gets a short final answer; otherwise the last
-user text decides.
+last message: a tool result gets a short final answer, a request without
+tools (a compaction) a summary; otherwise the last user text decides.
 
 - containing "markdown": a streamed markdown answer with a code block;
 - containing "tool": a `bash` call to `printf`;
 - containing "slow": a long answer streamed slowly, to steer, queue, and
   cancel while it runs;
+- containing "delegate": a `delegate_subagent` call to the `helper` agent;
+- containing "sleepy": a `bash` call that sleeps, to move to the background;
+- containing "picture": a `read` call on `dot.png`, whose result is a media
+  block;
 - anything else: "ok".
 
 Run: python3 -I mock-model.py <port-file>; it writes the port it listens on.
@@ -36,15 +40,14 @@ def text_reply(parts, pause=0.0):
     yield chunk({}, "stop", USAGE)
 
 
-def tool_reply():
+def tool_reply(name="bash", arguments=None):
+    if arguments is None:
+        arguments = {"command": "printf 'hello from the tool\\n'"}
     call = {
         "index": 0,
         "id": "call-" + str(time.time_ns()),
         "type": "function",
-        "function": {
-            "name": "bash",
-            "arguments": json.dumps({"command": "printf 'hello from the tool\\n'"}),
-        },
+        "function": {"name": name, "arguments": json.dumps(arguments)},
     }
     yield chunk({"tool_calls": [call]})
     yield chunk({}, "tool_calls", USAGE)
@@ -64,6 +67,9 @@ def reply(request):
     messages = request.get("messages", [])
     if messages and messages[-1].get("role") == "tool":
         return text_reply(["The tool ran."])
+    if not request.get("tools"):
+        # A compaction or other tool-less request: a summary.
+        return text_reply(["A short summary of the conversation."])
     text = last_text(messages).lower()
     if "markdown" in text:
         return text_reply(
@@ -74,6 +80,15 @@ def reply(request):
             ],
             pause=0.2,
         )
+    if "delegate" in text:
+        return tool_reply(
+            "delegate_subagent",
+            {"description": "child task", "prompt": "child task: answer", "agent_type": "helper"},
+        )
+    if "sleepy" in text:
+        return tool_reply("bash", {"command": "sleep 8; printf 'woke up\\n'"})
+    if "picture" in text:
+        return tool_reply("read", {"filePath": "dot.png"})
     if "tool" in text:
         return tool_reply()
     if "slow" in text:
