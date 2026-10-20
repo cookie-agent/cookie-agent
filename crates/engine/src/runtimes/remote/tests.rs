@@ -820,9 +820,7 @@ async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
     assert_eq!(
         failure.workspace.as_deref(),
         Some(
-            workspace
-                .path()
-                .canonicalize()
+            cookie_agent_protocol::paths::canonicalize(workspace.path())
                 .unwrap()
                 .to_string_lossy()
                 .as_ref()

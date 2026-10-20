@@ -502,14 +502,8 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
         .runtimes
         .local_workspace_root()
         .to_path_buf();
-    // Relative sources use the platform separator (`\\` on Windows).
-    let relative = |parts: &[&str]| -> String {
-        parts
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .to_string_lossy()
-            .into_owned()
-    };
+    // Sources relative to the workspace use `/` on every platform.
+    let relative = |parts: &[&str]| -> String { parts.join("/") };
     let project_source = relative(&[".cookie-agent", "agents", "AGENTS.md"]);
     let cwd_source = "AGENTS.md";
     let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None)
@@ -805,10 +799,7 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
     assert_eq!(entries.len(), 2);
     assert_eq!(
         entries[0].source.as_str(),
-        [".cookie-agent", "agents", "python", "AGENTS.md"]
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .to_string_lossy()
+        ".cookie-agent/agents/python/AGENTS.md"
     );
     assert_eq!(entries[0].content, "preset replay context");
 

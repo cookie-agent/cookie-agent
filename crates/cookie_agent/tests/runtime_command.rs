@@ -108,7 +108,7 @@ async fn the_runtime_opens_workspaces_expanding_home_and_stops_on_shutdown() {
     .await
     .expect("open answers")
     .expect("open succeeds");
-    let canonical = repository.canonicalize().unwrap();
+    let canonical = cookie_agent_protocol::paths::canonicalize(&repository).unwrap();
     assert_eq!(
         opened.workspace.as_deref(),
         Some(canonical.to_string_lossy().as_ref())

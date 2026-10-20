@@ -441,7 +441,11 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
     );
     assert_eq!(
         prepared[0].origin().and_then(ToolOrigin::workspace_root),
-        Some(api.canonicalize().unwrap().as_path())
+        Some(
+            cookie_agent_protocol::paths::canonicalize(&api)
+                .unwrap()
+                .as_path()
+        )
     );
 
     fixture
@@ -790,7 +794,11 @@ async fn an_instance_that_fails_to_start_on_open_is_reported() {
     assert_eq!(failure.runtime_id, "labpc");
     assert_eq!(
         failure.workspace.as_deref().map(std::path::Path::new),
-        Some(api.canonicalize().expect("canonical api").as_path())
+        Some(
+            cookie_agent_protocol::paths::canonicalize(&api)
+                .expect("canonical api")
+                .as_path()
+        )
     );
     assert!(
         failure.reason.contains("Connection refused"),
@@ -1164,7 +1172,7 @@ async fn a_session_attaches_each_capability_of_a_runtime_separately() {
 async fn a_session_created_for_a_client_directory_works_there() {
     let (fixture, selection) = custom_fixture();
     let client_directory = workspace_dir(fixture._directory.path(), "client-repo");
-    let canonical = client_directory.canonicalize().unwrap();
+    let canonical = cookie_agent_protocol::paths::canonicalize(&client_directory).unwrap();
     let session = fixture
         .engine
         .create_session_with_permissions(

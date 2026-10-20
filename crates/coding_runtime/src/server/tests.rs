@@ -287,7 +287,7 @@ async fn opening_reports_identity_tools_and_project_skills_then_shuts_down() {
     assert_eq!(result.attachment_name, "labpc_my_repo");
     assert_eq!(
         result.workspace.as_deref(),
-        Some(root.canonicalize().unwrap().to_str().unwrap())
+        Some(crate::shown_root(&root).to_str().unwrap())
     );
     let names = result
         .tools

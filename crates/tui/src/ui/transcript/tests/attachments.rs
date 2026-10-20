@@ -407,12 +407,16 @@ fn pasted_paths_are_recognized_as_terminals_paste_them() {
     std::fs::write(&path, b"x").expect("write");
     let plain = path.to_string_lossy().into_owned();
     let found = |text: &str| crate::ui::app::pasted_file_path_for_test(text);
-    for pasted in [
+    let mut pastes = vec![
         format!("'{plain}'"),
         format!("\"{plain}\"\n"),
-        plain.replace(' ', "\\ "),
         format!("file://{}", plain.replace(' ', "%20")),
-    ] {
+    ];
+    // A shell's backslash escape is a separator in a Windows path.
+    if !cfg!(windows) {
+        pastes.push(plain.replace(' ', "\\ "));
+    }
+    for pasted in pastes {
         assert_eq!(found(&pasted).as_deref(), Some(path.as_path()), "{pasted}");
     }
     for pasted in [
