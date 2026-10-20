@@ -40,16 +40,33 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             .subscribe(session.session_id, None)
             .await
             .expect("subscribe");
+        let result = fixture
+            .engine
+            .compact_session_result(
+                session.session_id,
+                Some("preserve focus"),
+                cookie_agent_protocol::EventOrigin::new("client:rpc").unwrap(),
+            )
+            .await
+            .expect("compaction");
         assert!(
+            result.compacted,
+            "not compacted ({:?}); the session's events: {:?}",
+            result.cancellation_reason,
             fixture
                 .engine
-                .compact_session(
-                    session.session_id,
-                    Some("preserve focus"),
-                    cookie_agent_protocol::EventOrigin::new("client:rpc").unwrap()
-                )
-                .await
-                .expect("compaction")
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("projection")
+                .log
+                .events()
+                .iter()
+                .map(|event| format!("{:?}", event.payload)
+                    .chars()
+                    .take(160)
+                    .collect::<String>())
+                .collect::<Vec<_>>()
         );
         // The native call is bracketed by live-only events whether or not it
         // succeeds, ahead of the summarizer fallback and the checkpoint.
