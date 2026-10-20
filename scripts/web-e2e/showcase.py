@@ -161,7 +161,12 @@ browser.size(390, 844)
 time.sleep(1)
 for theme in ("light", "dark"):
     browser.theme(theme)
-    browser.script("const t = document.querySelector('#transcript'); t.scrollTop = t.scrollHeight")
+    # The exchange from the user's message on: the message at the top.
+    browser.script(
+        "const t = document.querySelector('#transcript');"
+        "const m = t.querySelector('.user-message');"
+        "t.scrollTop += m.getBoundingClientRect().top - t.getBoundingClientRect().top - 8"
+    )
     browser.shot("web-phone-%s.png" % theme)
 
 # Every panel, sheet, and menu: a slash command typed in the composer, or a
