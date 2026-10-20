@@ -216,6 +216,10 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
         }
     }
     peer.close();
+    // The reply to `runtime/shutdown` is still queued: wait until it is
+    // written, since a process serving stdio exits as soon as this returns.
+    // A daemon that stopped reading cannot hold the exit up for long.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), peer.closed()).await;
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
