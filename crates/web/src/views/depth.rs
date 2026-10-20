@@ -620,36 +620,31 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                             </button>
                         }
                     });
+                    // Rows wrap rather than scroll: the rule's name takes
+                    // the room left, and its controls go below it when a
+                    // narrow screen or a long name needs.
                     view! {
-                        <tr class="permission-row border-b border-toasted dark:border-ember" data-rule=format!("{} {}", row.action, row.resource)>
-                            <td class="py-1 pr-2 font-mono text-xs">{row.action.to_string()}</td>
-                            <td class="py-1 pr-2 font-mono text-xs break-all">{row.resource.clone()}</td>
-                            <td class="py-1">
-                                <div class="inline-flex overflow-hidden rounded-md border border-crust dark:border-smoke" role="group" aria-label="Effect">
+                        <div
+                            class="permission-row flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-toasted py-2 dark:border-ember"
+                            data-rule=format!("{} {}", row.action, row.resource)
+                        >
+                            <span class="min-w-0 flex-1 basis-32 font-mono text-xs wrap-anywhere">
+                                <span class="font-bold">{row.action.to_string()}</span>
+                                " "
+                                <span>{row.resource.clone()}</span>
+                            </span>
+                            <span class="flex min-w-0 flex-wrap items-center gap-2">
+                                <span class="inline-flex shrink-0 overflow-hidden rounded-md border border-crust dark:border-smoke" role="group" aria-label="Effect">
                                     {segments}
-                                </div>
-                            </td>
-                            <td class=format!("py-1 pl-2 {NOTE}")>{source_label(row.source)}</td>
-                            <td>{remove}</td>
-                        </tr>
+                                </span>
+                                <span class=format!("min-w-14 wrap-anywhere {NOTE}")>{source_label(row.source)}</span>
+                                {remove}
+                            </span>
+                        </div>
                     }
                 })
                 .collect_view();
-            view! {
-                <table class="w-full text-left">
-                    <thead>
-                        <tr class="border-b border-crust text-xs text-ink dark:border-smoke dark:text-sand">
-                            <th class="py-1 pr-2 font-bold">"Action"</th>
-                            <th class="py-1 pr-2 font-bold">"Pattern"</th>
-                            <th class="py-1 font-bold">"Effect"</th>
-                            <th class="py-1 pl-2 font-bold">"From"</th>
-                            <th><span class="sr-only">"Remove"</span></th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows}</tbody>
-                </table>
-            }
-            .into_any()
+            view! { <div class="flex min-w-0 flex-col">{rows}</div> }.into_any()
         }
     };
     let actions = move || {
