@@ -58,27 +58,17 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let (done, result) = match request {
-                MachineRequest::Rename { machine, name } => (
-                    format!("renamed machine {machine} to {name}"),
-                    client.rename_machine(machine, name).await,
-                ),
-                MachineRequest::Assign { runtime, machine } => (
-                    format!("pinned runtime {runtime} to machine {machine}"),
-                    client.assign_machine(runtime, machine).await,
-                ),
-                MachineRequest::Unassign { runtime } => (
-                    format!("unpinned runtime {runtime}"),
-                    client.unassign_machine(runtime).await,
-                ),
-                MachineRequest::Merge { from, into } => (
-                    format!("merged machine {from} into {into}"),
-                    client.merge_machines(from, into).await,
-                ),
-                MachineRequest::Forget { machine } => (
-                    format!("forgot machine {machine}"),
-                    client.forget_machine(machine).await,
-                ),
+            let done = request.done();
+            let result = match request {
+                MachineRequest::Rename { machine, name } => {
+                    client.rename_machine(machine, name).await
+                }
+                MachineRequest::Assign { runtime, machine } => {
+                    client.assign_machine(runtime, machine).await
+                }
+                MachineRequest::Unassign { runtime } => client.unassign_machine(runtime).await,
+                MachineRequest::Merge { from, into } => client.merge_machines(from, into).await,
+                MachineRequest::Forget { machine } => client.forget_machine(machine).await,
             };
             let result = result
                 .map(|machines| (done, machines))

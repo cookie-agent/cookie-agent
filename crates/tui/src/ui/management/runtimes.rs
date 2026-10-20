@@ -5,9 +5,8 @@
 //! renames, merges, and forgets machines and moves runtimes between them.
 
 use cookie_agent_protocol::{
-    AttachmentName, CapabilityName, MachineAssignment, MachineInfo, MachineName,
-    MachinesListResult, RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId,
-    RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
+    CapabilityName, MachineAssignment, MachineInfo, MachineName, MachinesListResult, RuntimeId,
+    RuntimeListing, RuntimesListResult,
 };
 use ratatui::{
     Frame,
@@ -16,118 +15,18 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 
+pub(in crate::ui) use cookie_agent_client_state::runtimes::{
+    DraftRuntime, MachineAction, MachineEntry, MachineRequest, RuntimeChoice, RuntimeRow,
+    draft_runtime_rows, runtime_rows,
+};
+use cookie_agent_client_state::runtimes::{
+    attach_parameters, machine_action_request, machine_entries, machine_form_title,
+    machine_name_request, reconnect_request, runtime_choices, status_label,
+};
+
 use crate::{theme::Theme, ui::input::InputState};
 
 use super::super::app::paint_panel;
-
-/// One attachment row: what the session records and the instance it refers
-/// to, when the daemon reports one.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct RuntimeRow {
-    pub(in crate::ui) attachment: RuntimeAttachment,
-    pub(in crate::ui) instance: Option<RuntimeInstanceInfo>,
-    /// What the runtime says its capability offers, once it has connected.
-    pub(in crate::ui) description: Option<String>,
-}
-
-/// The description `listing` has for `capability` of `runtime_id`.
-fn capability_description(
-    listing: Option<&RuntimesListResult>,
-    runtime_id: &RuntimeId,
-    capability: &CapabilityName,
-) -> Option<String> {
-    listing?
-        .runtimes
-        .iter()
-        .find(|runtime| runtime.runtime_id == *runtime_id)?
-        .capabilities
-        .iter()
-        .find(|offered| offered.name == *capability)
-        .map(|offered| offered.description.clone())
-        .filter(|description| !description.is_empty())
-}
-
-/// A runtime a new-session draft attaches. Its instance is opened as soon as
-/// it joins the draft, so its status, and why it failed, show before the
-/// session exists.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct DraftRuntime {
-    /// Matches the answer of the open request to this entry.
-    pub(in crate::ui) id: u64,
-    pub(in crate::ui) request: RuntimeAttachRequest,
-    /// The instance the open request answered, or why it failed.
-    pub(in crate::ui) opened: Option<Result<RuntimeInstanceInfo, String>>,
-}
-
-impl DraftRuntime {
-    pub(in crate::ui) fn is_global(&self) -> bool {
-        self.request.runtime_id.as_str() == RuntimeId::GLOBAL
-    }
-
-    /// The opened instance's canonical workspace, else the one requested.
-    pub(in crate::ui) fn workspace(&self) -> Option<&str> {
-        match &self.opened {
-            Some(Ok(instance)) => instance.workspace.as_deref(),
-            _ => self.request.workspace.as_deref(),
-        }
-    }
-
-    /// Whether `other` names the same instance as this entry.
-    pub(in crate::ui) fn same_instance(&self, other: &RuntimeAttachRequest) -> bool {
-        self.request.runtime_id == other.runtime_id
-            && self.request.capability == other.capability
-            && (self.request.workspace == other.workspace
-                || self.workspace() == other.workspace.as_deref())
-    }
-}
-
-/// One thing the attach step offers: a capability of a runtime, or a runtime
-/// that has not said what it offers yet, which attaching connects and takes
-/// its only capability of.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) struct RuntimeChoice {
-    pub(in crate::ui) runtime_id: RuntimeId,
-    pub(in crate::ui) capability: Option<RuntimeCapabilityInfo>,
-    pub(in crate::ui) connected: bool,
-    /// Why the runtime last failed to connect.
-    pub(in crate::ui) message: Option<String>,
-}
-
-impl RuntimeChoice {
-    /// Whether attaching asks for a workspace: the capability takes one, or
-    /// the runtime has not said what it offers yet (then it is optional).
-    pub(in crate::ui) fn asks_workspace(&self) -> bool {
-        self.capability
-            .as_ref()
-            .is_none_or(|capability| capability.takes_workspace)
-    }
-
-    fn label(&self) -> String {
-        match &self.capability {
-            Some(capability) => format!("{}/{}", self.runtime_id, capability.name),
-            None => self.runtime_id.to_string(),
-        }
-    }
-
-    /// Case-insensitive substring match over the runtime ID and the
-    /// capability's name, kind, and description.
-    fn matches(&self, query: &str) -> bool {
-        let query = query.trim().to_lowercase();
-        if query.is_empty() {
-            return true;
-        }
-        let mut haystack = self.runtime_id.to_string();
-        if let Some(capability) = &self.capability {
-            haystack.push(' ');
-            haystack.push_str(capability.name.as_str());
-            haystack.push(' ');
-            haystack.push_str(capability.kind.as_str());
-            haystack.push(' ');
-            haystack.push_str(&capability.description);
-        }
-        haystack.to_lowercase().contains(&query)
-    }
-}
 
 /// Attaching takes two steps: choosing a runtime's capability from every
 /// runtime's, filtered by a search, then the parameters it needs (a
@@ -180,107 +79,6 @@ impl RuntimeView {
             Self::Machines => " Machines ",
         }
     }
-}
-
-/// A change to the machine registry the machines view offers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum MachineAction {
-    Rename,
-    Move,
-    Unpin,
-    Merge,
-    Forget,
-}
-
-impl MachineAction {
-    pub(in crate::ui) const fn key(self) -> char {
-        match self {
-            Self::Rename => 'n',
-            Self::Move => 'v',
-            Self::Unpin => 'u',
-            Self::Merge => 'g',
-            Self::Forget => 'f',
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Rename => "rename",
-            Self::Move => "move to machine",
-            Self::Unpin => "unpin",
-            Self::Merge => "merge into",
-            Self::Forget => "forget",
-        }
-    }
-
-    /// Whether the action asks for a machine name first.
-    const fn asks_name(self) -> bool {
-        matches!(self, Self::Rename | Self::Move | Self::Merge)
-    }
-
-    /// The action of the key `key`.
-    pub(in crate::ui) fn of_key(key: char) -> Option<Self> {
-        [
-            Self::Rename,
-            Self::Move,
-            Self::Unpin,
-            Self::Merge,
-            Self::Forget,
-        ]
-        .into_iter()
-        .find(|action| action.key() == key)
-    }
-}
-
-/// One row of the machines view: a machine, or a runtime under it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum MachineEntry {
-    Machine(MachineName),
-    Runtime {
-        machine: MachineName,
-        runtime: RuntimeId,
-        /// Why it belongs to the machine while it is connected.
-        assigned_by: Option<MachineAssignment>,
-        pinned: bool,
-    },
-}
-
-impl MachineEntry {
-    /// The actions the entry offers.
-    pub(in crate::ui) fn actions(&self) -> Vec<MachineAction> {
-        match self {
-            Self::Machine(_) => vec![
-                MachineAction::Rename,
-                MachineAction::Merge,
-                MachineAction::Forget,
-            ],
-            Self::Runtime { pinned: true, .. } => vec![MachineAction::Move, MachineAction::Unpin],
-            Self::Runtime { pinned: false, .. } => vec![MachineAction::Move],
-        }
-    }
-}
-
-/// A machine change as the daemon takes it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum MachineRequest {
-    Rename {
-        machine: MachineName,
-        name: MachineName,
-    },
-    Assign {
-        runtime: RuntimeId,
-        machine: MachineName,
-    },
-    Unassign {
-        runtime: RuntimeId,
-    },
-    Merge {
-        from: MachineName,
-        into: MachineName,
-    },
-    Forget {
-        machine: MachineName,
-    },
 }
 
 /// An action waiting for the machine name it needs.
@@ -339,41 +137,12 @@ impl RuntimePanel {
             .and_then(|runtime| runtime.machine.as_ref())
     }
 
-    /// The machines view's rows: each machine, then its connected
-    /// runtimes and the runtimes pinned to it that are not connected.
+    /// The machines view's rows.
     pub(in crate::ui) fn machine_entries(&self) -> Vec<MachineEntry> {
-        let Some(Ok(listing)) = &self.machines else {
-            return Vec::new();
-        };
-        listing
-            .machines
-            .iter()
-            .flat_map(|machine| {
-                let mut entries = vec![MachineEntry::Machine(machine.name.clone())];
-                for runtime in &machine.connected {
-                    entries.push(MachineEntry::Runtime {
-                        machine: machine.name.clone(),
-                        runtime: runtime.runtime_id.clone(),
-                        assigned_by: Some(runtime.assigned_by),
-                        pinned: machine.pinned.contains(&runtime.runtime_id),
-                    });
-                }
-                for runtime in machine.pinned.iter().filter(|pinned| {
-                    !machine
-                        .connected
-                        .iter()
-                        .any(|connected| connected.runtime_id == **pinned)
-                }) {
-                    entries.push(MachineEntry::Runtime {
-                        machine: machine.name.clone(),
-                        runtime: runtime.clone(),
-                        assigned_by: None,
-                        pinned: true,
-                    });
-                }
-                entries
-            })
-            .collect()
+        match &self.machines {
+            Some(Ok(listing)) => machine_entries(listing),
+            _ => Vec::new(),
+        }
     }
 
     pub(in crate::ui) fn selected_machine_entry(&self) -> Option<MachineEntry> {
@@ -402,34 +171,15 @@ impl RuntimePanel {
         let entry = self
             .selected_machine_entry()
             .ok_or("select a machine or a runtime first")?;
-        if !entry.actions().contains(&action) {
-            return Err(match (&entry, action) {
-                (MachineEntry::Machine(_), _) => format!("select a runtime to {}", action.label()),
-                (MachineEntry::Runtime { .. }, MachineAction::Unpin) => {
-                    "only a pinned runtime can be unpinned".to_owned()
-                }
-                (MachineEntry::Runtime { .. }, _) => {
-                    format!("select a machine to {}", action.label())
-                }
-            });
-        }
-        if action.asks_name() {
+        let request = machine_action_request(&entry, action)?;
+        if request.is_none() {
             self.machine_form = Some(MachineForm {
                 action,
                 entry,
                 input: InputState::default(),
             });
-            return Ok(None);
         }
-        Ok(Some(match (action, entry) {
-            (MachineAction::Forget, MachineEntry::Machine(machine)) => {
-                MachineRequest::Forget { machine }
-            }
-            (MachineAction::Unpin, MachineEntry::Runtime { runtime, .. }) => {
-                MachineRequest::Unassign { runtime }
-            }
-            _ => return Err("nothing to do".into()),
-        }))
+        Ok(request)
     }
 
     /// The request the open form describes.
@@ -438,30 +188,7 @@ impl RuntimePanel {
             .machine_form
             .as_ref()
             .ok_or("no machine change in progress")?;
-        let typed = form.input.as_str().trim();
-        let name = MachineName::new(typed).map_err(|_| {
-            format!(
-                "`{typed}` is not a machine name: a lowercase letter, then up to 31 lowercase \
-                 letters, digits, `_`, or `-`"
-            )
-        })?;
-        let request = match (&form.action, &form.entry) {
-            (MachineAction::Rename, MachineEntry::Machine(machine)) => MachineRequest::Rename {
-                machine: machine.clone(),
-                name,
-            },
-            (MachineAction::Merge, MachineEntry::Machine(machine)) => MachineRequest::Merge {
-                from: machine.clone(),
-                into: name,
-            },
-            (MachineAction::Move, MachineEntry::Runtime { runtime, .. }) => {
-                MachineRequest::Assign {
-                    runtime: runtime.clone(),
-                    machine: name,
-                }
-            }
-            _ => return Err("nothing to do".into()),
-        };
+        let request = machine_name_request(form.action, &form.entry, form.input.as_str())?;
         self.machine_form = None;
         Ok(request)
     }
@@ -484,32 +211,10 @@ impl RuntimePanel {
         Ok(())
     }
 
-    /// Every runtime's capabilities, in listing order, that match the
-    /// search; a runtime that has not said what it offers is one choice.
+    /// Every runtime's capabilities that match the search.
     pub(in crate::ui) fn choices(&self) -> Vec<RuntimeChoice> {
         let query = self.form.as_ref().map_or("", |form| form.search.as_str());
-        self.runtimes()
-            .iter()
-            .flat_map(|runtime| {
-                let choice = |capability| RuntimeChoice {
-                    runtime_id: runtime.runtime_id.clone(),
-                    capability,
-                    connected: runtime.connected,
-                    message: runtime.message.clone(),
-                };
-                if runtime.capabilities.is_empty() {
-                    vec![choice(None)]
-                } else {
-                    runtime
-                        .capabilities
-                        .iter()
-                        .cloned()
-                        .map(|capability| choice(Some(capability)))
-                        .collect()
-                }
-            })
-            .filter(|choice| choice.matches(query))
-            .collect()
+        runtime_choices(self.runtimes(), query)
     }
 
     /// Keeps the highlighted choice within the filtered list.
@@ -569,48 +274,15 @@ impl RuntimePanel {
     ) -> Result<(RuntimeId, Option<CapabilityName>, Option<String>), String> {
         let form = self.form.as_ref().ok_or("no attach in progress")?;
         let choice = form.chosen.as_ref().ok_or("choose a runtime")?;
-        let workspace = form.workspace.as_str().trim();
-        let workspace = match (&choice.capability, workspace.is_empty()) {
-            (Some(capability), true) => {
-                return Err(format!(
-                    "capability `{}` of runtime `{}` needs a workspace path",
-                    capability.name, choice.runtime_id
-                ));
-            }
-            (None, true) => None,
-            (_, false) => Some(workspace.to_owned()),
-        };
-        Ok((
-            choice.runtime_id.clone(),
-            choice
-                .capability
-                .as_ref()
-                .map(|capability| capability.name.clone()),
-            workspace,
-        ))
+        attach_parameters(choice, form.workspace.as_str())
     }
 
-    /// The `runtimes.reconnect` request that retries `row`'s instance: its
-    /// workspace goes along exactly when it has one.
+    /// The `runtimes.reconnect` request that retries `row`'s instance.
     pub(in crate::ui) fn reconnect_request(
         &self,
         row: &RuntimeRow,
     ) -> Result<(RuntimeId, CapabilityName, Option<String>), String> {
-        if !self
-            .runtimes()
-            .iter()
-            .any(|runtime| runtime.runtime_id == row.attachment.runtime_id)
-        {
-            return Err(format!(
-                "runtime `{}` is not a known runtime",
-                row.attachment.runtime_id
-            ));
-        }
-        Ok((
-            row.attachment.runtime_id.clone(),
-            row.attachment.capability.clone(),
-            row.attachment.workspace.clone(),
-        ))
+        reconnect_request(self.runtimes(), row)
     }
 
     pub(in crate::ui) fn clamp(&mut self, rows: usize) {
@@ -624,117 +296,6 @@ const fn cycle(index: usize, count: usize, backward: bool) -> usize {
         (index + count - 1) % count
     } else {
         (index + 1) % count
-    }
-}
-
-/// The rows for `attachments`, each matched to its instance in `listing`.
-pub(in crate::ui) fn runtime_rows(
-    attachments: &[RuntimeAttachment],
-    listing: Option<&RuntimesListResult>,
-) -> Vec<RuntimeRow> {
-    attachments
-        .iter()
-        .map(|attachment| RuntimeRow {
-            description: capability_description(
-                listing,
-                &attachment.runtime_id,
-                &attachment.capability,
-            ),
-            attachment: attachment.clone(),
-            instance: listing.and_then(|listing| {
-                listing
-                    .instances
-                    .iter()
-                    .find(|instance| {
-                        instance.runtime_id == attachment.runtime_id
-                            && instance.capability == attachment.capability
-                            && instance.workspace == attachment.workspace
-                    })
-                    .cloned()
-            }),
-        })
-        .collect()
-}
-
-/// The rows for a new-session draft: each entry with its live instance from
-/// `listing`, else the one its open request answered. Until the instance
-/// reports its attachment name and kind, the row shows the runtime ID and the
-/// capability.
-pub(in crate::ui) fn draft_runtime_rows(
-    entries: &[DraftRuntime],
-    listing: Option<&RuntimesListResult>,
-) -> Vec<RuntimeRow> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let capability = match (&entry.request.capability, &entry.opened) {
-                (Some(capability), _) => capability.clone(),
-                (None, Some(Ok(instance))) => instance.capability.clone(),
-                (None, _) => cookie_agent_protocol::default_capability(&entry.request.runtime_id),
-            };
-            let workspace = entry.workspace().map(str::to_owned);
-            let live = listing.and_then(|listing| {
-                listing
-                    .instances
-                    .iter()
-                    .find(|instance| {
-                        instance.runtime_id == entry.request.runtime_id
-                            && instance.capability == capability
-                            && instance.workspace == workspace
-                    })
-                    .cloned()
-            });
-            let instance = live.or_else(|| match &entry.opened {
-                Some(Ok(instance)) => Some(instance.clone()),
-                Some(Err(message)) => Some(RuntimeInstanceInfo {
-                    runtime_id: entry.request.runtime_id.clone(),
-                    capability: capability.clone(),
-                    attachment_name: None,
-                    kind: None,
-                    workspace: workspace.clone(),
-                    platform: None,
-                    status: RuntimeInstanceStatus::Failed,
-                    message: Some(message.clone()),
-                }),
-                None => None,
-            });
-            Some(RuntimeRow {
-                description: capability_description(
-                    listing,
-                    &entry.request.runtime_id,
-                    &capability,
-                ),
-                attachment: RuntimeAttachment {
-                    name: match instance
-                        .as_ref()
-                        .and_then(|instance| instance.attachment_name.clone())
-                    {
-                        Some(name) => name,
-                        None => AttachmentName::new(entry.request.runtime_id.as_str()).ok()?,
-                    },
-                    kind: match instance.as_ref().and_then(|instance| instance.kind.clone()) {
-                        Some(kind) => kind,
-                        None => RuntimeKind::new(capability.as_str()).ok()?,
-                    },
-                    runtime_id: entry.request.runtime_id.clone(),
-                    capability,
-                    workspace,
-                },
-                instance,
-            })
-        })
-        .collect()
-}
-
-const fn status_label(status: Option<RuntimeInstanceStatus>) -> &'static str {
-    match status {
-        Some(RuntimeInstanceStatus::Starting) => "starting",
-        Some(RuntimeInstanceStatus::Ready) => "ready",
-        Some(RuntimeInstanceStatus::Reconnecting) => "reconnecting",
-        Some(RuntimeInstanceStatus::Failed) => "failed",
-        Some(RuntimeInstanceStatus::Stopped) => "stopped",
-        Some(RuntimeInstanceStatus::Unknown) => "unknown",
-        None => "not running",
     }
 }
 
@@ -956,18 +517,7 @@ fn render_machines(
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), actions_area);
     if let Some(form) = panel.machine_form.as_mut() {
-        let title = match (&form.action, &form.entry) {
-            (MachineAction::Rename, MachineEntry::Machine(machine)) => {
-                format!("New name for {machine}")
-            }
-            (MachineAction::Merge, MachineEntry::Machine(machine)) => {
-                format!("Merge {machine} into (its memories move too)")
-            }
-            (MachineAction::Move, MachineEntry::Runtime { runtime, .. }) => {
-                format!("Machine for runtime {runtime} (a new name creates it)")
-            }
-            _ => "Machine name".to_owned(),
-        };
+        let title = machine_form_title(form.action, &form.entry);
         crate::ui::input::render(
             frame,
             form_area,
