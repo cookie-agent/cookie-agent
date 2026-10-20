@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Runs the web client's browser scenarios (scripts/web-e2e/scenarios.py) in
 # headless Firefox against real `cookie daemon`s in scratch homes: one with
-# a scripted model (scripts/web-e2e/mock-model.py), a subagent, and a skill,
-# whose `[server] allowed_origins` lists the page's origin, and one that
-# allows no origin. Run scripts/build-web.sh first so the daemons embed the real page.
+# a scripted model (scripts/web-e2e/mock-model.py), a subagent, a skill, a
+# runtime that never starts, and the reference plugin, whose
+# `[server] allowed_origins` lists the page's origin, and one that allows no
+# origin. Run scripts/build-web.sh first so the daemons embed the real page.
 #
 # Needs Firefox and geckodriver (on PATH, or set GECKODRIVER). With
 # SCREENSHOT_DIR set, it saves a screenshot of each step.
@@ -140,6 +141,13 @@ auth = { method = "no-auth-v1", values = {} }
 [providers."custom.local".models.test]
 display_name = "Scripted Model"
 capabilities = { input = ["text", "image"], output = ["text"], context_tokens = 65536, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = { image = { mime_types = ["image/png", "image/jpeg"], max_bytes = 200000, max_count = 4 } } }
+
+# A runtime whose instance never starts, for the retry.
+[runtimes.box]
+command = ["false"]
+
+[plugins.reference]
+command = ["python3", "$root/examples/plugins/python/reference_plugin.py"]
 TOML
 # A session made before the daemon starts, by another process: the daemon
 # lists it but has not loaded it, so the scenarios can hold its owner lock

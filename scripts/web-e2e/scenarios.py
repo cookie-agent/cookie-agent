@@ -242,6 +242,15 @@ def session_depth(browser):
     browser.click("#goal-bar [data-goal-action=pause]")
     browser.wait("the paused goal", lambda: count(browser, "#goal-bar [data-goal-action=resume]") == 1)
     print("set a goal and paused it")
+    browser.wait("the goal control row", lambda: "Goal paused" in browser.text("#transcript"))
+    assert "[engine goal control]" not in browser.text("#transcript"), "a producer message shows unfolded"
+    browser.script(
+        "const rows = [...document.querySelectorAll('#transcript [data-action=toggle-block]')]"
+        ".filter((row) => row.innerText.includes('Goal paused'));"
+        "rows[rows.length - 1].click()"
+    )
+    browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
+    print("goal control messages fold under their summary and open on a click")
     browser.shot("goal-paused")
     browser.wait("the goal run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
@@ -262,6 +271,16 @@ def session_depth(browser):
     browser.click("#sheet [data-stop]")
     browser.wait("the stopped call", lambda: count(browser, "#background-bar") == 0, timeout=40)
     print("moved a call to the background, listed it, and stopped it")
+    browser.wait(
+        "the background report row",
+        lambda: browser.script(
+            "return [...document.querySelectorAll('#transcript [data-action=toggle-block]')]"
+            ".some((row) => /background/i.test(row.innerText))"
+        ),
+        timeout=40,
+    )
+    assert "<background_result" not in browser.text("#transcript"), "a background report shows unfolded"
+    browser.shot("background-report")
     browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
     # Attach an image; one too large is offered downscaled.
@@ -353,6 +372,195 @@ def session_depth(browser):
     print("previewed a draft rule for a new session")
     browser.shot("permissions-draft")
     browser.click("#sheet h2 ~ button")
+
+
+def set_text(browser, selector, text):
+    browser.script(
+        "const e = document.querySelector(arguments[0]); e.value = arguments[1];"
+        "e.dispatchEvent(new Event('input'))",
+        selector,
+        text,
+    )
+
+
+def close_sheet(browser):
+    if count(browser, "#sheet") > 0:
+        browser.click("#sheet h2 ~ button")
+
+
+def click_row_button(browser, rows, text, button):
+    """Clicks `button` inside the first of `rows` whose text has `text`."""
+    clicked = browser.script(
+        "for (const row of document.querySelectorAll(arguments[0])) {"
+        "  if (row.innerText.includes(arguments[1])) {"
+        "    row.querySelector(arguments[2]).click(); return true; } }"
+        "return false",
+        rows,
+        text,
+        button,
+    )
+    assert clicked, "no %s row has %r" % (rows, text)
+
+
+def management(browser):
+    """The runtime, machine, MCP, provider, configuration, memory, and plugin
+    panels."""
+    # A new session's draft runtimes: one that never starts fails, a retry
+    # fails again, and it can be taken out.
+    new_session(browser)
+    send(browser, "/runtime")
+    browser.wait("the draft runtimes", lambda: count(browser, "#sheet .runtime-row") >= 2)
+    browser.click("#runtime-attach")
+    browser.type("#runtime-search", "box")
+    browser.wait("the box runtime", lambda: count(browser, '#sheet [data-choice="box"]') == 1)
+    browser.click('#sheet [data-choice="box"]')
+    browser.click("#runtime-attach-confirm")
+    browser.wait(
+        "the failed draft runtime",
+        lambda: "failed" in browser.text('#sheet .runtime-row:last-of-type'),
+        timeout=40,
+    )
+    browser.shot("runtime-draft-failed")
+    click_row_button(browser, "#sheet .runtime-row", "box/", "[data-retry]")
+    browser.wait("the retry", lambda: "box" in browser.text("#status"))
+    browser.wait("the retried runtime", lambda: "cannot start" in browser.text("#status"), timeout=40)
+    click_row_button(browser, "#sheet .runtime-row", "box/", "[data-detach]")
+    browser.wait("the dropped runtime", lambda: "box/" not in browser.text("#sheet"))
+    print("a new session's runtime that cannot start fails, is retried, and is taken out")
+    close_sheet(browser)
+
+    # A session's attachment detached and attached again.
+    browser.click("aside nav[aria-label=Sessions] button")
+    browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
+    send(browser, "/runtime")
+    browser.wait("the attachments", lambda: "local/coding" in browser.text("#sheet"))
+    click_row_button(browser, "#sheet .runtime-row", "local/coding", "[data-detach]")
+    browser.wait("the detached runtime", lambda: "local/coding" not in browser.text("#sheet .runtime-row:last-of-type") and "detached" in browser.text("#status"))
+    browser.click("#runtime-attach")
+    browser.type("#runtime-search", "coding")
+    browser.wait("the coding choice", lambda: count(browser, '#sheet [data-choice="local/coding"]') == 1)
+    browser.click('#sheet [data-choice="local/coding"]')
+    browser.type("#runtime-workspace", os.path.join(HOME, "workspace"))
+    browser.click("#runtime-attach-confirm")
+    browser.wait("the attached runtime", lambda: "attached runtime" in browser.text("#status"))
+    browser.wait("its row", lambda: "local/coding" in browser.text("#sheet"))
+    browser.shot("runtimes")
+    print("detached a session's runtime and attached it again")
+
+    # Rename a machine.
+    browser.click("#runtime-tab-machines")
+    browser.wait("the machines", lambda: count(browser, "#sheet .machine-row") > 0)
+    browser.click('#sheet .machine-row [data-machine-action="rename"]')
+    browser.type("#machine-name", "renamed")
+    browser.click("#machine-apply")
+    browser.wait("the renamed machine", lambda: "renamed machine" in browser.text("#status"))
+    browser.wait("its row", lambda: count(browser, '#sheet [data-machine-entry^="renamed"]') == 1)
+    browser.shot("machines")
+    print("renamed a machine")
+    close_sheet(browser)
+
+    # An MCP server that cannot start: added, disabled, removed.
+    send(browser, "/mcp")
+    browser.wait("the MCP panel", lambda: count(browser, "#mcp-new") == 1)
+    browser.click("#mcp-new")
+    browser.type("#mcp-name", "broken")
+    browser.type("#mcp-endpoint", "false")
+    browser.click("#mcp-save")
+    browser.wait("the new server", lambda: count(browser, '#sheet [data-server="broken"]') == 1)
+    browser.wait(
+        "its failure",
+        lambda: browser.text('#sheet [data-server="broken"] .mcp-state') in ("failed", "reconnecting", "disconnected"),
+        timeout=40,
+    )
+    browser.shot("mcp")
+    browser.click('#sheet [data-server="broken"] [data-mcp-toggle]')
+    browser.wait("the disabled server", lambda: browser.text('#sheet [data-server="broken"] .mcp-state') == "disabled")
+    browser.click('#sheet [data-server="broken"] [data-mcp-remove]')
+    browser.wait("the removed server", lambda: count(browser, '#sheet [data-server="broken"]') == 0)
+    print("added an MCP server that cannot start, disabled it, and removed it")
+    close_sheet(browser)
+
+    # Connect a provider with an API key, then disconnect it.
+    send(browser, "/connect")
+    browser.type("#provider-search", "openai")
+    browser.wait("the provider", lambda: count(browser, '#sheet [data-provider="openai"]') == 1)
+    browser.click('#sheet [data-provider="openai"]')
+    browser.wait("the connect form", lambda: count(browser, "#credential-0") == 1)
+    browser.type("#credential-0", "sk-e2e-not-a-real-key")
+    browser.shot("connect-form")
+    browser.click("#provider-connect")
+    browser.wait("the connection", lambda: "Connected provider openai" in browser.text("#status"), timeout=60)
+    assert "sk-e2e" not in browser.text(), "the key shows on the page"
+    set_text(browser, "#provider-search", "openai")
+    browser.wait("the provider", lambda: "connected" in browser.text('#sheet [data-provider="openai"]'))
+    browser.click('#sheet [data-provider="openai"]')
+    browser.click("#provider-disconnect")
+    browser.click("#provider-disconnect-confirm")
+    browser.wait("the disconnection", lambda: "Disconnected provider openai" in browser.text("#status"), timeout=60)
+    print("connected and disconnected a provider")
+    close_sheet(browser)
+
+    # Edit config.toml: an unknown key is refused and stays to be fixed; a
+    # valid edit applies.
+    send(browser, "/config")
+    browser.wait("the documents", lambda: count(browser, '#sheet [data-config-path="config.toml"]') == 1)
+    browser.click('#sheet [data-config-path="config.toml"] button')
+    browser.wait("the editor", lambda: count(browser, "#config-text") == 1)
+    original = browser.script("return document.querySelector('#config-text').value")
+    set_text(browser, "#config-text", original + "\ncolour = 1\n")
+    browser.click("#config-apply")
+    browser.wait("the refusal", lambda: "was not changed" in browser.text("#config-error"))
+    browser.shot("config-error")
+    set_text(browser, "#config-text", original + "\n# edited from the page\n")
+    browser.click("#config-apply")
+    browser.wait("the applied edit", lambda: "Applied config.toml" in browser.text("#status"))
+    browser.wait("the closed editor", lambda: count(browser, "#config-text") == 0)
+    print("a config edit with an unknown key was refused, then a valid one applied")
+    close_sheet(browser)
+
+    # Memory: an invalid one is refused, then created, edited over a change
+    # made meanwhile, and deleted.
+    send(browser, "/memory")
+    browser.wait("the memories", lambda: count(browser, "#memory-new") == 1)
+    set_text(browser, "#memory-new-url", "project://e2e/notes")
+    browser.click("#memory-new")
+    browser.wait("the editor", lambda: count(browser, "#memory-text") == 1)
+    set_text(browser, "#memory-text", "---\ndescription: \n---\nfirst\n")
+    browser.click("#memory-save")
+    browser.wait("the invalid memory", lambda: "not a valid memory" in browser.text("#memory-pending"))
+    browser.click("#memory-edit-again")
+    set_text(browser, "#memory-text", "---\ndescription: Browser scenario notes\n---\nfirst\n")
+    browser.click("#memory-save")
+    browser.wait("the created memory", lambda: "Created project://e2e/notes" in browser.text("#status"))
+    browser.wait("its row", lambda: count(browser, '#sheet [data-memory="project://e2e/notes"]') == 1)
+    browser.click('#sheet [data-memory="project://e2e/notes"] button')
+    browser.wait("the editor", lambda: "first" in browser.script("const e = document.querySelector('#memory-text'); return e ? e.value : ''"))
+    path = os.path.join(HOME, ".cookie-agent", "memory", "projects", "e2e", "notes.md")
+    with open(path, "w") as file:
+        file.write("---\ndescription: Browser scenario notes\n---\nchanged on disk\n")
+    set_text(browser, "#memory-text", "---\ndescription: Browser scenario notes\n---\nsecond\n")
+    browser.click("#memory-save")
+    browser.wait("the conflict", lambda: "changed since it was opened" in browser.text("#memory-pending"))
+    browser.shot("memory-conflict")
+    browser.click("#memory-overwrite")
+    browser.wait("the overwrite", lambda: "Saved project://e2e/notes" in browser.text("#status"))
+    with open(path) as file:
+        assert "second" in file.read()
+    browser.click('#sheet [data-memory="project://e2e/notes"] [data-memory-delete]')
+    browser.click("#memory-delete-confirm")
+    browser.wait("the deleted memory", lambda: count(browser, '#sheet [data-memory="project://e2e/notes"]') == 0)
+    print("a memory was refused, created, overwritten over a conflict, and deleted")
+    close_sheet(browser)
+
+    # Restart the reference plugin.
+    send(browser, "/plugins")
+    browser.wait("the plugin", lambda: count(browser, '#sheet [data-plugin="reference"]') == 1)
+    browser.wait("its start", lambda: browser.text('#sheet [data-plugin="reference"] .plugin-state') == "connected", timeout=40)
+    browser.shot("plugins")
+    browser.click('#sheet [data-plugin="reference"] [data-plugin-restart]')
+    browser.wait("the restart", lambda: "is restarting" in browser.text("#status"))
+    print("restarted the reference plugin")
+    close_sheet(browser)
 
 
 def session_dir(session_id):
@@ -447,6 +655,7 @@ def main():
         clear_composer(browser)
 
         session_depth(browser)
+        management(browser)
         foreign_session(browser)
 
         # A phone-sized window: no sideways scroll, the sidebar becomes a sheet.
