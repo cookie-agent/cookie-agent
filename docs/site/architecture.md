@@ -1,34 +1,44 @@
 # Architecture
 
-cookie agent is a subagent-first coding harness built as a Rust workspace of twelve
-crates. A local daemon owns provider connections, sessions, model execution,
-permissions, and persistence; a terminal UI communicates with it over a versioned
-JSON-RPC WebSocket protocol. Session history is a versionless, best-effort-read
-event log; other persisted and wire surfaces remain current-only.
+This page is the contributor's view of cookie agent: how the Rust workspace's
+fifteen crates implement the pieces the [Concepts](concepts/daemon.md) pages
+describe. The daemon, the `engine` crate served by the `server` crate, owns provider
+connections, sessions, agents, model execution, permissions, memory, and
+persistence. Runtimes provide its tools over the runtime protocol. Clients, the
+terminal UI, the web page, and the CLI, reach it over the client protocol,
+JSON-RPC on a WebSocket or an in-memory stream. The client, plugin, and
+runtime protocols and session history are versioned with semver and frozen at
+their major; see [Compatibility](reference/compatibility.md).
 
 ## Process model
 
-The `cookie` binary (`crates/cookie_agent`) is a thin composition root. Its CLI
-has six top-level subcommands plus a default mode:
+The `cookie` binary (`crates/cookie_agent`) is a thin composition root. The
+[command reference](clients/cli.md#command-reference) lists every subcommand
+and option; in outline:
 
 | Command | Behavior |
 |---|---|
 | *(none)* | Open the TUI on the daemon `[server]` describes on this machine when one answers; otherwise start an in-process daemon and open the TUI over an in-memory stream. `--standalone` never looks for one |
 | `run [options] <prompt>` | Run one prompt headlessly through the local engine |
-| `daemon [--port]` | Run only the daemon, listening on `ws://127.0.0.1:7419/ws` by default; `--port 0` picks an ephemeral port |
-| `attach [--url] --token` | Attach the TUI to an existing daemon WebSocket |
+| `daemon [--port \| --listen] [--tls-cert --tls-key]` | Run only the daemon, listening on `ws://127.0.0.1:7419/ws` by default; `--port 0` picks an ephemeral port |
+| `attach [--url] [--token]` | Attach the TUI to an existing daemon WebSocket |
 | `web [--url] [--token] [--open]` | Print (or open) the daemon's web page with its token in the fragment |
-| `connect [provider_id] --token` | Interactive durable managed-provider connection (TTY only) |
-| `disconnect [provider_id] --token` | Interactive durable managed-provider disconnection (TTY only) |
-| `mcp --token list` | List the MCP servers of every runtime with their state and hosting runtime |
-| `mcp --token auth <server>` | Start OAuth authorization for a remote MCP server |
+| `connect [provider_id]` | Interactive durable managed-provider connection (TTY only) |
+| `disconnect [provider_id]` | Interactive durable managed-provider disconnection (TTY only) |
+| `runtime serve --stdio \| --daemon [url]` | Serve this machine's coding runtime to a daemon, as a template starts it or by dialing in |
+| `mcp list` | List the MCP servers of every runtime with their state and hosting runtime |
+| `mcp auth <server>` | Start OAuth authorization for a remote MCP server |
 | `config edit [path]`, `config set <key> <value>`, `config unset <key>`, `config remove <path>`, `config reload`, `config status` | Read and change the daemon's `config.toml` and agent documents; see [config.toml](engine/configuration.md#changes-while-the-daemon-runs) |
+| `machine list`, `rename`, `assign`, `unassign`, `merge`, `forget` | List and regroup the machines the daemon's runtimes run on |
+| `memory list`, `edit`, `rm` | List, edit, and delete the daemon's memories |
+| `sessions upgrade [--all]` | Convert stored sessions to this build's history format, without a daemon |
 
 The daemon authenticates every WebSocket with a bearer token kept in
 `[server] token` of `config.toml`, which it writes at its first start when
-there is none. `attach`, `connect`, `disconnect`, `mcp`, and `config` take the token
-from `--token`, `COOKIE_DAEMON_TOKEN`, or the same configuration, and accept
-`ws`/`wss` URLs whose path is exactly `/ws`. They use the same shared protocol client as
+there is none. `attach`, `web`, `connect`, `disconnect`, `mcp`, `config`,
+`machine`, `memory`, and `runtime serve --daemon` take the token from
+`--token`, `COOKIE_DAEMON_TOKEN`, or the same configuration, and accept
+`ws`/`wss` URLs whose path is exactly `/ws`. Those that connect use the same shared protocol client as
 the TUI, so the CLI keeps working even when built without the `tui` feature.
 
 Tools run in *runtimes* (see the [runtimes specification](specs/runtimes.md)).
@@ -39,7 +49,11 @@ process and is reached over the [runtime protocol](reference/runtime-protocol.md
 through an in-memory frame pair. A configured
 [`[runtimes.<id>]`](daemon/runtimes.md) template starts runtimes in child
 processes (typically `cookie runtime serve --stdio` on another machine over
-ssh) that speak the same protocol over stdio.
+ssh) that speak the same protocol over stdio. A runtime can also dial in to the
+daemon's `/runtime` WebSocket route, as `cookie runtime serve --daemon` does,
+and a TUI attached to a daemon on another machine dials in its own directory
+as `client_<host name>`. The daemon groups runtimes into machines by the
+machine ID they report (`crates/engine/src/machines.rs`).
 
 Any number of clients may attach to one daemon at once. Each sees every
 session's events live, can submit input to any of them, and is told of the
@@ -84,7 +98,7 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | Crate | Responsibility |
 |---|---|
 | `identity` | Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no `cookie_agent_*` dependencies. |
-| `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the in-memory `InProcessStream` pair, the `ServerProtocol` trait, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. The opt-in `websocket` feature adds the daemon client transport (`WebSocketTransport`, `Client::connect_websocket_with_token`, `validate_websocket_url`). The client side also builds for `wasm32-unknown-unknown`: there the server, the stdio peer, `paths`, `StopSignals`, and the OAuth callback are left out, tasks and timers run on the browser's event loop, and `websocket` is the browser's `WebSocket` (`Client::connect_browser_websocket`, with the token in the handshake). Re-exports `identity` and hosts the unified wire types. |
+| `protocol` | The versioned wire contracts (semver per protocol, see [Compatibility](reference/compatibility.md)) **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the in-memory `InProcessStream` pair, the `ServerProtocol` trait, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. The opt-in `websocket` feature adds the daemon client transport (`WebSocketTransport`, `Client::connect_websocket_with_token`, `validate_websocket_url`). The client side also builds for `wasm32-unknown-unknown`: there the server, the stdio peer, `paths`, `StopSignals`, and the OAuth callback are left out, tasks and timers run on the browser's event loop, and `websocket` is the browser's `WebSocket` (`Client::connect_browser_websocket`, with the token in the handshake). Re-exports `identity` and hosts the unified wire types. |
 | `client_state` | The client state every client shares: `StateStore` and `SessionState`, reduced from stored and transient events (attribution, pending and queued lanes, approvals, goal, live tool display deltas), the runtime snapshot revision chain, model display names, and markdown kept renderer-neutral as source plus pulldown-cmark events per top-level block, parsed incrementally while text streams; a client keeps its own rendering of a block in that block's `RendererCache`. Also the client policy that is not rendering: the session subscription state machine (which returns the `events.subscribe` requests to send and takes their outcomes back), which trees stay subscribed, session ownership from `session.resume`, the debounced model-selection draft, the approval list, the permission-mode cycle, the complete content of cut blocks, the retry and redial waits, and the chunked upload. It also holds the rules both clients' panels share, which render nothing: permission, runtime and machine, MCP, provider, configuration, memory, and plugin rows and their requests, the credential projection a provider connect sends, tool header text, and producer and goal row labels. The client drives every timer. Depends only on `protocol` and plain crates, nothing renders, and it builds for `wasm32-unknown-unknown`. |
 | `plugin_sdk` | Official Rust SDK for out-of-process plugins, on the protocol crate's JSON-RPC peer: handler registration, tools over the runtime protocol's tool messages, interception hooks, event and bus handlers, and producers. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
@@ -93,11 +107,11 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `mcp` | The MCP client (`cookie_agent_mcp`): an `McpRegistry` per runtime that connects its servers eagerly over stdio or Streamable HTTP, publishes their tools as `<server>_<tool>` with untrusted-output markings, maps result media to attachments, reconnects dropped servers with the shared reconnect policy, and reports status and failures to subscribers and an `McpObserver`. The `oauth` feature, which only the engine enables, adds OAuth for remote servers and the `mcp-oauth.json` credential store. Depends on `runtime_api` and `config`, never on the engine. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`; messaging: `send_message`; `skill`; goals; `read_artifact`; `stop_background`), background calls (`runtime/background_tasks.rs`), subagent reports (`runtime/subagent_reports.rs`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), instance reconnects, and the global runtime's `McpRegistry` with the TUI's runtime-layer MCP edits and their write-back (`config_store`). |
 | `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime serve --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
-| `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
+| `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path for clients (`/ws`), dial-in runtimes (`/runtime`), and the web page with its browser-origin checks (`AllowedOrigins`) and TLS (`load_tls`), `Server::connect_in_process`, and token generation and the ready line. Server side only. |
 | `web` | The browser client: a Leptos page rendered client-side, built with Trunk and styled with Tailwind, over `protocol`'s browser transport and `client_state`, with the TUI's features (see [Web](clients/web.md)), a web app manifest for phones, and no service worker. Compiles natively too, so the workspace builds without the wasm target; its native tests cover the pure logic, and headless-Firefox scenarios (`scripts/test-web-page.sh`) cover the page against a real daemon. Not published. |
 | `web_assets` | The built page (`scripts/build-web.sh` writes `crates/web_assets/bundle/`), embedded at compile time for `server` to serve, with a content type, cache rule, and `ETag` per file; a placeholder page when no bundle was built. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow, rendering and highlighting the shared markdown. Keeps its state in `client_state` and runs over a `protocol::Client` it is handed. |
-| `cookie_agent` | CLI and composition root wiring every crate together, `cookie runtime serve --stdio`, which serves a coding runtime to a daemon without reading any configuration, and `cookie sessions upgrade`, which converts session history to this build's format. The only binary. |
+| `cookie_agent` | CLI and composition root wiring every crate together, `cookie runtime serve`, which serves a coding runtime to a daemon over stdio or by dialing in, and `cookie sessions upgrade`, which converts session history to this build's format. The only binary. |
 
 ### Type unification
 
@@ -121,12 +135,13 @@ implementation of the protocol mechanics.
 ### Transport
 
 `protocol::Transport` is a frame-level channel: `send(MessageFrame)` /
-`recv() -> Option<MessageFrame>`, with `MessageFrame` either a `Text` string or a
-`Value`. It has no JSON-RPC semantics. The `protocol` crate also provides the
+`recv() -> Option<MessageFrame>`, with `MessageFrame` a `Text` string, the
+`Bytes` of received JSON text, or a `Value`. It has no JSON-RPC semantics. The `protocol` crate also provides the
 concrete client transports: `InProcessStream` (an in-memory mpsc pair used by
 the local frontend and tests) and, behind the `websocket` feature,
-`WebSocketTransport` (tokio-tungstenite, used by the TUI and CLI to reach a
-daemon). The `server` crate's axum WebSocket accept path implements
+`WebSocketTransport` (tokio-tungstenite, used by the TUI, the CLI, and dial-in
+runtimes to reach a daemon) natively and `BrowserWebSocketTransport` (the
+browser's `WebSocket`, used by the web page) on `wasm32`. The `server` crate's axum WebSocket accept path implements
 `MessageStream` (the `Transport` alias) server-side.
 
 ### Server side
@@ -162,7 +177,10 @@ handles:
 - **Request/response correlation** by id, with a bounded command queue and a
   sole ordered delivery channel.
 - **Notification demux** into `ClientDelivery` variants: live
-  `events.subscription`, `events.plugin`, and `runtime.changed`.
+  `events.subscription`, `events.plugin`, `runtime.changed`, and the
+  daemon-wide change notifications (`sessions.changed`, `runtimes.changed`,
+  `mcp.changed`, `background.changed`, `plugins.changed`, `machines.changed`,
+  `memory.changed`).
 - **Replay and gap recovery.** `events.subscribe` runs a cursor replay that is
   injected into the delivery stream before buffered live notifications; a
   recovery worker re-subscribes with backoff and emits `RecoveryFailed` when it
@@ -178,8 +196,9 @@ handles:
 
 Connections are made with `Client::connect_stream` over any transport,
 `Client::connect_websocket_with_token` (the `websocket` feature), or
-`Server::connect_in_process` in the `server` crate. The TUI and the CLI use this
-same `protocol::Client` directly; there is no per-frontend wrapper.
+`Server::connect_in_process` in the `server` crate. The TUI, the web page, and
+the CLI use this same `protocol::Client` directly, with `client_state` above it
+for the TUI and the web page; there is no per-frontend wrapper.
 
 Each `events.subscribe` costs a paged replay and replaces the connection's live
 tail for that session, so the TUI subscribes a session at most once per
