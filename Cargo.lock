@@ -1082,6 +1082,11 @@ dependencies = [
 [[package]]
 name = "cookie_agent_web_assets"
 version = "0.3.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "sha2",
+]
 
 [[package]]
 name = "core-foundation"

@@ -814,6 +814,39 @@ mod authentication_tests {
                 asset.path
             );
             assert_eq!(body, asset.bytes, "{}", asset.path);
+            assert_eq!(
+                headers["content-security-policy"],
+                cookie_agent_web_assets::content_security_policy()
+            );
+            assert!(!headers.contains_key("content-encoding"), "{}", asset.path);
+            // A browser that takes gzip gets the compressed copy, under a
+            // tag of its own.
+            let Some(gzip) = asset.gzip else {
+                continue;
+            };
+            assert_eq!(headers["vary"], "accept-encoding", "{}", asset.path);
+            let (status, headers, body) = http(
+                &daemon,
+                "GET",
+                &format!("/{}", asset.path),
+                &[("accept-encoding", "gzip, br")],
+            )
+            .await;
+            assert_eq!(status, 200, "{}", asset.path);
+            assert_eq!(headers["content-encoding"], "gzip", "{}", asset.path);
+            assert_ne!(headers["etag"], asset.etag, "{}", asset.path);
+            assert_eq!(body, gzip, "{}", asset.path);
+            let (status, _, _) = http(
+                &daemon,
+                "GET",
+                &format!("/{}", asset.path),
+                &[
+                    ("accept-encoding", "gzip"),
+                    ("if-none-match", &headers["etag"]),
+                ],
+            )
+            .await;
+            assert_eq!(status, 304, "{}", asset.path);
         }
         // Any other path, or another method, is not the page.
         for (method, path) in [

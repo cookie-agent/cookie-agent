@@ -17,6 +17,8 @@ pub struct Asset {
     /// is not immutable.
     pub etag: &'static str,
     pub bytes: &'static [u8],
+    /// The file gzip-compressed, when that makes it smaller.
+    pub gzip: Option<&'static [u8]>,
 }
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
@@ -33,6 +35,14 @@ pub fn assets() -> &'static [Asset] {
     ASSETS
 }
 
+/// The Content-Security-Policy the page is served with: its own origin,
+/// its inline scripts by hash, WebAssembly, `blob:` media, and WebSocket
+/// connections to any daemon.
+#[must_use]
+pub const fn content_security_policy() -> &'static str {
+    POLICY
+}
+
 /// Whether the real page was built in, rather than the placeholder.
 #[must_use]
 pub const fn is_built() -> bool {
@@ -47,6 +57,7 @@ mod tests {
         assert_eq!(index.content_type, "text/html; charset=utf-8");
         assert!(!index.bytes.is_empty());
         assert!(!index.immutable);
+        assert!(super::content_security_policy().contains("default-src 'self'"));
         assert!(super::get("missing.js").is_none());
     }
 }
