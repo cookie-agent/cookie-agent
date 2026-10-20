@@ -10,11 +10,13 @@
 set -euo pipefail
 
 TRUNK_VERSION="0.21.14"
-# What a browser may download for the page, gzipped, in bytes: W3 measured
-# 1.45 MB with its features, after regex and runtime schema generation left
-# the wasm (1.64 MB before); the budget leaves room to grow before someone
-# looks at why.
-BUDGET_GZIPPED_BYTES=1600000
+# What a browser may download for the page, gzipped, in bytes. W3 measured
+# 1.45 MB; W4's six management panels (runtimes and machines, MCP,
+# providers, configuration, memory, plugins) took it to 1.62 MB, most of it
+# each RPC's request and answer code, after sending every request through
+# one shared future saved 16 KB. The budget leaves room to grow before
+# someone looks at why.
+BUDGET_GZIPPED_BYTES=1700000
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"

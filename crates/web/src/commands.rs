@@ -37,6 +37,18 @@ pub enum Command {
     AgentPanelShow,
     AgentPanelHide,
     AgentPanelAuto,
+    /// The session's runtimes and the daemon's machines.
+    Runtime,
+    /// The MCP servers.
+    Mcp,
+    /// Connect or disconnect a model provider.
+    Connect,
+    /// The daemon's `config.toml` and agent documents.
+    Config,
+    /// The daemon's memories.
+    Memory,
+    /// The plugins.
+    Plugins,
 }
 
 /// A command as the menu and `/` know it.
@@ -184,6 +196,48 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "show the subagent tree while agents run",
         takes_argument: false,
     },
+    CommandSpec {
+        command: Command::Connect,
+        name: "connect",
+        aliases: &[],
+        description: "securely connect a model provider",
+        takes_argument: false,
+    },
+    CommandSpec {
+        command: Command::Mcp,
+        name: "mcp",
+        aliases: &[],
+        description: "manage MCP servers",
+        takes_argument: false,
+    },
+    CommandSpec {
+        command: Command::Runtime,
+        name: "runtime",
+        aliases: &["runtimes"],
+        description: "attach and detach the session's runtimes; the machines",
+        takes_argument: false,
+    },
+    CommandSpec {
+        command: Command::Plugins,
+        name: "plugins",
+        aliases: &["plugin"],
+        description: "show plugin status and restart a plugin",
+        takes_argument: false,
+    },
+    CommandSpec {
+        command: Command::Config,
+        name: "config",
+        aliases: &[],
+        description: "edit the daemon's config.toml and agent documents",
+        takes_argument: false,
+    },
+    CommandSpec {
+        command: Command::Memory,
+        name: "memory",
+        aliases: &["memories"],
+        description: "browse, edit, create, and delete the daemon's memories",
+        takes_argument: false,
+    },
 ];
 
 /// The command a composer text names and its argument: `/<name>` or an
@@ -229,6 +283,9 @@ mod tests {
     fn names_and_aliases_parse_as_in_the_tui() {
         let command = |text: &str| parse(text).map(|(command, _)| command);
         assert_eq!(command("/new"), Some(Command::New));
+        assert_eq!(command("/runtimes"), Some(Command::Runtime));
+        assert_eq!(command("/memories"), Some(Command::Memory));
+        assert_eq!(command("/plugin"), Some(Command::Plugins));
         assert_eq!(command(" /resume "), Some(Command::Sessions));
         assert_eq!(command("/continue"), Some(Command::Sessions));
         assert_eq!(command("/usage"), Some(Command::Usage));
@@ -258,7 +315,7 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, ["model", "mode"]);
+        assert_eq!(names, ["model", "mode", "mcp", "memory"]);
         assert!(completions("hello").is_empty());
         assert_eq!(completions("/").len(), super::COMMANDS.len());
     }

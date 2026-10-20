@@ -38,12 +38,14 @@ mod attachments;
 mod background;
 mod goal;
 mod history;
+mod manage;
 mod permissions;
 mod skills;
 mod tree;
 
 pub use attachments::DownscaleOffer;
 pub use history::UserMenu;
+pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL};
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -65,6 +67,12 @@ pub enum Panel {
     Permissions,
     /// A user message's actions: copy, revert, fork.
     Message,
+    Runtimes,
+    Mcp,
+    Connect,
+    Config,
+    Memory,
+    Plugins,
 }
 
 /// The `/usage` panel's content.
@@ -135,6 +143,31 @@ pub struct Workspace {
     pub attachments: RwSignal<Vec<cookie_agent_protocol::ArtifactRef>>,
     pub downscale_offer: RwSignal<Option<DownscaleOffer>>,
     offer_bytes: StoredValue<Vec<u8>>,
+    /// `runtimes.list` while the `/runtime` panel is open.
+    pub runtimes: RwSignal<Option<cookie_agent_protocol::RuntimesListResult>>,
+    pub machines: RwSignal<Option<Result<cookie_agent_protocol::MachinesListResult, String>>>,
+    /// The runtimes a new session attaches, once `/runtime` edited them.
+    pub draft_runtimes: RwSignal<Option<Vec<cookie_agent_client_state::runtimes::DraftRuntime>>>,
+    next_draft_runtime: StoredValue<u64>,
+    pub mcp_servers: RwSignal<Option<Result<Vec<cookie_agent_protocol::McpServerInfo>, String>>>,
+    pub provider_operations: RwSignal<
+        HashMap<
+            cookie_agent_protocol::ProviderId,
+            cookie_agent_client_state::providers::ProviderOperation,
+        >,
+    >,
+    pub config: RwSignal<Option<Result<cookie_agent_protocol::ConfigGetResult, String>>>,
+    /// Edits the daemon refused, by path, to be fixed and applied again.
+    pub config_drafts: RwSignal<HashMap<String, ConfigEdit>>,
+    pub config_error: RwSignal<Option<String>>,
+    /// The document open in the editor.
+    pub config_edit: RwSignal<Option<ConfigEdit>>,
+    pub memory: RwSignal<Option<Result<cookie_agent_protocol::MemoryListResult, String>>>,
+    /// The memory open in the editor.
+    pub memory_edit: RwSignal<Option<MemoryEdit>>,
+    /// A write that was not saved, waiting for the user's choice.
+    pub memory_pending: RwSignal<Option<MemoryPending>>,
+    pub plugins: RwSignal<Option<Result<Vec<cookie_agent_protocol::PluginInfo>, String>>>,
     /// Bumped by every connection the page adopts, so work for an older one
     /// stops.
     connection: StoredValue<u64>,
@@ -196,6 +229,20 @@ impl Workspace {
             attachments: RwSignal::new(Vec::new()),
             downscale_offer: RwSignal::new(None),
             offer_bytes: StoredValue::new(Vec::new()),
+            runtimes: RwSignal::new(None),
+            machines: RwSignal::new(None),
+            draft_runtimes: RwSignal::new(None),
+            next_draft_runtime: StoredValue::new(0),
+            mcp_servers: RwSignal::new(None),
+            provider_operations: RwSignal::new(HashMap::new()),
+            config: RwSignal::new(None),
+            config_drafts: RwSignal::new(HashMap::new()),
+            config_error: RwSignal::new(None),
+            config_edit: RwSignal::new(None),
+            memory: RwSignal::new(None),
+            memory_edit: RwSignal::new(None),
+            memory_pending: RwSignal::new(None),
+            plugins: RwSignal::new(None),
             connection: StoredValue::new(0),
         }
     }
@@ -324,14 +371,25 @@ impl Workspace {
                 self.status.set(format!("recovery failed: {error}"));
                 return;
             }
-            ClientDelivery::Disconnected { .. }
-            | ClientDelivery::PluginEvent(_)
-            | ClientDelivery::McpChanged(_)
+            ClientDelivery::PluginEvent(event) => {
+                if self.selected.get_untracked() == Some(event.session_id) {
+                    self.status
+                        .set(cookie_agent_client_state::plugins::plugin_event_status(
+                            event,
+                        ));
+                }
+                return;
+            }
+            ClientDelivery::McpChanged(_)
             | ClientDelivery::RuntimesChanged(_)
             | ClientDelivery::PluginsChanged(_)
             | ClientDelivery::MachinesChanged(_)
-            | ClientDelivery::MemoryChanged(_)
-            | ClientDelivery::Diagnostic { .. } => return,
+            | ClientDelivery::MemoryChanged(_) => {
+                // An open panel refreshes now instead of at its next poll.
+                self.refresh_open_panel(&delivery);
+                return;
+            }
+            ClientDelivery::Disconnected { .. } | ClientDelivery::Diagnostic { .. } => return,
             _ => {}
         }
         let own_origin = self.client().and_then(|client| client.origin());
@@ -694,6 +752,7 @@ impl Workspace {
         self.attachments.set(Vec::new());
         self.downscale_offer.set(None);
         self.draft_rules.set(Vec::new());
+        self.draft_runtimes.set(None);
         self.composer.set(String::new());
         if let Some(directory) = self.directory_filter.get_untracked() {
             self.new_directory.set(directory);
@@ -1074,19 +1133,37 @@ impl Workspace {
         let directory = (!directory.is_empty()).then_some(directory);
         // Like the TUI's draft: `global`, and the daemon's `local` coding
         // capability at the chosen directory (its own when none is given).
-        let runtimes = directory.as_ref().map(|directory| {
-            vec![RuntimeAttachRequest {
-                runtime_id: RuntimeId::new(RuntimeId::LOCAL).expect("`local` is a runtime ID"),
-                capability: Some(cookie_agent_protocol::CapabilityName::coding()),
-                workspace: Some(directory.clone()),
-            }]
-        });
+        // `/runtime` may have edited the draft's runtimes.
+        let (global, runtimes) = match self.draft_runtimes.get_untracked() {
+            Some(entries) => (
+                entries.iter().any(|entry| entry.is_global()),
+                Some(
+                    entries
+                        .iter()
+                        .filter(|entry| !entry.is_global())
+                        .map(|entry| entry.request.clone())
+                        .collect(),
+                ),
+            ),
+            None => (
+                true,
+                directory.as_ref().map(|directory| {
+                    vec![RuntimeAttachRequest {
+                        runtime_id: RuntimeId::new(RuntimeId::LOCAL)
+                            .expect("`local` is a runtime ID"),
+                        capability: Some(cookie_agent_protocol::CapabilityName::coding()),
+                        workspace: Some(directory.clone()),
+                    }]
+                }),
+            ),
+        };
         let created = client
             .create_session(SessionCreateParams {
                 permission_mode: self.new_session_mode.get_untracked(),
                 permission_rules: self.draft_rules.get_untracked(),
                 cwd: directory,
                 runtimes,
+                global,
                 ..SessionCreateParams::new(selection)
             })
             .await
@@ -1110,6 +1187,7 @@ impl Workspace {
         }
         self.new_session_mode.set(None);
         self.draft_rules.set(Vec::new());
+        self.draft_runtimes.set(None);
         self.new_session.set(false);
         self.selected.set(Some(session_id));
         self.reroot_tree(session_id);
@@ -1533,6 +1611,12 @@ impl Workspace {
             Command::AgentPanelShow => self.set_panel_mode(PanelMode::Shown),
             Command::AgentPanelHide => self.set_panel_mode(PanelMode::Hidden),
             Command::AgentPanelAuto => self.set_panel_mode(PanelMode::Auto),
+            Command::Runtime => self.open_runtimes(),
+            Command::Mcp => self.open_mcp(),
+            Command::Connect => self.open_connect(),
+            Command::Config => self.open_config(),
+            Command::Memory => self.open_memory(),
+            Command::Plugins => self.open_plugins(),
         }
     }
 

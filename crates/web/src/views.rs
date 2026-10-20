@@ -29,11 +29,14 @@ use crate::{
 };
 
 mod depth;
+mod manage;
 
 use depth::{
     AttachButtons, BackgroundBar, DraftFiles, GoalBar, TreePanel, background_sheet, goal_sheet,
     message_sheet, permissions_sheet, skills_sheet,
 };
+
+use manage::{config_sheet, connect_sheet, mcp_sheet, memory_sheet, plugins_sheet, runtimes_sheet};
 
 /// How long a press on Send must last to queue instead of steer.
 const LONG_PRESS: Duration = Duration::from_millis(500);
@@ -467,7 +470,11 @@ fn NewSessionCard(workspace: Workspace) -> impl IntoView {
                     class="min-h-11 rounded border border-crust bg-cream px-3 font-mono hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple"
                     placeholder="the daemon's own directory"
                     prop:value=move || workspace.new_directory.get()
-                    on:input=move |event| workspace.new_directory.set(event_target_value(&event))
+                    on:input=move |event| {
+                        workspace.new_directory.set(event_target_value(&event));
+                        // The draft's runtimes follow the directory again.
+                        workspace.draft_runtimes.set(None);
+                    }
                 />
             </label>
             <p class="text-xs text-ink dark:text-sand">
@@ -784,6 +791,12 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Skills) => "Skills",
         Some(Panel::Permissions) => "Permissions",
         Some(Panel::Message) => "Message",
+        Some(Panel::Runtimes) => "Runtimes",
+        Some(Panel::Mcp) => "MCP servers",
+        Some(Panel::Connect) => "Providers",
+        Some(Panel::Config) => "Configuration",
+        Some(Panel::Memory) => "Memory",
+        Some(Panel::Plugins) => "Plugins",
         None => "",
     };
     view! {
@@ -791,7 +804,14 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
             <div class="fixed inset-0 z-10 bg-espresso/30 md:bg-transparent" on:click=close></div>
             <section
                 id="sheet"
-                class="fixed inset-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[28rem] md:border-l md:border-toasted dark:bg-night md:dark:border-ember"
+                class=move || {
+                    // The editors get the room a document needs.
+                    if matches!(workspace.panel.get(), Some(Panel::Config | Panel::Memory)) {
+                        "fixed inset-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[48rem] md:border-l md:border-toasted dark:bg-night md:dark:border-ember"
+                    } else {
+                        "fixed inset-0 z-20 flex flex-col overflow-y-auto bg-cream md:inset-y-0 md:right-0 md:left-auto md:w-[28rem] md:border-l md:border-toasted dark:bg-night md:dark:border-ember"
+                    }
+                }
             >
                 <div class="flex items-center gap-2 border-b border-toasted px-3 py-2 dark:border-ember">
                     <h2 class="flex-1 font-bold">{title}</h2>
@@ -818,6 +838,12 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                         Some(Panel::Skills) => skills_sheet(workspace).into_any(),
                         Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
                         Some(Panel::Message) => message_sheet(workspace).into_any(),
+                        Some(Panel::Runtimes) => runtimes_sheet(workspace).into_any(),
+                        Some(Panel::Mcp) => mcp_sheet(workspace).into_any(),
+                        Some(Panel::Connect) => connect_sheet(workspace).into_any(),
+                        Some(Panel::Config) => config_sheet(workspace).into_any(),
+                        Some(Panel::Memory) => memory_sheet(workspace).into_any(),
+                        Some(Panel::Plugins) => plugins_sheet(workspace).into_any(),
                         None => ().into_any(),
                     }}
                 </div>
