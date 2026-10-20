@@ -293,7 +293,7 @@ A `cookie` built from a fresh checkout serves a placeholder page.
 - it needs `trunk` 0.21.14 and the `wasm32-unknown-unknown` target;
 - it writes the page to `crates/web_assets/bundle/`, which the next build
   of `cookie` embeds;
-- it fails when the page, gzipped, is over its budget of 1.7 MB.
+- it fails when the page, gzipped, is over its budget of 10 MB, a backstop against runaway growth.
 
 The daemon sends the page gzip-compressed to browsers that accept it, under a
 Content-Security-Policy that allows only the page's own scripts and
