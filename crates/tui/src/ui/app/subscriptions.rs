@@ -7,63 +7,17 @@
 //! refresh) all go through [`App::subscribe_session`], which coalesces into
 //! whatever the session already has.
 //!
-//! The state lives here rather than in the protocol client because whether a
-//! finished subscription is live depends on ownership, which only the view
-//! classifies: the daemon answers a session it does not own with a read-only
-//! snapshot and registers no tail. The client still owns cursors and replay
-//! staging, and runs recovery replays (gaps, failed replays, and the view's
-//! own [`App::recover_session`]) on its own; this machine only tracks them.
+//! The state machine is `cookie_agent_client_state::subscriptions`, shared
+//! with the web client; this module sends the requests it returns and feeds
+//! their outcomes back. Whether a finished subscription is live depends on
+//! ownership, which the view classifies.
 
 use super::*;
 
-/// Where one session's subscription stands on this connection. A session
-/// without an entry is idle: never subscribed on this connection, or dropped
-/// because its recovery failed or the connection closed.
-pub(in crate::ui) enum SubscriptionState {
-    /// A subscribe this view requested is in flight.
-    Subscribing {
-        attempt: u64,
-        /// The session was classified as owned when the request was made, so
-        /// its final page registers a live tail.
-        owned: bool,
-        /// Ownership arrived after the request was made: its reply may be a
-        /// tail-less snapshot, so subscribe once more when it finishes.
-        resubscribe: bool,
-        /// A replay of this session ended while the request was in flight.
-        /// Only consulted when the request found another replay running.
-        replay_ended: bool,
-        /// Becomes `true` once the request has finished, for callers that
-        /// wait on the replay.
-        done: tokio::sync::watch::Receiver<bool>,
-    },
-    /// Replayed and following the live tail (a snapshot, unless `owned`).
-    Live { owned: bool },
-    /// A replay this view did not request (a recovery, or the client's retry
-    /// of a failed subscribe) is bringing the session up to date. It ends in
-    /// the session's next `ReplayEnd`, or in `RecoveryFailed`.
-    Recovering { owned: bool, resubscribe: bool },
-}
-
 use cookie_agent_client_state::subscriptions::{
-    RECONNECT_FIRST_DELAY, SUBSCRIPTION_RETRY_DELAY, next_reconnect_delay,
+    RECONNECT_FIRST_DELAY, SUBSCRIPTION_RETRY_DELAY, Subscribe, SubscriptionState,
+    next_reconnect_delay,
 };
-
-/// Why the view asks for a session's subscription.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::ui) enum SubscribeIntent {
-    /// Keep the session current: coalesce into any subscription it has.
-    Follow,
-    /// The user opened the session. As [`Self::Follow`], except that a
-    /// finished snapshot, which no tail keeps current, is read again from
-    /// the view's cursor.
-    Open,
-}
-
-pub(in crate::ui) enum SubscriptionOutcome {
-    Established,
-    ReplayInProgress,
-    Failed(String),
-}
 
 impl App {
     /// Make sure `session_id` is subscribed on this connection, issuing an
@@ -74,29 +28,9 @@ impl App {
         intent: SubscribeIntent,
     ) {
         let owned = self.owned_sessions.contains(&session_id);
-        match self.subscriptions.get_mut(&session_id) {
-            None => {}
-            Some(
-                SubscriptionState::Subscribing {
-                    owned: false,
-                    resubscribe,
-                    ..
-                }
-                | SubscriptionState::Recovering {
-                    owned: false,
-                    resubscribe,
-                },
-            ) if owned => {
-                *resubscribe = true;
-                return;
-            }
-            // A snapshot becomes live once the session is owned, and an
-            // opened snapshot is refreshed.
-            Some(SubscriptionState::Live { owned: false })
-                if owned || intent == SubscribeIntent::Open => {}
-            Some(_) => return,
+        if let Some(subscribe) = self.subscriptions.subscribe(session_id, owned, intent) {
+            self.send_subscribe(subscribe);
         }
-        self.start_subscription(session_id, owned, false);
     }
 
     /// Subscribe `session_id` with a full replay rather than from the view's
@@ -105,12 +39,16 @@ impl App {
     /// have missed deltas while it had no subscription.
     pub(in crate::ui) fn resubscribe_from_scratch(&mut self, session_id: SessionId) {
         let owned = self.owned_sessions.contains(&session_id);
-        self.start_subscription(session_id, owned, true);
+        let subscribe = self.subscriptions.subscribe_from_scratch(session_id, owned);
+        self.send_subscribe(subscribe);
     }
 
-    fn start_subscription(&mut self, session_id: SessionId, owned: bool, from_scratch: bool) {
-        self.next_subscription_attempt = self.next_subscription_attempt.wrapping_add(1);
-        let attempt = self.next_subscription_attempt;
+    fn send_subscribe(&mut self, subscribe: Subscribe) {
+        let Subscribe {
+            session_id,
+            attempt,
+            from_scratch,
+        } = subscribe;
         let cursor = if from_scratch {
             None
         } else {
@@ -120,16 +58,7 @@ impl App {
                 .map(|state| state.last_seq)
         };
         let (finished, done) = tokio::sync::watch::channel(false);
-        self.subscriptions.insert(
-            session_id,
-            SubscriptionState::Subscribing {
-                attempt,
-                owned,
-                resubscribe: false,
-                replay_ended: false,
-                done,
-            },
-        );
+        self.subscription_done.insert(session_id, done);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -163,77 +92,30 @@ impl App {
         attempt: u64,
         outcome: SubscriptionOutcome,
     ) {
-        let Some(&SubscriptionState::Subscribing {
-            attempt: current,
-            owned,
-            resubscribe,
-            replay_ended,
-            ..
-        }) = self.subscriptions.get(&session_id)
-        else {
-            return;
-        };
-        if current != attempt {
-            return;
+        let current = matches!(
+            self.subscriptions.state(session_id),
+            Some(SubscriptionState::Subscribing { attempt: current, .. }) if current == attempt
+        );
+        if current && let SubscriptionOutcome::Failed(error) = &outcome {
+            self.session_errors.record(error);
+            if self.selected == Some(session_id) {
+                self.status = error.clone();
+            }
         }
-        match outcome {
-            SubscriptionOutcome::Established if resubscribe => {
-                self.start_subscription(session_id, true, false);
-            }
-            SubscriptionOutcome::Established => {
-                self.subscriptions
-                    .insert(session_id, SubscriptionState::Live { owned });
-            }
-            SubscriptionOutcome::ReplayInProgress => {
-                // Another replay (a recovery) holds the session and registers
-                // the tail this one would have. It may have been requested
-                // before the session was owned, so an owned subscription
-                // follows it once it ends.
-                let resubscribe = resubscribe || owned;
-                if resubscribe && replay_ended {
-                    self.start_subscription(
-                        session_id,
-                        self.owned_sessions.contains(&session_id),
-                        false,
-                    );
-                } else {
-                    self.subscriptions.insert(
-                        session_id,
-                        SubscriptionState::Recovering { owned, resubscribe },
-                    );
-                }
-            }
-            SubscriptionOutcome::Failed(error) => {
-                self.session_errors.record(&error);
-                if self.selected == Some(session_id) {
-                    self.status = error;
-                }
-                // The client retries a failed replay as a recovery of it.
-                self.subscriptions.insert(
-                    session_id,
-                    SubscriptionState::Recovering { owned, resubscribe },
-                );
-            }
+        let owned = self.owned_sessions.contains(&session_id);
+        if let Some(subscribe) = self
+            .subscriptions
+            .finish(session_id, attempt, &outcome, owned)
+        {
+            self.send_subscribe(subscribe);
         }
     }
 
     /// A replay of `session_id` ended (already applied to the store).
     pub(super) fn note_replay_end(&mut self, session_id: SessionId) {
-        match self.subscriptions.get_mut(&session_id) {
-            Some(SubscriptionState::Subscribing { replay_ended, .. }) => *replay_ended = true,
-            Some(&mut SubscriptionState::Recovering { owned, resubscribe }) => {
-                if resubscribe {
-                    self.start_subscription(
-                        session_id,
-                        self.owned_sessions.contains(&session_id),
-                        false,
-                    );
-                } else {
-                    self.subscriptions
-                        .insert(session_id, SubscriptionState::Live { owned });
-                }
-            }
-            Some(SubscriptionState::Live { .. }) | None => {}
+        let owned = self.owned_sessions.contains(&session_id);
+        if let Some(subscribe) = self.subscriptions.note_replay_end(session_id, owned) {
+            self.send_subscribe(subscribe);
         }
     }
 
@@ -242,37 +124,14 @@ impl App {
     /// is already subscribed.
     pub(in crate::ui) fn recover_session(&mut self, session_id: SessionId) {
         self.client.recover_session(session_id, true);
-        // A follow-up the superseded state still owed is kept.
-        let resubscribe = matches!(
-            self.subscriptions.get(&session_id),
-            Some(
-                SubscriptionState::Subscribing {
-                    resubscribe: true,
-                    ..
-                } | SubscriptionState::Recovering {
-                    resubscribe: true,
-                    ..
-                }
-            )
-        );
-        self.subscriptions.insert(
-            session_id,
-            SubscriptionState::Recovering {
-                owned: self.owned_sessions.contains(&session_id),
-                resubscribe,
-            },
-        );
+        let owned = self.owned_sessions.contains(&session_id);
+        self.subscriptions.recover(session_id, owned);
     }
 
     /// The client gave up recovering `session_id` (every subscription when
     /// `None`): the next open or tree refresh subscribes it afresh.
     pub(super) fn note_recovery_failed(&mut self, session_id: Option<SessionId>) {
-        match session_id {
-            Some(session_id) => {
-                self.subscriptions.remove(&session_id);
-            }
-            None => self.subscriptions.clear(),
-        }
+        self.subscriptions.recovery_failed(session_id);
     }
 
     /// Ends this connection's live tail for `session_id`, keeping its
@@ -280,9 +139,12 @@ impl App {
     /// with a tail cannot be evicted by the daemon, so a TUI that has browsed
     /// many sessions releases the ones it no longer shows.
     pub(super) fn release_subscription(&mut self, session_id: SessionId) {
-        if self.subscriptions.remove(&session_id).is_none() {
-            return;
+        if self.subscriptions.release(session_id) {
+            self.send_unsubscribe(session_id);
         }
+    }
+
+    fn send_unsubscribe(&mut self, session_id: SessionId) {
         let client = self.client.clone();
         self.spawn_rpc(async move {
             // Best effort: a failure leaves a tail the connection's end drops.
@@ -293,8 +155,8 @@ impl App {
     /// Whether `session_id` belongs to a recently viewed tree, whose
     /// sessions keep their subscriptions.
     pub(super) fn is_recently_viewed(&self, session_id: SessionId) -> bool {
-        self.recent_trees
-            .contains(self.permission_mode_root(session_id))
+        self.subscriptions
+            .is_recent_tree(self.permission_mode_root(session_id))
     }
 
     /// Whether nothing in `session_id` is still owed to this view: no run, and
@@ -310,25 +172,22 @@ impl App {
     /// out of the recent set has its settled sessions released; ones still
     /// running are released when their run ends.
     pub(super) fn note_viewed_tree(&mut self, root: SessionId) {
-        for evicted in self.recent_trees.note_viewed(root) {
-            let released = self
-                .subscriptions
-                .keys()
-                .copied()
-                .filter(|session_id| {
-                    self.permission_mode_root(*session_id) == evicted
-                        && self.is_settled(*session_id)
-                })
-                .collect::<Vec<_>>();
-            for session_id in released {
-                self.release_subscription(session_id);
-            }
+        let mut subscriptions = std::mem::take(&mut self.subscriptions);
+        let released = subscriptions.note_viewed_tree(
+            root,
+            |session_id| self.permission_mode_root(session_id),
+            |session_id| self.is_settled(session_id),
+        );
+        self.subscriptions = subscriptions;
+        for session_id in released {
+            self.send_unsubscribe(session_id);
         }
     }
 
     /// The connection closed; nothing is subscribed on it any more.
     pub(super) fn reset_subscriptions(&mut self) {
-        self.subscriptions.clear();
+        self.subscriptions.reset();
+        self.subscription_done.clear();
     }
 
     /// Starts redialing the daemon after the connection dropped, when this
@@ -407,11 +266,15 @@ impl App {
     /// Wait (bounded) for an in-flight subscribe of `session_id` to deliver
     /// its replay. The replay itself is never cancelled.
     pub(super) async fn wait_for_subscription(&mut self, session_id: SessionId) {
-        let Some(SubscriptionState::Subscribing { done, .. }) = self.subscriptions.get(&session_id)
-        else {
+        if !matches!(
+            self.subscriptions.state(session_id),
+            Some(SubscriptionState::Subscribing { .. })
+        ) {
+            return;
+        }
+        let Some(mut done) = self.subscription_done.get(&session_id).cloned() else {
             return;
         };
-        let mut done = done.clone();
         if tokio::time::timeout(SELECT_SUBSCRIPTION_WAIT, done.wait_for(|done| *done))
             .await
             .is_err()
@@ -424,7 +287,7 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn subscription_state_for_test(&self, session_id: SessionId) -> &'static str {
-        match self.subscriptions.get(&session_id) {
+        match self.subscriptions.state(session_id) {
             None => "idle",
             Some(SubscriptionState::Subscribing { .. }) => "subscribing",
             Some(SubscriptionState::Live { owned: true }) => "live",

@@ -1094,7 +1094,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
     app.ownership_classifications.insert(session, 7);
     // Subscribed before ownership is known: the reply may be a snapshot.
     app.subscribe_session(session, SubscribeIntent::Follow);
-    let snapshot = app.next_subscription_attempt;
+    let snapshot = app.subscriptions.last_attempt();
     assert_eq!(app.subscription_state_for_test(session), "subscribing");
     app.handle_delivery(ClientDelivery::ReplayStart {
         session_id: session,
@@ -1117,9 +1117,9 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
     });
     assert!(app.owned_sessions.contains(&session));
     // Adoption waits for the in-flight request instead of racing it.
-    assert_eq!(app.next_subscription_attempt, snapshot);
+    assert_eq!(app.subscriptions.last_attempt(), snapshot);
     app.subscribe_session(session, SubscribeIntent::Open);
-    assert_eq!(app.next_subscription_attempt, snapshot);
+    assert_eq!(app.subscriptions.last_attempt(), snapshot);
 
     // The snapshot finishes, and exactly one live subscription follows it.
     app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
@@ -1127,7 +1127,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
         attempt: snapshot,
         outcome: SubscriptionOutcome::Established,
     });
-    let live = app.next_subscription_attempt;
+    let live = app.subscriptions.last_attempt();
     assert_eq!(live, snapshot + 1);
     assert_eq!(app.subscription_state_for_test(session), "subscribing");
     app.handle_delivery(ClientDelivery::ReplayEnd {
@@ -1137,7 +1137,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
     })
     .await;
     assert_eq!(app.store.sessions[&session].last_seq, 1);
-    assert_eq!(app.next_subscription_attempt, live);
+    assert_eq!(app.subscriptions.last_attempt(), live);
 
     // A recovery replay held the session: the owned request retries once it
     // ends, since that replay may have been served before ownership.
@@ -1146,7 +1146,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
         attempt: live,
         outcome: SubscriptionOutcome::ReplayInProgress,
     });
-    let retry = app.next_subscription_attempt;
+    let retry = app.subscriptions.last_attempt();
     assert_eq!(retry, live + 1, "the replay had already ended");
     app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
         session_id: session,
@@ -1154,7 +1154,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
         outcome: SubscriptionOutcome::ReplayInProgress,
     });
     assert_eq!(app.subscription_state_for_test(session), "recovering");
-    assert_eq!(app.next_subscription_attempt, retry);
+    assert_eq!(app.subscriptions.last_attempt(), retry);
     app.handle_delivery(ClientDelivery::ReplayStart {
         session_id: session,
         generation: 1,
@@ -1175,7 +1175,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
         final_seq: 1,
     })
     .await;
-    let last = app.next_subscription_attempt;
+    let last = app.subscriptions.last_attempt();
     assert_eq!(last, retry + 1);
     // A stale completion is ignored.
     app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
@@ -1194,7 +1194,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
     // subscribes nothing.
     app.subscribe_session(session, SubscribeIntent::Open);
     app.subscribe_session(session, SubscribeIntent::Follow);
-    assert_eq!(app.next_subscription_attempt, last);
+    assert_eq!(app.subscriptions.last_attempt(), last);
 
     let live = runless_event(
         session,

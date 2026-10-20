@@ -355,7 +355,7 @@ impl App {
             } => self.finish_draft_publish(session_id, generation),
             RpcUpdate::RetrySubscription { session_id } => {
                 if self.selected == Some(session_id)
-                    && !self.subscriptions.contains_key(&session_id)
+                    && !self.subscriptions.contains(session_id)
                     && !self.reconnecting
                 {
                     self.resubscribe_from_scratch(session_id);

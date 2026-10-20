@@ -23,6 +23,7 @@ pub(super) use agents::DescendantEvent;
 pub(super) use approvals::{ApprovalPanel, approval_content};
 #[cfg(test)]
 pub(crate) use attachments::pasted_file_path_for_test;
+pub(super) use cookie_agent_client_state::subscriptions::{SubscribeIntent, SubscriptionOutcome};
 use emoji_backend::EmojiBackend;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
 use pickers::{agent_picker_row, draft_title, model_picker_row};
@@ -32,8 +33,6 @@ use sessions::{
     collect_subtree_sessions, collect_tree_session_ids, find_node, find_node_mut, find_session,
     patch_tree_node_statuses, patch_tree_node_titles, title_change_from_event,
 };
-use subscriptions::SubscriptionState;
-pub(super) use subscriptions::{SubscribeIntent, SubscriptionOutcome};
 
 mod goal;
 
@@ -686,10 +685,6 @@ pub struct App {
     pub(super) reconnector: Option<Reconnector>,
     /// The connection dropped and a reconnect is under way.
     pub(super) reconnecting: bool,
-    /// Roots of the trees viewed most recently, newest first. Their sessions
-    /// stay subscribed so switching back is instant; older trees' settled
-    /// sessions are released so the daemon can evict them.
-    pub(super) recent_trees: cookie_agent_client_state::subscriptions::RecentTrees,
     /// Which draft change a debounced publish of the draft as the session's
     /// model selection may still send: only one no later change followed.
     pub(super) draft_publish: cookie_agent_client_state::model_draft::DraftPublish,
@@ -742,9 +737,12 @@ pub struct App {
     pub(super) owned_sessions: HashSet<SessionId>,
     pub(super) ownership_classifications: HashMap<SessionId, u64>,
     pub(super) next_ownership_classification: u64,
-    /// Each session's `events.subscribe` state on this connection.
-    pub(super) subscriptions: HashMap<SessionId, SubscriptionState>,
-    pub(super) next_subscription_attempt: u64,
+    /// Each session's `events.subscribe` state on this connection, and the
+    /// recently viewed trees whose sessions stay subscribed.
+    pub(super) subscriptions: cookie_agent_client_state::subscriptions::Subscriptions,
+    /// Becomes `true` once the subscribe in flight for a session has
+    /// finished, for a session switch that waits on its replay.
+    pub(super) subscription_done: HashMap<SessionId, tokio::sync::watch::Receiver<bool>>,
     pub(super) tree_refresh_in_flight: Option<(u64, u64)>,
     pub(super) tree_refresh_pending: bool,
     pub(super) next_tree_refresh_id: u64,
@@ -1345,7 +1343,6 @@ impl App {
             runtime_resync_in_flight: false,
             reconnector: None,
             reconnecting: false,
-            recent_trees: Default::default(),
             draft_publish: Default::default(),
             store: StateStore::default(),
             sessions: Vec::new(),
@@ -1381,8 +1378,8 @@ impl App {
             owned_sessions: HashSet::new(),
             ownership_classifications: HashMap::new(),
             next_ownership_classification: 0,
-            subscriptions: HashMap::new(),
-            next_subscription_attempt: 0,
+            subscriptions: Default::default(),
+            subscription_done: HashMap::new(),
             tree_refresh_in_flight: None,
             tree_refresh_pending: false,
             next_tree_refresh_id: 0,
