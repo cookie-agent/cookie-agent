@@ -121,8 +121,8 @@ pub fn recognize(path: &Path, bytes: &[u8], len: u64) -> Option<(&'static str, M
     }
 }
 
-/// The media type a file whose first [`MEDIA_SNIFF_BYTES`] are `head` and
-/// which is `len` bytes long starts like, recognized from its content
+/// The media type a file whose first bytes (the runtime reads
+/// `MEDIA_SNIFF_BYTES`) are `head` and which is `len` bytes long starts like, recognized from its content
 /// alone; nothing is validated.
 #[must_use]
 pub fn recognize_media_type(head: &[u8], len: u64) -> Option<&'static str> {
@@ -159,8 +159,8 @@ pub enum UploadRejection {
 
 /// Recognizes and validates an upload: its media type comes from its content
 /// alone, never from a filename, and it is held to the checks and caps a
-/// tool attachment is ([`validate_attachment`]), with an image's size
-/// reported.
+/// tool attachment is (the runtime's `validate_attachment`), with an
+/// image's size reported.
 pub fn validate_upload(bytes: &[u8]) -> Result<ValidatedUpload, UploadRejection> {
     let byte_length = bytes.len() as u64;
     let (media_type, kind) =
