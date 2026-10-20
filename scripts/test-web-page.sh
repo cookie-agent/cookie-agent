@@ -162,6 +162,9 @@ write_config "$scratch/refusing" "$refusing_port" "[]" </dev/null
 start_daemon "$scratch/refusing"
 refusing_link="$link"
 
+if [[ -n "${SCREENSHOT_DIR:-}" ]]; then
+    mkdir -p "$SCREENSHOT_DIR"
+fi
 driver_port="$(free_port)"
 # System access lets the phone audit zoom the page to a phone's width.
 "$geckodriver" --port "$driver_port" --allow-system-access >"$scratch/geckodriver.log" 2>&1 &

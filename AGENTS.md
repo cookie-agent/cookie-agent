@@ -69,6 +69,17 @@ cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -
 scripts/build-web.sh
 ```
 
+Run the headless-Firefox suites after changing the protocol client, the
+web client, or what the daemon serves to browsers. They need Firefox,
+geckodriver (on `PATH`, or `GECKODRIVER`), and, for the first,
+`wasm-bindgen-test-runner` of the `wasm-bindgen` version in `Cargo.lock`;
+CI runs both in its `web` job:
+
+```sh
+scripts/test-wasm-client.sh
+scripts/test-web-page.sh
+```
+
 Check the protocol compatibility baselines, documentation, and dependency policy:
 
 ```sh
