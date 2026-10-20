@@ -27,7 +27,7 @@ Credentials are checked when the provider is first used, not during the connect
 flow.
 
 The [installation guide](install.md#connect-a-model) ends with provider setup;
-[Run](clients/tui.md) covers interactive and headless operation. See [Providers](extend/providers.md) for managed and custom
+[Terminal UI](clients/tui.md) and [Command line](clients/cli.md) cover interactive and headless operation. See [Providers](extend/providers.md) for managed and custom
 provider options, [Plugins](extend/plugins.md) for executable extensions, and
 [Configuration](engine/configuration.md) for every configurable item.
 

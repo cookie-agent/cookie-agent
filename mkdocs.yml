@@ -74,7 +74,9 @@ nav:
   - Clients:
       - Terminal UI: clients/tui.md
       - Web: clients/web.md
+      - Command line: clients/cli.md
   - Run a daemon:
+      - Persistent daemon: daemon/persistent.md
       - Runtimes: daemon/runtimes.md
       - Security: daemon/security.md
   - Working with sessions:

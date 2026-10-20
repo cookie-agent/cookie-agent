@@ -1,6 +1,6 @@
 # Server [server]
 
-Configure the separate [server/client mode](../clients/tui.md#separate-server-and-client).
+Configure the separate [server/client mode](../daemon/persistent.md#separate-server-and-client).
 Complete `config.toml`:
 
 ```toml
@@ -30,7 +30,7 @@ machine read it from the same `config.toml`; elsewhere, pass `--token`, set
 Plain `cookie` on this machine uses a daemon listening at
 `ws://<host>:<port>/ws` of this table, when `token` is set, instead of
 starting an engine of its own; it never reads `url` for that. See
-[A daemon already running](../clients/tui.md#a-daemon-already-running).
+[A daemon already running](../daemon/persistent.md#a-daemon-already-running).
 
 For clients and runtimes on other machines, `cookie daemon` takes:
 

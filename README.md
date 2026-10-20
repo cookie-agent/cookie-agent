@@ -76,7 +76,9 @@ cookie run "Review this workspace"
 Setup, configuration, and task-oriented guides are at
 [cookie-agent.github.io/doc](https://cookie-agent.github.io/doc/),
 including the development version's [Installation](https://cookie-agent.github.io/doc/dev/install/),
-[Run](https://cookie-agent.github.io/doc/dev/clients/tui/),
+[Terminal UI](https://cookie-agent.github.io/doc/dev/clients/tui/),
+[Command line](https://cookie-agent.github.io/doc/dev/clients/cli/),
+[Persistent daemon](https://cookie-agent.github.io/doc/dev/daemon/persistent/),
 [Development](https://cookie-agent.github.io/doc/dev/development/building/),
 [Providers](https://cookie-agent.github.io/doc/dev/extend/providers/),
 [Plugins](https://cookie-agent.github.io/doc/dev/extend/plugins/), and

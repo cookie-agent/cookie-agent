@@ -8,7 +8,7 @@ message continues it. A headless continuation uses:
 cookie run --resume-session <session-id> "Continue the investigation"
 ```
 
-See [Run](../clients/tui.md#headless-runs) for selection overrides. For shortening model
+See [Command line](../clients/cli.md#headless-runs) for selection overrides. For shortening model
 context without removing the saved log, see [Compaction](compaction.md).
 
 ## Lifecycle and persistence

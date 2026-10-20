@@ -46,7 +46,7 @@ session's events live, can submit input to any of them, and is told of the
 others' changes (see [the protocol](reference/protocol.md#daemon-wide-changes)).
 Plain `cookie` uses a daemon already listening at `[server]` on its machine
 and otherwise keeps an in-process daemon private to its own TUI (see
-[A daemon already running](clients/tui.md#a-daemon-already-running)). An
+[A daemon already running](daemon/persistent.md#a-daemon-already-running)). An
 attached TUI that
 loses its connection redials the daemon with backoff under the same client
 identity, then rebuilds the viewed session from a full replay, which also

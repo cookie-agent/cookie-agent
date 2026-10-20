@@ -143,7 +143,7 @@ Any process that can read your `config.toml` can therefore connect to the
 daemon; keep the file private, and replace the token (delete the line and
 restart the daemon) if it leaks. Plain `cookie` sends the token to whatever
 listens at `[server] host` and `port` when it looks for a running daemon (see
-[A daemon already running](../clients/tui.md#a-daemon-already-running)), as
+[A daemon already running](persistent.md#a-daemon-already-running)), as
 `cookie attach` with default settings does; it looks only when the token is
 set. The daemon also prints the token in its first stdout line:
 

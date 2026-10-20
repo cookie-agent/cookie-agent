@@ -1221,7 +1221,7 @@ which they had left out. The [protocol reference](../reference/protocol.md#memor
 has the `memory.*` methods and `memory.changed`, the
 [changelog](../reference/protocol-changelog.md) client protocol 1.4.0,
 the [error reference](../reference/errors.md) the `memory_*` codes, and
-[Run](../clients/tui.md#command-palette) the `/memory` command. The configuration
+[Terminal UI](../clients/tui.md#command-palette) the `/memory` command. The configuration
 reference for `[memory]` ([Memory](../engine/memory.md)), the
 [Tools](../guide/tools.md) page, the [Events](../reference/events.md)
 reference for `memory_loaded`, the [system prompt reference](../reference/system-prompt.md),

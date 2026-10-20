@@ -1,6 +1,14 @@
-# Run
+# Terminal UI
 
-## Terminal UI
+This page covers the terminal UI: starting it, the composer and its
+attachments, the command palette, steering and queueing, the transcript, error
+details, background calls, approvals, the runtimes panel, and the usage
+dashboard. The [web client](web.md) works with the same daemon from a browser,
+the [command line](cli.md) runs a prompt without a UI, and
+[Persistent daemon](../daemon/persistent.md) covers running the daemon apart
+from the TUI and how plain `cookie` finds one already running.
+
+## Starting the TUI
 
 Start in the workspace where the agent should operate:
 
@@ -9,7 +17,7 @@ cookie
 ```
 
 When a daemon already runs on this machine, `cookie` opens the terminal
-client on it (see [A daemon already running](#a-daemon-already-running));
+client on it (see [A daemon already running](../daemon/persistent.md#a-daemon-already-running));
 otherwise it starts the engine and the terminal client together in one
 process. The bottom bar starts with where the engine runs: the daemon's
 address, or `standalone`. Configure the
@@ -36,173 +44,6 @@ resuming, to explicitly restore its suffix. Explicit agent/preset choices take
 precedence. New sessions use the configured starting selection; configuration
 files and previous runs' frozen chains are never rewritten.
 
-
-## Separate server and client
-
-
-The daemon binds to `127.0.0.1:7419` by default:
-
-```sh
-cookie daemon
-```
-
-Its first stdout line is the machine-readable ready frame; everything the
-daemon prints afterward is human logging. A supervisor writes the daemon's
-stdout to a pipe, reads exactly that one line, and ignores the rest:
-
-```text
-daemon-ready {"url":"ws://127.0.0.1:7419/ws","token":"<43-char base64url>"}
-```
-
-The token is `[server] token` in `config.toml`; the daemon writes a fresh one
-there at its first start when there is none, and keeps it across restarts.
-Treat it, and the ready line, as a secret: anyone who reads either can
-connect to the daemon.
-Pass `--port 0` to let the OS pick an ephemeral port; the ready line then
-carries the real port, and clients must use that URL rather than guessing 7419.
-
-Plain `cookie` in another terminal on the same machine finds it (see
-[A daemon already running](#a-daemon-already-running)). `cookie attach`
-requires it:
-
-```sh
-cookie attach
-```
-
-`attach`, `web`, `connect`, `disconnect`, `mcp`, `config`, `machine`, and
-`memory` find the daemon in this machine's `config.toml`: `[server] url`, else the local daemon the same
-table describes (`ws://127.0.0.1:<port>/ws`), and `[server] token`. Flags
-override either: `--url` (any host, `ws://` or `wss://` with the exact `/ws`
-path) and `--token` (or `COOKIE_DAEMON_TOKEN`), so a local `cookie attach`
-can still reach a daemon elsewhere:
-
-```sh
-cookie attach --url wss://laptop.example:7419/ws --token '<43-char base64url>'
-```
-
-A daemon on another machine listens with `--listen`; see
-[Server](../engine/server.md). The daemon also serves a web client on its
-port; `cookie web` prints its address with the token (see [Web](web.md)). Unlike plain `cookie`, `cookie attach` never
-falls back to an engine of its own: a daemon it cannot reach or use is an
-error.
-
-### A daemon already running
-
-Plain `cookie` looks for a daemon on this machine before it starts an engine
-of its own, so every client of a running daemon, `cookie daemon` as a
-service included, sees the same sessions:
-
-- It looks only when `config.toml` has `[server] token`, which
-  `cookie daemon` writes at its first start. Without one it starts its own
-  engine and touches no network.
-- It looks at `ws://<[server] host>:<[server] port>/ws` and never at
-  `[server] url`, which may name another machine: reaching another machine
-  takes `cookie attach`. A daemon started with `--port` or `--listen` on
-  another address, or serving only TLS, is not found.
-- Nothing listening (the connection is refused, or it is not open within
-  half a second) starts its own engine, silently.
-- A daemon that answers within two seconds and accepts the handshake gets
-  the TUI, exactly as `cookie attach` would: a dropped connection is
-  retried, and quitting the TUI leaves the daemon running.
-- Something that answers but cannot be used, such as a daemon refusing the
-  token, a daemon of another protocol major, a TLS listener, or another
-  program, starts its own engine with a notice that names the address and
-  the reason.
-
-When the daemon runs another version of cookie than this binary, the TUI
-says so once; restart the daemon to upgrade it. `cookie --standalone`
-always starts its own engine and never looks; it takes no subcommand.
-`cookie run` never looks either: it always runs its own engine. An engine
-of its own beside a running daemon opens the daemon's sessions as
-read-only snapshots. A daemon running as another OS user is not told apart:
-it reports the same machine, so its `local` runtime serves the directory
-with that user's file permissions. Use `--standalone` or a
-[runtime that dials in](../daemon/runtimes.md#runtimes-that-dial-in) with such a
-daemon.
-
-The daemon, `cookie runtime serve`, and the TUI stop cleanly on a stop
-signal: `SIGINT`, `SIGTERM` (`kill`, systemd), or `SIGHUP` (a closed
-terminal); on Windows Ctrl-C, Ctrl-Break, a closed console, logoff, or
-shutdown. The daemon stops listening and shuts down its engine and the
-runtimes it started; a runtime cancels its calls and stops its MCP servers; the
-TUI restores the terminal. A second signal during that shutdown exits the
-daemon or runtime at once.
-
-### Running as a service
-
-Both the daemon and a runtime that dials in run until stopped, so each can
-be a systemd user service. On the daemon's machine,
-`~/.config/systemd/user/cookie-daemon.service`:
-
-```ini
-[Unit]
-Description=cookie agent daemon
-
-[Service]
-ExecStart=%h/.cargo/bin/cookie daemon --listen 0.0.0.0:7419
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
-
-On a machine whose `config.toml` names the daemon (`[server] url` and
-`token`; see [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in)),
-`~/.config/systemd/user/cookie-runtime.service`:
-
-```ini
-[Unit]
-Description=cookie agent runtime
-
-[Service]
-ExecStart=%h/.cargo/bin/cookie runtime serve --daemon
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
-
-Enable each with `systemctl --user enable --now <name>`, and run
-`loginctl enable-linger` so they run without a login session. Either may
-start first: the runtime retries until the daemon answers. The journal keeps
-the daemon's ready line, token included, readable by whoever can read your
-user journal. A daemon running as a service has
-no `SSH_AUTH_SOCK` from your shell, so an ssh `[runtimes.<id>]` template
-needs a key file in its arguments (`-i`) or an agent socket set with the
-unit's `Environment=`.
-
-One daemon serves sessions of any directory. The TUI, whether attached or
-running the daemon itself, creates its sessions for the directory it was
-started in: they work there with `local`'s `coding` capability, and its
-session list shows that directory's sessions. Sessions stay in the store of
-the directory the daemon started in.
-
-Plain `cookie` on a found daemon and `cookie attach` choose the runtime
-for the directory the same way, first match first:
-
-1. The daemon runs on this machine (its handshake reports this machine's
-   ID, or either side reports none): its `local` runtime.
-2. A connected runtime of the daemon runs on this machine (the daemon
-   places it on a machine whose IDs include this one's; see
-   [Machines](../daemon/runtimes.md#machines)) and offers a capability that takes a
-   workspace: new sessions attach that capability
-   at the directory. With several, the lowest runtime ID wins. An example
-   is a daemon in a container with `cookie runtime serve --daemon` running
-   beside it on the host.
-3. Otherwise the TUI offers this machine to the daemon: it dials in a
-   runtime named `client_<host name>` that serves the TUI's directory only,
-   and the TUI's new sessions use its `coding` capability there. The
-   runtime lives as long as the TUI; sessions keep its attachment and find
-   it again when the TUI attaches again from this machine. Another TUI's
-   `client_<host name>` is never chosen in step 2.
-
-The bottom bar shows the chosen runtime and the directory.
-Configured plugins and eager MCP servers, which come only from the user
-`config.toml`, start during engine initialization, before a model tool call is
-approved. Repository `AGENTS.md` files and project skills still enter model
-context, so open unfamiliar workspaces with care.
-Allowed shell commands run without a filesystem sandbox; see the
-[security contract](../daemon/security.md#process-boundary).
 
 ## Composer
 
@@ -461,14 +302,6 @@ Transport failures retain send/receive context for pending calls and appear as
 connection diagnostics in the TUI. Rejected WebSocket handshakes show a bounded,
 response body with its content preserved when supplied, without printing response headers.
 
-`cookie run` writes failure diagnostics to stderr even with `--output none` and
-without `--verbose`. JSON output retains diagnostic event fields and adds an
-`error` field to the final summary (null for success). A failed tool or fallback
-can produce stderr diagnostics even if the overall run subsequently succeeds.
-This includes internal-agent fallback failures and session-scoped plugin notices
-for the selected session. Events from unrelated sessions/runs remain excluded.
-Exit codes retain their existing meanings.
-
 Response bodies are capped at 4,096 UTF-8 bytes with a truncation marker. JSON is
 formatted for reading; plaintext and HTML gateway errors remain plain text.
 Terminal controls and Unicode format controls are stripped or replaced with spaces;
@@ -489,6 +322,9 @@ A body is available only when the provider
 returned one: validation, connection, or cancellation errors may have no HTTP
 response body. Missing detail is not reconstructed or fetched with another API
 request.
+
+`cookie run` reports failures on its own streams; see
+[Failure diagnostics](cli.md#failure-diagnostics).
 
 Internal tracing logs are off by default. Setting `RUST_LOG` (for example
 `RUST_LOG=debug`, using `tracing-subscriber` filter syntax) writes them to
@@ -639,111 +475,3 @@ Esc to close. Clicking the selected session cost in the bottom bar still opens
 this panel.
 
 See [Usage and cost](../sessions/usage.md) for recording and pricing semantics.
-
-## Headless runs
-
-`cookie run` executes one prompt through the local engine without starting the
-TUI, daemon, or an in-process protocol server. It is intended for CI and scripts.
-
-### Prompt input
-
-Provide exactly one prompt source:
-
-```console
-cookie run "Review this workspace"
-cookie run -p "Review this workspace"
-cookie run -f request.txt
-printf '%s\n' 'Review this workspace' | cookie run -
-printf '%s\n' 'Review this workspace' | cookie run -p -
-```
-
-The positional prompt, `-p/--prompt`, and `-f/--prompt-file` conflict with each
-other. `-` reads standard input for any of them.
-
-### Selection and limits
-
-The default agent is the root-runnable `primary` agent, or the first
-root-runnable agent. The default model is its first live fallback, including a
-valid variant; if none is live, the first available model and its default
-variant are used. Select an agent preset with `--preset`; override the effective
-selection with `-a/--agent`, `-m/--model`, and `--variant`. Use `--variant base`
-to select no named variant. Every override is validated against the current
-coherent runtime before a session starts.
-
-`--resume-session <id>` continues an existing session and defaults to its
-creation preset. Supplying `--preset` selects a different preset for that run
-without rewriting the session's creation selection. See
-[Agent presets](../extend/agents.md#agent-presets) for resolution and persistence details.
-`--data-dir <path>` selects the session and artifact store. `--max-turns` and
-`--timeout` are positive guards and default to 100 root model turns and 600
-seconds. Reaching either guard cancels the run and waits for its terminal event.
-A stop signal (`SIGINT`, `SIGTERM`, or `SIGHUP`; on Windows Ctrl-C,
-Ctrl-Break, a closed console, logoff, or shutdown) follows the same
-cancellation path.
-
-### Permissions
-
-`--permission-mode` accepts `auto-approve` (`auto_approve`), `auto-approve-n`
-(`auto_approve_n`), `auto-approve-y` (`auto_approve_y`), `ask`, or `yolo`.
-The selected mode applies to the whole runtime session tree, including delegated
-descendants.
-Headless runs never wait for approval input. In `auto-approve-n`, a classifier
-escalation is rejected and cancels the root run with exit code `3`. In
-`auto-approve-y`, an escalation is approved once and the run continues
-automatically. Other escalations anywhere in the session tree are rejected;
-the runner cancels the root run and waits for the matching terminal event.
-
-`--allowed-tools` may be repeated or comma-delimited and accepts `read`,
-`write`, `bash`, `delegate`, `mcp`, `plugin`, `plugin:<name>`, and
-`skill:<name>` — each entry adds an `allow` overlay rule (resource `*`, or the
-given name). It does not deny omitted actions or replace existing agent policy.
-`webfetch` is not accepted; grant web access in the agent document.
-
-### Skills
-
-`--skill <name>` loads a user-invocable skill before the prompt run.
-`--skill-args <text>` supplies its raw arguments and requires `--skill`. Skill
-permission is evaluated before injection; use `--allowed-tools skill:<name>` to
-grant it explicitly in unattended runs. The load appends the same durable event
-used by interactive and model invocation.
-
-### Output
-
-Select `text`, `json`, or `none` with `-o/--output`. `--json` is an alias for
-`--output json` and conflicts with an explicit `--output`. `--output-file`
-redirects text or JSON output to a file and cannot be combined with
-`--output none`.
-
-Text mode writes only the terminal `final_text` to standard output. It does not
-stream model deltas. With `--verbose`, ANSI-free progress lines are written to
-standard error, including one for each finished tool call: `cookie run: tool`
-and the call's title (with `(failed)`, `(cancelled)`, or `(interrupted)` when
-it did not complete), then the first eight lines of its display as plain text,
-indented, and a count of the rest. `--output none` prints the same lines. Failures and model fallback diagnostics are written to standard
-error regardless of verbosity, including recovered failures in a successful run.
-
-JSON mode writes JSON Lines. Records use these stable `type` tags:
-
-- `event`: one accepted, ordered event for the active run.
-- `tool_output`: a retained or live tool-output delta, emitted with `--verbose`.
-- `tool_output_gap`: a tool-output retention or delivery gap, emitted with
-  `--verbose`.
-- `summary`: the final record, containing terminal status and exit code, IDs,
-   turn/rejection/recovery counts, cancellation cause, final text, error detail, and the
-  session usage and estimated-cost rollup.
-
-`--output none` suppresses command output. Diagnostics and verbose progress
-still use standard error.
-
-### Exit codes
-
-The active run's terminal event determines the runtime exit code. Command-line
-syntax errors use Clap's exit code `2` before the runtime starts.
-
-| Exit code | Meaning |
-|---|---|
-| `0` | `RunCompleted`, or `user_before_input` intentionally handled the input without starting a run |
-| `1` | `RunFailed`, blocked model selection, or an unrecoverable active-driver failure |
-| `3` | `RunCancelled` after the engine accepted a permission-triggered cancellation |
-| `4` | Other `RunCancelled` outcomes and every `RunInterrupted`, including a stop signal, timeout, and turn-limit cancellation |
-| `5` | Environment or setup failure before the run becomes active |

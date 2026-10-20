@@ -21,4 +21,4 @@ types, and malformed values fail with the path and offending key. Engine
 These are scalar keys, not TOML tables. Omitted fields use their individual
 defaults; the theme's environment and terminal fallbacks are described on its
 page. Runtime `/events` palette changes are view-only and never rewrite this file.
-See [Run](../clients/tui.md) for terminal operation.
+See [Terminal UI](../clients/tui.md) for terminal operation.

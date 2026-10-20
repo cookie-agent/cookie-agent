@@ -237,14 +237,14 @@ cookie runtime serve --daemon
   lists; when it dials in again, the daemon reopens them over the new
   connection. `runtimes.list` shows it with lifetime `dial_in`. It stops
   on a stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), so it runs as a
-  service; see [Running as a service](../clients/tui.md#running-as-a-service).
+  service; see [Running as a service](persistent.md#running-as-a-service).
 - **MCP servers.** It hosts its own machine's MCP servers: those of
   `[runtimes.local.mcp]` in that machine's `config.toml`.
 - **Roots.** `--root` limits its workspaces, as for `--stdio`.
 - **Clients on its machine.** Plain `cookie` and `cookie attach` on the
   runtime's machine use it for their directory when the daemon runs
   elsewhere, such as in a container; see
-  [A daemon already running](../clients/tui.md#a-daemon-already-running).
+  [A daemon already running](persistent.md#a-daemon-already-running).
 
 ## Machines
 

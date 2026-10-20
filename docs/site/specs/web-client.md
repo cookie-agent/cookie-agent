@@ -1413,7 +1413,7 @@ documentation. There is no wire change.
   budget; the manifest and icons add 23 KB.
 - **Docs.** `clients/web.md` is the complete guide (phones, the home screen,
   and what the page does not do, besides every panel and command);
-  `engine/server.md`, `clients/tui.md`, `architecture.md`, and the README
+  `engine/server.md`, `daemon/persistent.md`, `architecture.md`, and the README
   describe the web client as it is; sections 1 to 14 of this spec now
   match what landed.
 
