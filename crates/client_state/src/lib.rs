@@ -15,9 +15,11 @@ mod model_names;
 pub mod ownership;
 pub mod permissions;
 mod reduce;
+pub mod rows;
 mod runtime;
 pub mod session_actions;
 pub mod subscriptions;
+pub mod tool_header;
 pub mod uploads;
 
 pub use reduce::approval_state_from_record;

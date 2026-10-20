@@ -2,6 +2,10 @@
 
 use super::*;
 
+pub(super) use cookie_agent_client_state::rows::goal_status_label;
+pub(in crate::ui) use cookie_agent_client_state::rows::producer_summary;
+use cookie_agent_client_state::rows::{producer_mode_label, producer_owner_label};
+
 pub(super) fn goal_activation_layout(
     goal: &GoalState,
     width: u16,
@@ -42,33 +46,6 @@ pub(super) fn goal_layout(goal: &GoalState, width: u16, theme: &Theme) -> Vec<Li
         }));
     }
     role_block(Role::Goal, body, width, theme)
-}
-
-pub(in crate::ui) fn producer_summary(
-    owner: &ProducerOwner,
-    mode: ProducerDeliveryMode,
-    description: Option<&str>,
-) -> String {
-    if let Some(description) = description.filter(|text| !text.trim().is_empty()) {
-        return description.split_whitespace().collect::<Vec<_>>().join(" ");
-    }
-    format!(
-        "{} · {}",
-        producer_owner_label(owner),
-        producer_mode_label(mode)
-    )
-}
-
-pub(super) fn producer_owner_label(owner: &ProducerOwner) -> String {
-    match owner {
-        ProducerOwner::External { source, name } => format!("{source} · {name}"),
-        ProducerOwner::Delegation { invocation_id } => format!("delegation {invocation_id}"),
-        ProducerOwner::Goal { .. } => "goal controller".to_owned(),
-        ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
-        ProducerOwner::Agent { session_id } => format!("agent {session_id}"),
-        ProducerOwner::Tool { tool_call_id } => format!("background call {tool_call_id}"),
-        ProducerOwner::Subagent { session_id } => format!("subagent {session_id}"),
-    }
 }
 
 pub(super) fn producer_message_layout(
@@ -154,22 +131,6 @@ pub(super) fn discarded_producer_message_layout(
         ),
         regions: Vec::new(),
         user_seq: None,
-    }
-}
-
-pub(super) fn producer_mode_label(mode: ProducerDeliveryMode) -> &'static str {
-    match mode {
-        ProducerDeliveryMode::Steer => "steer",
-        ProducerDeliveryMode::Queue => "queue",
-    }
-}
-
-pub(super) fn goal_status_label(status: GoalStatus) -> &'static str {
-    match status {
-        GoalStatus::Active => "active",
-        GoalStatus::Paused => "paused",
-        GoalStatus::Completed => "completed",
-        GoalStatus::Cancelled => "cancelled",
     }
 }
 

@@ -32,9 +32,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use cookie_agent_protocol::GoalStatus;
 use cookie_agent_protocol::{
-    AgentId, GoalState, GoalStatus, ProducerDeliveryMode, ProducerMessageId, ProducerOwner,
-    SessionId,
+    AgentId, GoalState, ProducerDeliveryMode, ProducerMessageId, ProducerOwner, SessionId,
 };
 use ratatui::{
     layout::Rect,

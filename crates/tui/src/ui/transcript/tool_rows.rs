@@ -4,23 +4,9 @@ use super::*;
 use cookie_agent_protocol::{DisplayBlock, Open};
 use ratatui::style::Color;
 
-/// The icon for a tool hint (spec 12.2). Hints are open labels: one this
-/// build does not document, or none, gets the generic icon.
-pub(in crate::ui) fn hint_icon(hint: Option<&str>) -> &'static str {
-    use cookie_agent_protocol::ToolHint;
-    match hint.unwrap_or(ToolHint::GENERIC) {
-        ToolHint::SHELL => "💻",
-        ToolHint::FILE_READ => "📖",
-        ToolHint::FILE_WRITE | ToolHint::FILE_EDIT => "📝",
-        ToolHint::FETCH => "🌐",
-        ToolHint::SEARCH => "🔍",
-        ToolHint::DELEGATE => "🤖",
-        ToolHint::MESSAGE => "📨",
-        ToolHint::SKILL => "✨",
-        ToolHint::GOAL => "🎯",
-        _ => "🔨",
-    }
-}
+pub(in crate::ui) use cookie_agent_client_state::tool_header::{
+    flatten_header_argument, hint_icon,
+};
 
 /// The icon of a call, from its presentation's hint.
 pub(in crate::ui) fn tool_icon(tool: &crate::state::ToolCallState) -> &'static str {
@@ -66,25 +52,6 @@ pub(super) fn tool_row_prefix(short: &str, width: u16, reserve: usize) -> String
         return full;
     }
     crate::ui::app::truncate_with_ellipsis(&format!("[{short}]"), room)
-}
-
-/// Flatten an on-wire primary argument for single-line header display. The wire
-/// type is byte-capped only, so control characters reach the client: map each to
-/// a space before collapsing whitespace runs.
-pub(super) fn flatten_header_argument(argument: &str) -> String {
-    argument
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Columns the header text may use at `width`, after the prefix
@@ -156,31 +123,10 @@ pub(super) fn header_argument_width(label: &str, budget: usize) -> usize {
     budget.saturating_sub(UnicodeWidthStr::width(label) + 1)
 }
 
-/// Characters of an argument a title must show before its `…` for the
-/// title to count as naming the argument it cut short.
-const MIN_CUT_ARGUMENT_CHARS: usize = 8;
-
-/// Whether `title` already shows `argument`, whole or cut short before a
-/// `…`, so the header does not repeat it.
-fn title_names_argument(title: &str, argument: &str) -> bool {
-    if argument.is_empty() || title.contains(argument) {
-        return true;
-    }
-    title.match_indices('…').any(|(end, _)| {
-        let shown = &title[..end];
-        shown.char_indices().any(|(start, _)| {
-            let prefix = &shown[start..];
-            prefix.chars().count() >= MIN_CUT_ARGUMENT_CHARS && argument.starts_with(prefix)
-        })
-    })
-}
-
 /// The primary argument as the header shows it after the title, flattened
 /// to one line; `None` when there is none or the title already names it.
 pub(in crate::ui) fn header_argument(tool: &crate::state::ToolCallState) -> Option<String> {
-    let argument = flatten_header_argument(tool.presentation.primary_argument.as_ref()?.as_str());
-    let title = flatten_header_argument(tool.presentation.title.as_str());
-    (!title_names_argument(&title, &argument)).then_some(argument)
+    tool.header_argument()
 }
 
 pub(super) fn tool_header_title(tool: &crate::state::ToolCallState, budget: usize) -> String {

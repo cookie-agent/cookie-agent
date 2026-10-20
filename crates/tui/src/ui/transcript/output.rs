@@ -2,9 +2,7 @@
 
 use super::*;
 
-pub(super) fn display_line_count(text: &str) -> usize {
-    text.split('\n').count()
-}
+pub(super) use cookie_agent_client_state::rows::display_line_count;
 
 pub(super) const MAX_EXPANDED_BODY_LINES: usize = 64;
 
