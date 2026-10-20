@@ -17,6 +17,7 @@ cookie_agent_config = { version = "=0.3.0", path = "../config" }
 cookie_agent_engine = { version = "=0.3.0", path = "../engine" }
 cookie_agent_models = { version = "=0.3.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
+cookie_agent_web_assets = { version = "=0.3.0", path = "../web_assets" }
 futures-util.workspace = true
 getrandom.workspace = true
 rustls.workspace = true

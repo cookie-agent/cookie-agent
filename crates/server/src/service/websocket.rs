@@ -127,6 +127,7 @@ impl Server {
         Router::new()
             .route("/ws", get(websocket_upgrade))
             .route("/runtime", get(runtime_upgrade))
+            .fallback(super::page::page)
             .with_state(WebSocketState {
                 server: self,
                 token,
@@ -523,11 +524,15 @@ mod authentication_tests {
 
     impl Daemon {
         async fn start(origins: AllowedOrigins) -> Self {
+            Self::start_on(0, origins).await
+        }
+
+        async fn start_on(port: u16, origins: AllowedOrigins) -> Self {
             let fixture = crate::tests::harness();
             let token = crate::generate_token().unwrap();
             let running = Arc::clone(&fixture.server)
                 .serve_on(
-                    std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+                    std::net::SocketAddr::from(([127, 0, 0, 1], port)),
                     token.clone(),
                     None,
                     origins,
@@ -732,6 +737,140 @@ mod authentication_tests {
             let reply = call(&mut socket, 1, "session.list", json!({})).await;
             assert_eq!(reply["error"]["code"], -32003, "{reply}");
         }
+        daemon.stop().await;
+    }
+
+    /// One plain HTTP request to the daemon: its status, headers (names
+    /// lowercased), and body.
+    async fn http(
+        daemon: &Daemon,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (u16, std::collections::BTreeMap<String, String>, Vec<u8>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut stream =
+            tokio::net::TcpStream::connect(("127.0.0.1", daemon.running.address().port()))
+                .await
+                .unwrap();
+        let mut request =
+            format!("{method} {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n");
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str("\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("a header block");
+        let head = String::from_utf8_lossy(&response[..split]).into_owned();
+        let mut lines = head.lines();
+        let status = lines
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse().ok())
+            .expect("a status line");
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+            .collect();
+        (status, headers, response[split + 4..].to_vec())
+    }
+
+    #[tokio::test]
+    async fn the_daemon_serves_the_page_beside_its_endpoints() {
+        let daemon = Daemon::start(AllowedOrigins::None).await;
+        let index = cookie_agent_web_assets::get("index.html").expect("an index");
+        let (status, headers, body) = http(&daemon, "GET", "/", &[]).await;
+        assert_eq!(status, 200);
+        assert_eq!(headers["content-type"], "text/html; charset=utf-8");
+        assert_eq!(headers["cache-control"], "no-cache");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(body, index.bytes);
+        // Revalidating an unchanged file costs no body.
+        let (status, _, body) = http(&daemon, "GET", "/", &[("if-none-match", index.etag)]).await;
+        assert_eq!(status, 304);
+        assert!(body.is_empty());
+        for asset in cookie_agent_web_assets::assets() {
+            let (status, headers, body) =
+                http(&daemon, "GET", &format!("/{}", asset.path), &[]).await;
+            assert_eq!(status, 200, "{}", asset.path);
+            assert_eq!(
+                headers["content-type"], asset.content_type,
+                "{}",
+                asset.path
+            );
+            assert_eq!(
+                headers["cache-control"],
+                if asset.immutable {
+                    "public, max-age=31536000, immutable"
+                } else {
+                    "no-cache"
+                },
+                "{}",
+                asset.path
+            );
+            assert_eq!(body, asset.bytes, "{}", asset.path);
+        }
+        // Any other path, or another method, is not the page.
+        for (method, path) in [
+            ("GET", "/missing.js"),
+            ("GET", "/ws/index.html"),
+            ("POST", "/"),
+            ("DELETE", "/index.html"),
+        ] {
+            let (status, _, _) = http(&daemon, method, path, &[]).await;
+            assert_eq!(status, 404, "{method} {path}");
+        }
+        // `/ws` and `/runtime` keep their meaning: a request that is no
+        // upgrade is refused there, not answered with the page.
+        for path in ["/ws", "/runtime?id=devbox"] {
+            let (status, _, body) = http(&daemon, "GET", path, &[]).await;
+            assert_ne!(status, 200, "{path}");
+            assert_ne!(status, 404, "{path}");
+            assert_ne!(body, index.bytes, "{path}");
+        }
+        daemon.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_page_connects_only_from_an_origin_the_daemon_allows() {
+        // The page's origin names the daemon's own port, so pick it first.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let origin = format!("http://127.0.0.1:{port}");
+        let daemon = Daemon::start_on(port, AllowedOrigins::None).await;
+        // The page loads without a token, but its own origin is no
+        // exception for `/ws`.
+        let (status, _, _) = http(&daemon, "GET", "/", &[("origin", &origin)]).await;
+        assert_eq!(status, 200);
+        let error = daemon
+            .connect("/ws", None, Some(&origin))
+            .await
+            .expect_err("the page's origin is not listed");
+        assert!(error.to_string().contains("403"), "{error}");
+        daemon.stop().await;
+
+        // Listed, it connects and authenticates in its handshake.
+        let daemon = Daemon::start_on(port, AllowedOrigins::from_config(&[origin.clone()])).await;
+        let mut socket = daemon
+            .connect("/ws", None, Some(&origin))
+            .await
+            .expect("the page's origin is listed");
+        let reply = call(
+            &mut socket,
+            1,
+            "handshake",
+            hello(Some(daemon.token.as_str())),
+        )
+        .await;
+        assert!(reply["result"]["origin"].is_string(), "{reply}");
         daemon.stop().await;
     }
 }

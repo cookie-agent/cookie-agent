@@ -1,6 +1,8 @@
+mod page;
 mod routes;
 mod runtime_notifications;
 mod websocket;
+pub use page::page_url;
 pub use websocket::{AllowedOrigins, TlsConfig, load_tls};
 
 use std::{io, net::SocketAddr, sync::Arc};
