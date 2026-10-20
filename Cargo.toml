@@ -71,6 +71,9 @@ zeroize = "1.8"
 insta = { version = "1.48.0", features = ["json", "redactions"] }
 tempfile = "3.27.0"
 http = "1.4.0"
+# The web client's icons: Font Awesome Free (CC BY 4.0 artwork) as inline SVG.
+icondata = { version = "=0.7.0", default-features = false, features = ["font-awesome"] }
+leptos_icons = "=0.7.1"
 url = "2.5.7"
 windows-sys = "0.61.2"
 oven-sdk = { version = "=0.6.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "0f88e8a386aa3438fd38d521e5f816ab61dae195" }

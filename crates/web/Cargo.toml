@@ -16,9 +16,11 @@ cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = [
 foldhash.workspace = true
 futures-util.workspace = true
 gloo-timers = { version = "0.3.0", features = ["futures"] }
+icondata.workspace = true
 jiff.workspace = true
 js-sys = "0.3.80"
 leptos = { version = "0.8.22", features = ["csr"] }
+leptos_icons.workspace = true
 pulldown-cmark.workspace = true
 serde_json.workspace = true
 url.workspace = true
