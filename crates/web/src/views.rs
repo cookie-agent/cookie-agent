@@ -1905,8 +1905,8 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     title=format!("Works in {places} (click for the runtimes)")
                     on:click=move |_| workspace.run_command(Command::Runtime)
                 >
-                    // Each runtime's colour, as on the session rows; the
-                    // folder when there are none.
+                    // Each runtime in its machine's colour, as on the
+                    // session rows; the folder when there are none.
                     {move || {
                         let runtimes = workspace.places_runtimes();
                         if runtimes.is_empty() {
@@ -1914,7 +1914,12 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         } else {
                             view! {
                                 <span class="inline-flex shrink-0 items-center gap-0.5" data-places-dots>
-                                    {runtimes.iter().take(3).map(|runtime| crate::badges::runtime_dot(runtime)).collect_view()}
+                                    {runtimes.iter().take(3).map(|runtime| {
+                                        let key = workspace.runtimes.with(|listing| {
+                                            cookie_agent_client_state::badges::hue_key(listing.as_ref(), runtime)
+                                        });
+                                        crate::badges::runtime_dot(&key, runtime)
+                                    }).collect_view()}
                                 </span>
                             }
                             .into_any()

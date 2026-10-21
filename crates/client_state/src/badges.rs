@@ -1,11 +1,11 @@
 //! Where a session runs, as the badges a session row shows
 //! (`docs/site/specs/projects.md` section 9), and the stable colour of a
-//! machine or a runtime. The `global` attachment never counts. A session
-//! with no other attachment has a "no workspace" badge; one attachment
-//! shows its runtime and its workspace; several on one machine show the
-//! machine, then each runtime; several machines show each machine, in
-//! attachment order. The machine comes from `runtimes.list`; a runtime of
-//! no known machine stands for its own machine with its runtime badge.
+//! machine. Badges show machines, never runtime IDs, and the `global`
+//! attachment never counts. A session with no other attachment has no
+//! badge; one machine shows its badge and the workspaces, as `~/…`; several
+//! machines show each machine, in attachment order. The machine comes from
+//! `runtimes.list`; a runtime of no known machine stands for its own
+//! machine, under its runtime ID.
 
 use cookie_agent_protocol::{
     CapabilityName, ProjectDefaults, ProjectRuntime, RuntimeAttachment, RuntimeId,
@@ -17,9 +17,8 @@ use crate::paths::RuntimeHomes;
 /// How many hues badges take.
 pub const BADGE_HUES: u8 = 8;
 
-/// The hue (`0..BADGE_HUES`) of the machine or runtime named `key`: a
-/// 64-bit FNV-1a hash of its bytes, so every client and every run picks the
-/// same one.
+/// The hue (`0..BADGE_HUES`) of the machine named `key`: a 64-bit FNV-1a
+/// hash of its bytes, so every client and every run picks the same one.
 #[must_use]
 pub fn badge_hue(key: &str) -> u8 {
     let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
@@ -28,35 +27,47 @@ pub fn badge_hue(key: &str) -> u8 {
     u8::try_from(hash % u64::from(BADGE_HUES)).expect("a hue below eight")
 }
 
+/// What the colour of `runtime_id` is keyed on: its machine's name, or its
+/// own ID when `runtimes.list` knows no machine for it, so a runtime takes
+/// its machine's colour everywhere (badges, cards, the bottom bar).
+#[must_use]
+pub fn hue_key(listing: Option<&RuntimesListResult>, runtime_id: &str) -> String {
+    listing
+        .and_then(|listing| {
+            listing
+                .runtimes
+                .iter()
+                .find(|runtime| runtime.runtime_id.as_str() == runtime_id)
+        })
+        .and_then(|runtime| runtime.machine.as_ref())
+        .map_or_else(
+            || runtime_id.to_owned(),
+            |machine| machine.as_str().to_owned(),
+        )
+}
+
 /// One badge of a session row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionBadge {
-    /// The session attaches nothing besides `global`.
-    NoWorkspace,
-    /// A machine, with the operating system its runtimes report.
+    /// A machine, with the operating system its runtimes report; a runtime
+    /// of no known machine is one under its runtime ID.
     Machine {
         name: String,
         platform: Option<String>,
     },
-    /// A runtime; `capability` only when the runtime offers several.
-    Runtime {
-        runtime_id: String,
-        capability: Option<String>,
-    },
-    /// The one attachment's workspace, as clients show paths (`~/…`). From
-    /// a daemon that lists no attachments, the session's directory.
+    /// The workspaces on the one machine, as clients show paths (`~/…`),
+    /// comma-joined. From a daemon that lists no attachments, the session's
+    /// directory.
     Workspace(String),
 }
 
 impl SessionBadge {
-    /// The badge's hue: a machine's by its name, a runtime's by its ID.
-    /// The others are grey.
+    /// The badge's hue: a machine's by its name. A workspace has none.
     #[must_use]
     pub fn hue(&self) -> Option<u8> {
         match self {
             Self::Machine { name, .. } => Some(badge_hue(name)),
-            Self::Runtime { runtime_id, .. } => Some(badge_hue(runtime_id)),
-            Self::NoWorkspace | Self::Workspace(_) => None,
+            Self::Workspace(_) => None,
         }
     }
 
@@ -64,13 +75,7 @@ impl SessionBadge {
     #[must_use]
     pub fn label(&self) -> String {
         match self {
-            Self::NoWorkspace => "no workspace".to_owned(),
             Self::Machine { name, .. } => name.clone(),
-            Self::Runtime {
-                runtime_id,
-                capability: Some(capability),
-            } => format!("{runtime_id}·{capability}"),
-            Self::Runtime { runtime_id, .. } => runtime_id.clone(),
             Self::Workspace(path) => path.clone(),
         }
     }
@@ -114,16 +119,6 @@ fn machine_platform(listing: Option<&RuntimesListResult>, machine: &str) -> Opti
         .find_map(|runtime| runtime.platform.clone())
 }
 
-/// The badge of `attachment`'s runtime: its capability named only when the
-/// runtime offers several.
-#[must_use]
-pub fn runtime_badge(
-    listing: Option<&RuntimesListResult>,
-    attachment: &RuntimeAttachment,
-) -> SessionBadge {
-    Placed::of_attachment(attachment).runtime_badge(listing)
-}
-
 /// What the badges read of an attachment, whether a session has it or a
 /// project's defaults name it: the runtime, the capability when known, and
 /// the workspace.
@@ -132,6 +127,14 @@ struct Placed<'a> {
     runtime_id: &'a RuntimeId,
     capability: Option<&'a CapabilityName>,
     workspace: Option<&'a str>,
+}
+
+/// Where an attachment runs: its machine, or the runtime itself when the
+/// machine is not known.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Place {
+    Machine(String),
+    Runtime(RuntimeId),
 }
 
 impl<'a> Placed<'a> {
@@ -151,20 +154,36 @@ impl<'a> Placed<'a> {
         }
     }
 
-    fn runtime_badge(self, listing: Option<&RuntimesListResult>) -> SessionBadge {
+    /// The runtime as the tooltip names it: its ID, with the capability
+    /// when the runtime offers several (`alt·notes`).
+    fn runtime_label(self, listing: Option<&RuntimesListResult>) -> String {
         let several = listing_of(listing, self.runtime_id)
             .is_some_and(|runtime| runtime.capabilities.len() > 1);
-        SessionBadge::Runtime {
-            runtime_id: self.runtime_id.to_string(),
-            capability: self.capability.filter(|_| several).map(ToString::to_string),
+        match self.capability.filter(|_| several) {
+            Some(capability) => format!("{}·{capability}", self.runtime_id),
+            None => self.runtime_id.to_string(),
         }
     }
 
-    /// Where it runs: its machine, or the runtime itself when the machine
-    /// is not known.
     fn place(self, listing: Option<&RuntimesListResult>) -> Place {
         runtime_machine(listing, self.runtime_id)
             .map_or_else(|| Place::Runtime(self.runtime_id.clone()), Place::Machine)
+    }
+}
+
+impl Place {
+    fn badge(&self, listing: Option<&RuntimesListResult>) -> SessionBadge {
+        match self {
+            Self::Machine(name) => SessionBadge::Machine {
+                platform: machine_platform(listing, name),
+                name: name.clone(),
+            },
+            Self::Runtime(runtime_id) => SessionBadge::Machine {
+                name: runtime_id.to_string(),
+                platform: listing_of(listing, runtime_id)
+                    .and_then(|runtime| runtime.platform.clone()),
+            },
+        }
     }
 }
 
@@ -178,17 +197,24 @@ fn counted(session: &SessionMeta) -> Vec<Placed<'_>> {
         .collect()
 }
 
-/// Where an attachment runs: its machine, or the runtime itself when the
-/// machine is not known.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum Place {
-    Machine(String),
-    Runtime(RuntimeId),
+/// The default attachments that count for badges: all but `global`.
+fn counted_defaults(defaults: Option<&ProjectDefaults>) -> Vec<Placed<'_>> {
+    defaults
+        .map(|defaults| {
+            defaults
+                .runtimes
+                .iter()
+                .filter(|runtime| runtime.runtime_id.as_str() != RuntimeId::GLOBAL)
+                .map(Placed::of_default)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// The badges of `session`'s row, in order. `listed` says whether the
-/// daemon lists attachments (client protocol 1.7): from an older one the
-/// row shows the session's directory alone.
+/// The badges of `session`'s row, in order; none for a session that
+/// attaches nothing besides `global`. `listed` says whether the daemon
+/// lists attachments (client protocol 1.7): from an older one the row shows
+/// the session's directory alone.
 #[must_use]
 pub fn session_badges(
     session: &SessionMeta,
@@ -211,20 +237,7 @@ pub fn project_badges(
     listing: Option<&RuntimesListResult>,
     homes: &RuntimeHomes,
 ) -> Vec<SessionBadge> {
-    let placed = defaults
-        .map(|defaults| {
-            defaults
-                .runtimes
-                .iter()
-                .filter(|runtime| runtime.runtime_id.as_str() != RuntimeId::GLOBAL)
-                .map(Placed::of_default)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if placed.is_empty() {
-        return Vec::new();
-    }
-    placed_badges(&placed, listing, homes)
+    placed_badges(&counted_defaults(defaults), listing, homes)
 }
 
 fn placed_badges(
@@ -232,18 +245,6 @@ fn placed_badges(
     listing: Option<&RuntimesListResult>,
     homes: &RuntimeHomes,
 ) -> Vec<SessionBadge> {
-    let [first, rest @ ..] = attachments else {
-        return vec![SessionBadge::NoWorkspace];
-    };
-    if rest.is_empty() {
-        let mut badges = vec![first.runtime_badge(listing)];
-        if let Some(workspace) = first.workspace {
-            badges.push(SessionBadge::Workspace(
-                homes.display(first.runtime_id, workspace),
-            ));
-        }
-        return badges;
-    }
     let mut places = Vec::<Place>::new();
     for attachment in attachments {
         let place = attachment.place(listing);
@@ -251,34 +252,27 @@ fn placed_badges(
             places.push(place);
         }
     }
-    let machine_badge = |place: &Place| match place {
-        Place::Machine(name) => SessionBadge::Machine {
-            platform: machine_platform(listing, name),
-            name: name.clone(),
-        },
-        Place::Runtime(runtime_id) => attachments
-            .iter()
-            .find(|attachment| attachment.runtime_id == runtime_id)
-            .expect("a place comes from an attachment")
-            .runtime_badge(listing),
-    };
-    let mut badges = Vec::new();
-    if let [only] = places.as_slice() {
-        // One machine: it, then each runtime once. A runtime of no known
-        // machine is that machine.
-        if matches!(only, Place::Machine(_)) {
-            badges.push(machine_badge(only));
-        }
-        for attachment in attachments {
-            let badge = attachment.runtime_badge(listing);
-            if !badges.contains(&badge) {
-                badges.push(badge);
+    match places.as_slice() {
+        [] => Vec::new(),
+        // One machine: its badge, then its workspaces.
+        [only] => {
+            let mut workspaces = Vec::<String>::new();
+            for attachment in attachments {
+                if let Some(workspace) = attachment.workspace {
+                    let shown = homes.display(attachment.runtime_id, workspace);
+                    if !workspaces.contains(&shown) {
+                        workspaces.push(shown);
+                    }
+                }
             }
+            let mut badges = vec![only.badge(listing)];
+            if !workspaces.is_empty() {
+                badges.push(SessionBadge::Workspace(workspaces.join(", ")));
+            }
+            badges
         }
-    } else {
-        badges.extend(places.iter().map(machine_badge));
+        several => several.iter().map(|place| place.badge(listing)).collect(),
     }
-    badges
 }
 
 /// The row's tooltip: every attachment but `global`, one a line, as
@@ -305,13 +299,7 @@ pub fn project_badges_tooltip(
     listing: Option<&RuntimesListResult>,
     homes: &RuntimeHomes,
 ) -> String {
-    let placed = defaults
-        .runtimes
-        .iter()
-        .filter(|runtime| runtime.runtime_id.as_str() != RuntimeId::GLOBAL)
-        .map(Placed::of_default)
-        .collect::<Vec<_>>();
-    placed_tooltip(&placed, listing, homes)
+    placed_tooltip(&counted_defaults(Some(defaults)), listing, homes)
 }
 
 fn placed_tooltip(
@@ -326,7 +314,7 @@ fn placed_tooltip(
             if let Some(machine) = runtime_machine(listing, attachment.runtime_id) {
                 parts.push(machine);
             }
-            parts.push(attachment.runtime_badge(listing).label());
+            parts.push(attachment.runtime_label(listing));
             if let Some(workspace) = attachment.workspace {
                 parts.push(homes.display(attachment.runtime_id, workspace));
             }
@@ -452,15 +440,18 @@ mod tests {
             seen[usize::from(hue)] = true;
         }
         assert!(seen.iter().all(|seen| *seen), "{seen:?}");
+        // A runtime takes its machine's colour; one of no known machine,
+        // its own.
+        let listing = listing();
+        assert_eq!(hue_key(Some(&listing), "local"), "desk");
+        assert_eq!(hue_key(Some(&listing), "box"), "box");
+        assert_eq!(hue_key(None, "local"), "local");
     }
 
     #[test]
-    fn global_alone_is_no_workspace() {
-        assert_eq!(
-            badges(&session(&[("global", "global", None)])),
-            [SessionBadge::NoWorkspace]
-        );
-        assert_eq!(badges(&session(&[])), [SessionBadge::NoWorkspace]);
+    fn global_alone_has_no_badge() {
+        assert!(badges(&session(&[("global", "global", None)])).is_empty());
+        assert!(badges(&session(&[])).is_empty());
         let listing = listing();
         // A daemon that lists no attachments: the directory, absolute.
         assert_eq!(
@@ -475,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn one_attachment_is_its_runtime_and_workspace() {
+    fn one_attachment_is_its_machine_and_workspace() {
         let one = session(&[
             ("global", "global", None),
             ("labpc", "coding", Some("/home/labpc/api")),
@@ -483,20 +474,20 @@ mod tests {
         assert_eq!(
             badges(&one),
             [
-                SessionBadge::Runtime {
-                    runtime_id: "labpc".into(),
-                    capability: None
+                SessionBadge::Machine {
+                    name: "lab".into(),
+                    platform: Some("macos".into())
                 },
                 SessionBadge::Workspace("~/api".into()),
             ]
         );
-        // A runtime of several capabilities names the one attached.
+        // No runtime ID shows, whatever its capabilities.
         let alt = session(&[("alt", "notes", Some("/srv/notes"))]);
-        assert_eq!(labels(&badges(&alt)), ["alt·notes", "/srv/notes"]);
+        assert_eq!(labels(&badges(&alt)), ["desk", "/srv/notes"]);
     }
 
     #[test]
-    fn several_on_one_machine_are_the_machine_then_each_runtime() {
+    fn several_on_one_machine_are_the_machine_then_the_workspaces() {
         let desk = session(&[
             ("global", "global", None),
             ("local", "coding", Some("/home/local/web")),
@@ -504,7 +495,7 @@ mod tests {
             ("local", "coding", Some("/home/local/docs")),
         ]);
         let shown = badges(&desk);
-        assert_eq!(labels(&shown), ["desk", "local", "alt·coding"]);
+        assert_eq!(labels(&shown), ["desk", "~/web, ~/api, ~/docs"]);
         assert_eq!(
             shown[0],
             SessionBadge::Machine {
@@ -512,9 +503,11 @@ mod tests {
                 platform: Some("linux".into())
             }
         );
-        // Two workspaces of a runtime of no known machine: that runtime.
+        // Two workspaces of a runtime of no known machine: that runtime,
+        // as a machine.
         let boxed = session(&[("box", "coding", Some("/a")), ("box", "coding", Some("/b"))]);
-        assert_eq!(labels(&badges(&boxed)), ["box"]);
+        assert_eq!(labels(&badges(&boxed)), ["box", "/a, /b"]);
+        assert!(matches!(badges(&boxed)[0], SessionBadge::Machine { .. }));
     }
 
     #[test]
@@ -537,10 +530,9 @@ mod tests {
         defaults.runtimes = vec![runtime("labpc", Some("coding"), Some("/home/labpc/api"))];
         assert_eq!(
             labels(&project_badges(Some(&defaults), Some(&listing), &homes)),
-            ["labpc", "~/api"]
+            ["lab", "~/api"]
         );
-        // A capability left out (the runtime's only one) still names the
-        // runtime; several machines show each machine.
+        // Several machines show each machine.
         defaults.runtimes = vec![
             runtime("local", None, Some("/home/local/web")),
             runtime("labpc", Some("coding"), Some("/home/labpc/api")),
@@ -572,25 +564,24 @@ mod tests {
                 platform: Some("macos".into())
             }
         );
-        // A runtime of no known machine shows as its runtime.
-        assert!(matches!(shown[2], SessionBadge::Runtime { .. }));
         assert_eq!(shown[1].hue(), Some(badge_hue("desk")));
         assert_eq!(shown[2].hue(), Some(badge_hue("box")));
-        assert_eq!(SessionBadge::NoWorkspace.hue(), None);
+        assert_eq!(SessionBadge::Workspace("~/x".into()).hue(), None);
     }
 
     #[test]
-    fn the_tooltip_lists_every_attachment_with_its_path() {
+    fn the_tooltip_lists_every_attachment_with_its_runtime_and_path() {
         let listing = listing();
         let homes = RuntimeHomes::from_listing(&listing);
         let spread = session(&[
             ("global", "global", None),
             ("labpc", "coding", Some("/home/labpc/api")),
+            ("alt", "notes", Some("/srv/notes")),
             ("box", "coding", Some("/srv/x")),
         ]);
         assert_eq!(
             badges_tooltip(&spread, Some(&listing), &homes, true),
-            "lab · labpc · ~/api\nbox · /srv/x"
+            "lab · labpc · ~/api\ndesk · alt·notes · /srv/notes\nbox · /srv/x"
         );
         assert_eq!(
             badges_tooltip(

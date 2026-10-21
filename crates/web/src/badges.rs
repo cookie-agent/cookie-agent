@@ -1,7 +1,8 @@
 //! Where a session runs, as its row shows it: the badges of
-//! `client_state::badges`, each machine and runtime in its stable hue (the
-//! `hue-*` theme tokens in `style/main.css`), and the hue's dot that marks
-//! a runtime in the bottom bar and on the runtime cards.
+//! `client_state::badges`, each machine in its stable hue (the `hue-*`
+//! theme tokens in `style/main.css`), and the hue's dot that marks a
+//! runtime, in its machine's colour, in the bottom bar and on the runtime
+//! cards.
 
 use cookie_agent_client_state::badges::{SessionBadge, badge_hue};
 use leptos::prelude::*;
@@ -11,14 +12,11 @@ use crate::{icons::Glyph, machines::platform_icon};
 /// A badge's frame: small, on one line, truncating its label.
 const BADGE: &str = "inline-flex max-w-[9rem] items-center gap-1 rounded border px-1.5 text-[0.6875rem] leading-4 font-medium";
 
-/// How much of the line each badge gives up when the line is short. A
-/// machine's name and a workspace shrink first, nearly alone, down to a
-/// few letters (a machine's badge keeps its icon, its padding, and three
-/// characters); a runtime's ID keeps its whole width until nothing else
-/// can give.
+/// How much of the line each badge gives up when the line is short: the
+/// machines and the workspaces shrink alike, a machine's badge down to its
+/// icon, its padding, and three characters.
 const SHRINKS_FIRST: &str = "shrink-[100]";
 const MACHINE_MIN: &str = "min-w-[calc(3ch_+_1.75rem)]";
-const SHRINKS_LAST: &str = "min-w-0 shrink";
 
 /// Each hue's badge: its colour as the text, a faint tint of it behind,
 /// and a border between. Complete literals, for Tailwind to find.
@@ -54,9 +52,10 @@ pub fn hue_class(hue: Option<u8>) -> &'static str {
         .unwrap_or(GREY)
 }
 
-/// A small dot in the hue of the runtime `runtime_id`.
-pub fn runtime_dot(runtime_id: &str) -> impl IntoView + use<> {
-    let colour = DOTS[usize::from(badge_hue(runtime_id))];
+/// A small dot marking the runtime `runtime_id` in the hue of `hue_key`,
+/// its machine's name ([`cookie_agent_client_state::badges::hue_key`]).
+pub fn runtime_dot(hue_key: &str, runtime_id: &str) -> impl IntoView + use<> {
+    let colour = DOTS[usize::from(badge_hue(hue_key))];
     view! {
         <span
             class=format!("inline-block size-2 shrink-0 rounded-full {colour}")
@@ -66,25 +65,17 @@ pub fn runtime_dot(runtime_id: &str) -> impl IntoView + use<> {
     }
 }
 
-/// One badge of a session row. The workspace is no badge: it follows its
-/// runtime's as plain text, the first to truncate.
+/// One badge of a session row: a machine, or the workspaces after it as
+/// plain text, the first to truncate.
 pub fn badge_view(badge: SessionBadge) -> AnyView {
-    let shrink = if matches!(badge, SessionBadge::Machine { .. }) {
-        format!("{MACHINE_MIN} {SHRINKS_FIRST}")
-    } else {
-        SHRINKS_LAST.to_owned()
-    };
-    let class = format!("{BADGE} {shrink} {}", hue_class(badge.hue()));
+    let class = format!(
+        "{BADGE} {MACHINE_MIN} {SHRINKS_FIRST} {}",
+        hue_class(badge.hue())
+    );
     let hue = badge.hue().map(|hue| hue.to_string());
     match badge {
         SessionBadge::Workspace(path) => view! {
             <span class=format!("min-w-[4ch] {SHRINKS_FIRST} truncate font-mono") data-badge="workspace">{path}</span>
-        }
-        .into_any(),
-        SessionBadge::NoWorkspace => view! {
-            <span class=class data-badge="none">
-                <span class="truncate">"no workspace"</span>
-            </span>
         }
         .into_any(),
         SessionBadge::Machine { name, platform } => {
@@ -93,15 +84,6 @@ pub fn badge_view(badge: SessionBadge) -> AnyView {
                 <span class=class data-badge="machine" data-hue=hue>
                     <Glyph icon=icon class="shrink-0 text-[0.625rem]" />
                     <span class="min-w-0 truncate">{name}</span>
-                </span>
-            }
-            .into_any()
-        }
-        badge @ SessionBadge::Runtime { .. } => {
-            let label = badge.label();
-            view! {
-                <span class=class data-badge="runtime" data-hue=hue>
-                    <span class="truncate">{label}</span>
                 </span>
             }
             .into_any()

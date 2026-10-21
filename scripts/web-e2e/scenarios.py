@@ -1574,11 +1574,11 @@ def runtime_cards(browser):
     send(browser, "hello from three workspaces")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
     row = OPEN_SESSION_ROW
-    # Both runtimes are on this daemon's machine: it, then each runtime.
-    browser.wait("the row's badges", lambda: badge_kinds(browser, row) == ["machine", "runtime", "runtime"])
+    # Both runtimes are on this daemon's machine: it, then the workspaces.
+    browser.wait("the row's badges", lambda: badge_kinds(browser, row) == ["machine", "workspace"])
     shown_badges = badges(browser, row)
-    assert shown_badges[0][1] == daemon_group and shown_badges[1][1] == "local", shown_badges
-    assert shown_badges[2][1].startswith("alt"), shown_badges
+    assert shown_badges[0][1] == daemon_group, shown_badges
+    assert shown_badges[1][1] == "~/workspace, ~/second, ~/elsewhere", shown_badges
     assert "~/workspace" in browser.script(TOOLTIP, row) and "~/elsewhere" in browser.script(TOOLTIP, row)
     MADE["one machine"] = open_session_id(browser)
     browser.shot("cards-session-places")
@@ -1597,14 +1597,13 @@ def runtime_cards(browser):
     assert "global/global" in selected_cards(browser)
     print("a new session preselects the open session's runtimes and workspaces")
 
-    # One runtime alone: the session's directory is its workspace, which
-    # its row names by its runtime, under its home.
+    # One runtime alone: its machine, and its workspace under its home.
     browser.click(card("local/coding") + " [data-card-toggle]")
     browser.click("#start-session")
     browser.wait("the draft", lambda: count(browser, "#composer") == 1, timeout=40)
     send(browser, "hello from elsewhere")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
-    browser.wait("its row", lambda: badge_kinds(browser, row) == ["runtime", "workspace"])
+    browser.wait("its row", lambda: badge_kinds(browser, row) == ["machine", "workspace"])
     assert badges(browser, row)[1][1] == "~/elsewhere", badges(browser, row)
     MADE["one"] = open_session_id(browser)
 
@@ -1620,7 +1619,7 @@ def runtime_cards(browser):
     assert browser.text("#draft-places [data-draft-places]") == "no workspace"
     send(browser, "hello from nowhere")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
-    browser.wait("its row", lambda: badges(browser, row) == [["none", "no workspace"]])
+    browser.wait("its row", lambda: browser.text(row + " [data-session-title]") != "" and badges(browser, row) == [])
     MADE["none"] = open_session_id(browser)
     menu(browser, "runtime")
     browser.wait("the runtimes sheet", lambda: count(browser, "#sheet") == 1)
@@ -1671,15 +1670,15 @@ return badge ? getComputedStyle(badge).color : null;
 
 
 def session_badges(browser):
-    """Session rows say where they run as badges: no workspace, one runtime
-    and its workspace, one machine and its runtimes, and one badge per
-    machine once a runtime moves to another machine; a runtime keeps its
-    colour in every row, the bottom bar, and the runtime cards; and the
-    badges truncate before the time does."""
+    """Session rows say where they run as machine badges: none without a
+    workspace, one machine and its workspaces, and one badge per machine
+    once a runtime moves to another machine; a machine keeps its colour in
+    every row, and its runtimes take it in the bottom bar and the runtime
+    cards; and the badges truncate before the time does."""
     rows = {name: 'aside [data-session-row="%s"]' % session for name, session in MADE.items()}
-    assert badge_kinds(browser, rows["none"]) == ["none"]
-    assert badge_kinds(browser, rows["one"]) == ["runtime", "workspace"]
-    machine, local, alt = badges(browser, rows["one machine"])
+    assert badge_kinds(browser, rows["none"]) == []
+    assert badge_kinds(browser, rows["one"]) == ["machine", "workspace"]
+    machine, _ = badges(browser, rows["one machine"])
     # The time is on the title's line; the badges have the second to themselves.
     assert browser.script(
         "const r = document.querySelector(arguments[0]);"
@@ -1687,14 +1686,9 @@ def session_badges(browser):
         "  < r.querySelector('[data-session-badges]').getBoundingClientRect().top",
         rows["one machine"],
     )
-    # The same runtime, the same colour, in any row.
-    alt_colour = browser.script(BADGE_COLOUR, rows["one"], "alt")
-    assert alt_colour and alt_colour == browser.script(BADGE_COLOUR, rows["one machine"], "alt"), alt_colour
-    # The grey of "no workspace" is no hue.
-    assert browser.script(
-        "return document.querySelector(arguments[0] + ' [data-badge=none]').dataset.hue === undefined",
-        rows["none"],
-    )
+    # The same machine, the same colour, in any row.
+    desk_colour = browser.script(BADGE_COLOUR, rows["one"], machine[1])
+    assert desk_colour and desk_colour == browser.script(BADGE_COLOUR, rows["one machine"], machine[1]), desk_colour
     # A runtime pinned to another machine: the session spans two.
     subprocess.run([COOKIE, "machine", "assign", "alt", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
@@ -1702,10 +1696,12 @@ def session_badges(browser):
         "a badge per machine",
         lambda: badges(browser, rows["one machine"]) == [["machine", machine[1]], ["machine", "e2e-studio"]],
     )
-    # One attachment still shows its runtime and workspace.
-    assert badge_kinds(browser, rows["one"]) == ["runtime", "workspace"]
+    # One attachment shows its machine, now the studio, and its workspace.
+    browser.wait("alt on the studio", lambda: badges(browser, rows["one"]) == [["machine", "e2e-studio"], ["workspace", "~/elsewhere"]])
+    alt_colour = browser.script(BADGE_COLOUR, rows["one"], "e2e-studio")
+    assert alt_colour, alt_colour
     tooltip = browser.script(TOOLTIP, rows["one machine"])
-    assert "e2e-studio · %s · ~/elsewhere" % alt[1] in tooltip, tooltip
+    assert "e2e-studio · alt" in tooltip and "~/elsewhere" in tooltip, tooltip
     assert "%s · local · ~/workspace" % machine[1] in tooltip, tooltip
     # Machine badges carry the machine's OS icon.
     assert count(browser, rows["one machine"] + " [data-badge=machine] svg") == 2
@@ -1732,9 +1728,9 @@ def session_badges(browser):
     browser.wait("the session", lambda: count(browser, "#new-session") == 0)
     subprocess.run([COOKIE, "machine", "unassign", "alt"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
-    browser.wait("alt back on this machine", lambda: badge_kinds(browser, rows["one machine"]) == ["machine", "runtime", "runtime"])
-    # A narrowing sidebar: the machine's name gives way first, while the
-    # runtimes' IDs and the time stay whole.
+    browser.wait("alt back on this machine", lambda: badge_kinds(browser, rows["one machine"]) == ["machine", "workspace"])
+    # A narrowing sidebar: the machine's name and the workspaces give way,
+    # while the time stays whole.
     hover(browser, "#transcript")
     clipped = browser.script(
         "const row = arguments[0], sidebar = document.querySelector('#sidebar');"
@@ -1746,19 +1742,19 @@ def session_badges(browser):
         "  sidebar.style.width = width + 'px';"
         "  if (cut('machine')) {"
         "    const box = document.querySelector(row + ' [data-session]').getBoundingClientRect();"
-        "    return [width, cut('runtime'), time.scrollWidth <= time.clientWidth,"
+        "    return [width, time.scrollWidth <= time.clientWidth,"
         "      time.getBoundingClientRect().right <= box.right + 1];"
         "  }"
         "}"
         "return null",
         rows["one machine"],
     )
-    assert clipped and clipped[1:] == [False, True, True], clipped
+    assert clipped and clipped[1:] == [True, True], clipped
     browser.shot("badges-narrow")
     browser.script("document.querySelector('#sidebar').style.width = ''")
     subprocess.run([COOKIE, "machine", "forget", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
-    print("badges: no workspace, one runtime, one machine, two machines; a runtime keeps its colour everywhere")
+    print("badges: none, one machine and its workspaces, two machines; a machine keeps its colour everywhere")
 
 
 # A row's pencil and trash: the row's middle and each button's, their
@@ -2723,7 +2719,7 @@ def projects(browser):
         "return [...document.querySelectorAll(arguments[0] + ' [data-badge]')].map((b) => b.textContent.trim())",
         header(project),
     )
-    assert header_badges and header_badges[0] == "local", header_badges
+    assert len(header_badges) == 2 and header_badges[1] == "~/workspace", header_badges
     print("made project e2e-web with an emoji, defaults, and AGENTS.md; its header shows", header_badges)
 
     # A new session in it from its +: the cards and the agent prefilled.

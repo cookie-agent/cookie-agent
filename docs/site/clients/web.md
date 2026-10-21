@@ -126,25 +126,26 @@ address bar.
     The open session's row has a chevron before its badges, which turns
     with its subagent tree. Hover over a row for its status and every
     workspace with its machine, runtime, and path.
-  - **Badges.** The `global` attachment never counts:
-    - nothing else: a grey **no workspace** badge;
-    - one runtime: its badge, then its workspace, as `~/web`;
-    - several, all on one machine: the machine's badge, then a badge for
-      each runtime;
+  - **Badges** show machines, not runtimes. The `global` attachment never
+    counts:
+    - nothing else: no badge;
+    - one runtime: its machine's badge, then its workspace, as `~/web`;
+    - several, all on one machine: the machine's badge, then the
+      workspaces, separated by commas;
     - more than one machine: a badge for each machine, in the order the
       session attached them.
 
     A machine's badge has its operating system's icon, as on the Machines
-    view; a runtime's says its ID, and its capability when the runtime
-    offers several (`alt·notes`). A runtime whose machine the daemon does
-    not know counts as a machine of its own and shows its runtime badge.
-    Each machine and runtime keeps one of eight colours, chosen from its
-    name, so it looks the same in every row, every browser, and the TUI;
-    the same runtime colour marks the bottom bar's workspaces and the
-    runtime cards. The badges have the row's second line to themselves;
-    when it is too narrow, a machine's name and a workspace are cut short
-    first, and a runtime's ID only when nothing else can give. A daemon older than client protocol 1.7 lists no
-    attachments: the row shows the session's directory instead.
+    view. A runtime whose machine the daemon does not know counts as a
+    machine of its own, under its runtime ID. Each machine keeps one of
+    eight colours, chosen from its name, so it looks the same in every row
+    and every browser; the dots marking runtimes in the bottom bar and on
+    the runtime cards take their machine's colour. The badges have the
+    row's second line to themselves; when it is too narrow, the machines'
+    names and the workspaces are cut short. The row's tooltip lists every
+    workspace with its machine, runtime, and path. A daemon older than
+    client protocol 1.7 lists no attachments: the row shows the session's
+    directory instead.
   - **New session** opens the new session's runtime cards (below); the
     first message after **Start** creates the session with them and the
     agent, model, and permission mode the bottom bar shows.
@@ -225,8 +226,8 @@ address bar.
     waits until every field is filled in. With no coding card selected,
     the session works in no workspace. With two workspaces or more, a note
     says their tools get prefixes, with an example name.
-  - **Colours.** Each card has a dot in its runtime's colour, the colour
-    of that runtime's badge in the session rows.
+  - **Colours.** Each card has a dot in its machine's colour, the colour
+    of that machine's badge in the session rows.
   - **Start** opens every workspace at once. A runtime that refuses says
     why on its card, and nothing is created; once all of them open, the
     page shows where the new session will work, with **Change runtimes**
@@ -379,7 +380,7 @@ address bar.
   - **working…** while the session runs;
   - the last status message;
   - where the session (or the new session) works, its workspaces under
-    their runtimes' homes, after a dot in each runtime's colour (click for
+    their runtimes' homes, after a dot in each runtime's machine's colour (click for
     **Runtimes**; not on a phone);
   - the context size, in tokens, of the last request (also in **Usage**);
   - the session's cost (click for **Usage**).

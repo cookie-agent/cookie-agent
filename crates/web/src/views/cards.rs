@@ -226,8 +226,11 @@ fn card_view(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
                     />
                     <span class="flex min-w-0 flex-1 flex-col">
                         <span class="flex min-w-0 items-center gap-1.5">
-                            // The runtime's colour, as on the session rows.
-                            {crate::badges::runtime_dot(card.runtime_id.as_str())}
+                            // Its machine's colour, as on the session rows.
+                            {crate::badges::runtime_dot(
+                                &card.machine.as_ref().map_or_else(|| card.runtime_id.to_string(), ToString::to_string),
+                                card.runtime_id.as_str(),
+                            )}
                             <span class="truncate font-mono text-sm font-bold">{card.label()}</span>
                         </span>
                         {(!card.description.is_empty()).then(|| view! {
