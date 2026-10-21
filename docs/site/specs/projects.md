@@ -284,6 +284,10 @@ Web session rows replace the folder-and-paths line with badges. The
   - Project sections are collapsible and remembered per browser.
   - Projects are ordered by their latest session's activity, and "No
     project" comes last.
+  - Each section orders its own sessions (added 2026-10-21). Active
+    sessions come first: running, or waiting on a producer such as an
+    active goal or background calls. Every other session follows. Each
+    group is ordered by last activity, newest first.
   - Each header shows the project's emoji (a folder icon when it has
     none) and its name, with no count. When the project has default
     attachments, a second line shows them as badges, by the session-row
