@@ -7,7 +7,10 @@
 //! attachment order. The machine comes from `runtimes.list`; a runtime of
 //! no known machine stands for its own machine with its runtime badge.
 
-use cookie_agent_protocol::{RuntimeAttachment, RuntimeId, RuntimesListResult, SessionMeta};
+use cookie_agent_protocol::{
+    CapabilityName, ProjectDefaults, ProjectRuntime, RuntimeAttachment, RuntimeId,
+    RuntimesListResult, SessionMeta,
+};
 
 use crate::paths::RuntimeHomes;
 
@@ -118,20 +121,61 @@ pub fn runtime_badge(
     listing: Option<&RuntimesListResult>,
     attachment: &RuntimeAttachment,
 ) -> SessionBadge {
-    let several = listing_of(listing, &attachment.runtime_id)
-        .is_some_and(|runtime| runtime.capabilities.len() > 1);
-    SessionBadge::Runtime {
-        runtime_id: attachment.runtime_id.to_string(),
-        capability: several.then(|| attachment.capability.to_string()),
+    Placed::of_attachment(attachment).runtime_badge(listing)
+}
+
+/// What the badges read of an attachment, whether a session has it or a
+/// project's defaults name it: the runtime, the capability when known, and
+/// the workspace.
+#[derive(Clone, Copy, Debug)]
+struct Placed<'a> {
+    runtime_id: &'a RuntimeId,
+    capability: Option<&'a CapabilityName>,
+    workspace: Option<&'a str>,
+}
+
+impl<'a> Placed<'a> {
+    fn of_attachment(attachment: &'a RuntimeAttachment) -> Self {
+        Self {
+            runtime_id: &attachment.runtime_id,
+            capability: Some(&attachment.capability),
+            workspace: attachment.workspace.as_deref(),
+        }
+    }
+
+    fn of_default(runtime: &'a ProjectRuntime) -> Self {
+        Self {
+            runtime_id: &runtime.runtime_id,
+            capability: runtime.capability.as_ref(),
+            workspace: runtime.workspace.as_deref(),
+        }
+    }
+
+    fn runtime_badge(self, listing: Option<&RuntimesListResult>) -> SessionBadge {
+        let several = listing_of(listing, self.runtime_id)
+            .is_some_and(|runtime| runtime.capabilities.len() > 1);
+        SessionBadge::Runtime {
+            runtime_id: self.runtime_id.to_string(),
+            capability: self.capability.filter(|_| several).map(ToString::to_string),
+        }
+    }
+
+    /// Where it runs: its machine, or the runtime itself when the machine
+    /// is not known.
+    fn place(self, listing: Option<&RuntimesListResult>) -> Place {
+        runtime_machine(listing, self.runtime_id)
+            .map_or_else(|| Place::Runtime(self.runtime_id.clone()), Place::Machine)
     }
 }
 
 /// The attachments that count for badges: all but `global`.
-fn counted(session: &SessionMeta) -> impl Iterator<Item = &RuntimeAttachment> {
+fn counted(session: &SessionMeta) -> Vec<Placed<'_>> {
     session
         .attachments
         .iter()
         .filter(|attachment| attachment.runtime_id.as_str() != RuntimeId::GLOBAL)
+        .map(Placed::of_attachment)
+        .collect()
 }
 
 /// Where an attachment runs: its machine, or the runtime itself when the
@@ -140,13 +184,6 @@ fn counted(session: &SessionMeta) -> impl Iterator<Item = &RuntimeAttachment> {
 enum Place {
     Machine(String),
     Runtime(RuntimeId),
-}
-
-fn place(listing: Option<&RuntimesListResult>, attachment: &RuntimeAttachment) -> Place {
-    runtime_machine(listing, &attachment.runtime_id).map_or_else(
-        || Place::Runtime(attachment.runtime_id.clone()),
-        Place::Machine,
-    )
 }
 
 /// The badges of `session`'s row, in order. `listed` says whether the
@@ -162,22 +199,54 @@ pub fn session_badges(
     if session.attachments.is_empty() && !listed {
         return vec![SessionBadge::Workspace(homes.session_directory(session))];
     }
-    let attachments = counted(session).collect::<Vec<_>>();
-    let [first, rest @ ..] = attachments.as_slice() else {
+    placed_badges(&counted(session), listing, homes)
+}
+
+/// The badges of a project header: where its default attachments run, by
+/// the session rows' rules; none when the defaults name no runtime besides
+/// `global`, so the header has no second line.
+#[must_use]
+pub fn project_badges(
+    defaults: Option<&ProjectDefaults>,
+    listing: Option<&RuntimesListResult>,
+    homes: &RuntimeHomes,
+) -> Vec<SessionBadge> {
+    let placed = defaults
+        .map(|defaults| {
+            defaults
+                .runtimes
+                .iter()
+                .filter(|runtime| runtime.runtime_id.as_str() != RuntimeId::GLOBAL)
+                .map(Placed::of_default)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if placed.is_empty() {
+        return Vec::new();
+    }
+    placed_badges(&placed, listing, homes)
+}
+
+fn placed_badges(
+    attachments: &[Placed<'_>],
+    listing: Option<&RuntimesListResult>,
+    homes: &RuntimeHomes,
+) -> Vec<SessionBadge> {
+    let [first, rest @ ..] = attachments else {
         return vec![SessionBadge::NoWorkspace];
     };
     if rest.is_empty() {
-        let mut badges = vec![runtime_badge(listing, first)];
-        if let Some(workspace) = &first.workspace {
+        let mut badges = vec![first.runtime_badge(listing)];
+        if let Some(workspace) = first.workspace {
             badges.push(SessionBadge::Workspace(
-                homes.display(&first.runtime_id, workspace),
+                homes.display(first.runtime_id, workspace),
             ));
         }
         return badges;
     }
     let mut places = Vec::<Place>::new();
-    for attachment in &attachments {
-        let place = place(listing, attachment);
+    for attachment in attachments {
+        let place = attachment.place(listing);
         if !places.contains(&place) {
             places.push(place);
         }
@@ -187,13 +256,11 @@ pub fn session_badges(
             platform: machine_platform(listing, name),
             name: name.clone(),
         },
-        Place::Runtime(runtime_id) => {
-            let attachment = attachments
-                .iter()
-                .find(|attachment| attachment.runtime_id == *runtime_id)
-                .expect("a place comes from an attachment");
-            runtime_badge(listing, attachment)
-        }
+        Place::Runtime(runtime_id) => attachments
+            .iter()
+            .find(|attachment| attachment.runtime_id == runtime_id)
+            .expect("a place comes from an attachment")
+            .runtime_badge(listing),
     };
     let mut badges = Vec::new();
     if let [only] = places.as_slice() {
@@ -202,8 +269,8 @@ pub fn session_badges(
         if matches!(only, Place::Machine(_)) {
             badges.push(machine_badge(only));
         }
-        for attachment in &attachments {
-            let badge = runtime_badge(listing, attachment);
+        for attachment in attachments {
+            let badge = attachment.runtime_badge(listing);
             if !badges.contains(&badge) {
                 badges.push(badge);
             }
@@ -227,15 +294,41 @@ pub fn badges_tooltip(
     if session.attachments.is_empty() && !listed {
         return homes.session_directory(session);
     }
-    let lines = counted(session)
+    placed_tooltip(&counted(session), listing, homes)
+}
+
+/// A project header's tooltip: its default attachments, as
+/// [`badges_tooltip`] lists a session's.
+#[must_use]
+pub fn project_badges_tooltip(
+    defaults: &ProjectDefaults,
+    listing: Option<&RuntimesListResult>,
+    homes: &RuntimeHomes,
+) -> String {
+    let placed = defaults
+        .runtimes
+        .iter()
+        .filter(|runtime| runtime.runtime_id.as_str() != RuntimeId::GLOBAL)
+        .map(Placed::of_default)
+        .collect::<Vec<_>>();
+    placed_tooltip(&placed, listing, homes)
+}
+
+fn placed_tooltip(
+    attachments: &[Placed<'_>],
+    listing: Option<&RuntimesListResult>,
+    homes: &RuntimeHomes,
+) -> String {
+    let lines = attachments
+        .iter()
         .map(|attachment| {
             let mut parts = Vec::new();
-            if let Some(machine) = runtime_machine(listing, &attachment.runtime_id) {
+            if let Some(machine) = runtime_machine(listing, attachment.runtime_id) {
                 parts.push(machine);
             }
-            parts.push(runtime_badge(listing, attachment).label());
-            if let Some(workspace) = &attachment.workspace {
-                parts.push(homes.display(&attachment.runtime_id, workspace));
+            parts.push(attachment.runtime_badge(listing).label());
+            if let Some(workspace) = attachment.workspace {
+                parts.push(homes.display(attachment.runtime_id, workspace));
             }
             parts.join(" · ")
         })
@@ -422,6 +515,44 @@ mod tests {
         // Two workspaces of a runtime of no known machine: that runtime.
         let boxed = session(&[("box", "coding", Some("/a")), ("box", "coding", Some("/b"))]);
         assert_eq!(labels(&badges(&boxed)), ["box"]);
+    }
+
+    #[test]
+    fn project_headers_show_their_default_attachments_by_the_same_rules() {
+        let listing = listing();
+        let homes = RuntimeHomes::from_listing(&listing);
+        let runtime =
+            |id: &str, capability: Option<&str>, workspace: Option<&str>| ProjectRuntime {
+                runtime_id: RuntimeId::new(id).unwrap(),
+                capability: capability.map(|name| CapabilityName::new(name).unwrap()),
+                workspace: workspace.map(str::to_owned),
+            };
+        // No defaults, or defaults that name no runtime: no second line.
+        assert!(project_badges(None, Some(&listing), &homes).is_empty());
+        let mut defaults = ProjectDefaults {
+            global: false,
+            ..ProjectDefaults::default()
+        };
+        assert!(project_badges(Some(&defaults), Some(&listing), &homes).is_empty());
+        defaults.runtimes = vec![runtime("labpc", Some("coding"), Some("/home/labpc/api"))];
+        assert_eq!(
+            labels(&project_badges(Some(&defaults), Some(&listing), &homes)),
+            ["labpc", "~/api"]
+        );
+        // A capability left out (the runtime's only one) still names the
+        // runtime; several machines show each machine.
+        defaults.runtimes = vec![
+            runtime("local", None, Some("/home/local/web")),
+            runtime("labpc", Some("coding"), Some("/home/labpc/api")),
+        ];
+        assert_eq!(
+            labels(&project_badges(Some(&defaults), Some(&listing), &homes)),
+            ["desk", "lab"]
+        );
+        assert_eq!(
+            project_badges_tooltip(&defaults, Some(&listing), &homes),
+            "desk · local · ~/web\nlab · labpc · ~/api"
+        );
     }
 
     #[test]

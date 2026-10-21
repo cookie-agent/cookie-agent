@@ -23,6 +23,8 @@ jiff.workspace = true
 pulldown-cmark.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+unicode-properties.workspace = true
+unicode-segmentation.workspace = true
 # `std::time::Instant` on native targets; the browser's clock on wasm32,
 # where `std`'s panics.
 web-time = "1.1.0"

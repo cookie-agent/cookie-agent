@@ -21,6 +21,7 @@ pub mod ownership;
 pub mod paths;
 pub mod permissions;
 pub mod plugins;
+pub mod projects;
 pub mod providers;
 mod reduce;
 pub mod rows;
