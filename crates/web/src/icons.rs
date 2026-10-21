@@ -123,6 +123,23 @@ pub fn session_status(status: SessionStatus) -> StatusMark {
     }
 }
 
+/// The mark a session's row shows before its title, if any: a turning
+/// circle while it runs, and a mark when its last run failed or was
+/// interrupted. A finished, idle, or cancelled session has none, so its
+/// title starts at the row's edge. (A session waiting on a producer, such
+/// as an active goal, will have one too, which running outranks.)
+pub fn row_status(status: SessionStatus) -> Option<StatusMark> {
+    match status {
+        SessionStatus::Running | SessionStatus::Failed | SessionStatus::Interrupted => {
+            Some(session_status(status))
+        }
+        SessionStatus::Idle
+        | SessionStatus::Completed
+        | SessionStatus::Cancelled
+        | SessionStatus::Unknown => None,
+    }
+}
+
 /// The theme button's icon: the theme the page is in, or half a circle for
 /// the system's.
 pub fn theme_icon(preference: ThemePreference) -> Icon {
@@ -165,7 +182,7 @@ mod tests {
     use cookie_agent_client_state::ToolStatus;
     use cookie_agent_protocol::{SessionStatus, ToolHint};
 
-    use super::{hint_icon, permission_mode, session_status, svg, tool_status};
+    use super::{hint_icon, permission_mode, row_status, session_status, svg, tool_status};
 
     #[test]
     fn every_permission_mode_has_its_own_icon() {
@@ -230,6 +247,18 @@ mod tests {
             tool_status(&ToolStatus::Failed, false).icon
         );
         assert_eq!(session_status(SessionStatus::Unknown).label, "unknown");
+        // Rows mark only what runs and what went wrong.
+        assert!(row_status(SessionStatus::Running).is_some_and(|mark| mark.spins));
+        assert!(row_status(SessionStatus::Failed).is_some());
+        assert!(row_status(SessionStatus::Interrupted).is_some());
+        for quiet in [
+            SessionStatus::Idle,
+            SessionStatus::Completed,
+            SessionStatus::Cancelled,
+            SessionStatus::Unknown,
+        ] {
+            assert!(row_status(quiet).is_none(), "{quiet:?}");
+        }
     }
 
     #[test]

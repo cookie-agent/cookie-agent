@@ -111,11 +111,14 @@ address bar.
 - **Sessions.** The page has no directory of its own, so the list shows
   every session, with a filter by the session's directory (its first
   workspace), named by its runtime, such as `labpc · ~/api`.
-  - **Rows.** Each session shows its title, an icon for its status
-    (running, completed, failed, cancelled, interrupted, or idle), where it
-    runs as badges, and how long ago it was last active, beside its
-    title. Hover over a row
-    for every workspace with its machine, runtime, and path.
+  - **Rows.** Each session shows its title, how long ago it was last
+    active beside it, and where it runs as badges on the line below.
+    Running sessions come first, then the others, each newest first. A
+    session that runs has a turning circle before its title, and one whose
+    last run failed or was interrupted has a mark; the others have none.
+    The open session's row has a chevron before its badges, which turns
+    with its subagent tree. Hover over a row for its status and every
+    workspace with its machine, runtime, and path.
   - **Badges.** The `global` attachment never counts:
     - nothing else: a grey **no workspace** badge;
     - one runtime: its badge, then its workspace, as `~/web`;

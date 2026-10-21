@@ -242,7 +242,8 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 .cloned()
                 .collect::<Vec<_>>()
         });
-        sessions.sort_by_key(|session| std::cmp::Reverse(session.last_activity));
+        // Running sessions first, then the rest; newest first in each.
+        cookie_agent_client_state::rows::order_sessions(&mut sessions);
         sessions
     };
     // The rows' "5m ago" moves on while the list shows.
@@ -384,6 +385,7 @@ fn session_row(
     let session_id = session.session_id;
     let current = move || workspace.selected.get() == Some(session_id);
     let mark = icons::session_status(session.status);
+    let status_mark = icons::row_status(session.status);
     let last_activity = session.last_activity;
     // Where it runs, once the runtimes are known; the tooltip lists every
     // workspace with its path.
@@ -476,7 +478,7 @@ fn session_row(
         >
             <Show
                 when=move || !is_renaming()
-                fallback=move || rename_row(workspace, session_id, mark, actions, field_badges.clone())
+                fallback=move || rename_row(workspace, session_id, status_mark, actions, field_badges.clone())
             >
             <button
                 type="button"
@@ -517,7 +519,10 @@ fn session_row(
                 }
             >
                 <span class="flex w-full items-center gap-2">
-                    <Glyph icon=mark.icon class=mark.class("text-xs") />
+                    // The status slot, only when there is a mark.
+                    {status_mark.map(|mark| view! {
+                        <Glyph icon=mark.icon class=mark.class("text-xs") />
+                    })}
                     <span class="sr-only">{mark.label}</span>
                     <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title>{label.clone()}</span>
                     // The time sits beside the title, so the badges have
@@ -525,8 +530,10 @@ fn session_row(
                     <span class=format!("shrink-0 {NOTE}") data-session-time>
                         {move || relative_time(now.get(), last_activity)}
                     </span>
+                </span>
+                <span class=format!("flex w-full min-w-0 items-center gap-1.5 {NOTE}")>
                     // The open session's row folds and unfolds its subagent
-                    // tree: its chevron turns with it.
+                    // tree: its chevron, before the badges, turns with it.
                     <Show when=current>
                         <span
                             class="inline-flex shrink-0 opacity-70 transition-transform"
@@ -537,9 +544,9 @@ fn session_row(
                             <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
                         </span>
                     </Show>
-                </span>
-                <span class=format!("flex w-full min-w-0 items-center gap-1 overflow-hidden pl-5 {NOTE}") data-session-badges>
-                    {badges.clone()}
+                    <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" data-session-badges>
+                        {badges.clone()}
+                    </span>
                 </span>
             </button>
             // Shown while a mouse is over the row, or the keyboard is in
@@ -673,7 +680,7 @@ fn session_row(
 fn rename_row<B: IntoView + 'static>(
     workspace: Workspace,
     session_id: SessionId,
-    mark: icons::StatusMark,
+    mark: Option<icons::StatusMark>,
     actions: RowActions,
     badges: impl Fn() -> B + Send + Sync + 'static,
 ) -> impl IntoView {
@@ -725,7 +732,7 @@ fn rename_row<B: IntoView + 'static>(
             }
         >
             <span class="flex w-full items-center gap-2">
-                <Glyph icon=mark.icon class=mark.class("text-xs") />
+                {mark.map(|mark| view! { <Glyph icon=mark.icon class=mark.class("text-xs") /> })}
                 <input
                     type="text"
                     node_ref=field
@@ -752,14 +759,14 @@ fn rename_row<B: IntoView + 'static>(
             <Show
                 when=empty
                 fallback=move || view! {
-                    <span class=format!("flex w-full min-w-0 items-center gap-1 pl-5 {NOTE}")>
+                    <span class=format!("flex w-full min-w-0 items-center gap-1 {NOTE}")>
                         <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">{badges()}</span>
                     </span>
                 }
             >
                 <button
                     type="button"
-                    class=format!("{AUTO_TITLE} ml-5")
+                    class=format!("{AUTO_TITLE} -ml-2")
                     data-rename-reset=session_id.to_string()
                     // A tap must not take the focus from the field first,
                     // which would close it.

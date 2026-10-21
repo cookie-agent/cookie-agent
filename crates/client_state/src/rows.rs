@@ -4,7 +4,8 @@
 //! bounds every client shows an opened row's body within.
 
 use cookie_agent_protocol::{
-    AgentId, AgentSnapshot, GoalStatus, ProducerDeliveryMode, ProducerOwner,
+    AgentId, AgentSnapshot, GoalStatus, ProducerDeliveryMode, ProducerOwner, SessionMeta,
+    SessionStatus,
 };
 
 use crate::SessionState;
@@ -78,6 +79,25 @@ pub fn goal_bar_shows(status: GoalStatus) -> bool {
 /// How many lines `text` has, as the collapsed rows count them.
 pub fn display_line_count(text: &str) -> usize {
     text.split('\n').count()
+}
+
+/// Whether a session counts as active in a session list: for now, while
+/// it runs.
+pub fn session_is_active(session: &SessionMeta) -> bool {
+    session.status == SessionStatus::Running
+}
+
+/// Orders a session list: the active sessions first, then the rest, each
+/// group newest activity first; sessions that tie keep their order. It
+/// knows nothing of how a list is grouped, so a client orders each group
+/// (each project's sessions, say) on its own.
+pub fn order_sessions(sessions: &mut [SessionMeta]) {
+    sessions.sort_by_key(|session| {
+        (
+            !session_is_active(session),
+            std::cmp::Reverse(session.last_activity),
+        )
+    });
 }
 
 /// The agent snapshot the system prompt row shows: the latest run's, else
@@ -278,6 +298,61 @@ mod tests {
         assert_eq!(
             system_prompt_summary(&snapshot, false, Some(&fast)),
             "system prompt · primary (at creation) · next: fast (2 lines)"
+        );
+    }
+
+    #[test]
+    fn running_sessions_come_first_then_the_rest_newest_first() {
+        let session = |name: &str, status: &str, at: &str| -> SessionMeta {
+            serde_json::from_value(serde_json::json!({
+                "session_id": cookie_agent_protocol::SessionId::new_v7(),
+                "origin": {"type": "root"},
+                "short_id": name,
+                "cwd_identity": "/w",
+                "title": null,
+                "last_agent_activity": null,
+                "creation_selection": {
+                    "agent": "primary",
+                    "model": {"model": "custom.local/test", "variant": null},
+                },
+                "runtime_revision": format!("sha256:{}", "1".repeat(64)),
+                "catalog_revision": format!("sha256:{}", "2".repeat(64)),
+                "provider_state_revision": format!("sha256:{}", "3".repeat(64)),
+                "model_revision": format!("sha256:{}", "4".repeat(64)),
+                "agent_revision": format!("sha256:{}", "5".repeat(64)),
+                "recipe_registry_revision": format!("sha256:{}", "6".repeat(64)),
+                "manifest_revision": format!("sha256:{}", "7".repeat(64)),
+                "title_updated_seq": 0,
+                "last_event_seq": 1,
+                "last_activity": at,
+                "status": status,
+                "skipped_events": [],
+            }))
+            .expect("session meta")
+        };
+        let mut sessions = vec![
+            session("old-idle", "idle", "2026-10-20T08:00:00Z"),
+            session("old-running", "running", "2026-10-20T07:00:00Z"),
+            session("new-failed", "failed", "2026-10-20T12:00:00Z"),
+            session("tie-a", "completed", "2026-10-20T10:00:00Z"),
+            session("new-running", "running", "2026-10-20T11:00:00Z"),
+            session("tie-b", "cancelled", "2026-10-20T10:00:00Z"),
+        ];
+        order_sessions(&mut sessions);
+        let names = sessions
+            .iter()
+            .map(|session| session.short_id.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "new-running",
+                "old-running",
+                "new-failed",
+                "tie-a",
+                "tie-b",
+                "old-idle"
+            ]
         );
     }
 }
