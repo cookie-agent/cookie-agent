@@ -1870,10 +1870,9 @@ documentation. There is no wire change.
 
 ## 18. Addendum (2026-10-21): canonical paths and runtime homes
 
-Status: **protocol, daemon, and TUI implemented** (2026-10-21): runtime
-protocol 1.3.0 and client protocol 1.7.0. The web client's display and its
-runtime cards build on it next, on their own branch; until then the page
-compiles against the new types and shows paths as before.
+Status: **implemented** (2026-10-21): runtime protocol 1.3.0 and client
+protocol 1.7.0 in the protocol, the daemon, and the TUI, then the web
+client's display and its runtime cards (section 18.3).
 
 The web client's directory filter listed one directory twice: the page sent
 the `~/x` the user typed as `cwd`, which the daemon stored verbatim because
@@ -1967,3 +1966,58 @@ written `~/…` never matched either.
   workspace.
 - Keep sending what the user typed as `cwd` and `workspace`; the daemon and
   the runtime resolve it.
+
+### 18.3 The web client's paths and runtime cards (implemented 2026-10-21)
+
+**Paths.** The page reads `runtimes.list` when it connects and on
+`runtimes.changed` and `machines.changed`, keeps `RuntimeHomes`, and shows
+every path through it:
+
+- session rows list where a session works, `~/web, labpc:~/api` (a
+  runtime other than `local` is named), or "no workspace";
+- the sessions filter is by `cwd_identity`, as before, labelled with
+  `RuntimeHomes::session_directory` and the runtime whose workspace it is
+  (`labpc · ~/api`);
+- the bottom bar shows the session's (or the draft's) workspaces;
+- the `/runtime` sheet's attachments;
+- a tool row's title names its runtime's paths under that runtime's home.
+
+From a daemon older than client protocol 1.7, which lists no attachments,
+a session's place is its `cwd_identity`, absolute.
+
+**New session = runtime cards** (approved plan, 2026-10-21). New session
+opens cards in place of the transcript (a phone's fill the screen under the
+title bar, in one column, Start pinned at the foot):
+
+- **Groups by machine** from `runtimes.list` (this daemon's machine is
+  `local`'s, with `global`), first; then the others by name, then runtimes
+  of no known machine. A header folds its group to "name · N runtimes ·
+  N ready · N selected"; this daemon's machine and a machine with a
+  selected card start open, and the browser keeps each machine's choice
+  (`cookie.machine_open:<machine>`).
+- **Cards:** `global`, then `local`, then each other runtime's capabilities
+  that take a workspace, by runtime ID; a runtime that has not said what it
+  offers is one card that asks for a workspace and becomes its capability's
+  card once it connected, keeping its selection. States: ready (connected
+  or built in), starts on use (a template), offline (a dial-in runtime
+  that is not connected; it cannot be selected). A click anywhere on a card
+  but its fields selects or deselects it.
+- **Workspaces:** a selected card has a field per workspace (more with
+  "another workspace": the same runtime at another directory), suggesting
+  this browser's recent workspaces on that runtime
+  (`cookie.recent_workspaces:<runtime>`) and the sessions' attachments
+  there, as `~/…`; the text typed is sent, and the runtime resolves it.
+  Start waits for every field. With two workspaces or more a note says
+  tools get prefixes, naming the first as `<runtime>_<last component>_bash`.
+- **Start** sends `runtimes.reconnect` for every selected workspace at
+  once. A refusal shows on its card and nothing is created; once all open,
+  the draft composes with them, in card order, at the canonical workspaces
+  they reported, plus `global` when selected (`session.create`'s
+  `runtimes` and `global`; `cwd` is the first workspace, or none).
+- **Defaults:** the open session's attachments; else the browser's last
+  selection (`cookie.new_session`); the first time, `global` and `local`
+  with an empty, focused field. The old "the daemon's own directory" field
+  is gone, and nothing falls back to the daemon's directory.
+
+**Follow-ups:** a subagent's handle truncates before its agent's name, and
+the open session's row has a chevron that turns with its tree.

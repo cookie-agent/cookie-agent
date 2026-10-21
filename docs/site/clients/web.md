@@ -104,14 +104,19 @@ address bar.
 
 ## Sessions and chat
 
+- **Paths** show under the home directory of the runtime they belong to,
+  as `~/web`, and absolute when that runtime reported no home (a daemon
+  older than client protocol 1.7 reports none).
 - **Sessions.** The page has no directory of its own, so the list shows
-  every directory's sessions, with a filter by directory.
+  every session, with a filter by the session's directory (its first
+  workspace), named by its runtime, such as `labpc · ~/api`.
   - **Rows.** Each session shows its title, an icon for its status
-    (running, completed, failed, cancelled, interrupted, or idle), the name
-    of its directory, and how long ago it was last active. Hover over a row
-    for the directory's full path.
-  - **New session** starts a draft in a directory you name; leave it empty
-    for the daemon's own. The first message creates the session with the
+    (running, completed, failed, cancelled, interrupted, or idle), where it
+    works (its workspaces, each named by its runtime unless that is
+    `local`: `~/web, labpc:~/api`, or "no workspace"), and how long ago it
+    was last active. Hover over a row for the whole list.
+  - **New session** opens the new session's runtime cards (below); the
+    first message after **Start** creates the session with them and the
     agent, model, and permission mode the bottom bar shows.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
@@ -125,13 +130,42 @@ address bar.
     session leaves every client's list, and a page showing it starts a new
     session. A daemon older than client protocol 1.5 cannot delete, and
     the page offers no trash.
+- **New session.** The runtimes a session can use show as cards, grouped
+  by the machine each runs on, this daemon's machine first.
+  - **Groups.** A group's header says its machine, how many runtimes it
+    has, how many are ready, and how many cards are selected; click it to
+    fold or unfold the group. This daemon's machine, and a machine with a
+    selected card, start unfolded; the browser remembers what you fold.
+  - **Cards.** One for `global` (the daemon's own tools, MCP servers, and
+    memory; selected to start with, and you can deselect it), and one for
+    each runtime capability that takes a workspace. Each says whether its
+    runtime is **ready**, **starts on use** (the daemon starts it), or
+    **offline** (a runtime that dials in and is not connected), which
+    cannot be selected. Click anywhere on a card to select or deselect it.
+  - **Workspaces.** A selected card asks for its workspace, suggesting
+    the directories this browser opened on that runtime and the ones
+    sessions use there, as `~/…`; any path works. **another workspace**
+    adds a field for the same runtime at a second directory. **Start**
+    waits until every field is filled in. With no coding card selected,
+    the session works in no workspace. With two workspaces or more, a note
+    says their tools get prefixes, with an example name.
+  - **Start** opens every workspace at once. A runtime that refuses says
+    why on its card, and nothing is created; once all of them open, the
+    page shows where the new session will work, with **Change runtimes**
+    to go back, and the bottom bar shows its workspaces too.
+  - **What is preselected:** the open session's runtimes and workspaces;
+    else what this browser started its last session with; the first time,
+    `global` and `local` with an empty field to fill in. The page never
+    falls back to the daemon's own directory.
 - **Subagents.** Only the open session's row has its subagents nested
   under it, each with its status (a turning circle while it runs, a check,
   failed, or cancelled), its agent, its short handle, and its task. Click
   one to open it. Subagents have no trash: they go with their root. The
-  tree has two states; click the open session's own row to switch between
-  them (clicking another session still opens it), and the browser
-  remembers the choice for each session:
+  tree has two states; click the open session's own row, whose chevron
+  turns with it, to switch between them (clicking another session still
+  opens it), and the browser remembers the choice for each session. A
+  subagent's handle gives way before its agent's name when the row is
+  narrow:
   - **Collapsed** (the default): only the subagents that run, at any
     depth, and the one you have open. A running subagent whose parent has
     finished shows under its parent, dimmed, so it sits in its place. When
@@ -257,6 +291,8 @@ address bar.
   - the approvals waiting, when there are any (click to answer them);
   - **working…** while the session runs;
   - the last status message;
+  - where the session (or the new session) works, its workspaces under
+    their runtimes' homes (click for **Runtimes**; not on a phone);
   - the context size, in tokens, of the last request (also in **Usage**);
   - the session's cost (click for **Usage**).
 - **Diagnostics.** **Diagnostics** picks which diagnostic rows the
@@ -272,10 +308,9 @@ address bar.
   for a workspace when one is needed, **Detach** removes one (the daemon
   refuses while the session runs), and **Retry** restarts a failed
   instance.
-  - While a new session is composed, the list is the runtimes it will
-  attach: `global` and `local`'s `coding` at its directory to start with.
-  Each starts at once, so a runtime that cannot start says why before the
-  session exists.
+  - While a new session is composed, the list is the runtimes its cards
+  opened. One added here starts at once, so a runtime that cannot start
+  says why before the session exists.
   - The open panel reads the runtimes again every second, and links to
     the Machines & runtimes view.
 - **Machines.** The **Machines & runtimes** view shows each machine as a
