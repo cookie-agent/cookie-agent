@@ -71,7 +71,8 @@ address bar.
   each icon names itself in a tooltip, and the view shown is marked by a
   bar at the rail's edge:
   - **Chat** (the default): the sessions sidebar and the transcript;
-  - **Agents**: the agent documents and their presets;
+  - **Agents**: the agent documents and their presets, in a sidebar beside
+    the one open;
   - **Settings**: `config.toml`, providers, MCP servers, plugins, and this
     browser's preferences;
   - **Machines & runtimes**: the daemon's machines and its runtime
@@ -87,8 +88,9 @@ address bar.
   it. The ⋮ menu acts on the session shown.
 - **Widths.**
   - **1024 px and wider:** the sessions sidebar is pinned beside the
-    transcript. The sidebar button hides and shows it, and the browser
-    remembers the choice.
+    transcript, and the agents beside the open agent. The sidebar button
+    hides and shows it, and the browser remembers the choice (one for
+    both views).
   - **640 to 1023 px:** the rail stays; the sidebar button slides the
     sessions over the transcript.
   - **Narrower, a phone:** see [Phones](#phones).
@@ -276,12 +278,41 @@ address bar.
   session exists.
   - The open panel reads the runtimes again every second, and links to
     the Machines & runtimes view.
-- **Machines.** The **Machines & runtimes** view lists each machine with
-  its runtimes. Rename or forget a machine, merge it into another (its
-  memories move too), move a runtime to a machine, or unpin it. Under the
-  machines, the runtime registry lists every runtime: whether it is
-  connected, its machine and platform, its capabilities, and why it last
-  failed to connect.
+- **Machines.** The **Machines & runtimes** view shows each machine as a
+  card: an icon for its operating system (Linux, macOS, Windows, or a
+  generic computer), its name, its runtimes and memories, and buttons to
+  rename it, merge it into another (its memories move too), or forget it.
+  Under it are its runtimes, each with an icon for how it came to the
+  daemon (built in, started from a template, or dialled in), whether it is
+  connected (a green dot), pinned (a pin), its platform, its capabilities,
+  and why it last failed to connect. Runtimes that have never connected,
+  such as a template no session has used, sit under **On no machine yet**.
+  - **Moving a runtime.** Drag it onto another machine's card: with a
+    mouse, press anywhere on its row and drag; on a touch screen, hold the
+    row for about half a second until it lifts, then drag (moving sooner
+    scrolls the page). The card under it is outlined, and dropping it
+    there pins the runtime to that machine. A row held and let go without
+    moving opens **Move to…**, which each row also has as a button (the
+    keyboard reaches it): pick another machine, or type a new name to
+    create one. **Unpin** (the crossed-out pin) lets a pinned runtime
+    follow the machine it reports again.
+  - **Add a runtime** opens three ways to add one:
+    - **Start one over ssh:** a runtime ID, the ssh host, and optionally
+      the one directory its workspaces must be under. The page shows the
+      `[runtimes.<id>]` template, as in
+      [the ssh example](../daemon/runtimes.md#example-a-repository-on-another-machine-over-ssh),
+      and **Add to config.toml** writes it with `config.apply`. The daemon
+      starts the runtime only after a restart, and says so. The page
+      refuses an ID the daemon has, and a host or directory that ssh would
+      split or take as an option.
+    - **Let one dial in:** the `cookie runtime serve --daemon` command to
+      run on the other machine (see
+      [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in)),
+      with an optional runtime ID and **Copy**. The daemon's address is
+      the page's own unless the page reached it on a loopback address,
+      when it is a placeholder; the token is always a placeholder.
+    - **Guides:** links to the runtimes, ssh, dial-in, remote access, and
+      service guides of the released documentation.
 - **MCP servers.** Settings › MCP servers lists every runtime's servers with their state,
   tools, and last error. The global runtime's servers can be added, edited,
   enabled or disabled, removed, and kept in your `config.toml`; a coding
@@ -293,19 +324,36 @@ address bar.
   connect it, or to update or disconnect its stored connection. Credentials
   are typed into password fields, read once when you connect, and never
   kept by the page; closing the form clears them.
-- **Configuration.** Settings › Configuration has
-  `config.toml`, and the **Agents** view the agent documents, by preset.
-  Open one to edit it in the page and **Apply** it. A change the daemon
-  refuses stays open with the reason, to be fixed and applied again; a
-  document that changed meanwhile is reloaded instead. The Agents view
-  creates an agent document or deletes one; both reload from disk after
-  editing files by hand.
+- **Configuration.** Settings › Configuration has `config.toml`. Open it
+  to edit it in the page and **Apply** it. A change the daemon refuses
+  stays open with the reason, to be fixed and applied again; a document
+  that changed meanwhile is reloaded instead.
+- **Agents.** The **Agents** view lists the agent documents in a sidebar,
+  like the sessions in Chat: the shared agents, then each preset with its
+  agents. Each row has an icon for the agent's mode (a robot for a primary
+  agent, a person with a gear for a subagent), its ID, its description,
+  and **off** when it is disabled or **not applied** when an edit was
+  refused. Click one to edit it beside the list; **Apply** and **Close**
+  are at the editor's foot, with **Delete** behind a confirmation. **New
+  agent** asks for the document's path (`agents/<id>.md`, or
+  `agents/<preset>/<id>.md`), and the ↻ button reloads the documents from
+  disk after editing them by hand.
 - **Memory.** The **Memory** view lists the memories by layer, grouped by machine and
   project, with the files that are not valid memories. Open one to edit it,
-  create one at a URL (clicking a layer or group fills in its prefix), or
-  delete one. A memory that changed since you opened it is never
-  overwritten silently: you choose to reload it, overwrite it, or drop your
-  edit.
+  create one at a URL (clicking a layer or group, or a project's **+**,
+  fills in its prefix), or delete one. A memory that changed since you
+  opened it is never overwritten silently: you choose to reload it,
+  overwrite it, or drop your edit. After a save, the status line says what
+  the daemon kept in place of your text, when it kept anything.
+  - **Projects** are folders, folded until you open one; the browser
+    remembers which you opened. A project's trash deletes its memories,
+    one `memory.delete` each, after a confirmation that says how many; the
+    files in its folder that are not memories stay, and so does the
+    folder when there are any.
+  - **An agent's memory** (`agent://<agent>`) opens as its parts: the
+    description and the first keywords (the agent's ID and its mode)
+    belong to the daemon and show locked; the other keywords (separated
+    by commas) and the memory itself are yours to edit.
 - **Plugins.** Settings › Plugins lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
   bottom bar.
@@ -339,6 +387,8 @@ address bar.
   leaves the drawer open. It opens only from the button: a swipe from the edge is
   the browser's Back. A long press on a session's row reveals its
   **Delete**, then the confirmation.
+- **Agents** works like Chat: the agent open fills the screen, and the
+  sidebar button opens the drawer with the rail beside the agents.
 - **Other views** fill the screen under the same title bar. Lists open
   their details one level at a time, such as a Settings section, then a
   document: the back arrow in the title bar, or browser Back, goes up one

@@ -11,7 +11,10 @@ added browser authentication, and on the
 [runtime capabilities spec](runtime-capabilities.md), which added the
 listening daemon. The addendum of 2026-10-21
 ([section 16](#16-addendum-2026-10-21-web-layout-v2-and-session-deletion))
-adds web layout v2 and session deletion, implemented on 2026-10-21. On
+adds web layout v2 and session deletion, implemented on 2026-10-21, and
+its [section 16.4](#164-the-agents-machines-and-memory-views) the Agents
+sidebar, the machines' drag and drop and Add a runtime, and the Memory
+view's project folders, also implemented on 2026-10-21. On
 2026-10-21 the user also reversed the "no service worker" decision of
 [section 9](#9-phones): the page installs as an app, with a network-only
 service worker. On 2026-10-21 the user also reversed the origin allowlist
@@ -1048,6 +1051,57 @@ sessions are then absent from `session.list`.
   by which buttons show, so the text clears them from the first render
   (it was measured after a render, and missed the attach buttons that
   appear once the model's media are known).
+
+### 16.4 The Agents, Machines, and Memory views
+
+**Decided by the user, 2026-10-21 (web only; the TUI is unchanged; no
+protocol change):**
+
+- **Agents** gets a sidebar like Chat's sessions: the agent documents (the
+  shared agents, then each preset's) on the left with an icon for each
+  agent's mode, the open agent's editor on the right. The sidebar button
+  and its remembered pinning are shared with Chat (`cookie.sidebar`);
+  below 1024 px the agents slide over, and a phone's drawer carries them
+  beside the rail, as it carries the sessions in Chat. **New agent** and
+  **Reload from disk** sit above the list; **Apply**, **Close**, and
+  **Delete** (behind a confirmation) at the editor's foot. Settings ›
+  Configuration keeps only `config.toml`.
+- **Machines** shows each machine as a card with its runtimes, with icons
+  for the machine's operating system, each runtime's lifetime (built in,
+  spawned from a template, dialled in), and its status. Moving a runtime
+  is a pointer-event drag onto another machine's card: a mouse drags once
+  it moves 4 px; a finger after a 500 ms long press (moving sooner
+  scrolls), during which a non-passive `touchmove` listener keeps the page
+  still, and a long press let go in place opens **Move to…**. Every row
+  keeps a **Move to…** button for the keyboard, which picks another
+  machine or names a new one. A drop on its own machine does nothing;
+  runtimes the machine registry places nowhere (never connected) show
+  under "On no machine yet" and can be dropped onto a machine to pin them.
+- **Add a runtime** in Machines: an ssh form (runtime ID, host, optional
+  `--root`) that writes the runtimes guide's template with one
+  `config.apply` `set` of `["runtimes", <id>]` (retried once when the
+  revision moved, refused when `runtimes.list` or `config.toml` already
+  has the ID); the `cookie runtime serve --daemon <url> [--id <id>] --token
+  "<the daemon's token>"` command with a copy button, whose URL is the
+  page's own unless it is a loopback address (then `<daemon host>`); and
+  links to the guides of the released documentation.
+- **Memory**: project folders fold, folded by default, and the browser
+  keeps an opened one in `localStorage` (`cookie.memory_project:<project>`,
+  value `open`; storage that fails leaves folders folding for the page's
+  lifetime only). **Delete project** confirms, then sends `memory.delete`
+  for each memory of the project at its listed revision; files that are
+  not memories stay, and so does the folder when there are any.
+- **Agent memory files** (added the same day, after the daemon took over
+  their description and first keywords, client protocol 1.6.0): the web
+  editor shows an `agent://` file's description read-only and its
+  daemon-owned keywords (the agent's ID, then its mode) as fixed, with the
+  other keywords in a comma-separated field and the body in the text
+  area. A save writes the whole file with the description and keywords as
+  read, the extra keywords, and the body; unchanged parts write nothing.
+  `memory.write`'s optional `notice` follows "Saved …" in the status
+  line, as the TUI shows it; `MemoryWriteOutcome::Saved` in
+  `client_state` carries it, and both clients word the status with
+  `saved_status`.
 
 ## 17. Implementation notes
 

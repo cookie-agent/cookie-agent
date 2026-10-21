@@ -26,8 +26,9 @@ stored, in `~/.cookie-agent/machines.json`, which only the daemon writes.
 ## Regrouping
 
 Two IDs can be one computer (a container and its host), or one ID can be the
-wrong place for a runtime. `cookie machine` and the **Machines** tab of
-`/runtime` (TUI and web) change the registry:
+wrong place for a runtime. `cookie machine`, the **Machines** tab of the
+TUI's `/runtime`, and the web client's **Machines & runtimes** view (where
+a runtime moves by dragging it onto another machine) change the registry:
 
 - **rename** a machine, which moves its memory folder;
 - **assign** a runtime ID to a machine, pinning it, or **unassign** it so it

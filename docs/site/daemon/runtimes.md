@@ -319,7 +319,11 @@ a container reports its own machine ID. In the TUI, the Machines view of
 the `/runtime` panel (press `m`, or click its tab) lists each machine with
 its runtimes; select a machine to rename (`n`), merge (`g`), or forget
 (`f`) it, or a runtime to move it to another machine (`v`) or unpin it
-(`u`). From a terminal, `cookie machine` does the same and works against a
+(`u`). In the web client's **Machines & runtimes** view, drag a runtime
+onto another machine's card, or use its **Move to…** (see
+[Web](../clients/web.md#managing-the-daemon)); the view also adds an ssh
+template or shows the dial-in command. From a terminal, `cookie machine`
+does the same and works against a
 remote daemon like `cookie config`:
 
 ```sh
