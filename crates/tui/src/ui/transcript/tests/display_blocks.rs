@@ -412,7 +412,7 @@ fn a_title_that_cut_its_argument_short_does_not_repeat_it() {
 }
 
 #[test]
-fn argument_blocks_show_above_the_output_at_every_level() {
+fn argument_blocks_show_above_the_output_unless_the_header_shows_them() {
     let mut state = shown(vec![terminal(&[(TerminalStream::Stdout, "hi\n")], Some(0))]);
     let call_id = read_tool_id(&state);
     let tool = state.tools.get_mut(&call_id).unwrap();
@@ -438,6 +438,29 @@ fn argument_blocks_show_above_the_output_at_every_level() {
         .or_else(|| text.find(" hi\n"))
         .expect("output");
     assert!(arguments < command && command < output, "{text}");
+    // A command block that only repeats what the header shows is left out;
+    // the longer one above stayed because it says more.
+    state
+        .tools
+        .get_mut(&call_id)
+        .unwrap()
+        .presentation
+        .arguments = vec![Open::Known(DisplayBlock::code(
+        "echo hi\n",
+        Some("sh".into()),
+    ))];
+    let text = snapshot_lines(
+        &transcript_layout_with_level(
+            &state,
+            Some(&expanded),
+            80,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Warning,
+        )
+        .lines,
+    );
+    assert!(!text.contains("arguments"), "{text}");
     // The raw arguments of a call without argument blocks are diagnostic
     // detail, hidden above the `info` level.
     let mut plain = read_tool_state("unused", ToolStatus::Completed, "result");

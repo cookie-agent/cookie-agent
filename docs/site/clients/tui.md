@@ -258,9 +258,12 @@ follows the title.
 
 Expanded tools use ordinary text colours and end with a blank row: a grey
 title block over a lighter grey panel. The panel shows the call's argument
-blocks (a command, a URL) under a muted `arguments` label, leaving out a
-key/value row that only repeats the header's primary argument, then what the
-call shows, drawn by the kind of each block rather than by which tool sent it:
+blocks (a command, a URL) under a muted `arguments` label, leaving out what
+the header already says: a block whose text is the header's primary argument
+or the text its title quotes, and a key/value row that only repeats the
+primary argument. A block that says more, such as a long command the header
+shortened, stays. Then comes what the call shows, drawn by the kind of each
+block rather than by which tool sent it:
 
 - **Diffs** name how the file changed (`created`, `modified`, `deleted`, or
   `renamed`), its path, and the lines added and removed, then each hunk with

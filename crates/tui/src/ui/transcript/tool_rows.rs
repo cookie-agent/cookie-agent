@@ -1,7 +1,6 @@
 //! Tool call header rows, argument display, and tool block layout.
 
 use super::*;
-use cookie_agent_protocol::{DisplayBlock, Open};
 use ratatui::style::Color;
 
 pub(in crate::ui) use cookie_agent_client_state::tool_header::{
@@ -415,13 +414,7 @@ fn argument_section_lines(
         lines: MAX_ARGUMENT_LINES,
         bytes: MAX_ARGUMENT_BYTES,
     };
-    let arguments = shown_arguments(
-        &tool.presentation.arguments,
-        tool.presentation
-            .primary_argument
-            .as_ref()
-            .map(|argument| argument.as_str()),
-    );
+    let arguments = tool.shown_arguments();
     let rows = if arguments.is_empty() {
         // A presentation with argument blocks or a preview is complete as
         // given; only one with neither falls back to the raw arguments.
@@ -466,36 +459,6 @@ fn argument_section_lines(
         lines.push(ToolBodyLine::wrapped(Line::default()));
     }
     lines
-}
-
-/// The argument blocks worth showing: a `key_value` entry whose value is the
-/// primary argument the header already shows is left out, and so is a
-/// `key_value` block left with no entries.
-fn shown_arguments(
-    arguments: &[Open<DisplayBlock>],
-    primary_argument: Option<&str>,
-) -> Vec<Open<DisplayBlock>> {
-    arguments
-        .iter()
-        .filter_map(|block| match block {
-            Open::Known(DisplayBlock::KeyValue { entries, .. }) if primary_argument.is_some() => {
-                let kept = entries
-                    .iter()
-                    .filter(|entry| Some(entry.value.as_str()) != primary_argument)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if kept.is_empty() {
-                    return None;
-                }
-                let mut block = block.clone();
-                if let Open::Known(DisplayBlock::KeyValue { entries, .. }) = &mut block {
-                    *entries = kept;
-                }
-                Some(block)
-            }
-            _ => Some(block.clone()),
-        })
-        .collect()
 }
 
 /// The collapsed header row and the pieces an expanded title block reuses.
