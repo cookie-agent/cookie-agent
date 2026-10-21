@@ -385,6 +385,12 @@ async fn a_plugin_runs_named_producers_each_with_its_own_keys() {
     );
     drop(fixture.engine);
     let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    // The first queued message wakes the idle session, and the run it starts
+    // claims both messages for its model request until that request ends;
+    // a discard landing inside that window is rightly refused as too late.
+    // Hold the wake, installed before the plugin can send anything, so the
+    // plugin's discard settles a message no request has claimed.
+    let (_, wake_release) = engine.install_producer_wake_hook();
     engine.inner.plugins.await_eager_ready().await;
     let receipt: serde_json::Value = tokio::time::timeout(test_timeout(5), async {
         loop {
@@ -461,5 +467,6 @@ async fn a_plugin_runs_named_producers_each_with_its_own_keys() {
             status: ProducerSourceStatus::Ready,
         }]
     );
+    wake_release.notify_one();
     engine.shutdown().await;
 }
