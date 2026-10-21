@@ -255,7 +255,33 @@ fn project_folder(
         1 => "Its 1 file that is not a memory stays, and so does the folder.".to_owned(),
         strays => format!("Its {strays} files that are not memories stay, and so does the folder."),
     };
-    let question = format!("Delete project {name} and its {count}? This cannot be undone. {kept}");
+    let memory_question =
+        format!("Delete project {name} and its {count}? This cannot be undone. {kept}");
+    // A daemon that keeps projects deletes the project itself, with its
+    // sessions: the question counts both.
+    let project = {
+        let name = name.clone();
+        move || {
+            workspace
+                .projects
+                .with(|projects| {
+                    projects
+                        .iter()
+                        .find(|project| project.name.as_str() == name)
+                        .cloned()
+                })
+                .filter(|_| workspace.has_projects.get())
+        }
+    };
+    let question = {
+        let project = project.clone();
+        move || {
+            project().map_or_else(
+                || memory_question.clone(),
+                |project| cookie_agent_client_state::projects::delete_question(&project),
+            )
+        }
+    };
     view! {
         <div class="flex items-center gap-1 pl-3" data-project=name.clone()>
             <button
@@ -293,7 +319,7 @@ fn project_folder(
                 type="button"
                 class=ICON_BUTTON
                 aria-label="Delete the project"
-                title="Delete the project's memories"
+                title=move || if workspace.has_projects.get() { "Delete the project with its sessions and memories" } else { "Delete the project's memories" }
                 data-project-delete
                 on:click=move |_| confirm_project.set(Some(asked.clone()))
             >
@@ -303,6 +329,12 @@ fn project_folder(
         <Show when=confirming>
             <div class=format!("{CONFIRM} ml-6") role="alertdialog" data-project-confirm>
                 <p class="text-sm">{question.clone()}</p>
+                {move || {
+                    workspace
+                        .project_error
+                        .get()
+                        .map(|(_, message)| view! { <p class=ERROR data-project-error>{message}</p> })
+                }}
                 <div class="flex gap-2">
                     <button
                         type="button"
@@ -310,9 +342,15 @@ fn project_folder(
                         class=PRIMARY
                         on:click={
                             let deleted = deleted.clone();
+                            let project = project.clone();
                             move |_| {
-                                confirm_project.set(None);
-                                workspace.delete_project(deleted.clone());
+                                match project() {
+                                    Some(project) => workspace.remove_project(project.id),
+                                    None => {
+                                        confirm_project.set(None);
+                                        workspace.delete_project(deleted.clone());
+                                    }
+                                }
                             }
                         }
                     >

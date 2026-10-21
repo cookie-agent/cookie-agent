@@ -38,6 +38,7 @@ mod install;
 mod machines;
 mod manage;
 mod memory;
+mod projects;
 mod shell;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
@@ -84,6 +85,9 @@ const ROW_ACTIONS: &str = "absolute top-1/2 right-0.5 -translate-y-1/2 items-cen
 /// open row's hover colour is the same), one palette step darker on hover
 /// (lighter in dark), and further still when pressed. 44 px square.
 const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-toasted text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:bg-ember dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
+/// A button of a row's actions a long press revealed: narrower than
+/// [`BUTTON`], so that Move, Rename, Delete, and ✕ share a phone's line.
+const REVEALED: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-crust px-2 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
 /// A session's title as a field: in a session row, and in the title bar.
 const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-md border border-caramel bg-cream px-2 text-sm font-bold text-espresso focus:outline-none dark:border-maple dark:bg-night dark:text-latte";
 /// "Use the automatic title", under an emptied title field.
@@ -268,15 +272,36 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         renaming: RwSignal::new(None),
         draft: RwSignal::new(String::new()),
         fresh: StoredValue::new(false),
-        press: StoredValue::new(Press::default()),
-        timer: StoredValue::new(None),
     };
+    // Dragging a session onto a project's header, and the headers' own
+    // buttons.
+    let drag = projects::SessionDrag::new();
+    drag.follow(workspace, actions);
+    let headers = projects::HeaderActions::new();
+    let list = drag.list;
     view! {
         <div class="flex flex-col gap-2 p-3">
-            <button type="button" class=PRIMARY data-new-session on:click=move |_| workspace.start_new_session()>
-                <Glyph icon=icondata::FaPlusSolid />
-                "New session"
-            </button>
+            <div class="flex gap-2">
+                <button type="button" class=format!("{PRIMARY} flex-1") data-new-session on:click=move |_| workspace.start_new_session()>
+                    <Glyph icon=icondata::FaPlusSolid />
+                    "New session"
+                </button>
+                <Show when=move || workspace.has_projects.get()>
+                    <button
+                        type="button"
+                        class=BUTTON
+                        id="new-project"
+                        aria-label="New project…"
+                        title="New project…"
+                        on:click=move |_| workspace.open_project_editor(None, false)
+                    >
+                        <Glyph icon=icondata::FaFolderPlusSolid />
+                    </button>
+                </Show>
+            </div>
+            // A daemon without projects: the workspace filter instead of
+            // project sections.
+            <Show when=move || !workspace.has_projects.get()>
             <label class="flex flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
                 <span>"Workspace"</span>
                 <select
@@ -304,9 +329,13 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                     }}
                 </select>
             </label>
+            </Show>
         </div>
-        <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-3" aria-label="Sessions">
+        <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-x-hidden overflow-y-auto px-2 pb-3" aria-label="Sessions" node_ref=list>
             {move || {
+                if workspace.has_projects.get() {
+                    return projects::project_list(workspace, now, actions, drag, headers).into_any();
+                }
                 let sessions = shown();
                 if sessions.is_empty() {
                     return empty_state(icondata::FaFolderOpenSolid, "No sessions yet. Start one with New session.")
@@ -314,7 +343,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 }
                 sessions
                     .into_iter()
-                    .map(|session| session_row(workspace, session, now, actions))
+                    .map(|session| session_row(workspace, session, now, actions, drag))
                     .collect_view()
                     .into_any()
             }}
@@ -322,7 +351,8 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// The session list's row actions, shared by its rows: rename and delete.
+/// The session list's row actions, shared by its rows: move, rename, and
+/// delete.
 #[derive(Clone, Copy)]
 struct RowActions {
     /// The row a mouse (or pen) is over, which shows its buttons.
@@ -336,19 +366,9 @@ struct RowActions {
     draft: RwSignal<String>,
     /// The field just opened: its text is selected once it shows.
     fresh: StoredValue<bool>,
-    /// The touch press under way, one at a time.
-    press: StoredValue<Press>,
-    timer: StoredValue<Option<TimeoutHandle>>,
 }
 
 impl RowActions {
-    fn stop_timer(self) {
-        if let Some(timer) = self.timer.get_value() {
-            timer.clear();
-        }
-        self.timer.set_value(None);
-    }
-
     /// Turns `session`'s title into a field holding it.
     fn begin_rename(self, workspace: Workspace, session_id: SessionId) {
         self.revealed.set(None);
@@ -367,8 +387,10 @@ fn row_padding(shown: bool, buttons: usize) -> &'static str {
     match (shown, buttons) {
         (true, 0 | 1) => "pr-12",
         (false, 0 | 1) => "pr-3 group-has-focus-visible:pr-12",
-        (true, _) => "pr-24",
-        (false, _) => "pr-3 group-has-focus-visible:pr-24",
+        (true, 2) => "pr-24",
+        (false, 2) => "pr-3 group-has-focus-visible:pr-24",
+        (true, _) => "pr-36",
+        (false, _) => "pr-3 group-has-focus-visible:pr-36",
     }
 }
 
@@ -381,6 +403,7 @@ fn session_row(
     session: SessionMeta,
     now: RwSignal<jiff::Timestamp>,
     actions: RowActions,
+    drag: projects::SessionDrag,
 ) -> impl IntoView {
     let session_id = session.session_id;
     let current = move || workspace.selected.get() == Some(session_id);
@@ -426,49 +449,36 @@ fn session_row(
         revealed,
         confirming,
         renaming,
-        press,
         ..
     } = actions;
     let is_renaming = move || renaming.get() == Some(session_id);
-    let buttons = move || 1 + usize::from(workspace.can_delete.get());
+    let movable = move || workspace.has_projects.get();
+    let buttons = move || 1 + usize::from(workspace.can_delete.get()) + usize::from(movable());
     let shown = move || hovered.get() == Some(session_id) && !is_renaming();
+    // A mouse drags the row onto a project's header at once; a finger
+    // after a long press, which let go in place reveals the buttons.
     let on_pointerdown = move |event: ev::PointerEvent| {
-        if event.pointer_type() != "touch" {
-            return;
-        }
-        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
-        press.update_value(|press| press.start(x, y));
-        actions.stop_timer();
-        let timer = set_timeout_with_handle(
-            move || {
-                let fired = press.try_update_value(Press::elapse).unwrap_or(false);
-                if fired {
-                    confirming.set(None);
-                    revealed.set(Some(session_id));
-                }
-            },
-            LONG_PRESS,
-        )
-        .ok();
-        actions.timer.set_value(timer);
-    };
-    let on_pointermove = move |event: ev::PointerEvent| {
-        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
-        if press
-            .try_update_value(|press| press.moved(x, y))
-            .unwrap_or(false)
-        {
-            actions.stop_timer();
+        if !is_renaming() {
+            drag.press(workspace, session_id, &event);
         }
     };
-    let release = move |_| {
-        press.update_value(Press::cancel);
-        actions.stop_timer();
-    };
+    let lifted = move || drag.lifts(session_id);
     let field_badges = badges.clone();
     view! {
         <div
-            class="session-row group relative"
+            class=move || format!(
+                "session-row group relative {}",
+                if lifted() {
+                    "pointer-events-none z-30 rounded-md bg-cream shadow-xl ring-2 ring-caramel dark:bg-night dark:ring-maple"
+                } else {
+                    ""
+                },
+            )
+            style:transform=move || {
+                let (dx, dy) = drag.offset.get();
+                if lifted() { format!("translate({dx}px, {dy}px) scale(1.02)") } else { String::new() }
+            }
+            data-dragging=move || lifted().then_some("true")
             data-session-row=session_id.to_string()
             on:pointerenter=move |event: ev::PointerEvent| {
                 if event.pointer_type() != "touch" {
@@ -500,13 +510,10 @@ fn session_row(
                 data-session=session_id.to_string()
                 title=title.clone()
                 on:pointerdown=on_pointerdown
-                on:pointermove=on_pointermove
-                on:pointerup=release
-                on:pointercancel=release
                 on:contextmenu=move |event: ev::MouseEvent| {
-                    // A touch screen's long press offers the row's actions,
-                    // not the browser's menu.
-                    if revealed.get_untracked() == Some(session_id) {
+                    // A touch screen's long press lifts the row and offers
+                    // its actions, not the browser's menu.
+                    if lifted() || revealed.get_untracked() == Some(session_id) {
                         event.prevent_default();
                     }
                 }
@@ -514,7 +521,7 @@ fn session_row(
                 // the running ones and all of them.
                 aria-expanded=move || tree_root().then(|| workspace.tree_expanded.get().to_string())
                 on:click=move |_| {
-                    if press.try_update_value(Press::click).unwrap_or(true) {
+                    if !drag.take_click() {
                         if current() && tree_root() && !workspace.new_session.get_untracked() {
                             workspace.toggle_tree();
                         } else {
@@ -576,6 +583,18 @@ fn session_row(
                 }
                 data-row-actions
             >
+                <Show when=movable>
+                    <button
+                        type="button"
+                        class=ROW_ACTION
+                        aria-label="Move to project…"
+                        title="Move to project…"
+                        data-move=session_id.to_string()
+                        on:click=move |_| workspace.ask_move(session_id)
+                    >
+                        <Glyph icon=icondata::FaFolderOpenSolid />
+                    </button>
+                </Show>
                 <button
                     type="button"
                     class=ROW_ACTION
@@ -605,10 +624,24 @@ fn session_row(
             </Show>
         </div>
         <Show when=move || revealed.get() == Some(session_id) && confirming.get() != Some(session_id)>
-            <div class="flex gap-2 px-2 pb-1" data-delete-actions>
+            <div class="flex flex-wrap gap-1.5 px-2 pb-1" data-delete-actions>
+                <Show when=movable>
+                    <button
+                        type="button"
+                        class=REVEALED
+                        data-move-reveal=session_id.to_string()
+                        on:click=move |_| {
+                            revealed.set(None);
+                            workspace.ask_move(session_id);
+                        }
+                    >
+                        <Glyph icon=icondata::FaFolderOpenSolid />
+                        "Move"
+                    </button>
+                </Show>
                 <button
                     type="button"
-                    class=BUTTON
+                    class=REVEALED
                     data-rename-reveal=session_id.to_string()
                     on:click=move |_| actions.begin_rename(workspace, session_id)
                 >
@@ -618,7 +651,7 @@ fn session_row(
                 <Show when=move || workspace.can_delete.get()>
                     <button
                         type="button"
-                        class=BUTTON
+                        class=REVEALED
                         data-delete-reveal=session_id.to_string()
                         on:click=move |_| confirming.set(Some(session_id))
                     >
@@ -626,7 +659,7 @@ fn session_row(
                         "Delete"
                     </button>
                 </Show>
-                // An icon, so the three fit a phone's drawer on one line.
+                // An icon, so the four fit a phone's drawer on one line.
                 <button
                     type="button"
                     class=BUTTON.replace("px-3", "px-0")
@@ -1999,7 +2032,9 @@ fn cost_label(cost: f64) -> String {
 
 #[component]
 fn Sheet(workspace: Workspace) -> impl IntoView {
-    let close = move |_| workspace.panel.set(None);
+    let close = move |_| workspace.close_panel();
+    // The project editor fills a phone's screen.
+    let tall = move || workspace.panel.get() == Some(Panel::Project);
     let title = move || match workspace.panel.get() {
         Some(Panel::Agents) => "Agent",
         Some(Panel::Models) => "Model",
@@ -2016,6 +2051,18 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Permissions) => "Permissions",
         Some(Panel::Message) => "Message",
         Some(Panel::Runtimes) => "Runtimes",
+        Some(Panel::MoveSession) => "Move to project",
+        Some(Panel::Project) => {
+            if workspace.project_editor.with(|editor| {
+                editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.project.is_some())
+            }) {
+                "Project"
+            } else {
+                "New project"
+            }
+        }
         None => "",
     };
     view! {
@@ -2023,12 +2070,18 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
             <div class="fixed inset-0 z-10 bg-espresso/30 sm:bg-espresso/10 dark:bg-night/60 sm:dark:bg-night/30" on:click=close></div>
             // A phone's sheet rises from the bottom of what the keyboard
             // leaves; a wider window's stands on the right.
-            <div class="sheet-frame pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-col justify-end pt-12 sm:inset-y-0 sm:right-0 sm:left-auto sm:w-[28rem] sm:pt-0">
+            <div class=move || format!(
+                "sheet-frame pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-col justify-end sm:inset-y-0 sm:right-0 sm:left-auto sm:w-[28rem] sm:pt-0 {}",
+                if tall() { "pt-0" } else { "pt-12" },
+            )>
                 <section
                     id="sheet"
                     role="dialog"
                     aria-label=title
-                    class="pointer-events-auto flex max-h-full flex-col overflow-y-auto rounded-t-2xl border-t border-toasted bg-cream shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l dark:border-ember dark:bg-night"
+                    class=move || format!(
+                        "pointer-events-auto flex max-h-full flex-col overflow-y-auto border-toasted bg-cream shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l dark:border-ember dark:bg-night {}",
+                        if tall() { "h-full" } else { "rounded-t-2xl border-t" },
+                    )
                 >
                     <div class="sticky top-0 z-10 flex flex-col border-b border-toasted bg-parchment dark:border-ember dark:bg-char">
                         <span class="mx-auto mt-1.5 h-1 w-10 rounded-full bg-crust sm:hidden dark:bg-smoke" aria-hidden="true"></span>
@@ -2056,6 +2109,8 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
                             Some(Panel::Message) => message_sheet(workspace).into_any(),
                             Some(Panel::Runtimes) => runtimes_sheet(workspace).into_any(),
+                            Some(Panel::MoveSession) => projects::move_sheet(workspace).into_any(),
+                            Some(Panel::Project) => projects::editor_sheet(workspace).into_any(),
                             None => ().into_any(),
                         }}
                     </div>

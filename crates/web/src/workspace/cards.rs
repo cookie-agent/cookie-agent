@@ -20,7 +20,24 @@ use crate::{
     },
 };
 
+/// A set of runtime cards and what the user picked on them: the new
+/// session's, or the project editor's default attachments.
+#[derive(Clone, Copy)]
+pub struct CardSet {
+    pub selection: RwSignal<Selection>,
+    /// Refusals by card key and workspace field (the new session's only).
+    pub errors: RwSignal<HashMap<(String, usize), String>>,
+}
+
 impl Workspace {
+    /// The new session's cards.
+    pub fn new_cards(self) -> CardSet {
+        CardSet {
+            selection: self.selection,
+            errors: self.card_errors,
+        }
+    }
+
     /// Every runtime's home, from `runtimes.list` (none before it answered,
     /// or from a daemon older than client protocol 1.7).
     pub fn homes(self) -> RuntimeHomes {
@@ -73,21 +90,21 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    /// Whether `group` shows its cards.
-    pub fn group_shown(self, group: &Group) -> bool {
+    /// Whether `group` shows its cards in `set`.
+    pub fn group_shown(self, group: &Group, set: CardSet) -> bool {
         let name = group.name();
         let stored = self
             .group_open
             .with(|open| open.get(&name).copied())
             .map(|open| if open { "open" } else { "closed" }.to_owned())
             .or_else(|| browser::load(&group_key(&name)));
-        self.selection
+        set.selection
             .with(|selection| group.open(stored.as_deref(), selection))
     }
 
     /// Opens or closes `group`, as the browser remembers.
-    pub fn toggle_group(self, group: &Group) {
-        let open = !untrack(|| self.group_shown(group));
+    pub fn toggle_group(self, group: &Group, set: CardSet) {
+        let open = !untrack(|| self.group_shown(group, set));
         let name = group.name();
         browser::store(&group_key(&name), if open { "open" } else { "closed" });
         self.group_open.update(|groups| {
@@ -95,13 +112,13 @@ impl Workspace {
         });
     }
 
-    /// Selects or deselects `card`.
-    pub fn toggle_card(self, card: &Card) {
-        self.selection.update(|selection| {
+    /// Selects or deselects `card` in `set`.
+    pub fn toggle_card(self, card: &Card, set: CardSet) {
+        set.selection.update(|selection| {
             selection.toggle(card);
         });
         let key = card.key();
-        self.card_errors
+        set.errors
             .update(|errors| errors.retain(|(failed, _), _| *failed != key));
     }
 

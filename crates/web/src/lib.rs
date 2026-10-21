@@ -15,6 +15,7 @@ pub mod cards;
 pub mod commands;
 pub mod connect;
 pub mod connection;
+pub mod emoji;
 pub mod errors;
 mod files;
 pub mod format;

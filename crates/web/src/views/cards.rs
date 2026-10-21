@@ -10,7 +10,7 @@ use super::{BUTTON, ICON_BUTTON, NOTE, PRIMARY};
 use crate::{
     cards::{Card, CardState, Group},
     icons::Glyph,
-    workspace::Workspace,
+    workspace::{CardSet, Workspace},
 };
 
 const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
@@ -82,6 +82,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
             <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 <div class="mx-auto flex w-full max-w-3xl flex-col gap-3">
                     // The title bar names the view: no heading here.
+                    <super::projects::NewSessionProject workspace=workspace />
                     <p class=NOTE>
                         "Pick what the new session works with: click a card to select it, and give a coding runtime its workspace. With no coding runtime, the session has no workspace."
                     </p>
@@ -92,7 +93,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                         groups
                             .get()
                             .into_iter()
-                            .map(|group| group_view(workspace, group))
+                            .map(|group| group_view(workspace, group, workspace.new_cards()))
                             .collect_view()
                             .into_any()
                     }}
@@ -130,22 +131,18 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// A machine's cards under a header that folds them.
-fn group_view(workspace: Workspace, group: Group) -> impl IntoView {
+/// A machine's cards under a header that folds them, selected in `set`.
+pub(super) fn group_view(workspace: Workspace, group: Group, set: CardSet) -> impl IntoView {
     let name = group.name();
     let toggle_name = name.clone();
     let header = group.clone();
     let shown = {
         let group = group.clone();
-        Memo::new(move |_| workspace.group_shown(&group))
+        Memo::new(move |_| workspace.group_shown(&group, set))
     };
     let summary = {
         let group = group.clone();
-        move || {
-            workspace
-                .selection
-                .with(|selection| group.summary(selection))
-        }
+        move || set.selection.with(|selection| group.summary(selection))
     };
     let cards = group.cards.clone();
     view! {
@@ -155,7 +152,7 @@ fn group_view(workspace: Workspace, group: Group) -> impl IntoView {
                 class="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
                 aria-expanded=move || shown.get().to_string()
                 data-group-toggle=toggle_name
-                on:click=move |_| workspace.toggle_group(&header)
+                on:click=move |_| workspace.toggle_group(&header, set)
             >
                 <span
                     class="inline-flex transition-transform"
@@ -168,7 +165,7 @@ fn group_view(workspace: Workspace, group: Group) -> impl IntoView {
             </button>
             <Show when=move || shown.get()>
                 <div class="grid grid-cols-1 items-start gap-2 sm:grid-cols-2">
-                    {cards.clone().into_iter().map(|card| card_view(workspace, card)).collect_view()}
+                    {cards.clone().into_iter().map(|card| card_view(workspace, card, set)).collect_view()}
                 </div>
             </Show>
         </div>
@@ -177,15 +174,11 @@ fn group_view(workspace: Workspace, group: Group) -> impl IntoView {
 
 /// One card: a click anywhere selects it, except in its fields and
 /// buttons.
-fn card_view(workspace: Workspace, card: Card) -> impl IntoView {
+fn card_view(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
     let key = card.key();
     let selected = {
         let card = card.clone();
-        Memo::new(move |_| {
-            workspace
-                .selection
-                .with(|selection| selection.selected(&card))
-        })
+        Memo::new(move |_| set.selection.with(|selection| selection.selected(&card)))
     };
     let offline = card.state == CardState::Offline;
     let on_click = {
@@ -202,7 +195,7 @@ fn card_view(workspace: Workspace, card: Card) -> impl IntoView {
                 })
                 .is_some();
             if !inside_control {
-                workspace.toggle_card(&card);
+                workspace.toggle_card(&card, set);
             }
         }
     };
@@ -225,7 +218,7 @@ fn card_view(workspace: Workspace, card: Card) -> impl IntoView {
                     aria-label=format!("{label}: select")
                     disabled=move || offline && !selected.get()
                     data-card-toggle
-                    on:click=move |_| workspace.toggle_card(&toggle)
+                    on:click=move |_| workspace.toggle_card(&toggle, set)
                 >
                     <Glyph
                         icon=Signal::derive(move || if selected.get() { icondata::FaCircleCheckSolid } else { icondata::FaCircleRegular })
@@ -251,14 +244,14 @@ fn card_view(workspace: Workspace, card: Card) -> impl IntoView {
             })}
             {move || {
                 (selected.get() && fields.takes_workspace)
-                    .then(|| workspace_fields(workspace, fields.clone()))
+                    .then(|| workspace_fields(workspace, fields.clone(), set))
             }}
             {
                 let key = key.clone();
                 move || {
                     // A refusal of a card without a workspace field.
                     (!card.takes_workspace)
-                        .then(|| workspace.card_errors.with(|errors| errors.get(&(key.clone(), 0)).cloned()))
+                        .then(|| set.errors.with(|errors| errors.get(&(key.clone(), 0)).cloned()))
                         .flatten()
                         .map(|error| view! { <p class=super::ERROR data-card-error>{error}</p> })
                 }
@@ -269,16 +262,14 @@ fn card_view(workspace: Workspace, card: Card) -> impl IntoView {
 
 /// A selected card's workspace fields, their suggestions, and "+ another
 /// workspace".
-fn workspace_fields(workspace: Workspace, card: Card) -> impl IntoView {
+fn workspace_fields(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
     let list = format!("workspaces-{}", card.runtime_id);
     let suggestions = workspace.workspace_suggestions(&card.runtime_id);
     let rows = {
         let card = card.clone();
         let list = list.clone();
         move || {
-            let workspaces = workspace
-                .selection
-                .with(|selection| selection.workspaces(&card));
+            let workspaces = set.selection.with(|selection| selection.workspaces(&card));
             let removable = workspaces.len() > 1;
             workspaces
                 .into_iter()
@@ -286,8 +277,8 @@ fn workspace_fields(workspace: Workspace, card: Card) -> impl IntoView {
                 .map(|(index, text)| {
                     let edited = card.clone();
                     let removed = card.clone();
-                    let error = workspace
-                        .card_errors
+                    let error = set
+                        .errors
                         .with(|errors| errors.get(&(card.key(), index)).cloned());
                     view! {
                         <div class="flex flex-col gap-1">
@@ -304,7 +295,7 @@ fn workspace_fields(workspace: Workspace, card: Card) -> impl IntoView {
                                     prop:value=text
                                     on:input=move |event| {
                                         let text = event_target_value(&event);
-                                        workspace.selection.update(|selection| {
+                                        set.selection.update(|selection| {
                                             selection.set_workspace(&edited, index, text);
                                         });
                                     }
@@ -316,7 +307,7 @@ fn workspace_fields(workspace: Workspace, card: Card) -> impl IntoView {
                                         aria-label="Remove this workspace"
                                         title="Remove this workspace"
                                         data-remove-workspace=index.to_string()
-                                        on:click=move |_| workspace.selection.update(|selection| {
+                                        on:click=move |_| set.selection.update(|selection| {
                                             selection.remove_workspace(&removed, index);
                                         })
                                     >
@@ -342,7 +333,7 @@ fn workspace_fields(workspace: Workspace, card: Card) -> impl IntoView {
                 type="button"
                 class=format!("{BUTTON} self-start")
                 data-add-workspace
-                on:click=move |_| workspace.selection.update(|selection| selection.add_workspace(&added))
+                on:click=move |_| set.selection.update(|selection| selection.add_workspace(&added))
             >
                 <Glyph icon=icondata::FaPlusSolid />
                 "another workspace"

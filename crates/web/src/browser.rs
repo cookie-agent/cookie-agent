@@ -422,14 +422,19 @@ pub fn attribute_at(x: f64, y: f64, selector: &str, attribute: &str) -> Option<S
 /// Scrolls the element `selector` matches when `y` is near its top or
 /// bottom edge, so a drag reaches what is out of view.
 pub fn scroll_near_edge(selector: &str, y: f64) {
-    const EDGE: f64 = 48.0;
-    const STEP: f64 = 12.0;
-    let Some(element) = window()
+    if let Some(element) = window()
         .and_then(|window| window.document())
         .and_then(|document| document.query_selector(selector).ok().flatten())
-    else {
-        return;
-    };
+    {
+        scroll_element_near_edge(&element, y);
+    }
+}
+
+/// Scrolls `element` when `y` is near its top or bottom edge, as
+/// [`scroll_near_edge`] does.
+pub fn scroll_element_near_edge(element: &web_sys::Element, y: f64) {
+    const EDGE: f64 = 48.0;
+    const STEP: f64 = 12.0;
     let frame = element.get_bounding_client_rect();
     if y < frame.top() + EDGE {
         element.scroll_by_with_x_and_y(0.0, -STEP);

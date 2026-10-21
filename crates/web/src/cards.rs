@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 
 use cookie_agent_client_state::paths::RuntimeHomes;
 use cookie_agent_protocol::{
-    CapabilityName, MachineName, RuntimeAttachRequest, RuntimeAttachment, RuntimeId,
-    RuntimeLifetime, RuntimesListResult, SessionMeta,
+    CapabilityName, MachineName, ProjectDefaults, RuntimeAttachRequest, RuntimeAttachment,
+    RuntimeId, RuntimeLifetime, RuntimesListResult, SessionMeta,
 };
 use serde_json::{Value, json};
 
@@ -352,6 +352,64 @@ impl Selection {
             }
         }
         selection
+    }
+
+    /// The selection of a project's default attachments, their workspaces
+    /// shown under their runtime's home. A runtime named without a
+    /// capability takes its card whatever the capability turns out to be.
+    pub fn of_project(defaults: &ProjectDefaults, homes: &RuntimeHomes) -> Self {
+        let mut selection = Self {
+            global: defaults.global,
+            picks: Vec::new(),
+        };
+        for runtime in &defaults.runtimes {
+            let shown = runtime
+                .workspace
+                .as_deref()
+                .map(|workspace| homes.display(&runtime.runtime_id, workspace));
+            let key = card_key(
+                runtime.runtime_id.as_str(),
+                runtime.capability.as_ref().map(CapabilityName::as_str),
+            );
+            match selection.picks.iter_mut().find(|pick| pick.key() == key) {
+                Some(pick) => pick.workspaces.extend(shown),
+                None => selection.picks.push(Pick {
+                    runtime_id: runtime.runtime_id.to_string(),
+                    capability: runtime.capability.as_ref().map(ToString::to_string),
+                    workspaces: shown.into_iter().collect(),
+                }),
+            }
+        }
+        selection
+    }
+
+    /// What a project's defaults keep of the selection: `global`, and each
+    /// pick at each of its workspaces (as typed), in pick order. Unlike
+    /// [`Self::requests`] it needs no card, so a runtime that is not
+    /// listed now keeps its place.
+    pub fn project_requests(&self) -> (bool, Vec<RuntimeAttachRequest>) {
+        let mut requests = Vec::new();
+        for pick in &self.picks {
+            let Ok(runtime_id) = RuntimeId::new(pick.runtime_id.clone()) else {
+                continue;
+            };
+            let capability = pick
+                .capability
+                .as_ref()
+                .and_then(|name| CapabilityName::new(name.clone()).ok());
+            let request = |workspace: Option<String>| RuntimeAttachRequest {
+                runtime_id: runtime_id.clone(),
+                capability: capability.clone(),
+                workspace,
+            };
+            if pick.workspaces.is_empty() {
+                requests.push(request(None));
+            }
+            for workspace in &pick.workspaces {
+                requests.push(request(Some(workspace.trim().to_owned())));
+            }
+        }
+        (self.global, requests)
     }
 
     /// The selection the browser kept as `stored` ([`Self::to_storage`]);
@@ -977,6 +1035,51 @@ mod tests {
         );
         let without_global = Selection::of_session(&attachments[1..2], &homes());
         assert!(!without_global.global);
+    }
+
+    #[test]
+    fn a_projects_defaults_become_the_selection_and_back() {
+        use cookie_agent_protocol::ProjectRuntime;
+        let defaults = ProjectDefaults {
+            global: false,
+            runtimes: vec![
+                ProjectRuntime {
+                    runtime_id: RuntimeId::new("local").unwrap(),
+                    capability: Some(CapabilityName::coding()),
+                    workspace: Some("/home/ada/web".into()),
+                },
+                ProjectRuntime {
+                    runtime_id: RuntimeId::new("local").unwrap(),
+                    capability: Some(CapabilityName::coding()),
+                    workspace: Some("/srv/api".into()),
+                },
+                ProjectRuntime {
+                    runtime_id: RuntimeId::new("gone").unwrap(),
+                    capability: None,
+                    workspace: None,
+                },
+            ],
+            ..ProjectDefaults::default()
+        };
+        let selection = Selection::of_project(&defaults, &homes());
+        assert!(!selection.global);
+        assert_eq!(selection.picks[0].workspaces, ["~/web", "/srv/api"]);
+        assert_eq!(selection.picks[1].capability, None);
+        let (global, requests) = selection.project_requests();
+        assert!(!global);
+        let shown = requests
+            .iter()
+            .map(|request| (request.runtime_id.as_str(), request.workspace.as_deref()))
+            .collect::<Vec<_>>();
+        // A runtime no card offers keeps its place.
+        assert_eq!(
+            shown,
+            [
+                ("local", Some("~/web")),
+                ("local", Some("/srv/api")),
+                ("gone", None)
+            ]
+        );
     }
 
     #[test]

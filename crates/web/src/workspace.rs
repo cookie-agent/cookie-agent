@@ -40,13 +40,16 @@ mod history;
 mod manage;
 mod nav;
 mod permissions;
+mod projects;
 mod rename;
 mod skills;
 mod tree;
 
 pub use attachments::DownscaleOffer;
+pub use cards::CardSet;
 pub use history::UserMenu;
 pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL};
+pub use projects::{EditorFields, ProjectEditor};
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -75,6 +78,10 @@ pub enum Panel {
     Message,
     /// The session's attached runtimes.
     Runtimes,
+    /// "Move to project…" of the session in [`Workspace::moving`].
+    MoveSession,
+    /// The project editor ([`Workspace::project_editor`]).
+    Project,
 }
 
 /// The `/usage` panel's content.
@@ -209,6 +216,24 @@ pub struct Workspace {
     pub sidebar_pinned: RwSignal<bool>,
     /// The window is phone-sized.
     pub narrow: RwSignal<bool>,
+    /// Whether the daemon keeps projects (client protocol 1.8).
+    pub has_projects: RwSignal<bool>,
+    /// `projects.list`, in name order.
+    pub projects: RwSignal<Vec<cookie_agent_protocol::ProjectInfo>>,
+    /// The project sections folded or opened on this page, by section key;
+    /// the browser keeps them.
+    pub sections_open: RwSignal<HashMap<String, bool>>,
+    /// The project the new session is created in.
+    pub new_project: RwSignal<Option<cookie_agent_protocol::ProjectId>>,
+    /// The session "Move to project…" moves.
+    pub moving: RwSignal<Option<SessionId>>,
+    /// The project editor, while it is open.
+    pub project_editor: RwSignal<Option<ProjectEditor>>,
+    /// The project editor's runtime cards.
+    pub editor_selection: RwSignal<crate::cards::Selection>,
+    /// A project change the daemon refused, under its header: the
+    /// section key and the message.
+    pub project_error: RwSignal<Option<(String, String)>>,
     /// The layers the browser's history holds an entry for, innermost last.
     history: StoredValue<Vec<crate::layout::Layer>>,
     /// The page went back in the history and waits for the browser to get
@@ -305,6 +330,14 @@ impl Workspace {
                 browser::load(crate::connect::SIDEBAR_KEY).as_deref(),
             )),
             narrow: RwSignal::new(browser::matches(browser::PHONE_QUERY)),
+            has_projects: RwSignal::new(false),
+            projects: RwSignal::new(Vec::new()),
+            sections_open: RwSignal::new(HashMap::new()),
+            new_project: RwSignal::new(None),
+            moving: RwSignal::new(None),
+            project_editor: RwSignal::new(None),
+            editor_selection: RwSignal::new(crate::cards::Selection::default()),
+            project_error: RwSignal::new(None),
             history: StoredValue::new(Vec::new()),
             traversing: StoredValue::new(false),
             connection: StoredValue::new(0),
@@ -359,6 +392,10 @@ impl Workspace {
         self.lists_attachments.set(
             cookie_agent_client_state::paths::daemon_reports_runtime_homes(client.daemon_version()),
         );
+        self.has_projects
+            .set(cookie_agent_client_state::projects::daemon_has_projects(
+                client.daemon_version(),
+            ));
         self.client.set_value(Some(client));
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
@@ -396,6 +433,7 @@ impl Workspace {
             Ok(result) => self.sessions.set(result.sessions),
             Err(error) => self.status.set(crate::errors::describe(&error)),
         }
+        self.refresh_projects();
         self.poll_runtimes();
         match client.runtime_snapshot().await {
             Ok(result) => {
@@ -442,6 +480,10 @@ impl Workspace {
                 self.status.set(format!("recovery failed: {error}"));
                 return;
             }
+            ClientDelivery::ProjectsChanged(_) => {
+                self.refresh_projects();
+                return;
+            }
             ClientDelivery::PluginEvent(event) => {
                 if self.selected.get_untracked() == Some(event.session_id) {
                     self.status
@@ -449,6 +491,12 @@ impl Workspace {
                             event,
                         ));
                 }
+                return;
+            }
+            ClientDelivery::MemoryChanged(_) if self.has_projects.get_untracked() => {
+                // A project's memory count follows its memories.
+                self.refresh_projects();
+                self.refresh_open_panel(&delivery);
                 return;
             }
             ClientDelivery::McpChanged(_)
@@ -579,18 +627,29 @@ impl Workspace {
     fn apply_sessions_change(self, change: SessionsChangedNotification) {
         match change {
             SessionsChangedNotification::Upserted { session } => {
+                // A project's session count follows its sessions, which
+                // `projects.changed` does not announce.
+                let mut moved = false;
                 self.sessions.update(|sessions| {
                     if let Some(existing) = sessions
                         .iter_mut()
                         .find(|existing| existing.session_id == session.session_id)
                     {
+                        moved = existing.project != session.project;
                         *existing = *session;
                     } else if matches!(session.origin, SessionOrigin::Root) {
+                        moved = session.project.is_some();
                         sessions.push(*session);
                     }
                 });
+                if moved {
+                    self.refresh_projects();
+                }
             }
-            SessionsChangedNotification::Removed { session_id } => self.forget_removed(session_id),
+            SessionsChangedNotification::Removed { session_id } => {
+                self.forget_removed(session_id);
+                self.refresh_projects();
+            }
             SessionsChangedNotification::ApprovalsChanged {
                 root_session_id, ..
             } => {
@@ -893,6 +952,7 @@ impl Workspace {
             .filter(|_| !self.new_session.get_untracked())
             .and_then(|session_id| self.root_attachments(session_id));
         self.selection.set(self.default_selection(open.as_deref()));
+        self.new_project.set(None);
         self.card_errors.set(HashMap::new());
         self.starting.set(false);
         self.new_setup.set(true);
@@ -1307,11 +1367,18 @@ impl Workspace {
                 cwd: directory,
                 runtimes,
                 global,
+                project: self
+                    .new_project
+                    .get_untracked()
+                    .filter(|_| self.has_projects.get_untracked()),
                 ..SessionCreateParams::new(selection)
             })
             .await
             .map_err(|error| crate::errors::describe_full(&error))?;
         let session_id = created.session.session_id;
+        if created.session.project.is_some() {
+            self.refresh_projects();
+        }
         self.owned.update_value(|owned| {
             owned.insert(session_id);
         });
