@@ -6,9 +6,12 @@
 # and dark, at desktop and phone sizes. Run scripts/build-web.sh first so the
 # daemon embeds the real page.
 #
-# Usage: scripts/web-screenshots.sh [--all] <output-dir>
+# Usage: scripts/web-screenshots.sh [--all | --composer] <output-dir>
 # With --all it also photographs every panel, sheet, and menu, and the
 # connect screen, at both sizes and in both themes, under <output-dir>/all/.
+# With --composer it photographs the composer in each of its states, the
+# bottom bar in each permission mode, and the tool rows collapsed and open,
+# under <output-dir>/composer/.
 # Needs Firefox and geckodriver (on PATH, or set GECKODRIVER).
 set -euo pipefail
 
@@ -16,9 +19,12 @@ mode=""
 if [[ "${1:-}" == "--all" ]]; then
     mode="all"
     shift
+elif [[ "${1:-}" == "--composer" ]]; then
+    mode="composer"
+    shift
 fi
 if (($# != 1)); then
-    echo "usage: $0 [--all] <output-dir>" >&2
+    echo "usage: $0 [--all | --composer] <output-dir>" >&2
     exit 2
 fi
 mkdir -p "$1"

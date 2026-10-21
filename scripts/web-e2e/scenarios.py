@@ -180,6 +180,187 @@ return !!e && e.querySelector('[aria-current=true]') !== null;
 """
 
 
+def composer_height(browser):
+    return browser.script("return document.querySelector('#composer').getBoundingClientRect().height")
+
+
+def buttons(browser):
+    """The composer's buttons, by id, and whether each is enabled."""
+    return browser.script(
+        "return [...document.querySelectorAll('[data-composer-actions] button')]"
+        ".map((b) => [b.id, !b.disabled])"
+    )
+
+
+def composer(browser):
+    """The message box: one border, one line that grows to five and
+    shrinks back, and its buttons by the session's state."""
+    new_session(browser)
+    # One border: the box's. The text field and what holds the box draw none.
+    borders = browser.script(
+        "const t = getComputedStyle(document.querySelector('#composer'));"
+        "const b = getComputedStyle(document.querySelector('#composer-box'));"
+        "const outer = getComputedStyle(document.querySelector('#composer-box').parentElement.parentElement);"
+        "const shadowless = (style) => style.boxShadow.split(/,(?![^(]*\\))/)"
+        "  .every((shadow) => shadow.trim() === 'none' || shadow.includes('rgba(0, 0, 0, 0)'));"
+        "return [t.borderTopWidth, t.borderLeftWidth, t.outlineStyle, shadowless(t) ? 'none' : t.boxShadow,"
+        "        b.borderTopWidth, b.borderLeftWidth, outer.borderTopWidth]"
+    )
+    assert borders == ["0px", "0px", "none", "none", "1px", "1px", "0px"], borders
+    print("the message box has one border")
+    # One line to start; five at most, then it scrolls; back to one.
+    one = composer_height(browser)
+    assert 40 <= one <= 48, "the empty box is %s px tall" % one
+    set_text(browser, "#composer", "a\nb\nc")
+    time.sleep(0.3)
+    three = composer_height(browser)
+    assert abs(three - (one + 40)) <= 2, (one, three)
+    set_text(browser, "#composer", "\n".join("line %d" % n for n in range(1, 10)))
+    time.sleep(0.3)
+    five = composer_height(browser)
+    assert abs(five - (one + 80)) <= 2, (one, five)
+    scrolls = browser.script(
+        "const c = document.querySelector('#composer');"
+        "return [getComputedStyle(c).overflowY, c.scrollHeight > c.clientHeight]"
+    )
+    assert scrolls == ["auto", True], scrolls
+    browser.shot("composer-five-lines")
+    # Text never runs under the buttons.
+    clear = browser.script(
+        "const c = document.querySelector('#composer');"
+        "const a = document.querySelector('[data-composer-actions]').getBoundingClientRect();"
+        "return c.getBoundingClientRect().right - parseFloat(getComputedStyle(c).paddingRight) <= a.left"
+    )
+    assert clear, "the text runs under the buttons"
+    print("the box grows from one line to five, then scrolls")
+    # The state table: idle and empty, idle with text.
+    clear_composer(browser)
+    time.sleep(0.3)
+    assert buttons(browser) == [["send", False]], buttons(browser)
+    browser.type("#composer", "go slow")
+    assert buttons(browser) == [["send", True]], buttons(browser)
+    browser.click("#send")
+    browser.wait("the slow run", lambda: "word3" in browser.text("#transcript"))
+    assert abs(composer_height(browser) - one) <= 1, "the box kept its height after sending"
+    # Running and empty: Stop; with text: Queue and Steer.
+    browser.wait("stop", lambda: buttons(browser) == [["stop", True]])
+    browser.shot("composer-running-empty")
+    browser.type("#composer", "steer this way")
+    assert buttons(browser) == [["queue-send", True], ["steer", True]], buttons(browser)
+    browser.shot("composer-running-text")
+    browser.click("#steer")
+    browser.wait(
+        "the steered message",
+        lambda: "steer this way" in browser.text("#queue") or "steer this way" in browser.text("#transcript"),
+    )
+    browser.type("#composer", "queued by the button")
+    browser.click("#queue-send")
+    browser.wait("the queued message", lambda: "queued by the button" in browser.text("#queue"))
+    print("Steer and Queue send while the run goes")
+    browser.click("#stop")
+    browser.wait(
+        "the stopped run",
+        lambda: "working" not in browser.text("#status-bar")
+        and "queued by the button" in browser.script("return document.querySelector('#composer').value"),
+        timeout=40,
+    )
+    browser.wait("send again", lambda: buttons(browser) == [["send", True]])
+    clear_composer(browser)
+    print("the composer's buttons follow the run: Send, Stop, Queue and Steer")
+
+
+# How far the newest user bubble's right edge is from the right edge of the
+# transcript's content column, and how wide it is against that column.
+BUBBLE = """
+const bubbles = document.querySelectorAll('#transcript .user-message');
+if (!bubbles.length) return null;
+const bubble = bubbles[bubbles.length - 1].getBoundingClientRect();
+const column = bubbles[bubbles.length - 1].closest('.transcript-item').parentElement.getBoundingClientRect();
+return [Math.round(column.right - bubble.right), bubble.width / column.width];
+"""
+
+
+def bubble_aligned(browser):
+    """Whether the newest user bubble ends at the content column's right
+    edge, no wider than about 80 % of it."""
+    placed = browser.script(BUBBLE)
+    return placed is None or (abs(placed[0]) <= 1 and placed[1] <= 0.81)
+
+
+def expanded(browser, row):
+    return browser.script(
+        "const r = document.querySelector(arguments[0]); return r ? r.dataset.expanded : null", row
+    )
+
+
+def tool_rows(browser):
+    """Tool calls start collapsed and open on a click, kept per session; a
+    running call shows its progress collapsed; long output stops at the
+    row budget."""
+    new_session(browser)
+    send(browser, "print many lines")
+    browser.wait("the approval", lambda: count(browser, "#transcript [data-action=approvals]") == 1)
+    browser.click("#transcript [data-action=approvals]")
+    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    browser.click("#sheet [data-decision=approve_once]")
+    close_sheet(browser)
+    browser.wait("the tool's answer", lambda: "The tool ran." in browser.text("#transcript"), timeout=40)
+    assert bubble_aligned(browser), "the user's bubble is not at the right: %s" % browser.script(BUBBLE)
+    row = "#transcript [data-tool]"
+    assert expanded(browser, row) == "false", "the row starts open"
+    assert count(browser, row + " [data-tool-body]") == 0
+    browser.click(row + " [data-action=toggle-tool]")
+    browser.wait("the open row", lambda: expanded(browser, row) == "true")
+    browser.wait("the budget", lambda: "36 more lines (click to expand)" in browser.text(row))
+    assert "\n70\n" not in browser.text(row), "output past the budget shows"
+    browser.shot("tool-budget")
+    browser.click(row + " [data-more-lines]")
+    browser.wait("every line", lambda: "100" in browser.text(row) and "click to collapse" in browser.text(row))
+    print("a call starts collapsed; its output stops at the budget until clicked")
+    # Kept for this session across a switch.
+    title = browser.text("#session-title")
+    browser.click("aside nav[aria-label=Sessions] [data-session]:not([aria-current])")
+    browser.wait("another session", lambda: browser.text("#session-title") != title)
+    browser.script(
+        "[...document.querySelectorAll('aside nav[aria-label=Sessions] [data-session]')]"
+        ".find((b) => b.innerText.includes(arguments[0])).click()",
+        title,
+    )
+    browser.wait("the session again", lambda: browser.text("#session-title") == title)
+    browser.wait("the kept open row", lambda: expanded(browser, row) == "true")
+    browser.click(row + " [data-action=toggle-tool]")
+    browser.wait("the closed row", lambda: expanded(browser, row) == "false")
+    print("a row's state is kept per session and it closes again")
+    # A running call shows its progress while collapsed.
+    send(browser, "be chatty")
+    browser.wait("the approval", lambda: browser.text("#approvals-badge") != "")
+    browser.click("#approvals-badge")
+    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    browser.click("#sheet [data-decision=approve_once]")
+    close_sheet(browser)
+    browser.wait(
+        "the progress",
+        lambda: browser.script(
+            "const rows = document.querySelectorAll('#transcript [data-tool]');"
+            "const r = rows[rows.length - 1]; const p = r.querySelector('[data-progress]');"
+            "return r.dataset.expanded === 'false' && !!p && p.innerText.includes('bash')"
+        ),
+        timeout=20,
+    )
+    browser.shot("tool-progress")
+    print("a running call shows its progress collapsed:", browser.script(
+        "const p = document.querySelectorAll('#transcript [data-progress]'); return p[p.length - 1].innerText"))
+    browser.wait("the chatty run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    # A long message of several lines: its bubble still ends at the right.
+    long = "\n".join(["A long message about the greeting, " * 4] * 3)
+    set_text(browser, "#composer", long)
+    browser.type("#composer", ENTER)
+    browser.wait("the long message", lambda: "about the greeting" in browser.text("#transcript"))
+    assert bubble_aligned(browser), "a long bubble is not at the right: %s" % browser.script(BUBBLE)
+    print("user bubbles end at the content column's right edge:", browser.script(BUBBLE))
+    browser.wait("its answer", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+
+
 def session_depth(browser):
     """Subagents, history edits, goals, background calls, media, skills, and
     permission overrides."""
@@ -975,18 +1156,29 @@ for (const element of document.querySelectorAll(
   if (element.closest('.markdown') || element.offsetParent === null) continue;
   const rect = element.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) continue;
+  // A control smaller than a finger may reach further with an invisible
+  // ::before (.hit-area): measure what a finger hits.
+  let hit = rect;
+  if (element.classList.contains('hit-area')) {
+    const before = getComputedStyle(element, '::before');
+    const reach = (side) => Math.max(0, -parseFloat(before[side]) || 0);
+    hit = {
+      width: rect.width + reach('left') + reach('right'),
+      height: rect.height + reach('top') + reach('bottom'),
+    };
+  }
   // Cut off by the edge of the screen, which `overflow: hidden` hides.
   if (rect.right > innerWidth + 1 || rect.left < -1) {
     small.push('cut off: ' + element.tagName.toLowerCase() + ' "'
       + (element.innerText || element.getAttribute('aria-label') || '').slice(0, 30) + '"');
     continue;
   }
-  const tooShort = rect.height < 44;
-  const tooNarrow = element.tagName === 'BUTTON' && rect.width < 44;
+  const tooShort = hit.height < 44;
+  const tooNarrow = element.tagName === 'BUTTON' && hit.width < 44;
   if (tooShort || tooNarrow) {
     small.push(element.tagName.toLowerCase() + (element.id ? '#' + element.id : '') + ' "'
       + (element.innerText || element.value || element.getAttribute('aria-label') || '').slice(0, 30)
-      + '" ' + Math.round(rect.width) + 'x' + Math.round(rect.height));
+      + '" ' + Math.round(hit.width) + 'x' + Math.round(hit.height));
   }
 }
 return [...new Set(small)];
@@ -1065,6 +1257,8 @@ def phone_audit():
                 time.sleep(1.2)
                 overflow = phone.script(OVERFLOW)
                 small = phone.script(SMALL_TARGETS)
+                if view == "transcript" and not bubble_aligned(phone):
+                    problems.append("%s: the user's bubble is not at the right: %s" % (name, phone.script(BUBBLE)))
                 if overflow > 0:
                     problems.append("%s %s: scrolls sideways by %s px" % (name, view, overflow))
                 for target in small:
@@ -1212,6 +1406,8 @@ def main():
         browser.shot("cancelled")
         clear_composer(browser)
 
+        composer(browser)
+        tool_rows(browser)
         session_depth(browser)
         management(browser)
         suspended_tab(browser)

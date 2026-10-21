@@ -12,6 +12,9 @@ otherwise the last user text decides.
 - containing "delegate": a `delegate_subagent` call to the `helper` agent,
   whose task asks for a slow answer (below) when the text says "slowly";
 - containing "sleepy": a `bash` call that sleeps, to move to the background;
+- containing "chatty": a `bash` call that prints a line, then sleeps, so it
+  reports progress while it runs;
+- containing "many lines": a `bash` call that prints 100 lines;
 - containing "picture": a `read` call on `dot.png`, whose result is a media
   block;
 - anything else: "ok".
@@ -95,6 +98,10 @@ def reply(request):
             "delegate_subagent",
             {"description": "child task", "prompt": prompt, "agent_type": "helper"},
         )
+    if "chatty" in text:
+        return tool_reply("bash", {"command": "printf 'step one\\n'; sleep 6; printf 'done\\n'"})
+    if "many lines" in text:
+        return tool_reply("bash", {"command": "seq 1 100"})
     if "sleepy" in text:
         return tool_reply("bash", {"command": "sleep 8; printf 'woke up\\n'"})
     if "picture" in text:

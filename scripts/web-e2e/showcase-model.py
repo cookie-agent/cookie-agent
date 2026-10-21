@@ -2,7 +2,8 @@
 
 It plays one short, tidy coding exchange so the web client can be
 photographed: asked to fix `greet.py`, it edits the file, runs the check with
-`bash`, and answers in markdown. Which step it plays follows from how many
+`bash`, and answers in markdown. Asked to take its time, it streams a long
+answer slowly, so the page can be photographed while a run is going. Which step it plays follows from how many
 tool results the request carries after the last user message; a request
 without tools, the session title agent's, gets the title.
 
@@ -24,10 +25,10 @@ def chunk(delta, finish=None, usage=None):
     return "data: " + json.dumps(body) + "\n\n"
 
 
-def text(parts):
+def text(parts, pause=0.05):
     for part in parts:
         yield chunk({"content": part})
-        time.sleep(0.05)
+        time.sleep(pause)
     yield chunk({}, "stop", USAGE)
 
 
@@ -54,6 +55,9 @@ def reply(request):
         default=-1,
     )
     results = sum(1 for message in messages[last_user + 1 :] if message.get("role") == "tool")
+    asked = messages[last_user].get("content") if last_user >= 0 else ""
+    if isinstance(asked, str) and "take your time" in asked:
+        return text(["Looking at it slowly. "] * 160, pause=0.25)
     if results == 0:
         return tool(
             "The greeting is missing its comma and exclamation mark.",

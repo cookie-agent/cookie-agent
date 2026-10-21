@@ -27,6 +27,7 @@ import urllib.request
 DRIVER = "http://127.0.0.1:%s" % sys.argv[1]
 LINK, OUT = sys.argv[2:4]
 ALL = sys.argv[4:5] == ["all"]
+COMPOSER = sys.argv[4:5] == ["composer"]
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 ENTER = "\ue007"  # WebDriver key: Enter
 CHROME = 86  # what the headless window keeps above the page
@@ -123,11 +124,15 @@ class Browser:
     def count(self, selector):
         return self.script("return document.querySelectorAll(arguments[0]).length", selector)
 
-    def shot(self, name):
+    def shot(self, name, selector=None):
+        """Saves the page, or only the element `selector` matches."""
         time.sleep(0.8)
         os.makedirs(os.path.dirname(os.path.join(OUT, name)), exist_ok=True)
+        path = "/screenshot"
+        if selector:
+            path = "/element/%s/screenshot" % self.find(selector)
         with open(os.path.join(OUT, name), "wb") as file:
-            file.write(base64.b64decode(call("GET", self.path("/screenshot"))))
+            file.write(base64.b64decode(call("GET", self.path(path))))
         print("saved", name)
 
 
@@ -180,7 +185,6 @@ COMMANDS = [
 CLICKS = [
     ("commands", "button[aria-label=Commands]"),
     ("message-menu", "#transcript [data-action=user-menu]"),
-    ("send-menu", "button[aria-label='More ways to send']"),
     ("connection", "[data-rail] button[aria-haspopup=dialog]"),
     ("composer-completions", None),
     ("drawer", "main [data-sidebar-toggle]"),
@@ -200,8 +204,6 @@ def close_all():
         "const s = document.querySelector('#sheet h2 ~ button'); if (s) s.click();"
         "const c = document.querySelector('#connection-close'); if (c) c.click();"
         "const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click();"
-        "if (document.querySelector('#queue-send'))"
-        "  document.querySelector(\"button[aria-label='More ways to send']\").click();"
     )
     time.sleep(0.3)
     view("chat")
@@ -291,4 +293,100 @@ if ALL:
     browser.size(390, 844)
     time.sleep(1)
     both_themes("phone-connect")
+
+
+def set_composer(text):
+    browser.script(
+        "const c = document.querySelector('#composer'); c.value = arguments[0];"
+        "c.dispatchEvent(new Event('input')); c.blur()",
+        text,
+    )
+    time.sleep(0.4)
+
+
+def chips_line_up():
+    """The agent, model, and mode chips share their height and their top."""
+    boxes = browser.script(
+        "return ['#agent-chip', '#model-chip', '#permission-mode'].map((s) => {"
+        "  const r = document.querySelector(s).getBoundingClientRect();"
+        "  return [Math.round(r.top), Math.round(r.height)]; })"
+    )
+    assert len(set(map(tuple, boxes))) == 1, "the chips do not line up: %s" % boxes
+    return boxes[0]
+
+
+if COMPOSER:
+    MODES = ["auto-approve", "auto-approve-n", "auto-approve-y", "ask", "yolo"]
+    for size, (width, height) in (("desktop", (1280, 800)), ("phone", (390, 844))):
+        browser.size(width, height)
+        time.sleep(1)
+        # Tool rows: collapsed as they start, then open.
+        browser.script(
+            "for (const t of document.querySelectorAll('#transcript [data-action=toggle-tool][aria-expanded=true]'))"
+            " t.click()"
+        )
+        time.sleep(0.5)
+        for theme in ("light", "dark"):
+            browser.theme(theme)
+            browser.shot("composer/%s-tools-collapsed-%s.png" % (size, theme))
+        browser.script(
+            "for (const t of document.querySelectorAll('#transcript [data-action=toggle-tool]')) t.click()"
+        )
+        time.sleep(0.5)
+        for theme in ("light", "dark"):
+            browser.theme(theme)
+            browser.shot("composer/%s-tools-expanded-%s.png" % (size, theme))
+        # The box: one line and Send disabled, Send with text, five lines.
+        for name, text in (
+            ("idle-empty", ""),
+            ("idle-text", "Add a test for an empty name"),
+            ("five-lines", "\n".join("line %d of the message" % n for n in range(1, 9))),
+        ):
+            set_composer(text)
+            for theme in ("light", "dark"):
+                browser.theme(theme)
+                browser.shot("composer/%s-%s-%s.png" % (size, name, theme))
+        set_composer("")
+        # The bottom bar in each permission mode; its chips line up.
+        for mode in MODES:
+            for theme in ("light", "dark"):
+                browser.theme(theme)
+                top, height = chips_line_up()
+                browser.shot("composer/%s-bar-%s-%s.png" % (size, mode, theme), "#status-bar")
+            print("%s %s: chips at %s px, %s px tall" % (size, mode, top, height))
+            browser.script("document.querySelector('#permission-mode').click()")
+            time.sleep(2.4)
+        # A run going: Stop with an empty box, Steer and Queue with text.
+        browser.type("#composer", "Explain the change; take your time")
+        browser.type("#composer", ENTER)
+        browser.wait("the run", lambda: browser.count("#stop") == 1)
+        browser.script("document.querySelector('#composer').blur()")
+        for theme in ("light", "dark"):
+            browser.theme(theme)
+            browser.shot("composer/%s-running-empty-%s.png" % (size, theme))
+        set_composer("Also check the docstring")
+        browser.wait("steer and queue", lambda: browser.count("#steer") == 1)
+        for theme in ("light", "dark"):
+            browser.theme(theme)
+            browser.shot("composer/%s-running-text-%s.png" % (size, theme))
+        set_composer("")
+        browser.script("document.querySelector('#stop').click()")
+        browser.wait("the stopped run", lambda: browser.count("#send") == 1)
+        # A long message of several lines: its bubble ends at the right edge
+        # of the transcript's column, as the short one does.
+        set_composer(
+            "\n".join(["Please take your time and walk me through the change to greet.py."] * 3)
+        )
+        browser.script("document.querySelector('#send').click()")
+        browser.wait("the run", lambda: browser.count("#stop") == 1)
+        browser.script("document.querySelector('#stop').click()")
+        browser.wait("the stopped run", lambda: browser.count("#send") == 1)
+        browser.script(
+            "const t = document.querySelector('#transcript');"
+            "const m = [...t.querySelectorAll('.user-message')].pop();"
+            "t.scrollTop += m.getBoundingClientRect().top - t.getBoundingClientRect().top - 8"
+        )
+        for theme in ("light", "dark"):
+            browser.theme(theme)
+            browser.shot("composer/%s-long-message-%s.png" % (size, theme))
 call("DELETE", browser.path(""))
