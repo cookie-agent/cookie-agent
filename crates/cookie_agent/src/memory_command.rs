@@ -138,14 +138,10 @@ pub(crate) async fn run_memory_with<I: MemoryIo>(
     }
 }
 
-/// A daemon refusal as its message and hint, the way a user reads it.
+/// A daemon refusal the way a user reads it. A [`ClientError`] already
+/// reads as its message followed by its hint, so nothing is added to it.
 fn daemon_error(error: ClientError) -> anyhow::Error {
-    let hint = error.error_data().and_then(|data| data.hint);
-    let error = anyhow::Error::new(error);
-    match hint {
-        Some(hint) => error.context(hint),
-        None => error,
-    }
+    anyhow::Error::new(error)
 }
 
 /// The message of a daemon error, without its code.

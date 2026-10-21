@@ -2175,6 +2175,13 @@ async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
             .any(|error| error.is(&cookie_agent_protocol::errors::MEMORY_NOT_FOUND)),
         "{refused:#}"
     );
+    // It reads as the message and its hint, the hint once.
+    let shown = format!("{refused:#}");
+    let hint = cookie_agent_protocol::errors::MEMORY_NOT_FOUND
+        .hint
+        .expect("memory_not_found has a hint");
+    assert_eq!(shown.matches(hint).count(), 1, "{shown}");
+    assert!(shown.starts_with("There is no memory at "), "{shown}");
 
     drop(client);
     server_task.await.unwrap().unwrap();
