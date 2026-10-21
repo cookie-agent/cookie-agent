@@ -234,6 +234,41 @@ only where `global` is attached, and only when the run's agent may use it.
   directory, `/runtime` edits a draft's attachments, and project defaults
   apply as in the projects spec.
 
+### 5.3 Where a session works: badges from its subagents
+
+Added 2026-10-21. A root with only `global` shows no badges, yet its
+subagents work on `labpc` and in `~/api`. The session's badges should say
+so.
+
+- **The union.** A root session's badges are built from its own
+  attachments together with every direct child's attachments, with
+  duplicates (same runtime, capability, and workspace) removed and
+  `global` ignored as before. The usual badge rules then apply (projects
+  spec section 9): one machine shows `[machine]` and its workspaces, and
+  several machines show their machine badges.
+- **Depth 1 is enough.** Only depth-1 children can be given capabilities
+  (section 2), and deeper children inherit from their parent
+  (section 2.3). So the direct children's attachments already cover the
+  whole tree, and nothing deeper is read.
+- **Kept with the root, not computed per listing.** `session.list` stays
+  metadata-only (tree-local sessions spec), so the union cannot be built
+  by reading the children at listing time. When a child is created, the
+  daemon adds any of its attachments the root does not yet record to a new
+  `SessionMeta.delegated_attachments`, which is folded from a durable
+  event on the root's log. A cache rebuild keeps it, and the change is
+  announced with `sessions.changed` `upserted`. The cost is one small
+  event per child that brings new attachments, and none when a child only
+  inherits.
+- **Order.** The root's own attachments come first, then delegated ones
+  in the order children brought them. Machine badges follow that order.
+- **It only grows.** A child that finishes or is evicted leaves its
+  attachments in the union: the badges say where the session has worked.
+  A detach on the root removes only the root's own attachment.
+- **A child's own row** in the subagent tree shows badges from its own
+  attachments only.
+- **The TUI** uses the same union for the project and workspace label in
+  its session picker rows.
+
 ## 6. Prompt
 
 - **A root with only `global`.** Its system prompt has no working
@@ -269,9 +304,14 @@ docs show.
 
 ## 8. Protocol and compatibility
 
-- **No client, runtime, or plugin protocol change.** The tool schemas are
-  model-facing. Children record their attachments with the existing
-  `runtime_attached` events.
+- **Tools.** The tool schemas are model-facing, so the delegation changes
+  need no protocol version. Children record their attachments with the
+  existing `runtime_attached` events.
+- **Client protocol minor** (additive), for section 5.3:
+  `SessionMeta.delegated_attachments` and the root event it is folded
+  from. The event is also a plugin protocol minor, since plugins see
+  events. Older daemons send nothing, so clients show the root's own
+  attachments, as today.
 - **Old logs.** Children that inherited the root's attachments keep them.
   Replay reads attachments from each child's own events.
 - `docs/site/reference/tools.md` is regenerated for `list_runtimes` and
@@ -289,7 +329,9 @@ docs show.
    - tests;
    - the tools reference.
 2. **Web:** a global-only New session, the "Runtimes…" chip and sheet,
-   and project prefill through the chip.
+   project prefill through the chip, and badges from the union of the
+   root's and its subagents' attachments (section 5.3). The daemon's
+   `delegated_attachments` belongs to phase 1.
 3. **Docs:**
    - the runtimes concept page and delegation guide;
    - the pattern in section 7, with its security note;
