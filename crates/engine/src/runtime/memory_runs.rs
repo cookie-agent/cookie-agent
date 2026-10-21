@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentSnapshot, AttachmentName, EventPayload as Event, MachineName,
-    MemorySnapshot, PermissionAction, PermissionEffect, RunId, SessionId, SessionOrigin,
-    SessionPermissionOverlay, StoredEvent,
+    MemorySnapshot, PermissionAction, PermissionEffect, ProjectName, RunId, SessionId,
+    SessionOrigin, SessionPermissionOverlay, StoredEvent,
 };
 use cookie_agent_runtime_api::GLOBAL_RUNTIME_ID;
 
@@ -62,6 +62,9 @@ pub(crate) struct SnapshotFacts {
     /// The session's machines; compared only for root runs, whose snapshot
     /// lists them.
     pub(crate) machines: BTreeSet<MachineName>,
+    /// The name of the session's project; compared only for root runs,
+    /// whose snapshot shows it (`docs/site/specs/projects.md` section 7).
+    pub(crate) project: Option<ProjectName>,
 }
 
 /// What a run admission appends (section 7.2).
@@ -99,11 +102,13 @@ pub(crate) fn snapshot_change(
                 .iter()
                 .map(|machine| machine.machine.clone())
                 .collect::<BTreeSet<_>>();
+            let project = latest.project.as_ref().map(|project| &project.project);
             let changed = compacted
                 || agent.agent != facts.agent
                 || latest.writable != facts.access.writable
                 || latest.delegated != facts.delegated
-                || (!facts.delegated && machines != facts.machines);
+                || (!facts.delegated && machines != facts.machines)
+                || (!facts.delegated && project != facts.project.as_ref());
             if changed {
                 SnapshotChange::Take
             } else {
@@ -224,6 +229,16 @@ impl Engine {
         } else {
             Vec::new()
         };
+        let project = if access.available && !delegated {
+            let engine = self.clone();
+            tokio::task::spawn_blocking(move || engine.session_project(session))
+                .await
+                .ok()
+                .flatten()
+                .map(|project| project.name)
+        } else {
+            None
+        };
         let facts = SnapshotFacts {
             access,
             agent: policy.agent.agent.clone(),
@@ -232,6 +247,7 @@ impl Engine {
                 .iter()
                 .map(|(machine, _)| machine.clone())
                 .collect(),
+            project,
         };
         let events = projection.log.event_snapshot();
         let snapshot = match snapshot_change(latest_snapshot(&events), &facts) {
@@ -243,6 +259,7 @@ impl Engine {
                     delegated,
                     writable: access.writable,
                     machines,
+                    project: facts.project,
                     limits: self.memory_limits(),
                 };
                 let root = self.memory_root().clone();

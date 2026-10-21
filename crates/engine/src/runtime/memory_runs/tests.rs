@@ -99,6 +99,7 @@ fn memory_needs_global_a_memory_rule_and_a_non_internal_agent() {
 
 fn facts(access: MemoryAccess, agent: &str, delegated: bool, machines: &[&str]) -> SnapshotFacts {
     SnapshotFacts {
+        project: None,
         access,
         agent: AgentId::new(agent).unwrap(),
         delegated,
@@ -285,4 +286,49 @@ fn search_results_follow_the_memory_rule_for_their_url() {
     assert_eq!(visibility("agent://default"), Visibility::Hidden);
     assert_eq!(visibility("machine://labpc/x"), Visibility::Hidden);
     assert_eq!(visibility("machine://labpc/ok"), Visibility::Full);
+}
+
+#[test]
+fn a_root_runs_project_or_its_name_changing_takes_a_new_snapshot() {
+    let project = |name: &str| cookie_agent_protocol::MemorySnapshotProject {
+        project: cookie_agent_protocol::ProjectName::new(name).unwrap(),
+        overview: None,
+        memories: Vec::new(),
+        omitted: 0,
+    };
+    let in_project = |name: Option<&str>| SnapshotFacts {
+        project: name.map(|name| cookie_agent_protocol::ProjectName::new(name).unwrap()),
+        ..facts(BOTH, "default", false, &["laptop"])
+    };
+    let mut latest = taken("default", true, false, &["laptop"]);
+    latest.project = Some(project("web"));
+    assert_eq!(
+        snapshot_change(Some((&latest, false)), &in_project(Some("web"))),
+        SnapshotChange::Keep
+    );
+    // Renamed, moved elsewhere, or moved out.
+    for moved in [Some("shop"), None] {
+        assert_eq!(
+            snapshot_change(Some((&latest, false)), &in_project(moved)),
+            SnapshotChange::Take
+        );
+    }
+    // Moved in.
+    let outside = taken("default", true, false, &["laptop"]);
+    assert_eq!(
+        snapshot_change(Some((&outside, false)), &in_project(Some("web"))),
+        SnapshotChange::Take
+    );
+    // A delegated run never shows the project.
+    let delegated = taken("default", true, true, &[]);
+    assert_eq!(
+        snapshot_change(
+            Some((&delegated, false)),
+            &SnapshotFacts {
+                project: Some(cookie_agent_protocol::ProjectName::new("web").unwrap()),
+                ..facts(BOTH, "default", true, &[])
+            }
+        ),
+        SnapshotChange::Keep
+    );
 }

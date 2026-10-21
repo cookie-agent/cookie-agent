@@ -864,7 +864,8 @@ fn assemble_history_with_replay(
                 EventPayload::AgentMdLoaded {
                     entries,
                     attachment,
-                } => Some((attachment.as_str(), entries.as_slice())),
+                    project,
+                } => Some((attachment.as_str(), project.is_some(), entries.as_slice())),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1265,7 +1266,7 @@ fn assemble_history_with_replay(
 }
 
 /// The current `AGENTS.md` context: the latest run's `agent_md_loaded`
-/// events, the latest one per attachment, in log order.
+/// events, the latest one per attachment and the project's, in log order.
 fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent> {
     let latest_run = events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
@@ -1277,7 +1278,11 @@ fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent
         .copied()
         .filter(|event| latest_run.is_none_or(|run| event.run_id == run))
         .filter(|event| match &event.payload {
-            EventPayload::AgentMdLoaded { attachment, .. } => seen.insert(attachment.as_str()),
+            EventPayload::AgentMdLoaded {
+                attachment,
+                project,
+                ..
+            } => seen.insert((project.is_some(), attachment.as_str())),
             _ => false,
         })
         .collect::<Vec<_>>();
@@ -1310,14 +1315,20 @@ const AGENT_MD_FOOTNOTE: &str = "IMPORTANT: this context may or may not be relev
 
 /// One user turn holding every loaded file. With several attachments each
 /// file names the attachment it came from.
-fn agent_md_turn(loaded: &[(&str, &[cookie_agent_protocol::AgentMdEntry])]) -> String {
-    let several = loaded.len() > 1;
+/// The `AGENTS.md` turn: the project's file first, then each workspace's
+/// (`docs/site/specs/projects.md` section 6). A workspace's file names its
+/// attachment when several attachments gave files; a project's file says
+/// where it is from in its source, `project:<name>/AGENTS.md`.
+fn agent_md_turn(loaded: &[(&str, bool, &[cookie_agent_protocol::AgentMdEntry])]) -> String {
+    let several = loaded.iter().filter(|(_, project, _)| !project).count() > 1;
     let files = loaded
         .iter()
-        .flat_map(|(attachment, entries)| {
+        .filter(|(_, project, _)| *project)
+        .chain(loaded.iter().filter(|(_, project, _)| !project))
+        .flat_map(|(attachment, project, entries)| {
             entries.iter().map(move |entry| {
                 let source = escape_xml_attribute(entry.source.as_str());
-                let runtime = if several {
+                let runtime = if several && !project {
                     format!(" runtime=\"{}\"", escape_xml_attribute(attachment))
                 } else {
                     String::new()
@@ -1338,7 +1349,7 @@ fn agent_md_turn(loaded: &[(&str, &[cookie_agent_protocol::AgentMdEntry])]) -> S
 
 #[cfg(test)]
 pub(crate) fn agent_md_turn_for_test(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
-    agent_md_turn(&[("local", entries)])
+    agent_md_turn(&[("local", false, entries)])
 }
 
 fn escape_xml_attribute(value: &str) -> String {

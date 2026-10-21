@@ -74,6 +74,8 @@ mod model_loop;
 mod output_capture;
 pub(crate) mod plugin_diagnostics;
 mod producer_claims;
+mod project_api;
+pub(crate) use project_api::EngineMemoryOwners;
 pub(crate) mod producers;
 mod prompt_blocks;
 mod recovery;
@@ -301,6 +303,9 @@ pub enum EngineError {
     /// A `memory.*` request was refused or failed.
     #[error(transparent)]
     MemoryRequest(#[from] memory_api::MemoryRequestError),
+    /// A project request was refused or failed.
+    #[error(transparent)]
+    Project(#[from] crate::projects::ProjectError),
     #[error("plugin request rejected: {0}")]
     Plugin(String),
     #[error(transparent)]
@@ -855,6 +860,8 @@ pub(crate) struct Inner {
     pub(crate) runtimes: Arc<crate::runtimes::RuntimeRegistry>,
     /// The machines runtimes run on.
     pub(crate) machines: Arc<crate::machines::MachineRegistry>,
+    /// The projects sessions belong to.
+    pub(crate) projects: Arc<crate::projects::ProjectStore>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     /// MCP changes and failures of every runtime.
@@ -990,6 +997,17 @@ impl Engine {
             .create_defaults_if_absent()
             .map_err(|error| EngineError::Memory(error.to_string()))?;
         let machines = Arc::new(crate::machines::MachineRegistry::open(&options.data_dir)?);
+        let projects = Arc::new(crate::projects::ProjectStore::new(
+            &options.data_dir,
+            machines.memory().clone(),
+        ));
+        // Every memory folder of a project becomes a project before any
+        // memory write can be refused for naming none.
+        if let Err(error) =
+            projects.adopt_memory_folders(options.config.runtime.memory.max_file_bytes)
+        {
+            eprintln!("cookie-agent: projects: {error}");
+        }
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
         let placement = Arc::clone(&store);
@@ -1075,6 +1093,7 @@ impl Engine {
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 runtimes,
                 machines,
+                projects,
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 mcp_hub,

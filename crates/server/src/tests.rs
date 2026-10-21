@@ -1737,8 +1737,28 @@ async fn memory_is_listed_read_written_and_deleted_through_rpc() {
         "{listed}"
     );
 
-    // Creating a project memory, then reading it back whole.
+    // A project memory needs its project, which only a client creates.
     let text = "---\ndescription: Build conventions\nkeywords: [cargo]\n---\nRun the gates.\n";
+    let (unknown, _) = request(
+        &mut client,
+        30,
+        "memory.write",
+        json!({ "url": "project://web/build", "text": text }),
+    )
+    .await;
+    assert_eq!(code(&unknown), "memory_refused", "{unknown}");
+    assert!(!memory.join("projects/web").exists());
+    let (project, early) =
+        request(&mut client, 31, "project.create", json!({ "name": "web" })).await;
+    assert_eq!(project["result"]["project"]["name"], "web", "{project}");
+    if !early
+        .iter()
+        .any(|notification| notification["method"] == "projects.changed")
+    {
+        notification_where(&mut client, "projects.changed", |_| true).await;
+    }
+
+    // Creating a project memory, then reading it back whole.
     let (written, early) = request(
         &mut client,
         3,
@@ -1863,7 +1883,10 @@ async fn memory_is_listed_read_written_and_deleted_through_rpc() {
     assert!(gpu["invalid"].is_string(), "{machine}");
     assert!(gpu.get("description").is_none());
     let (project, _) = request(&mut client, 14, "memory.list", json!({ "project": "web" })).await;
-    assert_eq!(urls(&project), ["project://web/build"]);
+    assert_eq!(
+        urls(&project),
+        ["project://web/build", "project://web/overview"]
+    );
     assert_eq!(project["result"]["memories"][0]["group"], "web");
     assert_eq!(project["result"]["memories"][0]["size"], text.len());
     assert_eq!(
@@ -2035,6 +2058,236 @@ async fn a_deleted_session_is_removed_for_every_connection() {
     );
     let (listed, _) = request(&mut viewer, 4, "session.list", json!({})).await;
     assert_eq!(listed["result"]["sessions"], json!([]), "{listed}");
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn projects_are_created_changed_and_deleted_and_sessions_move_through_rpc() {
+    let mut catalog = (*openai_catalog()).clone();
+    Arc::make_mut(&mut catalog.providers)
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let harness = harness_with_catalog(Arc::new(catalog), |_| {});
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let mut viewer = connect(Arc::clone(&harness.server)).await;
+    let code = |reply: &Value| {
+        reply["error"]["data"]["code"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    };
+    let (connected, _) = request(
+        &mut client,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"projects-rpc-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+
+    // Create: an emoji that is not one emoji, and unknown members, are
+    // refused.
+    let (bad_emoji, _) = request(
+        &mut client,
+        3,
+        "project.create",
+        json!({ "name": "web", "emoji": "ok" }),
+    )
+    .await;
+    assert_eq!(code(&bad_emoji), "project_invalid", "{bad_emoji}");
+    assert_eq!(bad_emoji["error"]["data"]["field"], "emoji");
+    let (unknown, _) = request(
+        &mut client,
+        4,
+        "project.create",
+        json!({ "name": "web", "color": "teal" }),
+    )
+    .await;
+    assert_eq!(code(&unknown), "unknown_field", "{unknown}");
+    let (created, early) = request(
+        &mut client,
+        5,
+        "project.create",
+        json!({ "name": "web", "emoji": "🍪", "defaults": { "runtimes": [] , "global": true } }),
+    )
+    .await;
+    let project = created["result"]["project"].clone();
+    assert_eq!(project["name"], "web", "{created}");
+    assert_eq!(project["emoji"], "🍪");
+    assert_eq!(project["memories"], 1, "the overview");
+    assert_eq!(project["sessions"], 0);
+    assert_eq!(project["has_agents_md"], false);
+    let id = project["id"].clone();
+    if !early
+        .iter()
+        .any(|frame| frame["method"] == "projects.changed")
+    {
+        notification_where(&mut client, "projects.changed", |_| true).await;
+    }
+    notification_where(&mut viewer, "projects.changed", |_| true).await;
+    let (taken, _) = request(&mut client, 6, "project.create", json!({ "name": "web" })).await;
+    assert_eq!(code(&taken), "project_name_taken", "{taken}");
+
+    // A session created in the project, and one outside.
+    let selection = json!({
+        "agent": "default",
+        "model": { "model": "openai/gpt-5-mini", "variant": null }
+    });
+    let (missing, _) = request(
+        &mut client,
+        7,
+        "session.create",
+        json!({ "selection": selection.clone(), "project": "0000-none", "runtimes": [] }),
+    )
+    .await;
+    assert_eq!(code(&missing), "project_not_found", "{missing}");
+    let (inside, _) = request(
+        &mut client,
+        8,
+        "session.create",
+        json!({ "selection": selection.clone(), "project": id, "runtimes": [], "global": false }),
+    )
+    .await;
+    assert_eq!(inside["result"]["session"]["project"], id, "{inside}");
+    let inside_id = inside["result"]["session"]["session_id"].clone();
+    let (outside, _) = request(
+        &mut client,
+        9,
+        "session.create",
+        json!({ "selection": selection, "runtimes": [], "global": false }),
+    )
+    .await;
+    let outside_id = outside["result"]["session"]["session_id"].clone();
+    assert!(outside["result"]["session"].get("project").is_none());
+    let listed = |reply: &Value| {
+        reply["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| session["session_id"].clone())
+            .collect::<Vec<_>>()
+    };
+    let (in_web, _) = request(&mut client, 10, "session.list", json!({ "project": id })).await;
+    assert_eq!(
+        listed(&in_web),
+        std::slice::from_ref(&inside_id),
+        "{in_web}"
+    );
+    let (in_none, _) = request(
+        &mut client,
+        11,
+        "session.list",
+        json!({ "project": "none" }),
+    )
+    .await;
+    assert_eq!(
+        listed(&in_none),
+        std::slice::from_ref(&outside_id),
+        "{in_none}"
+    );
+
+    // Moving announces the session; a delegated session cannot move, and
+    // an unknown project is refused.
+    let (moved, early) = request(
+        &mut client,
+        12,
+        "session.project.set",
+        json!({ "session_id": outside_id, "project": id }),
+    )
+    .await;
+    assert_eq!(moved["result"]["session"]["project"], id, "{moved}");
+    let upserted = |change: &Value| {
+        change["change"] == "upserted" && change["session"]["session_id"] == outside_id
+    };
+    if !early
+        .iter()
+        .any(|frame| frame["method"] == "sessions.changed" && upserted(&frame["params"]))
+    {
+        notification_where(&mut client, "sessions.changed", upserted).await;
+    }
+    let (nowhere, _) = request(
+        &mut client,
+        13,
+        "session.project.set",
+        json!({ "session_id": outside_id, "project": "0000-none" }),
+    )
+    .await;
+    assert_eq!(code(&nowhere), "project_not_found", "{nowhere}");
+    let (no_member, _) = request(
+        &mut client,
+        14,
+        "session.project.set",
+        json!({ "session_id": outside_id }),
+    )
+    .await;
+    assert_eq!(no_member["error"]["code"], -32602, "{no_member}");
+
+    // Get, then update at the revision read; a stale revision is refused.
+    let (got, _) = request(&mut client, 15, "project.get", json!({ "project": id })).await;
+    assert_eq!(got["result"]["project"]["sessions"], 2, "{got}");
+    assert!(got["result"].get("agents_md").is_none());
+    let revision = got["result"]["project"]["revision"].clone();
+    let (updated, _) = request(
+        &mut client,
+        16,
+        "project.update",
+        json!({ "project": id, "revision": revision, "name": "shop", "emoji": null, "agents_md": "Use tabs.\n" }),
+    )
+    .await;
+    let renamed = updated["result"]["project"].clone();
+    assert_eq!(renamed["name"], "shop", "{updated}");
+    assert!(renamed.get("emoji").is_none());
+    assert_eq!(renamed["has_agents_md"], true);
+    let (stale, _) = request(
+        &mut client,
+        17,
+        "project.update",
+        json!({ "project": id, "revision": revision, "emoji": "🚀" }),
+    )
+    .await;
+    assert_eq!(code(&stale), "project_changed", "{stale}");
+    assert_eq!(stale["error"]["data"]["revision"], renamed["revision"]);
+    let (got, _) = request(&mut client, 18, "project.get", json!({ "project": id })).await;
+    assert_eq!(got["result"]["agents_md"]["text"], "Use tabs.\n", "{got}");
+    assert_eq!(
+        got["result"]["agents_md"]["revision"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    let (all, _) = request(&mut client, 19, "projects.list", json!({})).await;
+    assert_eq!(all["result"]["projects"][0]["name"], "shop", "{all}");
+
+    // Delete takes the sessions with it.
+    let (deleted, _) = request(
+        &mut client,
+        20,
+        "project.delete",
+        json!({ "project": id, "revision": renamed["revision"] }),
+    )
+    .await;
+    assert_eq!(
+        deleted["result"],
+        json!({ "deleted_sessions": 2, "deleted_memories": 1 }),
+        "{deleted}"
+    );
+    let (left, _) = request(&mut client, 21, "session.list", json!({})).await;
+    assert_eq!(listed(&left), Vec::<Value>::new(), "{left}");
+    let (gone, _) = request(&mut client, 22, "project.get", json!({ "project": id })).await;
+    assert_eq!(code(&gone), "project_not_found", "{gone}");
     harness.server.shutdown();
     harness.engine.shutdown().await;
 }

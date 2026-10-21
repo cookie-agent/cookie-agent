@@ -39,6 +39,7 @@ fn request(
     limits: SnapshotLimits,
 ) -> SnapshotRequest {
     SnapshotRequest {
+        project: None,
         agent: AgentId::new("reviewer").unwrap(),
         delegated,
         writable: true,
@@ -270,4 +271,118 @@ fn an_agent_file_whose_escaped_text_exceeds_the_file_limit_is_omitted() {
         .agent
         .unwrap();
     assert!(omitted.memory.is_none() && omitted.omitted);
+}
+
+fn in_project(project: &str, limits: SnapshotLimits) -> SnapshotRequest {
+    SnapshotRequest {
+        project: Some(cookie_agent_protocol::ProjectName::new(project).unwrap()),
+        ..request(false, &[("laptop", &[])], limits)
+    }
+}
+
+#[test]
+fn a_project_snapshot_holds_the_overview_whole_and_an_index_of_the_rest() {
+    let (data, memory) = root();
+    put(
+        data.path(),
+        "projects/web/overview.md",
+        &file("Overview of web", "A web shop.\n"),
+        50,
+    );
+    put(data.path(), "projects/web/old.md", &file("Old", ""), 40);
+    put(data.path(), "projects/web/new.md", &file("New", ""), 10);
+    put(data.path(), "projects/web/broken.md", "no frontmatter", 0);
+    put(data.path(), "projects/api/other.md", &file("Other", ""), 0);
+    let snapshot = memory
+        .snapshot(&in_project("web", limits(12_288, 4096)))
+        .unwrap();
+    let project = snapshot.project.unwrap();
+    assert_eq!(project.project.as_str(), "web");
+    let overview = project.overview.unwrap();
+    assert_eq!(
+        (overview.description.as_str(), overview.body.as_str()),
+        ("Overview of web", "A web shop.\n")
+    );
+    // Newest first; the overview and invalid files are not listed.
+    assert_eq!(
+        project
+            .memories
+            .iter()
+            .map(|memory| memory.url.as_str())
+            .collect::<Vec<_>>(),
+        ["project://web/new", "project://web/old"]
+    );
+    assert_eq!(project.omitted, 0);
+
+    // An empty overview is absent.
+    put(
+        data.path(),
+        "projects/web/overview.md",
+        &file("Overview of web", "  \n"),
+        50,
+    );
+    let snapshot = memory
+        .snapshot(&in_project("web", limits(12_288, 4096)))
+        .unwrap();
+    assert_eq!(snapshot.project.unwrap().overview, None);
+    // A delegated run has no project.
+    let delegated = SnapshotRequest {
+        delegated: true,
+        ..in_project("web", limits(12_288, 4096))
+    };
+    assert_eq!(memory.snapshot(&delegated).unwrap().project, None);
+}
+
+#[test]
+fn the_overview_shares_the_user_limit_and_the_index_the_machines_limit() {
+    let (data, memory) = root();
+    put(
+        data.path(),
+        "user/feedback.md",
+        &file("Feedback", "- a\n"),
+        0,
+    );
+    put(
+        data.path(),
+        "projects/web/overview.md",
+        &file("Overview of web", "A web shop.\n"),
+        0,
+    );
+    put(data.path(), "projects/web/a.md", &file("A", ""), 20);
+    put(data.path(), "projects/web/b.md", &file("B", ""), 10);
+    put(data.path(), "machines/laptop/m.md", &file("M", ""), 0);
+    let full = memory
+        .snapshot(&in_project("web", limits(12_288, 4096)))
+        .unwrap();
+    let project = full.project.clone().unwrap();
+    let overview_bytes =
+        render::project_overview(&project.project, project.overview.as_ref().unwrap()).len();
+    let user_bytes = render::user_section(&full.user, &[]).len();
+
+    // The overview comes first: with room for it but not for the feedback
+    // category as well, the category is named, not shown.
+    let snapshot = memory
+        .snapshot(&in_project(
+            "web",
+            limits(overview_bytes + user_bytes - 1, 4096),
+        ))
+        .unwrap();
+    assert!(snapshot.project.as_ref().unwrap().overview.is_some());
+    assert_eq!(snapshot.user_omitted, ["feedback"]);
+    // An overview too long for the user limit is listed instead.
+    let snapshot = memory
+        .snapshot(&in_project("web", limits(overview_bytes - 1, 4096)))
+        .unwrap();
+    let project = snapshot.project.unwrap();
+    assert_eq!(project.overview, None);
+    assert_eq!(project.memories[0].url, "project://web/overview");
+
+    // The project's index comes before the machines'.
+    let index_bytes = render::project_index(full.project.as_ref().unwrap()).len();
+    let snapshot = memory
+        .snapshot(&in_project("web", limits(12_288, index_bytes)))
+        .unwrap();
+    assert_eq!(snapshot.project.unwrap().memories.len(), 2);
+    assert!(snapshot.machines[0].memories.is_empty());
+    assert_eq!(snapshot.machines[0].omitted, 1);
 }

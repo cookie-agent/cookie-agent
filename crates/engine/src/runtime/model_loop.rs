@@ -614,6 +614,7 @@ impl Engine {
                         Event::AgentMdLoaded {
                             entries: loaded.entries,
                             attachment: loaded.attachment.clone(),
+                            project: loaded.project.clone(),
                         },
                     )
                     .await

@@ -113,6 +113,22 @@ fn memory_tool_names(request: &str) -> Vec<String> {
         .collect()
 }
 
+/// Creates the project `name`, as a client would.
+pub(super) async fn create_project(
+    fixture: &Fixture,
+    name: &str,
+) -> cookie_agent_protocol::ProjectInfo {
+    fixture
+        .engine
+        .create_project(cookie_agent_protocol::ProjectCreateParams {
+            name: cookie_agent_protocol::ProjectName::new(name).unwrap(),
+            emoji: None,
+            defaults: None,
+        })
+        .await
+        .unwrap()
+}
+
 fn url(value: &str) -> MemoryUrl {
     MemoryUrl::parse(value).unwrap()
 }
@@ -131,7 +147,7 @@ fn user_write(fixture: &Fixture, target: &str, description: &str, body: &str) {
             .render(),
         current.as_ref(),
         Origin::User,
-        |_| crate::memory::agents::AgentMemory::Registered,
+        |_: &cookie_agent_protocol::AgentId| crate::memory::agents::AgentMemory::Registered,
         LIMIT,
     )
     .map(|written| written.revision)
@@ -473,6 +489,7 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
     let (endpoint, responses, captured) = scripted_channel_server(10).await;
     let (fixture, selection) =
         custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+    create_project(&fixture, "web").await;
     let created = revision_of("Build conventions", &["cargo"], "- run cargo test\n");
     let edited = revision_of("Build conventions", &["cargo"], "- run cargo nextest\n");
     let calls = [
@@ -653,7 +670,7 @@ async fn deleting_user_and_agent_memories_clears_their_bodies() {
                 &text,
                 current.as_ref(),
                 Origin::User,
-                |_| crate::memory::agents::AgentMemory::Registered,
+                |_: &cookie_agent_protocol::AgentId| crate::memory::agents::AgentMemory::Registered,
                 LIMIT,
             )
             .map(|written| written.revision)

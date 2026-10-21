@@ -71,6 +71,15 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
     std::fs::write(memory.join("user/notes.txt"), "stray").unwrap();
     let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
+    // A project memory needs its project.
+    client
+        .create_project(cookie_agent_protocol::ProjectCreateParams {
+            name: cookie_agent_protocol::ProjectName::new("web").expect("project name"),
+            emoji: None,
+            defaults: None,
+        })
+        .await
+        .expect("project.create");
     let mut app = App::new(client).await.expect("app");
     let mut deliveries = app.take_deliveries();
 

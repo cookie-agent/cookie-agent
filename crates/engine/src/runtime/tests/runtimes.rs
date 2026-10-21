@@ -878,6 +878,7 @@ async fn each_coding_attachment_loads_its_own_agent_md() {
             EventPayload::AgentMdLoaded {
                 entries,
                 attachment,
+                ..
             } => Some((attachment.to_string(), entries[0].content.clone())),
             _ => None,
         })

@@ -30,6 +30,7 @@ mod plugins;
 mod producers;
 mod producers_discard;
 mod producers_plugin;
+mod projects;
 mod prompts;
 mod providers;
 mod recovery;

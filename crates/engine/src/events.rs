@@ -3121,6 +3121,12 @@ fn validate_record_incremental(
                 return corrupt(path, "runtime attachment events must be runless");
             }
         }
+        // A session moves between projects outside its runs.
+        EventPayload::SessionProjectSet { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "SessionProjectSet must be runless");
+            }
+        }
         EventPayload::GoalActivated { .. }
         | EventPayload::GoalChecklistRevised { .. }
         | EventPayload::GoalLifecycleChanged { .. }

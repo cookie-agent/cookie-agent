@@ -23,6 +23,41 @@ use super::{
     url::{MemoryLayer, MemoryName, MemoryUrl},
 };
 
+/// What the store is told about the owners of a URL: the agent of an
+/// `agent://` URL and whether the project of a `project://` URL exists.
+/// Asked while the memory lock is held.
+pub(crate) trait MemoryOwners {
+    /// What the store knows about `agent`.
+    fn agent(&self, agent: &AgentId) -> AgentMemory;
+
+    /// `None` when `project` is a project; otherwise the names of the
+    /// projects there are, in name order.
+    fn unknown_project(&self, project: &MemoryName) -> Option<Vec<String>> {
+        let _ = project;
+        None
+    }
+}
+
+/// A function of the agent alone knows every project.
+impl<F: Fn(&AgentId) -> AgentMemory> MemoryOwners for F {
+    fn agent(&self, agent: &AgentId) -> AgentMemory {
+        self(agent)
+    }
+}
+
+/// Why a write to a project that does not exist is refused
+/// (`docs/site/specs/projects.md` section 3).
+fn unknown_project(url: &MemoryUrl, project: &MemoryName, projects: &[String]) -> StoreError {
+    let existing = if projects.is_empty() {
+        "There are no projects yet".to_owned()
+    } else {
+        format!("The projects are {}", projects.join(", "))
+    };
+    StoreError::Refused(format!(
+        "{url} names `{project}`, which is no project. {existing}; projects are created from a client, not by writing memory"
+    ))
+}
+
 /// Who asks for a change. Model tools may not delete `user://` or
 /// `agent://` files, whose bodies they clear instead
 /// ([`MemoryRoot::clear_body`]), nor create `user://` files; the user,
@@ -493,14 +528,16 @@ impl MemoryRoot {
     /// daemon's description and keywords for an agent it keeps a file for,
     /// and the description the file has otherwise; the text's own
     /// frontmatter is replaced when it differs, its body kept as given.
-    /// The first memory of a project or machine creates its folder.
+    /// A project's overview keeps the daemon's description the same way.
+    /// A write to a project that does not exist is refused; the first
+    /// memory of a machine creates its folder.
     pub(crate) fn write(
         &self,
         url: &MemoryUrl,
         text: &str,
         expected: Option<&MemoryRevision>,
         origin: Origin,
-        agents: impl FnOnce(&AgentId) -> AgentMemory,
+        owners: impl MemoryOwners,
         max_file_bytes: usize,
     ) -> Result<Written, StoreError> {
         let invalid = |reason| StoreError::Invalid {
@@ -509,6 +546,11 @@ impl MemoryRoot {
         };
         let document = MemoryDocument::parse(text.as_bytes(), max_file_bytes).map_err(invalid)?;
         let lock = self.lock()?;
+        if let MemoryUrl::Project { project, .. } = url
+            && let Some(projects) = owners.unknown_project(project)
+        {
+            return Err(unknown_project(url, project, &projects));
+        }
         let path = self.file_path(url);
         let existing = read_bytes(&path)?.map(|(bytes, _)| bytes);
         let current = existing.as_deref().map(MemoryRevision::of);
@@ -535,54 +577,62 @@ impl MemoryRoot {
         }
         let mut text = std::borrow::Cow::Borrowed(text);
         let mut kept = None;
-        if let MemoryUrl::Agent { agent } = url {
-            let status = agents(agent);
-            if existing.is_none() && !status.exists() {
-                return Err(StoreError::Refused(format!(
-                    "{url} names no agent in the agent registry"
-                )));
-            }
-            let target = match &status {
-                AgentMemory::Managed(spec) => Some(spec.apply(agent, &document).map_err(invalid)?),
-                AgentMemory::Registered | AgentMemory::Unknown => existing
-                    .as_deref()
-                    .and_then(|bytes| MemoryDocument::parse(bytes, max_file_bytes).ok())
-                    .map(|current| {
-                        MemoryDocument::new(
-                            current.description(),
-                            document.keywords().to_vec(),
-                            document.body(),
-                        )
-                    })
-                    .transpose()
-                    .map_err(invalid)?,
-            };
-            if let Some(target) = target.filter(|target| *target != document) {
-                let added = target
-                    .keywords()
-                    .iter()
-                    .filter(|keyword| {
-                        !document
-                            .keywords()
-                            .iter()
-                            .any(|given| given.to_lowercase() == keyword.to_lowercase())
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let metadata = KeptMetadata {
-                    description: (target.description() != document.description())
-                        .then(|| target.description().to_owned()),
-                    keywords: added,
-                };
-                let replaced = with_frontmatter(&text, &target).ok_or_else(|| {
-                    invalid(InvalidMemory("the frontmatter was not found".to_owned()))
-                })?;
-                if replaced.len() > max_file_bytes {
-                    return Err(invalid(too_large(replaced.len(), max_file_bytes)));
+        let target = match url {
+            MemoryUrl::Agent { agent } => {
+                let status = owners.agent(agent);
+                if existing.is_none() && !status.exists() {
+                    return Err(StoreError::Refused(format!(
+                        "{url} names no agent in the agent registry"
+                    )));
                 }
-                text = std::borrow::Cow::Owned(replaced);
-                kept = (metadata != KeptMetadata::default()).then_some(metadata);
+                match &status {
+                    AgentMemory::Managed(spec) => {
+                        Some(spec.apply(agent, &document).map_err(invalid)?)
+                    }
+                    AgentMemory::Registered | AgentMemory::Unknown => existing
+                        .as_deref()
+                        .and_then(|bytes| MemoryDocument::parse(bytes, max_file_bytes).ok())
+                        .map(|current| {
+                            MemoryDocument::new(
+                                current.description(),
+                                document.keywords().to_vec(),
+                                document.body(),
+                            )
+                        })
+                        .transpose()
+                        .map_err(invalid)?,
+                }
             }
+            MemoryUrl::Project { project, .. } if super::projects::is_overview(url) => {
+                Some(super::projects::managed_overview(project, &document).map_err(invalid)?)
+            }
+            _ => None,
+        };
+        if let Some(target) = target.filter(|target| *target != document) {
+            let added = target
+                .keywords()
+                .iter()
+                .filter(|keyword| {
+                    !document
+                        .keywords()
+                        .iter()
+                        .any(|given| given.to_lowercase() == keyword.to_lowercase())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let metadata = KeptMetadata {
+                description: (target.description() != document.description())
+                    .then(|| target.description().to_owned()),
+                keywords: added,
+            };
+            let replaced = with_frontmatter(&text, &target).ok_or_else(|| {
+                invalid(InvalidMemory("the frontmatter was not found".to_owned()))
+            })?;
+            if replaced.len() > max_file_bytes {
+                return Err(invalid(too_large(replaced.len(), max_file_bytes)));
+            }
+            text = std::borrow::Cow::Owned(replaced);
+            kept = (metadata != KeptMetadata::default()).then_some(metadata);
         }
         let revision = write_file(&path, text.as_bytes())?;
         drop(lock);
@@ -602,10 +652,15 @@ impl MemoryRoot {
         old: &str,
         new: &str,
         expected: &MemoryRevision,
-        agents: impl FnOnce(&AgentId) -> AgentMemory,
+        owners: impl MemoryOwners,
         max_file_bytes: usize,
     ) -> Result<MemoryRevision, StoreError> {
         let lock = self.lock()?;
+        if let MemoryUrl::Project { project, .. } = url
+            && let Some(projects) = owners.unknown_project(project)
+        {
+            return Err(unknown_project(url, project, &projects));
+        }
         let path = self.file_path(url);
         let (bytes, _) =
             read_bytes(&path)?.ok_or_else(|| StoreError::NotFound { url: url.clone() })?;
@@ -646,9 +701,14 @@ impl MemoryRoot {
             .with_body(document.body().replacen(old, new, 1))
             .map_err(invalid)?;
         if let MemoryUrl::Agent { agent } = url
-            && let AgentMemory::Managed(spec) = agents(agent)
+            && let AgentMemory::Managed(spec) = owners.agent(agent)
         {
             edited = spec.apply(agent, &edited).map_err(invalid)?;
+        }
+        if let MemoryUrl::Project { project, .. } = url
+            && super::projects::is_overview(url)
+        {
+            edited = super::projects::managed_overview(project, &edited).map_err(invalid)?;
         }
         let text = edited.render();
         if text.len() > max_file_bytes {
@@ -702,8 +762,8 @@ impl MemoryRoot {
 
     /// Deletes a memory at revision `expected`. Deleting a `user://` or
     /// `agent://` file is refused for [`Origin::Model`], whose deletes of
-    /// those clear the body instead ([`Self::clear_body`]). Deleting the
-    /// last memory of a project removes the project's folder.
+    /// those clear the body instead ([`Self::clear_body`]). A project's
+    /// folder stays when its last memory goes: it belongs to the project.
     pub(crate) fn delete(
         &self,
         url: &MemoryUrl,
@@ -728,11 +788,6 @@ impl MemoryRoot {
             });
         }
         fs::remove_file(&path).map_err(io_error(&path))?;
-        if url.layer() == MemoryLayer::Project {
-            let folder = self.root.join(url.relative_dir());
-            // Fails, keeping the folder, while anything is left in it.
-            let _ = fs::remove_dir(&folder);
-        }
         drop(lock);
         self.changed();
         Ok(())

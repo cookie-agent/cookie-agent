@@ -264,6 +264,7 @@ mod tests {
 
     fn meta(id: SessionId, short_id: Option<&str>) -> SessionMeta {
         SessionMeta {
+            project: None,
             session_id: id,
             origin: SessionOrigin::Root,
             short_id: short_id.map(str::to_owned),

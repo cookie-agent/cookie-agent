@@ -3,7 +3,10 @@ use cookie_agent_protocol::{
     MemorySnapshotCategory, MemorySnapshotIndexEntry, MemorySnapshotMachine, MemorySnapshotMemory,
 };
 
-use super::{agent_content_bytes, escape_text, machines_section, snapshot_turn, user_section};
+use super::{
+    agent_content_bytes, escape_text, machines_section, project_section, snapshot_turn,
+    user_section,
+};
 
 fn category(name: &str, description: &str, body: &str) -> MemorySnapshotCategory {
     MemorySnapshotCategory {
@@ -59,6 +62,7 @@ const BACKGROUND: &str = "These are notes saved in earlier sessions, by you or b
 #[test]
 fn a_root_snapshot_renders_the_spec_example() {
     let snapshot = MemorySnapshot {
+        project: None,
         delegated: false,
         writable: true,
         user: vec![
@@ -350,4 +354,63 @@ fn agent_content_is_measured_escaped() {
     assert_eq!(agent_content_bytes("a", "b\n"), 2);
     // `<memory` grows by three bytes when escaped, `"` by five.
     assert_eq!(agent_content_bytes("\"", "<memory"), 6 + 10);
+}
+
+#[test]
+fn a_project_section_follows_the_machines_and_changes_the_search_paragraph() {
+    let project = cookie_agent_protocol::MemorySnapshotProject {
+        project: cookie_agent_protocol::ProjectName::new("cookie-agent").expect("project name"),
+        overview: Some(MemorySnapshotMemory {
+            description: "Overview of the `cookie-agent` project, loaded in full into its sessions"
+                .into(),
+            keywords: Vec::new(),
+            body: "A coding agent in Rust.\n".into(),
+        }),
+        memories: vec![index(
+            "project://cookie-agent/release",
+            "How releases are cut",
+            &["release"],
+        )],
+        omitted: 2,
+    };
+    assert_eq!(
+        project_section(&project),
+        "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\n<memory url=\"project://cookie-agent/overview\" description=\"Overview of the `cookie-agent` project, loaded in full into its sessions\">\nA coding agent in Rust.\n</memory>\n\nOther memories of this project (read with memory_read):\n- project://cookie-agent/release: How releases are cut [keywords: release]\n- 2 more; search with layer \"project\"."
+    );
+    let snapshot = MemorySnapshot {
+        writable: false,
+        agent: Some(agent("default", None)),
+        machines: vec![machine("laptop", &[], Vec::new(), 0)],
+        project: Some(project.clone()),
+        ..MemorySnapshot::default()
+    };
+    let turn = snapshot_turn(&snapshot).expect("a turn");
+    assert!(turn.contains("This session's project notes are listed below. Search memory (memory_search) for other projects only when the task reaches into them."));
+    assert!(!turn.contains("Project notes are never shown here."));
+    let machines_at = turn.find("## Machines in this session").expect("machines");
+    let project_at = turn.find("## Project cookie-agent").expect("project");
+    assert!(machines_at < project_at);
+    assert!(turn.ends_with("search with layer \"project\".\n</system-reminder>"));
+
+    // Without an overview or other memories, the structure stays.
+    let bare = cookie_agent_protocol::MemorySnapshotProject {
+        overview: None,
+        memories: Vec::new(),
+        omitted: 0,
+        ..project
+    };
+    assert_eq!(
+        project_section(&bare),
+        "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\nOther memories of this project (read with memory_read):\nNone."
+    );
+    // Outside a project the paragraph stays as it was.
+    let outside = MemorySnapshot {
+        project: None,
+        ..snapshot
+    };
+    assert!(
+        snapshot_turn(&outside)
+            .expect("a turn")
+            .contains("Project notes are never shown here.")
+    );
 }

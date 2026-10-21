@@ -230,7 +230,8 @@ impl Engine {
     /// for the user. The user may create a `user://` category; an
     /// `agent://` file still needs an agent the registry has, and keeps the
     /// description and keywords the daemon owns, which the result's
-    /// `notice` reports (section 16.7).
+    /// `notice` reports (section 16.7). A `project://` file needs a project
+    /// that exists (`docs/site/specs/projects.md` section 3).
     pub async fn write_memory(
         &self,
         params: MemoryWriteParams,
@@ -247,7 +248,7 @@ impl Engine {
                     &text,
                     revision.as_ref(),
                     Origin::User,
-                    |agent| engine.agent_memory(agent),
+                    super::project_api::EngineMemoryOwners(&engine),
                     max_file_bytes,
                 )
                 .map_err(|error| match error {

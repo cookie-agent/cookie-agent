@@ -523,6 +523,7 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
             1,
             run,
             EventPayload::AgentMdLoaded {
+                project: None,
                 attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
@@ -605,6 +606,7 @@ fn replay_orders_agent_md_then_skills_then_delegated_seed() {
             3,
             run,
             EventPayload::AgentMdLoaded {
+                project: None,
                 attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
@@ -2054,6 +2056,7 @@ fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
             seq,
             run,
             EventPayload::AgentMdLoaded {
+                project: None,
                 attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
@@ -2132,6 +2135,7 @@ fn summary_projection_orders_and_deduplicates_pinned_context() {
             1,
             run,
             EventPayload::AgentMdLoaded {
+                project: None,
                 attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
@@ -2758,6 +2762,7 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
             seq,
             run,
             EventPayload::AgentMdLoaded {
+                project: None,
                 attachment: cookie_agent_protocol::AttachmentName::new(attachment).unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("AGENTS.md").unwrap(),
@@ -2784,6 +2789,7 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
     let rendered = super::agent_md_turn(&[
         (
             "labpc_api",
+            false,
             &[AgentMdEntry {
                 source: SafeDisplayText::new("AGENTS.md").unwrap(),
                 content: "labpc rules".into(),
@@ -2792,6 +2798,7 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
         ),
         (
             "local_web",
+            false,
             &[AgentMdEntry {
                 source: SafeDisplayText::new("AGENTS.md").unwrap(),
                 content: "local rules".into(),
@@ -2828,6 +2835,7 @@ fn agent_md_event(seq: u64, run: RunId, content: &str) -> StoredEvent {
         seq,
         run,
         EventPayload::AgentMdLoaded {
+            project: None,
             attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
             entries: vec![AgentMdEntry {
                 source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),

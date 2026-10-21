@@ -9,6 +9,7 @@
 
 use cookie_agent_protocol::{
     MemorySnapshot, MemorySnapshotAgent, MemorySnapshotCategory, MemorySnapshotMachine,
+    MemorySnapshotMemory, MemorySnapshotProject, ProjectName,
 };
 
 const BACKGROUND: &str = concat!(
@@ -22,6 +23,13 @@ const ROOT_SEARCH: &str = concat!(
     "Project notes are never shown here. Before starting a task, search memory ",
     "(memory_search) for the project it belongs to, by repository name, directory, or ",
     "remote, and for anything else the task touches. Read a listed memory with memory_read.",
+);
+
+/// [`ROOT_SEARCH`] for a session in a project
+/// (`docs/site/specs/projects.md` section 7).
+const PROJECT_SEARCH: &str = concat!(
+    "This session's project notes are listed below. Search memory (memory_search) for other ",
+    "projects only when the task reaches into them.",
 );
 
 const DELEGATED_SEARCH: &str = concat!(
@@ -61,13 +69,21 @@ pub(crate) fn snapshot_turn(snapshot: &MemorySnapshot) -> Option<String> {
         }
         parts.extend(agent_section(agent));
     } else {
-        parts.push(ROOT_SEARCH.to_owned());
+        parts.push(
+            if snapshot.project.is_some() {
+                PROJECT_SEARCH
+            } else {
+                ROOT_SEARCH
+            }
+            .to_owned(),
+        );
         if snapshot.writable {
             parts.push(root_save(id));
         }
         parts.push(user_section(&snapshot.user, &snapshot.user_omitted));
         parts.extend(agent_section(agent));
         parts.push(machines_section(&snapshot.machines));
+        parts.extend(snapshot.project.as_ref().map(project_section));
     }
     Some(format!(
         "<system-reminder>\n# Memory\n{}\n</system-reminder>",
@@ -146,6 +162,53 @@ pub(crate) fn machines_section(machines: &[MemorySnapshotMachine]) -> String {
         "## Machines in this session",
         machines.iter().map(machine_element).collect(),
     )
+}
+
+/// `## Project <name>`: the session's project, its overview when it has
+/// one, and the index of its other memories.
+pub(crate) fn project_section(project: &MemorySnapshotProject) -> String {
+    let name = project.project.as_str();
+    let mut blocks = vec![format!(
+        "## Project {name}\nThis session belongs to the {name} project."
+    )];
+    if let Some(overview) = &project.overview {
+        blocks.push(project_overview(&project.project, overview));
+    }
+    blocks.push(project_index(project));
+    blocks.join("\n\n")
+}
+
+/// The overview's element. Its length counts toward the user section's
+/// limit.
+pub(crate) fn project_overview(project: &ProjectName, overview: &MemorySnapshotMemory) -> String {
+    memory_element(
+        &format!("project://{project}/overview"),
+        &overview.description,
+        &overview.body,
+    )
+}
+
+/// The index of the project's other memories. Its length counts toward the
+/// machines index's limit.
+pub(crate) fn project_index(project: &MemorySnapshotProject) -> String {
+    let mut lines = vec!["Other memories of this project (read with memory_read):".to_owned()];
+    lines.extend(project.memories.iter().map(|memory| {
+        let mut line = format!("- {}: {}", memory.url, memory.description);
+        if !memory.keywords.is_empty() {
+            line.push_str(&format!(" [keywords: {}]", memory.keywords.join(", ")));
+        }
+        escape_text(&line)
+    }));
+    if project.omitted > 0 {
+        lines.push(format!(
+            "- {} more; search with layer \"project\".",
+            project.omitted
+        ));
+    }
+    if lines.len() == 1 {
+        lines.push(NONE.to_owned());
+    }
+    lines.join("\n")
 }
 
 fn machine_element(machine: &MemorySnapshotMachine) -> String {

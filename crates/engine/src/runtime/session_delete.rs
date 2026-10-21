@@ -90,6 +90,43 @@ impl Engine {
         Ok(deletion.commit()?)
     }
 
+    /// Whether a session of the tree rooted at `root` has an active run, a
+    /// compaction, or a place in the delegation queue, as a delete would
+    /// find it.
+    pub(crate) fn tree_busy(&self, root: SessionId) -> bool {
+        let root_of = |session: &SessionId| self.inner.store.root_of(*session).unwrap_or(*session);
+        let busy =
+            |sessions: Vec<SessionId>| sessions.iter().any(|session| root_of(session) == root);
+        let running = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .map(|run| run.session)
+            .collect::<Vec<_>>();
+        let compacting = self
+            .inner
+            .compaction
+            .in_progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let queued = self
+            .inner
+            .delegation
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        busy(running) || busy(compacting) || busy(queued)
+    }
+
     /// A session of `members` with an active run, a compaction or run
     /// start holding it, or a place in the delegation queue.
     fn busy_member(&self, members: &HashSet<SessionId>) -> Option<SessionId> {

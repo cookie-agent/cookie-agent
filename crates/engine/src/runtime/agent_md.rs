@@ -1,12 +1,15 @@
-use cookie_agent_protocol::{AgentMdEntry, AgentMdSkipped, SessionId};
+use cookie_agent_protocol::{AgentMdEntry, AgentMdProject, AgentMdSkipped, SessionId};
 
 use super::{Engine, EngineError};
 
-/// The `AGENTS.md` files one coding-runtime attachment returned.
+/// The `AGENTS.md` files one coding-runtime attachment returned, or the
+/// session's project's `AGENTS.md`.
 pub(crate) struct AttachmentAgentMd {
     pub(crate) attachment: cookie_agent_protocol::AttachmentName,
     pub(crate) entries: Vec<AgentMdEntry>,
     pub(crate) skipped: Vec<AgentMdSkipped>,
+    /// The project whose `AGENTS.md` this is; `None` for a workspace's.
+    pub(crate) project: Option<AgentMdProject>,
 }
 
 impl Engine {
@@ -15,6 +18,9 @@ impl Engine {
     /// attachment of `session` applies the lookup to its own workspace: the
     /// preset's `.cookie-agent/agents/<preset>/AGENTS.md`, else
     /// `.cookie-agent/agents/AGENTS.md`, then `<workspace>/AGENTS.md`.
+    /// The session's project's `AGENTS.md` comes first, before every
+    /// workspace's (`docs/site/specs/projects.md` section 6): general
+    /// before specific. It needs no runtime, not even `global`.
     pub(crate) async fn load_agent_md(
         &self,
         session: SessionId,
@@ -25,6 +31,9 @@ impl Engine {
             return Ok(Vec::new());
         }
         let mut loaded = Vec::new();
+        if let Some(project) = self.project_agent_md(session).await {
+            loaded.push(project);
+        }
         for attachment in self.session_runtimes(session)? {
             // `AGENTS.md` lives in a workspace; runtimes without one have none.
             if attachment.workspace.is_none() {
@@ -41,6 +50,7 @@ impl Engine {
                     attachment: attachment.name,
                     entries: context.entries,
                     skipped: context.skipped,
+                    project: None,
                 });
             }
         }

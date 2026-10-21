@@ -86,16 +86,55 @@ impl Engine {
         rules: Vec<PermissionRule>,
         runtimes: super::attachments::SessionRuntimes,
     ) -> Result<SessionMeta, EngineError> {
+        self.create_session_in_project(selection, mode, rules, runtimes, None)
+            .await
+    }
+
+    /// [`Self::create_session_with_permissions`] for a session that belongs
+    /// to `project` (`docs/site/specs/projects.md` section 4): an unknown
+    /// project is refused before anything is attached, the creation
+    /// records `session_project_set`, and when `runtimes` names no runtimes
+    /// the session attaches the project's default `global` and `runtimes`,
+    /// if its defaults set them.
+    pub async fn create_session_in_project(
+        &self,
+        selection: RunSelection,
+        mode: Option<PermissionMode>,
+        rules: Vec<PermissionRule>,
+        mut runtimes: super::attachments::SessionRuntimes,
+        project: Option<cookie_agent_protocol::ProjectId>,
+    ) -> Result<SessionMeta, EngineError> {
         let overlay = SessionPermissionOverlay { rules };
         overlay
             .validate()
             .map_err(|error| EngineError::Permission(error.to_string()))?;
+        if let Some(project) = &project {
+            let defaults = self.project_attachment_defaults(project).await?;
+            if runtimes.runtimes.is_none()
+                && let Some(defaults) = defaults
+            {
+                runtimes.global = defaults.global;
+                runtimes.runtimes = Some(
+                    defaults
+                        .runtimes
+                        .into_iter()
+                        .map(|runtime| super::attachments::SessionRuntimeRequest {
+                            runtime_id: runtime.runtime_id.into_string(),
+                            capability: runtime
+                                .capability
+                                .map(cookie_agent_protocol::CapabilityName::into_string),
+                            workspace: runtime.workspace.map(std::path::PathBuf::from),
+                        })
+                        .collect(),
+                );
+            }
+        }
         let attachments = self.resolve_session_runtimes(&runtimes).await?;
         let cwd = runtimes
             .cwd
             .as_deref()
             .unwrap_or_else(|| self.inner.store.cwd());
-        let meta = self.create_session_in(selection, &attachments, cwd)?;
+        let meta = self.create_session_in(selection, &attachments, cwd, project)?;
         let session_id = meta.session_id;
         self.connect_session(session_id).await;
         if !overlay.rules.is_empty() {
@@ -126,17 +165,19 @@ impl Engine {
         selection: RunSelection,
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
     ) -> Result<SessionMeta, EngineError> {
-        self.create_session_in(selection, attachments, self.inner.store.cwd())
+        self.create_session_in(selection, attachments, self.inner.store.cwd(), None)
     }
 
     /// Creates a root session of the client directory `cwd` whose creation
     /// also records `attachments`, which are open. Its `cwd_identity` is the
     /// first workspace among them, else `cwd` ([`session_cwd_identity`]).
+    /// A session in `project` records it with its creation.
     fn create_session_in(
         &self,
         selection: RunSelection,
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
         cwd: &std::path::Path,
+        project: Option<cookie_agent_protocol::ProjectId>,
     ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
         let id = SessionId::new_v7();
@@ -161,11 +202,17 @@ impl Engine {
                 runtime.current_manifest.revision.clone(),
             ),
         };
+        let mut initial = super::attachments::initial_attachment_events(attachments);
+        if let Some(project) = project {
+            initial.push(Event::SessionProjectSet {
+                project: Some(project),
+            });
+        }
         self.inner.store.create_with_initial(
             id,
             EventOrigin::new("user").expect("static event origin is valid"),
             creation,
-            super::attachments::initial_attachment_events(attachments),
+            initial,
         )?;
         self.spawn_actor(id)?;
         Ok(self.inner.store.get(id)?.metadata())
@@ -175,13 +222,17 @@ impl Engine {
     /// selected through their root's tree and stay reachable via
     /// [`Engine::get_session`], [`Engine::children`], [`Engine::tree`] and
     /// resume.
+    ///
+    /// A session whose project no longer exists lists as having none.
     #[must_use]
     pub fn list_sessions(&self) -> Vec<SessionMeta> {
+        let known = self.project_ids();
         self.inner
             .store
             .list_roots()
             .into_iter()
             .filter(|meta| matches!(meta.origin, SessionOrigin::Root))
+            .map(|meta| self.resolve_session_project(meta, &known))
             .collect()
     }
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
@@ -210,7 +261,8 @@ impl Engine {
                 .expect("read-only reopen release lock poisoned")
                 .recv();
         }
-        Ok(session.metadata())
+        // A delegated session shows its root's project.
+        Ok(self.resolve_session_project(session.metadata(), &self.project_ids()))
     }
 
     #[cfg(test)]

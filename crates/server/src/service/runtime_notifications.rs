@@ -181,6 +181,33 @@ impl Server {
         });
     }
 
+    /// Signals project changes to this connection; bursts coalesce.
+    pub(super) fn start_project_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_project_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                if context
+                    .notify(
+                        cookie_agent_protocol::PROJECTS_CHANGED_METHOD,
+                        &cookie_agent_protocol::ProjectsChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Signals memory files this daemon changed to this connection;
     /// bursts coalesce.
     pub(super) fn start_memory_notifications(&self, context: ServerContext) {

@@ -41,6 +41,7 @@ impl ServerProtocol for Server {
         self.start_plugin_notifications(context.clone());
         self.start_machine_notifications(context.clone());
         self.start_memory_notifications(context.clone());
+        self.start_project_notifications(context.clone());
         self.start_background_notifications(context.clone());
         self.start_upload_cleanup(&context);
         self.start_engine_event_notifications(context);
@@ -67,11 +68,12 @@ impl ServerProtocol for Server {
         };
         let session = self
             .engine
-            .create_session_with_permissions(
+            .create_session_in_project(
                 params.selection,
                 params.permission_mode,
                 params.permission_rules,
                 runtimes,
+                params.project,
             )
             .await
             .map_err(protocol_fault)?;
@@ -92,6 +94,12 @@ impl ServerProtocol for Server {
                     .cwd_identity
                     .as_ref()
                     .is_none_or(|cwd| &session.cwd_identity == cwd)
+            })
+            .filter(|session| {
+                params
+                    .project
+                    .as_ref()
+                    .is_none_or(|filter| filter.admits(session.project.as_ref()))
             })
             .collect();
         Ok(SessionListResult { sessions })
@@ -665,6 +673,70 @@ impl ServerProtocol for Server {
             .await
             .map_err(protocol_fault)?;
         Ok(self.machines_list())
+    }
+
+    async fn list_projects(
+        &self,
+        _params: cookie_agent_protocol::ProjectsListParams,
+    ) -> Result<cookie_agent_protocol::ProjectsListResult> {
+        self.engine
+            .list_projects()
+            .await
+            .map(|projects| cookie_agent_protocol::ProjectsListResult { projects })
+            .map_err(protocol_fault)
+    }
+
+    async fn get_project(
+        &self,
+        params: cookie_agent_protocol::ProjectGetParams,
+    ) -> Result<cookie_agent_protocol::ProjectGetResult> {
+        self.engine
+            .get_project(params.project)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn create_project(
+        &self,
+        params: cookie_agent_protocol::ProjectCreateParams,
+    ) -> Result<cookie_agent_protocol::ProjectResult> {
+        self.engine
+            .create_project(params)
+            .await
+            .map(|project| cookie_agent_protocol::ProjectResult { project })
+            .map_err(protocol_fault)
+    }
+
+    async fn update_project(
+        &self,
+        params: cookie_agent_protocol::ProjectUpdateParams,
+    ) -> Result<cookie_agent_protocol::ProjectResult> {
+        self.engine
+            .update_project(params)
+            .await
+            .map(|project| cookie_agent_protocol::ProjectResult { project })
+            .map_err(protocol_fault)
+    }
+
+    async fn delete_project(
+        &self,
+        params: cookie_agent_protocol::ProjectDeleteParams,
+    ) -> Result<cookie_agent_protocol::ProjectDeleteResult> {
+        self.engine
+            .delete_project(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn set_session_project(
+        &self,
+        params: cookie_agent_protocol::SessionProjectSetParams,
+    ) -> Result<cookie_agent_protocol::SessionProjectSetResult> {
+        self.engine
+            .set_session_project(params.session_id, params.project)
+            .await
+            .map(|session| cookie_agent_protocol::SessionProjectSetResult { session })
+            .map_err(protocol_fault)
     }
 
     async fn list_memory(

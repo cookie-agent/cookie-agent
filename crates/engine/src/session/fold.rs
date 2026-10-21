@@ -162,6 +162,7 @@ fn projection_fold_with(
             })
             .collect(),
         attachments: Vec::new(),
+        project: None,
     };
     let mut projection = SessionProjection {
         meta,
@@ -270,6 +271,10 @@ impl SessionProjection {
         match &envelope.payload {
             EventPayload::SessionPermissionOverlaySet { overlay } => {
                 self.permission_overlay = overlay.clone();
+            }
+            EventPayload::SessionProjectSet { project } => {
+                self.meta.project = project.clone();
+                durable_meta = true;
             }
             EventPayload::RuntimeAttached { .. } | EventPayload::RuntimeDetached { .. } => {
                 self.runtime_attachments.observe(&envelope.payload);

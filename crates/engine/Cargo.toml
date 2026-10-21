@@ -38,6 +38,9 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
+toml.workspace = true
+unicode-properties.workspace = true
+unicode-segmentation.workspace = true
 uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -53,4 +56,3 @@ insta.workspace = true
 oven-sdk-openai.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-toml.workspace = true

@@ -362,6 +362,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             .field("reason", reason_text(reason)),
         EngineError::Machine(error) => machine_error(error),
         EngineError::MemoryRequest(error) => memory_error(error),
+        EngineError::Project(error) => project_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()
             .field("reason", reason_text(reason)),
@@ -483,6 +484,36 @@ fn memory_error(error: &cookie_agent_engine::MemoryRequestError) -> errors::Erro
             .field("reason", reason_text(reason)),
         MemoryRequestError::Busy(_) => errors::MEMORY_BUSY.error(),
         MemoryRequestError::Store(_) => errors::MEMORY_STORE_FAILED.error(),
+    }
+}
+
+fn project_error(error: &cookie_agent_engine::ProjectError) -> errors::ErrorBuilder {
+    use cookie_agent_engine::ProjectError;
+    match error {
+        ProjectError::NotFound(project) => {
+            errors::PROJECT_NOT_FOUND.error().field("project", project)
+        }
+        ProjectError::NameTaken(name) => errors::PROJECT_NAME_TAKEN.error().field("name", name),
+        ProjectError::Changed { project, revision } => errors::PROJECT_CHANGED
+            .error()
+            .field("project", project)
+            .field("revision", revision),
+        ProjectError::Invalid { field, reason } => errors::PROJECT_INVALID
+            .error()
+            .field("field", field)
+            .field("reason", reason_text(reason)),
+        ProjectError::SessionsRunning { project, sessions } => errors::PROJECT_SESSIONS_RUNNING
+            .error()
+            .field("project", project)
+            .field("session_ids", sessions),
+        ProjectError::RootSessionOnly {
+            session_id,
+            root_session_id,
+        } => errors::PROJECT_ROOT_SESSION_ONLY
+            .error()
+            .field("session_id", session_id)
+            .field("root_session_id", root_session_id),
+        ProjectError::Store(_) => errors::PROJECT_STORE_FAILED.error(),
     }
 }
 

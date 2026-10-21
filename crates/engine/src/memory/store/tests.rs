@@ -225,7 +225,7 @@ fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
             &text("d", ""),
             None,
             origin,
-            |id| {
+            |id: &AgentId| {
                 if id.as_str() == "default" {
                     AgentMemory::Registered
                 } else {
@@ -242,7 +242,7 @@ fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
             &text("d", ""),
             None,
             Origin::Model,
-            |id| {
+            |id: &AgentId| {
                 if id.as_str() == "reviewer" {
                     AgentMemory::Registered
                 } else {
@@ -365,6 +365,7 @@ fn clearing_a_body_keeps_the_file_and_its_frontmatter_byte_for_byte() {
 
     let snapshot = memory
         .snapshot(&SnapshotRequest {
+            project: None,
             agent: AgentId::new("reviewer").unwrap(),
             delegated: false,
             writable: true,
@@ -451,29 +452,135 @@ fn a_delete_needs_the_current_revision() {
 }
 
 #[test]
-fn a_project_starts_with_its_first_memory_and_ends_with_its_last() {
+fn a_project_folder_stays_when_its_last_memory_goes() {
     let (data, memory) = root();
     let folder = data.path().join("memory/projects/web");
-    assert!(!folder.exists());
     let a = create(&memory, "project://web/a", "");
     assert!(folder.is_dir());
-    let b = create(&memory, "project://web/b", "");
     memory
         .delete(&url("project://web/a"), &a, Origin::Model)
         .unwrap();
+    // The folder belongs to the project, not to its memories.
     assert!(folder.is_dir());
-    memory
-        .delete(&url("project://web/b"), &b, Origin::Model)
-        .unwrap();
-    assert!(!folder.exists());
+}
 
-    // A file that is not a memory keeps the folder.
-    let c = create(&memory, "project://web/c", "");
-    fs::write(folder.join("notes.txt"), "x").unwrap();
-    memory
-        .delete(&url("project://web/c"), &c, Origin::Model)
+/// Owners that know the agent `default` and the projects `web` and `api`.
+struct Owners;
+
+impl MemoryOwners for Owners {
+    fn agent(&self, _: &AgentId) -> AgentMemory {
+        AgentMemory::Registered
+    }
+
+    fn unknown_project(&self, project: &MemoryName) -> Option<Vec<String>> {
+        let known = vec!["api".to_owned(), "web".to_owned()];
+        (!known.iter().any(|name| name == project.as_str())).then_some(known)
+    }
+}
+
+#[test]
+fn writes_to_a_project_that_does_not_exist_are_refused_for_model_and_user() {
+    let (data, memory) = root();
+    for origin in [Origin::Model, Origin::User] {
+        let refused = memory.write(
+            &url("project://shop/build"),
+            &text("d", "x"),
+            None,
+            origin,
+            Owners,
+            LIMIT,
+        );
+        let Err(StoreError::Refused(reason)) = refused else {
+            panic!("{refused:?}");
+        };
+        assert!(reason.contains("The projects are api, web"), "{reason}");
+        assert!(reason.contains("created from a client"), "{reason}");
+    }
+    assert!(!data.path().join("memory/projects/shop").exists());
+    let written = memory
+        .write(
+            &url("project://web/build"),
+            &text("d", "x"),
+            None,
+            Origin::Model,
+            Owners,
+            LIMIT,
+        )
         .unwrap();
-    assert!(folder.join("notes.txt").is_file());
+    // An edit is a write too.
+    fs::create_dir_all(data.path().join("memory/projects/shop")).unwrap();
+    fs::write(
+        data.path().join("memory/projects/shop/old.md"),
+        text("d", "old"),
+    )
+    .unwrap();
+    let old = memory.read(&url("project://shop/old"), LIMIT).unwrap();
+    assert!(matches!(
+        memory.edit(
+            &url("project://shop/old"),
+            "old",
+            "new",
+            &old.entry.revision,
+            Owners,
+            LIMIT
+        ),
+        Err(StoreError::Refused(_))
+    ));
+    memory
+        .edit(
+            &url("project://web/build"),
+            "x",
+            "y",
+            &written.revision,
+            Owners,
+            LIMIT,
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_project_overview_keeps_the_daemons_description() {
+    let (_data, memory) = root();
+    let overview = url("project://web/overview");
+    let written = memory
+        .write(
+            &overview,
+            &text("Mine", "A web shop.\n"),
+            None,
+            Origin::User,
+            Owners,
+            LIMIT,
+        )
+        .unwrap();
+    let kept = written.kept.expect("the description was kept");
+    assert_eq!(
+        kept.description.as_deref(),
+        Some("Overview of the `web` project, loaded in full into its sessions")
+    );
+    let read = memory.read(&overview, LIMIT).unwrap();
+    let document = read.entry.document.unwrap();
+    assert_eq!(
+        document.description(),
+        "Overview of the `web` project, loaded in full into its sessions"
+    );
+    assert_eq!(document.keywords(), ["k"]);
+    assert_eq!(document.body(), "A web shop.\n");
+    let revision = memory
+        .edit(
+            &overview,
+            "web",
+            "book",
+            &read.entry.revision,
+            Owners,
+            LIMIT,
+        )
+        .unwrap();
+    let edited = memory.read(&overview, LIMIT).unwrap();
+    assert_eq!(edited.entry.revision, revision);
+    assert_eq!(
+        edited.entry.document.unwrap().description(),
+        "Overview of the `web` project, loaded in full into its sessions"
+    );
 }
 
 #[test]

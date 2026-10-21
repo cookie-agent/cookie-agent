@@ -323,7 +323,7 @@ fn writes_and_edits_keep_what_the_daemon_owns() {
             "---\ndescription: New\nkeywords: [x]\n---\n- changed\n",
             Some(&revision),
             Origin::User,
-            |_| AgentMemory::Unknown,
+            |_: &cookie_agent_protocol::AgentId| AgentMemory::Unknown,
             LIMIT,
         )
         .unwrap();

@@ -11,6 +11,7 @@
 
 pub(crate) mod agents;
 pub(crate) mod file;
+pub(crate) mod projects;
 pub(crate) mod render;
 pub(crate) mod search;
 pub(crate) mod snapshot;
