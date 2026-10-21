@@ -148,7 +148,7 @@ jobs:
       - name: Build tests
         run: cargo test --locked --workspace --no-run
         timeout-minutes: 60
-      # On a fresh runner the first launch of Git Bash, Python and where.exe
+      # On a fresh runner the first launch of Git Bash and Python
       # can take from seconds to over a minute (cold image disk, on-access
       # scanning), and std serializes process creation, so one cold launch
       # stalls every other spawn in the test process. Without this step that
@@ -159,9 +159,7 @@ jobs:
       - name: Warm up Git Bash and Python
         shell: pwsh
         run: |
-          $time = Measure-Command { $script:bashes = @(where.exe bash) }
-          "where.exe bash: {0:N1}s -> {1}" -f $time.TotalSeconds, ($bashes -join ', ')
-          $bash = $bashes | Where-Object { $_ -notlike "$env:SystemRoot\System32\*" } | Select-Object -First 1
+          $bash = (Get-Command bash -All -CommandType Application | Where-Object { $_.Source -notlike "$env:SystemRoot\System32\*" } | Select-Object -First 1).Source
           $time = Measure-Command { & $bash -c 'cat --version >/dev/null' | Out-Host }
           "Git Bash ($bash): {0:N1}s" -f $time.TotalSeconds
           $time = Measure-Command { python -c "import base64, json, os, sys, threading, time" | Out-Host }

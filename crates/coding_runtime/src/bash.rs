@@ -898,20 +898,84 @@ fn discover_git_bash() -> Result<PathBuf, String> {
         .to_owned())
 }
 
+/// Searches `PATH` in-process for `name`, like `where.exe name` does.
+///
+/// A cold `where.exe` launch can take tens of seconds on Windows, and it is
+/// only a PATH walk. `where.exe` also searches the current directory first;
+/// that is deliberately not reproduced. The current directory is the
+/// workspace, so it would let a repository plant a `bash.exe` that gets
+/// executed, and every candidate must still pass `validate_git_bash`, which
+/// requires a Git for Windows layout, so a real install is never found there.
 #[cfg(windows)]
 fn where_executable(name: &str) -> Vec<PathBuf> {
-    let Ok(output) = std::process::Command::new("where.exe").arg(name).output() else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
+    let path = env::var_os("PATH").unwrap_or_default();
+    let pathext = env::var_os("PATHEXT");
+    search_path_candidates(
+        name,
+        &path.to_string_lossy(),
+        pathext
+            .as_deref()
+            .map(|value| value.to_string_lossy())
+            .as_deref(),
+        |candidate| candidate.is_file(),
+    )
+}
+
+/// Pure candidate selection behind `where_executable`: for each `PATH` entry
+/// in order, tries `name` with each `PATHEXT` extension in order (default
+/// `.COM;.EXE;.BAT;.CMD`). Like `where`, a name that already ends in a
+/// `PATHEXT` extension (case-insensitive) is tried as written instead.
+/// Entries are `;`-separated, may be double-quoted, and empty ones are
+/// skipped. No System32 filtering happens here; `validate_git_bash` does it.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn search_path_candidates(
+    name: &str,
+    path: &str,
+    pathext: Option<&str>,
+    exists: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let extensions: Vec<&str> = pathext
+        .unwrap_or(".COM;.EXE;.BAT;.CMD")
+        .split(';')
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect()
+        .filter(|extension| !extension.is_empty())
+        .collect();
+    let has_extension = extensions.iter().any(|extension| {
+        name.len() > extension.len()
+            && name.is_char_boundary(name.len() - extension.len())
+            && name[name.len() - extension.len()..].eq_ignore_ascii_case(extension)
+    });
+    let names: Vec<String> = if has_extension {
+        vec![name.to_owned()]
+    } else {
+        extensions
+            .iter()
+            .map(|extension| format!("{name}{extension}"))
+            .collect()
+    };
+
+    let mut entries = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for character in path.chars() {
+        match character {
+            '"' => quoted = !quoted,
+            ';' if !quoted => entries.push(std::mem::take(&mut current)),
+            _ => current.push(character),
+        }
+    }
+    entries.push(current);
+
+    let mut found = Vec::new();
+    for entry in entries.iter().filter(|entry| !entry.is_empty()) {
+        for file in &names {
+            let candidate = Path::new(entry).join(file);
+            if exists(&candidate) {
+                found.push(candidate);
+            }
+        }
+    }
+    found
 }
 
 #[cfg(windows)]
@@ -1357,5 +1421,130 @@ mod windows_tests {
                 assert_eq!(waited, WAIT_OBJECT_0, "leaf survived job termination");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod path_search_tests {
+    use std::path::Path;
+
+    use super::search_path_candidates;
+
+    // `Path::join` uses the host separator, so compare with separators normalized.
+    fn norm(path: &str) -> String {
+        path.replace('\\', "/")
+    }
+
+    fn search(name: &str, path: &str, pathext: Option<&str>, present: &[&str]) -> Vec<String> {
+        let present: Vec<String> = present.iter().map(|file| norm(file)).collect();
+        search_path_candidates(name, path, pathext, |candidate: &Path| {
+            present.contains(&norm(&candidate.to_string_lossy()))
+        })
+        .iter()
+        .map(|candidate| norm(&candidate.to_string_lossy()))
+        .collect()
+    }
+
+    fn expected(files: &[&str]) -> Vec<String> {
+        files.iter().map(|file| norm(file)).collect()
+    }
+
+    #[test]
+    fn candidates_follow_path_order_then_extension_order() {
+        let found = search(
+            "bash",
+            r"C:\b;C:\a",
+            Some(".EXE;.CMD"),
+            &[
+                r"C:\a\bash.EXE",
+                r"C:\b\bash.CMD",
+                r"C:\b\bash.EXE",
+                r"C:\a\bash.CMD",
+            ],
+        );
+        assert_eq!(
+            found,
+            expected(&[
+                r"C:\b\bash.EXE",
+                r"C:\b\bash.CMD",
+                r"C:\a\bash.EXE",
+                r"C:\a\bash.CMD"
+            ])
+        );
+    }
+
+    #[test]
+    fn pathext_extensions_are_used_verbatim_and_default_applies() {
+        assert_eq!(
+            search(
+                "bash",
+                r"C:\a",
+                Some(".exe"),
+                &[r"C:\a\bash.exe", r"C:\a\bash.EXE"]
+            ),
+            expected(&[r"C:\a\bash.exe"])
+        );
+        assert_eq!(
+            search("bash", r"C:\a", None, &[r"C:\a\bash.EXE", r"C:\a\bash.BAT"]),
+            expected(&[r"C:\a\bash.EXE", r"C:\a\bash.BAT"])
+        );
+        assert!(search("bash", r"C:\a", Some(".EXE"), &[r"C:\a\bash"]).is_empty());
+    }
+
+    #[test]
+    fn name_with_known_extension_is_tried_as_written_case_insensitively() {
+        assert_eq!(
+            search(
+                "git.exe",
+                r"C:\a",
+                Some(".EXE"),
+                &[r"C:\a\git.exe", r"C:\a\git.exe.EXE"]
+            ),
+            expected(&[r"C:\a\git.exe"])
+        );
+        assert_eq!(
+            search("GIT.Exe", r"C:\a", Some(".exe"), &[r"C:\a\GIT.Exe"]),
+            expected(&[r"C:\a\GIT.Exe"])
+        );
+    }
+
+    #[test]
+    fn system32_candidate_is_kept_in_order_for_the_validator_to_reject() {
+        let found = search(
+            "bash",
+            r"C:\Windows\System32;C:\Git\bin",
+            None,
+            &[r"C:\Windows\System32\bash.EXE", r"C:\Git\bin\bash.EXE"],
+        );
+        assert_eq!(
+            found,
+            expected(&[r"C:\Windows\System32\bash.EXE", r"C:\Git\bin\bash.EXE"])
+        );
+    }
+
+    #[test]
+    fn quoted_and_empty_entries_are_handled() {
+        let found = search(
+            "bash",
+            r#";;"C:\Program Files\Git\bin";"C:\semi;colon";"#,
+            Some(".EXE"),
+            &[
+                r"C:\Program Files\Git\bin\bash.EXE",
+                r"C:\semi;colon\bash.EXE",
+            ],
+        );
+        assert_eq!(
+            found,
+            expected(&[
+                r"C:\Program Files\Git\bin\bash.EXE",
+                r"C:\semi;colon\bash.EXE"
+            ])
+        );
+    }
+
+    #[test]
+    fn no_match_and_empty_path_yield_nothing() {
+        assert!(search("bash", r"C:\a;C:\b", None, &[]).is_empty());
+        assert!(search("bash", "", None, &["bash.EXE"]).is_empty());
     }
 }
