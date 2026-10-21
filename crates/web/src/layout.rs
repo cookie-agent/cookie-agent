@@ -23,12 +23,13 @@ pub enum View {
 
 impl View {
     /// The rail's order.
+    /// The rail's order: Settings comes after every other view.
     pub const ALL: [Self; 5] = [
         Self::Chat,
         Self::Agents,
-        Self::Settings,
         Self::Machines,
         Self::Memory,
+        Self::Settings,
     ];
 
     /// The view's name, as its rail button and title bar say it.
@@ -313,6 +314,11 @@ mod tests {
             &names[..4],
             ["runtime", "permissions", "goal", "background"]
         );
+    }
+
+    #[test]
+    fn settings_is_the_last_view_on_the_rail() {
+        assert_eq!(View::ALL.last(), Some(&View::Settings));
     }
 
     #[test]
