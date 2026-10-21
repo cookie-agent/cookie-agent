@@ -16,8 +16,11 @@ the daemon's runtimes.
 
 **Decided 2026-10-21:**
 
-- At depth 0, `delegate_subagent` gains a `runtimes` parameter: a list of
-  runtimes, each with an optional workspace.
+- At depth 0, `delegate_subagent` gains an `attachments` parameter: the
+  attachments to open for the child, each a runtime (and capability) with
+  an optional workspace. The name matches the daemon's term: a session's
+  attachments are what it works through (renamed from `runtimes` on
+  2026-10-21).
   - It is **absent** when the root session does not have `global`
     attached.
   - It is **required** when the root session has nothing attached besides
@@ -53,7 +56,7 @@ machines (section 7 shows how a subagent can do it with existing tools).
 At depth 0 the schema gains:
 
 ```json
-"runtimes": {
+"attachments": {
   "type": "array",
   "minItems": 1,
   "items": {
@@ -71,12 +74,16 @@ At depth 0 the schema gains:
 - **Present, required, or absent.** The tool is already composed per
   session and per turn, so its schema follows the root's attachments:
   - **Absent** when the root session does not have `global` attached.
-    `runtimes` belongs with `list_runtimes`, which is part of `global`, so
+    `attachments` belongs with `list_runtimes`, which is part of `global`, so
     a session without `global` keeps today's tool, and its children
     inherit the root's attachments.
   - **Required** when the root has `global` and nothing else.
   - **Optional** when the root has `global` and other attachments.
-- **The description** says what the parameter does in each case, and
+- **The description** says that each item opens a new attachment for the
+  child: a runtime's capability, at a workspace when the capability takes
+  one. It says this is not about file attachments, and that an existing
+  attachment of the root's is named the same way, by runtime and
+  workspace. It also says what the parameter does in each case, and
   how to write `runtime`: the runtime's ID from `list_runtimes`, plus
   `/<capability>` when the runtime has several capabilities. `list_runtimes`
   prints no separate "delegate as" string (decided 2026-10-21). With
@@ -85,23 +92,23 @@ At depth 0 the schema gains:
 - **Capability.** `<id>` alone is valid when the runtime offers exactly
   one attachable capability. Otherwise the call is refused with a message
   that lists the runtime's capabilities.
-- **`resume_session_id`** cannot be combined with `runtimes`, because a
+- **`resume_session_id`** cannot be combined with `attachments`, because a
   resumed child keeps its own attachments. `inherit_context` can.
 
 ### 2.2 What the child gets
 
 - **`global` follows the root, never the model** (decided 2026-10-21).
   Every child in a tree has `global` exactly when the root session does,
-  at every depth. `runtimes` cannot name `global`; a call that does is
+  at every depth. `attachments` cannot name `global`; a call that does is
   refused. Attaching or detaching `global` on the root changes only
   children created afterwards.
-- **With `runtimes`:** the child gets the root's `global` by the rule
+- **With `attachments`:** the child gets the root's `global` by the rule
   above, so memory, MCP, and plugin tools stay. It also gets each listed
   runtime, in the order given, attached with the usual names
   (`<runtime>_<workspace basename>`, with `_2` added for duplicates).
   - Two or more workspaces get tool prefixes, exactly as for any session.
   - The same runtime may be listed twice with different workspaces.
-- **Without `runtimes`:** the child inherits the root's attachments, as
+- **Without `attachments`:** the child inherits the root's attachments, as
   today.
 - **Starting the runtimes.** The daemon starts each runtime before it
   creates the child, as `session.create` does: a template runtime is
@@ -114,7 +121,7 @@ At depth 0 the schema gains:
 
 ### 2.3 Deeper children
 
-- At depth 1 and below, `delegate_subagent` has no `runtimes` parameter.
+- At depth 1 and below, `delegate_subagent` has no `attachments` parameter.
   A call that passes one anyway is refused as an unknown argument
   (`deny_unknown_fields`).
 - A child at depth n + 1 inherits the attachments of its **parent** at
@@ -131,11 +138,11 @@ At depth 0 the schema gains:
   - a plain `delegate` rule covers every runtime.
 
   As with other selectors, the most specific rule wins.
-- **Checking a call.** Each runtime listed in `runtimes` is checked as
+- **Checking a call.** Each runtime listed in `attachments` is checked as
   `delegate@<runtime id>`. A denied runtime refuses the whole call. An
   `ask` runtime puts the call through the usual approval, which shows the
   runtimes and workspaces.
-- **Inheriting.** A call without `runtimes` is checked as today: plain
+- **Inheriting.** A call without `attachments` is checked as today: plain
   `delegate`, with no runtime selector.
 - **The child's own rules** still decide what it can do on that runtime,
   including any `bash@labpc`-style selectors.
@@ -194,13 +201,13 @@ only where `global` is attached, and only when the run's agent may use it.
     and nothing else (decided 2026-10-21). Instances that other sessions
     have open are left out: they say nothing about where this session can
     work, and they would show other sessions' workspaces. Any runtime can
-    still be named in `delegate_subagent`'s `runtimes`, opened or not.
+    still be named in `delegate_subagent`'s `attachments`, opened or not.
   - Attributes with no value (`home`, `platform`, `message`) are left out.
     Values are XML-escaped.
   - A runtime with no known machine goes under `<unplaced>`.
 - **Timing.** Its result describes the daemon at call time. A runtime that
   dials in or drops out later shows from the next call. `delegate_subagent`
-  checks its `runtimes` against the same live state when it is called.
+  checks its `attachments` against the same live state when it is called.
 
 ## 5. Clients
 
@@ -230,7 +237,7 @@ only where `global` is attached, and only when the run's agent may use it.
 - **A root with only `global`.** Its system prompt has no working
   directory and no machine line, as today. Instead, the delegate tool's
   prompt section adds a short paragraph: this session has no workspace;
-  work that needs files or commands goes to a subagent with `runtimes`;
+  work that needs files or commands goes to a subagent with `attachments`;
   and `list_runtimes` shows what exists.
 - **Every other prompt** is unchanged.
 
@@ -245,7 +252,7 @@ coding subagent bring a remote machine in temporarily:
    `ssh <host> cookie runtime serve --daemon <url> --id <id> --token <token>`.
    Alternatively, it adds a `[runtimes.<id>]` template to `config.toml`.
 3. The root calls `list_runtimes`, sees the new runtime, and delegates to
-   it with `runtimes`.
+   it with `attachments`.
 4. Stopping the background call (`stop_background`) ends the dial-in
    connection, and the runtime shows as disconnected.
 
@@ -271,7 +278,7 @@ docs show.
 ## 9. Phases
 
 1. **Engine:**
-   - the `runtimes` parameter and its per-session schema;
+   - the `attachments` parameter and its per-session schema;
    - starting runtimes for a child;
    - parent inheritance;
    - `delegate@runtime` checks;
@@ -290,7 +297,7 @@ docs show.
 
 None. The user approved the spec on 2026-10-21, including:
 - the `list_runtimes` permission defaults;
-- `resume_session_id` excluding `runtimes`;
+- `resume_session_id` excluding `attachments`;
 - the web client forgetting the selection;
 - the dial-in pattern in section 7.
 
