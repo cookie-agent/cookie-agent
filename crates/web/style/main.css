@@ -163,6 +163,28 @@ html.pressing * {
   --color-sand: #c9b59c;
   --color-maple: #e78c33;
 
+  /* Badge hues (client_state::badges::badge_hue): a machine's or a
+     runtime's colour wherever it shows. Each light hue keeps 4.6:1 or
+     more against a badge's tint over parchment and toasted (a row at rest,
+     and hovered or open), each dark one against its tint over char and
+     ember. */
+  --color-hue-0: #1a4486;
+  --color-hue-1: #005559;
+  --color-hue-2: #245720;
+  --color-hue-3: #553494;
+  --color-hue-4: #575100;
+  --color-hue-5: #7e2660;
+  --color-hue-6: #7a3900;
+  --color-hue-7: #8c1d16;
+  --color-hue-0-dark: #a0c2ff;
+  --color-hue-1-dark: #74d8d7;
+  --color-hue-2-dark: #9fdc90;
+  --color-hue-3-dark: #cdb2ff;
+  --color-hue-4-dark: #e3d46a;
+  --color-hue-5-dark: #f6a6d4;
+  --color-hue-6-dark: #ffb57a;
+  --color-hue-7-dark: #ffa093;
+
   --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }

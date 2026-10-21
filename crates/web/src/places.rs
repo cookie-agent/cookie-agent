@@ -1,7 +1,8 @@
-//! Where sessions work, as the sessions list shows and filters them: each
-//! session's runtimes and workspaces (`SessionMeta.attachments`) on its
-//! row, and its directory (`cwd_identity`, its first workspace) in the
-//! filter, named by its runtime. Every path shows under its runtime's home
+//! Where sessions work, as text: a session's runtimes and workspaces
+//! (`SessionMeta.attachments`) in the bottom bar, and its directory
+//! (`cwd_identity`, its first workspace) in the sessions filter, named by
+//! its runtime. (The session rows show them as badges,
+//! `client_state::badges`.) Every path shows under its runtime's home
 //! (`~/…`) with the shared `client_state::paths` rule, and absolute where
 //! the runtime reported no home.
 
@@ -40,9 +41,9 @@ pub fn places(session: &SessionMeta, listed: bool) -> Vec<Place> {
         .collect()
 }
 
-/// What a session's row says of where it works: its workspaces, each
-/// under its runtime's home and named by the runtime when that is not
-/// `local`, or that it has none.
+/// What the bottom bar says of where a session works: its workspaces,
+/// each under its runtime's home and named by the runtime when that is
+/// not `local`, or that it has none.
 pub fn places_label(session: &SessionMeta, homes: &RuntimeHomes, listed: bool) -> String {
     let places = places(session, listed);
     if places.is_empty() {

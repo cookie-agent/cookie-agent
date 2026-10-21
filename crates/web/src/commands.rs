@@ -8,9 +8,12 @@
 
 use icondata::Icon;
 
-/// A command of the session's ⋮ menu. Each opens a sheet.
+/// A command of the session's ⋮ menu. Each opens a sheet, but Rename
+/// edits the title in the title bar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
+    /// Rename the session, or go back to its automatic title.
+    Rename,
     /// Compact the session's context, with an optional focus.
     Compact,
     /// Set the root session's goal, or pause, resume, or cancel it.
@@ -41,9 +44,16 @@ pub struct MenuEntry {
     pub description: &'static str,
 }
 
-/// The ⋮ menu, in its order: what changes the conversation first, then
-/// what the session runs with, then what it shows.
+/// The ⋮ menu, in its order: the session's name, what changes the
+/// conversation, then what the session runs with, then what it shows.
 pub const MENU: &[MenuEntry] = &[
+    MenuEntry {
+        command: Command::Rename,
+        id: "rename",
+        label: "Rename",
+        icon: icondata::FaPenSolid,
+        description: "Change the session's title, or go back to the automatic one",
+    },
     MenuEntry {
         command: Command::Compact,
         id: "compact",
@@ -123,6 +133,7 @@ mod tests {
     #[test]
     fn the_menu_lists_every_command_once_by_a_readable_name() {
         for command in [
+            Command::Rename,
             Command::Compact,
             Command::Goal,
             Command::Skills,
@@ -140,7 +151,7 @@ mod tests {
             );
             assert_eq!(entry(command).command, command);
         }
-        assert_eq!(MENU.len(), 9);
+        assert_eq!(MENU.len(), 10);
         let mut ids = MENU.iter().map(|entry| entry.id).collect::<Vec<_>>();
         ids.sort_unstable();
         ids.dedup();
@@ -161,7 +172,7 @@ mod tests {
                 .map(|entry| entry.id)
                 .take(3)
                 .collect::<Vec<_>>(),
-            ["compact", "goal", "skills"]
+            ["rename", "compact", "goal"]
         );
     }
 }

@@ -232,7 +232,11 @@ fn card_view(workspace: Workspace, card: Card) -> impl IntoView {
                         class="mt-0.5 text-lg text-caramel dark:text-maple"
                     />
                     <span class="flex min-w-0 flex-1 flex-col">
-                        <span class="truncate font-mono text-sm font-bold">{card.label()}</span>
+                        <span class="flex min-w-0 items-center gap-1.5">
+                            // The runtime's colour, as on the session rows.
+                            {crate::badges::runtime_dot(card.runtime_id.as_str())}
+                            <span class="truncate font-mono text-sm font-bold">{card.label()}</span>
+                        </span>
                         {(!card.description.is_empty()).then(|| view! {
                             <span class=format!("line-clamp-2 {NOTE}")>{card.description.clone()}</span>
                         })}

@@ -40,6 +40,7 @@ mod history;
 mod manage;
 mod nav;
 mod permissions;
+mod rename;
 mod skills;
 mod tree;
 
@@ -192,6 +193,10 @@ pub struct Workspace {
     pub can_delete: RwSignal<bool>,
     /// A delete the daemon refused: the root session and its message.
     pub delete_error: RwSignal<Option<(SessionId, String)>>,
+    /// The title bar's title field, while it is open: what it holds.
+    pub title_edit: RwSignal<Option<String>>,
+    /// A rename the daemon refused: the session and its message.
+    pub rename_error: RwSignal<Option<(SessionId, String)>>,
     /// The view the rail shows.
     pub view: RwSignal<crate::layout::View>,
     /// The Settings section open; `None` for the section list on a phone,
@@ -291,6 +296,8 @@ impl Workspace {
             plugins: RwSignal::new(None),
             can_delete: RwSignal::new(false),
             delete_error: RwSignal::new(None),
+            title_edit: RwSignal::new(None),
+            rename_error: RwSignal::new(None),
             view: RwSignal::new(crate::layout::View::Chat),
             settings_section: RwSignal::new(None),
             sidebar_open: RwSignal::new(false),
@@ -1759,6 +1766,7 @@ impl Workspace {
     pub fn run_command(self, command: crate::commands::Command) {
         use crate::commands::Command;
         match command {
+            Command::Rename => self.begin_title_edit(),
             Command::Compact => {
                 if self.selected.get_untracked().is_none() || self.new_session.get_untracked() {
                     self.status

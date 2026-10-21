@@ -8,11 +8,12 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use cookie_agent_client_state::{
     EventLevel, ToolStatus,
+    badges::{badges_tooltip, session_badges},
     permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
 };
 use cookie_agent_protocol::{
     ApprovalUserDecision, InputDelivery, ModelSelection, PermissionAction, PermissionEffect,
-    PermissionRuleSource, SessionId, SessionMeta,
+    PermissionRuleSource, SessionId, SessionMeta, SessionRenameChange,
 };
 use leptos::{ev, html, prelude::*};
 use wasm_bindgen::JsCast as _;
@@ -75,12 +76,18 @@ const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center j
 const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
 /// A status bar indicator that does something when clicked.
 const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
-/// A session row's delete button, which shows only over the hovered (or
-/// focused) row: centred on its two lines, at rest in the row's hover
-/// colour so it blends in (the open row's hover colour is the same), one
-/// palette step darker on hover (lighter in dark), and further still when
-/// pressed. 44 px square, over the row's right padding.
-const ROW_DELETE: &str = "absolute top-1/2 right-0.5 min-h-11 min-w-11 -translate-y-1/2 items-center justify-center rounded-md bg-toasted text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:bg-ember dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
+/// A session row's buttons (rename, delete), which show only over the
+/// hovered (or focused) row: centred on its two lines, over the row's
+/// right padding, side by side.
+const ROW_ACTIONS: &str = "absolute top-1/2 right-0.5 -translate-y-1/2 items-center gap-0.5";
+/// One of them: at rest in the row's hover colour so it blends in (the
+/// open row's hover colour is the same), one palette step darker on hover
+/// (lighter in dark), and further still when pressed. 44 px square.
+const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-toasted text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:bg-ember dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
+/// A session's title as a field: in a session row, and in the title bar.
+const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-md border border-caramel bg-cream px-2 text-sm font-bold text-espresso focus:outline-none dark:border-maple dark:bg-night dark:text-latte";
+/// "Use the automatic title", under an emptied title field.
+const AUTO_TITLE: &str = "inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-bold text-caramel hover:bg-crust active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:text-maple dark:hover:bg-smoke";
 /// A row of a list: two lines, the second a note.
 const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
 const NOTE: &str = "text-xs text-ink dark:text-sand";
@@ -250,12 +257,16 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
             ticker.clear();
         }
     });
-    // Deleting: the row a long press revealed the action of, and the row
-    // whose delete waits for confirmation.
-    let deletes = RowDeletes {
+    // Renaming and deleting: the row a long press revealed the actions
+    // of, the row whose delete waits for confirmation, and the row whose
+    // title is a field.
+    let actions = RowActions {
         hovered: RwSignal::new(None),
         revealed: RwSignal::new(None),
         confirming: RwSignal::new(None),
+        renaming: RwSignal::new(None),
+        draft: RwSignal::new(String::new()),
+        fresh: StoredValue::new(false),
         press: StoredValue::new(Press::default()),
         timer: StoredValue::new(None),
     };
@@ -302,7 +313,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 }
                 sessions
                     .into_iter()
-                    .map(|session| session_row(workspace, session, now, deletes))
+                    .map(|session| session_row(workspace, session, now, actions))
                     .collect_view()
                     .into_any()
             }}
@@ -310,73 +321,117 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// The session list's delete state, shared by its rows.
+/// The session list's row actions, shared by its rows: rename and delete.
 #[derive(Clone, Copy)]
-struct RowDeletes {
-    /// The row a mouse (or pen) is over, which shows its trash.
+struct RowActions {
+    /// The row a mouse (or pen) is over, which shows its buttons.
     hovered: RwSignal<Option<SessionId>>,
+    /// The row a long press offered its actions under.
     revealed: RwSignal<Option<SessionId>>,
     confirming: RwSignal<Option<SessionId>>,
+    /// The row whose title is a field, and what the field holds; kept
+    /// here, so a list redrawn while the user types keeps it.
+    renaming: RwSignal<Option<SessionId>>,
+    draft: RwSignal<String>,
+    /// The field just opened: its text is selected once it shows.
+    fresh: StoredValue<bool>,
     /// The touch press under way, one at a time.
     press: StoredValue<Press>,
     timer: StoredValue<Option<TimeoutHandle>>,
 }
 
-impl RowDeletes {
+impl RowActions {
     fn stop_timer(self) {
         if let Some(timer) = self.timer.get_value() {
             timer.clear();
         }
         self.timer.set_value(None);
     }
+
+    /// Turns `session`'s title into a field holding it.
+    fn begin_rename(self, workspace: Workspace, session_id: SessionId) {
+        self.revealed.set(None);
+        self.confirming.set(None);
+        self.draft.set(workspace.title_draft(session_id));
+        self.fresh.set_value(true);
+        self.renaming.set(Some(session_id));
+    }
 }
 
-/// A root session's row: a click opens it; a trash button on hover (or a
-/// long press on a touch screen) offers to delete it, behind an inline
-/// confirmation. The open session's row has its subagents under it.
+/// The right padding a row keeps clear of its action buttons: room for
+/// them while they show (or the keyboard is in the row), else the row's
+/// own, which leaves its badges the room. A third button left of the
+/// pencil makes it wider still.
+fn row_padding(shown: bool, buttons: usize) -> &'static str {
+    match (shown, buttons) {
+        (true, 0 | 1) => "pr-12",
+        (false, 0 | 1) => "pr-3 group-has-focus-visible:pr-12",
+        (true, _) => "pr-24",
+        (false, _) => "pr-3 group-has-focus-visible:pr-24",
+    }
+}
+
+/// A root session's row: a click opens it. On hover (or a long press on
+/// a touch screen) its buttons offer to rename it, in place, and to
+/// delete it, behind an inline confirmation. Its second line says where
+/// it runs, as badges. The open session's row has its subagents under it.
 fn session_row(
     workspace: Workspace,
     session: SessionMeta,
     now: RwSignal<jiff::Timestamp>,
-    deletes: RowDeletes,
+    actions: RowActions,
 ) -> impl IntoView {
     let session_id = session.session_id;
     let current = move || workspace.selected.get() == Some(session_id);
     let mark = icons::session_status(session.status);
     let last_activity = session.last_activity;
-    // Where it works, each workspace under its runtime's home, once the
-    // homes are known.
-    let places = {
+    // Where it runs, once the runtimes are known; the tooltip lists every
+    // workspace with its path.
+    let badges = {
         let session = session.clone();
         move || {
-            crate::places::places_label(
-                &session,
-                &workspace.homes(),
-                workspace.lists_attachments.get(),
-            )
+            let homes = workspace.homes();
+            let listed = workspace.lists_attachments.get();
+            workspace.runtimes.with(|listing| {
+                session_badges(&session, listing.as_ref(), &homes, listed)
+                    .into_iter()
+                    .map(crate::badges::badge_view)
+                    .collect_view()
+            })
         }
     };
     let title = {
-        let places = places.clone();
+        let session = session.clone();
         let status = mark.label;
-        move || format!("{}\n{status}", places())
+        move || {
+            let homes = workspace.homes();
+            let listed = workspace.lists_attachments.get();
+            let places = workspace
+                .runtimes
+                .with(|listing| badges_tooltip(&session, listing.as_ref(), &homes, listed));
+            format!("{places}\n{status}")
+        }
     };
     let label = session_label(&session);
     let confirm_label = label.clone();
-    let RowDeletes {
+    let RowActions {
         hovered,
         revealed,
         confirming,
+        renaming,
         press,
         ..
-    } = deletes;
+    } = actions;
+    let is_renaming = move || renaming.get() == Some(session_id);
+    let buttons = move || 1 + usize::from(workspace.can_delete.get());
+    let shown = move || hovered.get() == Some(session_id) && !is_renaming();
     let on_pointerdown = move |event: ev::PointerEvent| {
-        if event.pointer_type() != "touch" || !workspace.can_delete.get_untracked() {
+        if event.pointer_type() != "touch" {
             return;
         }
         let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
         press.update_value(|press| press.start(x, y));
-        deletes.stop_timer();
+        actions.stop_timer();
         let timer = set_timeout_with_handle(
             move || {
                 let fired = press.try_update_value(Press::elapse).unwrap_or(false);
@@ -388,7 +443,7 @@ fn session_row(
             LONG_PRESS,
         )
         .ok();
-        deletes.timer.set_value(timer);
+        actions.timer.set_value(timer);
     };
     let on_pointermove = move |event: ev::PointerEvent| {
         let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
@@ -396,13 +451,14 @@ fn session_row(
             .try_update_value(|press| press.moved(x, y))
             .unwrap_or(false)
         {
-            deletes.stop_timer();
+            actions.stop_timer();
         }
     };
     let release = move |_| {
         press.update_value(Press::cancel);
-        deletes.stop_timer();
+        actions.stop_timer();
     };
+    let field_badges = badges.clone();
     view! {
         <div
             class="session-row group relative"
@@ -418,23 +474,31 @@ fn session_row(
                 }
             }
         >
+            <Show
+                when=move || !is_renaming()
+                fallback=move || rename_row(workspace, session_id, mark, actions, field_badges.clone())
+            >
             <button
                 type="button"
-                // The row looks hovered while the pointer is on its delete
-                // button too, which sits over it, or the keyboard is in it.
-                class=format!("{ROW} no-callout select-none pr-12 group-hover:bg-toasted group-has-focus-visible:bg-toasted dark:group-hover:bg-ember dark:group-has-focus-visible:bg-ember")
-                class:bg-toasted=current
-                class:dark:bg-ember=current
+                // The row looks hovered while the pointer is on its buttons
+                // too, which sit over it, or the keyboard is in it.
+                // One class closure for all of it: `class:` toggles beside
+                // it would be dropped each time it changes.
+                class=move || format!(
+                    "{ROW} no-callout select-none {} {} group-hover:bg-toasted group-has-focus-visible:bg-toasted dark:group-hover:bg-ember dark:group-has-focus-visible:bg-ember",
+                    row_padding(shown(), buttons()),
+                    if current() { "bg-toasted dark:bg-ember" } else { "" },
+                )
                 aria-current=move || current().then_some("true")
                 data-session=session_id.to_string()
-                title=title
+                title=title.clone()
                 on:pointerdown=on_pointerdown
                 on:pointermove=on_pointermove
                 on:pointerup=release
                 on:pointercancel=release
                 on:contextmenu=move |event: ev::MouseEvent| {
-                    // A touch screen's long press is the delete action, not
-                    // the browser's menu.
+                    // A touch screen's long press offers the row's actions,
+                    // not the browser's menu.
                     if revealed.get_untracked() == Some(session_id) {
                         event.prevent_default();
                     }
@@ -455,7 +519,12 @@ fn session_row(
                 <span class="flex w-full items-center gap-2">
                     <Glyph icon=mark.icon class=mark.class("text-xs") />
                     <span class="sr-only">{mark.label}</span>
-                    <span class="min-w-0 flex-1 truncate text-sm font-bold">{label}</span>
+                    <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title>{label.clone()}</span>
+                    // The time sits beside the title, so the badges have
+                    // the whole second line.
+                    <span class=format!("shrink-0 {NOTE}") data-session-time>
+                        {move || relative_time(now.get(), last_activity)}
+                    </span>
                     // The open session's row folds and unfolds its subagent
                     // tree: its chevron turns with it.
                     <Show when=current>
@@ -469,37 +538,50 @@ fn session_row(
                         </span>
                     </Show>
                 </span>
-                <span class=format!("flex w-full min-w-0 items-center gap-1 pl-5 {NOTE}")>
-                    <Glyph icon=icondata::FaFolderSolid class="opacity-70" />
-                    <span class="min-w-0 truncate" data-session-places>{places}</span>
-                    <span class="shrink-0">
-                        {move || format!("· {}", relative_time(now.get(), last_activity))}
-                    </span>
+                <span class=format!("flex w-full min-w-0 items-center gap-1 overflow-hidden pl-5 {NOTE}") data-session-badges>
+                    {badges.clone()}
                 </span>
             </button>
-            <Show when=move || workspace.can_delete.get()>
+            // Shown while a mouse is over the row, or the keyboard is in
+            // it; a touch screen's long press offers them below. Their
+            // group grows leftwards: a third button goes before the pencil.
+            <div
+                class=move || {
+                    let shown = if shown() {
+                        "flex"
+                    } else {
+                        "hidden group-has-focus-visible:flex"
+                    };
+                    format!("{ROW_ACTIONS} {shown}")
+                }
+                data-row-actions
+            >
                 <button
                     type="button"
-                    // Shown while a mouse is over the row, or the keyboard
-                    // is in it; a touch screen's long press offers it below.
-                    class=move || {
-                        let shown = if hovered.get() == Some(session_id) {
-                            "inline-flex"
-                        } else {
-                            "hidden group-has-focus-visible:inline-flex"
-                        };
-                        format!("{ROW_DELETE} {shown}")
-                    }
-                    aria-label="Delete the session"
-                    title="Delete the session and its subagents"
-                    data-delete=session_id.to_string()
-                    on:click=move |_| {
-                        revealed.set(None);
-                        confirming.set(Some(session_id));
-                    }
+                    class=ROW_ACTION
+                    aria-label="Rename the session"
+                    title="Rename the session"
+                    data-rename=session_id.to_string()
+                    on:click=move |_| actions.begin_rename(workspace, session_id)
                 >
-                    <Glyph icon=icondata::FaTrashCanRegular />
+                    <Glyph icon=icondata::FaPenSolid />
                 </button>
+                <Show when=move || workspace.can_delete.get()>
+                    <button
+                        type="button"
+                        class=ROW_ACTION
+                        aria-label="Delete the session"
+                        title="Delete the session and its subagents"
+                        data-delete=session_id.to_string()
+                        on:click=move |_| {
+                            revealed.set(None);
+                            confirming.set(Some(session_id));
+                        }
+                    >
+                        <Glyph icon=icondata::FaTrashCanRegular />
+                    </button>
+                </Show>
+            </div>
             </Show>
         </div>
         <Show when=move || revealed.get() == Some(session_id) && confirming.get() != Some(session_id)>
@@ -507,14 +589,33 @@ fn session_row(
                 <button
                     type="button"
                     class=BUTTON
-                    data-delete-reveal=session_id.to_string()
-                    on:click=move |_| confirming.set(Some(session_id))
+                    data-rename-reveal=session_id.to_string()
+                    on:click=move |_| actions.begin_rename(workspace, session_id)
                 >
-                    <Glyph icon=icondata::FaTrashCanRegular />
-                    "Delete"
+                    <Glyph icon=icondata::FaPenSolid />
+                    "Rename"
                 </button>
-                <button type="button" class=BUTTON on:click=move |_| revealed.set(None)>
-                    "Cancel"
+                <Show when=move || workspace.can_delete.get()>
+                    <button
+                        type="button"
+                        class=BUTTON
+                        data-delete-reveal=session_id.to_string()
+                        on:click=move |_| confirming.set(Some(session_id))
+                    >
+                        <Glyph icon=icondata::FaTrashCanRegular />
+                        "Delete"
+                    </button>
+                </Show>
+                // An icon, so the three fit a phone's drawer on one line.
+                <button
+                    type="button"
+                    class=BUTTON.replace("px-3", "px-0")
+                    aria-label="Cancel"
+                    title="Cancel"
+                    data-actions-cancel
+                    on:click=move |_| revealed.set(None)
+                >
+                    <Glyph icon=icondata::FaXmarkSolid />
                 </button>
             </div>
         </Show>
@@ -554,9 +655,125 @@ fn session_row(
                 .filter(|(failed, _)| *failed == session_id)
                 .map(|(_, message)| view! { <p class=format!("{ERROR} mx-2 mb-1") data-delete-error>{message}</p> })
         }}
+        {move || {
+            workspace
+                .rename_error
+                .get()
+                .filter(|(failed, _)| *failed == session_id)
+                .map(|(_, message)| view! { <p class=format!("{ERROR} mx-2 mb-1") data-rename-error>{message}</p> })
+        }}
         <Show when=move || workspace.tree_root.get() == Some(session_id)>
             <Subagents workspace=workspace />
         </Show>
+    }
+}
+
+/// A row whose title is a field: Enter renames, Escape (or leaving it)
+/// keeps the title, and an emptied field offers the automatic title.
+fn rename_row<B: IntoView + 'static>(
+    workspace: Workspace,
+    session_id: SessionId,
+    mark: icons::StatusMark,
+    actions: RowActions,
+    badges: impl Fn() -> B + Send + Sync + 'static,
+) -> impl IntoView {
+    let RowActions {
+        renaming,
+        draft,
+        fresh,
+        ..
+    } = actions;
+    let field = NodeRef::<html::Input>::new();
+    // The field takes the focus as it shows; its text is selected the
+    // first time, so typing replaces the title.
+    Effect::new(move |_| {
+        if let Some(input) = field.get() {
+            request_animation_frame(move || {
+                let _ = input.focus();
+                if fresh.get_value() {
+                    fresh.set_value(false);
+                    input.select();
+                }
+            });
+        }
+    });
+    let cancel = move || {
+        if renaming.get_untracked() == Some(session_id) {
+            renaming.set(None);
+        }
+    };
+    let save = move || {
+        if workspace.submit_title(session_id, &draft.get_untracked()) {
+            renaming.set(None);
+        }
+    };
+    let empty = move || draft.with(|draft| draft.trim().is_empty());
+    view! {
+        <div
+            class="flex min-h-11 w-full flex-col items-start gap-1 rounded-md bg-toasted px-3 py-2 dark:bg-ember"
+            data-renaming=session_id.to_string()
+            on:focusout=move |event: ev::FocusEvent| {
+                // Leaving the row keeps the title; moving within it does not.
+                let inside = event
+                    .related_target()
+                    .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+                    .zip(event.current_target().and_then(|target| target.dyn_into::<web_sys::Node>().ok()))
+                    .is_some_and(|(target, row)| row.contains(Some(&target)));
+                if !inside {
+                    cancel();
+                }
+            }
+        >
+            <span class="flex w-full items-center gap-2">
+                <Glyph icon=mark.icon class=mark.class("text-xs") />
+                <input
+                    type="text"
+                    node_ref=field
+                    class=TITLE_FIELD
+                    aria-label="Session title"
+                    placeholder="The automatic title"
+                    autocomplete="off"
+                    data-rename-field=session_id.to_string()
+                    prop:value=move || draft.get()
+                    on:input=move |event| draft.set(event_target_value(&event))
+                    on:keydown=move |event: ev::KeyboardEvent| match event.key().as_str() {
+                        "Enter" => {
+                            event.prevent_default();
+                            save();
+                        }
+                        "Escape" => {
+                            event.prevent_default();
+                            cancel();
+                        }
+                        _ => {}
+                    }
+                />
+            </span>
+            <Show
+                when=empty
+                fallback=move || view! {
+                    <span class=format!("flex w-full min-w-0 items-center gap-1 pl-5 {NOTE}")>
+                        <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">{badges()}</span>
+                    </span>
+                }
+            >
+                <button
+                    type="button"
+                    class=format!("{AUTO_TITLE} ml-5")
+                    data-rename-reset=session_id.to_string()
+                    // A tap must not take the focus from the field first,
+                    // which would close it.
+                    on:pointerdown=move |event: ev::PointerEvent| event.prevent_default()
+                    on:click=move |_| {
+                        renaming.set(None);
+                        workspace.rename_session(session_id, SessionRenameChange::Reset);
+                    }
+                >
+                    <Glyph icon=icondata::FaWandMagicSparklesSolid />
+                    "Use the automatic title"
+                </button>
+            </Show>
+        </div>
     }
 }
 
@@ -667,10 +884,104 @@ fn session_title(workspace: Workspace) -> String {
         .unwrap_or_else(|| "No session".into())
 }
 
-/// The chat's title bar: the sidebar button, the session's title, and its
-/// ⋮ menu of session commands.
+/// The title bar's title as a field: Enter renames, Escape (or leaving
+/// it) keeps the title, and an emptied field offers the automatic title.
+#[component]
+fn TitleField(workspace: Workspace) -> impl IntoView {
+    let field = NodeRef::<html::Input>::new();
+    Effect::new(move |_| {
+        if let Some(input) = field.get() {
+            request_animation_frame(move || {
+                let _ = input.focus();
+                input.select();
+            });
+        }
+    });
+    let empty = move || {
+        workspace
+            .title_edit
+            .with(|draft| draft.as_deref().is_none_or(|draft| draft.trim().is_empty()))
+    };
+    let save = move || {
+        let (Some(session_id), Some(draft)) = (
+            workspace.selected.get_untracked(),
+            workspace.title_edit.get_untracked(),
+        ) else {
+            return;
+        };
+        if workspace.submit_title(session_id, &draft) {
+            workspace.title_edit.set(None);
+        }
+    };
+    view! {
+        <div
+            class="flex min-w-0 flex-1 items-center gap-2"
+            data-title-editor
+            on:focusout=move |event: ev::FocusEvent| {
+                // Leaving the field keeps the title; its button does not.
+                let inside = event
+                    .related_target()
+                    .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+                    .zip(event.current_target().and_then(|target| target.dyn_into::<web_sys::Node>().ok()))
+                    .is_some_and(|(target, editor)| editor.contains(Some(&target)));
+                if !inside {
+                    workspace.title_edit.set(None);
+                }
+            }
+        >
+            <input
+                type="text"
+                id="session-title-field"
+                node_ref=field
+                class=format!("{TITLE_FIELD} max-w-xl text-base")
+                aria-label="Session title"
+                placeholder="The automatic title"
+                autocomplete="off"
+                prop:value=move || workspace.title_edit.get().unwrap_or_default()
+                on:input=move |event| workspace.title_edit.set(Some(event_target_value(&event)))
+                on:keydown=move |event: ev::KeyboardEvent| match event.key().as_str() {
+                    "Enter" => {
+                        event.prevent_default();
+                        save();
+                    }
+                    "Escape" => {
+                        event.prevent_default();
+                        workspace.title_edit.set(None);
+                    }
+                    _ => {}
+                }
+            />
+            <Show when=empty>
+                <button
+                    type="button"
+                    class=format!("{AUTO_TITLE} shrink-0")
+                    data-title-reset
+                    on:pointerdown=move |event: ev::PointerEvent| event.prevent_default()
+                    on:click=move |_| {
+                        workspace.title_edit.set(None);
+                        if let Some(session_id) = workspace.selected.get_untracked() {
+                            workspace.rename_session(session_id, SessionRenameChange::Reset);
+                        }
+                    }
+                >
+                    <Glyph icon=icondata::FaWandMagicSparklesSolid />
+                    <span class="max-sm:sr-only">"Use the automatic title"</span>
+                </button>
+            </Show>
+        </div>
+    }
+}
+
+/// The chat's title bar: the sidebar button, the session's title (a click
+/// renames it), and its ⋮ menu of session commands.
 #[component]
 fn TitleBar(workspace: Workspace) -> impl IntoView {
+    // Another session closes the title's field.
+    Effect::new(move |_| {
+        workspace.selected.track();
+        workspace.new_session.track();
+        workspace.title_edit.set(None);
+    });
     let title = move || session_title(workspace);
     let read_only = move || {
         workspace.selected.get().is_some_and(|session_id| {
@@ -749,9 +1060,29 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
             </nav>
             </Show>
             <div class="flex min-w-0 flex-1 items-center gap-2 px-1">
-                <h1 class="min-w-0 truncate text-lg font-bold" id="session-title" title=title>
-                    {title}
-                </h1>
+                <Show
+                    when=move || workspace.title_edit.with(Option::is_some)
+                    fallback=move || view! {
+                        <h1 class="flex min-w-0 text-lg font-bold" id="session-title" title=title>
+                            // A session's title is a button that renames it.
+                            <Show when=move || workspace.title_editable() fallback=move || view! {
+                                <span class="truncate">{title}</span>
+                            }>
+                                <button
+                                    type="button"
+                                    class="flex min-h-11 min-w-0 items-center rounded-md px-1 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
+                                    title=move || format!("{} (click to rename)", title())
+                                    data-title-edit
+                                    on:click=move |_| workspace.begin_title_edit()
+                                >
+                                    <span class="truncate">{title}</span>
+                                </button>
+                            </Show>
+                        </h1>
+                    }
+                >
+                    <TitleField workspace=workspace />
+                </Show>
                 <Show when=read_only>
                     <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-toasted px-2 py-1 text-xs dark:bg-ember" title="read-only snapshot">
                         <Glyph icon=icondata::FaLockSolid />
@@ -1499,7 +1830,21 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     title=format!("Works in {places} (click for the runtimes)")
                     on:click=move |_| workspace.run_command(Command::Runtime)
                 >
-                    <Glyph icon=icondata::FaFolderOpenSolid class="text-caramel dark:text-maple" />
+                    // Each runtime's colour, as on the session rows; the
+                    // folder when there are none.
+                    {move || {
+                        let runtimes = workspace.places_runtimes();
+                        if runtimes.is_empty() {
+                            view! { <Glyph icon=icondata::FaFolderOpenSolid class="text-caramel dark:text-maple" /> }.into_any()
+                        } else {
+                            view! {
+                                <span class="inline-flex shrink-0 items-center gap-0.5" data-places-dots>
+                                    {runtimes.iter().take(3).map(|runtime| crate::badges::runtime_dot(runtime)).collect_view()}
+                                </span>
+                            }
+                            .into_any()
+                        }
+                    }}
                     <span class="min-w-0 truncate font-mono">{places.clone()}</span>
                 </button>
             })}

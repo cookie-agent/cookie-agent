@@ -9,6 +9,7 @@
 pub mod agents;
 mod app;
 pub mod attach;
+pub mod badges;
 pub mod browser;
 pub mod cards;
 pub mod commands;

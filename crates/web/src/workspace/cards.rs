@@ -224,6 +224,43 @@ impl Workspace {
         self.new_setup.set(true);
     }
 
+    /// The runtimes the bottom bar's workspaces are on, each once, in
+    /// attach order: their colours mark the label.
+    pub fn places_runtimes(self) -> Vec<String> {
+        let mut runtimes = Vec::<String>::new();
+        let mut add = |runtime_id: &RuntimeId| {
+            if !runtimes.iter().any(|known| known == runtime_id.as_str()) {
+                runtimes.push(runtime_id.to_string());
+            }
+        };
+        if self.new_session.get() {
+            self.draft_runtimes.with(|entries| {
+                for entry in entries.iter().flatten() {
+                    if entry.workspace().is_some() {
+                        add(&entry.request.runtime_id);
+                    }
+                }
+            });
+            return runtimes;
+        }
+        let Some(session_id) = self.tree_root.get().or(self.selected.get()) else {
+            return runtimes;
+        };
+        self.sessions.with(|sessions| {
+            let attachments = sessions
+                .iter()
+                .find(|session| session.session_id == session_id)
+                .map(|session| session.attachments.as_slice())
+                .unwrap_or_default();
+            for attachment in attachments {
+                if attachment.workspace.is_some() {
+                    add(&attachment.runtime_id);
+                }
+            }
+        });
+        runtimes
+    }
+
     /// What the bottom bar says of where the viewed session (or the draft)
     /// works: its workspaces under their runtimes' homes; `None` before it
     /// has any runtimes.
