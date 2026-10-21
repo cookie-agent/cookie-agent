@@ -31,9 +31,9 @@ the daemon's runtimes.
 - Users can limit where the root delegates with `delegate@<runtime>` rules,
   using the existing `action@runtime` selector.
 - The `global` runtime offers a new tool, `list_runtimes`, behind its
-  own `list_runtimes` permission. It prints every
-  machine, runtime, and runtime instance on the daemon, marks the ones
-  attached to this session, and is exempt from output truncation. It reads
+  own `list_runtimes` permission. It prints every machine and runtime on
+  the daemon, plus this session's own attachments (never other sessions'
+  instances), and is exempt from output truncation. It reads
   the daemon's state at every call, so a runtime that dials in mid-session
   shows up on the next call.
 - **Web New session** opens straight on the composer with only `global`.
@@ -169,12 +169,11 @@ only where `global` is attached, and only when the run's agent may use it.
     <machine name="yunhao-labserver" platform="linux">
       <runtime id="global" lifetime="builtin" connected="true">
         <capability name="global" takes_workspace="false"/>
-        <attachment name="global" capability="global" status="ready" attached="true"/>
+        <attachment name="global" capability="global" status="ready"/>
       </runtime>
       <runtime id="local" lifetime="builtin" connected="true" home="/home/u">
         <capability name="coding" takes_workspace="true"/>
-        <attachment name="local_cookie_agent" capability="coding" workspace="/home/u/src/cookie-agent" status="ready" attached="true"/>
-        <attachment name="local_website" capability="coding" workspace="/home/u/src/website" status="ready"/>
+        <attachment name="local_cookie_agent" capability="coding" workspace="/home/u/src/cookie-agent" status="ready"/>
       </runtime>
     </machine>
     <machine name="labpc" platform="linux">
@@ -188,9 +187,11 @@ only where `global` is attached, and only when the run's agent may use it.
   </runtimes>
   ```
 
-  - `<attachment>` elements are the daemon's running runtime instances,
-    whichever sessions use them. `attached="true"` marks those attached to
-    the calling session; the attribute is left out otherwise.
+  - `<attachment>` elements are the calling session's own attachments,
+    and nothing else (decided 2026-10-21). Instances that other sessions
+    have open are left out: they say nothing about where this session can
+    work, and they would show other sessions' workspaces. Any runtime can
+    still be named in `delegate_subagent`'s `runtimes`, opened or not.
   - Attributes with no value (`home`, `platform`, `message`) are left out.
     Values are XML-escaped.
   - A runtime with no known machine goes under `<unplaced>`.
