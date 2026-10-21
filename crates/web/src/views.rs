@@ -68,6 +68,12 @@ const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center j
 const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
 /// A status bar indicator that does something when clicked.
 const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
+/// A session row's delete button, which shows only over the hovered (or
+/// focused) row: centred on its two lines, at rest in the row's hover
+/// colour so it blends in (the open row's hover colour is the same), one
+/// palette step darker on hover (lighter in dark), and further still when
+/// pressed. 44 px square, over the row's right padding.
+const ROW_DELETE: &str = "absolute top-1/2 right-0.5 min-h-11 min-w-11 -translate-y-1/2 items-center justify-center rounded-md bg-toasted text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:bg-ember dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
 /// A row of a list: two lines, the second a note.
 const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
 const NOTE: &str = "text-xs text-ink dark:text-sand";
@@ -381,7 +387,9 @@ fn session_row(
         >
             <button
                 type="button"
-                class=format!("{ROW} no-callout select-none pr-12")
+                // The row looks hovered while the pointer is on its delete
+                // button too, which sits over it, or the keyboard is in it.
+                class=format!("{ROW} no-callout select-none pr-12 group-hover:bg-toasted group-has-focus-visible:bg-toasted dark:group-hover:bg-ember dark:group-has-focus-visible:bg-ember")
                 class:bg-toasted=current
                 class:dark:bg-ember=current
                 aria-current=move || current().then_some("true")
@@ -428,10 +436,7 @@ fn session_row(
                         } else {
                             "hidden group-has-focus-visible:inline-flex"
                         };
-                        format!(
-                            "{} {shown} absolute top-0 right-0 bg-parchment dark:bg-char",
-                            ICON_BUTTON.replacen("inline-flex ", "", 1)
-                        )
+                        format!("{ROW_DELETE} {shown}")
                     }
                     aria-label="Delete the session"
                     title="Delete the session and its subagents"

@@ -860,6 +860,19 @@ def long_press(browser, selector, hold=800, drag=0):
     }])
 
 
+# A session row's middle and its trash's, the trash's size, and the
+# background of each.
+TRASH_GEOMETRY = """
+const row = document.querySelector(arguments[0]);
+const open = row.querySelector('[data-session]').getBoundingClientRect();
+const trash = row.querySelector('[data-delete]');
+const box = trash.getBoundingClientRect();
+return [open.top + open.height / 2, box.top + box.height / 2, box.width, box.height,
+    getComputedStyle(row.querySelector('[data-session]')).backgroundColor,
+    getComputedStyle(trash).backgroundColor];
+"""
+
+
 def deleting(browser):
     """Deleting a session from its row: the trash on hover, the inline
     confirmation naming it, a running session refused with the daemon's
@@ -877,6 +890,12 @@ def deleting(browser):
     assert not shown(browser, row + " [data-delete]"), "the trash shows without a hover"
     hover(browser, row)
     browser.wait("the trash on hover", lambda: shown(browser, row + " [data-delete]"))
+    # It is centred on the row's two lines, a full touch target, and at rest
+    # in the hovered row's colour.
+    middle, trash_middle, width, height, row_colour, trash_colour = browser.script(TRASH_GEOMETRY, row)
+    assert abs(middle - trash_middle) <= 1, "the trash is %s px off the row's middle" % (trash_middle - middle)
+    assert width >= 44 and height >= 44, "the trash is %sx%s px" % (width, height)
+    assert row_colour == trash_colour, "the trash is %s over a %s row" % (trash_colour, row_colour)
     browser.click(row + " [data-delete]")
     browser.wait("the confirmation", lambda: title in browser.text("aside [data-delete-confirm-box]"))
     browser.shot("delete-confirm")
