@@ -725,7 +725,10 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             return Vec::new();
         };
         let level = workspace.level.get();
-        let expanded = workspace.expanded.get();
+        // What the user opened in this session: its own, as in the TUI.
+        let expanded = workspace
+            .expanded
+            .with(|expanded| expanded.get(&session_id).cloned().unwrap_or_default());
         let names = workspace.with_runtime(|runtime| runtime.model_names().clone());
         let delegates = workspace.tree.with(|tree| {
             tree.as_ref()
@@ -825,13 +828,10 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         match action.as_str() {
             "toggle-tool" => {
                 if let Some(call) = call {
-                    workspace.expanded.update(|expanded| {
-                        if !expanded.remove(&call) {
-                            expanded.insert(call);
-                        }
-                    });
+                    workspace.toggle_expanded(call);
                 }
             }
+            "approvals" => workspace.panel.set(Some(Panel::Approvals)),
             "full" => {
                 let block = target
                     .get_attribute("data-block")
@@ -844,11 +844,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
             "toggle-block" => {
                 if let Some(key) = target.get_attribute("data-block-key") {
-                    workspace.expanded.update(|expanded| {
-                        if !expanded.remove(&key) {
-                            expanded.insert(key);
-                        }
-                    });
+                    workspace.toggle_expanded(key);
                 }
             }
             "user-menu" => {

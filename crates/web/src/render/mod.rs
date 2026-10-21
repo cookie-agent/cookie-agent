@@ -6,6 +6,7 @@
 //! dispatches.
 
 pub mod blocks;
+pub mod budget;
 pub mod markdown;
 pub mod sgr;
 pub mod transcript;

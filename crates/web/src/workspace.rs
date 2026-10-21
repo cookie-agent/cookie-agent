@@ -114,7 +114,10 @@ pub struct Workspace {
     pub costs: RwSignal<HashMap<SessionId, f64>>,
     cost_debounce: StoredValue<HashMap<SessionId, u64>>,
     pub level: RwSignal<EventLevel>,
-    pub expanded: RwSignal<HashSet<String>>,
+    /// What the user opened in each session's transcript: tool calls by
+    /// ID, other rows by their block key. It outlives a switch to another
+    /// session, not a reload.
+    pub expanded: RwSignal<HashMap<SessionId, HashSet<String>>>,
     pub composer: RwSignal<String>,
     pub status: RwSignal<String>,
     pub panel: RwSignal<Option<Panel>>,
@@ -227,7 +230,7 @@ impl Workspace {
             level: RwSignal::new(level_from_storage(
                 browser::load(EVENT_LEVEL_KEY).as_deref(),
             )),
-            expanded: RwSignal::new(HashSet::new()),
+            expanded: RwSignal::new(HashMap::new()),
             composer: RwSignal::new(String::new()),
             status: RwSignal::new(String::new()),
             panel: RwSignal::new(None),
@@ -1423,6 +1426,20 @@ impl Workspace {
     pub fn active_run(self) -> Option<cookie_agent_protocol::RunId> {
         let session_id = self.selected.get()?;
         self.with_store(|store| store.sessions.get(&session_id)?.active_run)
+    }
+
+    /// Opens or closes `key` (a tool call, or a row's block key) in the
+    /// viewed session's transcript.
+    pub fn toggle_expanded(self, key: String) {
+        let Some(session_id) = self.selected.get_untracked() else {
+            return;
+        };
+        self.expanded.update(|expanded| {
+            let opened = expanded.entry(session_id).or_default();
+            if !opened.remove(&key) {
+                opened.insert(key);
+            }
+        });
     }
 
     /// Whether the viewed session has a run or a compaction to stop, as
