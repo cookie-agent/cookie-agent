@@ -626,11 +626,16 @@ fn session_row(
             </Show>
         </div>
         <Show when=move || revealed.get() == Some(session_id) && confirming.get() != Some(session_id)>
+            // Labels only where the line fits them: on a narrow phone the
+            // three are icons, named by their aria-labels, so the four
+            // buttons stay on one line.
+            <div class="@container" data-delete-actions-frame>
             <div class="flex flex-wrap gap-1.5 px-2 pb-1" data-delete-actions>
                 <Show when=movable>
                     <button
                         type="button"
                         class=REVEALED
+                        aria-label="Move to project…"
                         data-move-reveal=session_id.to_string()
                         on:click=move |_| {
                             revealed.set(None);
@@ -638,27 +643,29 @@ fn session_row(
                         }
                     >
                         <Glyph icon=icondata::FaFolderOpenSolid />
-                        "Move"
+                        <span class="hidden @[22rem]:inline">"Move"</span>
                     </button>
                 </Show>
                 <button
                     type="button"
                     class=REVEALED
+                    aria-label="Rename"
                     data-rename-reveal=session_id.to_string()
                     on:click=move |_| actions.begin_rename(workspace, session_id)
                 >
                     <Glyph icon=icondata::FaPenSolid />
-                    "Rename"
+                    <span class="hidden @[22rem]:inline">"Rename"</span>
                 </button>
                 <Show when=move || workspace.can_delete.get()>
                     <button
                         type="button"
                         class=REVEALED
+                        aria-label="Delete"
                         data-delete-reveal=session_id.to_string()
                         on:click=move |_| confirming.set(Some(session_id))
                     >
                         <Glyph icon=icondata::FaTrashCanRegular />
-                        "Delete"
+                        <span class="hidden @[22rem]:inline">"Delete"</span>
                     </button>
                 </Show>
                 // An icon, so the four fit a phone's drawer on one line.
@@ -672,6 +679,7 @@ fn session_row(
                 >
                     <Glyph icon=icondata::FaXmarkSolid />
                 </button>
+            </div>
             </div>
         </Show>
         <Show when=move || confirming.get() == Some(session_id)>

@@ -2965,9 +2965,14 @@ def projects_phone():
         long_press(phone, '#drawer [data-session-row="%s"] [data-session]' % row)
         phone.wait("the row's actions", lambda: count(phone, "#drawer [data-delete-actions] [data-move-reveal]") == 1)
         labels = phone.script(
-            "return [...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => b.innerText.trim() || b.getAttribute('aria-label'))"
+            "return [...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => b.getAttribute('aria-label'))"
         )
-        assert labels == ["Move", "Rename", "Delete", "Cancel"], labels
+        assert labels == ["Move to project…", "Rename", "Delete", "Cancel"], labels
+        # A narrow phone shows the four as icons, on one line.
+        tops = phone.script(
+            "return [...new Set([...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => Math.round(b.getBoundingClientRect().top)))]"
+        )
+        assert len(tops) == 1, "the row's actions wrap: %s" % tops
         fits(phone, "the row's actions")
         phone.shot("phone-row-actions")
         phone.click("#drawer [data-actions-cancel]")
