@@ -1,4 +1,4 @@
-//! The cookie agent web client's built page, embedded at compile time for
+//! The Cookie Agent web client's built page, embedded at compile time for
 //! `cookie daemon` to serve: `scripts/build-web.sh` writes it to `bundle/`
 //! beside this crate. Without a built bundle the crate holds a placeholder
 //! `index.html` that says how to build one.

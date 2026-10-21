@@ -182,7 +182,7 @@ fn parse_allowed_tools(value: &str) -> Result<Vec<SkillAllowedTool>, String> {
 }
 
 /// The permission action an `allowed-tools` name grants. The names of the
-/// tools cookie agent ships map case-insensitively (`Edit` grants `write`);
+/// tools Cookie Agent ships map case-insensitively (`Edit` grants `write`);
 /// any other name is the action itself, lowercased, so a skill can grant a
 /// runtime's own action.
 fn tool_action(

@@ -1,4 +1,4 @@
-//! cookie agent's MCP client: the servers one runtime hosts, as a
+//! Cookie Agent's MCP client: the servers one runtime hosts, as a
 //! [`ToolProvider`].
 //!
 //! An [`McpRegistry`] connects every enabled server eagerly, lists its tools

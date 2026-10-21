@@ -1,6 +1,6 @@
 # Memory
 
-Memory is what cookie agent keeps between sessions: Markdown notes that the
+Memory is what Cookie Agent keeps between sessions: Markdown notes that the
 agent and you write, which later sessions see or find again. It belongs to the
 `global` runtime, so a session has memory while `global` is attached;
 detaching `global` turns it off for that session. Memory is gathered context:

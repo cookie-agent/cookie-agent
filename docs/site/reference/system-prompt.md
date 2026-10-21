@@ -1,6 +1,6 @@
 # System Prompt Composition
 
-cookie agent keeps the system prompt deliberately small and inspectable. The
+Cookie Agent keeps the system prompt deliberately small and inspectable. The
 Markdown body of the selected agent document is the base prompt. Parsing removes
 only trailing newlines and restores one final newline; frontmatter configures the
 agent but is not copied into prompt text.
@@ -147,7 +147,7 @@ already at its byte limit.
 At each root run start where AGENTS.md loading is on (the run agent's
 `agent_md` frontmatter, else `[agent_md] enabled`), each coding runtime the
 session is attached to discovers the applicable `AGENTS.md` files in its own
-workspace, and cookie agent stores their bounded content in one
+workspace, and Cookie Agent stores their bounded content in one
 `agent_md_loaded` event per attachment that returned a file, naming the
 attachment. Files larger than 2 MiB are skipped and surfaced as
 `AgentMdSkipped` warning events. History replays the latest run's entries, the

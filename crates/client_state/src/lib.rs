@@ -1,4 +1,4 @@
-//! The client state every cookie agent client shares: disposable projections
+//! The client state every Cookie Agent client shares: disposable projections
 //! reduced from the protocol's stored and transient events, independent of
 //! how a client renders them. The TUI and the web client both keep a
 //! [`StateStore`]; it builds for `wasm32-unknown-unknown` too.

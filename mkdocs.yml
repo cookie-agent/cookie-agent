@@ -1,6 +1,6 @@
-site_name: cookie agent
+site_name: Cookie Agent
 site_url: https://cookie-agent.github.io/doc/
-site_description: Documentation for the cookie agent coding harness
+site_description: Documentation for the Cookie Agent coding harness
 repo_url: https://github.com/cookie-agent/cookie-agent
 repo_name: cookie-agent/cookie-agent
 docs_dir: docs/site

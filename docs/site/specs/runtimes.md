@@ -18,7 +18,7 @@ directory. Where the two differ, that spec governs.
 
 ## 1. Goal and scope
 
-cookie agent aims to cover both coding-agent use (opencode) and personal
+Cookie Agent aims to cover both coding-agent use (opencode) and personal
 assistant use (openclaw). Both need the agent's tools to live somewhere other
 than the process that runs the model loop: a session may work in a repository
 on another machine, in several workspaces at once, or with no workspace at all.

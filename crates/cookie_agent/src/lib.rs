@@ -1,4 +1,4 @@
-//! Noninteractive cookie agent command support.
+//! Noninteractive Cookie Agent command support.
 
 pub mod availability;
 pub mod run;

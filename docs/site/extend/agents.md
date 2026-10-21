@@ -507,7 +507,7 @@ built-in `default` agent is used.
 ## Permissions
 
 Agent documents define an ordered permission map keyed by permission action.
-The tools cookie agent ships use `read`, `write`, `bash`, `delegate`,
+The tools Cookie Agent ships use `read`, `write`, `bash`, `delegate`,
 `message`, `mcp`, `skill`, `webfetch`, `memory`, and `memory_write`; a runtime's or plugin's tools may
 declare actions of their own, such as `browse`, which rules name the same way.
 An action is a lowercase ASCII letter followed by up to 31 lowercase letters,
@@ -608,7 +608,7 @@ Bash remains independent of this path-resource contract. An allowed command has
 only its complete command-string resource and does not gain hidden `read` or
 `write` resource checks when the command traverses a link.
 
-Permission policy does not validate cookie agent's pre-existing private-state
+Permission policy does not validate Cookie Agent's pre-existing private-state
 paths. New state is created with owner-only permissions, but existing loose,
 foreign-owned, hard-linked, or symlinked state is read and written as-is. This is
 part of the local storage threat model, not an `allow`/`ask`/`deny` decision.

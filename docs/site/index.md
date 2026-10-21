@@ -1,6 +1,6 @@
-# cookie agent
+# Cookie Agent
 
-cookie agent is a subagent-first coding harness. A daemon owns your provider
+Cookie Agent is a subagent-first coding harness. A daemon owns your provider
 connections, sessions, agents, permissions, and memory, and runs the models.
 Runtimes give its sessions their tools: the files and shell of a workspace on
 this machine or another one. Clients, the terminal UI, the web page, and the

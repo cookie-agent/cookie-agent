@@ -1,4 +1,4 @@
-//! Ratatui frontend for cookie agent's versioned JSON-RPC protocol.
+//! Ratatui frontend for Cookie Agent's versioned JSON-RPC protocol.
 
 pub mod config;
 pub mod markdown;

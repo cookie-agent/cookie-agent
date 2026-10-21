@@ -1,6 +1,6 @@
 # Plugins [plugins]
 
-Plugins are local programs that extend cookie agent from their own process.
+Plugins are local programs that extend Cookie Agent from their own process.
 A plugin can declare tools, intercept engine hooks, watch session events,
 publish to a bus other plugins hear, and send messages to sessions. Install a
 plugin by getting its executable from its author and adding it to your

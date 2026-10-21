@@ -1,12 +1,12 @@
-# cookie agent
+# Cookie Agent
 
-<p align="center"><img src="assets/logo.png" alt="cookie agent logo" width="256"></p>
+<p align="center"><img src="assets/logo.png" alt="Cookie Agent logo" width="256"></p>
 
 Simple and mighty coding agent.
 
 [![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io-blue)](https://cookie-agent.github.io/doc/)
 
-cookie agent is a Rust-powered terminal coding agent. The surface stays
+Cookie Agent is a Rust-powered terminal coding agent. The surface stays
 minimalistic — a daemon, a TUI, a web client, a headless runner — while the batteries are
 included underneath: providers, permissions, delegation, sessions, plugins,
 and observability are all built in.
@@ -86,11 +86,11 @@ including the development version's [Installation](https://cookie-agent.github.i
 
 ## License
 
-cookie agent is licensed under the [Cookie Agent License](LICENSE): the Apache
+Cookie Agent is licensed under the [Cookie Agent License](LICENSE): the Apache
 License 2.0 with one added condition. You can use, modify, fork, and self-host
 it for free, including commercially and as an internal tool for your team. The
 exception: an organization with annual revenue of USD 10,000 or more needs a
-commercial license to offer cookie agent (its daemon, gateway, or runtime, or a
+commercial license to offer Cookie Agent (its daemon, gateway, or runtime, or a
 product that embeds them) to third parties as a hosted service. Contact
 realquantumcookie@gmail.com for one.
 

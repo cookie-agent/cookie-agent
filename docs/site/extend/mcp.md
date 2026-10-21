@@ -168,7 +168,7 @@ containing the browser callback code.
 
 OAuth credentials are user-level and stored in the single
 `~/.cookie-agent/mcp-oauth.json` file. On Unix the file is owner-only
-(`0600`) when cookie agent creates it. The unversioned file is parsed strictly,
+(`0600`) when Cookie Agent creates it. The unversioned file is parsed strictly,
 but an existing file is used regardless of permissions, ownership, links, or
 symlinks. Stop the daemon and delete this file to revoke all locally stored MCP
 OAuth credentials. Removing a server through MCP management removes its

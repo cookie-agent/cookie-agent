@@ -1,4 +1,4 @@
-//! The signals that ask a cookie agent process to stop.
+//! The signals that ask a Cookie Agent process to stop.
 
 /// Listens for the signals that ask the process to stop: Ctrl-C (`SIGINT`),
 /// and on Unix `SIGTERM` (`kill`, systemd, container runtimes) and `SIGHUP`

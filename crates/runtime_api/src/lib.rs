@@ -1,4 +1,4 @@
-//! The contract between cookie agent's engine and the tools it runs.
+//! The contract between Cookie Agent's engine and the tools it runs.
 //!
 //! A tool provider implements [`ToolProvider`]: it declares [`ToolSpec`]s,
 //! prepares calls into [`PreparedTool`]s, and executes them with a

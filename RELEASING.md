@@ -1,4 +1,4 @@
-# Releasing cookie agent
+# Releasing Cookie Agent
 
 Stable releases start from a GitHub release published by hand. cargo-dist
 builds five Linux and macOS targets plus Windows x86_64 and ARM64 MSVC targets,

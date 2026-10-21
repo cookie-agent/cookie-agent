@@ -1,6 +1,6 @@
 # Security guarantees
 
-cookie agent combines permission policy with platform-specific filesystem and
+Cookie Agent combines permission policy with platform-specific filesystem and
 process controls. Permission rules decide whether a prepared tool call may run;
 they are not an operating-system security boundary. Rules deny by default: an
 unmatched action or resource is refused, and a tool whose action has no `allow`
@@ -51,7 +51,7 @@ it, rename it over the target, and sync the directory.
 ### Windows
 
 Windows filesystem capabilities remain path-based. For symbolic links and
-junctions that the backend supports, cookie agent follows the route to the
+junctions that the backend supports, Cookie Agent follows the route to the
 destination while preserving the alias for writes. Other reparse-point forms
 fail closed. The backend:
 
@@ -82,7 +82,7 @@ window but does not eliminate it.
 
 ## Private state
 
-On Unix, cookie agent creates new private-state directories with mode `0700` and
+On Unix, Cookie Agent creates new private-state directories with mode `0700` and
 new files with mode `0600`. Store updates use `flock`-locked journals and atomic
 publication. Existing paths are not checked for owner, mode, type, link count,
 or symlinks; they are opened and used as-is.
@@ -104,7 +104,7 @@ links; they are opened and used as-is.
 Creation-time modes and DACLs protect newly created state from other ordinary
 users. They do not protect state that already exists or is later replaced. A
 local actor able to pre-create or replace a state path can redirect reads and
-writes through a symlink or provide loose/foreign-owned storage; cookie agent
+writes through a symlink or provide loose/foreign-owned storage; Cookie Agent
 will use that path. Treat the parent storage location as trusted and remove
 unexpected state before starting the daemon. Neither platform protects secrets
 from privileged code such as `root`, `SYSTEM`, or an elevated administrator.
@@ -207,12 +207,12 @@ processes cannot escape during startup.
 The process-group and Job Object controls bound process lifetime; they do not
 restrict what an approved command can access. Windows commands do not run in an
 AppContainer or restricted token and have no seccomp-like syscall filter. Treat
-`bash` permission as authority to run the complete command with the cookie agent
+`bash` permission as authority to run the complete command with the Cookie Agent
 process's user privileges.
 
 ## Web fetching
 
-`webfetch` requests run with the cookie agent process's network access and
+`webfetch` requests run with the Cookie Agent process's network access and
 inherited proxy environment. Permission policy checks only the exact initial
 URL, including its query string; redirect destinations are not re-checked, and
 there is no SSRF protection, host or IP blocklist, or DNS pinning. A broad

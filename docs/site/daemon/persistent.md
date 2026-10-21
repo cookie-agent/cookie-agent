@@ -106,7 +106,7 @@ be a systemd user service. On the daemon's machine,
 
 ```ini
 [Unit]
-Description=cookie agent daemon
+Description=Cookie Agent daemon
 
 [Service]
 ExecStart=%h/.cargo/bin/cookie daemon --listen 0.0.0.0:7419
@@ -122,7 +122,7 @@ On a machine whose `config.toml` names the daemon (`[server] url` and
 
 ```ini
 [Unit]
-Description=cookie agent runtime
+Description=Cookie Agent runtime
 
 [Service]
 ExecStart=%h/.cargo/bin/cookie runtime serve --daemon

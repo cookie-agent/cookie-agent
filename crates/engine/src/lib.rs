@@ -1,4 +1,4 @@
-//! The transport-free single-conversation cookie agent runtime.
+//! The transport-free single-conversation Cookie Agent runtime.
 
 pub mod actor;
 mod base_tools;

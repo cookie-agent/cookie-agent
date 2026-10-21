@@ -951,7 +951,7 @@ fn client_identity(kind: &'static str) -> cookie_agent_protocol::ClientIdentity 
 }
 
 fn data_dir() -> anyhow::Result<PathBuf> {
-    paths::user_data_root().context("determine home directory for cookie agent data")
+    paths::user_data_root().context("determine home directory for Cookie Agent data")
 }
 
 /// This machine's host name; empty when it is unavailable.

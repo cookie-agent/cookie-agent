@@ -11,18 +11,9 @@ pub(crate) async fn scripted_model_server() -> (String, tokio::task::JoinHandle<
     let address = listener.local_addr().expect("listener address");
     let task = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("scripted accept");
-        let mut request = Vec::new();
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let read = socket.read(&mut buffer).await.expect("scripted read");
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..read]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
+        // The whole request: closing the socket with its body unread resets
+        // the connection on Windows, and the client sees a failed request.
+        let request = read_scripted_http_request(&mut socket).await;
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"scripted root complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
         let response = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -162,18 +153,9 @@ pub(crate) async fn scripted_zero_resource_tool_server()
         let mut requests = Vec::new();
         for body in bodies {
             let (mut socket, _) = listener.accept().await.expect("zero-resource accept");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = socket.read(&mut buffer).await.expect("zero-resource read");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            // The whole request: closing the socket with its body unread resets
+            // the connection on Windows, and the client sees a failed request.
+            let request = read_scripted_http_request(&mut socket).await;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -205,18 +187,9 @@ pub(crate) async fn scripted_delegation_server() -> (String, tokio::task::JoinHa
         let mut requests = Vec::new();
         for body in bodies {
             let (mut socket, _) = listener.accept().await.expect("delegation accept");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = socket.read(&mut buffer).await.expect("delegation read");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            // The whole request: closing the socket with its body unread resets
+            // the connection on Windows, and the client sees a failed request.
+            let request = read_scripted_http_request(&mut socket).await;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -1570,18 +1543,9 @@ pub(crate) async fn scripted_approval_server(
         let mut requests = Vec::new();
         for body in bodies {
             let (mut socket, _) = listener.accept().await.expect("approval accept");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = socket.read(&mut buffer).await.expect("approval read");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            // The whole request: closing the socket with its body unread resets
+            // the connection on Windows, and the client sees a failed request.
+            let request = read_scripted_http_request(&mut socket).await;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -1714,18 +1678,9 @@ pub(crate) async fn scripted_repeated_write_server(
         let mut requests = Vec::new();
         for body in bodies {
             let (mut socket, _) = listener.accept().await.expect("repeated write accept");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = socket.read(&mut buffer).await.expect("repeated write read");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            // The whole request: closing the socket with its body unread resets
+            // the connection on Windows, and the client sees a failed request.
+            let request = read_scripted_http_request(&mut socket).await;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()

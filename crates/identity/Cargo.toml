@@ -1,7 +1,7 @@
 [package]
 name = "cookie_agent_identity"
 version = "0.3.0"
-description = "Identity and identifier types for cookie agent"
+description = "Identity and identifier types for Cookie Agent"
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"

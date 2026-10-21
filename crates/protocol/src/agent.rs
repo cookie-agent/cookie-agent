@@ -27,7 +27,7 @@ pub enum AgentMode {
 /// declares, matching `[a-z][a-z0-9_]{0,31}`. Rules name actions; an action
 /// no rule names is denied.
 ///
-/// The constants are the actions of the tools cookie agent ships. The daemon
+/// The constants are the actions of the tools Cookie Agent ships. The daemon
 /// gives three groups of them meaning: [`Self::is_path`] actions take file
 /// paths as resources, [`Self::is_command`] takes shell commands, and
 /// [`Self::is_base_layer`] actions belong to the daemon's own tools. Every
@@ -51,7 +51,7 @@ impl PermissionAction {
     /// `memory_edit`, `memory_delete`).
     pub const MEMORY_WRITE: Self = Self(Cow::Borrowed("memory_write"));
 
-    /// The actions of the tools cookie agent ships, in display order.
+    /// The actions of the tools Cookie Agent ships, in display order.
     pub const BUILT_IN: [Self; 10] = [
         Self::READ,
         Self::WRITE,

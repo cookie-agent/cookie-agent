@@ -17,7 +17,7 @@ pub const GLOBAL_RUNTIME_ID: &str = "global";
 /// Runtime ID of the built-in coding runtime for the daemon's working
 /// directory.
 pub const LOCAL_RUNTIME_ID: &str = "local";
-/// The kind the coding runtimes cookie agent ships declare. A label only: the
+/// The kind the coding runtimes Cookie Agent ships declare. A label only: the
 /// daemon never branches on a runtime's kind.
 pub const CODING_RUNTIME_KIND: &str = "coding";
 /// Upper bound of an attachment name in bytes.

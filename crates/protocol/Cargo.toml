@@ -1,7 +1,7 @@
 [package]
 name = "cookie_agent_protocol"
 version = "0.3.0"
-description = "Protocol types and transports for cookie agent"
+description = "Protocol types and transports for Cookie Agent"
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"

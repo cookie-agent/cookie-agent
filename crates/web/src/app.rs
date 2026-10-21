@@ -346,7 +346,7 @@ fn Header(connection: Connection, theme: RwSignal<ThemePreference>) -> impl Into
         <header class="flex items-center gap-2 border-b border-toasted bg-parchment px-3 dark:border-ember dark:bg-char">
             <span class="flex min-w-0 flex-1 items-center gap-2 font-mono font-bold whitespace-nowrap">
                 <img src="icons/icon.svg" alt="" class="h-6 w-6 shrink-0" />
-                "cookie agent"
+                "Cookie Agent"
             </span>
             <ConnectionStatus connection=connection compact=false primary=true />
             <ThemeToggle theme=theme class=HEADER_BUTTON />

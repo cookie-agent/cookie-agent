@@ -1,6 +1,6 @@
 # Architecture
 
-This page is the contributor's view of cookie agent: how the Rust workspace's
+This page is the contributor's view of Cookie Agent: how the Rust workspace's
 fifteen crates implement the pieces the [Concepts](concepts/daemon.md) pages
 describe. The daemon, the `engine` crate served by the `server` crate, owns provider
 connections, sessions, agents, model execution, permissions, memory, and
