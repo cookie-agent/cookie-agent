@@ -3,7 +3,7 @@
 //! the items whose [`item_key`] changed.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     hash::{BuildHasher as _, Hash, Hasher as _},
 };
 
@@ -34,6 +34,18 @@ pub struct TranscriptView<'a> {
     pub minimum_level: EventLevel,
     /// Tool calls the user expanded.
     pub expanded: &'a HashSet<String>,
+    /// The subagents this session's delegate calls started, by call.
+    pub delegates: &'a HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
+}
+
+/// The subagent a delegate call started, as its row shows it.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Delegate {
+    pub session_id: cookie_agent_protocol::SessionId,
+    pub agent: String,
+    pub handle: Option<String>,
+    /// What it does while it runs.
+    pub activity: Option<crate::tree::Activity>,
 }
 
 const NOTE: &str = "text-xs text-ink dark:text-sand";
@@ -58,6 +70,7 @@ pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
                 if let Some(tool) = view.state.tools.get(call_id) {
                     tool.revision.hash(&mut hasher);
                 }
+                view.delegates.get(call_id).hash(&mut hasher);
             }
         }
     }
@@ -493,6 +506,9 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         ),
         escape(&tool.header_text()),
     );
+    if let Some(delegate) = view.delegates.get(&tool.id) {
+        html.push_str(&delegate_html(delegate, tool.status == ToolStatus::Running));
+    }
     if let Some(progress) = tool
         .progress
         .as_ref()
@@ -541,6 +557,34 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     html
 }
 
+/// A delegate call's subagent: its agent and handle, what it does while it
+/// runs, and the way to open it.
+fn delegate_html(delegate: &Delegate, running: bool) -> String {
+    let activity = delegate
+        .activity
+        .filter(|_| running)
+        .map(|activity| {
+            format!(
+                "<span class=\"inline-flex items-center gap-1 text-caramel dark:text-maple\" data-delegate-activity>{}{}</span>",
+                svg(icondata::FaCircleNotchSolid, "animate-spin"),
+                activity.label()
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "<div class=\"flex flex-wrap items-center gap-2 px-2 pb-1 {NOTE}\" data-delegate=\"{}\"><span class=\"font-mono\">{}{}</span>{activity}<button type=\"button\" data-action=\"open-session\" data-session=\"{}\" class=\"inline-flex min-h-11 items-center gap-1 rounded-md px-2 hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}open</button></div>",
+        delegate.session_id,
+        escape(&delegate.agent),
+        delegate
+            .handle
+            .as_ref()
+            .map(|handle| format!(" {}", escape(handle)))
+            .unwrap_or_default(),
+        delegate.session_id,
+        svg(icondata::FaArrowUpRightFromSquareSolid, ""),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -549,7 +593,11 @@ mod tests {
         EventLevel, ModelDisplayNames, ProducerMessageStatus, SessionState, TranscriptItem,
     };
 
-    use super::{TranscriptView, item_html, item_key, tool_html};
+    use super::{Delegate, TranscriptView, item_html, item_key, tool_html};
+
+    static NO_DELEGATES: std::sync::LazyLock<
+        std::collections::HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
+    > = std::sync::LazyLock::new(Default::default);
 
     /// A completed call with raw `arguments`, presented with `presentation`.
     fn tool(
@@ -607,6 +655,7 @@ mod tests {
             names: &names,
             minimum_level,
             expanded: &expanded,
+            delegates: &NO_DELEGATES,
         };
         assert!(tool_html(&view(EventLevel::Info), &plain).contains("raw-marker"));
         assert!(!tool_html(&view(EventLevel::Warning), &plain).contains("raw-marker"));
@@ -626,6 +675,7 @@ mod tests {
             names: &names,
             minimum_level,
             expanded: &expanded,
+            delegates: &NO_DELEGATES,
         };
         let row = TranscriptItem::internal("<careful>");
         let shown = item_html(&view(EventLevel::Info), &row).expect("shown");
@@ -677,6 +727,7 @@ mod tests {
             names: &names,
             minimum_level: EventLevel::Warning,
             expanded,
+            delegates: &NO_DELEGATES,
         };
         let consumed = row(ProducerMessageStatus::Consumed);
         let folded = item_html(&view(&collapsed), &consumed).expect("shown");

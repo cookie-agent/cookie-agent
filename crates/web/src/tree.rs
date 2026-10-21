@@ -1,11 +1,16 @@
-//! The subagent tree panel: which rows a session tree shows, folded where
-//! the user folded it, and when the panel shows at all (`/agent-panel`).
+//! The subagents nested under their session in the sessions list: which
+//! rows a session tree shows, folded where the user folded it, whether the
+//! session's row expands at all (`/agent-panel`), the title bar's path to
+//! a viewed subagent, and the subagent a delegate call started.
 
 use std::collections::HashSet;
 
-use cookie_agent_protocol::{SessionId, SessionMeta, SessionStatus, SessionTree};
+use cookie_agent_protocol::{
+    SessionId, SessionMeta, SessionOrigin, SessionStatus, SessionTree, ToolCallId,
+};
 
-/// Whether the agent panel shows, as `/agent-panel show|hide|auto` sets.
+/// Whether the open session's row shows its subagents, as
+/// `/agent-panel show|hide|auto` sets.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PanelMode {
     /// While a delegated agent is live, or a child session is viewed.
@@ -15,13 +20,18 @@ pub enum PanelMode {
     Hidden,
 }
 
-/// One row of the panel.
+/// One row of the tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TreeRow {
     pub session_id: SessionId,
     pub depth: usize,
-    pub label: String,
-    pub running: bool,
+    /// The agent's name.
+    pub agent: String,
+    /// What it was asked: the session's title.
+    pub task: String,
+    /// The short handle the model refers to it by.
+    pub handle: Option<String>,
+    pub status: SessionStatus,
     pub has_children: bool,
     pub collapsed: bool,
 }
@@ -45,8 +55,10 @@ fn push_rows(
     rows.push(TreeRow {
         session_id,
         depth,
-        label: row_label(&tree.session),
-        running: tree.session.status == SessionStatus::Running,
+        agent: tree.session.creation_selection.agent.to_string(),
+        task: task(&tree.session),
+        handle: tree.session.short_id.clone(),
+        status: tree.session.status,
         has_children: !tree.children.is_empty(),
         collapsed: folded,
     });
@@ -57,12 +69,93 @@ fn push_rows(
     }
 }
 
-fn row_label(session: &SessionMeta) -> String {
-    let title = session
+fn task(session: &SessionMeta) -> String {
+    session
         .title
         .as_ref()
-        .map_or_else(|| "untitled".to_owned(), ToString::to_string);
-    format!("{}: {title}", session.creation_selection.agent)
+        .map_or_else(|| "untitled".to_owned(), ToString::to_string)
+}
+
+/// A subagent's name in the title bar: its agent and its task.
+pub fn subagent_label(session: &SessionMeta) -> String {
+    format!("{}: {}", session.creation_selection.agent, task(session))
+}
+
+/// The sessions from `tree`'s root down to `session_id`, both included;
+/// empty when the tree does not hold it.
+pub fn path(tree: &SessionTree, session_id: SessionId) -> Vec<&SessionMeta> {
+    if tree.session.session_id == session_id {
+        return vec![&tree.session];
+    }
+    for child in &tree.children {
+        let mut below = path(child, session_id);
+        if !below.is_empty() {
+            below.insert(0, &tree.session);
+            return below;
+        }
+    }
+    Vec::new()
+}
+
+/// The subagents `parent` started, by the delegate call that started each.
+pub fn delegates_of(tree: &SessionTree, parent: SessionId) -> Vec<(ToolCallId, &SessionMeta)> {
+    let mut found = Vec::new();
+    collect_delegates(tree, parent, &mut found);
+    found
+}
+
+fn collect_delegates<'a>(
+    tree: &'a SessionTree,
+    parent: SessionId,
+    found: &mut Vec<(ToolCallId, &'a SessionMeta)>,
+) {
+    for child in &tree.children {
+        if let SessionOrigin::Delegated {
+            parent_session_id,
+            parent_tool_call_id,
+            ..
+        } = &child.session.origin
+            && *parent_session_id == parent
+        {
+            found.push((*parent_tool_call_id, &child.session));
+        }
+        collect_delegates(child, parent, found);
+    }
+}
+
+/// What a running subagent is doing, as a delegate call's row says it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Activity {
+    WaitingForApproval,
+    /// Running a tool call.
+    RunningTool,
+    /// Its model is answering.
+    Thinking,
+}
+
+impl Activity {
+    /// What the subagent's session state says it does: an approval
+    /// outranks a running tool, which outranks the run itself. `None` for
+    /// a subagent that is not running.
+    pub fn of(running: bool, tool_running: bool, approval_waiting: bool) -> Option<Self> {
+        if approval_waiting {
+            Some(Self::WaitingForApproval)
+        } else if tool_running {
+            Some(Self::RunningTool)
+        } else if running {
+            Some(Self::Thinking)
+        } else {
+            None
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WaitingForApproval => "waiting for approval",
+            Self::RunningTool => "running a tool",
+            Self::Thinking => "thinking",
+        }
+    }
 }
 
 /// Whether a delegated session of `tree` is still live (idle or running).
@@ -110,7 +203,10 @@ mod tests {
 
     use cookie_agent_protocol::{SessionId, SessionMeta, SessionStatus, SessionTree};
 
-    use super::{PanelMode, contains, has_live_delegate, panel_visible, tree_rows};
+    use super::{
+        Activity, PanelMode, contains, delegates_of, has_live_delegate, panel_visible, path,
+        subagent_label, tree_rows,
+    };
 
     fn meta(agent: &str, status: SessionStatus) -> SessionMeta {
         let mut meta: SessionMeta = serde_json::from_value(serde_json::json!({
@@ -163,15 +259,15 @@ mod tests {
         let rows = tree_rows(&tree, &HashSet::new());
         assert_eq!(
             rows.iter()
-                .map(|row| (row.depth, row.label.as_str()))
+                .map(|row| (row.depth, row.agent.as_str(), row.task.as_str()))
                 .collect::<Vec<_>>(),
             [
-                (0, "primary: untitled"),
-                (1, "worker: untitled"),
-                (2, "helper: untitled"),
+                (0, "primary", "untitled"),
+                (1, "worker", "untitled"),
+                (2, "helper", "untitled"),
             ]
         );
-        assert!(rows[1].running && rows[1].has_children);
+        assert!(rows[1].status == SessionStatus::Running && rows[1].has_children);
         let worker = tree.children[0].session.session_id;
         let folded = tree_rows(&tree, &HashSet::from([worker]));
         assert_eq!(folded.len(), 2);
@@ -202,5 +298,82 @@ mod tests {
         assert!(panel_visible(PanelMode::Auto, Some(&live), false));
         assert!(panel_visible(PanelMode::Shown, None, false));
         assert!(!panel_visible(PanelMode::Hidden, Some(&live), true));
+    }
+
+    /// `child` as delegated by `parent`'s call `call`.
+    fn delegated(mut child: SessionTree, parent: &SessionTree, call: &str) -> SessionTree {
+        child.session.origin = serde_json::from_value(serde_json::json!({
+            "type": "delegated",
+            "root_session_id": parent.session.session_id,
+            "parent_session_id": parent.session.session_id,
+            "parent_run_id": uuid::Uuid::now_v7(),
+            "parent_tool_call_id": call,
+            "invocation_id": uuid::Uuid::now_v7(),
+            "depth": 1,
+        }))
+        .expect("a delegated origin");
+        child
+    }
+
+    #[test]
+    fn the_path_leads_from_the_root_to_a_subagent() {
+        let mut tree = node("primary", SessionStatus::Idle, Vec::new());
+        let mut worker = node("worker", SessionStatus::Running, Vec::new());
+        worker.session.title =
+            Some(cookie_agent_protocol::SessionTitle::new("check tests").expect("a title"));
+        let helper = node("helper", SessionStatus::Idle, Vec::new());
+        let helper_id = helper.session.session_id;
+        worker.children.push(helper);
+        tree.children.push(worker);
+        let labels = path(&tree, helper_id)
+            .into_iter()
+            .map(|session| session.creation_selection.agent.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["primary", "worker", "helper"]);
+        assert_eq!(
+            subagent_label(&tree.children[0].session),
+            "worker: check tests"
+        );
+        assert_eq!(path(&tree, tree.session.session_id).len(), 1);
+        assert!(path(&tree, SessionId::new_v7()).is_empty());
+    }
+
+    #[test]
+    fn a_delegate_call_finds_the_subagent_it_started() {
+        let (call_7, call_9) = (
+            uuid::Uuid::now_v7().to_string(),
+            uuid::Uuid::now_v7().to_string(),
+        );
+        let mut tree = node("primary", SessionStatus::Idle, Vec::new());
+        let child = delegated(
+            node("worker", SessionStatus::Running, Vec::new()),
+            &tree,
+            &call_7,
+        );
+        let grandchild = delegated(
+            node("helper", SessionStatus::Idle, Vec::new()),
+            &child,
+            &call_9,
+        );
+        let mut child = child;
+        child.children.push(grandchild);
+        let child_id = child.session.session_id;
+        tree.children.push(child);
+        let found = delegates_of(&tree, tree.session.session_id);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.to_string(), call_7);
+        assert_eq!(found[0].1.session_id, child_id);
+        assert_eq!(delegates_of(&tree, child_id)[0].0.to_string(), call_9);
+    }
+
+    #[test]
+    fn an_approval_outranks_a_tool_which_outranks_thinking() {
+        assert_eq!(
+            Activity::of(true, true, true),
+            Some(Activity::WaitingForApproval)
+        );
+        assert_eq!(Activity::of(true, true, false), Some(Activity::RunningTool));
+        assert_eq!(Activity::of(true, false, false), Some(Activity::Thinking));
+        assert_eq!(Activity::of(false, false, false), None);
     }
 }

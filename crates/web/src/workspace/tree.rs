@@ -135,15 +135,15 @@ impl Workspace {
         self.panel_mode.set(mode);
         self.status.set(
             match mode {
-                PanelMode::Shown => "agent panel: shown",
-                PanelMode::Hidden => "agent panel: hidden",
-                PanelMode::Auto => "agent panel: shown while agents run",
+                PanelMode::Shown => "subagents: always shown",
+                PanelMode::Hidden => "subagents: hidden",
+                PanelMode::Auto => "subagents: shown while one runs or is open",
             }
             .into(),
         );
     }
 
-    /// Folds or unfolds `session_id`'s children in the panel.
+    /// Folds or unfolds `session_id`'s subagents.
     pub fn toggle_folded(self, session_id: SessionId) {
         self.collapsed.update(|collapsed| {
             if !collapsed.remove(&session_id) {
@@ -152,8 +152,8 @@ impl Workspace {
         });
     }
 
-    /// Whether the panel shows now.
-    pub fn tree_panel_visible(self) -> bool {
+    /// Whether the open session's row shows its subagents now.
+    pub fn subagents_shown(self) -> bool {
         let viewing_child = self.selected.get().is_some_and(|session_id| {
             !self.new_session.get() && self.tree_root.get() != Some(session_id)
         });

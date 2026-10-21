@@ -13,7 +13,7 @@ use cookie_agent_client_state::{
 };
 use cookie_agent_protocol::{
     ApprovalUserDecision, InputDelivery, ModelSelection, PermissionAction, PermissionEffect,
-    PermissionRuleSource, SessionMeta,
+    PermissionRuleSource, SessionId, SessionMeta,
 };
 use leptos::{ev, html, prelude::*};
 use wasm_bindgen::JsCast as _;
@@ -26,7 +26,7 @@ use crate::{
     keys::{ComposerAction, KeyPress, composer_action},
     render::{
         blocks::{BlockPlace, display_html},
-        transcript::{TranscriptView, item_html, item_key},
+        transcript::{Delegate, TranscriptView, item_html, item_key},
     },
     workspace::{Panel, Workspace},
 };
@@ -36,8 +36,8 @@ mod manage;
 mod shell;
 
 use depth::{
-    AttachButtons, BackgroundBar, DraftFiles, GoalBar, TreePanel, background_sheet, goal_sheet,
-    message_sheet, permissions_sheet, skills_sheet,
+    AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, goal_sheet, message_sheet,
+    permissions_sheet, skills_sheet,
 };
 
 use manage::runtimes_sheet;
@@ -45,8 +45,9 @@ use shell::{Drawer, PageView, Rail, SidebarButton};
 
 use crate::{
     app::Connection,
-    layout::{View, session_menu},
+    layout::{Press, View, session_menu},
     theme::ThemePreference,
+    tree::{Activity, delegates_of, path, subagent_label, tree_rows},
 };
 
 /// How long a press on Send must last to queue instead of steer.
@@ -121,7 +122,6 @@ pub fn WorkspaceView(
                     class:lg:flex=move || workspace.sidebar_pinned.get()
                     id="sidebar"
                 >
-                    <TreePanel workspace=workspace />
                     <SessionList workspace=workspace />
                 </aside>
                 <ChatView workspace=workspace />
@@ -226,6 +226,15 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
             ticker.clear();
         }
     });
+    // Deleting: the row a long press revealed the action of, and the row
+    // whose delete waits for confirmation.
+    let deletes = RowDeletes {
+        hovered: RwSignal::new(None),
+        revealed: RwSignal::new(None),
+        confirming: RwSignal::new(None),
+        press: StoredValue::new(Press::default()),
+        timer: StoredValue::new(None),
+    };
     view! {
         <div class="flex flex-col gap-2 p-3">
             <button type="button" class=PRIMARY data-new-session on:click=move |_| workspace.start_new_session()>
@@ -268,45 +277,302 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 }
                 sessions
                     .into_iter()
-                    .map(|session| {
-                        let session_id = session.session_id;
-                        let current = move || workspace.selected.get() == Some(session_id);
-                        let mark = icons::session_status(session.status);
-                        let directory = session.cwd_identity.to_string();
-                        let last_activity = session.last_activity;
-                        let title = format!("{directory}\n{}", mark.label);
-                        view! {
-                            <button
-                                type="button"
-                                class=ROW
-                                class:bg-toasted=current
-                                class:dark:bg-ember=current
-                                aria-current=move || current().then_some("true")
-                                data-session=session_id.to_string()
-                                title=title
-                                on:click=move |_| workspace.open_session(session_id)
-                            >
-                                <span class="flex w-full items-center gap-2">
-                                    <Glyph icon=mark.icon class=mark.class("text-xs") />
-                                    <span class="sr-only">{mark.label}</span>
-                                    <span class="min-w-0 flex-1 truncate text-sm font-bold">
-                                        {session_label(&session)}
-                                    </span>
-                                </span>
-                                <span class=format!("flex w-full min-w-0 items-center gap-1 pl-5 {NOTE}")>
-                                    <Glyph icon=icondata::FaFolderSolid class="opacity-70" />
-                                    <span class="min-w-0 truncate">{basename(&directory).to_owned()}</span>
-                                    <span class="shrink-0">
-                                        {move || format!("· {}", relative_time(now.get(), last_activity))}
-                                    </span>
-                                </span>
-                            </button>
-                        }
-                    })
+                    .map(|session| session_row(workspace, session, now, deletes))
                     .collect_view()
                     .into_any()
             }}
         </nav>
+    }
+}
+
+/// The session list's delete state, shared by its rows.
+#[derive(Clone, Copy)]
+struct RowDeletes {
+    /// The row a mouse (or pen) is over, which shows its trash.
+    hovered: RwSignal<Option<SessionId>>,
+    revealed: RwSignal<Option<SessionId>>,
+    confirming: RwSignal<Option<SessionId>>,
+    /// The touch press under way, one at a time.
+    press: StoredValue<Press>,
+    timer: StoredValue<Option<TimeoutHandle>>,
+}
+
+impl RowDeletes {
+    fn stop_timer(self) {
+        if let Some(timer) = self.timer.get_value() {
+            timer.clear();
+        }
+        self.timer.set_value(None);
+    }
+}
+
+/// A root session's row: a click opens it; a trash button on hover (or a
+/// long press on a touch screen) offers to delete it, behind an inline
+/// confirmation. The open session's row has its subagents under it.
+fn session_row(
+    workspace: Workspace,
+    session: SessionMeta,
+    now: RwSignal<jiff::Timestamp>,
+    deletes: RowDeletes,
+) -> impl IntoView {
+    let session_id = session.session_id;
+    let current = move || workspace.selected.get() == Some(session_id);
+    let mark = icons::session_status(session.status);
+    let directory = session.cwd_identity.to_string();
+    let last_activity = session.last_activity;
+    let title = format!("{directory}\n{}", mark.label);
+    let label = session_label(&session);
+    let confirm_label = label.clone();
+    let RowDeletes {
+        hovered,
+        revealed,
+        confirming,
+        press,
+        ..
+    } = deletes;
+    let on_pointerdown = move |event: ev::PointerEvent| {
+        if event.pointer_type() != "touch" || !workspace.can_delete.get_untracked() {
+            return;
+        }
+        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+        press.update_value(|press| press.start(x, y));
+        deletes.stop_timer();
+        let timer = set_timeout_with_handle(
+            move || {
+                let fired = press.try_update_value(Press::elapse).unwrap_or(false);
+                if fired {
+                    confirming.set(None);
+                    revealed.set(Some(session_id));
+                }
+            },
+            LONG_PRESS,
+        )
+        .ok();
+        deletes.timer.set_value(timer);
+    };
+    let on_pointermove = move |event: ev::PointerEvent| {
+        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+        if press
+            .try_update_value(|press| press.moved(x, y))
+            .unwrap_or(false)
+        {
+            deletes.stop_timer();
+        }
+    };
+    let release = move |_| {
+        press.update_value(Press::cancel);
+        deletes.stop_timer();
+    };
+    view! {
+        <div
+            class="session-row group relative"
+            data-session-row=session_id.to_string()
+            on:pointerenter=move |event: ev::PointerEvent| {
+                if event.pointer_type() != "touch" {
+                    hovered.set(Some(session_id));
+                }
+            }
+            on:pointerleave=move |_| {
+                if hovered.get_untracked() == Some(session_id) {
+                    hovered.set(None);
+                }
+            }
+        >
+            <button
+                type="button"
+                class=format!("{ROW} no-callout select-none pr-12")
+                class:bg-toasted=current
+                class:dark:bg-ember=current
+                aria-current=move || current().then_some("true")
+                data-session=session_id.to_string()
+                title=title
+                on:pointerdown=on_pointerdown
+                on:pointermove=on_pointermove
+                on:pointerup=release
+                on:pointercancel=release
+                on:contextmenu=move |event: ev::MouseEvent| {
+                    // A touch screen's long press is the delete action, not
+                    // the browser's menu.
+                    if revealed.get_untracked() == Some(session_id) {
+                        event.prevent_default();
+                    }
+                }
+                on:click=move |_| {
+                    if press.try_update_value(Press::click).unwrap_or(true) {
+                        workspace.open_session(session_id);
+                    }
+                }
+            >
+                <span class="flex w-full items-center gap-2">
+                    <Glyph icon=mark.icon class=mark.class("text-xs") />
+                    <span class="sr-only">{mark.label}</span>
+                    <span class="min-w-0 flex-1 truncate text-sm font-bold">{label}</span>
+                </span>
+                <span class=format!("flex w-full min-w-0 items-center gap-1 pl-5 {NOTE}")>
+                    <Glyph icon=icondata::FaFolderSolid class="opacity-70" />
+                    <span class="min-w-0 truncate">{basename(&directory).to_owned()}</span>
+                    <span class="shrink-0">
+                        {move || format!("· {}", relative_time(now.get(), last_activity))}
+                    </span>
+                </span>
+            </button>
+            <Show when=move || workspace.can_delete.get()>
+                <button
+                    type="button"
+                    // Shown while a mouse is over the row, or the keyboard
+                    // is in it; a touch screen's long press offers it below.
+                    class=move || {
+                        let shown = if hovered.get() == Some(session_id) {
+                            "inline-flex"
+                        } else {
+                            "hidden group-has-focus-visible:inline-flex"
+                        };
+                        format!(
+                            "{} {shown} absolute top-0 right-0 bg-parchment dark:bg-char",
+                            ICON_BUTTON.replacen("inline-flex ", "", 1)
+                        )
+                    }
+                    aria-label="Delete the session"
+                    title="Delete the session and its subagents"
+                    data-delete=session_id.to_string()
+                    on:click=move |_| {
+                        revealed.set(None);
+                        confirming.set(Some(session_id));
+                    }
+                >
+                    <Glyph icon=icondata::FaTrashCanRegular />
+                </button>
+            </Show>
+        </div>
+        <Show when=move || revealed.get() == Some(session_id) && confirming.get() != Some(session_id)>
+            <div class="flex gap-2 px-2 pb-1" data-delete-actions>
+                <button
+                    type="button"
+                    class=BUTTON
+                    data-delete-reveal=session_id.to_string()
+                    on:click=move |_| confirming.set(Some(session_id))
+                >
+                    <Glyph icon=icondata::FaTrashCanRegular />
+                    "Delete"
+                </button>
+                <button type="button" class=BUTTON on:click=move |_| revealed.set(None)>
+                    "Cancel"
+                </button>
+            </div>
+        </Show>
+        <Show when=move || confirming.get() == Some(session_id)>
+            <div class="mx-2 mb-1 flex flex-col gap-2 rounded-lg border border-caramel bg-cream p-2 text-sm dark:border-maple dark:bg-night" role="alertdialog" data-delete-confirm-box>
+                <p>{format!("Delete “{confirm_label}” and its subagents? This cannot be undone.")}</p>
+                <div class="flex flex-wrap gap-2">
+                    <button
+                        type="button"
+                        class=PRIMARY
+                        data-delete-confirm=session_id.to_string()
+                        on:click=move |_| {
+                            confirming.set(None);
+                            revealed.set(None);
+                            workspace.delete_session(session_id);
+                        }
+                    >
+                        "Delete"
+                    </button>
+                    <button
+                        type="button"
+                        class=BUTTON
+                        on:click=move |_| {
+                            confirming.set(None);
+                            revealed.set(None);
+                        }
+                    >
+                        "Keep it"
+                    </button>
+                </div>
+            </div>
+        </Show>
+        {move || {
+            workspace
+                .delete_error
+                .get()
+                .filter(|(failed, _)| *failed == session_id)
+                .map(|(_, message)| view! { <p class=format!("{ERROR} mx-2 mb-1") data-delete-error>{message}</p> })
+        }}
+        <Show when=move || workspace.tree_root.get() == Some(session_id) && workspace.subagents_shown()>
+            <Subagents workspace=workspace />
+        </Show>
+    }
+}
+
+/// The open session's subagents, nested under its row: each with its
+/// status, agent, handle, and task; a click opens one, the chevron folds
+/// its own.
+#[component]
+fn Subagents(workspace: Workspace) -> impl IntoView {
+    let rows = move || {
+        let collapsed = workspace.collapsed.get();
+        workspace
+            .tree
+            .with(|tree| tree.as_ref().map(|tree| tree_rows(tree, &collapsed)))
+            .unwrap_or_default()
+    };
+    view! {
+        <div role="group" aria-label="Subagents" data-subagents class="flex flex-col gap-0.5 pb-1">
+            {move || {
+                rows()
+                    .into_iter()
+                    .filter(|row| row.depth > 0)
+                    .map(|row| {
+                        let session_id = row.session_id;
+                        let current = move || workspace.selected.get() == Some(session_id);
+                        let mark = icons::session_status(row.status);
+                        let indent = format!("{}rem", 0.75 * (row.depth - 1) as f64);
+                        let fold = if row.has_children {
+                            view! {
+                                <button
+                                    type="button"
+                                    class=ICON_BUTTON
+                                    aria-label="Fold"
+                                    title=if row.collapsed { "Show its subagents" } else { "Hide its subagents" }
+                                    aria-expanded=(!row.collapsed).to_string()
+                                    on:click=move |_| workspace.toggle_folded(session_id)
+                                >
+                                    <Glyph
+                                        icon=if row.collapsed { icondata::FaChevronRightSolid } else { icondata::FaChevronDownSolid }
+                                        class="text-xs"
+                                    />
+                                </button>
+                            }
+                            .into_any()
+                        } else {
+                            view! { <span class="w-11 shrink-0" aria-hidden="true"></span> }.into_any()
+                        };
+                        view! {
+                            <div class="flex items-start" style:padding-left=indent>
+                                {fold}
+                                <button
+                                    type="button"
+                                    class=ROW.replace("w-full", "min-w-0 flex-1")
+                                    class:bg-toasted=current
+                                    class:dark:bg-ember=current
+                                    aria-current=move || current().then_some("true")
+                                    data-tree-session=session_id.to_string()
+                                    on:click=move |_| workspace.open_session(session_id)
+                                >
+                                    <span class="flex w-full min-w-0 items-center gap-2 text-sm">
+                                        <Glyph icon=mark.icon class=mark.class("text-xs") />
+                                        <span class="sr-only">{format!("{}: ", mark.label)}</span>
+                                        <span class="truncate font-mono font-bold">{row.agent.clone()}</span>
+                                        {row.handle.clone().map(|handle| view! {
+                                            <span class=format!("shrink-0 font-mono {NOTE}")>{handle}</span>
+                                        })}
+                                    </span>
+                                    <span class=format!("w-full truncate pl-5 {NOTE}")>{row.task.clone()}</span>
+                                </button>
+                            </div>
+                        }
+                    })
+                    .collect_view()
+            }}
+        </div>
     }
 }
 
@@ -333,13 +599,7 @@ fn session_title(workspace: Workspace) -> String {
                     workspace.tree.with(|tree| {
                         tree.as_ref()
                             .and_then(|tree| crate::tree::find(tree, session_id))
-                            .map(|session| {
-                                format!(
-                                    "{} · {}",
-                                    session.creation_selection.agent,
-                                    session_label(session)
-                                )
-                            })
+                            .map(subagent_label)
                     })
                 })
         })
@@ -359,9 +619,74 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                     .with(|read_only| read_only.contains(&session_id))
         })
     };
+    // A subagent's path from its root: each parent goes up to it.
+    let crumbs = move || {
+        if workspace.new_session.get() {
+            return Vec::new();
+        }
+        let Some(session_id) = workspace.selected.get() else {
+            return Vec::new();
+        };
+        workspace.tree.with(|tree| {
+            let Some(tree) = tree.as_ref() else {
+                return Vec::new();
+            };
+            let mut path = path(tree, session_id);
+            path.pop();
+            path.into_iter()
+                .enumerate()
+                .map(|(depth, session)| {
+                    let label = if depth == 0 {
+                        session_label(session)
+                    } else {
+                        subagent_label(session)
+                    };
+                    (session.session_id, label)
+                })
+                .collect::<Vec<_>>()
+        })
+    };
     view! {
         <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
             <SidebarButton workspace=workspace />
+            {move || {
+                crumbs().last().cloned().map(|(parent, label)| view! {
+                    <button
+                        type="button"
+                        class=format!("{ICON_BUTTON} sm:hidden")
+                        aria-label=format!("Back to {label}")
+                        title=format!("Back to {label}")
+                        data-crumb-back
+                        on:click=move |_| workspace.open_session(parent)
+                    >
+                        <Glyph icon=icondata::FaChevronLeftSolid class="text-lg" />
+                    </button>
+                })
+            }}
+            <Show when=move || !crumbs().is_empty()>
+            <nav aria-label="Path" class="hidden min-w-0 shrink items-center sm:flex">
+                {move || {
+                    crumbs()
+                        .into_iter()
+                        .map(|(session_id, label)| {
+                            let tip = label.clone();
+                            view! {
+                            <button
+                                type="button"
+                                class="inline-flex min-h-11 max-w-[14rem] min-w-0 items-center rounded-md px-2 text-sm text-ink hover:bg-toasted hover:text-espresso active:bg-crust dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke"
+                                title=tip
+                                data-crumb=session_id.to_string()
+                                on:click=move |_| workspace.open_session(session_id)
+                            >
+                                <span class="truncate">{label}</span>
+                            </button>
+                            <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem] opacity-60" />
+                            }
+                        })
+                        .collect_view()
+                }}
+            </nav>
+            </Show>
             <div class="flex min-w-0 flex-1 items-center gap-2 px-1">
                 <h1 class="min-w-0 truncate text-lg font-bold" id="session-title" title=title>
                     {title}
@@ -401,16 +726,52 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         let level = workspace.level.get();
         let expanded = workspace.expanded.get();
         let names = workspace.with_runtime(|runtime| runtime.model_names().clone());
+        let delegates = workspace.tree.with(|tree| {
+            tree.as_ref()
+                .map(|tree| delegates_of(tree, session_id))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(call, child)| (call, child.clone()))
+                .collect::<Vec<_>>()
+        });
         workspace.with_store(|store| {
             let Some(state) = store.sessions.get(&session_id) else {
                 return Vec::new();
             };
+            // What each running subagent does, from its own projection
+            // (the page follows a tree's live sessions).
+            let delegates = delegates
+                .into_iter()
+                .map(|(call, child)| {
+                    let activity = store.sessions.get(&child.session_id).and_then(|child| {
+                        Activity::of(
+                            child.active_run.is_some(),
+                            child
+                                .tools
+                                .values()
+                                .any(|tool| tool.status == ToolStatus::Running),
+                            child
+                                .approvals
+                                .iter()
+                                .any(|approval| approval.is_visible_user_escalation()),
+                        )
+                    });
+                    let delegate = Delegate {
+                        session_id: child.session_id,
+                        agent: child.creation_selection.agent.to_string(),
+                        handle: child.short_id.clone(),
+                        activity,
+                    };
+                    (call, delegate)
+                })
+                .collect::<HashMap<_, _>>();
             let view = TranscriptView {
                 session_id,
                 state,
                 names: &names,
                 minimum_level: level,
                 expanded: &expanded,
+                delegates: &delegates,
             };
             cache
                 .try_update_value(|cache| {

@@ -21,7 +21,6 @@ use crate::{
     icons::Glyph,
     layout::{Layer, SettingsSection, View},
     theme::ThemePreference,
-    views::depth::TreePanel,
     workspace::Workspace,
 };
 
@@ -119,7 +118,6 @@ pub fn Drawer(
                     <Rail workspace=workspace connection=connection theme=theme primary=false />
                 </div>
                 <div class="flex min-w-0 flex-1 flex-col overflow-y-auto border-r border-toasted bg-parchment dark:border-ember dark:bg-char">
-                    <TreePanel workspace=workspace />
                     <SessionList workspace=workspace />
                 </div>
             </div>

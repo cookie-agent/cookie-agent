@@ -1,6 +1,7 @@
 //! Where the page is, independent of the browser: the rail's views, the
 //! Settings sections, which view a slash command opens, the commands the
-//! session's ⋮ menu offers, and the history entries browser Back closes.
+//! session's ⋮ menu offers, the history entries browser Back closes, and
+//! the press that offers to delete a session row on a touch screen.
 
 use crate::commands::{COMMANDS, Command, CommandSpec};
 
@@ -192,6 +193,65 @@ pub fn reconcile(pushed: &[Layer], open: &[Layer]) -> HistoryStep {
     }
 }
 
+/// How far a finger may move during a long press before it counts as a
+/// scroll, in CSS pixels.
+pub const PRESS_SLOP: f64 = 10.0;
+
+/// A press on a session row: held long enough without moving, it reveals
+/// the row's delete action instead of opening the session.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Press {
+    start: Option<(f64, f64)>,
+    /// The long press fired: the click that follows must not open.
+    fired: bool,
+}
+
+impl Press {
+    /// A finger went down at `x`, `y`.
+    pub fn start(&mut self, x: f64, y: f64) {
+        *self = Self {
+            start: Some((x, y)),
+            fired: false,
+        };
+    }
+
+    /// The finger moved to `x`, `y`; `true` when that cancels the press,
+    /// as a scroll does.
+    pub fn moved(&mut self, x: f64, y: f64) -> bool {
+        let Some((start_x, start_y)) = self.start else {
+            return false;
+        };
+        if (x - start_x).hypot(y - start_y) > PRESS_SLOP {
+            self.start = None;
+            return true;
+        }
+        false
+    }
+
+    /// The finger lifted or the browser took the gesture over.
+    pub fn cancel(&mut self) {
+        self.start = None;
+    }
+
+    /// The hold timer ran out; `true` when the press is still down, so it
+    /// is a long press.
+    pub fn elapse(&mut self) -> bool {
+        if self.start.take().is_some() {
+            self.fired = true;
+            return true;
+        }
+        false
+    }
+
+    /// The click the press ends with; `true` when it opens the session,
+    /// which a long press never does.
+    pub fn click(&mut self) -> bool {
+        let opens = !self.fired;
+        *self = Self::default();
+        opens
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +349,25 @@ mod tests {
             reconcile(&[Drawer, Section], &[Drawer, Section]),
             HistoryStep::Keep
         );
+    }
+
+    #[test]
+    fn a_long_press_reveals_instead_of_opening_and_a_move_cancels_it() {
+        let mut press = Press::default();
+        press.start(100.0, 200.0);
+        assert!(!press.moved(104.0, 203.0), "a tremble is not a scroll");
+        assert!(press.elapse());
+        assert!(!press.click(), "a long press never opens the session");
+        assert!(press.click(), "the next tap opens it");
+
+        press.start(100.0, 200.0);
+        assert!(press.moved(100.0, 200.0 + PRESS_SLOP + 1.0));
+        assert!(!press.elapse(), "a scroll cancels the long press");
+        assert!(press.click());
+
+        press.start(0.0, 0.0);
+        press.cancel();
+        assert!(!press.elapse(), "lifting early is a tap");
+        assert!(press.click());
     }
 }

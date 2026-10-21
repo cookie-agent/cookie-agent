@@ -166,6 +166,10 @@ pub struct Workspace {
     /// A write that was not saved, waiting for the user's choice.
     pub memory_pending: RwSignal<Option<MemoryPending>>,
     pub plugins: RwSignal<Option<Result<Vec<cookie_agent_protocol::PluginInfo>, String>>>,
+    /// The daemon's client protocol has `session.delete`.
+    pub can_delete: RwSignal<bool>,
+    /// A delete the daemon refused: the root session and its message.
+    pub delete_error: RwSignal<Option<(SessionId, String)>>,
     /// The view the rail shows.
     pub view: RwSignal<crate::layout::View>,
     /// The Settings section open; `None` for the section list on a phone,
@@ -258,6 +262,8 @@ impl Workspace {
             memory_edit: RwSignal::new(None),
             memory_pending: RwSignal::new(None),
             plugins: RwSignal::new(None),
+            can_delete: RwSignal::new(false),
+            delete_error: RwSignal::new(None),
             view: RwSignal::new(crate::layout::View::Chat),
             settings_section: RwSignal::new(None),
             sidebar_open: RwSignal::new(false),
@@ -311,6 +317,11 @@ impl Workspace {
     pub fn adopt(self, client: Client) {
         let reconnected = self.client.with_value(Option::is_some);
         self.connection.update_value(|connection| *connection += 1);
+        self.can_delete.set(
+            cookie_agent_client_state::session_delete::daemon_can_delete_sessions(
+                client.daemon_version(),
+            ),
+        );
         self.client.set_value(Some(client));
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
@@ -535,9 +546,7 @@ impl Workspace {
                     }
                 });
             }
-            SessionsChangedNotification::Removed { session_id } => self
-                .sessions
-                .update(|sessions| sessions.retain(|session| session.session_id != session_id)),
+            SessionsChangedNotification::Removed { session_id } => self.forget_removed(session_id),
             SessionsChangedNotification::ApprovalsChanged {
                 root_session_id, ..
             } => {
@@ -563,6 +572,68 @@ impl Workspace {
                 });
             }
         }
+    }
+
+    /// A session the daemon removed (deleted with its tree): out of the
+    /// list and the store; a page viewing it starts a new session instead.
+    fn forget_removed(self, session_id: SessionId) {
+        self.sessions
+            .update(|sessions| sessions.retain(|session| session.session_id != session_id));
+        let viewed = self.selected.get_untracked() == Some(session_id)
+            || self.tree_root.get_untracked() == Some(session_id);
+        if viewed && !self.new_session.get_untracked() {
+            self.start_new_session();
+        }
+        // The daemon dropped its subscription already: nothing to send.
+        self.subscriptions.update_value(|subscriptions| {
+            subscriptions.release(session_id);
+        });
+        self.update_store(|store| store.forget_session(session_id));
+        if self.delete_error.with_untracked(|error| {
+            error
+                .as_ref()
+                .is_some_and(|(failed, _)| *failed == session_id)
+        }) {
+            self.delete_error.set(None);
+        }
+    }
+
+    /// Deletes the root session `session_id` and its subagents, as the
+    /// list showed it when the user confirmed. The list loses it when the
+    /// daemon says `sessions.changed` `removed`; a refusal shows the
+    /// daemon's message.
+    pub fn delete_session(self, session_id: SessionId) {
+        use cookie_agent_client_state::session_delete::{
+            DAEMON_TOO_OLD_TO_DELETE, SessionDeleteOutcome, delete_session,
+        };
+        let Some(session) = self.sessions.with_untracked(|sessions| {
+            sessions
+                .iter()
+                .find(|session| session.session_id == session_id)
+                .cloned()
+        }) else {
+            return;
+        };
+        let Some(client) = self.client() else {
+            return;
+        };
+        self.delete_error.set(None);
+        spawn_local(async move {
+            let message = match delete_session(&client, &session).await {
+                SessionDeleteOutcome::Deleted(deleted) => {
+                    let subagents = deleted.len().saturating_sub(1);
+                    self.status.set(match subagents {
+                        0 => "deleted the session".to_owned(),
+                        1 => "deleted the session and its subagent".to_owned(),
+                        count => format!("deleted the session and its {count} subagents"),
+                    });
+                    return;
+                }
+                SessionDeleteOutcome::DaemonTooOld => DAEMON_TOO_OLD_TO_DELETE.to_owned(),
+                SessionDeleteOutcome::Failed(error) => delete_refusal(&error),
+            };
+            self.delete_error.set(Some((session_id, message)));
+        });
     }
 
     fn resync_runtime(self) {
@@ -1691,6 +1762,21 @@ pub fn level_from_storage(stored: Option<&str>) -> EventLevel {
         Some("warning") => EventLevel::Warning,
         Some("error") => EventLevel::Error,
         _ => EventLevel::DEFAULT_MINIMUM,
+    }
+}
+
+/// What a refused delete shows: the daemon's registry message, and its
+/// hint when the message does not already say it.
+fn delete_refusal(error: &ClientError) -> String {
+    let ClientError::Rpc(rpc) = error else {
+        return error.to_string();
+    };
+    let hint = error.error_data().and_then(|data| data.hint);
+    match hint {
+        Some(hint) if !hint.is_empty() && !rpc.message.contains(hint.as_str()) => {
+            format!("{} {hint}", rpc.message)
+        }
+        _ => rpc.message.clone(),
     }
 }
 

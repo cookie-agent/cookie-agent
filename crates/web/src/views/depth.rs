@@ -1,4 +1,4 @@
-//! The session-depth parts of the page: the subagent tree, the goal and
+//! The session-depth parts of the page: the goal and
 //! background bars, the draft's files and the ways to attach them, and the
 //! goal, background, skills, permissions, and message sheets.
 
@@ -16,84 +16,12 @@ use crate::{
     attach::{accept_attribute, accepts_images},
     files::{CAMERA_INPUT, FILE_INPUT, files_of, pick_files},
     icons::Glyph,
-    tree::tree_rows,
     workspace::Workspace,
 };
 
 const BAR: &str =
     "flex flex-wrap items-center gap-2 border-t border-toasted px-3 py-1 text-sm dark:border-ember";
 const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
-
-/// The viewed session's tree, folded where the user folded it, shown as
-/// `/agent-panel` says.
-#[component]
-pub fn TreePanel(workspace: Workspace) -> impl IntoView {
-    let rows = move || {
-        let collapsed = workspace.collapsed.get();
-        workspace
-            .tree
-            .with(|tree| tree.as_ref().map(|tree| tree_rows(tree, &collapsed)))
-            .unwrap_or_default()
-    };
-    view! {
-        <Show when=move || workspace.tree_panel_visible()>
-            <nav id="agent-tree" class="flex max-h-72 flex-col gap-1 overflow-y-auto border-b border-toasted p-2 dark:border-ember" aria-label="Subagents">
-                <p class="flex items-center gap-2 px-2 text-xs font-bold text-ink uppercase tracking-wide dark:text-sand">
-                    <Glyph icon=icondata::FaRobotSolid />
-                    "Agents"
-                </p>
-                {move || {
-                    rows()
-                        .into_iter()
-                        .map(|row| {
-                            let session_id = row.session_id;
-                            let current = move || workspace.selected.get() == Some(session_id);
-                            let indent = format!("{}rem", row.depth);
-                            let fold = row.has_children.then(|| {
-                                view! {
-                                    <button
-                                        type="button"
-                                        class=ICON_BUTTON
-                                        aria-label="Fold"
-                                        title=if row.collapsed { "Show its subagents" } else { "Hide its subagents" }
-                                        aria-expanded=(!row.collapsed).to_string()
-                                        on:click=move |_| workspace.toggle_folded(session_id)
-                                    >
-                                        <Glyph
-                                            icon=if row.collapsed { icondata::FaChevronRightSolid } else { icondata::FaChevronDownSolid }
-                                            class="text-xs"
-                                        />
-                                    </button>
-                                }
-                            });
-                            view! {
-                                <div class="flex items-center" style:padding-left=indent>
-                                    {fold}
-                                    <button
-                                        type="button"
-                                        class=ROW
-                                        class:bg-toasted=current
-                                        class:dark:bg-ember=current
-                                        data-tree-session=session_id.to_string()
-                                        on:click=move |_| workspace.open_session(session_id)
-                                    >
-                                        <span class="flex w-full items-center gap-2 text-sm">
-                                            {row.running.then(|| view! {
-                                                <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-xs text-caramel dark:text-maple" />
-                                                <span class="sr-only">"running: "</span>
-                                            })}
-                                            <span class="min-w-0 flex-1 truncate">{row.label.clone()}</span>
-                                        </span>
-                                    </button>
-                                </div>
-                            }
-                        })
-                        .collect_view()
-                }}
-            </nav>
-        </Show>
-    }
-}
 
 /// The root session's goal, with the controls its status allows.
 #[component]

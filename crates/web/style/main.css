@@ -84,6 +84,12 @@ html.dark {
   }
 }
 
+/* A session row's long press offers to delete it, not the browser's
+   callout. */
+.no-callout {
+  -webkit-touch-callout: none;
+}
+
 /* The landing site's palette, which is the TUI's (crates/tui/src/theme.rs). */
 @theme {
   --color-cream: #fbf4e6;
