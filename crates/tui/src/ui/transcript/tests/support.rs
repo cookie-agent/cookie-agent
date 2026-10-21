@@ -968,6 +968,7 @@ pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
         last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
+        attachments: Vec::new(),
     }
 }
 

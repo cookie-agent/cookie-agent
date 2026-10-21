@@ -116,14 +116,38 @@ pub(super) fn session_depth(origin: &SessionOrigin) -> u32 {
     }
 }
 
-pub(crate) fn cwd_identity(path: &Path) -> Result<cookie_agent_protocol::CwdIdentity, EngineError> {
+/// A new root session's directory identity, decided once at creation, after
+/// its attachments have opened: the canonical workspace that the first of
+/// `attachments` with a workspace reported, on its runtime's machine. A
+/// session with no workspace attachment gets `cwd` canonicalized on the
+/// daemon's machine, or `cwd` as given when that fails. The client's typed
+/// text never decides it when a workspace is attached, so `~/x` and
+/// `/home/ada/x` attaching one workspace give one identity.
+pub(crate) fn session_cwd_identity(
+    attachments: &[cookie_agent_protocol::RuntimeAttachment],
+    cwd: &Path,
+) -> Result<cookie_agent_protocol::CwdIdentity, EngineError> {
+    match attachments
+        .iter()
+        .find_map(|attachment| attachment.workspace.as_deref())
+    {
+        Some(workspace) => cookie_agent_protocol::CwdIdentity::new(workspace)
+            .map_err(|error| invalid_cwd_identity(&error)),
+        None => cwd_identity(cwd),
+    }
+}
+
+fn cwd_identity(path: &Path) -> Result<cookie_agent_protocol::CwdIdentity, EngineError> {
     let canonical =
         cookie_agent_protocol::paths::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-    cookie_agent_protocol::CwdIdentity::new(canonical.to_string_lossy()).map_err(|error| {
-        EngineError::from(ModelError::invalid_request(format!(
-            "invalid cwd identity: {error}"
-        )))
-    })
+    cookie_agent_protocol::CwdIdentity::new(canonical.to_string_lossy())
+        .map_err(|error| invalid_cwd_identity(&error))
+}
+
+fn invalid_cwd_identity(error: &impl std::fmt::Display) -> EngineError {
+    EngineError::from(ModelError::invalid_request(format!(
+        "invalid cwd identity: {error}"
+    )))
 }
 
 pub(crate) fn invocation_id(session: SessionId, run: RunId, call: ToolCallId) -> InvocationId {

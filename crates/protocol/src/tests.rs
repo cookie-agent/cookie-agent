@@ -1874,12 +1874,26 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
         last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
+        attachments: vec![RuntimeAttachment {
+            name: AttachmentName::new("labpc_api").expect("attachment name"),
+            runtime_id: RuntimeId::new("labpc").expect("runtime ID"),
+            capability: CapabilityName::coding(),
+            kind: RuntimeKind::new("coding").expect("kind"),
+            workspace: Some("/srv/api".into()),
+        }],
     };
 
     let encoded = serde_json::to_value(&meta).expect("serialize session metadata");
+    assert_eq!(encoded["attachments"][0]["workspace"], "/srv/api");
     let decoded: SessionMeta =
-        serde_json::from_value(encoded).expect("deserialize session metadata");
+        serde_json::from_value(encoded.clone()).expect("deserialize session metadata");
     assert_eq!(decoded, meta);
+
+    // A daemon before client protocol 1.7.0 sends no attachments.
+    let mut older = encoded;
+    older.as_object_mut().unwrap().remove("attachments");
+    let decoded: SessionMeta = serde_json::from_value(older).expect("older session metadata");
+    assert!(decoded.attachments.is_empty());
 }
 
 #[test]

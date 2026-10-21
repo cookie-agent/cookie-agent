@@ -2422,6 +2422,85 @@ fn read_test_meta_cache(store: &SessionStore, id: SessionId) -> cookie_agent_pro
     super::read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)).expect("read metadata cache")
 }
 
+/// A session's attachments are part of its listed metadata: attaching and
+/// detaching update it, write the `metadata` cache through, and announce
+/// the session to every connection.
+#[test]
+fn attaching_and_detaching_keep_the_metadata_attachments_current() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+    let session_id = persist_test_session(&store);
+    assert!(store.get(session_id).unwrap().meta.attachments.is_empty());
+    let mut changes = store.subscribe_index_changes();
+    let origin = || cookie_agent_protocol::EventOrigin::new("user").unwrap();
+    let name = cookie_agent_protocol::AttachmentName::new("labpc_api").unwrap();
+    store
+        .append(
+            session_id,
+            None,
+            origin(),
+            EventPayload::RuntimeAttached {
+                name: name.clone(),
+                runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
+                capability: cookie_agent_protocol::CapabilityName::coding(),
+                kind: cookie_agent_protocol::RuntimeKind::new("coding").unwrap(),
+                workspace: Some("/srv/api".into()),
+            },
+        )
+        .unwrap();
+    let meta = store.get(session_id).unwrap().meta.clone();
+    let attached = meta
+        .attachments
+        .iter()
+        .map(|attachment| {
+            (
+                attachment.name.as_str(),
+                attachment.runtime_id.as_str(),
+                attachment.capability.as_str(),
+                attachment.workspace.as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        attached,
+        [("labpc_api", "labpc", "coding", Some("/srv/api"))]
+    );
+    assert_eq!(read_test_meta_cache(&store, session_id), meta);
+    let announced = |changes: &mut tokio::sync::broadcast::Receiver<_>| loop {
+        match changes.try_recv().expect("an index change") {
+            cookie_agent_protocol::SessionsChangedNotification::Upserted { session }
+                if session.session_id == session_id =>
+            {
+                break session.attachments;
+            }
+            _ => {}
+        }
+    };
+    assert_eq!(announced(&mut changes), meta.attachments);
+
+    store
+        .append(
+            session_id,
+            None,
+            origin(),
+            EventPayload::RuntimeDetached { name },
+        )
+        .unwrap();
+    let meta = store.get(session_id).unwrap().meta.clone();
+    assert!(meta.attachments.is_empty());
+    assert_eq!(read_test_meta_cache(&store, session_id), meta);
+    assert!(announced(&mut changes).is_empty());
+
+    // A cache an older build wrote has no attachments and still decodes.
+    let dir = store.session_dir(session_id);
+    let mut older = serde_json::to_value(&meta).unwrap();
+    older.as_object_mut().unwrap().remove("attachments");
+    fs::write(meta_path(&dir), serde_json::to_vec(&older).unwrap()).unwrap();
+    assert_eq!(read_test_meta_cache(&store, session_id), meta);
+}
+
 /// In-run records that only move the tip leave the `metadata` cache alone;
 /// the run's terminal event changes its status and brings it fully up to
 /// date, and outside a run the tip is written through.

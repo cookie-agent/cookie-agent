@@ -1169,6 +1169,144 @@ async fn a_session_attaches_each_capability_of_a_runtime_separately() {
     fixture.engine.shutdown().await;
 }
 
+/// A session's directory is its first workspace as the runtime reported
+/// it, never the client's text: a web client's `~/x` and a TUI's absolute
+/// path attaching one workspace give one `cwd_identity`, and the session
+/// list's directory filter returns both.
+#[tokio::test]
+async fn a_session_s_directory_is_the_workspace_its_runtime_reported() {
+    let (fixture, selection) = custom_fixture();
+    let home = workspace_dir(fixture._directory.path(), "home-ada");
+    let home = cookie_agent_protocol::paths::canonicalize(&home).unwrap();
+    let project = workspace_dir(&home, "x");
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_home(
+            "labpc",
+            &home,
+            probe_tools(ToolCollision::Prefix),
+        ))
+        .expect("register labpc");
+    let create = |spelling: &str| {
+        let engine = fixture.engine.clone();
+        let selection = selection.clone();
+        let spelling = std::path::PathBuf::from(spelling);
+        async move {
+            engine
+                .create_session_with_permissions(
+                    selection,
+                    None,
+                    Vec::new(),
+                    crate::SessionRuntimes {
+                        runtimes: Some(vec![crate::SessionRuntimeRequest {
+                            runtime_id: "labpc".into(),
+                            capability: None,
+                            workspace: Some(spelling.clone()),
+                        }]),
+                        global: true,
+                        cwd: Some(spelling),
+                    },
+                )
+                .await
+                .expect("session")
+        }
+    };
+    let web = create("~/x").await;
+    let tui = create(&project.to_string_lossy()).await;
+    assert_eq!(web.cwd_identity.as_str(), project.to_string_lossy());
+    assert_eq!(tui.cwd_identity, web.cwd_identity);
+    for session in [&web, &tui] {
+        let workspaces = session
+            .attachments
+            .iter()
+            .map(|attachment| {
+                (
+                    attachment.runtime_id.as_str(),
+                    attachment.workspace.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            workspaces,
+            [
+                ("global", None),
+                ("labpc", Some(project.to_string_lossy().as_ref()))
+            ]
+        );
+    }
+    let mut listed = fixture
+        .engine
+        .list_sessions()
+        .into_iter()
+        .filter(|session| session.cwd_identity == web.cwd_identity)
+        .map(|session| session.session_id)
+        .collect::<Vec<_>>();
+    listed.sort();
+    let mut expected = vec![web.session_id, tui.session_id];
+    expected.sort();
+    assert_eq!(listed, expected);
+
+    // A session without a workspace keeps the client's directory: the raw
+    // text when it does not resolve on the daemon's machine.
+    let bare = fixture
+        .engine
+        .create_session_with_permissions(
+            selection,
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                runtimes: Some(Vec::new()),
+                global: true,
+                cwd: Some("~/nowhere".into()),
+            },
+        )
+        .await
+        .expect("session without a workspace");
+    assert_eq!(bare.cwd_identity.as_str(), "~/nowhere");
+    fixture.engine.shutdown().await;
+}
+
+/// The session's attachments in its metadata follow attach and detach.
+#[tokio::test]
+async fn session_metadata_lists_the_attachments_as_they_change() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let names = |meta: &cookie_agent_protocol::SessionMeta| {
+        meta.attachments
+            .iter()
+            .map(|attachment| attachment.runtime_id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&session), ["global", "local"]);
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+            "labpc",
+            probe_tools(ToolCollision::Prefix),
+        ))
+        .expect("register labpc");
+    let api = workspace_dir(fixture._directory.path(), "api");
+    let attached = fixture
+        .engine
+        .attach_runtime(session.session_id, "labpc", None, Some(api), origin())
+        .await
+        .expect("attach labpc");
+    let meta = fixture.engine.get_session(session.session_id).unwrap();
+    assert_eq!(names(&meta), ["global", "local", "labpc"]);
+    assert_eq!(
+        meta.attachments,
+        fixture.engine.session_runtimes(session.session_id).unwrap()
+    );
+    fixture
+        .engine
+        .detach_runtime(session.session_id, attached.name, origin())
+        .await
+        .expect("detach labpc");
+    let meta = fixture.engine.get_session(session.session_id).unwrap();
+    assert_eq!(names(&meta), ["global", "local"]);
+    fixture.engine.shutdown().await;
+}
+
 /// A daemon serves sessions of any directory: a session created for the
 /// client's directory records it and works there with `local`'s `coding`.
 #[tokio::test]

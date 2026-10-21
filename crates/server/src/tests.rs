@@ -1108,6 +1108,11 @@ async fn runtime_attachments_are_reachable_through_rpc() {
     assert_eq!(defaults.len(), 2);
     assert_eq!(defaults[0], "global");
     assert!(defaults[1].starts_with("local"));
+    // The session's metadata lists them too (client protocol 1.7.0).
+    assert_eq!(
+        created["result"]["session"]["attachments"], created["result"]["runtimes"],
+        "{created}"
+    );
 
     // No runtimes at all.
     let (bare, _) = request(
@@ -1172,6 +1177,10 @@ async fn runtime_attachments_are_reachable_through_rpc() {
     .await;
     assert!(
         names(&fetched["result"]["runtimes"]).is_empty(),
+        "{fetched}"
+    );
+    assert!(
+        fetched["result"]["session"].get("attachments").is_none(),
         "{fetched}"
     );
 
@@ -1576,6 +1585,19 @@ async fn machines_are_listed_changed_and_announced_through_rpc() {
             .unwrap()
             .iter()
             .all(|runtime| runtime["machine"] == daemon.as_str()),
+        "{runtimes}"
+    );
+    // The built-in runtimes report the daemon's home (client protocol 1.7.0).
+    let home = cookie_agent_protocol::paths::canonical_home_dir()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        runtimes["result"]["runtimes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|runtime| runtime["home"] == home.as_str()),
         "{runtimes}"
     );
 

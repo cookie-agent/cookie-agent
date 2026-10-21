@@ -303,6 +303,7 @@ mod tests {
             capabilities,
             platform: None,
             machine: machine.map(|name| MachineName::new(name).unwrap()),
+            home: None,
             message: None,
         }
     }

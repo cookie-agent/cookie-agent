@@ -102,6 +102,13 @@
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         },
+        "attachments": {
+          "description": "The session's runtime attachments now, in attach order: the fold of\nits `runtime_attached` and `runtime_detached` events (client protocol\n1.7.0). Empty from an older daemon, and for a session whose\nmetadata an older build wrote and that has recorded nothing since.",
+          "items": {
+            "$ref": "#/$defs/RuntimeAttachment"
+          },
+          "type": "array"
+        },
         "catalog_revision": {
           "maxLength": 71,
           "minLength": 71,

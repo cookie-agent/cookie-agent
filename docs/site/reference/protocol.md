@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.6.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.7.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.6.0",
+    "protocol_version": "1.7.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.6.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.7.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -220,7 +220,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied |
-| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory) | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
+| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory) | Session metadata with skipped-event diagnostics and its `attachments`, and the session's `runtimes` |
 | `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
@@ -394,15 +394,27 @@ the capability's `kind` (a label the runtime declares, such as `global` or
 `coding`; the daemon never branches on it), and the canonical `workspace` the
 runtime reported, if any. The session create, get, and resume results carry the
 session's attachments in attach order; clients follow later changes through the
-`runtime_attached` and `runtime_detached` events of the session.
+`runtime_attached` and `runtime_detached` events of the session. Since 1.7.0
+every `SessionMeta` also carries them as `attachments`, kept current on attach
+and detach, so `session.list` and `sessions.changed` show each session's
+runtimes and workspaces without a `session.get`. Metadata an older build
+wrote has none until the session records an event; a 1.6 daemon sends none.
 
 `session.create` attaches `global` unless `global` is `false`, then each entry
 of `runtimes` (`runtime_id`, optional `capability`, optional `workspace`) in
 order; without `runtimes` it attaches `local`'s `coding` capability at `cwd`,
 or at the daemon's working directory without one. `cwd` is the client's
-directory as it names it: the session records it as its `cwd_identity`, so
-one daemon serves sessions of many directories and `session.list` with a
-`cwd_identity` shows one directory's. An empty `runtimes` list creates a
+directory as it names it. One daemon serves sessions of many directories, and
+`session.list` with a `cwd_identity` shows one directory's. A session's
+`cwd_identity` is decided once, when it is created, after its attachments
+have opened: it is the canonical `workspace` that the first attachment with a
+workspace reported, on its runtime's machine, never the client's text. So a
+web client's `~/x` and a TUI's `/home/ada/x` attaching one workspace give
+one identity. A session with no workspace attachment records `cwd`
+canonicalized on the daemon's machine, or as given when that fails (the
+daemon's working directory without `cwd`). Delegated sessions copy their
+parent's, and sessions created before 1.7.0 keep the identity they stored.
+An empty `runtimes` list creates a
 session with no coding runtime. Instances that are not running are started
 first, and a failure creates no session and records no instance.
 
@@ -436,10 +448,15 @@ its `lifetime` (`builtin` for `global` and `local`, `spawned` for a
 template, `dial_in` for a runtime that connected on its own); whether the daemon is `connected` to it now; its `capabilities`
 (`name`, `kind`, `takes_workspace`, `description`), empty until it has
 connected once; its `platform`; its `machine` (see [Machines](#machines));
-and a `message` saying why its last attempt to connect failed, or, for a
+since 1.7.0 its `home`, the home directory it reported (runtime protocol
+1.3.0, absent when it reported none), which `global` and `local` report as
+the daemon's; and a `message` saying why its last attempt to connect failed, or, for a
 dial-in runtime that went away, ``runtime `<id>` disconnected: <reason>``,
 where a runtime that stopped cleanly gives `the other end closed the
-connection`. Each instance has its `runtime_id`, `capability`, reported
+connection`. Clients store and compare paths canonical and absolute and only show them
+shorter: a path of a runtime with a `home` reads `~` for the home itself and
+`~/rest` under it, and a path of a runtime without one stays absolute
+(`cookie_agent_client_state::paths::display_path`). Each instance has its `runtime_id`, `capability`, reported
 `attachment_name`, `kind`, `workspace`, and `platform` once started, its
 `status` (`starting`, `ready`, `reconnecting`, `failed`, or `stopped`), and a
 failure `message`.
@@ -843,7 +860,7 @@ notification methods they do not know.
 
 | `change` | Fields | Sent when |
 |---|---|---|
-| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status or title changes |
+| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, or attachments change |
 | `removed` | `session_id` | A revert deleted a delegated session, or `session.delete` deleted a session of a tree; the connection's subscription to it has ended |
 | `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
 | `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |

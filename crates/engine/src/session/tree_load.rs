@@ -1217,7 +1217,13 @@ impl SessionStore {
                     continue;
                 }
                 let authoritative = validated.expect("checked above");
-                if authoritative != child.summary.meta {
+                // The index carries no attachments (see `persist_subagent_index`);
+                // any change to them moved the child's tip anyway.
+                let indexed = SessionMeta {
+                    attachments: Vec::new(),
+                    ..authoritative.clone()
+                };
+                if indexed != child.summary.meta {
                     // The entry disagrees with the session's own authoritative
                     // `metadata` cache: the child moved on after this index was
                     // written, so nothing it says about the child is current.

@@ -408,9 +408,12 @@ pub struct SessionCreateParams {
     /// Whether the session attaches the global runtime; `true` when omitted.
     #[serde(default = "attach_global", skip_serializing_if = "attaches_global")]
     pub global: bool,
-    /// The client's directory, as the client names it: the session's
-    /// `cwd_identity`, and the workspace of `local`'s `coding` capability
-    /// when `runtimes` is omitted. The daemon's own directory when omitted.
+    /// The client's directory, as the client names it: the workspace of
+    /// `local`'s `coding` capability when `runtimes` is omitted. The
+    /// session's `cwd_identity` is the canonical workspace its first
+    /// attachment with a workspace reports; only a session without one takes
+    /// this directory instead, canonicalized on the daemon's machine (as
+    /// given when that fails). The daemon's own directory when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 }
@@ -649,6 +652,12 @@ pub struct RuntimeListing {
     /// Absent while the daemon cannot tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<MachineName>,
+    /// The home directory the runtime reported when it last connected, as a
+    /// canonical absolute path on its machine (client protocol 1.7.0).
+    /// Clients show the paths of the runtime's attachments under it as `~/…`;
+    /// without one they show them absolute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
     /// Why the last attempt to connect failed, while it is not connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,

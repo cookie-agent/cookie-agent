@@ -143,7 +143,8 @@ use cookie_agent_runtime_api::{
 pub struct EngineOptions {
     pub data_dir: PathBuf,
     /// The daemon's working directory. It only locates the session store and
-    /// stamps `cwd_identity`; tools see their runtime's workspace instead.
+    /// stands in for a client directory a session is created without; tools
+    /// see their runtime's workspace instead.
     pub cwd: PathBuf,
     pub config: LoadedConfiguration,
     pub model_manager: Arc<ModelManager>,

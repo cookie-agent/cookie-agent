@@ -13,7 +13,7 @@ use cookie_agent_protocol::{
 use super::{
     Engine, EngineError, Event, SessionCommand,
     delegation::DELEGATION_RECOVERY_SETTLE_BOUND,
-    helpers::{cwd_identity, root_id, session_depth},
+    helpers::{root_id, session_cwd_identity, session_depth},
 };
 use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
 use crate::session::SessionError;
@@ -130,7 +130,8 @@ impl Engine {
     }
 
     /// Creates a root session of the client directory `cwd` whose creation
-    /// also records `attachments`.
+    /// also records `attachments`, which are open. Its `cwd_identity` is the
+    /// first workspace among them, else `cwd` ([`session_cwd_identity`]).
     fn create_session_in(
         &self,
         selection: RunSelection,
@@ -139,7 +140,7 @@ impl Engine {
     ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
         let id = SessionId::new_v7();
-        let cwd_identity = cwd_identity(cwd)?;
+        let cwd_identity = session_cwd_identity(attachments, cwd)?;
         // A new root begins an empty tree, so its first handle is trivially
         // unique; it still goes through the same generation path so every
         // session carries a handle uniformly.

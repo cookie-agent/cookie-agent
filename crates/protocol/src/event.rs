@@ -300,6 +300,12 @@ pub struct SessionMeta {
     pub last_agent_activity: Option<Timestamp>,
     pub status: SessionStatus,
     pub skipped_events: Vec<SkippedEvent>,
+    /// The session's runtime attachments now, in attach order: the fold of
+    /// its `runtime_attached` and `runtime_detached` events (client protocol
+    /// 1.7.0). Empty from an older daemon, and for a session whose
+    /// metadata an older build wrote and that has recorded nothing since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::RuntimeAttachment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -345,6 +351,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             status: SessionStatus,
             #[serde(default)]
             skipped_events: Vec<SkippedEvent>,
+            #[serde(default)]
+            attachments: Vec<crate::RuntimeAttachment>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -367,6 +375,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             last_agent_activity: w.last_agent_activity,
             status: w.status,
             skipped_events: w.skipped_events,
+            attachments: w.attachments,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

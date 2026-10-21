@@ -88,6 +88,7 @@ fn session_meta(session_id: SessionId) -> SessionMeta {
         last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
+        attachments: Vec::new(),
     }
 }
 

@@ -20,6 +20,7 @@ pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
                     capabilities: template.listing.capabilities,
                     platform: template.listing.platform,
                     machine: engine.runtime_machine(&template.runtime_id),
+                    home: template.listing.home,
                     message: template.listing.message,
                 })
             })

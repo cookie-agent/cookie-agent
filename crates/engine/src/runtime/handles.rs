@@ -290,6 +290,7 @@ mod tests {
             last_agent_activity: None,
             status: SessionStatus::Completed,
             skipped_events: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 

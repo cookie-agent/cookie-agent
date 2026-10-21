@@ -5,6 +5,25 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.7.0
+
+- Paths and runtimes: `SessionMeta` gains `attachments`, the session's
+  runtime attachments now (`RuntimeAttachment`: `name`, `runtime_id`,
+  `capability`, `kind`, `workspace`), kept current on attach and detach,
+  which also announce the session with `sessions.changed` `upserted`; session
+  lists can show and filter sessions by runtime and workspace without a
+  `session.get` each. `RuntimeListing` in `runtimes.list` gains `home`, the
+  home directory the runtime reported (runtime protocol 1.3.0), which clients
+  show the runtime's paths under as `~/…` (see [Runtimes](protocol.md#runtimes)).
+  A 1.6 client ignores both; a 1.7 client reading a 1.6 daemon sees no
+  attachments and no homes, and shows paths absolute.
+- A new root session's `cwd_identity` is decided at creation, once its
+  attachments have opened: the canonical workspace its first attachment with
+  a workspace reported, else `cwd` canonicalized on the daemon's machine (as
+  given when that fails). A client's `~/x` and another's `/home/ada/x`
+  attaching one workspace now give one identity. Sessions created before keep
+  the identity they stored.
+
 ## 1.6.0
 
 - `memory.write` results carry an optional `notice`: what the daemon kept in

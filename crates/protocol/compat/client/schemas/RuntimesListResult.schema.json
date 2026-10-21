@@ -140,6 +140,13 @@
           "description": "Whether the daemon holds a connection to the runtime now.",
           "type": "boolean"
         },
+        "home": {
+          "description": "The home directory the runtime reported when it last connected, as a\ncanonical absolute path on its machine (client protocol 1.7.0).\nClients show the paths of the runtime's attachments under it as `~/…`;\nwithout one they show them absolute.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "lifetime": {
           "$ref": "#/$defs/RuntimeLifetime"
         },

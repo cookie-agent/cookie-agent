@@ -144,7 +144,7 @@
   "additionalProperties": false,
   "properties": {
     "cwd": {
-      "description": "The client's directory, as the client names it: the session's\n`cwd_identity`, and the workspace of `local`'s `coding` capability\nwhen `runtimes` is omitted. The daemon's own directory when omitted.",
+      "description": "The client's directory, as the client names it: the workspace of\n`local`'s `coding` capability when `runtimes` is omitted. The\nsession's `cwd_identity` is the canonical workspace its first\nattachment with a workspace reports; only a session without one takes\nthis directory instead, canonicalized on the daemon's machine (as\ngiven when that fails). The daemon's own directory when omitted.",
       "type": [
         "string",
         "null"

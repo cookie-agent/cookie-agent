@@ -61,6 +61,51 @@
       ],
       "type": "object"
     },
+    "RuntimeAttachment": {
+      "description": "One runtime a session is attached to.",
+      "properties": {
+        "capability": {
+          "description": "The capability of the runtime the session uses.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "kind": {
+          "description": "The capability's self-declared kind.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "Session-unique attachment name; the tool prefix on collisions.",
+          "maxLength": 40,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "type": "string"
+        },
+        "runtime_id": {
+          "description": "The runtime the capability instance belongs to.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Canonical workspace path the runtime reported; absent without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "runtime_id",
+        "capability",
+        "kind"
+      ],
+      "type": "object"
+    },
     "SessionMeta": {
       "properties": {
         "agent_revision": {
@@ -68,6 +113,13 @@
           "minLength": 71,
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
+        },
+        "attachments": {
+          "description": "The session's runtime attachments now, in attach order: the fold of\nits `runtime_attached` and `runtime_detached` events (client protocol\n1.7.0). Empty from an older daemon, and for a session whose\nmetadata an older build wrote and that has recorded nothing since.",
+          "items": {
+            "$ref": "#/$defs/RuntimeAttachment"
+          },
+          "type": "array"
         },
         "catalog_revision": {
           "maxLength": 71,

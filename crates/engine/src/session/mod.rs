@@ -1767,8 +1767,9 @@ impl SessionStore {
         // rewrites it, and eviction and store release flush a tip that is
         // still pending. A title or status change, and anything outside a run
         // (where nothing is guaranteed to follow), is written through.
-        // Whether the session's listed metadata (status, title, or its first
-        // persistence) changed; a refold is assumed to have changed it.
+        // Whether the session's listed metadata (status, title, attachments,
+        // or its first persistence) changed; a refold is assumed to have
+        // changed it.
         let mut index_changed = true;
         let applied = {
             let mut residency = self
@@ -3008,7 +3009,11 @@ impl SessionStore {
                 if !self.is_published_child(root, id) {
                     return None;
                 }
-                let summary = self.cached_summary(id)?;
+                let mut summary = self.cached_summary(id)?;
+                // The index leaves the attachments out: a seed takes its
+                // metadata from the child's own `metadata` cache, and an index
+                // an earlier build wrote then reads back byte for byte.
+                summary.meta.attachments.clear();
                 Some(IndexedChild {
                     summary,
                     terminal_runs: cached.get(&id).cloned().unwrap_or_default(),

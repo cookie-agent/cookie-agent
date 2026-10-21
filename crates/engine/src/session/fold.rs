@@ -161,6 +161,7 @@ fn projection_fold_with(
                 reason: diagnostic.reason.clone(),
             })
             .collect(),
+        attachments: Vec::new(),
     };
     let mut projection = SessionProjection {
         meta,
@@ -219,8 +220,8 @@ pub(super) enum FoldStep<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Observed {
     /// The event was applied. `durable_meta` reports whether it changed the
-    /// metadata beyond its tip (title or status), which other processes read
-    /// from the `metadata` cache.
+    /// metadata beyond its tip (title, status, or attachments), which other
+    /// processes read from the `metadata` cache.
     Applied { durable_meta: bool },
     /// The event cannot be applied in place; the log needs a full fold.
     NeedsRefold,
@@ -272,6 +273,8 @@ impl SessionProjection {
             }
             EventPayload::RuntimeAttached { .. } | EventPayload::RuntimeDetached { .. } => {
                 self.runtime_attachments.observe(&envelope.payload);
+                self.meta.attachments = self.runtime_attachments.attachments().to_vec();
+                durable_meta = true;
             }
             EventPayload::SessionTitleCommitted { change, .. } => {
                 let fold = &mut self.fold;
