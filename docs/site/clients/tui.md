@@ -101,8 +101,8 @@ Some commands have aliases, listed below, that match the search the same way
 but are never shown in the list.
 
 Commands that need input ask for it in a follow-up step instead of taking
-typed arguments. Esc in a step returns to the command list with the search
-intact.
+typed arguments; `/rename` alone takes its title after it in the search.
+Esc in a step returns to the command list with the search intact.
 
 | Command | Action |
 |---|---|
@@ -118,7 +118,8 @@ intact.
 | `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](../sessions/memory.md#managing-memory) |
 | `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](../extend/plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](../extend/agents.md#permissions) |
-| `/sessions` (also `resume`, `load`, `continue`) | Choose a session, delete one, or list every directory's; see [Session picker](#session-picker) |
+| `/sessions` (also `resume`, `load`, `continue`) | Choose a session, rename or delete one, or list every directory's; see [Session picker](#session-picker) |
+| `/rename` (also `title`) | Rename the selected session: `/rename <title>` sets the title, `/rename --auto` goes back to the generated title, and `/rename` alone asks for the title in a field holding the current one; see [Renaming](#renaming) |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed only when the selected model accepts files; see [Attachments](#attachments) |
 | `/usage` | Show selected-session and session-tree usage |
@@ -131,7 +132,7 @@ intact.
 
 In a read-only session owned by another cookie process, commands that write to
 the session (`/permissions`, `/runtime`, `/skills`, `/attach`, `/cancel`,
-`/goal`, `/compact`) are hidden.
+`/goal`, `/compact`, `/rename`) are hidden.
 
 The composer only ever sends messages: text beginning with `/` is sent as a
 prompt like any other. To start a message with `/`, open the palette and type
@@ -192,6 +193,9 @@ Enter or click a row to open one.
   sessions instead, each row naming its directory; press it again (the
   button now reads **This directory**) to go back. In the search field,
   Home still moves to the start of the text.
+- **Ctrl+R**, or the **Rename** button, renames the highlighted session:
+  a field holding its title opens over the search. See
+  [Renaming](#renaming).
 - **Ctrl+D**, **Delete** while the list has focus, or the **Delete**
   button asks to delete the highlighted session. The confirmation names
   the session and says how many subagent sessions go with it; **y** or
@@ -207,6 +211,22 @@ cannot delete sessions, and the TUI says so instead of asking. When the
 session you are viewing is deleted, from this TUI or another client, the
 TUI leaves it for a new session, as it does when it starts without one. See
 [Delete](../sessions/index.md#delete).
+
+## Renaming
+
+A session's title is generated from its first messages (see
+[Session Title](../engine/session_title.md)); a title you set replaces it.
+
+- `/rename Fix the parser` sets the selected session's title.
+- `/rename --auto` drops your title for the generated one again.
+- `/rename` alone, and **Ctrl+R** in the session picker, open a field
+  holding the current title. Enter saves it; Enter on an emptied field
+  goes back to the generated title, and Esc keeps the title as it was.
+
+The title can be up to 512 bytes, without line breaks; a longer one stays
+in the field with the reason in the status line. Every client sees the new
+title at once. A session you have not sent a first message to yet has
+nothing to rename.
 
 ## User-message menu
 

@@ -81,8 +81,9 @@ address bar.
 
   The connection and the theme button are at its foot.
 - **Chat.** The title bar has the sidebar button, the session's title, and
-  the ⋮ menu of the session's commands. Below the transcript are the
-  composer and the bottom bar. While a subagent's session is open, the
+  the ⋮ menu of the session's commands. Click the title to rename the
+  session (see [Renaming](#sessions-and-chat)). Below the transcript are
+  the composer and the bottom bar. While a subagent's session is open, the
   title is a path from its root, such as
   `Fix the greeting › reviewer: check tests`: click a parent to go up to
   it. The ⋮ menu acts on the session shown.
@@ -112,17 +113,44 @@ address bar.
   workspace), named by its runtime, such as `labpc · ~/api`.
   - **Rows.** Each session shows its title, an icon for its status
     (running, completed, failed, cancelled, interrupted, or idle), where it
-    works (its workspaces, each named by its runtime unless that is
-    `local`: `~/web, labpc:~/api`, or "no workspace"), and how long ago it
-    was last active. Hover over a row for the whole list.
+    runs as badges, and how long ago it was last active, beside its
+    title. Hover over a row
+    for every workspace with its machine, runtime, and path.
+  - **Badges.** The `global` attachment never counts:
+    - nothing else: a grey **no workspace** badge;
+    - one runtime: its badge, then its workspace, as `~/web`;
+    - several, all on one machine: the machine's badge, then a badge for
+      each runtime;
+    - more than one machine: a badge for each machine, in the order the
+      session attached them.
+
+    A machine's badge has its operating system's icon, as on the Machines
+    view; a runtime's says its ID, and its capability when the runtime
+    offers several (`alt·notes`). A runtime whose machine the daemon does
+    not know counts as a machine of its own and shows its runtime badge.
+    Each machine and runtime keeps one of eight colours, chosen from its
+    name, so it looks the same in every row, every browser, and the TUI;
+    the same runtime colour marks the bottom bar's workspaces and the
+    runtime cards. The badges have the row's second line to themselves;
+    when it is too narrow, a machine's name and a workspace are cut short
+    first, and a runtime's ID only when nothing else can give. A daemon older than client protocol 1.7 lists no
+    attachments: the row shows the session's directory instead.
   - **New session** opens the new session's runtime cards (below); the
     first message after **Start** creates the session with them and the
     agent, model, and permission mode the bottom bar shows.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
+  - **Renaming.** Click the title in the title bar, or choose ⋮ ›
+    **Rename**, and the title becomes a field holding it: **Enter** saves
+    and **Escape** (or clicking elsewhere) keeps the old title. In the
+    list, hover over a row for its pencil, beside the trash, which does
+    the same with the row's title. Empty the field for **Use the automatic
+    title**, which goes back to the title the daemon generates (as does
+    Enter on an empty field). Every client sees the new title at once.
   - **Deleting.** Hover over a session's row for its trash button (on a
     touch screen, press the row for about half a second; the press never
-    opens the session, and scrolling cancels it). A confirmation in the row
+    opens the session, and scrolling cancels it, and it offers
+    **Rename** too). A confirmation in the row
     names the session; **Delete** removes it and its subagents from the
     daemon's disk, for good. The daemon refuses while the session tree
     runs, while another cookie process holds it, or when it changed since
@@ -149,6 +177,8 @@ address bar.
     waits until every field is filled in. With no coding card selected,
     the session works in no workspace. With two workspaces or more, a note
     says their tools get prefixes, with an example name.
+  - **Colours.** Each card has a dot in its runtime's colour, the colour
+    of that runtime's badge in the session rows.
   - **Start** opens every workspace at once. A runtime that refuses says
     why on its card, and nothing is created; once all of them open, the
     page shows where the new session will work, with **Change runtimes**
@@ -175,6 +205,15 @@ address bar.
 - **Transcript.** Markdown is rendered with any HTML in it shown as text.
   Links open in a new tab, but only `http`, `https`, and `mailto` links;
   images show as links.
+  - **Pinned at the top**, folded side by side on one line, as in the
+    TUI: the system prompt of the session's last run (`system prompt ·
+    primary (last run) (42 lines)`; before its first run, the one it was
+    created with), with
+    `· next: <agent>` when the bottom bar's agent differs, and the tools
+    the last model request offered (`tools · 12 available (last
+    request)`). Click one to open it: the prompt in monospace with its
+    line breaks and indentation, up to 256 lines or 32 KiB, and the tool
+    names as chips, up to 8 KiB of names.
   - **Tool calls** are one line each until you open them, as in the TUI:
     an icon for the kind of tool (from its presentation hint, never its
     name), the title, the primary argument unless the title names it, and
@@ -292,7 +331,8 @@ address bar.
   - **working…** while the session runs;
   - the last status message;
   - where the session (or the new session) works, its workspaces under
-    their runtimes' homes (click for **Runtimes**; not on a phone);
+    their runtimes' homes, after a dot in each runtime's colour (click for
+    **Runtimes**; not on a phone);
   - the context size, in tokens, of the last request (also in **Usage**);
   - the session's cost (click for **Usage**).
 - **Diagnostics.** **Diagnostics** picks which diagnostic rows the
@@ -421,7 +461,8 @@ address bar.
   view closes it; a tap on the open session's row switches its tree and
   leaves the drawer open. It opens only from the button: a swipe from the edge is
   the browser's Back. A long press on a session's row reveals its
-  **Delete**, then the confirmation.
+  **Rename**, which makes its title a field, and its **Delete**, then the
+  confirmation.
 - **Agents** works like Chat: the agent open fills the screen, and the
   sidebar button opens the drawer with the rail beside the agents.
 - **Other views** fill the screen under the same title bar. Lists open
