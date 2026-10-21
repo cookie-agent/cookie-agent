@@ -1,7 +1,7 @@
 {
-  "name": "cookie agent",
-  "short_name": "cookie",
-  "description": "The cookie agent daemon in the browser.",
+  "name": "Cookie Agent",
+  "short_name": "Cookie Agent",
+  "description": "Cookie Agent in the browser: chat, approvals, subagents, and your runtimes.",
   "id": "./",
   "start_url": "./",
   "scope": "./",

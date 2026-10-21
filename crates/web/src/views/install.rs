@@ -232,7 +232,7 @@ pub(crate) fn InstallBanner() -> impl IntoView {
                 <div class="flex min-w-0 flex-1 flex-col gap-1 py-2">
                     <p class="flex items-center gap-2 font-bold">
                         <Glyph icon=icondata::FaMobileScreenButtonSolid class="text-caramel dark:text-maple" />
-                        "Install cookie"
+                        "Install Cookie Agent"
                     </p>
                     {move || (install.offer() == InstallOffer::AddToHomeScreen).then(ios_steps)}
                 </div>

@@ -104,6 +104,16 @@ mod tests {
     };
 
     #[test]
+    fn the_app_and_the_page_are_named_cookie_agent() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../assets/manifest.webmanifest")).unwrap();
+        assert_eq!(manifest["name"], "Cookie Agent");
+        assert_eq!(manifest["short_name"], "Cookie Agent");
+        let index = include_str!("../index.html");
+        assert!(index.contains("<title>Cookie Agent</title>"));
+    }
+
+    #[test]
     fn a_page_running_as_an_app_offers_nothing() {
         for context in [
             InstallContext {
@@ -296,7 +306,7 @@ mod tests {
             r#"<link rel="manifest" href="manifest.webmanifest" />"#,
             r#"<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />"#,
             r#"<meta name="apple-mobile-web-app-capable" content="yes" />"#,
-            r#"<meta name="apple-mobile-web-app-title" content="cookie" />"#,
+            r#"<meta name="apple-mobile-web-app-title" content="Cookie Agent" />"#,
             r#"addEventListener("beforeinstallprompt""#,
             "event.preventDefault()",
         ] {
