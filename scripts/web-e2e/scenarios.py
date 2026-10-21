@@ -171,18 +171,54 @@ def clear_composer(browser):
     )
 
 
+# Whether the nested subagents follow the open session's row.
+NESTED_UNDER_OPEN_ROW = """
+const group = document.querySelector('aside [data-subagents]');
+let e = group && group.previousElementSibling;
+while (e && !e.matches('[data-session-row]')) e = e.previousElementSibling;
+return !!e && e.querySelector('[aria-current=true]') !== null;
+"""
+
+
 def session_depth(browser):
     """Subagents, history edits, goals, background calls, media, skills, and
     permission overrides."""
-    # A delegation: the tree panel shows the child; its session_ref opens it.
+    # A delegation whose subagent answers slowly: the open session's row
+    # expands to show it while it is live, and its delegate call says what
+    # it does.
     new_session(browser)
-    send(browser, "delegate the work")
-    browser.wait("the delegation", lambda: "The tool ran." in browser.text("#transcript"), timeout=60)
-    # The finished child is no longer live, so `auto` hides the panel.
+    send(browser, "delegate slowly")
+    nested = "aside [data-subagents] [data-tree-session]"
+    browser.wait("the live subagent under its session", lambda: count(browser, nested) == 1, timeout=60)
+    assert browser.script(NESTED_UNDER_OPEN_ROW), "the subagents are not under the open session's row"
+    assert count(browser, "aside [data-subagents] [data-delete]") == 0, "a subagent offers deleting"
+    assert "helper" in browser.text("aside [data-subagents]"), browser.text("aside [data-subagents]")
+    browser.wait(
+        "the subagent's activity",
+        lambda: browser.text("#transcript [data-delegate-activity]") != "",
+        timeout=30,
+    )
+    print("a live subagent shows nested under its session:", browser.text("#transcript [data-delegate-activity]"))
+    browser.shot("subagent-live")
+    browser.wait("the delegation", lambda: "The tool ran." in browser.text("#transcript"), timeout=90)
+    # The finished subagent is no longer live, so `auto` folds the row.
+    browser.wait("the folded row", lambda: count(browser, nested) == 0)
+    print("the session's row expands only while its subagent is live")
     send(browser, "/agent-panel show")
-    browser.wait("the agent tree", lambda: "helper" in browser.text("#agent-tree"))
+    browser.wait("the subagents", lambda: count(browser, nested) == 1)
     browser.shot("subagent-tree")
     root_title = browser.text("#session-title")
+    # A subagent opens from the nested tree; the breadcrumb leads back.
+    browser.click(nested)
+    browser.wait("the child session", lambda: "child task" in browser.text("#transcript"))
+    assert "helper" in browser.text("#session-title"), browser.text("#session-title")
+    browser.wait("the breadcrumb", lambda: shown(browser, "main [data-crumb]"))
+    assert root_title in browser.text("main nav[aria-label=Path]"), browser.text("main nav[aria-label=Path]")
+    browser.shot("subagent")
+    browser.click("main [data-crumb]")
+    browser.wait("back at the root", lambda: browser.text("#session-title") == root_title)
+    print("a subagent opens from the nested tree; the breadcrumb leads back")
+    # Its delegate call's session reference opens it too.
     browser.click("#transcript [data-action=toggle-tool]")
     browser.wait(
         "the session reference",
@@ -190,14 +226,14 @@ def session_depth(browser):
     )
     browser.click("#transcript [data-action=open-session]")
     browser.wait("the child session", lambda: "child task" in browser.text("#transcript"))
-    assert "helper" in browser.text("#session-title"), browser.text("#session-title")
-    print("the delegation shows in the tree; its session reference opens the child")
-    browser.shot("subagent")
-    browser.click("#agent-tree [data-tree-session]")
+    # `/agent-panel hide` folds the row even while the child is open.
+    send(browser, "/agent-panel hide")
+    browser.wait("the hidden subagents", lambda: count(browser, nested) == 0)
+    send(browser, "/agent-panel auto")
+    browser.wait("the subagents of the open child", lambda: count(browser, nested) == 1)
+    browser.click("main [data-crumb]")
     browser.wait("back at the root", lambda: browser.text("#session-title") == root_title)
-    browser.click("#agent-tree button[aria-label=Fold]")
-    browser.wait("the folded tree", lambda: "helper" not in browser.text("#agent-tree"))
-    print("the tree folds")
+    print("/agent-panel hide folds the subagents")
 
     # Fork at a message, then revert one.
     new_session(browser)
@@ -613,6 +649,71 @@ def page_view(browser):
     return browser.script("const p = document.querySelector('#page'); return p ? p.dataset.view : 'chat'")
 
 
+def perform(browser, sources):
+    """Runs WebDriver input actions, then releases what they hold."""
+    call("POST", browser.path("/actions"), {"actions": sources})
+    call("DELETE", browser.path("/actions"))
+
+
+def hover(browser, selector):
+    origin = {ELEMENT: browser.find(selector)}
+    perform(browser, [{
+        "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
+        "actions": [{"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": 0}],
+    }])
+
+
+def long_press(browser, selector, hold=800, drag=0):
+    """A finger held on `selector` for `hold` ms, moved `drag` px down
+    first (a scroll)."""
+    origin = {ELEMENT: browser.find(selector)}
+    steps = [
+        {"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": 0},
+        {"type": "pointerDown", "button": 0},
+    ]
+    if drag:
+        steps.append({"type": "pointerMove", "duration": 100, "origin": "pointer", "x": 0, "y": drag})
+    steps += [{"type": "pause", "duration": hold}, {"type": "pointerUp", "button": 0}]
+    perform(browser, [{
+        "type": "pointer", "id": "finger", "parameters": {"pointerType": "touch"}, "actions": steps,
+    }])
+
+
+def deleting(browser):
+    """Deleting a session from its row: the trash on hover, the inline
+    confirmation naming it, a running session refused with the daemon's
+    message, and the open session gone for a new one."""
+    new_session(browser)
+    send(browser, "go slow")
+    browser.wait("the slow run", lambda: "word3" in browser.text("#transcript"))
+    current = browser.script(
+        "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
+    )
+    row = 'aside [data-session-row="%s"]' % current
+    title = browser.text("#session-title")
+    # The pointer away from the list: the row it last clicked may be this one.
+    hover(browser, "#transcript")
+    assert not shown(browser, row + " [data-delete]"), "the trash shows without a hover"
+    hover(browser, row)
+    browser.wait("the trash on hover", lambda: shown(browser, row + " [data-delete]"))
+    browser.click(row + " [data-delete]")
+    browser.wait("the confirmation", lambda: title in browser.text("aside [data-delete-confirm-box]"))
+    browser.shot("delete-confirm")
+    browser.click('aside [data-delete-confirm="%s"]' % current)
+    browser.wait("the refusal", lambda: browser.text("aside [data-delete-error]") != "")
+    print("deleting a running session is refused:", browser.text("aside [data-delete-error]"))
+    browser.shot("delete-refused")
+    assert count(browser, row) == 1
+    browser.type("#composer", ESCAPE)
+    browser.wait("the cancelled run", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    hover(browser, row)
+    browser.click(row + " [data-delete]")
+    browser.click('aside [data-delete-confirm="%s"]' % current)
+    browser.wait("the deleted row", lambda: count(browser, row) == 0, timeout=30)
+    browser.wait("a new session", lambda: browser.text("#session-title") == "New session")
+    print("deleted the open session from its row; the page went to a new session")
+
+
 def desktop_layout(browser):
     """The rail's views, slash commands that open them, the session menu,
     the sidebar toggle, the theme toggle, and the bottom bar's pickers."""
@@ -778,8 +879,55 @@ def phone_layout():
         phone.wait("the section list", lambda: shown(phone, "[data-section=providers]"))
         print("phone: the drawer opens and switches views; Back closes it, then leaves a detail")
 
-        # Back to Chat and the latest session, from the drawer.
+        # A subagent's title bar: ‹ goes back to its parent.
         phone.click("#page [data-sidebar-toggle]")
+        phone.click("#drawer [data-new-session]")
+        phone.wait("the new session", lambda: page_view(phone) == "chat" and count(phone, "#drawer") == 0)
+        send(phone, "delegate the work")
+        phone.wait("the delegation", lambda: "The tool ran." in phone.text("#transcript"), timeout=60)
+        root_title = phone.text("#session-title")
+        phone.click("#transcript [data-delegate] [data-action=open-session]")
+        phone.wait("the child", lambda: "helper" in phone.text("#session-title"))
+        assert shown(phone, "[data-crumb-back]") and not shown(phone, "main nav[aria-label=Path]")
+        phone.shot("phone-subagent")
+        phone.click("[data-crumb-back]")
+        phone.wait("the parent", lambda: phone.text("#session-title") == root_title)
+        print("phone: a subagent's ‹ goes back to its parent")
+
+        # A long press on a session row offers to delete it, and never opens
+        # it; a scroll cancels the press.
+        phone.click("main [data-sidebar-toggle]")
+        phone.click("#drawer [data-new-session]")
+        send(phone, "hello there")
+        phone.wait("the answer", lambda: answers(phone) >= 1)
+        doomed = phone.script(
+            "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
+        )
+        phone.click("main [data-sidebar-toggle]")
+        phone.click("#drawer nav[aria-label=Sessions] [data-session]:not([aria-current])")
+        phone.wait("another session", lambda: count(phone, "#drawer") == 0 and phone.text("#transcript") != "")
+        opened = phone.text("#session-title")
+        phone.click("main [data-sidebar-toggle]")
+        row = '#drawer [data-session="%s"]' % doomed
+        phone.wait("the drawer", lambda: count(phone, row) == 1)
+        assert not shown(phone, '#drawer [data-delete="%s"]' % doomed), "the hover trash shows on a phone"
+        long_press(phone, row, drag=40)
+        time.sleep(0.3)
+        assert count(phone, "#drawer [data-delete-actions]") == 0, "a scroll still revealed the delete"
+        long_press(phone, row)
+        phone.wait("the delete action", lambda: count(phone, "#drawer [data-delete-actions]") == 1)
+        assert count(phone, "#drawer") == 1 and phone.text("#session-title") == opened, "the long press opened the session"
+        phone.shot("phone-delete-revealed")
+        phone.click("#drawer [data-delete-reveal]")
+        phone.wait("the confirmation", lambda: count(phone, "#drawer [data-delete-confirm-box]") == 1)
+        phone.shot("phone-delete-confirm")
+        phone.click('#drawer [data-delete-confirm="%s"]' % doomed)
+        phone.wait("the deleted row", lambda: count(phone, row) == 0, timeout=30)
+        print("phone: a long press offers the delete without opening the session; a scroll cancels it")
+        phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+
+        # Back to Chat and the latest session, from the drawer.
+        phone.click("main [data-sidebar-toggle]")
         phone.click("#drawer nav[aria-label=Sessions] button")
         phone.wait("the transcript", lambda: page_view(phone) == "chat" and phone.text("#transcript") != "")
         phone.wait("the closed drawer", lambda: count(phone, "#drawer") == 0)
@@ -896,12 +1044,17 @@ def phone_audit():
             phone.wait("the transcript", lambda: phone.text("#transcript") != "")
             time.sleep(1)
             views = [("transcript", None)] + [(command[1:], command) for command in SHEETS]
-            views += [("commands", "menu"), ("drawer", "drawer")] + SCRIPTED
+            views += [("commands", "menu"), ("drawer", "drawer"), ("subagents", "subagents")] + SCRIPTED
             for view, command in views:
                 close_sheet(phone)
                 if command == "menu":
                     phone.click("button[aria-label=Commands]")
                 elif command == "drawer":
+                    phone.click("main [data-sidebar-toggle]")
+                elif command == "subagents":
+                    # The drawer with the open session's subagents under it.
+                    send(phone, "/agent-panel show")
+                    time.sleep(0.6)
                     phone.click("main [data-sidebar-toggle]")
                 elif isinstance(command, list):
                     for selector in command:
@@ -1065,6 +1218,7 @@ def main():
         foreign_session(browser)
 
         desktop_layout(browser)
+        deleting(browser)
 
         # A phone-sized window: no sideways scroll, the sessions in a drawer.
         browser.resize(375, 800)

@@ -9,7 +9,8 @@ otherwise the last user text decides.
 - containing "tool": a `bash` call to `printf`;
 - containing "slow": a long answer streamed slowly, to steer, queue, and
   cancel while it runs;
-- containing "delegate": a `delegate_subagent` call to the `helper` agent;
+- containing "delegate": a `delegate_subagent` call to the `helper` agent,
+  whose task asks for a slow answer (below) when the text says "slowly";
 - containing "sleepy": a `bash` call that sleeps, to move to the background;
 - containing "picture": a `read` call on `dot.png`, whose result is a media
   block;
@@ -89,9 +90,10 @@ def reply(request):
             pause=0.2,
         )
     if "delegate" in text:
+        prompt = "child task: answer slowly" if "slowly" in text else "child task: answer"
         return tool_reply(
             "delegate_subagent",
-            {"description": "child task", "prompt": "child task: answer", "agent_type": "helper"},
+            {"description": "child task", "prompt": prompt, "agent_type": "helper"},
         )
     if "sleepy" in text:
         return tool_reply("bash", {"command": "sleep 8; printf 'woke up\\n'"})
