@@ -89,9 +89,7 @@ address bar.
     registry;
   - **Memory**.
 
-  The connection and the theme button are at its foot. `/config`,
-  `/connect`, `/mcp`, `/plugins`, and `/memory` open their view; the
-  session's own commands open sheets.
+  The connection and the theme button are at its foot.
 - **Chat.** The title bar has the sidebar button, the session's title, and
   the ⋮ menu of the session's commands. Below the transcript are the
   composer and the bottom bar. While a subagent's session is open, the
@@ -106,10 +104,10 @@ address bar.
     sessions over the transcript.
   - **Narrower, a phone:** see [Phones](#phones).
 - **Sheets.** The session's panels open as a sheet on the right (from the
-  bottom on a phone): approvals, the agent, model, and preset pickers,
-  usage, the diagnostics filter, the goal, background calls, skills,
-  permissions, a message's actions, the session's runtimes, and the ⋮
-  menu.
+  bottom on a phone): approvals, the agent, model, permission mode, and
+  preset pickers, usage, the diagnostics filter, compacting, the goal,
+  background calls, skills, permission rules, a message's actions, the
+  session's runtimes, and the ⋮ menu.
 - **Long lines** in code, diffs, and terminal output scroll inside their
   block.
 
@@ -136,14 +134,19 @@ address bar.
     session leaves every client's list, and a page showing it starts a new
     session. A daemon older than client protocol 1.5 cannot delete, and
     the page offers no trash.
-- **Subagents.** The open session's row expands to show its subagents,
-  nested under it: each with its status (a turning circle while it runs, a
-  check, failed, or cancelled), its agent, its short handle, and its task.
-  Click one to open it, and the chevron beside it to fold its own
-  subagents. Subagents have no trash: they go with their root.
-  - `/agent-panel auto` (the default) expands the row while a subagent is
-    live or a subagent's session is open; `/agent-panel show` and
-    `/agent-panel hide` always expand or fold it.
+- **Subagents.** Only the open session's row has its subagents nested
+  under it, each with its status (a turning circle while it runs, a check,
+  failed, or cancelled), its agent, its short handle, and its task. Click
+  one to open it. Subagents have no trash: they go with their root. The
+  tree has two states; click the open session's own row to switch between
+  them (clicking another session still opens it), and the browser
+  remembers the choice for each session:
+  - **Collapsed** (the default): only the subagents that run, at any
+    depth, and the one you have open. A running subagent whose parent has
+    finished shows under its parent, dimmed, so it sits in its place. When
+    nothing runs, nothing shows under the session.
+  - **Expanded:** the whole hierarchy, finished subagents included; the
+    chevron beside a subagent folds its own.
 - **Transcript.** Markdown is rendered with any HTML in it shown as text.
   Links open in a new tab, but only `http`, `https`, and `mailto` links;
   images show as links.
@@ -171,8 +174,11 @@ address bar.
     output with its colours, tables, JSON, links, session links, and media
     shown inline.
   - **Cut output** offers its complete content.
-  - **Your messages** show the files they attached. Their **⋯** menu copies
-    the message, **reverts** to before it (it and every later turn are
+  - **Your messages** show the files they attached. Their **⋯** shows while
+    the mouse is over the message's row (or the keyboard is in it); on a
+    touch screen a long press on the message (about half a second; moving
+    or scrolling cancels it) opens the same menu. The menu copies the
+    message, **reverts** to before it (it and every later turn are
     removed, and its text comes back into the composer), or **forks** a new
     session with the conversation up to it. A revert is refused when another
     client added to the session since the menu opened.
@@ -188,7 +194,9 @@ address bar.
   | running or compacting | empty | **Stop** cancels it, as Escape does |
   | running | has text or files | **Queue** and **Steer** |
 
-  Each button's tooltip names its key. The keys work like the TUI's:
+  Text that starts with `/` is sent like any other message: the page has
+  no slash commands (the ⋮ menu has them). Each button's tooltip names
+  its key. The keys work like the TUI's:
   - **Enter** sends, steering a running run.
   - **Alt+Enter** queues the message behind the run.
   - **Shift+Enter or Ctrl+J** inserts a newline.
@@ -198,41 +206,31 @@ address bar.
 
   The strip above the composer lists pending and queued messages; tap one
   of yours to take it back.
-- **Commands.** `/` starts a command:
-  - `/new`;
-  - `/sessions` (also `/resume`, `/load`, `/continue`);
-  - `/agent`, `/model`, `/preset`;
-  - `/approvals`;
-  - `/mode` cycles the permission mode;
-  - `/usage`, `/cancel`, `/events`;
-  - `/goal`, `/compact`, `/background` (also `/bg`), `/skills`,
-    `/permissions` (also `/perms`), `/attach` (also `/file`, `/image`);
-  - `/agent-panel show`, `/agent-panel hide`, `/agent-panel auto`;
-  - `/runtime` (also `/runtimes`), `/mcp`, `/connect`, `/config`,
-    `/memory` (also `/memories`), `/plugins` (also `/plugin`).
-
-  The ⋮ menu in the title bar lists the session's own commands: `/runtime`,
-  `/permissions`, `/goal`, `/background`, `/usage`, `/compact`,
-  `/skills`, `/events`, `/preset`, and `/agent-panel`. The others have
-  their place in the page: the bottom bar picks the agent, model, and mode
-  and answers approvals; the composer attaches, sends, and cancels; the
-  sidebar starts and opens sessions; and the rail has the daemon's views.
+- **Commands.** The ⋮ menu in the title bar has the session's commands,
+  each by name with an icon and a line saying what it does, and each opens
+  a sheet with labelled fields and a main button: **Compact context**,
+  **Goal**, **Skills**, **Background calls**, **Runtimes**, **Permission
+  rules**, **Usage**, **Diagnostics**, and **Agent preset**. The others
+  have their place in the page: the bottom bar picks the agent, model, and
+  permission mode and answers approvals; the composer attaches, sends, and
+  stops; the sidebar starts and opens sessions; and the rail has the
+  daemon's views.
 - **Approvals.** When a tool call needs an answer, the bottom bar says so.
   Open it to approve once, approve for the session tree, or reject.
-- **Compacting.** `/compact` compacts the session's context, and
-  `/compact <focus>` says what the summary should keep. Escape, or
-  `/cancel`, cancels a compaction in progress.
-- **Goal.** `/goal <objective>` sets the root session's goal with the agent
-  and model shown; `/goal pause`, `/goal resume`, and `/goal cancel` control
-  it, and `/goal` alone shows it. The goal bar above the composer shows the
-  objective with the controls its state allows. Goals belong to root
+- **Compacting.** **Compact context** opens a sheet with an optional
+  **Focus** (what the summary should keep) and **Compact**. While it
+  compacts, the sheet offers **Cancel compaction**, as the composer's
+  **Stop** and Escape do, and then says how it went.
+- **Goal.** **Goal** shows the root session's goal, its checklist, and the
+  controls its state allows (**Pause**, **Resume**, **Cancel**), and sets a
+  **New objective** with the agent and model shown. The goal bar above the
+  composer shows the objective with the same controls. Goals belong to root
   sessions; a child session or a read-only snapshot offers none.
 - **Background calls.** While the session has calls running in the
   background, a bar above the composer lists them. Click it, or use
-  `/background`, to see how long each has run and stop one; a stopped call
+  **Background calls**, to see how long each has run and stop one; a stopped call
   still reports to the model.
-- **Files.** Attach files with `/attach` or the paperclip (the file
-  picker), by dropping them on the page, or by pasting them; on a phone,
+- **Files.** Attach files with the paperclip (the file picker), by dropping them on the page, or by pasting them; on a phone,
   the camera button takes a photo. They upload at once and wait on the
   draft as chips; the × on a chip removes it.
   - Only the kinds of file the selected model takes are offered: the picker
@@ -242,10 +240,9 @@ address bar.
   - An image too large for the model or the daemon is offered as
     **Downscale and attach**: the page redraws it smaller and attaches that.
     Video is never downscaled.
-- **Skills.** `/skills` lists the skills you can run, searched as you type
-  (`/skills <search>` starts the search). Pick one, give its arguments, and
-  run it.
-- **Permissions.** `/permissions` shows the session's rules by action, and
+- **Skills.** **Skills** lists the skills you can run, searched as you
+  type. Pick one, give its arguments, and run it.
+- **Permissions.** **Permission rules** shows the session's rules by action, and
   where each comes from: the agent, the default, or a session override.
   Click an effect to override it, add a rule for a pattern, or the × on an
   override to remove it. While a new session is composed, the same table edits the
@@ -253,22 +250,33 @@ address bar.
 - **Bottom bar.** Below the composer; each part has an icon and says more
   on hover:
   - the agent, the model, and the permission mode, as three chips of one
-    shape: the agent and model chips open their pickers; the mode chip,
-    with a shield of its own for each mode, switches to the next mode;
+    shape, each opening its picker. The mode chip has a shield of its own
+    for each mode; its picker lists every mode with its shield and what it
+    does, checks the current one, and sets the one you click:
+    - **auto-approve** (the default): the approval agent decides; what it
+      won't approve comes to you;
+    - **auto-approve-n**: the approval agent decides; what it would pass
+      to you is rejected;
+    - **auto-approve-y**: the approval agent decides; what it would pass
+      to you is approved once;
+    - **ask**: every ask comes to you;
+    - **yolo**: every ask is approved at once.
+
+    Deny rules and the loop guard hold in every mode;
   - the approvals waiting, when there are any (click to answer them);
   - **working…** while the session runs;
   - the last status message;
-  - the context size, in tokens, of the last request (also in `/usage`);
-  - the session's cost (click for `/usage`).
-- **Diagnostics.** `/events` picks which diagnostic rows the transcript
-  shows; the choice stays in the browser.
+  - the context size, in tokens, of the last request (also in **Usage**);
+  - the session's cost (click for **Usage**).
+- **Diagnostics.** **Diagnostics** picks which diagnostic rows the
+  transcript shows; the choice stays in the browser.
 - **Messages from producers** (goal control and reminders, background-call
   reports, delegation reports, plugins) show as one folded line with their
   summary; click one to read it whole.
 
 ## Managing the daemon
 
-- **Runtimes.** `/runtime` (in the ⋮ menu) lists the session's attached runtimes with their
+- **Runtimes.** **Runtimes** (in the ⋮ menu) lists the session's attached runtimes with their
   status: **Attach a runtime** searches every runtime's capabilities and asks
   for a workspace when one is needed, **Detach** removes one (the daemon
   refuses while the session runs), and **Retry** restarts a failed
@@ -285,35 +293,35 @@ address bar.
   machines, the runtime registry lists every runtime: whether it is
   connected, its machine and platform, its capabilities, and why it last
   failed to connect.
-- **MCP servers.** Settings › MCP servers (`/mcp`) lists every runtime's servers with their state,
+- **MCP servers.** Settings › MCP servers lists every runtime's servers with their state,
   tools, and last error. The global runtime's servers can be added, edited,
   enabled or disabled, removed, and kept in your `config.toml`; a coding
   runtime's come from its template. **Reconnect** works for any server.
   - A server that needs authorization says so. The page cannot sign in to
     it: run `cookie mcp auth <server>` on a machine with a browser, or
     authorize it from the TUI.
-- **Providers.** Settings › Providers (`/connect`) lists the catalog's providers. Pick one to
+- **Providers.** Settings › Providers lists the catalog's providers. Pick one to
   connect it, or to update or disconnect its stored connection. Credentials
   are typed into password fields, read once when you connect, and never
   kept by the page; closing the form clears them.
-- **Configuration.** Settings › Configuration (`/config`) has
+- **Configuration.** Settings › Configuration has
   `config.toml`, and the **Agents** view the agent documents, by preset.
   Open one to edit it in the page and **Apply** it. A change the daemon
   refuses stays open with the reason, to be fixed and applied again; a
   document that changed meanwhile is reloaded instead. The Agents view
   creates an agent document or deletes one; both reload from disk after
   editing files by hand.
-- **Memory.** The **Memory** view (`/memory`) lists the memories by layer, grouped by machine and
+- **Memory.** The **Memory** view lists the memories by layer, grouped by machine and
   project, with the files that are not valid memories. Open one to edit it,
   create one at a URL (clicking a layer or group fills in its prefix), or
   delete one. A memory that changed since you opened it is never
   overwritten silently: you choose to reload it, overwrite it, or drop your
   edit.
-- **Plugins.** Settings › Plugins (`/plugins`) lists each plugin with its state, tools, hooks,
+- **Plugins.** Settings › Plugins lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
   bottom bar.
 - **This browser.** Settings › This browser picks the diagnostics the
-  transcript shows (as `/events` does) and forgets the daemon.
+  transcript shows (as **Diagnostics** does) and forgets the daemon.
 
 ## Phones
 
@@ -327,11 +335,10 @@ address bar.
     parent.
   - **Bottom bar:** one row. The model chip takes the room left and
     shortens its name first; the agent chip shows only its icon below
-    about 380 px; the permission mode chip shows only its shield, and a tap
-    says
-    "now: <mode>" for a moment; the cost shows to the cent ("$0.02") and
-    opens `/usage`, which also has the context size. Every picker opens
-    from the bottom.
+    about 380 px; the permission mode chip shows only its shield; the cost
+    shows to the cent ("$0.02") and opens **Usage**, which also has the
+    context size. Every picker, and every sheet of the ⋮ menu, opens from
+    the bottom.
   - **Status line:** a thin line above the composer, only while the
     session runs, while approvals wait (tap the badge to answer), or for a
     few seconds after a status message.
@@ -339,7 +346,8 @@ address bar.
   the dimmed page: the rail as an icon strip, with the theme button at its
   foot, beside the sessions, with the open session's subagents nested
   under its row. A tap outside, browser Back, or choosing a session or a
-  view closes it. It opens only from the button: a swipe from the edge is
+  view closes it; a tap on the open session's row switches its tree and
+  leaves the drawer open. It opens only from the button: a swipe from the edge is
   the browser's Back. A long press on a session's row reveals its
   **Delete**, then the confirmation.
 - **Other views** fill the screen under the same title bar. Lists open
@@ -425,7 +433,7 @@ daemon of a new build serves its own page at once. It never touches the
 
 - **Sign in to an MCP server.** Authorizing a remote MCP server needs a
   callback on the machine's loopback address, which a page in a browser
-  cannot offer. `/mcp` marks such a server as needing authorization: run
+  cannot offer. Settings › MCP servers marks such a server as needing authorization: run
   `cookie mcp auth <server>` on a machine with a browser, or authorize it
   from the TUI.
 - **Offer this machine as a runtime.** A browser has no workspace to share.

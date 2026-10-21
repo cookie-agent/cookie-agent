@@ -228,7 +228,9 @@ with them (`state/tests.rs`).
     and the transcript fills the screen.
 - **Commands.** The composer accepts the same slash commands as the TUI,
   with the same names and aliases. Every command is also reachable from a
-  menu, because phones lack a convenient `/`.
+  menu, because phones lack a convenient `/`. *Superseded on 2026-10-21
+  (section 16.3): the web composer has no slash commands; the ⋮ menu has
+  them all.*
 - **Keys and touch.**
   - **Keys:** Enter steers, Alt+Enter queues, Shift+Enter and Ctrl+J insert
     a newline, Escape cancels, Up recalls.
@@ -736,7 +738,9 @@ Status: **implemented** (2026-10-21). Session deletion (section 16.2) is a
 minor protocol addition, client protocol 1.5.0, in the daemon, the shared
 client state, the TUI, and the web client; the web client's layout (section
 16.1) and its delete control build on it. Section 16.1 also records the
-decisions the web layout settled while it was built.
+decisions the web layout settled while it was built. Section 16.3 records
+the web-only decisions of 2026-10-21 on commands, the subagent tree, the
+permission mode picker, and the message menu, also implemented.
 
 ### 16.1 Web layout v2
 
@@ -770,6 +774,7 @@ decisions the web layout settled while it was built.
 - **Subagent tree.** The open session's subagents nest under its row in the
   sessions list, labelled "Subagents". The tree expands on its own while a
   subagent is live; `/agent-panel show|hide|auto` controls the expansion.
+  *Superseded on 2026-10-21 by the tree rules of section 16.3.*
 - **Children.** Child nodes have no delete control: a subagent goes with
   its root (`not_a_root_session`).
 - **Delegate rows.** A delegation row in the transcript shows the child's
@@ -966,6 +971,63 @@ sessions are then absent from `session.list`.
   - the outcome the TUI and the web client show.
 - **TUI.** The confirmation names the session's title and says how many
   subagents go with it. Refusals show their registry message and hint.
+
+### 16.3 Commands, the subagent tree, and the mode picker
+
+**Decided by the user, 2026-10-21 (web only; the TUI is unchanged):**
+
+- **No slash commands in the web composer.** `/` parsing and the
+  completion popup are gone: text that starts with `/` (say `/compact`) is
+  sent as a message. The placeholder is "Message". Every session command
+  is in the title bar's ⋮ menu; the commands with another place keep it
+  (the bottom bar's agent, model, and mode pickers and approvals badge,
+  the composer's attach and Stop, the sidebar's New session, and the
+  rail's views).
+- **The ⋮ menu** lists each command by a readable name with an icon and a
+  one-line description, never slash syntax, and each opens a sheet (a side
+  sheet on desktop, a bottom sheet on phones) with labelled fields and a
+  main button:
+  - **Compact context:** an optional **Focus** and **Compact**
+    (`session.compact` with the focus); while it compacts, **Cancel
+    compaction**, as the composer's Stop and Escape do;
+  - **Goal:** the goal with **Pause**, **Resume**, and **Cancel** as the
+    goal bar offers them, and a **New objective** field with **Set the
+    goal**;
+  - **Skills:** a search and the picked skill's arguments with **Run**;
+  - **Background calls**, **Runtimes**, **Permission rules**, **Usage**,
+    **Diagnostics**, and **Agent preset** open their existing sheets (the
+    background sheet says so when no call runs in the background).
+- **`/agent-panel` is gone**, with its menu entries. Only the open
+  session's row has a subagent tree, in one of two states; a click on the
+  open session's own row switches them (a click on another session still
+  opens it), and the browser keeps the state per session in
+  `localStorage` (`cookie.tree:<session id>`):
+  - **collapsed** (the default): the running subagents at any depth, and
+    the subagent the page shows; a running subagent's ancestors that do
+    not run show dimmed, only to place it; with nothing running, nothing
+    shows;
+  - **expanded:** the whole hierarchy, finished subagents included, each
+    foldable by its chevron.
+
+  The nodes keep their rendering (status, agent, handle, task, a click
+  opens the child) and the child's breadcrumb stays.
+- **Permission mode picker.** The mode chip no longer cycles modes or
+  shows a toast: like the agent and model chips, it has a chevron and
+  opens a picker (the side sheet on desktop, a bottom sheet on phones).
+  The picker lists every mode with its shield, its name, and a line from
+  the permissions guide, checks the current one, and sets the one clicked
+  (`session.set_permission_mode`); a footnote says deny rules and the loop
+  guard hold in every mode. The web client names the modes as the guide
+  does: auto-approve, auto-approve-n, auto-approve-y, ask, yolo.
+- **The message menu.** A user message's ⋯ shows only while a mouse or pen
+  is over the message's row (the whole band at the bubble's height) or the
+  keyboard is in it; its room is kept, so the bubble never moves. A touch
+  screen has no ⋯: a long press on the bubble (500 ms, cancelled by
+  moving or scrolling, without the browser's callout) opens the same menu.
+- **The composer's padding** for its in-box buttons is static CSS chosen
+  by which buttons show, so the text clears them from the first render
+  (it was measured after a render, and missed the attach buttons that
+  appear once the model's media are known).
 
 ## 17. Implementation notes
 
