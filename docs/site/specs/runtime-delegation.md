@@ -332,6 +332,9 @@ docs show.
 ## 9. Phases
 
 1. **Engine:**
+   - first, the registry remembering where runtimes ran (memory spec
+     section 16.8), so offline runtimes keep their machine in
+     `list_runtimes`, badges, and the Machines view;
    - the `capabilities` parameter and its per-session schema;
    - starting runtimes for a child;
    - parent inheritance;

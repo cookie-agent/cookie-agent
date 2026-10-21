@@ -5,7 +5,8 @@ listed in [section 1](#1-goal-and-scope) and the sections that follow; none
 are open ([section 15](#15-open-questions)). How each phase settled, with
 its deviations, is in [section 16](#16-implementation-notes); later
 decisions are dated addenda there ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete),
-[section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)). This spec
+[section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent),
+[section 16.8](#168-addendum-2026-10-21-the-registry-remembers-where-runtimes-ran)). This spec
 builds on the [runtimes spec](runtimes.md) and the
 [runtime capabilities spec](runtime-capabilities.md), and adds the term
 *machine* to their vocabulary.
@@ -1355,3 +1356,60 @@ files (section 4.1) and the `No memory yet.` line of section 7.4.
   and a replay of such a log does not show that line. Keeping the old text
   for old events would need a new event member that every snapshot carries,
   which this change did not take on.
+
+### 16.8 Addendum 2026-10-21: the registry remembers where runtimes ran
+
+Approved 2026-10-21, and queued as the first step of phase 1 of
+[delegating to runtimes](runtime-delegation.md).
+
+Until now a runtime's machine came only from a pin or from what the
+runtime reported while connected
+([section 3.2](#32-machine-registry)). An ssh template that had
+connected before therefore fell back to "on no machine yet" as soon as
+it disconnected. Its badges, its `~/…` paths, and its place in the
+Machines view were all lost while it was offline.
+
+- **What is remembered.** When a runtime connects, `machines.json` records
+  under its runtime ID:
+  - the machine ID it reported;
+  - its platform and its home directory;
+  - when it was last seen.
+
+  The record is rewritten whenever a reconnect reports something
+  different. Writes go through the same lock as every registry change.
+  The registry format version goes up by one, and an older file reads
+  with no records.
+- **Placement.** A runtime's machine is decided in this order:
+  1. its pin;
+  2. the machine its live report resolves to;
+  3. the machine its record resolves to, as a new reason, "last seen".
+
+  A disconnected runtime with a record stays on that machine, shown as
+  offline. "On no machine yet" is left for runtimes that have never
+  connected. Merging or renaming machines moves remembered runtimes as it
+  moves connected ones, because records hold machine IDs, not names.
+- **What clients see.**
+  - `runtimes.list` gives a disconnected runtime with a record its
+    remembered `machine`, `platform` and `home`, with `connected: false`.
+  - `machines.list` lists remembered runtimes beside connected ones, each
+    with its last-seen time.
+  - `list_runtimes` places them under their machine the same way.
+- **Forgetting.**
+  - A new `machines.forget_runtime` drops one runtime's record. The web
+    Machines view offers it on offline runtimes as "Forget".
+  - Removing an ssh template from `config.toml` drops its record at the
+    next config reload.
+  - Dial-in runtimes, which have no config, keep their record until
+    forgotten.
+  - `machines.forget` on a machine still refuses while the machine has
+    connected runtimes or memories. Remembered offline runtimes don't
+    block it; their records are dropped with it.
+- **Machines view.** Each machine card lists its offline runtimes under
+  the connected ones, dimmed, with "last seen …". Dragging an offline
+  runtime onto another machine pins it there, as for any runtime.
+- **Protocol.** This is an additive client protocol minor:
+  - the "last seen" assignment reason;
+  - remembered runtimes and their last-seen times in `machines.list`;
+  - `machines.forget_runtime`.
+
+  Older clients see what they see today.
