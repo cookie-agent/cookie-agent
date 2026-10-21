@@ -115,10 +115,14 @@ address bar.
   by its runtime, such as `labpc · ~/api`.
   - **Rows.** Each session shows its title, how long ago it was last
     active beside it, and where it runs as badges on the line below.
-    In each project, running sessions come first, then the others, each
-    newest first. A
-    session that runs has a turning circle before its title, and one whose
-    last run failed or was interrupted has a mark; the others have none.
+    In each project, active sessions come first (those that run, or wait
+    on something that will start their next run: an active goal, a
+    background call, a subagent, or a plugin or runtime), then the others,
+    each newest first. A session that runs has a turning circle before its
+    title, one that waits has a clock (its tooltip says what it waits on,
+    such as `waiting on: goal, background call`), and one whose last run
+    failed or was interrupted has a mark; the others have none. A daemon
+    older than client protocol 1.9 does not say what a session waits on.
     The open session's row has a chevron before its badges, which turns
     with its subagent tree. Hover over a row for its status and every
     workspace with its machine, runtime, and path.

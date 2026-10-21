@@ -5,7 +5,6 @@
 
 use cookie_agent_protocol::{
     AgentId, AgentSnapshot, GoalStatus, ProducerDeliveryMode, ProducerOwner, SessionMeta,
-    SessionStatus,
 };
 
 use crate::SessionState;
@@ -81,10 +80,14 @@ pub fn display_line_count(text: &str) -> usize {
     text.split('\n').count()
 }
 
-/// Whether a session counts as active in a session list: for now, while
-/// it runs.
+/// Whether a session counts as active in a session list: it runs, or it
+/// waits on a producer that will start its next run (an active goal, a
+/// background call, a subagent, an external producer).
 pub fn session_is_active(session: &SessionMeta) -> bool {
-    session.status == SessionStatus::Running
+    matches!(
+        crate::activity::session_activity(session),
+        crate::activity::SessionActivity::Running | crate::activity::SessionActivity::Waiting(_)
+    )
 }
 
 /// Orders a session list: the active sessions first, then the rest, each
@@ -302,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn running_sessions_come_first_then_the_rest_newest_first() {
+    fn active_sessions_come_first_then_the_rest_newest_first() {
         let session = |name: &str, status: &str, at: &str| -> SessionMeta {
             serde_json::from_value(serde_json::json!({
                 "session_id": cookie_agent_protocol::SessionId::new_v7(),
@@ -337,6 +340,13 @@ mod tests {
             session("tie-a", "completed", "2026-10-20T10:00:00Z"),
             session("new-running", "running", "2026-10-20T11:00:00Z"),
             session("tie-b", "cancelled", "2026-10-20T10:00:00Z"),
+            {
+                // Waiting on a producer counts as active, under the newer
+                // running sessions but above every idle one.
+                let mut waiting = session("old-waiting", "idle", "2026-10-20T06:00:00Z");
+                waiting.waiting_on = vec![cookie_agent_protocol::WaitingOn::Goal];
+                waiting
+            },
         ];
         order_sessions(&mut sessions);
         let names = sessions
@@ -348,6 +358,7 @@ mod tests {
             [
                 "new-running",
                 "old-running",
+                "old-waiting",
                 "new-failed",
                 "tie-a",
                 "tie-b",

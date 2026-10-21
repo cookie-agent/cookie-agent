@@ -6,7 +6,7 @@
 //! Icons inherit the text colour (`currentColor`) and are hidden from
 //! assistive technology: the button or text beside them carries the name.
 
-use cookie_agent_client_state::ToolStatus;
+use cookie_agent_client_state::{ToolStatus, activity::SessionActivity};
 use cookie_agent_protocol::{PermissionMode, SessionStatus, ToolHint};
 pub use icondata::Icon;
 use leptos::prelude::*;
@@ -124,20 +124,39 @@ pub fn session_status(status: SessionStatus) -> StatusMark {
 }
 
 /// The mark a session's row shows before its title, if any: a turning
-/// circle while it runs, and a mark when its last run failed or was
-/// interrupted. A finished, idle, or cancelled session has none, so its
-/// title starts at the row's edge. (A session waiting on a producer, such
-/// as an active goal, will have one too, which running outranks.)
-pub fn row_status(status: SessionStatus) -> Option<StatusMark> {
-    match status {
-        SessionStatus::Running | SessionStatus::Failed | SessionStatus::Interrupted => {
-            Some(session_status(status))
+/// circle while it runs, a clock while it waits on a producer (an active
+/// goal, a background call, a subagent, or an external producer) to start
+/// its next run, and a mark when its last run failed or was interrupted. A
+/// finished, idle, or cancelled session has none, so its title starts at
+/// the row's edge. Running outranks waiting, which outranks a problem.
+pub fn row_status(activity: &SessionActivity) -> Option<StatusMark> {
+    match activity {
+        SessionActivity::Running => Some(session_status(SessionStatus::Running)),
+        SessionActivity::Waiting(_) => Some(StatusMark {
+            icon: icondata::FaClockRegular,
+            label: "waiting",
+            tone: RUNNING,
+            spins: false,
+        }),
+        SessionActivity::Problem(status @ (SessionStatus::Failed | SessionStatus::Interrupted)) => {
+            Some(session_status(*status))
         }
-        SessionStatus::Idle
-        | SessionStatus::Completed
-        | SessionStatus::Cancelled
-        | SessionStatus::Unknown => None,
+        SessionActivity::Problem(_) | SessionActivity::None => None,
     }
+}
+
+/// [`row_status`] of a row that knows only its status, such as a
+/// subagent's in the tree: subagents report no producer they wait on.
+pub fn row_status_of(status: SessionStatus) -> Option<StatusMark> {
+    row_status(&match status {
+        SessionStatus::Running => SessionActivity::Running,
+        SessionStatus::Failed | SessionStatus::Cancelled | SessionStatus::Interrupted => {
+            SessionActivity::Problem(status)
+        }
+        SessionStatus::Idle | SessionStatus::Completed | SessionStatus::Unknown => {
+            SessionActivity::None
+        }
+    })
 }
 
 /// The theme button's icon: the theme the page is in, or half a circle for
@@ -182,7 +201,9 @@ mod tests {
     use cookie_agent_client_state::ToolStatus;
     use cookie_agent_protocol::{SessionStatus, ToolHint};
 
-    use super::{hint_icon, permission_mode, row_status, session_status, svg, tool_status};
+    use super::{
+        SessionActivity, hint_icon, permission_mode, row_status, session_status, svg, tool_status,
+    };
 
     #[test]
     fn every_permission_mode_has_its_own_icon() {
@@ -247,18 +268,18 @@ mod tests {
             tool_status(&ToolStatus::Failed, false).icon
         );
         assert_eq!(session_status(SessionStatus::Unknown).label, "unknown");
-        // Rows mark only what runs and what went wrong.
-        assert!(row_status(SessionStatus::Running).is_some_and(|mark| mark.spins));
-        assert!(row_status(SessionStatus::Failed).is_some());
-        assert!(row_status(SessionStatus::Interrupted).is_some());
-        for quiet in [
-            SessionStatus::Idle,
-            SessionStatus::Completed,
-            SessionStatus::Cancelled,
-            SessionStatus::Unknown,
-        ] {
-            assert!(row_status(quiet).is_none(), "{quiet:?}");
-        }
+        // Rows mark only what runs, what waits, and what went wrong.
+        assert!(row_status(&SessionActivity::Running).is_some_and(|mark| mark.spins));
+        let waiting = row_status(&SessionActivity::Waiting(vec![
+            cookie_agent_protocol::WaitingOn::Goal,
+        ]))
+        .expect("a waiting mark");
+        assert!(!waiting.spins);
+        assert_ne!(waiting.icon, session_status(SessionStatus::Running).icon);
+        assert!(row_status(&SessionActivity::Problem(SessionStatus::Failed)).is_some());
+        assert!(row_status(&SessionActivity::Problem(SessionStatus::Interrupted)).is_some());
+        assert!(row_status(&SessionActivity::Problem(SessionStatus::Cancelled)).is_none());
+        assert!(row_status(&SessionActivity::None).is_none());
     }
 
     #[test]

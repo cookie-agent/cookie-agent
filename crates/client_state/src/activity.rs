@@ -58,11 +58,31 @@ pub fn session_activity(meta: &SessionMeta) -> SessionActivity {
     }
 }
 
+/// What a waiting row's tooltip says: `waiting on: goal, background call`,
+/// each kind once, in `kinds` order.
+#[must_use]
+pub fn waiting_label(kinds: &[WaitingOn]) -> String {
+    let mut names = Vec::<&str>::new();
+    for kind in kinds {
+        let name = match kind {
+            WaitingOn::Goal => "goal",
+            WaitingOn::BackgroundCall => "background call",
+            WaitingOn::Subagent => "subagent",
+            WaitingOn::ExternalProducer => "external producer",
+            WaitingOn::Unknown => "another producer",
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    format!("waiting on: {}", names.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{SemVer, SessionMeta, SessionStatus, WaitingOn};
 
-    use super::{SessionActivity, daemon_reports_waiting, session_activity};
+    use super::{SessionActivity, daemon_reports_waiting, session_activity, waiting_label};
 
     fn meta(status: SessionStatus, waiting_on: &[WaitingOn]) -> SessionMeta {
         let revision = format!("sha256:{}", "a".repeat(64));
@@ -162,5 +182,17 @@ mod tests {
         assert!(reports(SemVer::new(1, 9, 0)));
         assert!(reports(SemVer::new(1, 12, 3)));
         assert!(!reports(SemVer::new(2, 9, 0)));
+    }
+
+    #[test]
+    fn a_waiting_rows_tooltip_names_each_kind_once() {
+        assert_eq!(
+            waiting_label(&[WaitingOn::Goal, WaitingOn::BackgroundCall, WaitingOn::Goal]),
+            "waiting on: goal, background call"
+        );
+        assert_eq!(
+            waiting_label(&[WaitingOn::Subagent, WaitingOn::ExternalProducer]),
+            "waiting on: subagent, external producer"
+        );
     }
 }

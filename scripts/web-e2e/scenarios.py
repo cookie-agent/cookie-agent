@@ -701,6 +701,17 @@ def session_depth(browser):
     browser.click("#transcript [data-action=background]")
     browser.wait("the background bar", lambda: "in background" in browser.text("#background-bar"))
     browser.shot("background")
+    # Once its run ends, the session waits on the call: its row has a clock,
+    # and its tooltip says what it waits on.
+    waiting_row = "aside [data-session-row] [aria-current=true]"
+    browser.wait(
+        "the waiting row",
+        lambda: count(browser, waiting_row + ' [data-session-activity="waiting"]') == 1,
+        timeout=40,
+    )
+    tooltip = browser.script("return document.querySelector(arguments[0]).title", waiting_row)
+    assert "waiting on: background call" in tooltip, tooltip
+    print("a session waiting on a background call shows a clock:", tooltip.splitlines()[-1])
     menu(browser, "background")
     browser.wait("the background sheet", lambda: count(browser, "#sheet [data-stop]") > 0)
     browser.shot("background-sheet")

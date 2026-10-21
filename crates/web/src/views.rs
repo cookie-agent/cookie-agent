@@ -413,7 +413,16 @@ fn session_row(
     let tree_root =
         move || workspace.tree_root.get() == Some(session_id) && workspace.tree_has_subagents();
     let mark = icons::session_status(session.status);
-    let status_mark = icons::row_status(session.status);
+    let activity = cookie_agent_client_state::activity::session_activity(&session);
+    let status_mark = icons::row_status(&activity);
+    // What the row's tooltip and a screen reader say of it: what it waits
+    // on, else its status.
+    let status_text = match &activity {
+        cookie_agent_client_state::activity::SessionActivity::Waiting(kinds) => {
+            cookie_agent_client_state::activity::waiting_label(kinds)
+        }
+        _ => mark.label.to_owned(),
+    };
     let last_activity = session.last_activity;
     // Where it runs, once the runtimes are known; the tooltip lists every
     // workspace with its path.
@@ -432,7 +441,7 @@ fn session_row(
     };
     let title = {
         let session = session.clone();
-        let status = mark.label;
+        let status = status_text.clone();
         move || {
             let homes = workspace.homes();
             let listed = workspace.lists_attachments.get();
@@ -533,9 +542,11 @@ fn session_row(
                 <span class="flex w-full items-center gap-2">
                     // The status slot, only when there is a mark.
                     {status_mark.map(|mark| view! {
-                        <Glyph icon=mark.icon class=mark.class("text-xs") />
+                        <span class="inline-flex shrink-0" data-session-activity=mark.label>
+                            <Glyph icon=mark.icon class=mark.class("text-xs") />
+                        </span>
                     })}
-                    <span class="sr-only">{mark.label}</span>
+                    <span class="sr-only">{status_text.clone()}</span>
                     <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title>{label.clone()}</span>
                     // The time sits beside the title, so the badges have
                     // the whole second line.
@@ -854,7 +865,7 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                         let current = move || workspace.selected.get() == Some(session_id);
                         // As on session rows: a mark only while it runs or
                         // when its last run went wrong.
-                        let mark = icons::row_status(row.status);
+                        let mark = icons::row_status_of(row.status);
                         let task_indent = if mark.is_some() { "pl-5" } else { "" };
                         let indent = format!("{}rem", 0.75 * (row.depth - 1) as f64);
                         let fold = if expanded && row.has_children {
