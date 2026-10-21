@@ -59,14 +59,14 @@ pub(crate) fn snapshot_turn(snapshot: &MemorySnapshot) -> Option<String> {
         if snapshot.writable {
             parts.push(delegated_save(id));
         }
-        parts.push(agent_section(agent));
+        parts.extend(agent_section(agent));
     } else {
         parts.push(ROOT_SEARCH.to_owned());
         if snapshot.writable {
             parts.push(root_save(id));
         }
         parts.push(user_section(&snapshot.user, &snapshot.user_omitted));
-        parts.push(agent_section(agent));
+        parts.extend(agent_section(agent));
         parts.push(machines_section(&snapshot.machines));
     }
     Some(format!(
@@ -115,18 +115,22 @@ pub(crate) fn user_section(user: &[MemorySnapshotCategory], omitted: &[String]) 
 }
 
 /// `## About this agent (<agent>)`: the agent's file, or why it is not
-/// shown.
-pub(crate) fn agent_section(agent: &MemorySnapshotAgent) -> String {
+/// shown. An agent file with an empty body, or none, adds no section at all
+/// (section 16.7): the daemon keeps a file for every agent, and most stay
+/// empty.
+pub(crate) fn agent_section(agent: &MemorySnapshotAgent) -> Option<String> {
     let url = format!("agent://{}", agent.agent);
     let block = match &agent.memory {
-        Some(memory) => memory_element(&url, &memory.description, &memory.body),
+        Some(memory) if !is_blank(&memory.body) => {
+            memory_element(&url, &memory.description, &memory.body)
+        }
         None if agent.omitted => format!("Not shown (too long): {url}"),
-        None => "No memory yet.".to_owned(),
+        Some(_) | None => return None,
     };
-    section(
+    Some(section(
         &format!("## About this agent ({})", agent.agent),
         vec![block],
-    )
+    ))
 }
 
 /// What the agent's file adds to the snapshot as rendered text: its

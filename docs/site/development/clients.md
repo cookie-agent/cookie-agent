@@ -31,7 +31,7 @@ The first request must be `handshake`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"handshake","params":{
-  "protocol_version":"1.5.0",
+  "protocol_version":"1.6.0",
   "client":{"kind":"mytool","instance_id":"0192f3c4-8d1e-7a2b-9c3d-4e5f60718293"},
   "features":[]}}
 ```

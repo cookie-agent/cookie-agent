@@ -18,6 +18,7 @@ use cookie_agent_protocol::MachineName;
 
 use super::{
     MEMORY_EXTENSION, MemoryError, MemoryRoot,
+    agents::{AgentMemory, with_frontmatter},
     file::{InvalidMemory, MemoryDocument, MemoryRevision, too_large},
     url::{MemoryLayer, MemoryName, MemoryUrl},
 };
@@ -89,6 +90,51 @@ pub(crate) struct MemoryRead {
     pub(crate) text: String,
 }
 
+/// What a write of an `agent://` file kept in place of what it was given
+/// (section 16.7): the daemon owns an agent file's description and its two
+/// keywords, and an agent file the daemon does not keep keeps the
+/// description it has.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct KeptMetadata {
+    /// The description the file keeps, when the text gave another.
+    pub(crate) description: Option<String>,
+    /// The daemon's keywords the text left out, added back.
+    pub(crate) keywords: Vec<String>,
+}
+
+impl KeptMetadata {
+    /// What was kept, in a sentence or two for the writer of `url`.
+    pub(crate) fn describe(&self, url: &MemoryUrl) -> String {
+        let mut parts = Vec::new();
+        if let Some(description) = &self.description {
+            parts.push(format!(
+                "The description of {url} is the daemon's and cannot be changed, so it stays \"{description}\"."
+            ));
+        }
+        if !self.keywords.is_empty() {
+            let keywords = self
+                .keywords
+                .iter()
+                .map(|keyword| format!("`{keyword}`"))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            parts.push(format!(
+                "Its keywords always include {keywords}, so they were added back; other keywords are kept."
+            ));
+        }
+        parts.join(" ")
+    }
+}
+
+/// A successful write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Written {
+    pub(crate) revision: MemoryRevision,
+    /// What an `agent://` write kept of the file's frontmatter; `None` when
+    /// the text was written as given.
+    pub(crate) kept: Option<KeptMetadata>,
+}
+
 /// What [`MemoryRoot::clear_body`] did, with the file's revision after it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ClearedBody {
@@ -136,7 +182,7 @@ const NOT_FILE: &str = "not a regular file";
 const NOT_FOLDER: &str = "not a folder";
 const UNKNOWN_TOP: &str = "not part of the memory layout";
 
-fn io_error(path: &Path) -> impl FnOnce(io::Error) -> MemoryError + '_ {
+pub(super) fn io_error(path: &Path) -> impl FnOnce(io::Error) -> MemoryError + '_ {
     move |source| MemoryError::Io {
         path: path.to_owned(),
         source,
@@ -150,7 +196,7 @@ fn not_found(error: &io::Error) -> bool {
 /// Reads a whole file, or `None` when nothing is at `path`. Something other
 /// than a regular file, a symbolic link included, reads as no bytes and
 /// parses as invalid.
-fn read_bytes(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>, MemoryError> {
+pub(super) fn read_bytes(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>, MemoryError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if not_found(&error) => return Ok(None),
@@ -219,7 +265,7 @@ fn relative(path: &[&str]) -> String {
 }
 
 /// The sorted entries of a folder that exists; none when it does not.
-fn read_dir_sorted(path: &Path) -> Result<Vec<(String, fs::FileType)>, MemoryError> {
+pub(super) fn read_dir_sorted(path: &Path) -> Result<Vec<(String, fs::FileType)>, MemoryError> {
     let entries = match fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error) if not_found(&error) => return Ok(Vec::new()),
@@ -236,7 +282,7 @@ fn read_dir_sorted(path: &Path) -> Result<Vec<(String, fs::FileType)>, MemoryErr
 }
 
 impl MemoryRoot {
-    fn file_path(&self, url: &MemoryUrl) -> PathBuf {
+    pub(super) fn file_path(&self, url: &MemoryUrl) -> PathBuf {
         self.root.join(url.relative_path())
     }
 
@@ -442,27 +488,30 @@ impl MemoryRoot {
     /// be a valid memory within `max_file_bytes`. Without `expected` the
     /// file must not exist; with it, the file must exist at that revision.
     /// Creating a `user://` file is refused for [`Origin::Model`]; creating
-    /// an `agent://` file needs `agent_exists` to accept its agent ID. The
-    /// first memory of a project or machine creates its folder. Returns the
-    /// new revision.
+    /// an `agent://` file needs `agents` to know its agent. An `agent://`
+    /// file keeps the frontmatter the daemon owns (section 16.7): the
+    /// daemon's description and keywords for an agent it keeps a file for,
+    /// and the description the file has otherwise; the text's own
+    /// frontmatter is replaced when it differs, its body kept as given.
+    /// The first memory of a project or machine creates its folder.
     pub(crate) fn write(
         &self,
         url: &MemoryUrl,
         text: &str,
         expected: Option<&MemoryRevision>,
         origin: Origin,
-        agent_exists: impl FnOnce(&AgentId) -> bool,
+        agents: impl FnOnce(&AgentId) -> AgentMemory,
         max_file_bytes: usize,
-    ) -> Result<MemoryRevision, StoreError> {
-        MemoryDocument::parse(text.as_bytes(), max_file_bytes).map_err(|reason| {
-            StoreError::Invalid {
-                url: url.clone(),
-                reason,
-            }
-        })?;
+    ) -> Result<Written, StoreError> {
+        let invalid = |reason| StoreError::Invalid {
+            url: url.clone(),
+            reason,
+        };
+        let document = MemoryDocument::parse(text.as_bytes(), max_file_bytes).map_err(invalid)?;
         let lock = self.lock()?;
         let path = self.file_path(url);
-        let current = read_bytes(&path)?.map(|(bytes, _)| MemoryRevision::of(&bytes));
+        let existing = read_bytes(&path)?.map(|(bytes, _)| bytes);
+        let current = existing.as_deref().map(MemoryRevision::of);
         match (current, expected) {
             (Some(revision), None) => {
                 return Err(StoreError::Exists {
@@ -477,37 +526,83 @@ impl MemoryRoot {
                     current,
                 });
             }
-            (Some(_), Some(_)) => {}
-            (None, None) => match url {
-                MemoryUrl::User { .. } if origin == Origin::Model => {
-                    return Err(StoreError::Refused(format!(
-                        "{url} does not exist, and only the user adds user categories"
-                    )));
+            (None, None) if matches!(url, MemoryUrl::User { .. }) && origin == Origin::Model => {
+                return Err(StoreError::Refused(format!(
+                    "{url} does not exist, and only the user adds user categories"
+                )));
+            }
+            (Some(_), Some(_)) | (None, None) => {}
+        }
+        let mut text = std::borrow::Cow::Borrowed(text);
+        let mut kept = None;
+        if let MemoryUrl::Agent { agent } = url {
+            let status = agents(agent);
+            if existing.is_none() && !status.exists() {
+                return Err(StoreError::Refused(format!(
+                    "{url} names no agent in the agent registry"
+                )));
+            }
+            let target = match &status {
+                AgentMemory::Managed(spec) => Some(spec.apply(agent, &document).map_err(invalid)?),
+                AgentMemory::Registered | AgentMemory::Unknown => existing
+                    .as_deref()
+                    .and_then(|bytes| MemoryDocument::parse(bytes, max_file_bytes).ok())
+                    .map(|current| {
+                        MemoryDocument::new(
+                            current.description(),
+                            document.keywords().to_vec(),
+                            document.body(),
+                        )
+                    })
+                    .transpose()
+                    .map_err(invalid)?,
+            };
+            if let Some(target) = target.filter(|target| *target != document) {
+                let added = target
+                    .keywords()
+                    .iter()
+                    .filter(|keyword| {
+                        !document
+                            .keywords()
+                            .iter()
+                            .any(|given| given.to_lowercase() == keyword.to_lowercase())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let metadata = KeptMetadata {
+                    description: (target.description() != document.description())
+                        .then(|| target.description().to_owned()),
+                    keywords: added,
+                };
+                let replaced = with_frontmatter(&text, &target).ok_or_else(|| {
+                    invalid(InvalidMemory("the frontmatter was not found".to_owned()))
+                })?;
+                if replaced.len() > max_file_bytes {
+                    return Err(invalid(too_large(replaced.len(), max_file_bytes)));
                 }
-                MemoryUrl::Agent { agent } if !agent_exists(agent) => {
-                    return Err(StoreError::Refused(format!(
-                        "{url} names no agent in the agent registry"
-                    )));
-                }
-                _ => {}
-            },
+                text = std::borrow::Cow::Owned(replaced);
+                kept = (metadata != KeptMetadata::default()).then_some(metadata);
+            }
         }
         let revision = write_file(&path, text.as_bytes())?;
         drop(lock);
         self.changed();
-        Ok(revision)
+        Ok(Written { revision, kept })
     }
 
     /// Replaces the one occurrence of `old` in the body of a memory at
     /// revision `expected` with `new`. Fails, changing nothing, when `old`
     /// occurs zero or several times or the result is not a valid memory.
-    /// The file is written in the form [`MemoryDocument::render`] gives.
+    /// The file is written in the form [`MemoryDocument::render`] gives,
+    /// with the daemon's description and keywords for an agent file the
+    /// daemon keeps (section 16.7).
     pub(crate) fn edit(
         &self,
         url: &MemoryUrl,
         old: &str,
         new: &str,
         expected: &MemoryRevision,
+        agents: impl FnOnce(&AgentId) -> AgentMemory,
         max_file_bytes: usize,
     ) -> Result<MemoryRevision, StoreError> {
         let lock = self.lock()?;
@@ -547,9 +642,14 @@ impl MemoryRoot {
                 });
             }
         }
-        let edited = document
+        let mut edited = document
             .with_body(document.body().replacen(old, new, 1))
             .map_err(invalid)?;
+        if let MemoryUrl::Agent { agent } = url
+            && let AgentMemory::Managed(spec) = agents(agent)
+        {
+            edited = spec.apply(agent, &edited).map_err(invalid)?;
+        }
         let text = edited.render();
         if text.len() > max_file_bytes {
             return Err(invalid(too_large(text.len(), max_file_bytes)));
@@ -642,7 +742,7 @@ impl MemoryRoot {
 /// Writes `bytes` to `path` through a flushed temporary file in the same
 /// folder renamed over it, creating the folder first. Returns the new
 /// revision.
-fn write_file(path: &Path, bytes: &[u8]) -> Result<MemoryRevision, MemoryError> {
+pub(super) fn write_file(path: &Path, bytes: &[u8]) -> Result<MemoryRevision, MemoryError> {
     let directory = path.parent().expect("memory files have a folder");
     fs::create_dir_all(directory).map_err(io_error(directory))?;
     let file_name = path

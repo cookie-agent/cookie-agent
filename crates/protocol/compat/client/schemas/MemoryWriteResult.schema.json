@@ -2,6 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "The memory's new revision.",
   "properties": {
+    "notice": {
+      "description": "What the daemon kept in place of what the text gave, for the user\nto read: an `agent://` file keeps the description and the two\nkeywords the daemon owns. Absent when the text was written as\ngiven. (Since 1.6.0.)",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "revision": {
       "type": "string"
     },

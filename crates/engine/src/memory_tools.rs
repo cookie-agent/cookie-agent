@@ -119,8 +119,8 @@ pub fn memory_tool_specs() -> Vec<ToolSpec> {
 
 const SEARCH_DESCRIPTION: &str = "Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, name, description, and body; results are ranked by keyword hits first. Results show each memory's URL, description, keywords, and up to three matching lines; a result you need approval to read shows only its URL and description. Search for the project a task belongs to by repository name, remote URL, or directory before starting work. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.";
 const READ_DESCRIPTION: &str = "Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns its description, keywords, body, and revision; send the revision to memory_write, memory_edit, or memory_delete to change it.";
-const WRITE_DESCRIPTION: &str = "Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. Writing the first memory of a project (project://<project>/<name>) creates the project. user:// categories cannot be created, only changed; agent://<agent> may be created only for an existing agent. Give each memory a one-line description and the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.";
-const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. Never save secrets.";
+const WRITE_DESCRIPTION: &str = "Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. Writing the first memory of a project (project://<project>/<name>) creates the project. user:// categories cannot be created, only changed. Every agent already has an agent://<agent> memory, whose description the daemon sets and whose keywords always include the agent ID and its mode: leave `description` out for agent:// (any you send is replaced) and add keywords freely. Give every other memory a one-line description, and each memory the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.";
+const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. An agent:// memory keeps the description and keywords the daemon gives it. Never save secrets.";
 const DELETE_DESCRIPTION: &str = "Delete one memory at the revision memory_read returned. machine:// and project:// memories are deleted; a project disappears with its last memory. user:// and agent:// memories cannot be deleted: for those, the call clears the body and keeps the file with its description and keywords, so the category or agent file stays.";
 
 fn spec(
@@ -197,8 +197,12 @@ struct WriteArgs {
     /// The memory URL.
     url: String,
     /// One line, 1 to 200 characters, shown in indexes and search results.
-    description: String,
-    /// Up to 32 keywords of 1 to 64 characters a later search would use.
+    /// Required except for agent://, whose description the daemon sets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    /// Up to 32 keywords of 1 to 64 characters a later search would use;
+    /// none when left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     keywords: Vec<String>,
     /// The memory's Markdown body; may be empty.
     body: String,
@@ -243,6 +247,9 @@ enum MemoryCall {
     Write {
         url: MemoryUrl,
         document: MemoryDocument,
+        /// Whether the call gave a description, and keywords.
+        described: bool,
+        keyworded: bool,
         revision: Option<MemoryRevision>,
     },
     Edit {
@@ -322,13 +329,28 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
         WRITE => {
             let args: WriteArgs = parse_args(WRITE, arguments)?;
             let url = parse_url(&args.url)?;
-            let document = MemoryDocument::new(args.description, args.keywords, args.body)
-                .map_err(|reason| {
+            let described = args.description.is_some();
+            let keyworded = !args.keywords.is_empty();
+            // An agent file's description is the daemon's, which the store
+            // puts in place of this one when it writes.
+            let description = match (args.description, &url) {
+                (Some(description), _) => description,
+                (None, MemoryUrl::Agent { agent }) => format!("Memory of the `{agent}` agent"),
+                (None, _) => {
+                    return Err(ToolError::execution(format!(
+                        "{url} needs a description: one line, 1 to 200 characters"
+                    )));
+                }
+            };
+            let document =
+                MemoryDocument::new(description, args.keywords, args.body).map_err(|reason| {
                     ToolError::execution(format!("{url} would not be a valid memory: {reason}"))
                 })?;
             Ok(MemoryCall::Write {
                 url,
                 document,
+                described,
+                keyworded,
                 revision: args.revision.as_deref().map(parse_revision).transpose()?,
             })
         }
@@ -657,28 +679,45 @@ impl PreparedExecutor for MemoryExecutor {
             MemoryCall::Write {
                 url,
                 document,
+                described,
+                keyworded,
                 revision,
             } => {
                 let created = revision.is_none();
                 let agents = engine.clone();
                 let target = url.clone();
-                let new_revision = blocking(move || {
+                let written = blocking(move || {
                     root.write(
                         &target,
                         &document.render(),
                         revision.as_ref(),
                         Origin::Model,
-                        |agent| agents.agent_registered(agent),
+                        |agent| agents.agent_memory(agent),
                         max_file_bytes,
                     )
                 })
                 .await?
-                .map_err(store_error)?
-                .to_string();
+                .map_err(store_error)?;
+                let new_revision = written.revision.to_string();
                 let verb = if created { "Created" } else { "Replaced" };
+                let mut output = format!("{verb} {url}; its revision is now {new_revision}.");
+                // What the call left out was never the model's to keep.
+                if let Some(mut kept) = written.kept {
+                    if !described {
+                        kept.description = None;
+                    }
+                    if !keyworded {
+                        kept.keywords.clear();
+                    }
+                    let notice = kept.describe(&url);
+                    if !notice.is_empty() {
+                        output.push(' ');
+                        output.push_str(&notice);
+                    }
+                }
                 Ok(result(
                     format!("{verb} memory {url}"),
-                    format!("{verb} {url}; its revision is now {new_revision}."),
+                    output,
                     key_value(vec![
                         ("url", url.to_string()),
                         ("revision", new_revision.clone()),
@@ -693,11 +732,20 @@ impl PreparedExecutor for MemoryExecutor {
                 revision,
             } => {
                 let target = url.clone();
-                let new_revision =
-                    blocking(move || root.edit(&target, &old, &new, &revision, max_file_bytes))
-                        .await?
-                        .map_err(store_error)?
-                        .to_string();
+                let agents = engine.clone();
+                let new_revision = blocking(move || {
+                    root.edit(
+                        &target,
+                        &old,
+                        &new,
+                        &revision,
+                        |agent| agents.agent_memory(agent),
+                        max_file_bytes,
+                    )
+                })
+                .await?
+                .map_err(store_error)?
+                .to_string();
                 Ok(result(
                     format!("Edited memory {url}"),
                     format!("Edited {url}; its revision is now {new_revision}."),

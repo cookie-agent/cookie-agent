@@ -304,6 +304,12 @@ pub struct MemoryWriteParams {
 pub struct MemoryWriteResult {
     pub url: String,
     pub revision: String,
+    /// What the daemon kept in place of what the text gave, for the user
+    /// to read: an `agent://` file keeps the description and the two
+    /// keywords the daemon owns. Absent when the text was written as
+    /// given. (Since 1.6.0.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 /// Delete one memory at the revision last read.

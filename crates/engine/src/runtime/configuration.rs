@@ -279,6 +279,9 @@ impl Engine {
             self.inner.config.store(Arc::clone(&candidate));
             self.publish(publication);
         }
+        // The publication also wakes the background sync; awaiting one here
+        // makes the files current when the apply or reload answers.
+        self.sync_agent_memory().await;
         *self
             .inner
             .config_error

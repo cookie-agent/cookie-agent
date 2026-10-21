@@ -1,6 +1,7 @@
 use std::fs;
 
 use super::*;
+use crate::memory::agents::AgentMemory;
 
 const LIMIT: usize = 4096;
 
@@ -14,12 +15,12 @@ fn text(description: &str, body: &str) -> String {
         .render()
 }
 
-fn no_agents(_: &AgentId) -> bool {
-    false
+fn no_agents(_: &AgentId) -> AgentMemory {
+    AgentMemory::Unknown
 }
 
-fn any_agent(_: &AgentId) -> bool {
-    true
+fn any_agent(_: &AgentId) -> AgentMemory {
+    AgentMemory::Registered
 }
 
 /// A data root whose memory folder exists, as after a first start.
@@ -40,6 +41,7 @@ fn create(memory: &MemoryRoot, target: &str, body: &str) -> MemoryRevision {
             any_agent,
             LIMIT,
         )
+        .map(|written| written.revision)
         .unwrap()
 }
 
@@ -55,14 +57,16 @@ fn a_write_creates_then_replaces_only_at_the_read_revision() {
     assert_eq!(first, MemoryRevision::of(text("d", "one\n").as_bytes()));
 
     // Creating again fails and names the current revision.
-    let again = memory.write(
-        &target,
-        &text("d", "x"),
-        None,
-        Origin::Model,
-        any_agent,
-        LIMIT,
-    );
+    let again = memory
+        .write(
+            &target,
+            &text("d", "x"),
+            None,
+            Origin::Model,
+            any_agent,
+            LIMIT,
+        )
+        .map(|written| written.revision);
     assert!(matches!(again, Err(StoreError::Exists { revision, .. }) if revision == first));
 
     let second = memory
@@ -74,17 +78,20 @@ fn a_write_creates_then_replaces_only_at_the_read_revision() {
             any_agent,
             LIMIT,
         )
+        .map(|written| written.revision)
         .unwrap();
     assert_ne!(second, first);
     // The old revision no longer replaces it.
-    let stale = memory.write(
-        &target,
-        &text("d", "three\n"),
-        Some(&first),
-        Origin::Model,
-        any_agent,
-        LIMIT,
-    );
+    let stale = memory
+        .write(
+            &target,
+            &text("d", "three\n"),
+            Some(&first),
+            Origin::Model,
+            any_agent,
+            LIMIT,
+        )
+        .map(|written| written.revision);
     assert!(
         matches!(stale, Err(StoreError::RevisionMismatch { current, .. }) if current == second)
     );
@@ -94,14 +101,16 @@ fn a_write_creates_then_replaces_only_at_the_read_revision() {
     );
 
     // Replacing a file that does not exist fails.
-    let missing = memory.write(
-        &url("project://web/other"),
-        &text("d", ""),
-        Some(&first),
-        Origin::Model,
-        any_agent,
-        LIMIT,
-    );
+    let missing = memory
+        .write(
+            &url("project://web/other"),
+            &text("d", ""),
+            Some(&first),
+            Origin::Model,
+            any_agent,
+            LIMIT,
+        )
+        .map(|written| written.revision);
     assert!(matches!(missing, Err(StoreError::NotFound { .. })));
     assert!(matches!(
         memory.read(&url("project://web/other"), LIMIT),
@@ -116,6 +125,7 @@ fn a_write_keeps_the_text_it_was_given_and_leaves_no_temporary_file() {
     let target = url("machine://labpc/gpu");
     memory
         .write(&target, authored, None, Origin::User, no_agents, LIMIT)
+        .map(|written| written.revision)
         .unwrap();
     let folder = memory.machine_dir(&MachineName::new("labpc").unwrap());
     let names = fs::read_dir(&folder)
@@ -135,7 +145,9 @@ fn invalid_or_oversized_writes_are_refused() {
         "---\ndescription: x\nextra: 1\n---\n",
         "---\ndescription: x\n---\n\u{0}",
     ] {
-        let result = memory.write(&target, written, None, Origin::User, any_agent, LIMIT);
+        let result = memory
+            .write(&target, written, None, Origin::User, any_agent, LIMIT)
+            .map(|written| written.revision);
         assert!(
             matches!(result, Err(StoreError::Invalid { .. })),
             "{written:?}"
@@ -153,11 +165,13 @@ fn invalid_or_oversized_writes_are_refused() {
                 any_agent,
                 100
             )
+            .map(|written| written.revision)
             .is_err()
     );
     assert!(
         memory
             .write(&target, &fits, None, Origin::User, any_agent, 100)
+            .map(|written| written.revision)
             .is_ok()
     );
 }
@@ -166,14 +180,16 @@ fn invalid_or_oversized_writes_are_refused() {
 fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
     let (_data, memory) = root();
     let category = url("user://work");
-    let refused = memory.write(
-        &category,
-        &text("d", ""),
-        None,
-        Origin::Model,
-        any_agent,
-        LIMIT,
-    );
+    let refused = memory
+        .write(
+            &category,
+            &text("d", ""),
+            None,
+            Origin::Model,
+            any_agent,
+            LIMIT,
+        )
+        .map(|written| written.revision);
     assert!(matches!(refused, Err(StoreError::Refused(_))));
     assert!(memory.read(&category, LIMIT).is_err());
     memory
@@ -185,6 +201,7 @@ fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
             any_agent,
             LIMIT,
         )
+        .map(|written| written.revision)
         .unwrap();
 
     // The model may edit an existing category.
@@ -198,6 +215,7 @@ fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
             no_agents,
             LIMIT,
         )
+        .map(|written| written.revision)
         .unwrap();
 
     let agent = url("agent://reviewer");
@@ -207,7 +225,13 @@ fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
             &text("d", ""),
             None,
             origin,
-            |id| id.as_str() == "default",
+            |id| {
+                if id.as_str() == "default" {
+                    AgentMemory::Registered
+                } else {
+                    AgentMemory::Unknown
+                }
+            },
             LIMIT,
         );
         assert!(matches!(refused, Err(StoreError::Refused(_))), "{origin:?}");
@@ -218,9 +242,16 @@ fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
             &text("d", ""),
             None,
             Origin::Model,
-            |id| id.as_str() == "reviewer",
+            |id| {
+                if id.as_str() == "reviewer" {
+                    AgentMemory::Registered
+                } else {
+                    AgentMemory::Unknown
+                }
+            },
             LIMIT,
         )
+        .map(|written| written.revision)
         .unwrap();
 }
 
@@ -237,6 +268,7 @@ fn deleting_user_and_agent_files_is_for_the_user_only() {
             any_agent,
             LIMIT,
         )
+        .map(|written| written.revision)
         .unwrap();
     let category = url("user://profile");
     let category_revision = memory.read(&category, LIMIT).unwrap().entry.revision;
@@ -288,6 +320,7 @@ fn clearing_a_body_keeps_the_file_and_its_frontmatter_byte_for_byte() {
                 any_agent,
                 LIMIT,
             )
+            .map(|written| written.revision)
             .unwrap();
         changes.mark_unchanged();
 
@@ -356,7 +389,8 @@ fn clearing_a_body_keeps_the_file_and_its_frontmatter_byte_for_byte() {
     assert_eq!(agent.body, "");
     let text = crate::memory::render::snapshot_turn(&snapshot).unwrap();
     assert!(text.contains("user://feedback"), "{text}");
-    assert!(text.contains("description=\"How reviews go\""), "{text}");
+    // An empty agent memory is left out of the rendered text.
+    assert!(!text.contains("About this agent"), "{text}");
 
     // Search still finds both by their keywords, with no body lines.
     let hits = memory
@@ -452,17 +486,19 @@ fn an_edit_replaces_exactly_one_occurrence() {
         ("beta", "occurs 2 times"),
         ("", "does not occur"),
     ] {
-        let error = memory.edit(&target, old, "x", &first, LIMIT).unwrap_err();
+        let error = memory
+            .edit(&target, old, "x", &first, any_agent, LIMIT)
+            .unwrap_err();
         assert!(error.to_string().contains(expected), "{old}: {error}");
     }
     // The frontmatter is not part of the body.
     let error = memory
-        .edit(&target, "description", "x", &first, LIMIT)
+        .edit(&target, "description", "x", &first, any_agent, LIMIT)
         .unwrap_err();
     assert!(matches!(error, StoreError::NoOccurrence { .. }));
 
     let second = memory
-        .edit(&target, "alpha", "ALPHA", &first, LIMIT)
+        .edit(&target, "alpha", "ALPHA", &first, any_agent, LIMIT)
         .unwrap();
     let read = memory.read(&target, LIMIT).unwrap();
     assert_eq!(read.entry.revision, second);
@@ -470,19 +506,23 @@ fn an_edit_replaces_exactly_one_occurrence() {
 
     // Edits need the current revision, keep the file valid, and fit.
     assert!(matches!(
-        memory.edit(&target, "gamma", "x", &first, LIMIT),
+        memory.edit(&target, "gamma", "x", &first, any_agent, LIMIT),
         Err(StoreError::RevisionMismatch { current, .. }) if current == second
     ));
     assert!(matches!(
-        memory.edit(&target, "gamma", "\u{7}", &second, LIMIT),
+        memory.edit(&target, "gamma", "\u{7}", &second, any_agent, LIMIT),
         Err(StoreError::Invalid { .. })
     ));
     let size = read.text.len();
     assert!(matches!(
-        memory.edit(&target, "gamma", "gammas", &second, size),
+        memory.edit(&target, "gamma", "gammas", &second, any_agent, size),
         Err(StoreError::Invalid { .. })
     ));
-    assert!(memory.edit(&target, "gamma", "gamm", &second, size).is_ok());
+    assert!(
+        memory
+            .edit(&target, "gamma", "gamm", &second, any_agent, size)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -493,7 +533,14 @@ fn editing_an_invalid_file_is_refused() {
     fs::write(&path, "no frontmatter alpha").unwrap();
     let revision = MemoryRevision::of(b"no frontmatter alpha");
     assert!(matches!(
-        memory.edit(&url("project://web/a"), "alpha", "beta", &revision, LIMIT),
+        memory.edit(
+            &url("project://web/a"),
+            "alpha",
+            "beta",
+            &revision,
+            any_agent,
+            LIMIT
+        ),
         Err(StoreError::Invalid { .. })
     ));
     // Writing the whole file at its revision repairs it.
@@ -506,6 +553,7 @@ fn editing_an_invalid_file_is_refused() {
             any_agent,
             LIMIT,
         )
+        .map(|written| written.revision)
         .unwrap();
 }
 
@@ -763,19 +811,28 @@ fn successful_changes_through_any_clone_signal_subscribers() {
     changes.mark_unchanged();
 
     // A refused write changes nothing and signals nothing.
-    let refused = tool.write(
-        &url("project://web/build"),
-        &text("d", "c"),
-        None,
-        Origin::Model,
-        any_agent,
-        LIMIT,
-    );
+    let refused = tool
+        .write(
+            &url("project://web/build"),
+            &text("d", "c"),
+            None,
+            Origin::Model,
+            any_agent,
+            LIMIT,
+        )
+        .map(|written| written.revision);
     assert!(matches!(refused, Err(StoreError::Exists { .. })));
     assert!(!changes.has_changed().unwrap());
 
     let revision = tool
-        .edit(&url("project://web/build"), "b", "c", &revision, LIMIT)
+        .edit(
+            &url("project://web/build"),
+            "b",
+            "c",
+            &revision,
+            any_agent,
+            LIMIT,
+        )
         .unwrap();
     assert!(changes.has_changed().unwrap());
     changes.mark_unchanged();

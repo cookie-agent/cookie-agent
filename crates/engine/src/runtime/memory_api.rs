@@ -228,7 +228,9 @@ impl Engine {
 
     /// `memory.write`: creates or replaces one memory from its whole text,
     /// for the user. The user may create a `user://` category; an
-    /// `agent://` file still needs an agent the registry has.
+    /// `agent://` file still needs an agent the registry has, and keeps the
+    /// description and keywords the daemon owns, which the result's
+    /// `notice` reports (section 16.7).
     pub async fn write_memory(
         &self,
         params: MemoryWriteParams,
@@ -245,7 +247,7 @@ impl Engine {
                     &text,
                     revision.as_ref(),
                     Origin::User,
-                    |agent| engine.agent_registered(agent),
+                    |agent| engine.agent_memory(agent),
                     max_file_bytes,
                 )
                 .map_err(|error| match error {
@@ -257,7 +259,8 @@ impl Engine {
                 })?;
             Ok(MemoryWriteResult {
                 url: url.to_string(),
-                revision: written.as_str().to_owned(),
+                revision: written.revision.as_str().to_owned(),
+                notice: written.kept.as_ref().map(|kept| kept.describe(&url)),
             })
         })
         .await

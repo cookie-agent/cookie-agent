@@ -202,10 +202,6 @@ fn without_write_access_the_save_paragraph_is_left_out() {
 {BACKGROUND}
 
 Only your own agent's notes are shown here. Search memory (memory_search) for the user's preferences, the project, and the machines your task touches. Read a listed memory with memory_read.
-
-## About this agent (reviewer)
-
-No memory yet.
 </system-reminder>"
             )
             .as_str()
@@ -220,29 +216,47 @@ No memory yet.
     assert!(!text.contains("Save what a later session"), "{text}");
 }
 
+/// The user and machine sections keep their heading when empty; an agent
+/// memory that is empty, or missing, adds no section at all.
 #[test]
-fn empty_sections_keep_their_heading() {
-    let snapshot = MemorySnapshot {
-        writable: false,
-        agent: Some(agent("default", None)),
-        ..MemorySnapshot::default()
-    };
-    let text = snapshot_turn(&snapshot).expect("a snapshot with an agent renders");
-    assert!(
-        text.ends_with(
-            "## About the user
+fn empty_sections_keep_their_heading_but_an_empty_agent_memory_is_left_out() {
+    for memory in [
+        None,
+        Some(("Memory of the `default` agent", "")),
+        Some(("d", " \n\n")),
+    ] {
+        let snapshot = MemorySnapshot {
+            writable: false,
+            agent: Some(agent("default", memory)),
+            ..MemorySnapshot::default()
+        };
+        let text = snapshot_turn(&snapshot).expect("a snapshot with an agent renders");
+        assert!(
+            text.ends_with(
+                "## About the user
 
 None.
-
-## About this agent (default)
-
-No memory yet.
 
 ## Machines in this session
 
 None.
 </system-reminder>"
-        ),
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("About this agent"), "{text}");
+        assert!(!text.contains("agent://default\""), "{text}");
+    }
+    // An agent file too long to show is still named.
+    let mut omitted = agent("default", None);
+    omitted.omitted = true;
+    let text = snapshot_turn(&MemorySnapshot {
+        agent: Some(omitted),
+        ..MemorySnapshot::default()
+    })
+    .unwrap();
+    assert!(
+        text.contains("## About this agent (default)\n\nNot shown (too long): agent://default"),
         "{text}"
     );
 }

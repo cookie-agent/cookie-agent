@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.6.0
+
+- `memory.write` results carry an optional `notice`: what the daemon kept in
+  place of the text it was given. The daemon now keeps a memory file for
+  every agent and owns its description and two keywords, so a write of an
+  `agent://` file that changes them keeps the daemon's and says so (see
+  [Memory](protocol.md#memory)). A 1.5 client ignores the member.
+
 ## 1.5.0
 
 - Session deletion: `session.delete { session_id, expected_last_seq }`

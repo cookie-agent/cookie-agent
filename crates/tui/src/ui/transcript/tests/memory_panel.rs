@@ -244,3 +244,50 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
     app.handle_key(key(KeyCode::Esc)).await;
     assert_eq!(app.modal, Modal::None);
 }
+
+/// The daemon keeps a memory file for each agent and owns its description:
+/// a save that changes it keeps the daemon's, and the status line says so.
+#[tokio::test]
+async fn saving_an_agent_memory_says_what_the_daemon_kept() {
+    let (_directory, server) = crate::tests::in_process_server();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    let mut app = App::new(client).await.expect("app");
+    let mut deliveries = app.take_deliveries();
+    app.run_command(SlashCommand::Memory).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        matches!(app.memory_panel.listing, Some(Ok(_)))
+    })
+    .await;
+    let agent = row_of(
+        &app,
+        |row| matches!(row, MemoryRow::Memory(memory) if memory.layer == MemoryLayer::Agent),
+    );
+    let MemoryRow::Memory(memory) = app.memory_panel.rows()[agent].clone() else {
+        unreachable!("an agent memory row");
+    };
+    app.memory_panel.selection.select(Some(agent));
+    app.handle_key(key(KeyCode::Enter)).await;
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.pending_memory_editor.is_some()
+    })
+    .await;
+    let request = app.pending_memory_editor.take().unwrap();
+    app.finish_memory_edit(
+        request,
+        Ok("---\ndescription: Mine\nkeywords: [extra]\n---\n- a lesson\n".into()),
+    );
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.status.starts_with("Saved")
+    })
+    .await;
+    let description = memory.description.expect("a valid agent memory");
+    assert!(
+        app.status.starts_with(&format!(
+            "Saved {}. The description of {} is the daemon's and cannot be changed, so it stays \"{description}\".",
+            memory.url, memory.url
+        )),
+        "{}",
+        app.status
+    );
+}

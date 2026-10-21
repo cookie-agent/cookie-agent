@@ -307,16 +307,23 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let outcome = MemoryWriteOutcome::from_result(
-                client
-                    .write_memory(
-                        request.url.clone(),
-                        request.text.clone(),
-                        request.revision.clone(),
-                    )
-                    .await,
-            );
-            let _ = updates.send(RpcUpdate::MemoryWritten { request, outcome });
+            let result = client
+                .write_memory(
+                    request.url.clone(),
+                    request.text.clone(),
+                    request.revision.clone(),
+                )
+                .await;
+            let notice = result
+                .as_ref()
+                .ok()
+                .and_then(|written| written.notice.clone());
+            let outcome = MemoryWriteOutcome::from_result(result);
+            let _ = updates.send(RpcUpdate::MemoryWritten {
+                request,
+                outcome,
+                notice,
+            });
         });
     }
 
@@ -324,6 +331,7 @@ impl App {
         &mut self,
         request: MemoryEditRequest,
         outcome: MemoryWriteOutcome,
+        notice: Option<String>,
     ) {
         match outcome {
             MemoryWriteOutcome::Saved => {
@@ -334,6 +342,10 @@ impl App {
                     "Created"
                 };
                 self.status = format!("{verb} {}.", request.url);
+                if let Some(notice) = notice {
+                    self.status.push(' ');
+                    self.status.push_str(&notice);
+                }
             }
             MemoryWriteOutcome::Invalid(message) => {
                 self.status = format!("Not saved: {message}");

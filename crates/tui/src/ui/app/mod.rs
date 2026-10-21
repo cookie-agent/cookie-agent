@@ -1066,6 +1066,8 @@ pub(in crate::ui) enum RpcUpdate {
     MemoryWritten {
         request: memory_panel::MemoryEditRequest,
         outcome: memory_panel::MemoryWriteOutcome,
+        /// What the daemon kept in place of the text, when it says.
+        notice: Option<String>,
     },
     /// A delete finished: what to tell the user either way.
     MemoryDeleted {

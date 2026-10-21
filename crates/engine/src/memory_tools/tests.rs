@@ -95,10 +95,10 @@ fn arguments_are_strict() {
             json!({"url": "project://web/build", "old": "a", "new": "b"}),
         ),
         ("memory_delete", json!({"url": "project://web/build"})),
-        // `keywords` and `body` are required.
+        // `body` is required.
         (
             "memory_write",
-            json!({"url": "project://web/build", "description": "d"}),
+            json!({"url": "project://web/build", "description": "d", "keywords": []}),
         ),
     ] {
         assert!(
@@ -202,4 +202,41 @@ fn long_matching_lines_are_cut() {
         hit_line(&long),
         format!("{}…", "é".repeat(MAX_HIT_LINE_CHARS))
     );
+}
+
+/// `keywords` may be left out; `description` too for an agent's memory,
+/// whose description the daemon sets, but not for any other.
+#[test]
+fn keywords_are_optional_and_an_agent_memory_needs_no_description() {
+    assert!(matches!(
+        check(
+            "memory_write",
+            json!({"url": "project://web/build", "description": "d", "body": ""})
+        ),
+        Ok(MemoryCall::Write {
+            described: true,
+            keyworded: false,
+            ..
+        })
+    ));
+    assert!(matches!(
+        check(
+            "memory_write",
+            json!({"url": "agent://reviewer", "body": "- a lesson\n", "revision": "0123456789abcdef"})
+        ),
+        Ok(MemoryCall::Write {
+            described: false,
+            ..
+        })
+    ));
+    for url in [
+        "project://web/build",
+        "user://profile",
+        "machine://labpc/gpu",
+    ] {
+        assert!(
+            error("memory_write", json!({"url": url, "body": ""})).contains("needs a description"),
+            "{url}"
+        );
+    }
 }

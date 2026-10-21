@@ -207,6 +207,33 @@ fn each_refresh_trigger_takes_a_new_snapshot() {
     );
 }
 
+/// An agent memory with an empty body is left out of the prompt but stays
+/// in the event, so the snapshot still records that memory is available:
+/// later runs keep it, and the agent's first body shows from the next
+/// refresh, like any other write (section 16.7).
+#[test]
+fn an_empty_agent_memory_keeps_the_snapshot_until_a_refresh() {
+    let mut empty = taken("reviewer", true, false, &["labpc"]);
+    empty.agent.as_mut().unwrap().memory = Some(cookie_agent_protocol::MemorySnapshotMemory {
+        description: "Memory of the `reviewer` agent".into(),
+        keywords: vec!["reviewer".into(), "subagent".into()],
+        body: String::new(),
+    });
+    assert_eq!(
+        crate::memory::render::agent_section(empty.agent.as_ref().unwrap()),
+        None
+    );
+    let same = facts(BOTH, "reviewer", false, &["labpc"]);
+    assert_eq!(
+        snapshot_change(Some((&empty, false)), &same),
+        SnapshotChange::Keep
+    );
+    assert_eq!(
+        snapshot_change(Some((&empty, true)), &same),
+        SnapshotChange::Take
+    );
+}
+
 #[test]
 fn a_delegated_snapshot_ignores_machines() {
     let latest = taken("reviewer", false, true, &[]);

@@ -131,9 +131,10 @@ fn user_write(fixture: &Fixture, target: &str, description: &str, body: &str) {
             .render(),
         current.as_ref(),
         Origin::User,
-        |_| true,
+        |_| crate::memory::agents::AgentMemory::Registered,
         LIMIT,
     )
+    .map(|written| written.revision)
     .unwrap();
 }
 
@@ -461,7 +462,9 @@ async fn a_new_agent_takes_a_new_snapshot() {
         .collect::<Vec<_>>();
     assert_eq!(agents, ["primary", "worker"]);
     let requests = captured.await.unwrap();
-    assert!(requests[1].contains("## About this agent (worker)"));
+    // Both agents' files are empty, so neither run's prompt has an agent
+    // section.
+    assert!(!requests[1].contains("## About this agent"));
     fixture.engine.shutdown().await;
 }
 
@@ -614,7 +617,13 @@ async fn deleting_user_and_agent_memories_clears_their_bodies() {
         custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
     let root = fixture.engine.memory_root().clone();
     let feedback_frontmatter = "---\n# kept as written\ndescription: \"Feedback: corrections\"\nkeywords:\n  - feedback\n---\n";
-    let agent_frontmatter = "---\ndescription: Review lessons\nkeywords: [review]\n---\n";
+    // The daemon made the agent's file at start, with an empty body.
+    let agent_frontmatter = root.read(&url("agent://primary"), LIMIT).unwrap().text;
+    assert_eq!(
+        agent_frontmatter,
+        "---\ndescription: \"Memory of the `primary` agent: Memory test agent\"\nkeywords: [primary]\n---\n"
+    );
+    let agent_frontmatter = agent_frontmatter.as_str();
     let mut revisions = HashMap::new();
     for (target, text) in [
         (
@@ -644,9 +653,10 @@ async fn deleting_user_and_agent_memories_clears_their_bodies() {
                 &text,
                 current.as_ref(),
                 Origin::User,
-                |_| true,
+                |_| crate::memory::agents::AgentMemory::Registered,
                 LIMIT,
             )
+            .map(|written| written.revision)
             .unwrap();
         revisions.insert(target, revision.to_string());
     }
@@ -785,7 +795,10 @@ async fn deleting_user_and_agent_memories_clears_their_bodies() {
     assert_eq!(feedback.revision, feedback_cleared);
     assert_eq!(feedback.invalid, None);
     let agent_file = info("agent://primary");
-    assert_eq!(agent_file.description.as_deref(), Some("Review lessons"));
+    assert_eq!(
+        agent_file.description.as_deref(),
+        Some("Memory of the `primary` agent: Memory test agent")
+    );
     assert_eq!(agent_file.revision, agent_cleared);
 
     // A new session's snapshot shows them too.
@@ -808,7 +821,10 @@ async fn deleting_user_and_agent_memories_clears_their_bodies() {
     assert_eq!(category.description, "Feedback: corrections");
     assert_eq!(category.body, "");
     let own = snapshot.agent.as_ref().unwrap().memory.as_ref().unwrap();
-    assert_eq!(own.description, "Review lessons");
+    assert_eq!(
+        own.description,
+        "Memory of the `primary` agent: Memory test agent"
+    );
     assert_eq!(own.body, "");
     fixture.engine.shutdown().await;
 }
@@ -947,6 +963,15 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
         .unwrap()
         .session_id;
     let child = create_buffered_delegated_child(&fixture.engine, parent);
+    // The daemon made the agent's file; replacing it needs its revision.
+    let own_revision = fixture
+        .engine
+        .memory_root()
+        .read(&url("agent://primary"), LIMIT)
+        .unwrap()
+        .entry
+        .revision
+        .to_string();
     // A delegation gives the child its parent's attachments.
     for runtime in ["global", "local"] {
         fixture
@@ -969,7 +994,7 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
             scripted_tool_body(
                 "own",
                 "memory_write",
-                serde_json::json!({"url": "agent://primary", "description": "Lessons", "keywords": [], "body": "- check twice\n"}),
+                serde_json::json!({"url": "agent://primary", "description": "Lessons", "keywords": ["checks"], "body": "- check twice\n", "revision": own_revision}),
             ),
         ),
         ("\"own\"", scripted_text_body("done")),
@@ -1005,18 +1030,25 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
             .to_string()
             .contains("may write only its own agent's memory")
     );
-    assert_eq!(ended["own"].outcome, ToolTerminationOutcome::Completed);
+    let own = &ended["own"];
+    assert_eq!(own.outcome, ToolTerminationOutcome::Completed, "{own:?}");
+    // The write keeps the daemon's description and re-adds its keyword,
+    // keeping the agent's own, and says so.
+    let read = fixture
+        .engine
+        .memory_root()
+        .read(&url("agent://primary"), LIMIT)
+        .unwrap();
+    let revision = read.entry.revision.to_string();
     assert_eq!(
-        fixture
-            .engine
-            .memory_root()
-            .read(&url("agent://primary"), LIMIT)
-            .unwrap()
-            .entry
-            .document
-            .unwrap()
-            .body(),
-        "- check twice\n"
+        read.text,
+        "---\ndescription: \"Memory of the `primary` agent: Memory test agent\"\nkeywords: [primary, checks]\n---\n- check twice\n"
+    );
+    assert_eq!(
+        own.result.as_ref().unwrap().output,
+        format!(
+            "Replaced agent://primary; its revision is now {revision}. The description of agent://primary is the daemon's and cannot be changed, so it stays \"Memory of the `primary` agent: Memory test agent\". Its keywords always include `primary`, so they were added back; other keywords are kept."
+        )
     );
     fixture.engine.shutdown().await;
 }

@@ -45,6 +45,7 @@ use crate::{
 
 mod admission;
 mod agent_md;
+mod agent_memory;
 mod approval_api;
 mod approval_flow;
 mod approval_projection;
@@ -1134,6 +1135,9 @@ impl Engine {
         engine.install_tree_load_observer()?;
         engine.install_runtime_producers();
         engine.install_machine_assignment();
+        // After the first start above and before any run: every agent's
+        // memory file exists when the first snapshot is taken.
+        engine.install_agent_memory_sync();
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
             engine.inner.plugins.start_eager(runtime);

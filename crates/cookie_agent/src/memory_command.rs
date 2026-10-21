@@ -187,7 +187,11 @@ async fn edit<I: MemoryIo>(client: &Client, url: &str, io: &mut I) -> anyhow::Re
                 } else {
                     "Created"
                 };
-                return io.write_line(&format!("{verb} {}.", written.url));
+                io.write_line(&format!("{verb} {}.", written.url))?;
+                if let Some(notice) = &written.notice {
+                    io.write_line(notice)?;
+                }
+                return Ok(());
             }
             Err(error) if error.is(&errors::MEMORY_INVALID) => {
                 io.write_line(&format!("Not saved: {}", message_of(&error)))?;

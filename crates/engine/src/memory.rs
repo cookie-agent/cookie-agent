@@ -9,6 +9,7 @@
 //! because two plain `cookie` processes are two daemons sharing one data
 //! root. Functions that change folders take the held lock as proof.
 
+pub(crate) mod agents;
 pub(crate) mod file;
 pub(crate) mod render;
 pub(crate) mod search;

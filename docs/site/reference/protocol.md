@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.5.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.6.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.5.0",
+    "protocol_version": "1.6.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.5.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.6.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -249,7 +249,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `machines.forget` | `machine` | The `machines` afterwards, without the machine |
 | `memory.list` | Optional `layer`, and at most one of `agent`, `machine`, and `project` | The `memories`, valid or not, and the `ignored` entries of the memory folder (see [Memory](#memory)) |
 | `memory.read` | Memory `url` | The file's whole `text`, its `revision`, and why it is `invalid` when it is |
-| `memory.write` | Memory `url`, whole-file `text`, `revision` of the file it replaces | The new `revision`; without `revision` the memory must not exist |
+| `memory.write` | Memory `url`, whole-file `text`, `revision` of the file it replaces | The new `revision`, and a `notice` when an `agent://` file kept the daemon's description or keywords; without `revision` the memory must not exist |
 | `memory.delete` | Memory `url`, `revision` | Empty object |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
@@ -531,6 +531,15 @@ replaces the memory at that revision, and fails with
 the user may create and delete `user://` categories and delete `agent://`
 files; an `agent://` file is created only for an agent the agent registry
 has (`memory_refused`).
+
+The daemon keeps an `agent://` file for every agent that is not internal
+and owns its `description` and two keywords, the agent ID and its mode (see
+the [memory guide](../sessions/memory.md#agent-memory)). A `memory.write` of
+such a file keeps them: when the text gives another description or leaves a
+daemon keyword out, the daemon puts its own frontmatter in place, keeps the
+body and any other keywords, and says what it kept in the result's `notice`
+(since 1.6.0). A file whose agent the registry no longer has keeps the
+description it has.
 
 A URL that is not a memory URL is `memory_url_invalid`; text that is not a
 valid memory is `memory_invalid` with the reason; a malformed `revision` is

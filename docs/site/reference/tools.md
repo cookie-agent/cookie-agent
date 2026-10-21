@@ -1486,13 +1486,13 @@ Only when the session has the `global` runtime attached and the agent or the ses
 <!-- generated: tool memory_write -->
 
 ```text
-memory_write(body: string, description: string, keywords: string[], revision?: string, url: string)
+memory_write(body: string, description?: string, keywords?: string[], revision?: string, url: string)
 ```
 
 Description sent to the model:
 
 ```text
-Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. Writing the first memory of a project (project://<project>/<name>) creates the project. user:// categories cannot be created, only changed; agent://<agent> may be created only for an existing agent. Give each memory a one-line description and the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.
+Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. Writing the first memory of a project (project://<project>/<name>) creates the project. user:// categories cannot be created, only changed. Every agent already has an agent://<agent> memory, whose description the daemon sets and whose keywords always include the agent ID and its mode: leave `description` out for agent:// (any you send is replaced) and add keywords freely. Give every other memory a one-line description, and each memory the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.
 ```
 
 Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
@@ -1500,8 +1500,8 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `body` | `string` | yes | The memory's Markdown body; may be empty. |
-| `description` | `string` | yes | One line, 1 to 200 characters, shown in indexes and search results. |
-| `keywords` | `string[]` | yes | Up to 32 keywords of 1 to 64 characters a later search would use. |
+| `description` | `string` | no | One line, 1 to 200 characters, shown in indexes and search results. Required except for agent://, whose description the daemon sets. |
+| `keywords` | `string[]` | no | Up to 32 keywords of 1 to 64 characters a later search would use; none when left out. |
 | `revision` | `string` | no | The revision memory_read returned, to replace an existing memory; leave it out to create one. |
 | `url` | `string` | yes | The memory URL. |
 
@@ -1517,11 +1517,14 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
           "type": "string"
         },
         "description": {
-          "description": "One line, 1 to 200 characters, shown in indexes and search results.",
-          "type": "string"
+          "description": "One line, 1 to 200 characters, shown in indexes and search results.\nRequired except for agent://, whose description the daemon sets.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "keywords": {
-          "description": "Up to 32 keywords of 1 to 64 characters a later search would use.",
+          "description": "Up to 32 keywords of 1 to 64 characters a later search would use;\nnone when left out.",
           "items": {
             "type": "string"
           },
@@ -1541,8 +1544,6 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
       },
       "required": [
         "url",
-        "description",
-        "keywords",
         "body"
       ],
       "title": "WriteArgs",
@@ -1563,7 +1564,7 @@ memory_edit(new: string, old: string, revision: string, url: string)
 Description sent to the model:
 
 ```text
-Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. Never save secrets.
+Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. An agent:// memory keeps the description and keywords the daemon gives it. Never save secrets.
 ```
 
 Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
