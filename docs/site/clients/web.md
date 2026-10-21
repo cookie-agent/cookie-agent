@@ -94,7 +94,10 @@ address bar.
   session's own commands open sheets.
 - **Chat.** The title bar has the sidebar button, the session's title, and
   the ⋮ menu of the session's commands. Below the transcript are the
-  composer and the bottom bar.
+  composer and the bottom bar. While a subagent's session is open, the
+  title is a path from its root, such as
+  `Fix the greeting › reviewer: check tests`: click a parent to go up to
+  it. The ⋮ menu acts on the session shown.
 - **Widths.**
   - **1024 px and wider:** the sessions sidebar is pinned beside the
     transcript. The sidebar button hides and shows it, and the browser
@@ -123,14 +126,24 @@ address bar.
     agent, model, and permission mode the bottom bar shows.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
-- **Subagents.** The subagent tree above the session list shows the
-  viewed session's tree: each delegated agent with its task, with a turning
-  circle while it runs. Click one to open it, and the chevron beside it to
-  fold its children. A session link in
-  a delegation's output opens the child too.
-  - `/agent-panel auto` (the default) shows the panel while a delegated
-    agent is live or a child session is open; `/agent-panel show` and
-    `/agent-panel hide` always show or hide it.
+  - **Deleting.** Hover over a session's row for its trash button (on a
+    touch screen, press the row for about half a second; the press never
+    opens the session, and scrolling cancels it). A confirmation in the row
+    names the session; **Delete** removes it and its subagents from the
+    daemon's disk, for good. The daemon refuses while the session tree
+    runs, while another cookie process holds it, or when it changed since
+    the list showed it; the row then shows the daemon's reason. A deleted
+    session leaves every client's list, and a page showing it starts a new
+    session. A daemon older than client protocol 1.5 cannot delete, and
+    the page offers no trash.
+- **Subagents.** The open session's row expands to show its subagents,
+  nested under it: each with its status (a turning circle while it runs, a
+  check, failed, or cancelled), its agent, its short handle, and its task.
+  Click one to open it, and the chevron beside it to fold its own
+  subagents. Subagents have no trash: they go with their root.
+  - `/agent-panel auto` (the default) expands the row while a subagent is
+    live or a subagent's session is open; `/agent-panel show` and
+    `/agent-panel hide` always expand or fold it.
 - **Transcript.** Markdown is rendered with any HTML in it shown as text.
   Links open in a new tab, but only `http`, `https`, and `mailto` links;
   images show as links.
@@ -140,6 +153,9 @@ address bar.
     icon when it failed, was cancelled, or was interrupted. Click one for
     its arguments and output. A running call that can move to the
     background offers **background**.
+  - **A delegate call** names the subagent it started with its handle and
+    an **open** link; while the subagent runs, the row says whether it is
+    thinking, running a tool, or waiting for an approval.
   - **Output blocks** each have their own view: code highlighted by the
     bundled highlight.js, diffs with the file's line numbers, terminal
     output with its colours, tables, JSON, links, session links, and media
@@ -286,6 +302,8 @@ address bar.
 - **Chat.**
   - **Title bar:** the sidebar button, the session's title on one line,
     and ⋮, which opens the session's commands as a sheet from the bottom.
+    A subagent's session has **‹** before its title, which goes to its
+    parent.
   - **Bottom bar:** one row. The model chip takes the room left and
     shortens its name first; the agent chip shows only its icon below
     about 380 px; the permission mode is its shield, and a tap says
@@ -297,9 +315,11 @@ address bar.
     few seconds after a status message.
 - **The drawer.** The sidebar button opens a drawer from the left over
   the dimmed page: the rail as an icon strip, with the theme button at its
-  foot, beside the sessions. A tap outside, browser Back, or choosing a
-  session or a view closes it. It opens only from the button: a swipe from
-  the edge is the browser's Back.
+  foot, beside the sessions, with the open session's subagents nested
+  under its row. A tap outside, browser Back, or choosing a session or a
+  view closes it. It opens only from the button: a swipe from the edge is
+  the browser's Back. A long press on a session's row reveals its
+  **Delete**, then the confirmation.
 - **Other views** fill the screen under the same title bar. Lists open
   their details one level at a time, such as a Settings section, then a
   document: the back arrow in the title bar, or browser Back, goes up one
