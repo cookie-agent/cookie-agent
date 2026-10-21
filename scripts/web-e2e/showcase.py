@@ -223,8 +223,8 @@ def close_all():
     time.sleep(0.3)
     view("chat")
     browser.script(
-        "const c = document.querySelector('#composer'); c.value = '';"
-        "c.dispatchEvent(new Event('input')); c.blur()"
+        "const c = document.querySelector('#composer');"
+        "if (c) { c.value = ''; c.dispatchEvent(new Event('input')); c.blur() }"
     )
     time.sleep(0.3)
 
@@ -347,6 +347,135 @@ def long_press(selector):
     time.sleep(0.5)
 
 
+def hover(selector, dx=0):
+    """Moves the mouse over `selector` (`dx` from its middle)."""
+    mouse = {"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}}
+    call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
+        {"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find(selector)}, "x": dx, "y": 0},
+    ])]})
+    time.sleep(0.4)
+
+
+def project_id(name):
+    """The ID of the project named `name`, from its sidebar header."""
+    return browser.script(
+        "const h = [...document.querySelectorAll('#sidebar [data-project-header]')]"
+        "  .find((h) => h.querySelector('[data-project-name]').textContent.trim() === arguments[0]);"
+        "return h ? h.dataset.projectHeader : null",
+        name,
+    )
+
+
+def edit_project(name, emoji, workspace=None, agent=None, agents_md=None):
+    """Gives the project `name` an emoji, and optionally default
+    attachments (`global` and `local` at `workspace`), a default agent, and
+    an AGENTS.md, in its editor."""
+    header = '#sidebar [data-project-header="%s"]' % project_id(name)
+    hover(header + " [data-section-toggle]", dx=-60)
+    click(header + " [data-header-edit]")
+    browser.wait("the editor", lambda: browser.count("#project-editor") == 1)
+    browser.wait("the AGENTS.md field", lambda: browser.script(
+        "const e = document.querySelector('#project-agents-md'); return !!e && !e.disabled"))
+    click("#project-emoji")
+    field_value("#emoji-typed", emoji)
+    click("#emoji-use")
+    if workspace:
+        browser.wait("the cards", lambda: browser.count('#sheet [data-card="local/coding"]') == 1)
+        if browser.count('#sheet [data-card="local/coding"][data-selected=true]') == 0:
+            click('#sheet [data-card="local/coding"] [data-card-toggle]')
+        field_value('#sheet [data-card="local/coding"] [data-workspace-field="0"]', workspace)
+    if agent:
+        click("#project-agent")
+        click('[data-agent-choice="%s"]' % agent)
+    if agents_md:
+        field_value("#project-agents-md", agents_md)
+    click("#project-save")
+    browser.wait("the saved project", lambda: browser.count("#sheet") == 0)
+
+
+def move_to(title, name):
+    """Moves the session titled `title` into the project `name` with Move to
+    project…."""
+    row = row_of(title)
+    hover(row + " [data-session]", dx=-80)
+    click(row + " [data-move]")
+    click('#sheet [data-move-to="%s"]' % project_id(name))
+    time.sleep(0.6)
+
+
+def projects_showcase(size, width):
+    """The project sections (one folded), a header's buttons, a session
+    being dragged onto a header, Move to project…, the editor and its emoji
+    picker, New session's project picker, and a project's delete."""
+    close_all()
+    drawer = width < 1024
+    scope = "#drawer" if drawer else "#sidebar"
+    greeter = project_id("greeter")
+    website = project_id("website")
+    if drawer:
+        click("main [data-sidebar-toggle]")
+    both_themes("%s-project-sections" % size)
+    click('%s [data-project-header="%s"] [data-section-toggle]' % (scope, website))
+    both_themes("%s-project-folded" % size)
+    click('%s [data-project-header="%s"] [data-section-toggle]' % (scope, website))
+    header = '%s [data-project-header="%s"]' % (scope, greeter)
+    if drawer:
+        long_press(header + " [data-section-toggle]")
+    else:
+        hover(header + " [data-section-toggle]", dx=-60)
+    both_themes("%s-project-header-actions" % size)
+    if not drawer:
+        drag_and_shoot(
+            row_of("Brainstorm release names") + " [data-session]",
+            header + " [data-section-toggle]",
+            "%s-project-drag" % size,
+        )
+    close_all()
+    if drawer:
+        click("main [data-sidebar-toggle]")
+        long_press(row_of("Brainstorm release names", scope) + " [data-session]")
+        both_themes("%s-project-row-actions" % size)
+        click(row_of("Brainstorm release names", scope) + " ~ [data-delete-actions] [data-move-reveal]")
+    else:
+        row = row_of("Brainstorm release names")
+        hover(row + " [data-session]", dx=-80)
+        click(row + " [data-move]")
+    both_themes("%s-project-move" % size)
+    close_all()
+    if drawer:
+        click("main [data-sidebar-toggle]")
+        long_press(header + " [data-section-toggle]")
+    else:
+        hover(header + " [data-section-toggle]", dx=-60)
+    click(header + " [data-header-edit]")
+    browser.wait("the editor", lambda: browser.count("#project-editor") == 1)
+    time.sleep(0.8)
+    both_themes("%s-project-editor" % size)
+    click("#project-emoji")
+    field_value("#emoji-search", "")
+    both_themes("%s-project-emoji" % size)
+    field_value("#emoji-search", "heart")
+    both_themes("%s-project-emoji-search" % size)
+    close_all()
+    if drawer:
+        click("main [data-sidebar-toggle]")
+    click(header + " [data-header-new]")
+    browser.wait("the cards", lambda: browser.count("#new-session-project") == 1)
+    time.sleep(0.6)
+    both_themes("%s-project-new-session" % size)
+    click(row_of("Fix the greeting in greet.py") + " [data-session]")
+    close_all()
+    if drawer:
+        click("main [data-sidebar-toggle]")
+        long_press(header + " [data-section-toggle]")
+    else:
+        hover(header + " [data-section-toggle]", dx=-60)
+    click(header + " [data-header-delete]")
+    both_themes("%s-project-delete" % size)
+    click("%s [data-project-confirm-box] button:not([data-project-delete-confirm])" % scope)
+    close_all()
+
+
 def badges_and_titles(size, width):
     """The sessions list with every kind of badge, a row's title as a field
     (offered by the hover's pencil, or a phone's long press), emptied, and
@@ -392,6 +521,16 @@ if ALL:
     badge_session("Note: Review the website copy.", [("local", "~/greeter"), ("alt", "~/website")])
     badge_session("Note: Deploy the site from the studio.", [("local", "~/greeter"), ("studio", "~/website")])
     badge_session("Note: Brainstorm release names.", [])
+    # The projects the memory folders became: greeter with an emoji, its
+    # defaults, its agent, and an AGENTS.md, and website with an emoji;
+    # two sessions moved into them.
+    edit_project(
+        "greeter", "👋", workspace="~/greeter", agent="primary · fast",
+        agents_md="Run python3 test_greet.py before you finish.\n",
+    )
+    edit_project("website", "🌐")
+    move_to("Fix the greeting in greet.py", "greeter")
+    move_to("Review the website copy", "website")
     click(row_of("Fix the greeting in greet.py") + " [data-session]")
     browser.wait("the first session", lambda: "Fix the greeting" in browser.text("#session-title"))
     for size, (width, height) in SIZES:
@@ -411,6 +550,7 @@ if ALL:
         time.sleep(0.4)
         if size != "landscape":
             badges_and_titles(size, width)
+            projects_showcase(size, width)
         for name, clicks in COMMANDS:
             close_all()
             for selector in clicks:
