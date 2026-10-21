@@ -285,7 +285,10 @@ Web session rows replace the folder-and-paths line with badges. The
   - Projects are ordered by their latest session's activity, and "No
     project" comes last.
   - Each header shows the project's emoji (a folder icon when it has
-    none) and its name, with no count, plus:
+    none) and its name, with no count. When the project has default
+    attachments, a second line shows them as badges, by the session-row
+    rules of [section 9](#9-session-badges) (added 2026-10-21). The header
+    also has:
     - `+` for a new session in the project, always visible;
     - a pencil, then a delete button, shown like the session rows' buttons
       (on hover on desktop, on long-press on a phone).
