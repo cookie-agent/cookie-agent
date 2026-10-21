@@ -36,6 +36,9 @@ if [[ "$locked" != "$pinned" ]]; then
     exit 1
 fi
 
+# From a clean dist/: trunk can leave an index.html naming an earlier
+# build's stylesheet, which the page then cannot load.
+rm -rf crates/web/dist
 (cd crates/web && trunk build --release --locked)
 
 bundle="crates/web_assets/bundle"
