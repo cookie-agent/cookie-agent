@@ -174,7 +174,16 @@ impl ProcessTransport {
 #[async_trait]
 impl Transport for ProcessTransport {
     async fn send(&mut self, frame: MessageFrame) -> Result<(), TransportError> {
-        self.lines.send(frame).await
+        let result = self.lines.send(frame).await;
+        if result.is_err() && self.child.is_some() {
+            // A child that exits before reading its input breaks the pipe:
+            // its exit status and stderr say why, the broken pipe does not.
+            let reason = self.exit_reason().await;
+            if self.child.is_none() {
+                return Err(TransportError::Other(reason));
+            }
+        }
+        result
     }
 
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
