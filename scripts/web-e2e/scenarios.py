@@ -101,11 +101,22 @@ class Browser:
             ELEMENT
         ]
 
+    def on_element(self, selector, action, body):
+        # The page can re-render the element between finding it and acting
+        # on it; the selector then names its replacement, so find it again.
+        for attempt in range(3):
+            try:
+                return call("POST", self.path("/element/%s/%s" % (self.find(selector), action)), body)
+            except RuntimeError as error:
+                if "stale element reference" not in str(error) or attempt == 2:
+                    raise
+                time.sleep(0.1)
+
     def click(self, selector):
-        call("POST", self.path("/element/%s/click" % self.find(selector)), {})
+        self.on_element(selector, "click", {})
 
     def type(self, selector, text):
-        call("POST", self.path("/element/%s/value" % self.find(selector)), {"text": text})
+        self.on_element(selector, "value", {"text": text})
 
     def text(self, selector="body"):
         return self.script(
