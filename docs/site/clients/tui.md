@@ -20,7 +20,8 @@ When a daemon already runs on this machine, `cookie` opens the terminal
 client on it (see [A daemon already running](../daemon/persistent.md#a-daemon-already-running));
 otherwise it starts the engine and the terminal client together in one
 process. The bottom bar starts with where the engine runs: the daemon's
-address, or `standalone`. Configure the
+address, or `standalone` (after the session's [project](#projects), while
+no run is active). Configure the
 [theme](../tui/theme.md) and [diagnostic filter](../tui/minimum_event_level.md)
 in the independent client configuration.
 When at least one model is available, select an agent and model if needed, type
@@ -119,6 +120,7 @@ Esc in a step returns to the command list with the search intact.
 | `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](../extend/plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](../extend/agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session, rename or delete one, or list every directory's; see [Session picker](#session-picker) |
+| `/project` (also `projects`) | Choose the project of the selected session, or of a new session before its first prompt; see [Projects](#projects) |
 | `/rename` (also `title`) | Rename the selected session: `/rename <title>` sets the title, `/rename --auto` goes back to the generated title, and `/rename` alone asks for the title in a field holding the current one; see [Renaming](#renaming) |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed only when the selected model accepts files; see [Attachments](#attachments) |
@@ -193,6 +195,10 @@ Enter or click a row to open one.
   sessions instead, each row naming its directory; press it again (the
   button now reads **This directory**) to go back. In the search field,
   Home still moves to the start of the text.
+- **Ctrl+P**, or the project button beside it, filters by project: all
+  projects, then each project in name order, then the sessions in no
+  project, then all again. The picker's title names the project shown.
+  Each row names its project, with its emoji, before its agent.
 - **Ctrl+R**, or the **Rename** button, renames the highlighted session:
   a field holding its title opens over the search. See
   [Renaming](#renaming).
@@ -227,6 +233,31 @@ The title can be up to 512 bytes, without line breaks; a longer one stays
 in the field with the reason in the status line. Every client sees the new
 title at once. A session you have not sent a first message to yet has
 nothing to rename.
+
+## Projects
+
+While no run is active, the bottom bar starts with the session's
+[project](../concepts/projects.md): its emoji and name, or `no project`.
+That covers a session you have open and a new session before its first
+prompt. An emoji counts as two columns. Click the name, or choose
+`/project`, for the project picker: the projects, **No project**, and
+**New project…**, which asks for a name and creates the project.
+
+- **An open session** moves to the project you pick with
+  `session.project.set`, even while it runs; its runtimes and agent stay.
+  A subagent belongs to its root session's project, so select the root to
+  move it.
+- **A new session** is created in the project you pick. A project whose
+  defaults name runtimes gives them to the draft, and the bottom bar shows
+  their workspaces before you send anything; otherwise the draft keeps the
+  usual runtimes. Its default agent and preset become the draft's, with
+  the agent's own model; an agent that is gone, or cannot start a session,
+  leaves the usual one, and the status line says so.
+
+A new session belongs to no project unless you pick one; `cookie --project
+<name>` starts in one, and nothing is ever picked from the directory the TUI
+started in. A daemon older than client protocol 1.8 keeps no projects, so
+the bar names none and `/project` is not offered.
 
 ## User-message menu
 
@@ -457,8 +488,9 @@ When pricing is available, the bottom bar also shows the selected session's
 estimated cost between the permission mode and context usage. Click the cost to
 open the `/usage` dashboard. Unpriced sessions omit the segment.
 
-The left of the bottom bar shows the runtimes the selected session, or a new
-session before its first prompt, attaches besides `global`. With one, it
+The left of the bottom bar shows the session's project while no run is
+active (see [Projects](#projects)), then the runtimes the selected session,
+or a new session before its first prompt, attaches besides `global`. With one, it
 shows the runtime and its workspace, for example `labpc · ~/api`; with
 several, their attachment names, for example `local_web, labpc_api`. It
 shows `global` when that is all the session attaches, and `no runtimes` for

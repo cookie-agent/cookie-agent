@@ -49,6 +49,22 @@ agent or by you: projects are created from a client, never by writing memory.
 Every memory folder that existed before projects did became a project, with
 no defaults, the first time the daemon started.
 
+## In the clients
+
+- **The web client** groups its sessions sidebar by project, **No
+  project** last; each header shows the project's emoji, its name, and its
+  default runtimes as badges. Drag a session onto a header, or use its
+  **Move to project…**, to move it. The project editor sets the name,
+  emoji, defaults, and `AGENTS.md`, and New session starts from a project's
+  defaults. See [Projects](../clients/web.md#sessions-and-chat) in the web
+  guide.
+- **The TUI** starts its bottom bar with the session's project while no
+  run is active; click it, or choose `/project`, to move the session or
+  pick the new session's project. The session picker filters by project
+  with **Ctrl+P**. See [Projects](../clients/tui.md#projects) in the TUI
+  guide.
+- **The CLI** has `cookie project` and `cookie --project <name>`.
+
 ## Managing projects
 
 `projects.list`, `project.create`, `project.update`, and `project.delete`

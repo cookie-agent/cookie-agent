@@ -109,11 +109,14 @@ address bar.
   as `~/web`, and absolute when that runtime reported no home (a daemon
   older than client protocol 1.7 reports none).
 - **Sessions.** The page has no directory of its own, so the list shows
-  every session, with a filter by the session's directory (its first
-  workspace), named by its runtime, such as `labpc · ~/api`.
+  every session, grouped by [project](../concepts/projects.md) (below). A
+  daemon older than client protocol 1.8 keeps no projects: its list has a
+  filter by the session's directory (its first workspace) instead, named
+  by its runtime, such as `labpc · ~/api`.
   - **Rows.** Each session shows its title, how long ago it was last
     active beside it, and where it runs as badges on the line below.
-    Running sessions come first, then the others, each newest first. A
+    In each project, running sessions come first, then the others, each
+    newest first. A
     session that runs has a turning circle before its title, and one whose
     last run failed or was interrupted has a mark; the others have none.
     The open session's row has a chevron before its badges, which turns
@@ -151,9 +154,9 @@ address bar.
     title**, which goes back to the title the daemon generates (as does
     Enter on an empty field). Every client sees the new title at once.
   - **Deleting.** Hover over a session's row for its trash button (on a
-    touch screen, press the row for about half a second; the press never
-    opens the session, and scrolling cancels it, and it offers
-    **Rename** too). A confirmation in the row
+    touch screen, press the row for about half a second and let go; the
+    press never opens the session, scrolling cancels it, and it offers
+    **Move** and **Rename** too). A confirmation in the row
     names the session; **Delete** removes it and its subagents from the
     daemon's disk, for good. The daemon refuses while the session tree
     runs, while another cookie process holds it, or when it changed since
@@ -161,8 +164,46 @@ address bar.
     session leaves every client's list, and a page showing it starts a new
     session. A daemon older than client protocol 1.5 cannot delete, and
     the page offers no trash.
-- **New session.** The runtimes a session can use show as cards, grouped
-  by the machine each runs on, this daemon's machine first.
+- **Projects.** The sessions sidebar has a section for each project,
+  ordered by its latest session's activity, then **No project** last.
+  - **Headers.** A project's header shows its emoji (a folder when it has
+    none) and its name; when its defaults attach runtimes, a second line
+    shows them as badges, by the session rows' rules. Click a header to
+    fold or unfold its section; the browser remembers it. **+**, always
+    there, starts a new session in the project. Hover over a header (on a
+    touch screen, press it for about half a second) for its pencil, which
+    opens the project editor, and its trash. **No project** has only its
+    **+**. The folder button beside **New session** makes a new project.
+  - **Moving a session.** Drag its row onto a project's header, or onto
+    **No project**: a mouse drags at once, a finger after pressing the row
+    for half a second (the list scrolls when the row nears its edge). Or
+    hover over the row for **Move to project…**, left of its pencil, which
+    lists the projects and **No project**. The session keeps its runtimes
+    and agent; its next message sees the project's memory and `AGENTS.md`.
+  - **Deleting a project** asks first, saying how many sessions and
+    memories go with it; the daemon refuses while one of its sessions
+    runs, and the header names the running sessions.
+  - **The project editor** opens on the right (filling a phone's screen):
+    the name; the emoji; the runtime cards a new session in the project
+    starts with, as on New session, with **Use this session's
+    attachments**; the default agent, with its preset, or **None**; the
+    project's `AGENTS.md`; and a way to its memory folder. **Save** sends
+    the whole change at once; if the project changed meanwhile, in another
+    client or on disk, the editor says so and offers **Reload**, which
+    drops your edit. Closing with unsaved edits asks first.
+  - **Emoji.** The picker lists a few hundred common emoji by category,
+    with a search by name; the field below it takes any one emoji, from
+    your system's emoji keyboard too, and says at once when what you typed
+    is not one. **No emoji** clears it. On a phone the picker rises from
+    the bottom.
+- **New session.** A **Project** picker comes first: the section whose
+  **+** you used, else **No project**, and **New project…**, which opens
+  the editor and picks the project it makes. Picking a project selects the
+  cards its defaults name and gives the bottom bar its default agent and
+  preset, with the agent's own model; an agent that is gone, or cannot
+  start a session, leaves the usual one, and the status line says so.
+  Everything stays editable. The runtimes a session can use show as cards,
+  grouped by the machine each runs on, this daemon's machine first.
   - **Groups.** A group's header says its machine, how many runtimes it
     has, how many are ready, and how many cards are selected; click it to
     fold or unfold the group. This daemon's machine, and a machine with a
@@ -424,10 +465,13 @@ address bar.
   overwrite it, or drop your edit. After a save, the status line says what
   the daemon kept in place of your text, when it kept anything.
   - **Projects** are folders, folded until you open one; the browser
-    remembers which you opened. A project's trash deletes its memories,
-    one `memory.delete` each, after a confirmation that says how many; the
-    files in its folder that are not memories stay, and so does the
-    folder when there are any.
+    remembers which you opened. A project's trash deletes the project,
+    with its sessions, memories, and `AGENTS.md`, after a confirmation
+    that counts them, as its header's trash in the sessions sidebar does.
+    A daemon older than client protocol 1.8 has no projects, only memory
+    folders: there the trash deletes the folder's memories, one
+    `memory.delete` each; the files in it that are not memories stay, and
+    so does the folder when there are any.
   - **An agent's memory** (`agent://<agent>`) opens as its parts: the
     description and the first keywords (the agent's ID and its mode)
     belong to the daemon and show locked; the other keywords (separated
@@ -463,9 +507,11 @@ address bar.
   under its row. A tap outside, browser Back, or choosing a session or a
   view closes it; a tap on the open session's row switches its tree and
   leaves the drawer open. It opens only from the button: a swipe from the edge is
-  the browser's Back. A long press on a session's row reveals its
-  **Rename**, which makes its title a field, and its **Delete**, then the
-  confirmation.
+  the browser's Back. A long press on a session's row, let go in place,
+  reveals its **Move**, which lists the projects, its **Rename**, which
+  makes its title a field, and its **Delete**, then the confirmation; held
+  and moved, it drags the row onto a project's header. A long press on a
+  project's header shows its pencil and trash.
 - **Agents** works like Chat: the agent open fills the screen, and the
   sidebar button opens the drawer with the rail beside the agents.
 - **Other views** fill the screen under the same title bar. Lists open
