@@ -428,6 +428,18 @@ fn session_row(
                     <Glyph icon=mark.icon class=mark.class("text-xs") />
                     <span class="sr-only">{mark.label}</span>
                     <span class="min-w-0 flex-1 truncate text-sm font-bold">{label}</span>
+                    // The open session's row folds and unfolds its subagent
+                    // tree: its chevron turns with it.
+                    <Show when=current>
+                        <span
+                            class="inline-flex shrink-0 opacity-70 transition-transform"
+                            class:rotate-90=move || workspace.tree_expanded.get()
+                            data-tree-chevron
+                            title="Click to show every subagent, or only the running ones"
+                        >
+                            <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
+                        </span>
+                    </Show>
                 </span>
                 <span class=format!("flex w-full min-w-0 items-center gap-1 pl-5 {NOTE}")>
                     <Glyph icon=icondata::FaFolderSolid class="opacity-70" />
@@ -580,9 +592,10 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                                     <span class="flex w-full min-w-0 items-center gap-2 text-sm">
                                         <Glyph icon=mark.icon class=mark.class("text-xs") />
                                         <span class="sr-only">{format!("{}: ", mark.label)}</span>
-                                        <span class="truncate font-mono font-bold">{row.agent.clone()}</span>
+                                        // The handle gives way before the agent's name.
+                                        <span class="max-w-[75%] shrink-0 truncate font-mono font-bold">{row.agent.clone()}</span>
                                         {row.handle.clone().map(|handle| view! {
-                                            <span class=format!("shrink-0 font-mono {NOTE}")>{handle}</span>
+                                            <span class=format!("min-w-0 truncate font-mono {NOTE}") data-handle>{handle}</span>
                                         })}
                                     </span>
                                     <span class=format!("w-full truncate pl-5 {NOTE}")>{row.task.clone()}</span>
