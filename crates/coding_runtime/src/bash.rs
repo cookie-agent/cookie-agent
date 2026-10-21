@@ -556,19 +556,10 @@ pub fn bash_tool_description_for(windows: bool) -> &'static str {
     }
 }
 
-/// Commands longer than this many characters are cut in a call's title.
-const TITLE_COMMAND_CHARS: usize = 60;
-
-/// `Run` and the one-line `command`, cut to [`TITLE_COMMAND_CHARS`].
+/// `Run` and the whole one-line `command`. Clients cut the title to the
+/// width they have; only the title's byte bound applies here.
 fn run_title(command: &str) -> String {
-    let mut shown = command
-        .chars()
-        .take(TITLE_COMMAND_CHARS)
-        .collect::<String>();
-    if command.chars().nth(TITLE_COMMAND_CHARS).is_some() {
-        shown.push('…');
-    }
-    format!("Run `{shown}`")
+    format!("Run `{command}`")
 }
 
 fn compact_command_line(command: &str) -> String {

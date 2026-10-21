@@ -492,7 +492,7 @@ process-group cleanup.
 | | `bash` |
 |---|---|
 | Hint | `shell` |
-| Title | ``Run `<command>` ``, the one-line command cut to 60 characters |
+| Title | ``Run `<command>` ``, the whole command on one line; clients cut it to the width they have |
 | Arguments | the command as `code` in `sh` |
 | Preview | – |
 | Result | one `terminal` block: stdout and stderr segments in the order they were read, with `exit_code` |

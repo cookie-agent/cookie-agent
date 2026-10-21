@@ -23,6 +23,26 @@ fn segment(stream: TerminalStream, text: &str) -> TerminalSegment {
 }
 
 #[test]
+fn the_title_holds_the_whole_command_for_clients_to_cut() {
+    let tool = BashTool::new(&crate::test_workspace(std::env::temp_dir()));
+    let command = format!("cargo test --locked --workspace {}", "--package x ".repeat(12));
+    let presentation = tool.presentation(&ToolCall {
+        id: ToolCallId::new_v7(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": format!("{command}\n  && echo done") }),
+    });
+    let one_line = format!("{} && echo done", command.trim_end());
+    assert_eq!(presentation.title.as_str(), format!("Run `{one_line}`"));
+    assert_eq!(
+        presentation
+            .primary_argument
+            .as_ref()
+            .map(|argument| argument.as_str()),
+        Some(one_line.as_str())
+    );
+}
+
+#[test]
 fn permission_resource_is_the_command() {
     let tool = BashTool::new(&crate::test_workspace(std::env::temp_dir()));
     assert_eq!(
