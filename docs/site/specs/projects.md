@@ -1,6 +1,7 @@
 # Projects
 
-Status: **approved** (2026-10-21); implementation in progress. Builds on the
+Status: **approved** (2026-10-21); phases 1 and 2 implemented 2026-10-21
+([section 14](#14-implementation-notes)), phase 3 in progress. Builds on the
 [memory spec](memory.md), the [runtimes spec](runtimes.md), and the
 [web client spec](web-client.md).
 
@@ -418,3 +419,86 @@ first proposed with it:
 - root runs only;
 - refusing a delete while a session runs;
 - hashed badge colours.
+
+## 14. Implementation notes
+
+### 14.1 Phases 1 and 2: store, protocol, and prompt (2026-10-21)
+
+Landed: the project store and the upgrade from memory folders, the
+`project.*` methods and `projects.list`, `projects.changed`,
+`session_project_set` and `session.project.set`, defaults at creation,
+delete, the refusal of writes to unknown projects, the project `AGENTS.md`,
+the overview and the project index in the snapshot, the snapshot triggers,
+and, from phase 3, `cookie project` and `cookie --project`. Client protocol
+1.8.0, plugin protocol 1.3.0, history format 1. The web client and the TUI
+pickers are phase 3.
+
+Where it is: `crates/engine/src/projects.rs` (`ProjectStore`),
+`crates/engine/src/memory/projects.rs` (the memory folder and the overview),
+`crates/engine/src/runtime/project_api.rs` (the requests, membership, and the
+project's `AGENTS.md`), `crates/protocol/src/project.rs` (the wire types),
+and `crates/cookie_agent/src/project_command.rs`.
+
+Decisions taken where the spec left room, and deviations:
+
+- **Revision.** A project's revision is the first 16 hex digits of the
+  SHA-256 of `project.toml`, then, when it exists, of `AGENTS.md`, so an
+  edit of either file by hand, or by another client, makes a stale
+  `project.update` fail. `project.get`'s `agents_md.revision` is the file's
+  own digest, for display.
+- **The upgrade runs at every start**, not only the first: it adopts every
+  valid folder under `memory/projects/` that has no project, and it is
+  idempotent. While a project folder does not read, it adopts nothing, and
+  `project.create` refuses, since that project could have the name. It also
+  makes sure every project's overview exists with the daemon's description,
+  which is how a rename's new description lands even after a crash.
+- **Defaults at creation** apply when the project's defaults name runtimes
+  or leave out `global`. Defaults that only name an agent or a preset leave
+  a new session the usual attachments, so adding a default agent never
+  takes the `local` runtime away. `project.update` clears the defaults or
+  the emoji with `null`.
+- **The overview's description** is the daemon's, as an agent file's is;
+  its keywords are the writer's. `memory_write` may leave the description
+  out for an overview, and `memory_edit` keeps the daemon's.
+- **Refused writes** cover `memory_edit` as well as `memory_write` and
+  `memory.write`; deletes of an unknown project's files stay allowed. A
+  project's folder now stays when its last memory goes: the folder belongs
+  to the project. The model-facing tool descriptions say so.
+- **`agent_md_loaded`'s project source** is `project: { id, name }`; the
+  event's `attachment`, a required member older readers rely on, is
+  `global`, where the file lives. The rendered `<contents>` of a project
+  file has no `runtime` attribute, and adding a project never adds one to
+  a lone workspace's files.
+- **Snapshot limits.** The overview is measured against
+  `snapshot_user_bytes` before the user categories and the project index
+  against `snapshot_index_bytes` before the machines: the session's own
+  project matters most. An overview too long for the user limit is listed
+  first in the index instead of being dropped silently. The snapshot
+  compares the project by name, which is all the event records; a session
+  whose project was deleted is deleted with it.
+- **`project.delete`'s result** is two counts: root sessions deleted, each
+  with its tree, and memory files deleted. Delete, and `ProjectInfo.sessions`,
+  reach the sessions of the daemon's own session store, the sessions of its
+  working directory; a second daemon sharing the data root with another
+  working directory keeps its sessions, which then list as having no
+  project.
+- **`SessionMeta.project`** of a delegated session is its root's, filled in
+  when the daemon serves `session.get` and `session.list`; delegated
+  sessions record nothing. `sessions.changed` carries the metadata as
+  stored.
+- **`ProjectFilter`** spells "no project" as the string `none`. Project IDs
+  are UUIDv7 strings, so no project has that ID.
+- **Emoji validation** uses `unicode-segmentation` and `unicode-properties`
+  (both already in the dependency tree): one extended grapheme cluster, at
+  most 32 bytes, not all ASCII, no whitespace or control character, made of
+  characters with `Emoji` or `Emoji_Component`, at least one of them
+  `Emoji`. A project file whose emoji does not pass reads as unreadable.
+- **`cookie --project`** works with plain `cookie`, through a running daemon
+  or standalone: the TUI starts on a new session in the project, with the
+  default agent and preset when they resolve; the project applies to that
+  first session only. `cookie project defaults --from-session` takes the
+  session's agent and preset as well as its attachments.
+- **Corpora.** The 1.8.0 client corpus and the 1.3.0 runtime corpus are
+  recorded and pinned, with the session created in a project. The recorder
+  now writes the runtime's host name, the machine name derived from it, and
+  its home directory as placeholders.

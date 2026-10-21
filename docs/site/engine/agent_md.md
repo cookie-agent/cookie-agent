@@ -35,10 +35,11 @@ Answer using only what the user provides.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | boolean | `true` | Load `AGENTS.md` context files at each root run start. Delegated and internal agents remain excluded. An agent document's `agent_md` field, when present, overrides this for that agent's root runs. |
+| `enabled` | boolean | `true` | Load `AGENTS.md` context files at each root run start: the session's [project](../concepts/projects.md)'s, then each workspace's. Delegated and internal agents remain excluded. An agent document's `agent_md` field, when present, overrides this for that agent's root runs. |
 
 Files larger than 2 MiB (`2097152` bytes) are skipped entirely and surfaced as
 an `AgentMdSkipped` warning event; they are never partially loaded or
 truncated. Loaded entries are rendered into a single user context turn wrapped
 in a `<system-reminder>` block, with each file delimited as
-`<contents from="/abs/path/AGENTS.md">…</contents>`.
+`<contents from="/abs/path/AGENTS.md">…</contents>`; a project's file comes
+first, as `<contents from="project:<name>/AGENTS.md">…</contents>`.

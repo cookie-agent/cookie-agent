@@ -21,6 +21,7 @@ attaching clients to it.
 | [`cookie config`](#cookie-config) | Read and change the daemon's `config.toml` and agent documents |
 | [`cookie machine`](#cookie-machine) | List and regroup the machines the daemon's runtimes run on |
 | [`cookie memory`](#cookie-memory) | List, edit, and delete the daemon's memories |
+| [`cookie project`](#cookie-project) | List, create, rename, delete, and edit the daemon's projects |
 | [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
 | [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
 
@@ -33,13 +34,14 @@ attaching clients to it.
 |---|---|
 | `--error-details` | Accepted by every command. When the daemon refuses a request, also print the technical detail of its error, such as the upstream cause or a path (see [Error details](tui.md#error-details)). |
 | `--standalone` | Plain `cookie` only: run the engine in this process, without looking for a running daemon. With a subcommand it is a usage error. |
+| `--project <NAME>` | Plain `cookie` only: start a new session in this [project](../concepts/projects.md). With a subcommand it is a usage error. |
 
 ### Reaching a daemon
 
 `attach`, `web`, `connect`, `disconnect`, `config`, `machine`, `memory`,
-`mcp`, and `runtime serve --daemon` talk to a running daemon. Each takes
-`--url` and `--token`; for `config`, `machine`, and `memory` the two may also
-follow the nested subcommand. They resolve the daemon this way:
+`project`, `mcp`, and `runtime serve --daemon` talk to a running daemon. Each
+takes `--url` and `--token`; for `config`, `machine`, `memory`, and `project`
+the two may also follow the nested subcommand. They resolve the daemon this way:
 
 - **URL:** `--url`, else `[server] url` in this machine's `config.toml`, else
   the local daemon that table describes, `ws://<host>:<port>/ws`. The URL must
@@ -66,7 +68,7 @@ unknown option or a missing argument, exit `2` with clap's message.
 ### `cookie`
 
 ```text
-cookie [--standalone] [--error-details]
+cookie [--standalone] [--project <NAME>] [--error-details]
 ```
 
 Opens the terminal UI for the current directory. Unless `--standalone` is
@@ -75,6 +77,14 @@ given, it first looks for a daemon on this machine, as
 describes, and opens the TUI on it; otherwise it runs the engine in this
 process and the TUI with it. Quitting the TUI exits `0`. See
 [Terminal UI](tui.md).
+
+With `--project <NAME>` the TUI starts on a new session in that
+[project](../concepts/projects.md): it takes the project's default agent and
+preset, with the agent's own default model, and, when the project's defaults
+name runtimes, the daemon attaches those instead of the TUI's usual ones. An
+agent that is gone or cannot run as root leaves the usual agent, and the
+status line says so. A new session belongs to no project otherwise; nothing
+is picked from the current directory.
 
 ### `cookie run`
 
@@ -308,6 +318,50 @@ memory that changed since it was opened, offers to edit again.
 
 `cookie memory rm <URL> [-y | --yes]` deletes a memory, asking first unless
 `--yes`.
+
+### `cookie project`
+
+```text
+cookie project <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Manages the daemon's [projects](../concepts/projects.md) by name.
+
+#### `cookie project list`
+
+`cookie project list` prints one line per project: its emoji and name, its
+sessions and memories, whether it has an `AGENTS.md`, and its defaults.
+
+#### `cookie project create`
+
+`cookie project create <NAME> [--emoji <EMOJI>]` creates a project with an
+empty `project://<name>/overview` memory. The name is a lowercase letter or
+digit, then up to 63 lowercase letters, digits, or `-`; the emoji is exactly
+one emoji.
+
+#### `cookie project rename`
+
+`cookie project rename <OLD> <NEW>` renames a project; its memory folder moves
+with it, so its memories become `project://<new>/…`.
+
+#### `cookie project delete`
+
+`cookie project delete <NAME> [-y | --yes]` deletes a project with its
+sessions, its memories, its `AGENTS.md`, and its defaults, asking first unless
+`--yes`, with the counts of sessions and memories that go. The daemon refuses
+while a session of the project runs.
+
+#### `cookie project edit`
+
+`cookie project edit <NAME>` opens the project's `AGENTS.md` in `$VISUAL`,
+else `$EDITOR`, else `vi`; saving it empty removes the file. A project that
+changed since it was opened offers to reload it and edit again.
+
+#### `cookie project defaults`
+
+`cookie project defaults <NAME> --from-session <SESSION_ID>` sets the
+project's defaults from a session: its runtime attachments, whether it has
+`global`, and its agent and agent preset.
 
 ### `cookie sessions upgrade`
 

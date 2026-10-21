@@ -12,7 +12,7 @@ them with tools, so what one session learns the next can use.
 | `user` | `user://<category>` | you: preferences, conventions, how you like to work |
 | `agent` | `agent://<agent>` | one agent's own notes about doing its job |
 | `machine` | `machine://<machine>/<name>` | one [machine](machines.md): toolchains, paths, services |
-| `project` | `project://<project>/<name>` | one project, wherever its checkouts live |
+| `project` | `project://<project>/<name>` | one [project](projects.md), wherever its checkouts live |
 
 Every agent has its `agent://` memory from the start: the daemon makes one
 file per agent, names the agent in its description and keywords, and keeps
@@ -20,9 +20,12 @@ those in line with the agent's document; the agent writes the body. An empty
 one is not shown to the model. See
 [Agent memory](../sessions/memory.md#agent-memory).
 
-A project memory names what identifies the project across machines, such as
-repository names, remote URLs, and `<machine>:<path>` places, so an agent can
-search for it from any checkout. See
+Project memories belong to a [project](projects.md): a project memory can be
+written only to a project that exists, and every project has an
+`project://<name>/overview` whose description the daemon owns. A project
+memory names what identifies the project across machines, such as repository
+names, remote URLs, and `<machine>:<path>` places, so an agent can search for
+it from any checkout. See
 [Layers and files](../sessions/memory.md#layers-and-files).
 
 ## How agents use it
@@ -30,7 +33,9 @@ search for it from any checkout. See
 Memory comes with the `global` runtime, which new sessions attach. A run
 starts with a snapshot of it after the `AGENTS.md` context: every `user`
 memory, the run's agent's own, and an index of the memories of the machines
-the session works on; project memories the agent searches for. The memory
+the session works on. A session in a project also sees the project's overview
+in full and an index of its other memories; other projects' memories the
+agent searches for. The memory
 tools,
 `memory_search`, `memory_read`, `memory_write`, `memory_edit`, and
 `memory_delete`, read and change memories by URL. Writes name the revision

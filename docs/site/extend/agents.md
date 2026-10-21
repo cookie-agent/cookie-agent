@@ -144,8 +144,14 @@ unless it is turned off. The run agent's `agent_md` frontmatter decides when it 
 set; otherwise the global [`[agent_md]`](../engine/agent_md.md) `enabled` switch
 does. The files are read fresh, so edits apply to the next run:
 
-Every coding runtime the session is attached to applies the same lookup to its
-own workspace (for the built-in `local` runtime, the daemon's working
+A session in a [project](../concepts/projects.md) first gets the project's
+`AGENTS.md`, which the daemon keeps in `~/.cookie-agent/projects/<id>/` and
+which needs no runtime, not even `global`. It comes before every workspace's
+files, general before specific, so a workspace's `AGENTS.md` still has the
+last word, and follows the same switches and size cap.
+
+Every coding runtime the session is attached to then applies the same lookup
+to its own workspace (for the built-in `local` runtime, the daemon's working
 directory):
 
 1. `.cookie-agent/agents/AGENTS.md` is the default project file. When the run
@@ -160,7 +166,8 @@ and surfaced as `AgentMdSkipped` warning events. Delegated sessions do not
 discover these files for their own runs; explicitly inherited parent text and
 forked event prefixes retain their existing behavior. Internal agents never
 discover them. Loaded entries are persisted with provenance in one
-`agent_md_loaded` event per attachment that returned a file and replayed
+`agent_md_loaded` event per attachment that returned a file, and one for the
+project's file, and replayed
 together as one user context turn wrapped in a `<system-reminder>` block, not
 as system-prompt text.
 

@@ -173,6 +173,11 @@ With more than one attachment each `<contents>` element also carries a
 `runtime="<attachment>"` attribute. Events written before runtimes carry no
 attachment and count as the `local` runtime's.
 
+A session in a project gets the project's `AGENTS.md` first, before every
+workspace's, as `<contents from="project:<name>/AGENTS.md">` without a
+`runtime` attribute. Its `agent_md_loaded` event names the attachment
+`global`, where the file lives, and the project.
+
 Making this context a turn rather than system text keeps the stable system
 cache key independent of normal repository edits, preserves per-file
 provenance, and lets compaction pin the turn alongside loaded skill bodies. The
@@ -186,8 +191,9 @@ agent or the session overlay has an `allow` or `ask` rule for `memory`) sees
 a snapshot of it as one user turn right after the AGENTS.md turn. The
 snapshot is taken at run admission and recorded as a `memory_loaded` event
 only when something it depends on changed: the session has none yet, a
-compaction finished since the latest one, the session's machines, the run's
-agent, whether memory is available, or whether the run may write it. History
+compaction finished since the latest one, the session's machines, the
+session's project or its name, the run's agent, whether memory is available,
+or whether the run may write it. History
 renders the latest event only, and compaction pins the turn like the AGENTS.md
 turn. Writes during the session, and edits the user makes from a client,
 change the files but not the turn until the next of those points, so the
@@ -238,6 +244,29 @@ Empty: user://feedback, user://profile, user://references
   file first, until `[memory] snapshot_index_bytes` of rendered section is
   used; the rest are counted.
 - A section with nothing to show keeps its heading and says `None.`
+- A root run of a session in a project gets a last section, and its search
+  paragraph reads `This session's project notes are listed below. Search
+  memory (memory_search) for other projects only when the task reaches into
+  them.` instead:
+
+  ```text
+  ## Project cookie-agent
+  This session belongs to the cookie-agent project.
+
+  <memory url="project://cookie-agent/overview" description="Overview of the `cookie-agent` project, loaded in full into its sessions">
+  A coding agent harness in Rust.
+  </memory>
+
+  Other memories of this project (read with memory_read):
+  - project://cookie-agent/release: How releases are cut [keywords: release]
+  - 2 more; search with layer "project".
+  ```
+
+  The overview is left out when its body is empty; one too long for
+  `[memory] snapshot_user_bytes`, which it shares with the user section, is
+  listed in the index instead. The index lists the project's other memories,
+  newest first, within `[memory] snapshot_index_bytes`, which it shares with
+  the machines section and uses first; without any it says `None.`
 - Attribute values escape `&`, `<`, `>`, and `"`; text escapes only a `<`
   that starts `memory`, `machine`, or `system-reminder` (with or without
   `/`, in any case), so a note cannot open or close an element.

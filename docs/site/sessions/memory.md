@@ -25,7 +25,18 @@ memory/
 | `user` | You, in every task: profile, preferences, feedback, references | You only (the agent may edit existing categories) | You only; the agent's delete clears the body |
 | `agent` | One agent's way of doing its job, such as what you want from reviews | The daemon, one for every agent ([Agent memory](#agent-memory)) | You; the daemon removes an empty one it made when its agent goes; the agent's delete clears the body |
 | `machine` | One machine: OS quirks, toolchains, paths, rules such as "read-only unless asked" | The agent or you | The agent or you |
-| `project` | One body of work: conventions, decisions, gotchas | The agent or you; the first memory creates the project | The agent or you; the project goes with its last memory |
+| `project` | One body of work: conventions, decisions, gotchas | The agent or you, in a [project](../concepts/projects.md) that exists; the daemon creates the project's `overview` | The agent or you; the folder goes with its project |
+
+A project's memory folder is the project's: a `project://` write to a name
+that is no project is refused, from an agent and from you alike, and the
+refusal names the projects there are. Projects are created from a client
+(`cookie project create`, the web client), which also creates
+`project://<name>/overview` with an empty body. Like an agent file's, the
+overview's description is the daemon's: ``Overview of the `<name>` project,
+loaded in full into its sessions``; a write keeps it and says so. Renaming a
+project moves its folder, and deleting it deletes the folder whole. Every
+folder under `projects/` from before projects existed became a project the
+first time the daemon started. See [Projects](../concepts/projects.md).
 
 The first time the daemon starts without a memory folder, it creates the four
 layer folders and the categories `profile`, `preferences`, `feedback`, and
@@ -131,14 +142,20 @@ into another; `machines.list` and `cookie machine list` count them.
 At the start of a run that has memory, the model gets a **snapshot** as one
 user turn after the `AGENTS.md` turn: every `user` category, the run's
 agent's own file, and an index of the memories of the machines the session's
-attachments run on. Project memories are never shown; the model searches for
+attachments run on. A root run of a session in a project also gets the
+project's overview in full and an index of its other memories, newest first;
+the overview counts toward `[memory] snapshot_user_bytes` and the index
+shares `snapshot_index_bytes` with the machines', the project's own taking
+its room first. An overview too long to show is listed in the index instead.
+Outside a project, project memories are never shown; the model searches for
 the project a task belongs to. An agent file with an empty body adds nothing. The [system prompt reference](../reference/system-prompt.md#memory-turn)
 shows the exact text.
 
 The snapshot is taken once and kept, so the provider's prompt cache survives
 writes. It is taken again only at a run's start when the session has none
-yet, after a compaction, when the session's machines or the run's agent
-changed, or when the run gained or lost memory or write access. Edits you make
+yet, after a compaction, when the session's machines, its project, its
+project's name, or the run's agent changed, or when the run gained or lost
+memory or write access. Edits you make
 to the files reach open sessions at those points, and new sessions at once.
 
 ## Tools

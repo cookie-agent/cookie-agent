@@ -85,6 +85,7 @@ nav:
       - Agents and presets: concepts/agents.md
       - Permissions: concepts/permissions.md
       - Memory: concepts/memory.md
+      - Projects: concepts/projects.md
   - Clients:
       - Terminal UI: clients/tui.md
       - Web: clients/web.md

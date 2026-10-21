@@ -274,7 +274,7 @@ detaching a runtime does today.
 | `user` | The user, in every task | The user only | The user only; the agent's delete clears the body ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
 | `agent` | One agent's way of doing its job: what the user wants from this role, lessons, checklists | The daemon, one for every agent that is not internal ([section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)) | The user; the daemon removes an empty file it made when the agent goes ([section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)); the agent's delete clears the body ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
 | `machine` | One machine: OS quirks, toolchains, paths, hardware, rules such as "read-only unless asked" | The agent or the user | The agent or the user |
-| `project` | One body of work: conventions, decisions, gotchas, where things are | The agent or the user; writing the first memory creates the project | The agent or the user; the project disappears with its last memory |
+| `project` | One body of work: conventions, decisions, gotchas, where things are | The agent or the user; writing the first memory creates the project (superseded: projects are created from a client, [projects spec](projects.md#3-storage)) | The agent or the user; the project disappears with its last memory (superseded: the folder goes with its project) |
 
 The agent may edit any existing `user` category but cannot add or remove one.
 When it deletes a `user` category or an `agent` file, the file stays with its
