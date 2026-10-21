@@ -662,6 +662,10 @@ pub struct App {
     pub(in crate::ui) client_capability: Option<cookie_agent_protocol::CapabilityName>,
     /// The bottom bar's leading label: where the daemon runs.
     pub(in crate::ui) connection_label: Option<String>,
+    /// The home directory each runtime reported, which its paths show
+    /// under as `~/…`; empty before `runtimes.list` answers, and from a
+    /// daemon before client protocol 1.7.0.
+    pub(in crate::ui) runtime_homes: cookie_agent_client_state::paths::RuntimeHomes,
     pub(super) client: Client,
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
@@ -1042,6 +1046,10 @@ pub(in crate::ui) enum RpcUpdate {
     RuntimesRefreshed {
         result: Result<cookie_agent_protocol::RuntimesListResult, String>,
     },
+    /// `runtimes.list` answered for the runtimes' homes alone.
+    RuntimeHomesRefreshed {
+        homes: cookie_agent_client_state::paths::RuntimeHomes,
+    },
     MachinesRefreshed {
         result: Result<cookie_agent_protocol::MachinesListResult, String>,
     },
@@ -1343,6 +1351,7 @@ impl App {
             client_runtime: placement.runtime,
             client_capability: placement.capability,
             connection_label: None,
+            runtime_homes: Default::default(),
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,
@@ -1694,23 +1703,6 @@ fn latest_resolved_model_key(state: &crate::state::SessionState) -> Option<&Mode
             })
             .or(Some(&attribution.resolved_model.selection.model))
     })
-}
-
-fn shorten_home(cwd: &str) -> String {
-    let Ok(home) = cookie_agent_protocol::paths::home_dir() else {
-        return cwd.to_owned();
-    };
-    let home = home.to_string_lossy();
-    if cwd == home {
-        "~".into()
-    } else if let Some(suffix) = cwd
-        .strip_prefix(home.as_ref())
-        .filter(|suffix| suffix.starts_with('/'))
-    {
-        format!("~{suffix}")
-    } else {
-        cwd.to_owned()
-    }
 }
 
 pub(super) fn format_token_count(tokens: u64) -> String {

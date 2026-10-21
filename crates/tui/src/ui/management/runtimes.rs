@@ -129,6 +129,17 @@ impl RuntimePanel {
         }));
     }
 
+    /// `workspace`, a path of the runtime `runtime_id`, shown under the home
+    /// that runtime reported (`~/…`), else absolute.
+    fn display_workspace(&self, runtime_id: &RuntimeId, workspace: &str) -> String {
+        let home = self
+            .runtimes()
+            .iter()
+            .find(|runtime| runtime.runtime_id == *runtime_id)
+            .and_then(|runtime| runtime.home.as_deref());
+        cookie_agent_client_state::paths::display_path(workspace, home)
+    }
+
     /// The machine of `runtime_id` as `runtimes.list` reports it.
     fn machine_of(&self, runtime_id: &RuntimeId) -> Option<&MachineName> {
         self.runtimes()
@@ -373,10 +384,10 @@ fn render_attachments(
                 row.attachment.name,
                 row.attachment.runtime_id,
                 row.attachment.capability,
-                row.attachment
-                    .workspace
-                    .as_deref()
-                    .unwrap_or("(no workspace)"),
+                row.attachment.workspace.as_deref().map_or_else(
+                    || "(no workspace)".to_owned(),
+                    |workspace| panel.display_workspace(&row.attachment.runtime_id, workspace)
+                ),
                 status_label(row.instance.as_ref().map(|instance| instance.status)),
             );
             if let Some(machine) = panel.machine_of(&row.attachment.runtime_id) {
@@ -416,7 +427,7 @@ fn render_attachments(
                     "No runtimes attached. Press a to attach one.".to_owned()
                 }
             },
-            |row| row_detail(row, panel.machine_of(&row.attachment.runtime_id)),
+            |row| row_detail(row, panel),
         );
     frame.render_widget(
         Paragraph::new(detail).wrap(Wrap { trim: false }).block(
@@ -614,8 +625,9 @@ fn machine_entry_detail(entry: &MachineEntry, machines: &[MachineInfo]) -> Strin
     }
 }
 
-fn row_detail(row: &RuntimeRow, machine: Option<&MachineName>) -> String {
+fn row_detail(row: &RuntimeRow, panel: &RuntimePanel) -> String {
     let attachment = &row.attachment;
+    let machine = panel.machine_of(&attachment.runtime_id);
     let mut text = format!(
         "{}\nruntime: {}\ncapability: {} ({})",
         attachment.name,
@@ -630,7 +642,8 @@ fn row_detail(row: &RuntimeRow, machine: Option<&MachineName>) -> String {
         text.push_str(&format!("\ndescription: {description}"));
     }
     if let Some(workspace) = &attachment.workspace {
-        text.push_str(&format!("\nworkspace: {workspace}"));
+        let shown = panel.display_workspace(&attachment.runtime_id, workspace);
+        text.push_str(&format!("\nworkspace: {shown}"));
     }
     text.push_str(&format!(
         "\nstatus: {}",

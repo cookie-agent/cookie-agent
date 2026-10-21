@@ -16,6 +16,7 @@ pub mod memory;
 pub mod model_draft;
 mod model_names;
 pub mod ownership;
+pub mod paths;
 pub mod permissions;
 pub mod plugins;
 pub mod providers;

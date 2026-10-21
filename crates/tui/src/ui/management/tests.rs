@@ -946,6 +946,49 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
     );
 }
 
+/// The panel shows a workspace under the home its own runtime reported, and
+/// absolute for a runtime that reported none.
+#[test]
+fn runtime_panel_shows_workspaces_under_their_runtime_home() {
+    let mut listing = runtime_listing();
+    // labpc reports a home; the attached workspace of `devbox`, which
+    // reports none, stays absolute even under the same path.
+    listing.runtimes[1].home = Some("/srv".into());
+    let attached = [
+        attachment("labpc_api", "labpc", "coding", Some("/srv/api")),
+        attachment("devbox_api", "devbox", "coding", Some("/srv/api")),
+    ];
+    let rows = super::runtime_rows(&attached, Some(&listing));
+    let mut panel = super::RuntimePanel::default();
+    panel.install(listing);
+    panel.selection.select(Some(0));
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::render_runtimes(
+                frame,
+                frame.area(),
+                &mut panel,
+                &rows,
+                &crate::theme::Theme::default(),
+            );
+        })
+        .expect("render runtime panel");
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("labpc_api  labpc/coding  ~/api"), "{text}");
+    assert!(
+        text.contains("devbox_api  devbox/coding  /srv/api"),
+        "{text}"
+    );
+    assert!(text.contains("workspace: ~/api"), "{text}");
+}
+
 #[test]
 fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
     let server = |runtime: &str, workspace: Option<&str>, name: &str| McpServerInfo {

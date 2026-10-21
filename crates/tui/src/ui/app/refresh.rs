@@ -90,6 +90,38 @@ impl App {
     pub(in crate::ui) async fn refresh_lists(&mut self) {
         self.refresh_session_list().await;
         self.refresh_coherent_lists().await;
+        self.poll_runtime_homes();
+    }
+
+    /// Fetches the runtimes' homes in the background, from a daemon that
+    /// reports them (client protocol 1.7.0). A failure keeps the homes
+    /// known so far: paths then show as they did.
+    pub(in crate::ui) fn poll_runtime_homes(&self) {
+        if !cookie_agent_client_state::paths::daemon_reports_runtime_homes(
+            self.client.daemon_version(),
+        ) {
+            return;
+        }
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            if let Ok(listing) = client.list_runtimes().await {
+                let homes = cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing);
+                let _ = updates.send(RpcUpdate::RuntimeHomesRefreshed { homes });
+            }
+        });
+    }
+
+    /// Installs the runtimes' homes; the session picker's rows name
+    /// directories with them, so a change rebuilds them.
+    pub(in crate::ui) fn install_runtime_homes(
+        &mut self,
+        homes: cookie_agent_client_state::paths::RuntimeHomes,
+    ) {
+        if self.runtime_homes != homes {
+            self.runtime_homes = homes;
+            self.note_sessions_changed();
+        }
     }
 
     /// Lists this directory's root sessions, or every directory's when the
@@ -643,10 +675,16 @@ impl App {
             RpcUpdate::RuntimesRefreshed { result } => {
                 self.runtime_panel.refresh_in_flight = false;
                 match result {
-                    Ok(listing) => self.runtime_panel.install(listing),
+                    Ok(listing) => {
+                        self.install_runtime_homes(
+                            cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing),
+                        );
+                        self.runtime_panel.install(listing);
+                    }
                     Err(error) => self.status = format!("runtime refresh failed: {error}"),
                 }
             }
+            RpcUpdate::RuntimeHomesRefreshed { homes } => self.install_runtime_homes(homes),
             RpcUpdate::RuntimeAttachmentChanged { result } => {
                 self.status = match result {
                     Ok(message) | Err(message) => message,
@@ -969,6 +1007,10 @@ impl App {
             ClientDelivery::RuntimesChanged(_) | ClientDelivery::MachinesChanged(_)
         ) {
             self.poll_runtimes();
+            if self.modal != Modal::Runtimes {
+                // An open panel's refresh brings the homes as well.
+                self.poll_runtime_homes();
+            }
         }
         // Renaming or merging a machine moves its memories too.
         if matches!(

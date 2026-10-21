@@ -231,13 +231,36 @@ async fn ctrl_a_lists_every_directory_and_back() {
 async fn every_directory_rows_name_the_directory() {
     let (mut app, _, other, _) = picker_app("1.5.0").await;
     let mut elsewhere = titled_meta(SessionId::new_v7(), "elsewhere", 1);
-    elsewhere.cwd_identity = cookie_agent_protocol::CwdIdentity::new("/srv/project").unwrap();
+    elsewhere.cwd_identity = cookie_agent_protocol::CwdIdentity::new("/srv/lab/project").unwrap();
+    elsewhere.attachments = vec![cookie_agent_protocol::RuntimeAttachment {
+        name: cookie_agent_protocol::AttachmentName::new("labpc_project").unwrap(),
+        runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
+        capability: cookie_agent_protocol::CapabilityName::coding(),
+        kind: cookie_agent_protocol::RuntimeKind::new("coding").unwrap(),
+        workspace: Some("/srv/lab/project".into()),
+    }];
     app.sessions.push(elsewhere);
     app.session_scope_all = true;
     app.note_sessions_changed();
+    // No runtime has reported a home: directories show absolute.
     let frame = frame_rows(&mut app, 100, 30).join("\n");
-    assert!(frame.contains("· project)"), "{frame}");
-    assert!(frame.contains("· workspace)"), "{frame}");
+    assert!(frame.contains("· /srv/lab/project)"), "{frame}");
+    assert!(frame.contains("· /workspace)"), "{frame}");
+
+    // Once `labpc` reports its home, its session's directory shows under it;
+    // the session without attachments stays absolute.
+    let listing: cookie_agent_protocol::RuntimesListResult = serde_json::from_value(json!({
+        "runtimes": [{"runtime_id": "labpc", "lifetime": "dial_in", "connected": true,
+                      "capabilities": [], "home": "/srv/lab"}],
+        "instances": []
+    }))
+    .unwrap();
+    app.install_runtime_homes(
+        cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing),
+    );
+    let frame = frame_rows(&mut app, 100, 30).join("\n");
+    assert!(frame.contains("· ~/project)"), "{frame}");
+    assert!(frame.contains("· /workspace)"), "{frame}");
     let _ = other;
 }
 

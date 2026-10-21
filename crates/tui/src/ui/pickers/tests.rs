@@ -211,7 +211,7 @@ fn session_search_groups_local_days_and_sorts_newest_first() {
         "",
         now,
         &time_zone,
-        false,
+        None,
     );
     assert_eq!(rows[0], SessionSearchRow::Header("Today".into()));
     assert!(

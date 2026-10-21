@@ -1688,6 +1688,9 @@ struct RuntimeLabelEntry {
     /// The attachment name, once known.
     name: Option<String>,
     workspace: Option<String>,
+    /// The home directory the runtime reported, which its workspace shows
+    /// under as `~/…`.
+    home: Option<String>,
 }
 
 impl App {
@@ -1710,16 +1713,19 @@ impl App {
                             _ => None,
                         },
                         workspace: entry.workspace().map(str::to_owned),
+                        home: self.home_of(entry.request.runtime_id.as_str()),
                     })
                     .collect::<Vec<_>>(),
                 None => std::iter::once(RuntimeLabelEntry {
                     runtime_id: cookie_agent_protocol::RuntimeId::GLOBAL.to_owned(),
                     name: None,
                     workspace: None,
+                    home: None,
                 })
                 .chain(
                     self.default_coding_runtime()
                         .map(|request| RuntimeLabelEntry {
+                            home: self.home_of(request.runtime_id.as_str()),
                             runtime_id: request.runtime_id.to_string(),
                             name: None,
                             workspace: request.workspace,
@@ -1742,10 +1748,16 @@ impl App {
                     runtime_id: attachment.runtime_id.to_string(),
                     name: Some(attachment.name.to_string()),
                     workspace: attachment.workspace.clone(),
+                    home: self.home_of(attachment.runtime_id.as_str()),
                 })
                 .collect()
         };
         runtime_label(&entries)
+    }
+
+    /// The home directory the runtime `runtime_id` reported.
+    fn home_of(&self, runtime_id: &str) -> Option<String> {
+        self.runtime_homes.get_str(runtime_id).map(str::to_owned)
     }
 }
 
@@ -1758,7 +1770,11 @@ fn runtime_label(entries: &[RuntimeLabelEntry]) -> String {
         [] if entries.is_empty() => "no runtimes".into(),
         [] => cookie_agent_protocol::RuntimeId::GLOBAL.into(),
         [only] => match &only.workspace {
-            Some(workspace) => format!("{} · {}", only.runtime_id, shorten_home(workspace)),
+            Some(workspace) => format!(
+                "{} · {}",
+                only.runtime_id,
+                cookie_agent_client_state::paths::display_path(workspace, only.home.as_deref())
+            ),
             None => only.runtime_id.clone(),
         },
         several => several
@@ -1778,6 +1794,7 @@ mod runtime_label_tests {
             runtime_id: runtime_id.into(),
             name: name.map(str::to_owned),
             workspace: workspace.map(str::to_owned),
+            home: None,
         }
     }
 
@@ -1794,6 +1811,24 @@ mod runtime_label_tests {
         assert_eq!(
             runtime_label(&[entry("computer", Some("computer"), None)]),
             "computer"
+        );
+        // A workspace shows under the home its own runtime reported, never
+        // this client's.
+        let at_home = |home: Option<&str>| RuntimeLabelEntry {
+            home: home.map(str::to_owned),
+            ..entry("labpc", Some("labpc_api"), Some("/home/lab/api"))
+        };
+        assert_eq!(
+            runtime_label(&[global(), at_home(Some("/home/lab"))]),
+            "labpc · ~/api"
+        );
+        assert_eq!(
+            runtime_label(&[global(), at_home(Some("/home/ada"))]),
+            "labpc · /home/lab/api"
+        );
+        assert_eq!(
+            runtime_label(&[global(), at_home(None)]),
+            "labpc · /home/lab/api"
         );
         assert_eq!(
             runtime_label(&[

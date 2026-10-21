@@ -162,14 +162,14 @@ impl SessionSearchRow {
 /// Search sessions by title and group matching rows by their local activity day.
 /// Callers pass the sessions the picker may offer (root sessions only).
 /// The picker's rows: day headers over sessions, newest first. With
-/// `with_directory` (the picker lists every directory's sessions) each row
-/// also names its session's directory.
+/// `homes` (the picker lists every directory's sessions) each row also names
+/// its session's directory, under the home of its runtime (`~/…`).
 pub(crate) fn session_search_rows<'a>(
     sessions: impl IntoIterator<Item = &'a SessionMeta>,
     query: &str,
     now: Timestamp,
     time_zone: &TimeZone,
-    with_directory: bool,
+    homes: Option<&cookie_agent_client_state::paths::RuntimeHomes>,
 ) -> Vec<SessionSearchRow> {
     let today = now.to_zoned(time_zone.clone()).date();
     let yesterday = today.yesterday().ok();
@@ -198,15 +198,9 @@ pub(crate) fn session_search_rows<'a>(
         } else {
             " !"
         };
-        let directory = if with_directory {
-            let cwd = session.cwd_identity.as_str();
-            let name = std::path::Path::new(cwd).file_name().map_or_else(
-                || cwd.to_owned(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            format!(" · {name}")
-        } else {
-            String::new()
+        let directory = match homes {
+            Some(homes) => format!(" · {}", homes.session_directory(session)),
+            None => String::new(),
         };
         rows.push(SessionSearchRow::Session {
             session_id: session.session_id,

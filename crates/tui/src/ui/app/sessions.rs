@@ -446,7 +446,7 @@ impl App {
             query,
             now,
             &time_zone,
-            self.session_scope_all,
+            self.session_scope_all.then_some(&self.runtime_homes),
         );
         self.session_search_rows_cache = SessionSearchRowsCache {
             query: query.to_owned(),
