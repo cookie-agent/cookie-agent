@@ -147,12 +147,22 @@ address bar.
 - **Transcript.** Markdown is rendered with any HTML in it shown as text.
   Links open in a new tab, but only `http`, `https`, and `mailto` links;
   images show as links.
-  - **Tool calls** show an icon for the kind of tool (from its
-    presentation hint, never its name), their title, and their status: a
-    turning circle while running, a check when done, and a word with its
-    icon when it failed, was cancelled, or was interrupted. Click one for
-    its arguments and output. A running call that can move to the
-    background offers **background**.
+  - **Tool calls** are one line each until you open them, as in the TUI:
+    an icon for the kind of tool (from its presentation hint, never its
+    name), the title, the primary argument unless the title names it, and
+    the status: a turning circle while running, a check when done, and a
+    word with its icon when it failed, was cancelled, or was interrupted.
+    While a call runs, its latest progress follows the title. A call
+    waiting for your approval says **approve?** on its line, which opens
+    the approvals. A running call that can move to the background offers
+    **background**.
+  - **An open call.** Click a call's line (or press Enter on it) to open
+    it, and again to close it. It shows its arguments under a muted
+    **arguments** label, leaving out what the line already says (a block
+    or key/value row that only repeats the primary argument or the text
+    the title quotes), then its output. Output past 64 lines ends with
+    "… N more lines (click to expand)", which shows up to 1024. The page
+    remembers which calls you opened in each session until you reload it.
   - **A delegate call** names the subagent it started with its handle and
     an **open** link; while the subagent runs, the row says whether it is
     thinking, running a tool, or waiting for an approval.
@@ -166,17 +176,28 @@ address bar.
     removed, and its text comes back into the composer), or **forks** a new
     session with the conversation up to it. A revert is refused when another
     client added to the session since the menu opened.
-- **Composer.** It works like the TUI's:
+- **Composer.** One line to start; it grows with what you write up to
+  five lines, then scrolls, and shrinks back when you send. The paperclip
+  (and on a phone the camera) is inside it at the bottom left, and round
+  buttons at the bottom right:
+
+  | The session | The box | The buttons |
+  |---|---|---|
+  | idle | empty | **Send**, disabled |
+  | idle | has text or files | **Send** starts a run |
+  | running or compacting | empty | **Stop** cancels it, as Escape does |
+  | running | has text or files | **Queue** and **Steer** |
+
+  Each button's tooltip names its key. The keys work like the TUI's:
   - **Enter** sends, steering a running run.
   - **Alt+Enter** queues the message behind the run.
   - **Shift+Enter or Ctrl+J** inserts a newline.
-  - **Escape** cancels the run.
+  - **Escape** cancels the run, or a compaction in progress.
   - **Up** in an empty composer takes back your newest pending or queued
     message.
 
-  The send button (a paper plane) steers, and a long press on it, or the
-  menu beside it, queues; the menu also cancels the run. The strip above the composer lists pending and queued messages;
-  tap one of yours to take it back.
+  The strip above the composer lists pending and queued messages; tap one
+  of yours to take it back.
 - **Commands.** `/` starts a command:
   - `/new`;
   - `/sessions` (also `/resume`, `/load`, `/continue`);
@@ -231,9 +252,9 @@ address bar.
   rules it will be created with, previewed against its agent.
 - **Bottom bar.** Below the composer; each part has an icon and says more
   on hover:
-  - the agent and the model, as chips that open their pickers;
-  - the permission mode, each with its own shield (click it for the next
-    one);
+  - the agent, the model, and the permission mode, as three chips of one
+    shape: the agent and model chips open their pickers; the mode chip,
+    with a shield of its own for each mode, switches to the next mode;
   - the approvals waiting, when there are any (click to answer them);
   - **working…** while the session runs;
   - the last status message;
@@ -306,7 +327,8 @@ address bar.
     parent.
   - **Bottom bar:** one row. The model chip takes the room left and
     shortens its name first; the agent chip shows only its icon below
-    about 380 px; the permission mode is its shield, and a tap says
+    about 380 px; the permission mode chip shows only its shield, and a tap
+    says
     "now: <mode>" for a moment; the cost shows to the cent ("$0.02") and
     opens `/usage`, which also has the context size. Every picker opens
     from the bottom.
