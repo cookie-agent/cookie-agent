@@ -3,11 +3,29 @@
 # crates/web_assets embeds it, so the next `cookie` build serves the real
 # page. Prints the bundle's size and fails when it is over its budget.
 #
+# Usage: scripts/build-web.sh [--fast]
+#
+# The bundle is built with the `web` Cargo profile and wasm-opt, as CI and
+# releases ship it. --fast builds it with `web-dev` and without wasm-opt, in
+# a fraction of the time, for local browser runs; it is larger and slower,
+# so never ship it.
+#
 # Needs the wasm32-unknown-unknown target and trunk of the version below
 # (`cargo install trunk --version <it> --locked`). Trunk downloads the
 # wasm-bindgen CLI, wasm-opt, and the Tailwind CLI of the versions
 # crates/web/Trunk.toml pins on first use, into its cache directory.
 set -euo pipefail
+
+# Trunk runs wasm-opt for release builds only.
+trunk_args=(--release --cargo-profile web)
+case "${1:-}" in
+    "") ;;
+    --fast) trunk_args=(--cargo-profile web-dev) ;;
+    *)
+        echo "usage: $0 [--fast]" >&2
+        exit 2
+        ;;
+esac
 
 TRUNK_VERSION="0.21.14"
 # What a browser may download for the page, gzipped, in bytes: a backstop
@@ -39,7 +57,7 @@ fi
 # From a clean dist/: trunk can leave an index.html naming an earlier
 # build's stylesheet, which the page then cannot load.
 rm -rf crates/web/dist
-(cd crates/web && trunk build --release --locked)
+(cd crates/web && trunk build --locked "${trunk_args[@]}")
 
 bundle="crates/web_assets/bundle"
 rm -rf "$bundle"

@@ -114,3 +114,12 @@ opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+# `scripts/build-web.sh --fast`: the web client for local browser runs,
+# built in a fraction of `web`'s time. CI and releases ship `web`.
+[profile.web-dev]
+inherits = "web"
+opt-level = 1
+lto = false
+codegen-units = 16
+incremental = true
