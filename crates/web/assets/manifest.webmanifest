@@ -2,6 +2,7 @@
   "name": "cookie agent",
   "short_name": "cookie",
   "description": "The cookie agent daemon in the browser.",
+  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -13,5 +14,21 @@
     { "src": "icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
     { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
     { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "screenshots": [
+    {
+      "src": "screenshots/narrow.webp",
+      "sizes": "390x844",
+      "type": "image/webp",
+      "form_factor": "narrow",
+      "label": "A chat on a phone: an edit, a check that passes, and the reply"
+    },
+    {
+      "src": "screenshots/wide.webp",
+      "sizes": "1280x800",
+      "type": "image/webp",
+      "form_factor": "wide",
+      "label": "A chat beside the sessions list: an edit, a check that passes, and the reply"
+    }
   ]
 }

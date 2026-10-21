@@ -36,8 +36,8 @@ pub fn assets() -> &'static [Asset] {
 }
 
 /// The Content-Security-Policy the page is served with: its own origin,
-/// its inline scripts by hash, WebAssembly, `blob:` media, and WebSocket
-/// connections to any daemon.
+/// its inline scripts by hash, WebAssembly, `blob:` media, WebSocket
+/// connections to any daemon, and its service worker from its own origin.
 #[must_use]
 pub const fn content_security_policy() -> &'static str {
     POLICY
@@ -57,7 +57,11 @@ mod tests {
         assert_eq!(index.content_type, "text/html; charset=utf-8");
         assert!(!index.bytes.is_empty());
         assert!(!index.immutable);
-        assert!(super::content_security_policy().contains("default-src 'self'"));
+        let policy = super::content_security_policy();
+        assert!(policy.contains("default-src 'self'"));
+        // The service worker and the manifest, for installing the page.
+        assert!(policy.contains("worker-src 'self';"), "{policy}");
+        assert!(policy.contains("manifest-src 'self';"), "{policy}");
         assert!(super::get("missing.js").is_none());
     }
 }

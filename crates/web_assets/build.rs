@@ -71,7 +71,8 @@ fn main() {
 /// The page's Content-Security-Policy: everything from its own origin, its
 /// inline scripts by hash, WebAssembly, `blob:` media read from the daemon,
 /// and WebSocket connections to any daemon, since the page may name one on
-/// another host. Inline style attributes carry terminal colours.
+/// another host. Inline style attributes carry terminal colours. Its
+/// service worker and manifest come from its own origin only.
 fn content_security_policy(inline_scripts: &[String]) -> String {
     let mut scripts = String::from("'self' 'wasm-unsafe-eval'");
     for hash in inline_scripts {
@@ -80,7 +81,8 @@ fn content_security_policy(inline_scripts: &[String]) -> String {
     format!(
         "default-src 'self'; script-src {scripts}; style-src 'self' 'unsafe-inline'; \
          img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self'; \
-         connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; \
+         connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; \
+         object-src 'none'; base-uri 'none'; \
          frame-ancestors 'none'; form-action 'none'"
     )
 }
@@ -176,6 +178,7 @@ fn content_type(path: &str) -> &'static str {
         Some("webmanifest") => "application/manifest+json",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
+        Some("webp") => "image/webp",
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
         Some("woff") => "font/woff",

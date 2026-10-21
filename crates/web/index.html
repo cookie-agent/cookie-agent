@@ -10,13 +10,33 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="cookie" />
     <title>cookie agent</title>
-    <!-- Home screen: the manifest names its icons by path, so they are
-         copied as they are (no service worker; see the web client spec). -->
+    <!-- Installing as an app: the manifest names its icons and screenshots
+         by path, and the service worker must keep its name, so they are
+         copied as they are. The service worker caches nothing (web client
+         spec, section 9). -->
     <link data-trunk rel="copy-file" href="assets/manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="assets/sw.js" />
     <link data-trunk rel="copy-dir" href="assets/icons" />
+    <link data-trunk rel="copy-dir" href="assets/screenshots" />
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <script>
+      // Chromium offers to install the page as soon as it qualifies, which
+      // may be before the page's WebAssembly runs: keep the offer for the
+      // page's own Install app action instead of the browser's mini-infobar,
+      // and note an install, for the page to read (src/browser.rs).
+      addEventListener("beforeinstallprompt", (event) => {
+        event.preventDefault();
+        window.cookieInstallPrompt = event;
+        dispatchEvent(new Event("cookie-install"));
+      });
+      addEventListener("appinstalled", () => {
+        window.cookieInstallPrompt = null;
+        window.cookieInstalled = true;
+        dispatchEvent(new Event("cookie-install"));
+      });
+    </script>
     <link data-trunk rel="tailwind-css" href="style/main.css" />
     <link data-trunk rel="copy-dir" href="assets/fonts" />
     <!-- highlight.js 11.12.0 (@highlightjs/cdn-assets, sha512-KvOKXODaiFmId9xaq3xc5xCL66wVLUuOngDbO9B/kewbFTqdGbn2nJxNhN3H5R1cgDTVj6R8vH0zgiNDEGjpDw==),

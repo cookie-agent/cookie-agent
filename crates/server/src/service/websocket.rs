@@ -923,6 +923,74 @@ mod authentication_tests {
         (status, headers, response[split + 4..].to_vec())
     }
 
+    /// The built page's service worker and manifest, for installing it:
+    /// the worker beside `index.html` under its own name, revalidated on
+    /// every load like it, needing no wider scope, and caching nothing;
+    /// the manifest with what Chromium's install criteria ask for.
+    async fn the_page_installs_as_an_app(daemon: &Daemon) {
+        let (status, headers, body) = http(daemon, "GET", "/sw.js", &[]).await;
+        assert_eq!(status, 200);
+        assert_eq!(headers["content-type"], "text/javascript; charset=utf-8");
+        assert_eq!(headers["cache-control"], "no-cache");
+        assert!(!headers.contains_key("service-worker-allowed"));
+        assert!(
+            headers["content-security-policy"].contains("worker-src 'self';"),
+            "{}",
+            headers["content-security-policy"]
+        );
+        let worker = String::from_utf8(body).expect("JavaScript");
+        assert!(worker.contains("self.skipWaiting()"), "{worker}");
+        assert!(worker.contains("self.clients.claim()"), "{worker}");
+        assert!(
+            !worker.contains("caches."),
+            "the service worker caches nothing"
+        );
+        assert!(
+            worker.lines().last().is_some_and(|line| {
+                line.strip_prefix("// build: ")
+                    .is_some_and(|build| build.len() == 16 && build != "source")
+            }),
+            "scripts/build-web.sh stamps the build"
+        );
+        let (status, headers, body) = http(daemon, "GET", "/manifest.webmanifest", &[]).await;
+        assert_eq!(status, 200);
+        assert_eq!(headers["content-type"], "application/manifest+json");
+        let manifest: serde_json::Value = serde_json::from_slice(&body).expect("a manifest");
+        for field in ["name", "short_name", "background_color", "theme_color"] {
+            assert!(
+                manifest[field]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "{field}"
+            );
+        }
+        // Relative, so the page installs from any path.
+        for field in ["id", "start_url", "scope"] {
+            assert_eq!(manifest[field], "./", "{field}");
+        }
+        assert_eq!(manifest["display"], "standalone");
+        assert_ne!(manifest["prefer_related_applications"], true);
+        let icons = manifest["icons"].as_array().expect("icons");
+        for size in ["192x192", "512x512"] {
+            for purpose in ["any", "maskable"] {
+                let icon = icons
+                    .iter()
+                    .find(|icon| icon["sizes"] == size && icon["purpose"] == purpose)
+                    .unwrap_or_else(|| panic!("a {size} {purpose} icon"));
+                let src = icon["src"].as_str().expect("its path");
+                let (status, headers, _) = http(daemon, "GET", &format!("/{src}"), &[]).await;
+                assert_eq!(status, 200, "{src}");
+                assert_eq!(headers["content-type"], "image/png", "{src}");
+            }
+        }
+        for screenshot in manifest["screenshots"].as_array().into_iter().flatten() {
+            let src = screenshot["src"].as_str().expect("its path");
+            let (status, headers, _) = http(daemon, "GET", &format!("/{src}"), &[]).await;
+            assert_eq!(status, 200, "{src}");
+            assert_eq!(headers["content-type"], screenshot["type"], "{src}");
+        }
+    }
+
     #[tokio::test]
     async fn the_daemon_serves_the_page_beside_its_endpoints() {
         let daemon = Daemon::start(AllowedOrigins::None).await;
@@ -990,6 +1058,13 @@ mod authentication_tests {
             )
             .await;
             assert_eq!(status, 304, "{}", asset.path);
+        }
+        assert!(
+            cookie_agent_web_assets::content_security_policy().contains("worker-src 'self';"),
+            "the page's service worker is allowed"
+        );
+        if cookie_agent_web_assets::is_built() {
+            the_page_installs_as_an_app(&daemon).await;
         }
         // Any other path, or another method, is not the page.
         for (method, path) in [

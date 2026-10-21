@@ -43,6 +43,16 @@ rm -rf "$bundle"
 mkdir -p "$bundle"
 cp -R crates/web/dist/. "$bundle/"
 rm -rf "$bundle/.stage"
+# Stamp the service worker with the build: index.html names the build's
+# hashed files, so a new build changes sw.js too and browsers replace the
+# installed one. The same build gets the same stamp.
+build="$({ sha256sum 2>/dev/null || shasum -a 256; } <"$bundle/index.html" | cut -c1-16)"
+sed "s|^// build: source\$|// build: $build|" "$bundle/sw.js" >"$bundle/sw.js.stamped"
+mv "$bundle/sw.js.stamped" "$bundle/sw.js"
+grep -q "^// build: $build\$" "$bundle/sw.js" || {
+    echo "could not stamp $bundle/sw.js with the build" >&2
+    exit 1
+}
 
 echo "web bundle in $bundle:"
 total=0
