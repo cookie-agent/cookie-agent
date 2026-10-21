@@ -488,6 +488,8 @@ def session_depth(browser):
     browser.click(open_row(browser))
     browser.wait("the expanded tree", lambda: tree_state(browser) == "expanded" and count(browser, nested) == 1)
     assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", open_row(browser)) == "true"
+    # A finished subagent shows no status mark, as a finished session does.
+    assert count(browser, nested + " svg") == 0, "a finished subagent shows a status mark"
     browser.shot("subagent-tree")
     root_title = browser.text("#session-title")
     root = browser.script("return document.querySelector(arguments[0]).dataset.session", open_row(browser))
@@ -497,6 +499,16 @@ def session_depth(browser):
     assert "helper" in browser.text("#session-title"), browser.text("#session-title")
     browser.wait("the breadcrumb", lambda: shown(browser, "main [data-crumb]"))
     assert root_title in browser.text("main nav[aria-label=Path]"), browser.text("main nav[aria-label=Path]")
+    # With the subagent open, the root's row keeps its chevron, which folds
+    # the tree on its own; rows without subagents never show one.
+    chevron = 'aside [data-session="%s"] [data-tree-chevron]' % root
+    assert count(browser, chevron) == 1, "the root lost its chevron while a subagent is open"
+    assert count(browser, "aside [data-session] [data-tree-chevron]") == 1, "a session without subagents shows a chevron"
+    browser.click(chevron)
+    browser.wait("the folded tree", lambda: tree_state(browser) == "collapsed")
+    browser.click(chevron)
+    browser.wait("the unfolded tree", lambda: tree_state(browser) == "expanded")
+    assert "helper" in browser.text("#session-title"), "the chevron left the open subagent"
     browser.shot("subagent")
     browser.click("main [data-crumb]")
     browser.wait("back at the root", lambda: browser.text("#session-title") == root_title)

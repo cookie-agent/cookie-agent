@@ -384,6 +384,11 @@ fn session_row(
 ) -> impl IntoView {
     let session_id = session.session_id;
     let current = move || workspace.selected.get() == Some(session_id);
+    // The root of the open tree, whether the root itself or one of its
+    // subagents is open, and only when it has subagents: its row keeps the
+    // chevron that folds and unfolds the tree.
+    let tree_root =
+        move || workspace.tree_root.get() == Some(session_id) && workspace.tree_has_subagents();
     let mark = icons::session_status(session.status);
     let status_mark = icons::row_status(session.status);
     let last_activity = session.last_activity;
@@ -507,10 +512,10 @@ fn session_row(
                 }
                 // The open session's row switches its subagent tree between
                 // the running ones and all of them.
-                aria-expanded=move || current().then(|| workspace.tree_expanded.get().to_string())
+                aria-expanded=move || tree_root().then(|| workspace.tree_expanded.get().to_string())
                 on:click=move |_| {
                     if press.try_update_value(Press::click).unwrap_or(true) {
-                        if current() && !workspace.new_session.get_untracked() {
+                        if current() && tree_root() && !workspace.new_session.get_untracked() {
                             workspace.toggle_tree();
                         } else {
                             workspace.open_session(session_id);
@@ -534,12 +539,20 @@ fn session_row(
                 <span class=format!("flex w-full min-w-0 items-center gap-1.5 {NOTE}")>
                     // The open session's row folds and unfolds its subagent
                     // tree: its chevron, before the badges, turns with it.
-                    <Show when=current>
+                    // With a subagent open, the row's click opens the root
+                    // again, so the chevron folds and unfolds on its own.
+                    <Show when=tree_root>
                         <span
-                            class="inline-flex shrink-0 opacity-70 transition-transform"
+                            class="hit-area relative inline-flex shrink-0 opacity-70 transition-transform hover:opacity-100"
                             class:rotate-90=move || workspace.tree_expanded.get()
                             data-tree-chevron
-                            title="Click to show every subagent, or only the running ones"
+                            title="Show every subagent, or only the running ones"
+                            on:click=move |event: ev::MouseEvent| {
+                                if !current() {
+                                    event.stop_propagation();
+                                    workspace.toggle_tree();
+                                }
+                            }
                         >
                             <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
                         </span>
@@ -806,7 +819,10 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                     .map(|row| {
                         let session_id = row.session_id;
                         let current = move || workspace.selected.get() == Some(session_id);
-                        let mark = icons::session_status(row.status);
+                        // As on session rows: a mark only while it runs or
+                        // when its last run went wrong.
+                        let mark = icons::row_status(row.status);
+                        let task_indent = if mark.is_some() { "pl-5" } else { "" };
                         let indent = format!("{}rem", 0.75 * (row.depth - 1) as f64);
                         let fold = if expanded && row.has_children {
                             view! {
@@ -842,15 +858,17 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                                     on:click=move |_| workspace.open_session(session_id)
                                 >
                                     <span class="flex w-full min-w-0 items-center gap-2 text-sm">
-                                        <Glyph icon=mark.icon class=mark.class("text-xs") />
-                                        <span class="sr-only">{format!("{}: ", mark.label)}</span>
+                                        {mark.map(|mark| view! {
+                                            <Glyph icon=mark.icon class=mark.class("text-xs") />
+                                            <span class="sr-only">{format!("{}: ", mark.label)}</span>
+                                        })}
                                         // The handle gives way before the agent's name.
                                         <span class="max-w-[75%] shrink-0 truncate font-mono font-bold">{row.agent.clone()}</span>
                                         {row.handle.clone().map(|handle| view! {
                                             <span class=format!("min-w-0 truncate font-mono {NOTE}") data-handle>{handle}</span>
                                         })}
                                     </span>
-                                    <span class=format!("w-full truncate pl-5 {NOTE}")>{row.task.clone()}</span>
+                                    <span class=format!("w-full truncate {task_indent} {NOTE}")>{row.task.clone()}</span>
                                 </button>
                             </div>
                         }

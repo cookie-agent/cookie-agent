@@ -152,6 +152,13 @@ impl Workspace {
         self.tree_expanded.set(expanded);
     }
 
+    /// Whether the open session's tree has any subagent: only then does its
+    /// root's row offer to fold and unfold the tree.
+    pub fn tree_has_subagents(self) -> bool {
+        self.tree
+            .with(|tree| tree.as_ref().is_some_and(|tree| !tree.children.is_empty()))
+    }
+
     /// Folds or unfolds `session_id`'s subagents.
     pub fn toggle_folded(self, session_id: SessionId) {
         self.collapsed.update(|collapsed| {
