@@ -2,7 +2,7 @@
 # Photographs the web client for the landing page: a `cookie daemon` in a
 # scratch home with a scripted model (scripts/web-e2e/showcase-model.py)
 # answers one request with an edit, a `bash` check, and a markdown reply, and
-# scripts/web-e2e/showcase.py captures the page in headless Firefox, light
+# scripts/web-e2e/showcase.py captures the page in headless Chrome, light
 # and dark, at desktop and phone sizes. Run scripts/build-web.sh first so the
 # daemon embeds the real page.
 #
@@ -12,7 +12,9 @@
 # With --composer it photographs the composer in each of its states, the
 # bottom bar in each permission mode, and the tool rows collapsed and open,
 # under <output-dir>/composer/.
-# Needs Firefox and geckodriver (on PATH, or set GECKODRIVER).
+# Needs Chrome or Chromium and a matching chromedriver
+# (scripts/web-e2e/chrome.sh finds or fetches them; CHROME and CHROMEDRIVER
+# override).
 set -euo pipefail
 
 mode=""
@@ -33,11 +35,11 @@ out="$(cd "$1" && pwd)"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-geckodriver="${GECKODRIVER:-$(command -v geckodriver || true)}"
-if [[ -z "$geckodriver" ]]; then
-    echo "geckodriver is missing; install it or set GECKODRIVER" >&2
-    exit 1
-fi
+# shellcheck source=web-e2e/chrome.sh
+source scripts/web-e2e/chrome.sh
+find_chrome
+CHROME_ARGS="$(chrome_args_json)"
+export CHROME_ARGS
 if [[ ! -f crates/web_assets/bundle/index.html ]]; then
     echo "no web bundle; run scripts/build-web.sh first" >&2
     exit 1
@@ -178,7 +180,6 @@ HOME="$home" "$cookie" machine assign labpc labpc >/dev/null
 HOME="$home" "$cookie" machine assign studio studio >/dev/null
 
 driver_port="$(free_port)"
-# System access lets the driver zoom the page to a phone's width.
-"$geckodriver" --port "$driver_port" --allow-system-access >"$scratch/geckodriver.log" 2>&1 &
+"$CHROMEDRIVER" --port="$driver_port" >"$scratch/chromedriver.log" 2>&1 &
 pids+=("$!")
 python3 -I scripts/web-e2e/showcase.py "$driver_port" "$link" "$out" $mode

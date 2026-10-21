@@ -1,4 +1,5 @@
-"""Photographs the web client for the landing page, driven over WebDriver.
+"""Photographs the web client for the landing page, driven over WebDriver
+(chromedriver, headless Chrome).
 
 Run by scripts/web-screenshots.sh:
 
@@ -16,6 +17,9 @@ phone, and phone-landscape sizes, and saves each in light and dark under
 as a whole. First it starts three more sessions on the runtime cards, so
 the sessions list shows every kind of badge, and it photographs a row's
 title and the title bar's as fields.
+
+In the environment, `CHROME` and `CHROME_ARGS` (a JSON list) are the
+browser and its switches.
 """
 
 import base64
@@ -32,7 +36,11 @@ ALL = sys.argv[4:5] == ["all"]
 COMPOSER = sys.argv[4:5] == ["composer"]
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 ENTER = "\ue007"  # WebDriver key: Enter
-CHROME = 86  # what the headless window keeps above the page
+# What a desktop with a mouse reports, which headless Chrome does not:
+# Tailwind's hover: styles apply only under (hover: hover).
+DESKTOP_POINTER = (
+    "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4"
+)
 PROMPT = "greet() should say “Hello, Ada!”. Fix it and run the check."
 
 
@@ -56,10 +64,27 @@ class Browser:
                 break
             except OSError:
                 time.sleep(0.1)
-        capabilities = {"browserName": "firefox", "moz:firefoxOptions": {"args": ["-headless"]}}
+        args = json.loads(os.environ.get("CHROME_ARGS") or '["--headless=new"]')
+        args += ["--window-size=1280,800", "--hide-scrollbars", DESKTOP_POINTER]
+        options = {"args": args}
+        if os.environ.get("CHROME"):
+            options["binary"] = os.environ["CHROME"]
+        capabilities = {"browserName": "chrome", "goog:chromeOptions": options}
         self.session = call("POST", "/session", {"capabilities": {"alwaysMatch": capabilities}})[
             "sessionId"
         ]
+        # Chrome's own install prompt would put its banner in the shots.
+        call(
+            "POST",
+            self.path("/goog/cdp/execute"),
+            {
+                "cmd": "Page.addScriptToEvaluateOnNewDocument",
+                "params": {
+                    "source": "addEventListener('beforeinstallprompt',"
+                    " (e) => { if (e.isTrusted) e.stopImmediatePropagation(); }, true)"
+                },
+            },
+        )
 
     def path(self, suffix):
         return "/session/%s%s" % (self.session, suffix)
@@ -96,20 +121,16 @@ class Browser:
         sys.exit("timed out waiting for %s; the page shows:\n%s" % (what, self.text()))
 
     def size(self, width, height):
-        """Shows the page at `width`×`height`: Firefox windows are at least
-        500 px wide, so a narrower page is a 500 px window zoomed in (needs
-        geckodriver --allow-system-access)."""
-        zoom = max(1.0, 500 / width)
+        """Shows the page in a `width`×`height` viewport, which the shots
+        then are, by Chrome's device emulation."""
         call(
             "POST",
-            self.path("/window/rect"),
-            {"width": max(width, 500), "height": round(height * zoom) + CHROME},
+            self.path("/goog/cdp/execute"),
+            {
+                "cmd": "Emulation.setDeviceMetricsOverride",
+                "params": {"width": width, "height": height, "deviceScaleFactor": 0, "mobile": False},
+            },
         )
-        call("POST", self.path("/moz/context"), {"context": "chrome"})
-        try:
-            self.script("gBrowser.selectedBrowser.fullZoom = arguments[0]", zoom)
-        finally:
-            call("POST", self.path("/moz/context"), {"context": "content"})
 
     def theme(self, name):
         # A script click: on a phone an open sheet covers the header.
@@ -339,7 +360,7 @@ def long_press(selector):
         "actions": [
             {"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": 0},
             {"type": "pointerDown", "button": 0},
-            {"type": "pause", "duration": 800},
+            {"type": "pause", "duration": 1200},
             {"type": "pointerUp", "button": 0},
         ],
     }]})

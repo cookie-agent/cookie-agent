@@ -74,6 +74,30 @@ script builds workspace rustdoc and runs MkDocs in strict mode;
 `./scripts/build-docs.sh --no-rustdoc` skips rustdoc when only the prose
 changed.
 
+## Web client and browser suites
+
+`scripts/build-web.sh` builds the web client's bundle with Trunk 0.21.14
+into `crates/web_assets/bundle/`, which the next `cookie` build embeds.
+`scripts/build-web.sh --fast` builds a larger, unoptimized bundle in
+seconds once warm, for local browser runs only.
+
+The browser suites drive headless Google Chrome or Chromium through
+chromedriver. `scripts/web-e2e/chrome.sh` finds the browser (`CHROME`
+overrides) and a chromedriver of its version (`CHROMEDRIVER` overrides),
+downloading one from Chrome for Testing into `~/.cache/cookie-agent` when
+none is on `PATH`. A snap's browser sees a private `/tmp`, where the suites
+keep their files, so prefer a packaged one.
+
+```sh
+scripts/test-wasm-client.sh             # the protocol client in the browser
+scripts/test-web-page.sh                # every scenario against a real daemon
+scripts/test-web-page.sh projects       # one scenario and those it builds on
+```
+
+`scripts/test-web-page.sh` runs its groups of scenarios side by side, each
+with its own daemons and browser; `SCREENSHOT_DIR` keeps a screenshot of
+each step.
+
 ## Windows targets
 
 CI builds and tests both `x86_64-pc-windows-msvc` and

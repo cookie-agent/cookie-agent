@@ -62,7 +62,7 @@ The local tier is:
   `crates/client_state`, or `crates/web` changed;
 - `check-schema-additive.sh` and `scripts/test-wasm-client.sh` only when
   `crates/protocol` changed;
-- `scripts/build-web.sh` and `scripts/test-web-page.sh` only when
+- `scripts/build-web.sh --fast` and `scripts/test-web-page.sh` only when
   `crates/web`, `crates/web_assets`, or `scripts/web-e2e` changed;
 - `./scripts/build-docs.sh` only when `docs/` or `mkdocs.yml` changed, with
   `--no-rustdoc` unless a crate changed too, and the tests that keep `docs/site/clients/cli.md` and the tools, protocol,
@@ -105,23 +105,32 @@ cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
 ```
 
 Check the browser side for `wasm32-unknown-unknown` and build the web client
-bundle (`scripts/build-web.sh` needs trunk 0.21.14):
+bundle (`scripts/build-web.sh` needs trunk 0.21.14). `scripts/build-web.sh
+--fast` builds it in seconds once warm, larger and unoptimized, for local
+browser runs; CI and releases build the real one:
 
 ```sh
 cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol --features websocket -p cookie_agent_client_state -p cookie_agent_web --all-targets -- -D warnings
 scripts/build-web.sh
 ```
 
-Run the headless-Firefox suites after changing the protocol client, the
-web client, or what the daemon serves to browsers. They need Firefox,
-geckodriver (on `PATH`, or `GECKODRIVER`), and, for the first,
-`wasm-bindgen-test-runner` of the `wasm-bindgen` version in `Cargo.lock`;
-CI runs both in its `web` job:
+Run the headless-Chrome suites after changing the protocol client, the
+web client, or what the daemon serves to browsers. They need Google Chrome
+or Chromium (`CHROME` overrides; a snap's private `/tmp` breaks them), a
+matching chromedriver, which `scripts/web-e2e/chrome.sh` downloads from
+Chrome for Testing when none is on `PATH` (`CHROMEDRIVER` overrides), and,
+for the first, `wasm-bindgen-test-runner` of the `wasm-bindgen` version in
+`Cargo.lock`; CI runs both in its `web` job:
 
 ```sh
 scripts/test-wasm-client.sh
 scripts/test-web-page.sh
 ```
+
+`scripts/test-web-page.sh <scenario>...` runs only the scenarios named in
+`SCENARIOS` (`scripts/web-e2e/scenarios.py`) and those they build on;
+without names it runs them all, its groups side by side, each with its own
+daemons and browser.
 
 Check the protocol compatibility baselines, documentation, and dependency policy:
 

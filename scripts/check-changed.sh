@@ -9,8 +9,8 @@
 #   - Clippy for wasm32 when the protocol, client state, or web crates
 #     changed, and the protocol client's browser tests when the protocol did;
 #   - the protocol compatibility check when crates/protocol changed;
-#   - the web bundle and the browser scenarios when the web client or its
-#     scenarios changed;
+#   - the web bundle (the quick --fast one) and the browser scenarios when
+#     the web client or its scenarios changed;
 #   - the documentation build when docs/ or mkdocs.yml changed, without
 #     rustdoc unless a crate changed too.
 #
@@ -68,6 +68,7 @@ for path in "${changed[@]}"; do
         # release_integrity pins CI's gates.
         .github/workflows/ci.yml) test_only+=(cookie_agent_models) workflows=true ;;
         .github/workflows/*) workflows=true ;;
+        scripts/web-e2e/chrome.sh) web=true wasm_client=true ;;
         scripts/web-e2e/* | scripts/test-web-page.sh | scripts/build-web.sh) web=true ;;
         scripts/test-wasm-client.sh) wasm_client=true ;;
         scripts/update_models_dev.py) crate_dirs+=(models) ;;
@@ -137,7 +138,7 @@ fi
 $schema && step crates/protocol/scripts/check-schema-additive.sh
 $wasm_client && step scripts/test-wasm-client.sh
 if $web; then
-    step scripts/build-web.sh
+    step scripts/build-web.sh --fast
     step scripts/test-web-page.sh
 fi
 # Rustdoc only when a crate changed too: CI builds it with warnings denied.

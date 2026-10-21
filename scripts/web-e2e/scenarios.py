@@ -1,18 +1,29 @@
-"""Browser scenarios for the web client, driven over WebDriver (geckodriver).
+"""Browser scenarios for the web client, driven over WebDriver (chromedriver,
+headless Chrome).
 
 Run by scripts/test-web-page.sh:
 
     python3 -I scenarios.py <driver-port> <allowing-link> <other-link> \
-        <other-port> <allowing-home> <held-session> [screenshot-dir]
+        <other-port> <allowing-home> <held-session> <screenshot-dir|""> \
+        [scenario ...]
+
+runs the scenarios named (all, in order, when none is) in one browser, and
+
+    python3 -I scenarios.py --plan [scenario ...]
+
+prints the groups of scenarios to run for those named, one group per line,
+each in its own process against its own daemons (see SCENARIOS).
 
 The allowing daemon has a scripted model (mock-model.py) that takes images,
 an agent whose `bash` asks for approval, a `helper` subagent, and a `greet`
 skill. `held-session` is a session another process made before the daemon
 started, which the daemon lists but has not loaded. The other daemon is
-empty; its page is of another origin. `COOKIE` in the environment is the
-`cookie` binary, for the machine commands the badges need.
+empty; its page is of another origin. In the environment, `COOKIE` is the
+`cookie` binary, for the machine commands the badges need, and `CHROME`
+and `CHROME_ARGS` (a JSON list) the browser and its switches.
 """
 
+import atexit
 import base64
 import fcntl
 import functools
@@ -21,6 +32,7 @@ import json
 import os
 import random
 import re
+import shutil
 import signal
 import socket
 import struct
@@ -34,8 +46,12 @@ import urllib.parse
 import urllib.request
 import zlib
 
-DRIVER = "http://127.0.0.1:%s" % sys.argv[1]
-LINK, OTHER_LINK, OTHER_PORT, HOME, HELD_SESSION = sys.argv[2:7]
+PLAN = sys.argv[1:2] == ["--plan"]
+if not PLAN:
+    DRIVER = "http://127.0.0.1:%s" % sys.argv[1]
+    LINK, OTHER_LINK, OTHER_PORT, HOME, HELD_SESSION, SCREENSHOTS = sys.argv[2:8]
+else:
+    DRIVER = LINK = OTHER_LINK = OTHER_PORT = HOME = HELD_SESSION = SCREENSHOTS = ""
 # The other daemon's page, without a token.
 OTHER_PAGE = OTHER_LINK.split("#")[0]
 # A daemon URL nothing listens on (port 9, discard): the connection fails
@@ -47,7 +63,6 @@ REMEMBER_DAEMON = (
     "localStorage.setItem('cookie.daemon_url', arguments[0]);"
     "localStorage.setItem('cookie.token:' + arguments[0], arguments[1])"
 )
-SCREENSHOTS = sys.argv[7] if len(sys.argv) > 7 else ""
 COOKIE = os.environ.get("COOKIE", "cookie")
 # The sessions runtime_cards makes, by what they attach, for the badges.
 MADE = {}
@@ -67,25 +82,49 @@ def call(method, path, body=None):
         raise RuntimeError("%s %s: %s" % (method, path, error.read().decode())) from None
 
 
+# What a desktop with a mouse reports, which headless Chrome does not:
+# Tailwind's hover: styles apply only under (hover: hover).
+DESKTOP_POINTER = (
+    "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4"
+)
+
+
 class Browser:
-    def __init__(self, user_agent=None, prefs=None):
+    def __init__(self, user_agent=None, touch=False):
+        """A new headless Chrome; `touch` makes it a touch screen, whose
+        pointer is coarse and cannot hover."""
         for _ in range(100):
             try:
                 call("GET", "/status")
                 break
             except OSError:
                 time.sleep(0.1)
-        options = {"args": ["-headless"]}
-        options["prefs"] = dict(prefs or {})
+        args = json.loads(os.environ.get("CHROME_ARGS") or '["--headless=new"]')
+        args += ["--window-size=1280,900", "--hide-scrollbars", DESKTOP_POINTER]
         if user_agent:
-            options["prefs"]["general.useragent.override"] = user_agent
-        capabilities = {
-            "browserName": "firefox",
-            "moz:firefoxOptions": options,
-        }
+            args.append("--user-agent=" + user_agent)
+        options = {"args": args}
+        if os.environ.get("CHROME"):
+            options["binary"] = os.environ["CHROME"]
+        capabilities = {"browserName": "chrome", "goog:chromeOptions": options}
         self.session = call("POST", "/session", {"capabilities": {"alwaysMatch": capabilities}})[
             "sessionId"
         ]
+        if touch:
+            self.cdp("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
+        # Chrome's own install prompt comes when it pleases and moves the
+        # page; the install scenarios hand the page theirs (FAKE_PROMPT).
+        self.cdp(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": "addEventListener('beforeinstallprompt',"
+                " (e) => { if (e.isTrusted) e.stopImmediatePropagation(); }, true)"
+            },
+        )
+
+    def cdp(self, command, params):
+        """Runs a Chrome DevTools Protocol command in the page."""
+        return call("POST", self.path("/goog/cdp/execute"), {"cmd": command, "params": params})
 
     def path(self, suffix):
         return "/session/%s%s" % (self.session, suffix)
@@ -102,15 +141,23 @@ class Browser:
         ]
 
     def on_element(self, selector, action, body):
-        # The page can re-render the element between finding it and acting
-        # on it; the selector then names its replacement, so find it again.
-        for attempt in range(3):
+        """Clicks or types into `selector`, for up to 2 s while the page is
+        not ready for it: the page can re-render the element between
+        finding it and acting on it (the selector then names its
+        replacement), a sheet can still be sliding in, and Chrome scrolls a
+        target only just into view, where a sticky header can cover it."""
+        for attempt in range(10):
             try:
                 return call("POST", self.path("/element/%s/%s" % (self.find(selector), action)), body)
             except RuntimeError as error:
-                if "stale element reference" not in str(error) or attempt == 2:
+                retried = ("stale element reference", "element not interactable", "element click intercepted")
+                if attempt == 9 or not any(reason in str(error) for reason in retried):
                     raise
-                time.sleep(0.1)
+                if "element click intercepted" in str(error):
+                    self.script(
+                        "document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", selector
+                    )
+                time.sleep(0.2)
 
     def click(self, selector):
         self.on_element(selector, "click", {})
@@ -143,20 +190,17 @@ class Browser:
                 file.write(base64.b64decode(call("GET", self.path("/screenshot"))))
 
     def resize(self, width, height):
+        self.cdp("Emulation.clearDeviceMetricsOverride", {})
         call("POST", self.path("/window/rect"), {"width": width, "height": height})
 
     def phone(self, width, height):
-        """Shows the page as a `width`×`height` screen: Firefox windows are
-        at least 500 px wide, so a narrower one is the 500 px window zoomed
-        in (geckodriver runs with --allow-system-access for the zoom)."""
-        zoom = max(1.0, 500 / width)
-        chrome = 86  # what the headless window keeps above the page
-        self.resize(max(width, 500), round(height * zoom) + chrome)
-        call("POST", self.path("/moz/context"), {"context": "chrome"})
-        try:
-            self.script("gBrowser.selectedBrowser.fullZoom = arguments[0]", zoom)
-        finally:
-            call("POST", self.path("/moz/context"), {"context": "content"})
+        """Shows the page in a `width`×`height` viewport, as on a phone, by
+        Chrome's device emulation (resize ends it). It stays a desktop
+        browser's page, as the layout does not ask what the device is."""
+        self.cdp(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": width, "height": height, "deviceScaleFactor": 0, "mobile": False},
+        )
         size = self.script("return [innerWidth, innerHeight]")
         assert abs(size[0] - width) <= 3, "the page is %s px wide, not %s" % (size[0], width)
 
@@ -742,13 +786,8 @@ def session_depth(browser):
     browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
     # Attach an image; one too large is offered downscaled.
-    # Under the checkout's target directory, or WEB_E2E_UPLOADS: a sandboxed
-    # Firefox (a snap) may not see the system's temporary directory, nor a
-    # checkout under it.
-    uploads = os.environ.get("WEB_E2E_UPLOADS") or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "web-e2e"
-    )
-    os.makedirs(uploads, exist_ok=True)
+    uploads = tempfile.mkdtemp(prefix="cookie-web-e2e-")
+    atexit.register(shutil.rmtree, uploads, True)
     small = png(os.path.join(uploads, "small.png"), 64, 48)
     browser.type("#attach-input", small)
     browser.wait("the small chip", lambda: "small.png" in browser.text("#draft-files"))
@@ -948,7 +987,7 @@ def touch_message_menu():
     """On a touch screen the ⋯ is gone: a long press on the bubble opens
     the message's menu."""
     # A coarse pointer that cannot hover: a phone's.
-    phone = Browser(prefs={"ui.primaryPointerCapabilities": 1, "ui.allPointerCapabilities": 1})
+    phone = Browser(touch=True)
     try:
         phone.go(LINK)
         phone.wait("the connection", lambda: phone.text("#connected") != "")
@@ -1304,9 +1343,9 @@ def views_2026(browser):
     browser.click("#machines-add")
     browser.wait("the add panel", lambda: count(browser, "#add-runtime") == 1)
     # A click and then keys, as a person types: the field keeps the focus
-    # after the mouse button comes up. (A release once cleared the page's
-    # selection, which in Chromium also takes a focused field's caret;
-    # Firefox keeps it, so this only guards the focus here.)
+    # and its caret after the mouse button comes up. (A release once cleared
+    # the page's selection, which in Chrome also takes a focused field's
+    # caret, so the keys typed nothing.)
     browser.click("#ssh-id")
     keys = [step for key in "e2essh" for step in ({"type": "keyDown", "value": key}, {"type": "keyUp", "value": key})]
     perform(browser, [{"type": "key", "id": "keyboard", "actions": keys}])
@@ -1416,9 +1455,10 @@ def click_row(browser, selector):
     }])
 
 
-def long_press(browser, selector, hold=800, drag=0):
+def long_press(browser, selector, hold=1200, drag=0):
     """A finger held on `selector` for `hold` ms, moved `drag` px down
-    first (a scroll)."""
+    first (a scroll). Chrome takes a touch held under a second for a tap,
+    whose click lands on what the press opened."""
     origin = {ELEMENT: browser.find(selector)}
     steps = [
         {"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": 0},
@@ -2277,6 +2317,29 @@ SCRIPTED = [
 ]
 
 
+# Whether the page has settled: no finite animation runs and nothing in the
+# DOM changed for 300 ms (the first call starts watching).
+SETTLED = """
+if (window.__lastChange === undefined) {
+    window.__lastChange = performance.now();
+    new MutationObserver(() => { window.__lastChange = performance.now(); })
+        .observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+}
+const moving = document.getAnimations().some((a) =>
+    a.playState === 'running' && a.effect && a.effect.getComputedTiming().iterations !== Infinity);
+return !moving && performance.now() - window.__lastChange >= 300;
+"""
+
+
+def settle(browser, timeout=5):
+    """Waits at least 0.3 s, then until the page has settled (SETTLED), for
+    at most `timeout` s."""
+    time.sleep(0.3)
+    deadline = time.time() + timeout
+    while not browser.script(SETTLED) and time.time() < deadline:
+        time.sleep(0.1)
+
+
 def phone_audit():
     """Every view, sheet, editor, and the drawer at phone sizes: no
     sideways scroll and touch targets of at least 44 px. Returns what falls
@@ -2300,7 +2363,7 @@ def phone_audit():
             else:
                 click_row(phone, latest)
             phone.wait("the transcript", lambda: phone.text("#transcript") != "")
-            time.sleep(1)
+            settle(phone)
             views = [("transcript", None)] + SHEETS
             views += [("commands", "menu"), ("drawer", "drawer"), ("subagents", "subagents")] + SCRIPTED
             for view, command in views:
@@ -2312,18 +2375,18 @@ def phone_audit():
                 elif command == "subagents":
                     # The drawer with the open session's tree expanded.
                     phone.click("main [data-sidebar-toggle]")
-                    time.sleep(0.6)
+                    settle(phone)
                     phone.script(
                         "const row = document.querySelector('#drawer [data-session][aria-current=true]');"
                         "if (row && row.getAttribute('aria-expanded') !== 'true') row.click()"
                     )
                 elif isinstance(command, list):
                     for selector in command:
-                        time.sleep(0.6)
+                        settle(phone)
                         phone.script("document.querySelector(arguments[0]).click()", selector)
                 elif command:
                     send(phone, command)
-                time.sleep(1.2)
+                settle(phone)
                 overflow = phone.script(OVERFLOW)
                 small = phone.script(SMALL_TARGETS)
                 if view == "transcript" and not bubble_aligned(phone):
@@ -2527,16 +2590,17 @@ def fits(browser, what):
 
 
 def install_prompt():
-    """Chromium's prompt, which Firefox does not have, handed to the page by
-    a script: Settings offers Install app, which opens it once; a dismissed
-    prompt leaves the browser's menu, and an install hides the action."""
+    """Chromium's prompt, handed to the page by a script (Browser keeps
+    Chrome's own from the page): Settings offers Install app, which opens
+    it once; a dismissed prompt leaves the browser's menu, and an install
+    hides the action."""
     browser = Browser()
     try:
         browser.resize(1280, 900)
         browser.go(LINK)
         browser.wait("the connection", lambda: browser.text("#connected") != "")
         browser_section(browser)
-        # Firefox hands the page no prompt: its menu.
+        # No prompt yet: the browser's menu.
         assert offer(browser) == "browser-menu", offer(browser)
         assert browser.script(FAKE_PROMPT, "dismissed"), "the mini-infobar was not prevented"
         browser.wait("the install action", lambda: offer(browser) == "prompt")
@@ -2558,7 +2622,7 @@ def install_prompt():
 
 def install_on_phones():
     """The install offer on a phone, in both themes: Chromium's prompt (from
-    a script) and iOS's steps (Firefox posing as Safari on an iPhone), in
+    a script) and iOS's steps (Chrome posing as Safari on an iPhone), in
     the banner, Settings › This browser, and the connect screen."""
     for platform, agent in (("android", None), ("ios", IPHONE)):
         phone = Browser(user_agent=agent)
@@ -2985,140 +3049,210 @@ def projects_phone():
         phone.close()
 
 
-def main():
-    browser = Browser()
+def connect(browser):
+    """Opens the page from the link `cookie web` prints, as a desktop."""
+    browser.resize(1280, 900)
+    browser.go(LINK)
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    assert browser.script("return location.hash") == "", "the token stayed in the address bar"
+
+
+def basics(browser):
+    """The fresh page, the manifest and the service worker, then a first
+    session: streamed markdown, a tool call that asks for approval, and a
+    slow run steered, queued behind, and cancelled."""
+    print("connected:", browser.text("#connected"))
+    composer_clear(browser, "desktop")
+    browser.shot("fresh-connect")
+    print("the fresh page's composer keeps its text clear of its buttons")
+    assert browser.script(
+        "return document.querySelector('link[rel=manifest]').getAttribute('href')"
+    ) == "manifest.webmanifest"
+    home_screen()
+    service_worker(browser)
+
+    # A new session from the first message; streamed markdown.
+    send(browser, "show me markdown")
+    browser.wait("the markdown", lambda: "A heading" in browser.text("#transcript"))
+    browser.wait(
+        "the highlighted code",
+        lambda: browser.script(
+            "return document.querySelector('#transcript code.language-rust[data-highlighted]') !== null"
+        ),
+    )
+    assert browser.script("return document.querySelector('#transcript h1') !== null")
+    assert browser.script("return document.querySelector('#transcript strong') !== null")
+    print("streamed markdown rendered and highlighted")
+    browser.shot("markdown")
+
+    # A tool call that asks for approval.
+    send(browser, "use the tool")
+    browser.wait("the approval", lambda: browser.text("#approvals-badge") != "")
+    browser.click("#approvals-badge")
+    browser.wait("the approval sheet", lambda: "bash" in browser.text("#sheet").lower() or "printf" in browser.text("#sheet"))
+    browser.shot("approval")
+    browser.click("#sheet [data-decision=approve_once]")
+    browser.wait("the tool's answer", lambda: "The tool ran." in browser.text("#transcript"))
+    if "hello from the tool" not in browser.text("#transcript"):
+        browser.click("#transcript [data-action=toggle-tool]")
+    browser.wait("the tool output", lambda: "hello from the tool" in browser.text("#transcript"))
+    print("approved the tool; its terminal output shows")
+
+    # Steer, queue, and cancel a slow run.
+    browser.script(
+        "const sheet = document.querySelector('#sheet'); if (sheet) sheet.querySelector('button').click()"
+    )
+    send(browser, "go slow")
+    browser.wait("the slow run", lambda: "word3" in browser.text("#transcript"))
+    send(browser, "steer this way")
+    browser.wait(
+        "the steered message",
+        lambda: "steer this way" in browser.text("#queue") or "steer this way" in browser.text("#transcript"),
+    )
+    print("steered the running run")
+    send(browser, "queued one", ALT + ENTER + NULL)
+    browser.wait("the queued message", lambda: "queued one" in browser.text("#queue"))
+    browser.shot("queue")
+    print("queued behind the run")
+    browser.type("#composer", ESCAPE)
+    browser.wait(
+        "the cancelled run",
+        lambda: "working" not in browser.text("#status-bar")
+        and browser.script("return document.querySelector('#composer').value").find("queued one") >= 0,
+        timeout=40,
+    )
+    print("cancelled the run; the queued message came back to the composer")
+    browser.shot("cancelled")
+    clear_composer(browser)
+
+
+def narrow(browser):
+    """A phone-sized window: no sideways scroll, the sessions in a drawer."""
+    browser.resize(375, 800)
+    time.sleep(0.5)
+    overflow = browser.script(
+        "return document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+    assert overflow <= 0, "the page scrolls sideways by %s px" % overflow
+    browser.click("main [data-sidebar-toggle]")
+    browser.wait("the drawer", lambda: browser.text("#drawer") != "")
+    browser.shot("narrow-sessions")
+    browser.script("document.querySelector('[data-drawer-backdrop]').click()")
+    browser.wait("the closed drawer", lambda: count(browser, "#drawer") == 0)
+    browser.shot("narrow")
+    print("the narrow layout fits and opens the sessions in a drawer")
+
+
+def foreign_origin(browser):
+    """The other daemon's page, of a foreign origin, connects to this
+    daemon: the token is the guard. A connection that fails before its
+    handshake says what to check."""
+    browser.resize(1280, 900)
+    page, fragment = LINK.split("#")
+    token = urllib.parse.parse_qs(fragment)["token"][0]
+    browser.go(OTHER_PAGE)
+    browser.script(REMEMBER_DAEMON, "ws" + page[len("http"):] + "ws", token)
+    browser.go(OTHER_PAGE)
+    browser.wait("the connection from a foreign origin", lambda: browser.text("#connected") != "")
+    print("a page of a foreign origin connects with the token")
+    browser.script(REMEMBER_DAEMON, UNREACHABLE, token)
+    browser.go(OTHER_PAGE)
+    browser.wait("the refusal hint", lambda: "Check the daemon URL" in browser.text())
+    print("a connection refused before its handshake points at the URL and the daemon")
+    browser.shot("refused")
+    # Back to this daemon's page for whatever runs next.
+    connect(browser)
+
+
+def audit():
+    problems = phone_audit()
+    for problem in problems:
+        print("phone:", problem)
+    assert not problems or os.environ.get("PHONE_AUDIT_REPORT_ONLY"), "the phone layout falls short"
+    print("every view fits the phone sizes with touch-sized targets")
+
+
+# Every scenario, in the order a group runs them: (name, function, group,
+# needs). The scenarios of a group run in one process against one set of
+# daemons (scripts/test-web-page.sh), in this order, and those that take
+# `browser` share one desktop browser; groups share nothing, so they run
+# side by side. `needs` names the scenarios of its group whose state a
+# scenario builds on, which run first when it is picked alone. The phone
+# audit stays last in its group, after every scenario that fills the
+# daemon it looks through.
+SCENARIOS = [
+    ("basics", basics, "chat", []),
+    ("composer", composer, "chat", []),
+    ("tool_rows", tool_rows, "chat", []),
+    ("pinned_rows", pinned_rows, "chat", ["tool_rows"]),
+    ("message_menu", message_menu, "chat", ["basics"]),
+    ("session_depth", session_depth, "depth", []),
+    ("management", management, "chat", []),
+    ("views", views_2026, "chat", []),
+    ("suspended_tab", suspended_tab, "chat", ["basics"]),
+    ("foreign_session", foreign_session, "chat", []),
+    ("desktop_layout", desktop_layout, "chat", ["basics"]),
+    ("runtime_cards", runtime_cards, "chat", []),
+    ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
+    ("renaming", renaming, "chat", ["basics"]),
+    ("deleting", deleting, "chat", []),
+    ("projects", projects, "chat", ["basics", "composer"]),
+    ("narrow", narrow, "chat", []),
+    ("foreign_origin", foreign_origin, "chat", []),
+    ("phone_layout", phone_layout, "chat", []),
+    ("touch_message_menu", touch_message_menu, "chat", []),
+    ("projects_phone", projects_phone, "chat", []),
+    ("phone_audit", audit, "chat", []),
+    ("install_prompt", install_prompt, "install", []),
+    ("install_on_phones", install_on_phones, "install", []),
+    # It stops the other daemon.
+    ("daemon_change", daemon_change, "install", []),
+]
+
+
+def plan(names):
+    """The groups to run for scenarios `names` (all when empty), each the
+    list of its scenarios in suite order with what they need."""
+    known = {name: (group, needs) for name, _, group, needs in SCENARIOS}
+    unknown = [name for name in names if name not in known]
+    if unknown:
+        sys.exit("unknown scenarios: %s (known: %s)" % (" ".join(unknown), " ".join(known)))
+    chosen = set(names or known)
+    pending = list(chosen)
+    while pending:
+        for need in known[pending.pop()][1]:
+            if need not in chosen:
+                chosen.add(need)
+                pending.append(need)
+    groups = {}
+    for name, _, group, _ in SCENARIOS:
+        if name in chosen:
+            groups.setdefault(group, []).append(name)
+    return list(groups.values())
+
+
+def run(names):
+    functions = {name: function for name, function, _, _ in SCENARIOS}
+    browser = None
     try:
-        browser.resize(1280, 900)
-        browser.go(LINK)
-        browser.wait("the connection", lambda: browser.text("#connected") != "")
-        assert browser.script("return location.hash") == "", "the token stayed in the address bar"
-        print("connected:", browser.text("#connected"))
-        composer_clear(browser, "desktop")
-        browser.shot("fresh-connect")
-        print("the fresh page's composer keeps its text clear of its buttons")
-        assert browser.script(
-            "return document.querySelector('link[rel=manifest]').getAttribute('href')"
-        ) == "manifest.webmanifest"
-        home_screen()
-        service_worker(browser)
-
-        # A new session from the first message; streamed markdown.
-        send(browser, "show me markdown")
-        browser.wait("the markdown", lambda: "A heading" in browser.text("#transcript"))
-        browser.wait(
-            "the highlighted code",
-            lambda: browser.script(
-                "return document.querySelector('#transcript code.language-rust[data-highlighted]') !== null"
-            ),
-        )
-        assert browser.script("return document.querySelector('#transcript h1') !== null")
-        assert browser.script("return document.querySelector('#transcript strong') !== null")
-        print("streamed markdown rendered and highlighted")
-        browser.shot("markdown")
-
-        # A tool call that asks for approval.
-        send(browser, "use the tool")
-        browser.wait("the approval", lambda: browser.text("#approvals-badge") != "")
-        browser.click("#approvals-badge")
-        browser.wait("the approval sheet", lambda: "bash" in browser.text("#sheet").lower() or "printf" in browser.text("#sheet"))
-        browser.shot("approval")
-        browser.click("#sheet [data-decision=approve_once]")
-        browser.wait("the tool's answer", lambda: "The tool ran." in browser.text("#transcript"))
-        if "hello from the tool" not in browser.text("#transcript"):
-            browser.click("#transcript [data-action=toggle-tool]")
-        browser.wait("the tool output", lambda: "hello from the tool" in browser.text("#transcript"))
-        print("approved the tool; its terminal output shows")
-
-        # Steer, queue, and cancel a slow run.
-        browser.script(
-            "const sheet = document.querySelector('#sheet'); if (sheet) sheet.querySelector('button').click()"
-        )
-        send(browser, "go slow")
-        browser.wait("the slow run", lambda: "word3" in browser.text("#transcript"))
-        send(browser, "steer this way")
-        browser.wait(
-            "the steered message",
-            lambda: "steer this way" in browser.text("#queue") or "steer this way" in browser.text("#transcript"),
-        )
-        print("steered the running run")
-        send(browser, "queued one", ALT + ENTER + NULL)
-        browser.wait("the queued message", lambda: "queued one" in browser.text("#queue"))
-        browser.shot("queue")
-        print("queued behind the run")
-        browser.type("#composer", ESCAPE)
-        browser.wait(
-            "the cancelled run",
-            lambda: "working" not in browser.text("#status-bar")
-            and browser.script("return document.querySelector('#composer').value").find("queued one") >= 0,
-            timeout=40,
-        )
-        print("cancelled the run; the queued message came back to the composer")
-        browser.shot("cancelled")
-        clear_composer(browser)
-
-        composer(browser)
-        tool_rows(browser)
-        pinned_rows(browser)
-        message_menu(browser)
-        session_depth(browser)
-        management(browser)
-        views_2026(browser)
-        suspended_tab(browser)
-        foreign_session(browser)
-
-        desktop_layout(browser)
-        runtime_cards(browser)
-        session_badges(browser)
-        renaming(browser)
-        deleting(browser)
-        projects(browser)
-
-        # A phone-sized window: no sideways scroll, the sessions in a drawer.
-        browser.resize(375, 800)
-        time.sleep(0.5)
-        overflow = browser.script(
-            "return document.documentElement.scrollWidth - document.documentElement.clientWidth"
-        )
-        assert overflow <= 0, "the page scrolls sideways by %s px" % overflow
-        browser.click("main [data-sidebar-toggle]")
-        browser.wait("the drawer", lambda: browser.text("#drawer") != "")
-        browser.shot("narrow-sessions")
-        browser.script("document.querySelector('[data-drawer-backdrop]').click()")
-        browser.wait("the closed drawer", lambda: count(browser, "#drawer") == 0)
-        browser.shot("narrow")
-        print("the narrow layout fits and opens the sessions in a drawer")
-
-        # The other daemon's page, of a foreign origin, connects to this
-        # daemon: the token is the guard.
-        browser.resize(1280, 900)
-        page, fragment = LINK.split("#")
-        token = urllib.parse.parse_qs(fragment)["token"][0]
-        browser.go(OTHER_PAGE)
-        browser.script(REMEMBER_DAEMON, "ws" + page[len("http"):] + "ws", token)
-        browser.go(OTHER_PAGE)
-        browser.wait("the connection from a foreign origin", lambda: browser.text("#connected") != "")
-        print("a page of a foreign origin connects with the token")
-        # A connection that fails before its handshake says what to check.
-        browser.script(REMEMBER_DAEMON, UNREACHABLE, token)
-        browser.go(OTHER_PAGE)
-        browser.wait("the refusal hint", lambda: "Check the daemon URL" in browser.text())
-        print("a connection refused before its handshake points at the URL and the daemon")
-        browser.shot("refused")
+        for name in names:
+            started = time.time()
+            function = functions[name]
+            if function.__code__.co_argcount:
+                if browser is None:
+                    browser = Browser()
+                    connect(browser)
+                function(browser)
+            else:
+                function()
+            print("scenario %s passed in %.0f s" % (name, time.time() - started), flush=True)
     finally:
-        browser.close()
+        if browser is not None:
+            browser.close()
 
 
-main()
-# geckodriver runs one browser at a time: the phone sizes get theirs last.
-phone_layout()
-touch_message_menu()
-projects_phone()
-problems = phone_audit()
-for problem in problems:
-    print("phone:", problem)
-assert not problems or os.environ.get("PHONE_AUDIT_REPORT_ONLY"), "the phone layout falls short"
-print("every view fits the phone sizes with touch-sized targets")
-install_prompt()
-install_on_phones()
-# Last: it stops the other daemon.
-daemon_change()
+if PLAN:
+    for group in plan(sys.argv[2:]):
+        print(" ".join(group))
+else:
+    run(sys.argv[8:] or [name for name, _, _, _ in SCENARIOS])

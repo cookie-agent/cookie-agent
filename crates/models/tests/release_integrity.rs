@@ -470,10 +470,6 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "release_binary_contains_no_secret_material -- --ignored --exact",
         "cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_client_state",
         "tool: trunk@0.21.14,wasm-bindgen@0.2.126",
-        "browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795",
-        "firefox-version: \"157.0.1\"",
-        "geckodriver-v0.37.1-linux64.tar.gz",
-        "e815130ea95983e162ae91843b48d3a3ce991735635fce83a647afde21e09f7e  geckodriver.tar.gz",
         "scripts/test-wasm-client.sh",
         "scripts/test-web-page.sh",
         "tool: cargo-nextest@0.9.145",
@@ -501,6 +497,8 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
             " --all-targets",
         ]
         .concat(),
+        // CI builds and tests the page it ships, not the quick local one.
+        ["build-web.sh --", "fast"].concat(),
     ] {
         assert!(
             !workflow.contains(&forbidden),

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Runs the protocol client's browser tests (crates/protocol/tests/browser.rs)
-# in headless Firefox against a real `cookie daemon` in a scratch home. The
+# in headless Chrome against a real `cookie daemon` in a scratch home. The
 # test page's origin is foreign to the daemon, which takes it like any other.
 #
 # Needs the wasm32-unknown-unknown target, `wasm-bindgen-test-runner` of the
 # wasm-bindgen version in Cargo.lock (`cargo install wasm-bindgen-cli
-# --version <it> --locked`), Firefox, and geckodriver (on PATH, or set
-# GECKODRIVER).
+# --version <it> --locked`), and Chrome or Chromium with a matching
+# chromedriver (scripts/web-e2e/chrome.sh finds or fetches them; CHROME and
+# CHROMEDRIVER override).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,14 +22,12 @@ if [[ "$runner_version" != *" $wasm_bindgen"* ]]; then
     echo "wasm-bindgen-test-runner is $runner_version; Cargo.lock has wasm-bindgen $wasm_bindgen" >&2
     exit 1
 fi
-export GECKODRIVER="${GECKODRIVER:-$(command -v geckodriver || true)}"
-if [[ -z "$GECKODRIVER" ]]; then
-    echo "geckodriver is missing; install it or set GECKODRIVER" >&2
-    exit 1
-fi
+# shellcheck source=web-e2e/chrome.sh
+source scripts/web-e2e/chrome.sh
+find_chrome
 
 cargo build --locked -p cookie_agent
-cookie="$root/target/debug/cookie"
+cookie="${CARGO_TARGET_DIR:-$root/target}/debug/cookie"
 
 scratch="$(mktemp -d)"
 pids=()
@@ -97,6 +96,14 @@ EOF
 
 start_daemon "$home"
 ready="$ready_json"
+
+# wasm-bindgen-test-runner drives the driver its environment names first
+# (CHROMEDRIVER, from find_chrome), the browser webdriver.json names, and
+# adds the headless switches itself.
+unset GECKODRIVER SAFARIDRIVER
+python3 -I -c 'import json, sys; json.dump({"goog:chromeOptions": {"binary": sys.argv[1]}}, sys.stdout)' \
+    "$CHROME" >"$scratch/webdriver.json"
+export WASM_BINDGEN_TEST_WEBDRIVER_JSON="$scratch/webdriver.json"
 
 COOKIE_WASM_TEST_URL="$(json_field "$ready" url)" \
 COOKIE_WASM_TEST_TOKEN="$(json_field "$ready" token)" \
