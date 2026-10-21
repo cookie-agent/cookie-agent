@@ -196,11 +196,11 @@ impl MarkdownDocument {
             let source = self.source.clone();
             let parsed = self.parse(&source);
             self.reference_definitions = self.effective_definitions(&parsed.definitions);
-            self.apply_parsed(parsed);
+            self.apply_parsed(&source, parsed);
             return;
         }
         self.reference_definitions = effective_definitions;
-        self.apply_parsed(parsed);
+        self.apply_parsed(&tail, parsed);
     }
 
     fn parse(&mut self, source: &str) -> ParsedDocument {
@@ -222,8 +222,8 @@ impl MarkdownDocument {
         definitions
     }
 
-    fn apply_parsed(&mut self, parsed: ParsedDocument) {
-        let split = parsed.blocks.last().map_or(0, |block| block.range.start);
+    fn apply_parsed(&mut self, source: &str, parsed: ParsedDocument) {
+        let split = settled_split(source, &parsed.blocks);
         self.stable_reference_dependencies.extend(
             parsed
                 .blocks
@@ -269,6 +269,28 @@ impl MarkdownDocument {
     pub const fn is_finished(&self) -> bool {
         self.finished
     }
+}
+
+/// Where the settled blocks end in `source`: before the last block, and
+/// before every block that runs straight into the one after it. A block
+/// settles only once a blank line separates it from what follows, because
+/// until then the next line may still belong to it: a table's first body
+/// row, half streamed as `|`, parses as a paragraph of its own and would
+/// otherwise settle the table without its rows.
+fn settled_split(source: &str, blocks: &[ParsedBlock]) -> usize {
+    let Some(last) = blocks.last() else {
+        return 0;
+    };
+    let mut split = last.range.start;
+    for block in blocks.iter().rev().skip(1) {
+        let between = &source[block.range.end..split];
+        let separated = between.contains('\n') || source[block.range.clone()].ends_with("\n\n");
+        if separated {
+            break;
+        }
+        split = block.range.start;
+    }
+    split
 }
 
 fn markdown_options() -> Options {
@@ -454,6 +476,38 @@ mod tests {
         );
         assert!(!document.is_finished());
         assert!(document.clone().finished().is_finished());
+    }
+
+    /// Streaming a table one character or one small chunk at a time ends
+    /// with the blocks a whole parse gives: no row settles as a paragraph
+    /// of its own while the table is still open.
+    #[test]
+    fn streamed_tables_keep_every_row() {
+        let samples = [
+            "Here is a table:\n\n| Name | Value |\n|------|-------|\n| a | 1 |\n| b | 2 |\n\nDone.\n",
+            "Here is a table:\n| Name | Value |\n|------|-------|\n| a | 1 |\n| b | 2 |\n\nDone.\n",
+            "Intro\n\nName | Value\n--- | ---\na | 1\nb | 2\n\nDone.\n",
+            "| Name | Value |\n| :--- | ---: |\n| `x` | **1** |\n| - item | 2 |\n",
+            "1. Step\n\n| A | B |\n|---|---|\n| 1 | 2 |\n",
+            "# Heading\n| A | B |\n| - | - |\n| 1 | 2 |\n- after\n",
+        ];
+        let blocks = |document: &MarkdownDocument| {
+            document
+                .blocks()
+                .map(|block| (block.kind(), block.source().to_string()))
+                .collect::<Vec<_>>()
+        };
+        for sample in samples {
+            let whole = blocks(&MarkdownDocument::new(sample.to_owned()));
+            for chunk in [1, 2, 3, 7] {
+                let mut streamed = MarkdownDocument::default();
+                let characters = sample.chars().collect::<Vec<_>>();
+                for piece in characters.chunks(chunk) {
+                    streamed.append(&piece.iter().collect::<String>());
+                }
+                assert_eq!(blocks(&streamed), whole, "{sample:?} in chunks of {chunk}");
+            }
+        }
     }
 
     #[test]
