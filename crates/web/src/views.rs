@@ -63,8 +63,9 @@ const BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center 
 const PRIMARY: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md bg-espresso px-3 text-sm font-bold text-cream hover:bg-caramel active:bg-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-espresso dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand dark:disabled:hover:bg-latte";
 /// A button that is only an icon: it has an `aria-label` and a `title`.
 const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted hover:text-espresso active:bg-crust disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
-/// A picker showing its current value: the agent and the model.
-const CHIP: &str = "inline-flex min-h-11 min-w-0 max-w-[16rem] items-center gap-2 rounded-full border border-crust bg-cream px-3 text-sm hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
+/// A bottom bar control showing its current value: the agent, the model,
+/// and the permission mode share it. 32 px to see, 44 px to hit.
+const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
 /// A status bar indicator that does something when clicked.
 const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
 /// A row of a list: two lines, the second a note.
@@ -1312,7 +1313,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             <button
                 type="button"
                 id="permission-mode"
-                class=STATUS_BUTTON
+                class=CHIP.replace("min-w-0", "min-w-11 justify-center")
                 aria-label=move || format!("Permission mode: {}", permission_mode_label(mode()))
                 title=move || {
                     let mode = mode();
@@ -1324,8 +1325,10 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 }
                 on:click=move |_| workspace.cycle_permission_mode()
             >
-                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-base text-caramel dark:text-maple" />
-                <span class="font-mono compact:sr-only">{move || permission_mode_label(mode())}</span>
+                <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-caramel dark:text-maple" />
+                // A toggle, not a picker: no chevron. A phone shows the
+                // shield alone and says the new mode in a toast.
+                <span class="min-w-0 truncate compact:sr-only">{move || permission_mode_label(mode())}</span>
             </button>
             <Show when=move || { approvals.get() > 0 }>
                 <button

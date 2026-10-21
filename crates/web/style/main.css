@@ -84,6 +84,21 @@ html.dark {
   }
 }
 
+/* A control smaller than a finger (a chip, a composer button) still
+   takes a 44 px touch: an invisible ::before reaches past its edges where
+   it is smaller than that. */
+.hit-area {
+  position: relative;
+}
+.hit-area::before {
+  content: "";
+  position: absolute;
+  top: min(0px, calc((100% - 2.75rem) / 2));
+  bottom: min(0px, calc((100% - 2.75rem) / 2));
+  left: min(0px, calc((100% - 2.75rem) / 2));
+  right: min(0px, calc((100% - 2.75rem) / 2));
+}
+
 /* A session row's long press offers to delete it, not the browser's
    callout. */
 .no-callout {
