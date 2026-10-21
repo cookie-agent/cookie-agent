@@ -3,7 +3,7 @@
 use super::*;
 
 pub(crate) async fn scripted_model_server() -> (String, tokio::task::JoinHandle<String>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -139,7 +139,7 @@ pub(crate) async fn native_compaction_server(
 
 pub(crate) async fn scripted_zero_resource_tool_server()
 -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -172,7 +172,7 @@ pub(crate) async fn scripted_zero_resource_tool_server()
 }
 
 pub(crate) async fn scripted_delegation_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1518,7 +1518,7 @@ pub(crate) async fn scripted_queued_resume_server() -> (
 pub(crate) async fn scripted_approval_server(
     internal_output: &str,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1657,7 +1657,7 @@ pub(crate) async fn scripted_server_with_status_and_delay(
 pub(crate) async fn scripted_repeated_write_server(
     tool_calls: usize,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1699,7 +1699,7 @@ pub(crate) async fn scripted_repeated_write_server(
 pub(crate) async fn scripted_two_evaluated_writes_server(
     internal_output: &str,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1730,21 +1730,9 @@ pub(crate) async fn scripted_two_evaluated_writes_server(
         let mut requests = Vec::new();
         for body in bodies {
             let (mut socket, _) = listener.accept().await.expect("persistent approval accept");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 8192];
-            loop {
-                let read = socket
-                    .read(&mut buffer)
-                    .await
-                    .expect("persistent approval read");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            // The whole request: closing the socket with its body unread resets
+            // the connection on Windows, and the client sees a failed request.
+            let request = read_scripted_http_request(&mut socket).await;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
