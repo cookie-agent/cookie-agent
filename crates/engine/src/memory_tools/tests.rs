@@ -127,24 +127,25 @@ fn urls_revisions_and_memories_are_checked_before_the_call_runs() {
         )
         .contains("would not be a valid memory")
     );
-    // Deleting a user category or an agent's file is the user's to do.
-    for url in ["user://profile", "agent://default"] {
+    // Every layer's delete is accepted; a user category's or an agent
+    // file's clears its body when it runs.
+    for url in [
+        "user://profile",
+        "agent://default",
+        "machine://labpc/x",
+        "project://web/build",
+    ] {
         assert!(
-            error(
-                "memory_delete",
-                json!({"url": url, "revision": "0123456789abcdef"})
-            )
-            .contains("can only be deleted by the user"),
+            matches!(
+                check(
+                    "memory_delete",
+                    json!({"url": url, "revision": "0123456789abcdef"})
+                ),
+                Ok(MemoryCall::Delete { .. })
+            ),
             "{url}"
         );
     }
-    assert!(matches!(
-        check(
-            "memory_delete",
-            json!({"url": "machine://labpc/x", "revision": "0123456789abcdef"})
-        ),
-        Ok(MemoryCall::Delete { .. })
-    ));
 }
 
 #[test]

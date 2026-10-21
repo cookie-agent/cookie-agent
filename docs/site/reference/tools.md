@@ -1623,7 +1623,7 @@ memory_delete(revision: string, url: string)
 Description sent to the model:
 
 ```text
-Delete one machine:// or project:// memory at the revision memory_read returned. user:// and agent:// memories cannot be deleted. A project disappears with its last memory.
+Delete one memory at the revision memory_read returned. machine:// and project:// memories are deleted; a project disappears with its last memory. user:// and agent:// memories cannot be deleted: for those, the call clears the body and keeps the file with its description and keywords, so the category or agent file stays.
 ```
 
 Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.

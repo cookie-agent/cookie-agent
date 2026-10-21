@@ -23,8 +23,9 @@ use super::{
 };
 
 /// Who asks for a change. Model tools may not delete `user://` or
-/// `agent://` files nor create `user://` files; the user, through a
-/// client, may (sections 8 and 10).
+/// `agent://` files, whose bodies they clear instead
+/// ([`MemoryRoot::clear_body`]), nor create `user://` files; the user,
+/// through a client, may (sections 8 and 10).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Origin {
     Model,
@@ -86,6 +87,15 @@ pub(crate) struct MemoryRead {
     pub(crate) entry: MemoryEntry,
     /// The file's text; invalid UTF-8 is replaced.
     pub(crate) text: String,
+}
+
+/// What [`MemoryRoot::clear_body`] did, with the file's revision after it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ClearedBody {
+    /// The body was removed; the frontmatter stays as it was.
+    Cleared(MemoryRevision),
+    /// The body was already empty, so nothing was written.
+    AlreadyEmpty(MemoryRevision),
 }
 
 /// Something in the memory folder that is not a memory file of the layout:
@@ -550,9 +560,50 @@ impl MemoryRoot {
         Ok(revision)
     }
 
+    /// Removes the body of a valid memory at revision `expected`, keeping
+    /// the file and its frontmatter byte for byte. This is what a model
+    /// tool's delete of a `user://` or `agent://` memory does
+    /// (section 16.6). A body that is already empty is left alone, and
+    /// nothing is written or signalled.
+    pub(crate) fn clear_body(
+        &self,
+        url: &MemoryUrl,
+        expected: &MemoryRevision,
+        max_file_bytes: usize,
+    ) -> Result<ClearedBody, StoreError> {
+        let lock = self.lock()?;
+        let path = self.file_path(url);
+        let (bytes, _) =
+            read_bytes(&path)?.ok_or_else(|| StoreError::NotFound { url: url.clone() })?;
+        let current = MemoryRevision::of(&bytes);
+        if current != *expected {
+            return Err(StoreError::RevisionMismatch {
+                url: url.clone(),
+                current,
+            });
+        }
+        let invalid = |reason| StoreError::Invalid {
+            url: url.clone(),
+            reason,
+        };
+        MemoryDocument::parse(&bytes, max_file_bytes).map_err(invalid)?;
+        let frontmatter = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(MemoryDocument::frontmatter_len)
+            .ok_or_else(|| invalid(InvalidMemory("the frontmatter was not found".to_owned())))?;
+        if frontmatter == bytes.len() {
+            return Ok(ClearedBody::AlreadyEmpty(current));
+        }
+        let revision = write_file(&path, &bytes[..frontmatter])?;
+        drop(lock);
+        self.changed();
+        Ok(ClearedBody::Cleared(revision))
+    }
+
     /// Deletes a memory at revision `expected`. Deleting a `user://` or
-    /// `agent://` file is refused for [`Origin::Model`]. Deleting the last
-    /// memory of a project removes the project's folder.
+    /// `agent://` file is refused for [`Origin::Model`], whose deletes of
+    /// those clear the body instead ([`Self::clear_body`]). Deleting the
+    /// last memory of a project removes the project's folder.
     pub(crate) fn delete(
         &self,
         url: &MemoryUrl,
@@ -562,7 +613,7 @@ impl MemoryRoot {
         if origin == Origin::Model && matches!(url.layer(), MemoryLayer::User | MemoryLayer::Agent)
         {
             return Err(StoreError::Refused(format!(
-                "{url} can only be deleted by the user; only machine:// and project:// memories can be deleted here"
+                "{url} can only be deleted by the user; a model tool clears its body instead"
             )));
         }
         let lock = self.lock()?;

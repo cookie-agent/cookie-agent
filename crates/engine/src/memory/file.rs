@@ -158,6 +158,32 @@ impl MemoryDocument {
         Self::new(frontmatter.description, frontmatter.keywords, body)
     }
 
+    /// The length in bytes of a memory file's frontmatter as written: its
+    /// opening `---` line, the YAML, and its closing `---` line with that
+    /// line's break, if any. What follows is the body. `None` when `text`
+    /// does not start with frontmatter. Line breaks may be `\n` or `\r\n`,
+    /// as [`Self::parse`] reads them, so for a valid file the rest is the
+    /// body it parses.
+    pub(crate) fn frontmatter_len(text: &str) -> Option<usize> {
+        let fence = |line: &str| {
+            let line = line.strip_suffix('\n').unwrap_or(line);
+            line.strip_suffix('\r').unwrap_or(line) == FENCE
+        };
+        let mut lines = text.split_inclusive('\n');
+        let opening = lines.next()?;
+        if !(opening.ends_with('\n') && fence(opening)) {
+            return None;
+        }
+        let mut length = opening.len();
+        for line in lines {
+            length += line.len();
+            if fence(line) {
+                return Some(length);
+            }
+        }
+        None
+    }
+
     /// The file text of this memory: `description`, `keywords` when there
     /// are any, and the body as it is.
     pub(crate) fn render(&self) -> String {
@@ -407,6 +433,38 @@ mod tests {
         );
         let bare = MemoryDocument::new("x", vec![], "body").unwrap().render();
         assert_eq!(bare, "---\ndescription: x\n---\nbody");
+    }
+
+    #[test]
+    fn the_frontmatter_as_written_ends_where_the_parsed_body_starts() {
+        for (text, frontmatter) in [
+            (
+                "---\ndescription: x\nkeywords: [a]\n---\nbody\n---\nmore\n",
+                "---\ndescription: x\nkeywords: [a]\n---\n",
+            ),
+            (
+                "---\r\n# a comment\r\ndescription: \"x\"\r\n---\r\nbody\r\n",
+                "---\r\n# a comment\r\ndescription: \"x\"\r\n---\r\n",
+            ),
+            (
+                "---\ndescription: x\nkeywords:\n  - a\n---\n",
+                "---\ndescription: x\nkeywords:\n  - a\n---\n",
+            ),
+            ("---\ndescription: x\n---", "---\ndescription: x\n---"),
+            ("---\ndescription: x\n---\n\n", "---\ndescription: x\n---\n"),
+        ] {
+            let length = MemoryDocument::frontmatter_len(text).expect(text);
+            assert_eq!(&text[..length], frontmatter, "{text:?}");
+            let whole = parse(text).unwrap();
+            let kept = parse(frontmatter).unwrap();
+            assert_eq!(whole.body(), text[length..].replace("\r\n", "\n"));
+            assert_eq!(kept.description(), whole.description());
+            assert_eq!(kept.keywords(), whole.keywords());
+            assert_eq!(kept.body(), "");
+        }
+        for text in ["", "description: x\n", "---", "---\ndescription: x\n"] {
+            assert_eq!(MemoryDocument::frontmatter_len(text), None, "{text:?}");
+        }
     }
 
     #[test]

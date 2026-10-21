@@ -595,11 +595,277 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
             .is_err()
     );
     assert!(failure("create-user").contains("only the user adds user categories"));
-    assert!(failure("delete-user").contains("can only be deleted by the user"));
+    // A user category's delete clears its body, at the revision it read.
+    assert!(failure("delete-user").contains("user://profile changed since it was read"));
     assert!(failure("create-ghost").contains("names no agent"));
     assert!(failure("stale").contains("does not exist"));
     // Results reach the model.
     assert!(requests[2].contains(&created));
+    fixture.engine.shutdown().await;
+}
+
+/// `user://` and `agent://` memories cannot be deleted by a model: a
+/// delete clears the body, keeps the file and its frontmatter as written,
+/// and says so; `machine://` and `project://` deletes remove the file.
+#[tokio::test]
+async fn deleting_user_and_agent_memories_clears_their_bodies() {
+    let (endpoint, responses, captured) = scripted_channel_server(8).await;
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+    let root = fixture.engine.memory_root().clone();
+    let feedback_frontmatter = "---\n# kept as written\ndescription: \"Feedback: corrections\"\nkeywords:\n  - feedback\n---\n";
+    let agent_frontmatter = "---\ndescription: Review lessons\nkeywords: [review]\n---\n";
+    let mut revisions = HashMap::new();
+    for (target, text) in [
+        (
+            "user://feedback",
+            format!("{feedback_frontmatter}- prefer short answers\n"),
+        ),
+        (
+            "agent://primary",
+            format!("{agent_frontmatter}- check twice\n"),
+        ),
+        (
+            "machine://labpc/gpu",
+            "---\ndescription: GPU notes\n---\n- two cards\n".to_owned(),
+        ),
+        (
+            "project://web/build",
+            "---\ndescription: Build notes\n---\n- cargo\n".to_owned(),
+        ),
+    ] {
+        let current = root
+            .read(&url(target), LIMIT)
+            .ok()
+            .map(|read| read.entry.revision);
+        let revision = root
+            .write(
+                &url(target),
+                &text,
+                current.as_ref(),
+                Origin::User,
+                |_| true,
+                LIMIT,
+            )
+            .unwrap();
+        revisions.insert(target, revision.to_string());
+    }
+    let feedback_cleared = MemoryRevision::of(feedback_frontmatter.as_bytes()).to_string();
+    let agent_cleared = MemoryRevision::of(agent_frontmatter.as_bytes()).to_string();
+    let calls = [
+        (
+            "start-clearing",
+            "clear-user",
+            serde_json::json!({"url": "user://feedback", "revision": revisions["user://feedback"]}),
+        ),
+        (
+            "clear-user",
+            "clear-agent",
+            serde_json::json!({"url": "agent://primary", "revision": revisions["agent://primary"]}),
+        ),
+        (
+            "clear-agent",
+            "again-user",
+            serde_json::json!({"url": "user://feedback", "revision": feedback_cleared}),
+        ),
+        (
+            "again-user",
+            "stale-user",
+            serde_json::json!({"url": "user://feedback", "revision": revisions["user://feedback"]}),
+        ),
+        (
+            "stale-user",
+            "delete-machine",
+            serde_json::json!({"url": "machine://labpc/gpu", "revision": revisions["machine://labpc/gpu"]}),
+        ),
+        (
+            "delete-machine",
+            "delete-project",
+            serde_json::json!({"url": "project://web/build", "revision": revisions["project://web/build"]}),
+        ),
+    ];
+    for (matcher, id, arguments) in calls {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                matcher,
+                scripted_tool_body(id, "memory_delete", arguments),
+            ))
+            .unwrap();
+    }
+    for matcher in ["delete-project", "fresh"] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                matcher,
+                scripted_text_body("done"),
+            ))
+            .unwrap();
+    }
+    let mut changes = fixture.engine.subscribe_memory_changes();
+    changes.mark_unchanged();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    run(&fixture, session, &selection, "go", "start-clearing").await;
+    let ended = terminations(&fixture, session);
+    let output = |id: &str| {
+        let termination = &ended[id];
+        assert_eq!(
+            termination.outcome,
+            ToolTerminationOutcome::Completed,
+            "{termination:?}"
+        );
+        termination.result.as_ref().unwrap().output.clone()
+    };
+    assert_eq!(
+        output("clear-user"),
+        format!(
+            "user://feedback cannot be deleted, so its content was cleared; its description and keywords stay. New revision: {feedback_cleared}."
+        )
+    );
+    assert_eq!(
+        output("clear-agent"),
+        format!(
+            "agent://primary cannot be deleted, so its content was cleared; its description and keywords stay. New revision: {agent_cleared}."
+        )
+    );
+    assert_eq!(
+        output("again-user"),
+        format!(
+            "user://feedback cannot be deleted, and its content is already empty, so nothing changed. Its revision is still {feedback_cleared}."
+        )
+    );
+    let stale = &ended["stale-user"];
+    assert_eq!(stale.outcome, ToolTerminationOutcome::Failed);
+    assert_eq!(
+        stale.error.as_ref().unwrap().message.to_string(),
+        format!(
+            "user://feedback changed since it was read; its current revision is {feedback_cleared}"
+        )
+    );
+    assert_eq!(output("delete-machine"), "Deleted machine://labpc/gpu.");
+    assert_eq!(output("delete-project"), "Deleted project://web/build.");
+    assert!(changes.has_changed().unwrap());
+
+    // The files: user and agent ones stay with their frontmatter byte for
+    // byte; the machine and project ones are gone.
+    let path = |target: &str| root.path().join(url(target).relative_path());
+    assert_eq!(
+        std::fs::read_to_string(path("user://feedback")).unwrap(),
+        feedback_frontmatter
+    );
+    assert_eq!(
+        std::fs::read_to_string(path("agent://primary")).unwrap(),
+        agent_frontmatter
+    );
+    assert!(!path("machine://labpc/gpu").exists());
+    assert!(!path("project://web/build").exists());
+
+    // Listings show the cleared memories with their descriptions.
+    let listed = fixture
+        .engine
+        .list_memory(cookie_agent_protocol::MemoryListParams::default())
+        .await
+        .unwrap();
+    let info = |target: &str| {
+        listed
+            .memories
+            .iter()
+            .find(|memory| memory.url == target)
+            .unwrap_or_else(|| panic!("{target} is listed"))
+            .clone()
+    };
+    let feedback = info("user://feedback");
+    assert_eq!(
+        feedback.description.as_deref(),
+        Some("Feedback: corrections")
+    );
+    assert_eq!(feedback.keywords, ["feedback"]);
+    assert_eq!(feedback.revision, feedback_cleared);
+    assert_eq!(feedback.invalid, None);
+    let agent_file = info("agent://primary");
+    assert_eq!(agent_file.description.as_deref(), Some("Review lessons"));
+    assert_eq!(agent_file.revision, agent_cleared);
+
+    // A new session's snapshot shows them too.
+    let fresh = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    run(&fixture, fresh, &selection, "fresh", "fresh").await;
+    let requests = captured.await.unwrap();
+    // The results reach the model.
+    assert!(requests[1].contains(&feedback_cleared));
+    let taken = snapshots(&fixture, fresh);
+    let snapshot = taken.last().unwrap();
+    let category = snapshot
+        .user
+        .iter()
+        .find(|category| category.category == "feedback")
+        .unwrap();
+    assert_eq!(category.description, "Feedback: corrections");
+    assert_eq!(category.body, "");
+    let own = snapshot.agent.as_ref().unwrap().memory.as_ref().unwrap();
+    assert_eq!(own.description, "Review lessons");
+    assert_eq!(own.body, "");
+    fixture.engine.shutdown().await;
+}
+
+/// Clearing is a `memory_write` like any other: a rule that denies the
+/// URL refuses it and the file stays as it was.
+#[tokio::test]
+async fn clearing_a_body_follows_the_memory_write_rules() {
+    let (endpoint, responses, _captured) = scripted_channel_server(2).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        &agent("{ memory: allow, memory_write: { \"user://*\": deny, \"*\": allow } }"),
+    );
+    user_write(&fixture, "user://feedback", "Feedback", "- keep me\n");
+    let path = fixture
+        .engine
+        .memory_root()
+        .path()
+        .join(url("user://feedback").relative_path());
+    let before = std::fs::read(&path).unwrap();
+    let revision = MemoryRevision::of(&before).to_string();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "start-denied",
+            scripted_tool_body(
+                "denied",
+                "memory_delete",
+                serde_json::json!({"url": "user://feedback", "revision": revision}),
+            ),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "denied",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    run(&fixture, session, &selection, "go", "start-denied").await;
+    let ended = terminations(&fixture, session);
+    let denied = &ended["denied"];
+    assert_eq!(denied.outcome, ToolTerminationOutcome::Failed, "{denied:?}");
+    assert!(
+        denied
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+            .to_string()
+            .contains("tool_denied"),
+        "{denied:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
     fixture.engine.shutdown().await;
 }
 

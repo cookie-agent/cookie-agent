@@ -3,6 +3,9 @@
 //! `memory_write`, `memory_edit`, and `memory_delete` under `memory_write`,
 //! each with the memory URL as resource. `memory_search` is checked per
 //! result instead (section 9.3), so it declares no permission.
+//! `memory_delete` deletes `machine://` and `project://` memories; a
+//! `user://` or `agent://` memory cannot be deleted by a model, so the call
+//! clears its body and keeps its frontmatter (section 16.6).
 //!
 //! The provider is built with the `global` runtime, before the engine
 //! exists, and holds the engine through a handle bound once the engine is
@@ -31,7 +34,7 @@ use crate::{
     memory::{
         file::{MemoryDocument, MemoryRevision},
         search::SearchHit,
-        store::{Origin, StoreError},
+        store::{ClearedBody, Origin, StoreError},
         url::{MemoryLayer, MemoryUrl},
     },
     runtime::Inner,
@@ -118,7 +121,7 @@ const SEARCH_DESCRIPTION: &str = "Search memory: notes saved in earlier sessions
 const READ_DESCRIPTION: &str = "Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns its description, keywords, body, and revision; send the revision to memory_write, memory_edit, or memory_delete to change it.";
 const WRITE_DESCRIPTION: &str = "Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. Writing the first memory of a project (project://<project>/<name>) creates the project. user:// categories cannot be created, only changed; agent://<agent> may be created only for an existing agent. Give each memory a one-line description and the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.";
 const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. Never save secrets.";
-const DELETE_DESCRIPTION: &str = "Delete one machine:// or project:// memory at the revision memory_read returned. user:// and agent:// memories cannot be deleted. A project disappears with its last memory.";
+const DELETE_DESCRIPTION: &str = "Delete one memory at the revision memory_read returned. machine:// and project:// memories are deleted; a project disappears with its last memory. user:// and agent:// memories cannot be deleted: for those, the call clears the body and keeps the file with its description and keywords, so the category or agent file stays.";
 
 fn spec(
     name: &str,
@@ -340,14 +343,8 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
         }
         DELETE => {
             let args: DeleteArgs = parse_args(DELETE, arguments)?;
-            let url = parse_url(&args.url)?;
-            if matches!(url.layer(), MemoryLayer::User | MemoryLayer::Agent) {
-                return Err(ToolError::execution(format!(
-                    "{url} can only be deleted by the user; only machine:// and project:// memories can be deleted here"
-                )));
-            }
             Ok(MemoryCall::Delete {
-                url,
+                url: parse_url(&args.url)?,
                 revision: parse_revision(&args.revision)?,
             })
         }
@@ -712,6 +709,23 @@ impl PreparedExecutor for MemoryExecutor {
                 ))
             }
             MemoryCall::Delete { url, revision } => {
+                if matches!(url.layer(), MemoryLayer::User | MemoryLayer::Agent) {
+                    let target = url.clone();
+                    let cleared =
+                        blocking(move || root.clear_body(&target, &revision, max_file_bytes))
+                            .await?
+                            .map_err(store_error)?;
+                    let (title, output, revision) = cleared_result(&url, cleared);
+                    return Ok(result(
+                        title,
+                        output,
+                        key_value(vec![
+                            ("url", url.to_string()),
+                            ("revision", revision.clone()),
+                        ]),
+                        serde_json::json!({ "url": url.to_string(), "revision": revision }),
+                    ));
+                }
                 let target = url.clone();
                 blocking(move || root.delete(&target, &revision, Origin::Model))
                     .await?
@@ -724,6 +738,28 @@ impl PreparedExecutor for MemoryExecutor {
                 ))
             }
         }
+    }
+}
+
+/// The title and text of a delete that cleared a `user://` or `agent://`
+/// memory's body instead, and the revision after it. The text says plainly
+/// that the memory still exists, so the model does not take it for gone.
+fn cleared_result(url: &MemoryUrl, cleared: ClearedBody) -> (String, String, String) {
+    match cleared {
+        ClearedBody::Cleared(revision) => (
+            format!("Cleared memory {url}"),
+            format!(
+                "{url} cannot be deleted, so its content was cleared; its description and keywords stay. New revision: {revision}."
+            ),
+            revision.to_string(),
+        ),
+        ClearedBody::AlreadyEmpty(revision) => (
+            format!("Memory {url} already empty"),
+            format!(
+                "{url} cannot be deleted, and its content is already empty, so nothing changed. Its revision is still {revision}."
+            ),
+            revision.to_string(),
+        ),
     }
 }
 

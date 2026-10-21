@@ -252,6 +252,147 @@ fn deleting_user_and_agent_files_is_for_the_user_only() {
     }
 }
 
+/// A model's delete of a user category or an agent file clears its body:
+/// the file stays with its frontmatter exactly as written, and listings,
+/// the snapshot, and search still show it with its description.
+#[test]
+fn clearing_a_body_keeps_the_file_and_its_frontmatter_byte_for_byte() {
+    use crate::memory::{
+        search::Visibility,
+        snapshot::{SnapshotLimits, SnapshotRequest},
+    };
+
+    let (data, memory) = root();
+    let feedback_frontmatter = "---\r\n# Written by hand\r\ndescription: \"Feedback: corrections\"\r\nkeywords:\r\n  - feedback\r\n  - zebra\r\n---\r\n";
+    let agent_frontmatter = "---\ndescription: How reviews go\nkeywords: [review, zebra]\n---\n";
+    let mut changes = memory.subscribe();
+    for (target, frontmatter, body) in [
+        (
+            "user://feedback",
+            feedback_frontmatter,
+            "- prefer short answers\r\n",
+        ),
+        ("agent://reviewer", agent_frontmatter, "- zebra checklist\n"),
+    ] {
+        let target = url(target);
+        let current = memory
+            .read(&target, LIMIT)
+            .ok()
+            .map(|read| read.entry.revision);
+        let written = memory
+            .write(
+                &target,
+                &format!("{frontmatter}{body}"),
+                current.as_ref(),
+                Origin::User,
+                any_agent,
+                LIMIT,
+            )
+            .unwrap();
+        changes.mark_unchanged();
+
+        // A stale revision changes nothing.
+        let stale = MemoryRevision::of(b"something else");
+        assert!(matches!(
+            memory.clear_body(&target, &stale, LIMIT),
+            Err(StoreError::RevisionMismatch { current, .. }) if current == written
+        ));
+        assert!(!changes.has_changed().unwrap());
+
+        let cleared = memory.clear_body(&target, &written, LIMIT).unwrap();
+        let revision = MemoryRevision::of(frontmatter.as_bytes());
+        assert_eq!(cleared, ClearedBody::Cleared(revision.clone()), "{target}");
+        let path = data.path().join("memory").join(target.relative_path());
+        assert_eq!(fs::read(&path).unwrap(), frontmatter.as_bytes(), "{target}");
+        assert!(changes.has_changed().unwrap());
+        changes.mark_unchanged();
+
+        // An empty body is left alone.
+        assert_eq!(
+            memory.clear_body(&target, &revision, LIMIT).unwrap(),
+            ClearedBody::AlreadyEmpty(revision.clone())
+        );
+        assert_eq!(fs::read(&path).unwrap(), frontmatter.as_bytes());
+        assert!(!changes.has_changed().unwrap());
+    }
+
+    let listing = memory.list(&ListScope::All, LIMIT).unwrap();
+    let described = |target: &str| {
+        let entry = listing
+            .entries
+            .iter()
+            .find(|entry| entry.url.to_string() == target)
+            .unwrap_or_else(|| panic!("{target} is listed"));
+        let document = entry.document.as_ref().unwrap();
+        assert_eq!(document.body(), "");
+        document.description().to_owned()
+    };
+    assert_eq!(described("user://feedback"), "Feedback: corrections");
+    assert_eq!(described("agent://reviewer"), "How reviews go");
+
+    let snapshot = memory
+        .snapshot(&SnapshotRequest {
+            agent: AgentId::new("reviewer").unwrap(),
+            delegated: false,
+            writable: true,
+            machines: Vec::new(),
+            limits: SnapshotLimits {
+                max_file_bytes: LIMIT,
+                user_bytes: 16 * 1024,
+                index_bytes: 16 * 1024,
+            },
+        })
+        .unwrap();
+    let feedback = snapshot
+        .user
+        .iter()
+        .find(|category| category.category == "feedback")
+        .unwrap();
+    assert_eq!(feedback.description, "Feedback: corrections");
+    assert_eq!(feedback.keywords, ["feedback", "zebra"]);
+    assert_eq!(feedback.body, "");
+    let agent = snapshot.agent.as_ref().unwrap().memory.as_ref().unwrap();
+    assert_eq!(agent.description, "How reviews go");
+    assert_eq!(agent.body, "");
+    let text = crate::memory::render::snapshot_turn(&snapshot).unwrap();
+    assert!(text.contains("user://feedback"), "{text}");
+    assert!(text.contains("description=\"How reviews go\""), "{text}");
+
+    // Search still finds both by their keywords, with no body lines.
+    let hits = memory
+        .search("zebra", None, 10, LIMIT, |_| Visibility::Full)
+        .unwrap();
+    let found = hits
+        .iter()
+        .map(|hit| (hit.url.to_string(), hit.description.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found.contains(&("user://feedback".to_owned(), "Feedback: corrections")));
+    assert!(found.contains(&("agent://reviewer".to_owned(), "How reviews go")));
+    assert!(
+        hits.iter()
+            .all(|hit| hit.detail.as_ref().unwrap().lines.is_empty())
+    );
+}
+
+#[test]
+fn clearing_needs_an_existing_valid_memory() {
+    let (data, memory) = root();
+    let ghost = url("agent://ghost");
+    assert!(matches!(
+        memory.clear_body(&ghost, &MemoryRevision::of(b""), LIMIT),
+        Err(StoreError::NotFound { .. })
+    ));
+    let path = data.path().join("memory/user/broken.md");
+    fs::write(&path, "no frontmatter\n").unwrap();
+    let revision = MemoryRevision::of(b"no frontmatter\n");
+    assert!(matches!(
+        memory.clear_body(&url("user://broken"), &revision, LIMIT),
+        Err(StoreError::Invalid { .. })
+    ));
+    assert_eq!(fs::read(&path).unwrap(), b"no frontmatter\n");
+}
+
 #[test]
 fn a_delete_needs_the_current_revision() {
     let (_data, memory) = root();
