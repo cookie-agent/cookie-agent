@@ -90,6 +90,7 @@ impl Dragging {
     }
 
     fn reset(self) {
+        browser::set_pressing(false);
         self.stop_timer();
         self.gesture.update_value(Drag::cancel);
         self.pressed.set_value(None);
@@ -110,6 +111,7 @@ impl Dragging {
             {
                 DragStep::Nothing => {}
                 DragStep::Cancelled => {
+                    browser::set_pressing(false);
                     self.stop_timer();
                     self.pressed.set_value(None);
                 }
@@ -155,6 +157,11 @@ impl Dragging {
             }
         });
         let cancelled = window_event_listener(ev::pointercancel, move |_| self.reset());
+        let unselectable = StoredValue::new_local(browser::hold_selection(move || {
+            self.pressed
+                .try_with_value(Option::is_some)
+                .unwrap_or(false)
+        }));
         let hold = StoredValue::new_local(browser::hold_touch_scroll(move || {
             self.gesture
                 .try_with_value(Drag::holds_scroll)
@@ -167,6 +174,10 @@ impl Dragging {
             if let Some(hold) = hold.try_update_value(Option::take).flatten() {
                 hold.remove();
             }
+            if let Some(hold) = unselectable.try_update_value(Option::take).flatten() {
+                hold.remove();
+            }
+            browser::set_pressing(false);
         });
     }
 }
@@ -571,6 +582,7 @@ fn runtime_row(
             .update_value(|gesture| gesture.press(x, y, touch));
         dragging.pressed.set_value(Some(pressed.clone()));
         if touch {
+            browser::set_pressing(true);
             let id = pressed.id.clone();
             let timer = set_timeout_with_handle(
                 move || {

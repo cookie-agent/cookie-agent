@@ -344,6 +344,66 @@ impl TouchHold {
     }
 }
 
+/// Marks the page as pressed, or not: while it is, nothing on the page can
+/// be selected (`html.pressing` in the style sheet), and what a long press
+/// already selected is cleared. A phone otherwise selects the words under
+/// and around a finger held on a row, and extends that selection as the
+/// finger drags.
+pub fn set_pressing(pressing: bool) {
+    let Some(window) = window() else {
+        return;
+    };
+    if let Some(root) = window
+        .document()
+        .and_then(|document| document.document_element())
+    {
+        let classes = root.class_list();
+        let _ = if pressing {
+            classes.add_1("pressing")
+        } else {
+            classes.remove_1("pressing")
+        };
+    }
+    if let Ok(Some(selection)) = window.get_selection() {
+        let _ = selection.remove_all_ranges();
+    }
+}
+
+/// Refuses every text selection that starts while `holds`, until removed.
+pub fn hold_selection(holds: impl Fn() -> bool + 'static) -> Option<SelectionHold> {
+    let document = window()?.document()?;
+    let listener = Closure::<dyn Fn(web_sys::Event)>::new(move |event: web_sys::Event| {
+        if holds() {
+            event.prevent_default();
+        }
+    });
+    document
+        .add_event_listener_with_callback_and_bool(
+            "selectstart",
+            listener.as_ref().unchecked_ref(),
+            true,
+        )
+        .ok()?;
+    Some(SelectionHold { listener })
+}
+
+/// A listener [`hold_selection`] added.
+pub struct SelectionHold {
+    listener: Closure<dyn Fn(web_sys::Event)>,
+}
+
+impl SelectionHold {
+    pub fn remove(self) {
+        if let Some(document) = window().and_then(|window| window.document()) {
+            let _ = document.remove_event_listener_with_callback_and_bool(
+                "selectstart",
+                self.listener.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+    }
+}
+
 /// The `attribute` of the element `selector` matches that is at `x`, `y`
 /// in the viewport or holds what is: what a drag is over.
 pub fn attribute_at(x: f64, y: f64, selector: &str, attribute: &str) -> Option<String> {

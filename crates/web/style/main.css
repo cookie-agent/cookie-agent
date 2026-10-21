@@ -136,6 +136,15 @@ html.dark {
   -webkit-touch-callout: none;
 }
 
+/* While a finger holds or drags a row, nothing on the page is selectable:
+   a phone would otherwise select the text around the finger. */
+html.pressing,
+html.pressing * {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
 /* The landing site's palette, which is the TUI's (crates/tui/src/theme.rs). */
 @theme {
   --color-cream: #fbf4e6;

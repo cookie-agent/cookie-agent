@@ -1181,9 +1181,19 @@ def views_2026(browser):
     browser.click("#machine-apply")
     browser.wait("box on e2e-lab", lambda: under(browser, "e2e-lab", "box"))
     print("machines: Move to… took a runtime to a new machine")
+    # The page is unselectable while the finger is down (a phone would
+    # select the words around it), and selectable again once it lifts.
+    browser.script("""window.e2ePressed = false;
+        new MutationObserver(() => {
+          if (document.documentElement.classList.contains('pressing')) window.e2ePressed = true;
+        }).observe(document.documentElement, { attributes: true });""")
     drag(browser, '#page [data-runtime="box"]', '#page [data-machine-drop="%s"]' % machine, touch=True)
     browser.wait("box dragged back by a finger", lambda: under(browser, machine, "box"))
-    print("machines: a finger dragged a runtime after a long press")
+    assert browser.script("return window.e2ePressed"), "a held finger left the page selectable"
+    assert not browser.script("return document.documentElement.classList.contains('pressing')"), \
+        "the page stays unselectable after the finger lifted"
+    assert browser.script("return String(window.getSelection())") == "", "the drag selected text"
+    print("machines: a finger dragged a runtime after a long press, selecting no text")
     long_press(browser, '#page [data-runtime="box"]')
     browser.wait("Move to… after a long press", lambda: count(browser, '#page [data-move-picker="box"]') == 1)
     click_row_button(browser, '#page [data-move-picker="box"] div', "Cancel", "button:last-child")
