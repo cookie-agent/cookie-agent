@@ -3,7 +3,8 @@
 Status: **implemented** (2026-10-19); approved the same day. Decisions are
 listed in [section 1](#1-goal-and-scope) and the sections that follow; none
 are open ([section 15](#15-open-questions)). How each phase settled, with
-its deviations, is in [section 16](#16-implementation-notes). This spec
+its deviations, is in [section 16](#16-implementation-notes); later
+decisions are dated addenda there ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)). This spec
 builds on the [runtimes spec](runtimes.md) and the
 [runtime capabilities spec](runtime-capabilities.md), and adds the term
 *machine* to their vocabulary.
@@ -269,12 +270,14 @@ detaching a runtime does today.
 
 | Layer | About | Who creates files | Who deletes files |
 |---|---|---|---|
-| `user` | The user, in every task | The user only | The user only |
-| `agent` | One agent's way of doing its job: what the user wants from this role, lessons, checklists | The agent, by its first write to its own file, or the user | The user only |
+| `user` | The user, in every task | The user only | The user only; the agent's delete clears the body ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
+| `agent` | One agent's way of doing its job: what the user wants from this role, lessons, checklists | The agent, by its first write to its own file, or the user | The user only; the agent's delete clears the body ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
 | `machine` | One machine: OS quirks, toolchains, paths, hardware, rules such as "read-only unless asked" | The agent or the user | The agent or the user |
 | `project` | One body of work: conventions, decisions, gotchas, where things are | The agent or the user; writing the first memory creates the project | The agent or the user; the project disappears with its last memory |
 
 The agent may edit any existing `user` category but cannot add or remove one.
+When it deletes a `user` category or an `agent` file, the file stays with its
+frontmatter and only the body is cleared.
 
 An agent's file outlives the agent: when an agent document is removed or
 renamed, its memory stays on disk, and `memory.list` and `/memory` show the
@@ -624,7 +627,7 @@ fields fail).
 | `memory_read` | `url` | Frontmatter, body, and revision |
 | `memory_write` | `url`, `description`, `keywords`, `body`, `revision?` | Creates or replaces one file; returns the new revision. Without `revision` the file must not exist; with it, it must exist at that revision. Creating a `user://` file is refused; an `agent://` file may be created only for an agent ID in the registry. |
 | `memory_edit` | `url`, `old`, `new`, `revision` | Replaces the one occurrence of `old` in the body; fails when `old` occurs zero or several times |
-| `memory_delete` | `url`, `revision` | Deletes a `machine://` or `project://` file; refused for `user://` and `agent://` |
+| `memory_delete` | `url`, `revision` | Deletes a `machine://` or `project://` file. A `user://` or `agent://` file cannot be deleted: its body is cleared, its frontmatter kept as written, and the result says so with the new revision ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
 
 ### 8.1 `memory_search`
 
@@ -1110,8 +1113,10 @@ Deviations and readings of the spec:
   and session overlay for its URL. Matching body lines longer than 200
   characters are cut and end with `…`.
 - **Refusals before rules.** A delegated run's write to anything but its own
-  agent file, and a delete of a `user://` or `agent://` memory, are refused
-  while the call is prepared, so no approval is asked for a call that
+  agent file, and a delete of a `user://` or `agent://` memory (superseded
+  by [section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete):
+  such a delete now clears the body), are refused while the call is
+  prepared, so no approval is asked for a call that
   cannot succeed. Creating a `user://` file and creating an `agent://` file
   for an unknown agent are refused by the store when the call runs.
 - **Errors.** Tool failures reach the model as failed tool results with the
@@ -1227,3 +1232,45 @@ reference for `[memory]` ([Memory](../engine/memory.md)), the
 reference for `memory_loaded`, the [system prompt reference](../reference/system-prompt.md),
 and [Agents](../extend/agents.md) were checked against the code and needed no
 change beyond what is listed here. No deviations.
+
+### 16.6 Addendum 2026-10-21: agents clear what they cannot delete
+
+**Decided 2026-10-21.** A model's `memory_delete` of a `user://` or
+`agent://` memory is no longer refused. It supersedes the refusal of
+sections 4.1 and 8 and of the "Refusals before rules" note in
+[section 16.3](#163-phase-3-model-surface). `machine://` and `project://`
+deletes are unchanged: the file is removed, and a project goes with its
+last memory.
+
+- **What a clear does.** The body is removed; the frontmatter stays byte
+  for byte as it was (YAML comments, quoting, and line endings included),
+  and so does the file, so a `user://` category or an `agent://` file
+  keeps existing. An empty body is valid (section 4.3), so the cleared file
+  loads as a valid memory: listings show it with its description and
+  keywords, the snapshot includes it with an empty body (a user category
+  then renders in the `Empty:` line, an agent file as an empty element),
+  and search still matches its keywords, name, and description.
+- **Same rules as other writes.** The call is a `memory_write` on the
+  memory URL, so the permission rules and the delegated-write rule apply
+  as before; the revision must be current, and a stale one is refused with
+  the current revision. The clear runs under the memory lock, writes the
+  file through a temporary file renamed over it, signals `memory.changed`,
+  and returns the new revision. A file that is invalid is refused, as an
+  edit is; the agent can fix it with `memory_write` first.
+- **Results.** A clear answers ``<url> cannot be deleted, so its content
+  was cleared; its description and keywords stay. New revision: <revision>.``
+  A body that is already empty (no bytes after the closing `---` line) is
+  left alone, nothing is written or signalled, and the call answers
+  ``<url> cannot be deleted, and its content is already empty, so nothing
+  changed. Its revision is still <revision>.``
+- **Where it is.** `MemoryRoot::clear_body` in `memory/store.rs`, which
+  returns `ClearedBody::Cleared` or `AlreadyEmpty` with the revision, and
+  `MemoryDocument::frontmatter_len` in `memory/file.rs`, which finds where
+  the frontmatter ends in the file as written. The store's `delete` still
+  refuses `Origin::Model` for these layers; the tool calls `clear_body`
+  instead.
+- **Unchanged.** The client RPC `memory.delete` (`/memory`, the web page,
+  `cookie memory rm`) still deletes any file, `user://` and `agent://`
+  included, since it acts for the user. No protocol, schema, or history
+  format changed; only the `memory_delete` tool's description and results
+  did.

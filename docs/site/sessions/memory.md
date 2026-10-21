@@ -22,8 +22,8 @@ memory/
 
 | Layer | About | Created by | Deleted by |
 |---|---|---|---|
-| `user` | You, in every task: profile, preferences, feedback, references | You only (the agent may edit existing categories) | You only |
-| `agent` | One agent's way of doing its job, such as what you want from reviews | The agent, by its first write to its own file, or you | You only |
+| `user` | You, in every task: profile, preferences, feedback, references | You only (the agent may edit existing categories) | You only; the agent's delete clears the body |
+| `agent` | One agent's way of doing its job, such as what you want from reviews | The agent, by its first write to its own file, or you | You only; the agent's delete clears the body |
 | `machine` | One machine: OS quirks, toolchains, paths, rules such as "read-only unless asked" | The agent or you | The agent or you |
 | `project` | One body of work: conventions, decisions, gotchas | The agent or you; the first memory creates the project | The agent or you; the project goes with its last memory |
 
@@ -120,7 +120,7 @@ The `global` runtime offers five tools ([Tools](../reference/tools.md#memory_sea
 | `memory_read` | Reads one memory with its revision |
 | `memory_write` | Creates a memory, or replaces one at the revision it read |
 | `memory_edit` | Replaces one occurrence of a text in a memory's body |
-| `memory_delete` | Deletes a `machine://` or `project://` memory |
+| `memory_delete` | Deletes a `machine://` or `project://` memory. A `user://` or `agent://` memory cannot be deleted: its body is cleared, and the file stays with its description and keywords |
 
 ## Permissions
 
