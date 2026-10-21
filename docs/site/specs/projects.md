@@ -1,7 +1,7 @@
 # Projects
 
-Status: **approved** (2026-10-21); phases 1 and 2 implemented 2026-10-21
-([section 14](#14-implementation-notes)), phase 3 in progress. Builds on the
+Status: **implemented** (2026-10-21), in three phases
+([section 14](#14-implementation-notes)). Builds on the
 [memory spec](memory.md), the [runtimes spec](runtimes.md), and the
 [web client spec](web-client.md).
 
@@ -35,8 +35,8 @@ spec makes a project something the daemon knows and sessions belong to.
   then "No project". The workspace filter goes away.
 - Users can rename sessions from the TUI and the web client. The protocol
   already has `session.rename`; no client calls it yet.
-- Web session rows show where a session runs as machine and runtime badges
-  with stable colours ([section 9](#9-session-badges)).
+- Web session rows show where a session runs as machine badges with
+  stable colours ([section 9](#9-session-badges)).
 
 Out of scope: nesting projects, a session in several projects, sharing a
 project between daemons, and per-project permission rules.
@@ -253,28 +253,35 @@ New client requests (client protocol 1.8.0):
 
 ## 9. Session badges
 
-Web session rows replace the folder-and-paths line with badges. The
-`global` attachment is ignored for all of these rules:
+Web session rows replace the folder-and-paths line with badges. Badges show
+**machines**, never runtime IDs (changed 2026-10-21: an ID such as `local`
+says nothing a user needs). The `global` attachment is ignored for all of
+these rules:
 
 | Session's attachments | Badges |
 |---|---|
-| None besides `global` | One grey "no workspace" badge |
-| One | `[runtime]` badge, then the workspace as `~/…` |
-| Several, all on one machine | `[machine]` badge, then one `[runtime]` badge per attachment |
+| None besides `global` | No badge |
+| One | `[machine]` badge, then the workspace as `~/…` |
+| Several, all on one machine | `[machine]` badge, then the workspaces, comma-joined, truncating |
 | On more than one machine | One `[machine]` badge per machine, in attachment order |
 
 - The machine comes from `runtimes.list`, via the attachment's runtime's
-  `machine`. A runtime with no known machine counts as its own machine and
-  shows its runtime badge.
+  `machine`. A runtime with no known machine counts as its own machine:
+  its runtime ID shows in a machine badge.
 - **Colours are stable.** Each badge takes one of eight hues, chosen by a
-  hash of the machine name or runtime ID. Each hue has a light-theme pair
-  and a dark-theme pair that meet contrast. The same runtime is the same
-  colour everywhere: rows, cards, and the bottom bar.
+  hash of the machine name (or, for a runtime of no known machine, its
+  ID). Each hue has a light-theme pair and a dark-theme pair that meet
+  contrast. Colours mean machines everywhere: a runtime's dot on the
+  runtime cards and in the bottom bar takes its machine's hue.
 - **Machine badges** carry the machine's OS icon, as on the Machines view.
-  **Runtime badges** carry the runtime ID, with the capability only when the
-  runtime has several capabilities.
-- Badges truncate before the time does. The row's tooltip keeps the full
-  list with paths.
+- **A machine's name is never cut** (added 2026-10-21). When the line runs
+  out of room, the workspaces shrink first, down to `…`, and then leave
+  the line; when the machine badges alone still do not fit, the line shows as many whole machine
+  badges as fit, then a final `+N` badge whose tooltip names the rest. This
+  holds for session rows and project headers; the bottom bar names no
+  machine, only workspaces after their machines' dots.
+- Badges give way before the time does. The row's tooltip keeps the full
+  list, each attachment with its machine, runtime ID, and full path.
 
 ## 10. Clients
 
@@ -509,3 +516,71 @@ Decisions taken where the spec left room, and deviations:
   recorded and pinned, with the session created in a project. The recorder
   now writes the runtime's host name, the machine name derived from it, and
   its home directory as placeholders.
+
+### 14.2 Phase 3: the clients (2026-10-21)
+
+Landed: the web client's project sections, moving sessions by drag and
+with Move to project…, the project editor with its emoji picker, New
+session's project picker, and `project.delete` from the sidebar and the
+Memory view; the TUI's project in the bottom bar, its picker and
+`/project`, and the session picker's project filter. Session rename and
+badges landed beforehand (the `rename-badges` work), and the waiting clock
+on web rows with client protocol 1.9.0. No protocol change.
+
+Where it is: `crates/client_state/src/projects.rs` (sections, the picker's
+choices, the emoji check, defaults to and from attach requests, the default
+agent), `badges::project_badges`, `crates/web/src/views/projects.rs` and
+`crates/web/src/workspace/projects.rs`, `crates/web/src/emoji.rs` with the
+list `scripts/web-emoji.py` writes, and `crates/tui/src/ui/app/projects.rs`.
+
+Decisions taken where the spec left room, and deviations:
+
+- **Gating.** Everything shows from a daemon of client protocol 1.8 or
+  later (`projects::daemon_has_projects`). An older daemon keeps the web
+  client's workspace filter and the Memory view's per-memory delete, and
+  the TUI names no project.
+- **"No project"** has a `+` too, for a new session outside every project;
+  it has no pencil or trash. An open section with no sessions says so, and
+  every header, "No project" included, takes a dropped session.
+- **Session counts.** `projects.changed` announces changes to projects,
+  not to their sessions, so the web client reads `projects.list` again
+  when a session moves, is created in a project, or is removed, and when
+  memory changes: the delete's confirmation then counts what goes.
+- **Conflicts.** Reloading the editor after `project_changed` also
+  refreshes the list's revision; a delete refused with `project_changed`
+  reads the list again and asks for the delete once more.
+- **Defaults from the editor** keep every picked runtime, one not listed
+  now included, and each workspace as typed (`~/…`): the coding runtime
+  resolves it when a session attaches it. A project's defaults are sent
+  only when they changed, and `null` when they say nothing beyond the
+  daemon's usual defaults.
+- **Drag.** The session rows use the Machines view's gesture: a mouse
+  drags once it moves 4 px (only where there are headers to drop on), a
+  finger after a half-second press, which let go in place reveals the
+  row's Move, Rename, and Delete. A header's own long press shows its
+  pencil and trash. Over a hovered row, the three buttons cover the middle
+  of a 288 px sidebar row; the browser scenarios click rows by their title.
+- **Emoji picker.** 503 emoji in nine categories (Emoji 13.0 or older,
+  fully qualified, no skin tones, no zero-width joiner sequences, no
+  country flags), with their CLDR names from Unicode's `emoji-test.txt`.
+  The search matches every word of the query against the name, or the
+  emoji itself. The check is `unicode-segmentation` and
+  `unicode-properties`, as the daemon's; client_state now depends on them.
+- **New session's project picker** is a native `<select>`, which phones
+  show with their own picker; "New project…" opens the editor and picks the
+  project it creates.
+- **TUI.** The project leads the bottom bar, before the daemon's address.
+  `/project` and a click on the name open the same picker; "New project…"
+  asks for a name over it. `Ctrl+P` in the session picker also has a
+  button on its action row, which names the filter. A draft whose project
+  defaults name runtimes drops runtimes edited with `/runtime` and shows
+  the defaults' workspaces; the daemon attaches them at creation.
+- **Ordering.** `rows::order_sessions` counts a session that waits on a
+  producer (client protocol 1.9) as active, so it leads its section with
+  the running ones.
+- **Badges show machines** (section 9 as changed on 2026-10-21):
+  `badges::session_badges` and `project_badges` follow the new table, and
+  `badges::hue_key` gives the runtime cards' and the bottom bar's dots
+  their machine's hue. The web client fits each badge line after it draws
+  and whenever it changes size (a `ResizeObserver`), leaving out whole
+  machine badges for the `+N` from the end.
