@@ -47,6 +47,13 @@ html.dark {
   :where(button:not(:disabled), summary, select, a[href]) {
     cursor: pointer;
   }
+  /* Monospace text is literal: JetBrains Mono's ligatures would draw
+     `--` as a dash and `://` with a gap, which commands and paths must
+     not. The class outranks the preflight's `font: inherit` on form
+     fields, which would reset it. */
+  .font-mono, code, pre, kbd, samp {
+    font-variant-ligatures: none;
+  }
 }
 
 /* The rail's tooltips: an icon button's name beside it on hover or
