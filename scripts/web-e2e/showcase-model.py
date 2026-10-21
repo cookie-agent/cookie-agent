@@ -5,12 +5,15 @@ photographed: asked to fix `greet.py`, it edits the file, runs the check with
 `bash`, and answers in markdown. Asked to take its time, it streams a long
 answer slowly, so the page can be photographed while a run is going. Which step it plays follows from how many
 tool results the request carries after the last user message; a request
-without tools, the session title agent's, gets the title.
+without tools, the session title agent's, gets the title. A message
+"Note: <title>." is answered "Noted.", and its session is titled <title>,
+for the sessions that show the sessions list's badges.
 
 Run: python3 -I showcase-model.py <port-file>; it writes the port it listens on.
 """
 
 import json
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,15 +50,18 @@ def tool(preface, name, arguments):
 
 def reply(request):
     messages = request.get("messages", [])
+    note = re.search(r"Note: ([^.\"]+)\.", json.dumps(messages))
     if not request.get("tools"):
         # The session title agent.
-        return text(["Fix the greeting in greet.py"])
+        return text([note.group(1) if note else "Fix the greeting in greet.py"])
     last_user = max(
         (index for index, message in enumerate(messages) if message.get("role") == "user"),
         default=-1,
     )
     results = sum(1 for message in messages[last_user + 1 :] if message.get("role") == "tool")
     asked = messages[last_user].get("content") if last_user >= 0 else ""
+    if isinstance(asked, str) and asked.startswith("Note:"):
+        return text(["Noted."])
     if isinstance(asked, str) and "take your time" in asked:
         return text(["Looking at it slowly. "] * 160, pause=0.25)
     if results == 0:

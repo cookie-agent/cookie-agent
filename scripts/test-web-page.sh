@@ -191,5 +191,5 @@ driver_port="$(free_port)"
 "$geckodriver" --port "$driver_port" --allow-system-access >"$scratch/geckodriver.log" 2>&1 &
 pids+=("$!")
 
-python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \
+COOKIE="$cookie" python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \
     "$other_port" "$allowing" "$held_session" "${SCREENSHOT_DIR:-}"

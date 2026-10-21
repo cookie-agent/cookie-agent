@@ -70,8 +70,9 @@ done
 model_port="$(cat "$scratch/model.port")"
 
 home="$scratch/home"
-workspace="$scratch/greeter"
-mkdir -p -m 700 "$home/.cookie-agent/agents" "$workspace"
+# Under the home, so its paths show as ~/greeter.
+workspace="$home/greeter"
+mkdir -p -m 700 "$home/.cookie-agent/agents" "$workspace" "$home/website"
 cat >"$home/.cookie-agent/agents/primary.md" <<'AGENT'
 ---
 description: Coding agent
@@ -136,6 +137,14 @@ cat >"$home/.cookie-agent/config.toml" <<TOML
 [server]
 port = $port
 
+# Two more coding runtimes on this machine, started on use; studio is
+# pinned to a machine of its own below, for the session rows' badges.
+[runtimes.alt]
+command = ["$cookie", "runtime", "serve", "--stdio"]
+
+[runtimes.studio]
+command = ["$cookie", "runtime", "serve", "--stdio"]
+
 # A runtime on another machine over ssh, never started here.
 [runtimes.labpc]
 command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "serve", "--stdio"]
@@ -166,6 +175,7 @@ fi
 link="$(HOME="$home" "$cookie" web)"
 # A second machine for the Machines view: labpc pinned to it.
 HOME="$home" "$cookie" machine assign labpc labpc >/dev/null
+HOME="$home" "$cookie" machine assign studio studio >/dev/null
 
 driver_port="$(free_port)"
 # System access lets the driver zoom the page to a phone's width.

@@ -13,7 +13,9 @@ With `all`, it also opens every view of the rail, every Settings section,
 an editor, every sheet and menu, and the phone's drawer, at desktop,
 phone, and phone-landscape sizes, and saves each in light and dark under
 `<output-dir>/all/`, then the connect screen, for reviewing the page's look
-as a whole.
+as a whole. First it starts three more sessions on the runtime cards, so
+the sessions list shows every kind of badge, and it photographs a row's
+title and the title bar's as fields.
 """
 
 import base64
@@ -147,6 +149,14 @@ call("POST", browser.path("/url"), {"url": LINK})
 browser.wait("the connection", lambda: browser.text("#connected") != "")
 browser.click("aside [data-new-session]")
 browser.wait("the new session", lambda: "New session" in browser.text("#session-title"))
+# The runtime cards: `global`, and `local` at the greeter.
+browser.wait("the cards", lambda: browser.count('#new-session [data-card="local/coding"] [data-workspace-field]') > 0)
+browser.script(
+    "const f = document.querySelector('#new-session [data-card=\"local/coding\"] [data-workspace-field]');"
+    "f.value = '~/greeter'; f.dispatchEvent(new Event('input'))"
+)
+browser.click("#start-session")
+browser.wait("the draft", lambda: browser.count("#composer") == 1)
 browser.type("#composer", PROMPT)
 browser.type("#composer", ENTER)
 browser.wait(
@@ -260,12 +270,147 @@ def both_themes(name):
 
 SIZES = (("desktop", (1280, 800)), ("phone", (390, 844)), ("landscape", (844, 390)))
 
+
+def badge_session(note, picks):
+    """Starts a session on the runtime cards with `global` and `picks`,
+    (runtime, workspace) pairs, and sends `note`, which titles it."""
+    click("aside [data-new-session]")
+    browser.wait("the cards", lambda: browser.count("#new-session [data-card]") > 0)
+    browser.script(
+        "for (const g of document.querySelectorAll('#new-session [data-group][data-open=false] [data-group-toggle]'))"
+        " g.click()"
+    )
+    time.sleep(0.5)
+    browser.script(
+        "for (const c of document.querySelectorAll('#new-session [data-card][data-selected=true]'))"
+        " if (c.dataset.card !== 'global/global') c.querySelector('[data-card-toggle]').click()"
+    )
+    if browser.count('#new-session [data-card="global/global"][data-selected=true]') == 0:
+        click('#new-session [data-card="global/global"] [data-card-toggle]')
+    for runtime, workspace in picks:
+        key = runtime + "/coding" if browser.count('#new-session [data-card="%s/coding"]' % runtime) else runtime
+        card = '#new-session [data-card="%s"]' % key
+        if browser.count(card + "[data-selected=true]") == 0:
+            click(card + " [data-card-toggle]")
+        index = browser.count(card + " [data-workspace-field]") - 1
+        if browser.script("return document.querySelector(arguments[0]).value", card + ' [data-workspace-field="%d"]' % index):
+            click(card + " [data-add-workspace]")
+            index += 1
+        browser.script(
+            "const f = document.querySelector(arguments[0]); f.value = arguments[1];"
+            "f.dispatchEvent(new Event('input'))",
+            card + ' [data-workspace-field="%d"]' % index,
+            workspace,
+        )
+    click("#start-session")
+    browser.wait("the draft", lambda: browser.count("#composer") == 1)
+    browser.type("#composer", note)
+    browser.type("#composer", ENTER)
+    title = note[len("Note: "):].rstrip(".")
+    browser.wait("the title " + title, lambda: browser.text("#session-title") == title)
+
+
+def row_of(title, scope="#sidebar"):
+    """The session row titled `title` in the sidebar, or `scope`."""
+    session = browser.script(
+        "const r = [...document.querySelectorAll(arguments[1] + ' [data-session-row]')]"
+        "  .find((r) => r.querySelector('[data-session-title]').textContent === arguments[0]);"
+        "return r ? r.dataset.sessionRow : null",
+        title,
+        scope,
+    )
+    return '%s [data-session-row="%s"]' % (scope, session)
+
+
+def field_value(selector, value):
+    browser.script(
+        "const f = document.querySelector(arguments[0]); f.value = arguments[1];"
+        "f.dispatchEvent(new Event('input'))",
+        selector,
+        value,
+    )
+    time.sleep(0.4)
+
+
+def long_press(selector):
+    origin = {ELEMENT: browser.find(selector)}
+    call("POST", browser.path("/actions"), {"actions": [{
+        "type": "pointer", "id": "finger", "parameters": {"pointerType": "touch"},
+        "actions": [
+            {"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": 0},
+            {"type": "pointerDown", "button": 0},
+            {"type": "pause", "duration": 800},
+            {"type": "pointerUp", "button": 0},
+        ],
+    }]})
+    call("DELETE", browser.path("/actions"))
+    time.sleep(0.5)
+
+
+def badges_and_titles(size, width):
+    """The sessions list with every kind of badge, a row's title as a field
+    (offered by the hover's pencil, or a phone's long press), emptied, and
+    the title bar's title as a field, emptied."""
+    close_all()
+    drawer = width < 1024
+    if drawer:
+        click("main [data-sidebar-toggle]")
+    both_themes("%s-session-badges" % size)
+    row = row_of("Deploy the site from the studio", "#drawer" if drawer else "#sidebar")
+    if drawer:
+        long_press(row + " [data-session]")
+        both_themes("%s-row-actions" % size)
+        click(row + " ~ [data-delete-actions] [data-rename-reveal]")
+    else:
+        mouse = {"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}}
+        call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
+            {"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find(row)}, "x": 0, "y": 0},
+        ])]})
+        time.sleep(0.4)
+        both_themes("%s-row-hover" % size)
+        click(row + " [data-rename]")
+    both_themes("%s-rename-row" % size)
+    field_value(row + " [data-rename-field]", "")
+    both_themes("%s-rename-row-empty" % size)
+    browser.script("document.activeElement.blur()")
+    time.sleep(0.3)
+    close_all()
+    click("main [data-title-edit]")
+    both_themes("%s-rename-title" % size)
+    field_value("#session-title-field", "")
+    both_themes("%s-rename-title-empty" % size)
+    browser.script("document.activeElement.blur()")
+    time.sleep(0.3)
+
+
 if ALL:
+    # Sessions for every kind of badge: two runtimes on this machine, a
+    # runtime on another machine beside one on this, and no workspace; the
+    # first session has one runtime at one workspace.
+    browser.size(1280, 800)
+    time.sleep(1)
+    badge_session("Note: Review the website copy.", [("local", "~/greeter"), ("alt", "~/website")])
+    badge_session("Note: Deploy the site from the studio.", [("local", "~/greeter"), ("studio", "~/website")])
+    badge_session("Note: Brainstorm release names.", [])
+    click(row_of("Fix the greeting in greet.py") + " [data-session]")
+    browser.wait("the first session", lambda: "Fix the greeting" in browser.text("#session-title"))
     for size, (width, height) in SIZES:
         browser.size(width, height)
         time.sleep(1)
         close_all()
         both_themes("%s-transcript" % size)
+        # The system prompt and the tools, pinned at the transcript's top,
+        # opened.
+        browser.script(
+            "for (const b of document.querySelectorAll('#transcript [data-pinned] > button')) b.click();"
+            "document.querySelector('#transcript').scrollTop = 0"
+        )
+        time.sleep(0.6)
+        both_themes("%s-pinned-rows" % size)
+        browser.script("for (const b of document.querySelectorAll('#transcript [data-pinned] > button')) b.click()")
+        time.sleep(0.4)
+        if size != "landscape":
+            badges_and_titles(size, width)
         for name, clicks in COMMANDS:
             close_all()
             for selector in clicks:

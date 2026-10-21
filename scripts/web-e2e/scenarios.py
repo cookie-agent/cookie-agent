@@ -9,7 +9,8 @@ The allowing daemon has a scripted model (mock-model.py) that takes images,
 an agent whose `bash` asks for approval, a `helper` subagent, and a `greet`
 skill. `held-session` is a session another process made before the daemon
 started, which the daemon lists but has not loaded. The other daemon is
-empty; its page is of another origin.
+empty; its page is of another origin. `COOKIE` in the environment is the
+`cookie` binary, for the machine commands the badges need.
 """
 
 import base64
@@ -23,6 +24,7 @@ import re
 import signal
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -46,6 +48,9 @@ REMEMBER_DAEMON = (
     "localStorage.setItem('cookie.token:' + arguments[0], arguments[1])"
 )
 SCREENSHOTS = sys.argv[7] if len(sys.argv) > 7 else ""
+COOKIE = os.environ.get("COOKIE", "cookie")
+# The sessions runtime_cards makes, by what they attach, for the badges.
+MADE = {}
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 ENTER, ALT, ESCAPE, NULL = "", "", "", ""
 
@@ -410,6 +415,48 @@ def tool_rows(browser):
     assert bubble_aligned(browser), "a long bubble is not at the right: %s" % browser.script(BUBBLE)
     print("user bubbles end at the content column's right edge:", browser.script(BUBBLE))
     browser.wait("its answer", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+
+
+def pinned_rows(browser):
+    """The system prompt and the tools the latest request offered, pinned
+    folded at the top of the transcript as in the TUI; each opens to the
+    prompt, whitespace kept, and the tool names as chips."""
+    prompt = "#transcript [data-pinned=system-prompt]"
+    tools = "#transcript [data-pinned=model-tools]"
+    browser.wait("the pinned rows", lambda: count(browser, prompt) == 1 and count(browser, tools) == 1)
+    assert browser.script(
+        "return document.querySelector('#transcript .transcript-item').querySelector('[data-pinned=system-prompt]') !== null"
+    ), "the system prompt is not the transcript's first row"
+    title = browser.text(prompt)
+    assert re.search(r"system prompt · primary \(last run\) \(\d+ lines\)", title), title
+    assert re.fullmatch(r"tools · \d+ available \(last request\)", browser.text(tools).strip()), browser.text(tools)
+    assert count(browser, "[data-system-prompt], [data-model-tools]") == 0, "a pinned row starts open"
+    # Folded, they share one compact line.
+    tops, height = browser.script(
+        "const b = [...document.querySelectorAll('#transcript [data-pinned] > button')];"
+        "return [b.map((e) => Math.round(e.getBoundingClientRect().top)),"
+        "  document.querySelector('#transcript [data-pinned-rows]').getBoundingClientRect().height]"
+    )
+    assert len(set(tops)) == 1 and height <= 32, (tops, height)
+    browser.click(prompt + " button")
+    browser.wait("the system prompt", lambda: count(browser, "[data-system-prompt]") == 1)
+    body = browser.script("return document.querySelector('[data-system-prompt]').textContent")
+    assert "Help." in body, body
+    style = browser.script(
+        "const s = getComputedStyle(document.querySelector('[data-system-prompt]'));"
+        "return [s.whiteSpace, s.fontFamily]"
+    )
+    assert style[0] == "pre-wrap" and "Mono" in style[1], style
+    browser.click(tools + " button")
+    browser.wait("the tools", lambda: count(browser, "[data-model-tools] li") > 0)
+    names = browser.script("return [...document.querySelectorAll('[data-model-tools] li')].map((l) => l.textContent)")
+    offered = int(re.search(r"(\d+) available", browser.text(tools)).group(1))
+    assert len(names) == offered and "bash" in names, names
+    browser.shot("pinned-rows")
+    print("the pinned system prompt and tools rows open:", offered, "tools")
+    browser.click(prompt + " button")
+    browser.click(tools + " button")
+    browser.wait("the folded rows", lambda: count(browser, "[data-system-prompt], [data-model-tools]") == 0)
 
 
 def session_depth(browser):
@@ -1481,10 +1528,16 @@ def runtime_cards(browser):
     assert "~/workspace" in browser.text("#places"), browser.text("#places")
     send(browser, "hello from three workspaces")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
-    row = "aside [data-session-row] [aria-current=true] [data-session-places]"
-    browser.wait("the row's places", lambda: browser.text(row) == "~/workspace, ~/second, alt:~/elsewhere")
+    row = OPEN_SESSION_ROW
+    # Both runtimes are on this daemon's machine: it, then each runtime.
+    browser.wait("the row's badges", lambda: badge_kinds(browser, row) == ["machine", "runtime", "runtime"])
+    shown_badges = badges(browser, row)
+    assert shown_badges[0][1] == daemon_group and shown_badges[1][1] == "local", shown_badges
+    assert shown_badges[2][1].startswith("alt"), shown_badges
+    assert "~/workspace" in browser.script(TOOLTIP, row) and "~/elsewhere" in browser.script(TOOLTIP, row)
+    MADE["one machine"] = open_session_id(browser)
     browser.shot("cards-session-places")
-    print("two runtimes at three workspaces, shown under their homes:", browser.text(row))
+    print("two runtimes at three workspaces on one machine:", shown_badges)
 
     # The defaults follow the open session.
     open_cards(browser)
@@ -1506,7 +1559,9 @@ def runtime_cards(browser):
     browser.wait("the draft", lambda: count(browser, "#composer") == 1, timeout=40)
     send(browser, "hello from elsewhere")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
-    browser.wait("its row", lambda: browser.text(row) == "alt:~/elsewhere")
+    browser.wait("its row", lambda: badge_kinds(browser, row) == ["runtime", "workspace"])
+    assert badges(browser, row)[1][1] == "~/elsewhere", badges(browser, row)
+    MADE["one"] = open_session_id(browser)
     options = browser.script("return [...document.querySelectorAll('#place-filter option')].map((o) => o.innerText)")
     for expected in ("local · ~/workspace", "alt · ~/elsewhere"):
         assert expected in options, (expected, options)
@@ -1533,7 +1588,8 @@ def runtime_cards(browser):
     assert browser.text("#draft-places [data-draft-places]") == "no workspace"
     send(browser, "hello from nowhere")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
-    browser.wait("its row", lambda: browser.text(row) == "no workspace")
+    browser.wait("its row", lambda: badges(browser, row) == [["none", "no workspace"]])
+    MADE["none"] = open_session_id(browser)
     menu(browser, "runtime")
     browser.wait("the runtimes sheet", lambda: count(browser, "#sheet") == 1)
     time.sleep(1)
@@ -1546,6 +1602,223 @@ def runtime_cards(browser):
     if "global/global" not in selected_cards(browser):
         browser.click(card("global/global") + " [data-card-toggle]")
     start_cards(browser, WORKSPACE)
+
+
+# The open session's row.
+OPEN_SESSION_ROW = "aside [data-session-row]:has([aria-current=true])"
+# A row's tooltip: where it runs, with every path.
+TOOLTIP = "return document.querySelector(arguments[0] + ' [data-session]').title"
+
+
+def open_session_id(browser):
+    return browser.script(
+        "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
+    )
+
+
+def badges(browser, row):
+    """A session row's badges, as [kind, text] pairs."""
+    return browser.script(
+        "return [...document.querySelectorAll(arguments[0] + ' [data-session-badges] [data-badge]')]"
+        ".map((b) => [b.dataset.badge, b.textContent.trim()])",
+        row,
+    )
+
+
+def badge_kinds(browser, row):
+    return [kind for kind, _ in badges(browser, row)]
+
+
+# The text colour of a row's badge for `arguments[1]`, and of the bottom
+# bar's dot for it.
+BADGE_COLOUR = """
+const badge = [...document.querySelectorAll(arguments[0] + ' [data-badge]')]
+    .find((b) => b.textContent.trim().startsWith(arguments[1]));
+return badge ? getComputedStyle(badge).color : null;
+"""
+
+
+def session_badges(browser):
+    """Session rows say where they run as badges: no workspace, one runtime
+    and its workspace, one machine and its runtimes, and one badge per
+    machine once a runtime moves to another machine; a runtime keeps its
+    colour in every row, the bottom bar, and the runtime cards; and the
+    badges truncate before the time does."""
+    rows = {name: 'aside [data-session-row="%s"]' % session for name, session in MADE.items()}
+    assert badge_kinds(browser, rows["none"]) == ["none"]
+    assert badge_kinds(browser, rows["one"]) == ["runtime", "workspace"]
+    machine, local, alt = badges(browser, rows["one machine"])
+    # The time is on the title's line; the badges have the second to themselves.
+    assert browser.script(
+        "const r = document.querySelector(arguments[0]);"
+        "return r.querySelector('[data-session-time]').getBoundingClientRect().top"
+        "  < r.querySelector('[data-session-badges]').getBoundingClientRect().top",
+        rows["one machine"],
+    )
+    # The same runtime, the same colour, in any row.
+    alt_colour = browser.script(BADGE_COLOUR, rows["one"], "alt")
+    assert alt_colour and alt_colour == browser.script(BADGE_COLOUR, rows["one machine"], "alt"), alt_colour
+    # The grey of "no workspace" is no hue.
+    assert browser.script(
+        "return document.querySelector(arguments[0] + ' [data-badge=none]').dataset.hue === undefined",
+        rows["none"],
+    )
+    # A runtime pinned to another machine: the session spans two.
+    subprocess.run([COOKIE, "machine", "assign", "alt", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
+                   stdout=subprocess.DEVNULL)
+    browser.wait(
+        "a badge per machine",
+        lambda: badges(browser, rows["one machine"]) == [["machine", machine[1]], ["machine", "e2e-studio"]],
+    )
+    # One attachment still shows its runtime and workspace.
+    assert badge_kinds(browser, rows["one"]) == ["runtime", "workspace"]
+    tooltip = browser.script(TOOLTIP, rows["one machine"])
+    assert "e2e-studio · %s · ~/elsewhere" % alt[1] in tooltip, tooltip
+    assert "%s · local · ~/workspace" % machine[1] in tooltip, tooltip
+    # Machine badges carry the machine's OS icon.
+    assert count(browser, rows["one machine"] + " [data-badge=machine] svg") == 2
+    browser.shot("badges")
+    # The bottom bar and the runtime cards mark alt in its colour.
+    browser.click(rows["one"] + " [data-session]")
+    browser.wait("the alt session", lambda: count(browser, '#places [data-runtime-dot="alt"]') == 1)
+    dot = browser.script(
+        "return getComputedStyle(document.querySelector('#places [data-runtime-dot=alt]')).backgroundColor"
+    )
+    assert dot == alt_colour, (dot, alt_colour)
+    open_cards(browser)
+    for name, is_open in browser.script(
+        "return [...document.querySelectorAll('#new-session [data-group]')].map((g) => [g.dataset.group, g.dataset.open])"
+    ):
+        if is_open != "true":
+            browser.click('#new-session [data-group-toggle="%s"]' % name)
+    browser.wait("alt's card dot", lambda: count(browser, '#new-session [data-runtime-dot="alt"]') == 1)
+    assert browser.script(
+        "return getComputedStyle(document.querySelector('#new-session [data-runtime-dot=alt]')).backgroundColor"
+    ) == alt_colour
+    browser.shot("badges-cards")
+    browser.click(rows["one machine"] + " [data-session]")
+    browser.wait("the session", lambda: count(browser, "#new-session") == 0)
+    subprocess.run([COOKIE, "machine", "unassign", "alt"], check=True, env=dict(os.environ, HOME=HOME),
+                   stdout=subprocess.DEVNULL)
+    browser.wait("alt back on this machine", lambda: badge_kinds(browser, rows["one machine"]) == ["machine", "runtime", "runtime"])
+    # A narrowing sidebar: the machine's name gives way first, while the
+    # runtimes' IDs and the time stay whole.
+    hover(browser, "#transcript")
+    clipped = browser.script(
+        "const row = arguments[0], sidebar = document.querySelector('#sidebar');"
+        "const line = document.querySelector(row + ' [data-session-badges]');"
+        "const time = document.querySelector(row + ' [data-session-time]');"
+        "const cut = (kind) => [...line.querySelectorAll('[data-badge=' + kind + '] .truncate')]"
+        "  .some((e) => e.scrollWidth > e.clientWidth + 1);"
+        "for (let width = 288; width >= 120; width -= 2) {"
+        "  sidebar.style.width = width + 'px';"
+        "  if (cut('machine')) {"
+        "    const box = document.querySelector(row + ' [data-session]').getBoundingClientRect();"
+        "    return [width, cut('runtime'), time.scrollWidth <= time.clientWidth,"
+        "      time.getBoundingClientRect().right <= box.right + 1];"
+        "  }"
+        "}"
+        "return null",
+        rows["one machine"],
+    )
+    assert clipped and clipped[1:] == [False, True, True], clipped
+    browser.shot("badges-narrow")
+    browser.script("document.querySelector('#sidebar').style.width = ''")
+    subprocess.run([COOKIE, "machine", "forget", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
+                   stdout=subprocess.DEVNULL)
+    print("badges: no workspace, one runtime, one machine, two machines; a runtime keeps its colour everywhere")
+
+
+# A row's pencil and trash: the row's middle and each button's, their
+# sizes, the row's background and theirs, and the gap between them.
+ROW_BUTTONS = """
+const row = document.querySelector(arguments[0]);
+const open = row.querySelector('[data-session]').getBoundingClientRect();
+const pencil = row.querySelector('[data-rename]'), trash = row.querySelector('[data-delete]');
+const p = pencil.getBoundingClientRect(), t = trash.getBoundingClientRect();
+return [open.top + open.height / 2, p.top + p.height / 2, p.width, p.height, t.left - p.right,
+    getComputedStyle(row.querySelector('[data-session]')).backgroundColor,
+    getComputedStyle(pencil).backgroundColor];
+"""
+
+
+def renaming(browser):
+    """Renaming a session: the title bar's title edits in place (Enter
+    saves, Escape keeps it), ⋮ › Rename does the same, the row's pencil
+    beside its trash turns the row's title into a field, and an emptied
+    field offers the automatic title."""
+    session = open_session_id(browser)
+    row = 'aside [data-session-row="%s"]' % session
+    before = browser.text("#session-title")
+    # The title is a button; a click makes it a field holding the title.
+    browser.click("#session-title [data-title-edit]")
+    browser.wait("the title field", lambda: count(browser, "#session-title-field") == 1)
+    # It holds the title; an untitled session's is empty.
+    assert browser.script("return document.querySelector('#session-title-field').value") in (before, "")
+    assert browser.script("return document.activeElement.id") == "session-title-field"
+    browser.type("#session-title-field", "Scratch" + ESCAPE)
+    browser.wait("the title again", lambda: count(browser, "#session-title-field") == 0)
+    assert browser.text("#session-title") == before
+    browser.click("#session-title [data-title-edit]")
+    browser.wait("the title field", lambda: count(browser, "#session-title-field") == 1)
+    set_text(browser, "#session-title-field", "Badges and titles")
+    browser.shot("rename-title-bar")
+    browser.type("#session-title-field", ENTER)
+    browser.wait("the new title", lambda: browser.text("#session-title") == "Badges and titles")
+    browser.wait("the row's new title", lambda: browser.text(row + " [data-session-title]") == "Badges and titles")
+    print("renamed the session from its title bar")
+    # ⋮ › Rename opens the same field; emptied, it offers the automatic title.
+    menu(browser, "rename")
+    browser.wait("the title field", lambda: count(browser, "#session-title-field") == 1)
+    assert count(browser, "[data-title-reset]") == 0
+    set_text(browser, "#session-title-field", "")
+    browser.wait("the automatic title button", lambda: count(browser, "[data-title-reset]") == 1)
+    browser.shot("rename-title-bar-empty")
+    browser.click("[data-title-reset]")
+    browser.wait("the automatic title", lambda: browser.text("#session-title") not in ("Badges and titles", ""))
+    print("⋮ › Rename and the automatic title:", browser.text("#session-title"))
+
+    # The row's pencil sits left of its trash, centred, in the hovered
+    # row's colour.
+    hover(browser, "#transcript")
+    assert not shown(browser, row + " [data-rename]"), "the pencil shows without a hover"
+    hover(browser, row)
+    browser.wait("the pencil on hover", lambda: shown(browser, row + " [data-rename]"))
+    middle, pencil_middle, width, height, gap, row_colour, pencil_colour = browser.script(ROW_BUTTONS, row)
+    assert abs(middle - pencil_middle) <= 1, "the pencil is %s px off the row's middle" % (pencil_middle - middle)
+    assert width >= 44 and height >= 44, "the pencil is %sx%s px" % (width, height)
+    assert 0 <= gap <= 8, "the pencil is %s px from the trash" % gap
+    assert row_colour == pencil_colour, "the pencil is %s over a %s row (%s)" % (
+        pencil_colour, row_colour, browser.script("return document.querySelector(arguments[0] + ' [data-session]').className", row))
+    original = browser.text(row + " [data-session-title]")
+    browser.click(row + " [data-rename]")
+    field = row + " [data-rename-field]"
+    browser.wait("the row's field", lambda: count(browser, field) == 1)
+    browser.wait("the field's focus", lambda: browser.script(
+        "return document.activeElement === document.querySelector(arguments[0])", field))
+    browser.type(field, "Nope" + ESCAPE)
+    browser.wait("the row again", lambda: count(browser, field) == 0)
+    assert browser.text(row + " [data-session-title]") == original
+    hover(browser, row)
+    browser.wait("the pencil on hover", lambda: shown(browser, row + " [data-rename]"))
+    browser.click(row + " [data-rename]")
+    browser.wait("the row's field", lambda: count(browser, field) == 1)
+    set_text(browser, field, "Renamed from its row")
+    browser.shot("rename-row")
+    browser.type(field, ENTER)
+    browser.wait("the row's new title", lambda: browser.text(row + " [data-session-title]") == "Renamed from its row")
+    browser.wait("the title bar's", lambda: browser.text("#session-title") == "Renamed from its row")
+    # Emptied, the row offers the automatic title.
+    hover(browser, row)
+    browser.wait("the pencil on hover", lambda: shown(browser, row + " [data-rename]"))
+    browser.click(row + " [data-rename]")
+    browser.wait("the row's field", lambda: count(browser, field) == 1)
+    set_text(browser, field, "")
+    browser.wait("the automatic title button", lambda: count(browser, row + " [data-rename-reset]") == 1)
+    browser.shot("rename-row-empty")
+    browser.click(row + " [data-rename-reset]")
+    browser.wait("the automatic title", lambda: browser.text(row + " [data-session-title]") != "Renamed from its row")
+    print("renamed the session from its row's pencil, and back to its automatic title")
 
 
 def desktop_layout(browser):
@@ -1578,7 +1851,7 @@ def desktop_layout(browser):
     )
     names = [entry[0] for entry in entries]
     assert names == [
-        "compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset",
+        "rename", "compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset",
     ], names
     for name, text, icon in entries:
         assert icon and "/" not in text and "\n" in text, (name, text, icon)
@@ -1586,7 +1859,8 @@ def desktop_layout(browser):
     close_sheet(browser)
     browser.click("aside nav[aria-label=Sessions] button")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
-    for name in names:
+    # Rename edits the title in place (renaming); the others open sheets.
+    for name in names[1:]:
         menu(browser, name)
         browser.wait("the %s sheet" % name, lambda: count(browser, "#sheet [data-command]") == 0 and count(browser, "#sheet") == 1)
         assert page_view(browser) == "chat"
@@ -1775,6 +2049,14 @@ def phone_layout():
         phone.wait("the delete action", lambda: count(phone, "#drawer [data-delete-actions]") == 1)
         assert count(phone, "#drawer") == 1 and phone.text("#session-title") == opened, "the long press opened the session"
         phone.shot("phone-delete-revealed")
+        # The long press offers Rename too, which makes the title a field.
+        phone.click("#drawer [data-rename-reveal]")
+        phone.wait("the row's field", lambda: count(phone, '#drawer [data-rename-field="%s"]' % doomed) == 1)
+        phone.shot("phone-rename-row")
+        phone.type('#drawer [data-rename-field="%s"]' % doomed, "Doomed" + ENTER)
+        phone.wait("the renamed row", lambda: phone.text('#drawer [data-session-row="%s"] [data-session-title]' % doomed) == "Doomed")
+        long_press(phone, row)
+        phone.wait("the delete action", lambda: count(phone, "#drawer [data-delete-actions]") == 1)
         phone.click("#drawer [data-delete-reveal]")
         phone.wait("the confirmation", lambda: count(phone, "#drawer [data-delete-confirm-box]") == 1)
         phone.shot("phone-delete-confirm")
@@ -2370,6 +2652,7 @@ def main():
 
         composer(browser)
         tool_rows(browser)
+        pinned_rows(browser)
         message_menu(browser)
         session_depth(browser)
         management(browser)
@@ -2379,6 +2662,8 @@ def main():
 
         desktop_layout(browser)
         runtime_cards(browser)
+        session_badges(browser)
+        renaming(browser)
         deleting(browser)
 
         # A phone-sized window: no sideways scroll, the sessions in a drawer.
