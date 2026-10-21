@@ -43,9 +43,48 @@ hover-quiet (`PointerTarget::is_hoverable`). The sweep in
 `crates/tui/src/ui/transcript/tests/pointer.rs` checks every target hovers
 visibly, so reach the new target from one of its surfaces.
 
-## Required Gates
+## Gate Tiers
 
-Use locked dependency resolution for builds and tests:
+The gates below come in two tiers. Before each commit, run the local tier
+for what the change touches; CI runs every gate on every push that is not
+documentation only.
+
+`scripts/check-changed.sh [base]` runs the local tier for the changes since
+the merge base with `base` (default `origin/main`), uncommitted and
+untracked files included; `-n` prints the commands without running them.
+The local tier is:
+
+- `cargo fmt --all -- --check`, always;
+- Clippy with warnings denied and the tests of the changed crates and of
+  every workspace crate that depends on them, the whole workspace when
+  `Cargo.toml`, `Cargo.lock`, `test-support/`, or `examples/` changed;
+- the `wasm32-unknown-unknown` Clippy command only when `crates/protocol`,
+  `crates/client_state`, or `crates/web` changed;
+- `check-schema-additive.sh` and `scripts/test-wasm-client.sh` only when
+  `crates/protocol` changed;
+- `scripts/build-web.sh` and `scripts/test-web-page.sh` only when
+  `crates/web`, `crates/web_assets`, or `scripts/web-e2e` changed;
+- `./scripts/build-docs.sh` only when `docs/` or `mkdocs.yml` changed, and
+  the tests that keep `docs/site/clients/cli.md` and the tools, protocol,
+  and errors references in step with the code when those pages changed.
+
+The CI-only tier is the Rust 1.88 MSRV build, the Windows build and tests,
+the full workspace test run, the release target checks, and the release
+gates (the locked release build and its secret scan, `cargo audit`, and
+`cargo deny`). Run one of them locally only when the change is aimed at
+it: a Windows-only path (`cargo check --target x86_64-pc-windows-msvc
+--all-targets`), a language feature or dependency that may need a newer
+Rust than 1.88, or release metadata.
+
+Pushes that change only `docs/**`, Markdown files, or `mkdocs.yml` skip the
+CI workflow (the Documentation workflow still builds the site), except for
+the pages the tests above keep in step with the code. A documentation-only
+commit on `main` therefore publishes no prerelease.
+
+## Gates
+
+CI runs all of these; the local tier above picks among them. Use locked
+dependency resolution for builds and tests:
 
 ```sh
 cargo build --locked --workspace --all-targets
