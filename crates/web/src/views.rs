@@ -1381,7 +1381,14 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             on:touchstart=move |_| user_scrolling.set_value(true)
-            on:touchend=move |_| user_scrolling.set_value(false)
+            on:touchend=move |event: ev::TouchEvent| {
+                user_scrolling.set_value(false);
+                // Chrome ends a long press with a click, which would land on
+                // the menu's backdrop the press just opened and close it.
+                if message_press.fired() {
+                    event.prevent_default();
+                }
+            }
             on:pointerdown=move |event: ev::PointerEvent| {
                 user_scrolling.set_value(true);
                 message_press.down(&event);
@@ -1472,6 +1479,7 @@ struct MessagePress {
 impl MessagePress {
     fn down(self, event: &ev::PointerEvent) {
         self.cancel();
+        self.press.set_value(Press::default());
         self.seq.set_value(None);
         if event.pointer_type() != "touch" {
             return;
@@ -1516,6 +1524,11 @@ impl MessagePress {
     fn cancel(self) {
         self.press.update_value(Press::cancel);
         self.stop_timer();
+    }
+
+    /// Whether the last press opened the menu, until the next one starts.
+    fn fired(self) -> bool {
+        self.press.with_value(Press::fired)
     }
 
     /// Whether a press is on a bubble now, held or just fired.

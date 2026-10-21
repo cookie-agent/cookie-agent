@@ -509,6 +509,13 @@ fn project_header(
                 on:pointermove=on_pointermove
                 on:pointerup=release
                 on:pointercancel=release
+                on:touchend=move |event: ev::TouchEvent| {
+                    // Chrome ends a long press with a click, which would
+                    // land on the buttons it just showed under the finger.
+                    if press.try_update_value(|press| !press.click()).unwrap_or(false) {
+                        event.prevent_default();
+                    }
+                }
                 on:contextmenu=move |event: ev::MouseEvent| {
                     // A long press shows the header's buttons, not the
                     // browser's menu.

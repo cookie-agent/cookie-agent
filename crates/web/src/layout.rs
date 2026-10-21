@@ -209,6 +209,11 @@ impl Press {
         false
     }
 
+    /// Whether the press fired as a long press, until the next one starts.
+    pub fn fired(&self) -> bool {
+        self.fired
+    }
+
     /// The click the press ends with; `true` when it opens the session,
     /// which a long press never does.
     pub fn click(&mut self) -> bool {
@@ -281,5 +286,17 @@ mod tests {
         press.cancel();
         assert!(!press.elapse(), "lifting early is a tap");
         assert!(press.click());
+    }
+
+    #[test]
+    fn a_long_press_stays_fired_after_the_finger_lifts_until_the_next_press() {
+        let mut press = Press::default();
+        press.start(10.0, 10.0);
+        assert!(!press.fired());
+        assert!(press.elapse());
+        press.cancel();
+        assert!(press.fired(), "the lift ends a long press");
+        press.start(10.0, 10.0);
+        assert!(!press.fired(), "a new press starts unfired");
     }
 }
