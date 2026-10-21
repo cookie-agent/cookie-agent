@@ -16,7 +16,10 @@ mod plugins;
 mod pointer;
 mod providers;
 mod refresh;
+mod session_delete;
 mod sessions;
+#[cfg(test)]
+pub(in crate::ui) use session_delete::{SessionDeletePrompt, SessionPickerAction};
 mod subscriptions;
 pub(super) use agents::DescendantEvent;
 #[cfg_attr(not(test), allow(unused_imports))]
@@ -472,6 +475,8 @@ pub(super) enum PointerTarget {
     /// A picker's search input: a click places its caret.
     PickerInput,
     PickerRow(usize),
+    /// A button on the session picker's action row.
+    SessionPickerAction(session_delete::SessionPickerAction),
     ProviderSubmit,
     ProviderCancel,
     ProviderField(ProviderFormFocus),
@@ -562,6 +567,8 @@ pub(super) struct UiHitMap {
     pub(super) provider_cancel: Option<Rect>,
     /// The open confirm panel's Confirm/Cancel buttons.
     pub(super) confirm_buttons: Vec<(Rect, ConfirmButton)>,
+    /// The session picker's action row buttons.
+    pub(super) session_picker_actions: Vec<(Rect, session_delete::SessionPickerAction)>,
     pub(super) goal_actions: Vec<(Rect, GoalBarAction)>,
     pub(super) goal_close: Option<Rect>,
     /// The background bar; a click opens the panel.
@@ -600,6 +607,7 @@ impl UiHitMap {
         self.provider_submit = None;
         self.provider_cancel = None;
         self.confirm_buttons.clear();
+        self.session_picker_actions.clear();
         self.goal_actions.clear();
         self.goal_close = None;
         self.background_bar = None;
@@ -788,6 +796,11 @@ pub struct App {
     pub(super) goal_focus: Option<GoalBarAction>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
+    /// Whether `/sessions` lists every directory's sessions rather than
+    /// this directory's (Ctrl+A).
+    pub(super) session_scope_all: bool,
+    /// The session delete waiting for the user to confirm it.
+    pub(super) session_delete: Option<session_delete::SessionDeletePrompt>,
     pub(super) agent_search: SearchPickerState,
     pub(super) model_search: SearchPickerState,
     pub(super) provider_search: SearchPickerState,
@@ -976,6 +989,16 @@ pub(in crate::ui) enum RpcUpdate {
     /// A fork RPC committed; the new session becomes the viewed one.
     Forked {
         forked: SessionId,
+    },
+    /// How many subagents the session a delete waits for has.
+    SessionDeleteSubagents {
+        session_id: SessionId,
+        subagents: usize,
+    },
+    /// A `session.delete` ended.
+    SessionDeleted {
+        title: String,
+        outcome: cookie_agent_client_state::session_delete::SessionDeleteOutcome,
     },
     Tree {
         session_id: SessionId,
@@ -1410,6 +1433,8 @@ impl App {
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),
+            session_scope_all: false,
+            session_delete: None,
             agent_search: SearchPickerState::default(),
             model_search: SearchPickerState::default(),
             provider_search: SearchPickerState::default(),

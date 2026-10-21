@@ -186,6 +186,23 @@ impl App {
                     .find(|(rect, _)| over(*rect))
                     .map(|(_, index)| PointerTarget::MemoryRow(*index));
             }
+            // A waiting delete owns the picker: only its answers act.
+            Modal::Sessions if self.session_delete.is_some() => {
+                return hits
+                    .confirm_buttons
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, button)| PointerTarget::ConfirmButton(*button));
+            }
+            Modal::Sessions => {
+                if let Some((_, action)) = hits
+                    .session_picker_actions
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                {
+                    return Some(PointerTarget::SessionPickerAction(*action));
+                }
+            }
             Modal::Background => {
                 if let Some((_, index)) = hits.background_stops.iter().find(|(rect, _)| over(*rect))
                 {
@@ -326,6 +343,8 @@ impl App {
             PointerTarget::ConfirmButton(button) => {
                 if self.modal == Modal::RevertConfirm {
                     self.answer_revert_confirm(button);
+                } else if self.modal == Modal::Sessions {
+                    self.answer_session_delete(button);
                 } else if self.modal == Modal::AttachConfirm {
                     self.answer_attach_offer(button).await;
                 }
@@ -351,6 +370,9 @@ impl App {
                 );
             }
             PointerTarget::PickerRow(index) => self.choose_picker_entry(index).await,
+            PointerTarget::SessionPickerAction(action) => {
+                self.activate_session_picker_action(action).await;
+            }
             PointerTarget::ProviderSubmit => self.dispatch_provider_connect(),
             PointerTarget::ProviderCancel => self.cancel_connect_form(),
             PointerTarget::ProviderField(focus) => {
@@ -600,6 +622,14 @@ impl App {
                     .find(|hit| hit.index == index)
                     .map(|hit| hit.rect)),
                 text_style,
+            ),
+            PointerTarget::SessionPickerAction(action) => (
+                one(hits
+                    .session_picker_actions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
             ),
             PointerTarget::ProviderField(focus) => (
                 one(hits

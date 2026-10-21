@@ -88,14 +88,23 @@ impl App {
     }
 
     pub(in crate::ui) async fn refresh_lists(&mut self) {
+        self.refresh_session_list().await;
+        self.refresh_coherent_lists().await;
+    }
+
+    /// Lists this directory's root sessions, or every directory's when the
+    /// picker shows all of them.
+    pub(in crate::ui) async fn refresh_session_list(&mut self) {
+        let cwd_identity = if self.session_scope_all {
+            None
+        } else {
+            self.cwd
+                .as_deref()
+                .and_then(|cwd| cookie_agent_protocol::CwdIdentity::new(cwd).ok())
+        };
         match self
             .client
-            .list_sessions(SessionListParams {
-                cwd_identity: self
-                    .cwd
-                    .as_deref()
-                    .and_then(|cwd| cookie_agent_protocol::CwdIdentity::new(cwd).ok()),
-            })
+            .list_sessions(SessionListParams { cwd_identity })
             .await
         {
             Ok(result) => {
@@ -108,7 +117,6 @@ impl App {
             }
             Err(error) => self.status = error.to_string(),
         }
-        self.refresh_coherent_lists().await;
     }
 
     /// Fetch and install the sole protocol-10 discovery object.
@@ -165,10 +173,11 @@ impl App {
                 {
                     *existing = session;
                 } else if matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
-                    && self
-                        .cwd
-                        .as_deref()
-                        .is_none_or(|cwd| session.cwd_identity.as_str() == cwd)
+                    && (self.session_scope_all
+                        || self
+                            .cwd
+                            .as_deref()
+                            .is_none_or(|cwd| session.cwd_identity.as_str() == cwd))
                 {
                     // A root another client created; children join the cache
                     // when the Agents tree loads them.
@@ -178,14 +187,8 @@ impl App {
                 }
                 self.note_sessions_changed();
             }
-            Change::Removed { session_id } => {
-                let before = self.sessions.len();
-                self.sessions
-                    .retain(|session| session.session_id != session_id);
-                if self.sessions.len() != before {
-                    self.note_sessions_changed();
-                }
-            }
+            // A revert's deleted subagent or a deleted tree, by any client.
+            Change::Removed { session_id } => self.forget_removed_session(session_id),
             Change::ApprovalsChanged {
                 root_session_id, ..
             } => {
@@ -489,6 +492,13 @@ impl App {
                     self.status = "reverted; the message text is kept for its session".into();
                 }
                 self.refresh_tree_background();
+            }
+            RpcUpdate::SessionDeleteSubagents {
+                session_id,
+                subagents,
+            } => self.note_session_delete_subagents(session_id, subagents),
+            RpcUpdate::SessionDeleted { title, outcome } => {
+                self.finish_session_delete(title, outcome);
             }
             RpcUpdate::Forked { forked } => {
                 self.status = "forked the session; switching to it".into();

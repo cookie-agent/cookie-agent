@@ -1076,7 +1076,10 @@ impl App {
         let picker_total = self.picker_sessions().count();
         let rows = &self.session_search_rows_cache.rows;
         let session_count = rows.iter().filter(|row| row.session_id().is_some()).count();
-        let title = format!("Sessions ({session_count}/{picker_total})");
+        let title = format!(
+            "{} ({session_count}/{picker_total})",
+            self.session_scope_title()
+        );
         frame.render_widget(
             crate::ui::panel_block()
                 .border_style(self.theme.panel_border())
@@ -1084,13 +1087,25 @@ impl App {
                 .style(self.theme.panel()),
             picker,
         );
-        let inner = inner_rect(picker);
+        let panel_inner = inner_rect(picker);
+        // The last row holds the picker's actions; the sessions fill the rest.
+        let actions_row = Rect::new(
+            panel_inner.x,
+            panel_inner.bottom().saturating_sub(1),
+            panel_inner.width,
+            panel_inner.height.min(1),
+        );
+        let inner = Rect {
+            height: panel_inner.height.saturating_sub(1),
+            ..panel_inner
+        };
         self.hit_map.picker_rows.clear();
         if session_count == 0 {
             frame.render_widget(
                 Paragraph::new("No sessions match the filter.").style(self.theme.muted()),
                 inner,
             );
+            self.render_session_picker_actions(frame, actions_row, frame.area());
             return;
         }
 
@@ -1158,6 +1173,7 @@ impl App {
                 }
             }
         }
+        self.render_session_picker_actions(frame, actions_row, frame.area());
     }
 
     pub(super) fn render_connect_details(&mut self, frame: &mut ratatui::Frame, area: Rect) {

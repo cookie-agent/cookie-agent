@@ -26,7 +26,8 @@ Sessions are stored per directory under `~/.cookie-agent/sessions/`, each tree
 in its own folder with its subagents below it and the artifacts its tools
 retained. A session exists on disk from its first message. Its directory
 decides where it is listed: the TUI shows the sessions of the directory it was
-started in; the web page lists every directory's. See
+started in, and Ctrl+A in its session picker switches to every directory's;
+the web page lists every directory's. See
 [Lifecycle and persistence](../sessions/index.md#lifecycle-and-persistence).
 
 ## Ownership
@@ -57,6 +58,11 @@ when it opens them, keeping the originals as `events.jsonl.v<N>.bak`.
   See [Fork](../sessions/index.md#fork).
 - **Compaction** replaces older context with a summary when the context fills,
   or on `/compact`. See [Compaction](../sessions/compaction.md).
+- **Delete** removes a whole tree from disk: the root, its subagents, their
+  events, and their artifacts. Only a root is deleted, after you confirm; it
+  is refused while a session of the tree runs, while another process owns
+  the tree, and when the root gained events since you looked. It cannot be
+  undone. See [Delete](../sessions/index.md#delete).
 
 ## What a session is bound to
 

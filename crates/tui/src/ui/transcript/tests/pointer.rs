@@ -49,6 +49,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::ConfirmButton(_) => "confirm button",
         PointerTarget::PickerInput => "picker input",
         PointerTarget::PickerRow(_) => "picker row",
+        PointerTarget::SessionPickerAction(_) => "session picker action",
         PointerTarget::ProviderSubmit => "provider submit",
         PointerTarget::ProviderCancel => "provider cancel",
         PointerTarget::ProviderField(_) => "provider field",
@@ -288,6 +289,19 @@ async fn every_clickable_element_hovers_visibly() {
     seen.extend(sweep(&mut app, "model picker"));
     app.modal = Modal::None;
 
+    let listed = app.sessions.clone();
+    app.sessions = vec![titled_meta(session, "root", 1)];
+    app.modal = Modal::Sessions;
+    seen.extend(sweep(&mut app, "session picker"));
+    app.session_delete = Some(SessionDeletePrompt {
+        session: titled_meta(session, "root", 1),
+        subagents: Some(2),
+    });
+    seen.extend(sweep(&mut app, "session delete confirmation"));
+    app.session_delete = None;
+    app.sessions = listed;
+    app.modal = Modal::None;
+
     app.modal = Modal::Permissions;
     app.permission_panel.install(sample_permissions());
     app.permission_panel.selection.select(Some(7));
@@ -365,6 +379,7 @@ async fn every_clickable_element_hovers_visibly() {
         "confirm button",
         "picker input",
         "picker row",
+        "session picker action",
         "provider submit",
         "provider cancel",
         "provider field",

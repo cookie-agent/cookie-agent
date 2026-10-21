@@ -415,7 +415,7 @@ impl App {
         }
     }
 
-    pub(super) fn note_sessions_changed(&mut self) {
+    pub(in crate::ui) fn note_sessions_changed(&mut self) {
         self.sessions_revision = self.sessions_revision.wrapping_add(1);
     }
 
@@ -441,7 +441,13 @@ impl App {
         {
             return;
         }
-        let rows = session_search_rows(self.picker_sessions(), query, now, &time_zone);
+        let rows = session_search_rows(
+            self.picker_sessions(),
+            query,
+            now,
+            &time_zone,
+            self.session_scope_all,
+        );
         self.session_search_rows_cache = SessionSearchRowsCache {
             query: query.to_owned(),
             sessions_revision: self.sessions_revision,
@@ -456,7 +462,7 @@ impl App {
         &self.session_search_rows_cache.rows
     }
 
-    pub(super) fn session_search_ids(&mut self) -> Vec<SessionId> {
+    pub(in crate::ui) fn session_search_ids(&mut self) -> Vec<SessionId> {
         self.current_session_search_rows()
             .iter()
             .filter_map(SessionSearchRow::session_id)

@@ -331,7 +331,10 @@ async fn session_picker_lists_only_root_sessions() {
 
     app.modal = Modal::Sessions;
     let frame = rendered_frame(&mut app, 80, 24);
-    assert!(frame.contains("Sessions (1/1)"), "picker header: {frame}");
+    assert!(
+        frame.contains("Sessions — this directory (1/1)"),
+        "picker header: {frame}"
+    );
     assert!(
         frame.contains("untitled"),
         "the root row is missing: {frame}"

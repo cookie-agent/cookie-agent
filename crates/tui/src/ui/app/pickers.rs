@@ -505,6 +505,16 @@ impl App {
     }
 
     pub(in crate::ui) async fn handle_session_picker(&mut self, key: KeyEvent) {
+        if self.handle_session_delete_key(key) {
+            return;
+        }
+        if key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char('a') => return self.toggle_session_scope().await,
+                KeyCode::Char('d') => return self.begin_session_delete(),
+                _ => {}
+            }
+        }
         let count = self.session_search_ids().len();
         if self.session_search.focus() == SearchPickerFocus::Input {
             match key.code {
@@ -526,11 +536,8 @@ impl App {
                 }
                 KeyCode::Left => self.session_search.input_mut().move_left(),
                 KeyCode::Right => self.session_search.input_mut().move_right(),
-                KeyCode::Home | KeyCode::Char('a')
-                    if key.code == KeyCode::Home || key.modifiers == KeyModifiers::CONTROL =>
-                {
-                    self.session_search.input_mut().move_buffer_home();
-                }
+                // Ctrl+A switches directories here, so only Home goes home.
+                KeyCode::Home => self.session_search.input_mut().move_buffer_home(),
                 KeyCode::End | KeyCode::Char('e')
                     if key.code == KeyCode::End || key.modifiers == KeyModifiers::CONTROL =>
                 {
@@ -561,6 +568,7 @@ impl App {
                 self.choose_picker_entry(self.picker_state.selected().unwrap_or(0))
                     .await
             }
+            KeyCode::Delete => self.begin_session_delete(),
             KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
                 self.session_search.reset();
                 self.session_search_changed();

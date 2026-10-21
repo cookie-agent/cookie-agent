@@ -31,6 +31,7 @@ mod render_preview;
 mod runtimes;
 mod scrolling;
 mod selection;
+mod session_delete;
 mod sessions_tree;
 mod streaming;
 mod subscriptions;

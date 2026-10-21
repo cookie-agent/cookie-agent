@@ -731,11 +731,13 @@ control build on it.
   while another process holds the tree's `owner.lock`.
 - A delete that succeeds sends the existing `sessions.changed` `removed`
   change to every connection.
-- **TUI.** In the session picker (`/sessions`), Ctrl+D, or Delete while the
-  list has focus, asks to delete the highlighted session, inline in the
-  picker; `y` (or the Delete button) deletes and Esc (or Cancel) keeps it.
-  Ctrl+A switches the list between this directory's sessions and every
-  directory's. The picker's key hints name both.
+- **TUI.** In the session picker (`/sessions`), Ctrl+D, Delete while the
+  list has focus, or the picker's Delete button asks to delete the
+  highlighted session, in a confirmation over the picker; `y` or Enter (or
+  Confirm) deletes and `n` or Esc (or Cancel) keeps it. Ctrl+A, or the
+  picker's directory button, switches the list between this directory's
+  sessions and every directory's, whose rows then name their directory. The
+  picker's action row names both keys.
 - **Web client.** Section 16.1's trash icon and confirmation.
 
 #### The method

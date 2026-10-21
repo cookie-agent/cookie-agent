@@ -111,6 +111,27 @@ In the TUI, click a past user message, choose **Revert**, and confirm. The TUI
 targets the sequence immediately before that user message and restores the
 message text to the composer for editing.
 
+## Delete
+
+Deleting a session removes its whole tree from disk: the root session, every
+subagent session under it, their `events.jsonl` and `metadata`, and the
+tree's artifacts (uploads and retained tool output). Only a root can be
+deleted; a subagent goes with its root. Its background calls are stopped
+without reporting. A delete cannot be undone: fork first to keep a copy,
+since a fork holds its own copy of the artifacts.
+
+The daemon refuses while any session of the tree is running or compacting,
+while another cookie process owns the tree, and when the root gained events
+since the client showed it, such as another client's new turn. It moves the
+tree's directory aside first and then removes it, so a crash in between
+leaves only a `.deleted-…` directory, which the next start removes. Every
+client is told the sessions are gone.
+
+In the TUI, open `/sessions`, highlight the session, press Ctrl+D (or Delete
+while the list has focus), and confirm with `y`. In the web client, use the
+trash icon on the session's row. See
+[`session.delete`](../reference/protocol.md#delete).
+
 ## Fork
 
 Fork copies a persisted prefix containing at least one submitted user message

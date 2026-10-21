@@ -118,7 +118,7 @@ intact.
 | `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](../sessions/memory.md#managing-memory) |
 | `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](../extend/plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](../extend/agents.md#permissions) |
-| `/sessions` (also `resume`, `load`, `continue`) | Choose a session |
+| `/sessions` (also `resume`, `load`, `continue`) | Choose a session, delete one, or list every directory's; see [Session picker](#session-picker) |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed only when the selected model accepts files; see [Attachments](#attachments) |
 | `/usage` | Show selected-session and session-tree usage |
@@ -181,6 +181,32 @@ count toward the double-Esc run-cancel gesture.
 Conversation copy removes role gutters, borders, and code-fence chrome, so code
 is copied as raw source. Clipboard writes use OSC 52 and work over SSH when the
 terminal emulator supports OSC 52.
+
+## Session picker
+
+`/sessions` lists the root sessions of the directory the TUI started in,
+newest first under day headings; type to filter them by title, and press
+Enter or click a row to open one.
+
+- **Ctrl+A**, or the **All directories** button, lists every directory's
+  sessions instead, each row naming its directory; press it again (the
+  button now reads **This directory**) to go back. In the search field,
+  Home still moves to the start of the text.
+- **Ctrl+D**, **Delete** while the list has focus, or the **Delete**
+  button asks to delete the highlighted session. The confirmation names
+  the session and says how many subagent sessions go with it; **y** or
+  Enter (or **Confirm**) deletes it, and **n** or Esc (or **Cancel**)
+  keeps it. While it is open, the rows behind it do not respond to clicks.
+
+Deleting removes the whole tree from disk: the session, its subagents, and
+their messages, tool output, and attachments. It cannot be undone. The
+daemon refuses while the session or one of its subagents is running, while
+another cookie process owns it, and when it changed since the picker showed
+it; the status line then says why. A daemon older than client protocol 1.5
+cannot delete sessions, and the TUI says so instead of asking. When the
+session you are viewing is deleted, from this TUI or another client, the
+TUI leaves it for a new session, as it does when it starts without one. See
+[Delete](../sessions/index.md#delete).
 
 ## User-message menu
 
