@@ -174,38 +174,50 @@ only where `global` is attached, and only when the run's agent may use it.
   output is bounded only by the event size limit, so a daemon with
   thousands of instances fails with a resource-limit error rather than
   being cut silently.
-- **Output.** Tags, grouped by machine and then by runtime:
+- **Output.** Tags, grouped by machine and then by runtime (format
+  settled 2026-10-21):
 
   ```text
   <runtimes>
+    <!-- global is attached to this session's root, so every subagent in this tree has it, whether or not its capabilities list it. -->
+    <global/>
     <machine name="yunhao-labserver" platform="linux">
-      <runtime id="global" lifetime="builtin" connected="true">
-        <capability name="global" takes_workspace="false"/>
-        <attachment name="global" capability="global" status="ready"/>
-      </runtime>
-      <runtime id="local" lifetime="builtin" connected="true" home="/home/u">
-        <capability name="coding" takes_workspace="true"/>
+      <runtime id="local" connected="true" home="/home/u">
+        <capability name="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
         <attachment name="local_cookie_agent" capability="coding" workspace="/home/u/src/cookie-agent" status="ready"/>
       </runtime>
     </machine>
     <machine name="labpc" platform="linux">
-      <runtime id="labpc" lifetime="spawned" connected="false" message="starts when a session needs it">
-        <capability name="coding" takes_workspace="true"/>
+      <runtime id="labpc" connected="false" starts_on_use="true" home="/home/u">
+        <capability name="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
       </runtime>
     </machine>
     <unplaced>
-      <runtime id="roamer" lifetime="dial_in" connected="false" message="…"/>
+      <runtime id="roamer" connected="false" message="runtime `roamer` disconnected: the other end closed the connection"/>
     </unplaced>
   </runtimes>
   ```
 
-  - `<attachment>` elements are the calling session's own attachments,
+  - **`global`** is never listed as a runtime, because it cannot be named
+    in `capabilities`. A single `<global/>` element, with the comment
+    above it, appears exactly when the root session of the caller's tree
+    has `global` attached. It is left out otherwise.
+  - **`<capability>`** carries the capability's own `description`, from
+    the `description` the runtime reports for each capability (as in
+    `runtimes.list`).
+  - **`starts_on_use="true"`** marks a template runtime that is not
+    running and that the daemon starts when a session needs it. It
+    replaces a `lifetime` attribute: whether a runtime is built in,
+    spawned, or dials in tells the model nothing more it can act on.
+  - **`<attachment>`** elements are the calling session's own attachments,
     and nothing else (decided 2026-10-21). Instances that other sessions
     have open are left out: they say nothing about where this session can
     work, and they would show other sessions' workspaces. Any runtime can
     still be named in `delegate_subagent`'s `capabilities`, opened or not.
-  - Attributes with no value (`home`, `platform`, `message`) are left out.
-    Values are XML-escaped.
+  - **Paths are absolute.** `home` is printed so the model can relate a
+    path to the machine's home directory.
+  - Attributes with no value (`home`, `platform`, `message`,
+    `starts_on_use`) are left out. Values are XML-escaped.
   - A runtime with no known machine goes under `<unplaced>`.
 - **Timing.** Its result describes the daemon at call time. A runtime that
   dials in or drops out later shows from the next call. `delegate_subagent`
