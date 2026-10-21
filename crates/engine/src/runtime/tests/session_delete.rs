@@ -74,9 +74,10 @@ async fn deleting_a_tree_removes_it_from_disk_and_tells_every_listener() {
         after,
         before
             .into_iter()
-            .filter(|name| *name != root.to_string())
+            // On Windows the tree's lock is a sidecar beside it, and goes too.
+            .filter(|name| *name != root.to_string() && *name != format!("{root}.owner.lock"))
             .collect::<Vec<_>>(),
-        "only the tree left the work dir, and no tombstone stayed"
+        "only the tree (and its lock) left the work dir, and no tombstone stayed"
     );
     assert!(
         engine
