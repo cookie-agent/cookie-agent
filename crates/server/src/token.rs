@@ -19,10 +19,17 @@ pub enum TokenError {
 
 /// Generates a fresh random 32-byte daemon bearer token as 43 base64url
 /// characters. The token is kept only in memory and dies with the process.
+/// It never starts with `-`, so a command line never takes it for a flag.
 pub fn generate_token() -> Result<Zeroizing<String>, TokenError> {
-    let mut bytes = [0_u8; TOKEN_BYTES];
-    getrandom::getrandom(&mut bytes).map_err(TokenError::Random)?;
-    Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes)))
+    let mut bytes = Zeroizing::new([0_u8; TOKEN_BYTES]);
+    loop {
+        getrandom::getrandom(&mut bytes[..]).map_err(TokenError::Random)?;
+        let token = Zeroizing::new(URL_SAFE_NO_PAD.encode(&bytes[..]));
+        // One draw in 64 starts with `-`; draw again.
+        if !token.starts_with('-') {
+            return Ok(token);
+        }
+    }
 }
 
 /// Formats the single machine-readable startup frame a supervisor parses.
@@ -64,6 +71,14 @@ mod tests {
                 token.as_str()
             );
             assert!(seen.insert(token.to_string()));
+        }
+    }
+
+    #[test]
+    fn generated_tokens_never_start_with_a_hyphen() {
+        for _ in 0..640 {
+            let token = generate_token().expect("token");
+            assert!(!token.starts_with('-'), "{}", token.as_str());
         }
     }
 

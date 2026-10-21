@@ -129,7 +129,12 @@ enum Command {
         url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
-        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
         token: Option<String>,
     },
     /// Print the daemon's web page with its token, `#token=<token>`, for a
@@ -141,7 +146,12 @@ enum Command {
         url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
-        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
         token: Option<String>,
         /// Also open the page in the system browser.
         #[arg(long)]
@@ -157,7 +167,12 @@ enum Command {
         url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
-        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
         token: Option<String>,
     },
     /// Remove a durable global managed-provider connection.
@@ -170,7 +185,12 @@ enum Command {
         url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
-        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
         token: Option<String>,
     },
     /// Serve a runtime to a daemon over the runtime protocol, as a
@@ -194,7 +214,8 @@ enum Command {
             long,
             global = true,
             env = "COOKIE_DAEMON_TOKEN",
-            hide_env_values = true
+            hide_env_values = true,
+            allow_hyphen_values = true
         )]
         token: Option<String>,
     },
@@ -213,7 +234,8 @@ enum Command {
             long,
             global = true,
             env = "COOKIE_DAEMON_TOKEN",
-            hide_env_values = true
+            hide_env_values = true,
+            allow_hyphen_values = true
         )]
         token: Option<String>,
     },
@@ -232,7 +254,8 @@ enum Command {
             long,
             global = true,
             env = "COOKIE_DAEMON_TOKEN",
-            hide_env_values = true
+            hide_env_values = true,
+            allow_hyphen_values = true
         )]
         token: Option<String>,
     },
@@ -251,7 +274,12 @@ enum Command {
         url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
-        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
         token: Option<String>,
     },
 }
@@ -279,7 +307,12 @@ enum RuntimeCommand {
         id: Option<String>,
         /// The daemon's bearer token, for `--daemon`; `[server] token` in
         /// this machine's `config.toml` when omitted.
-        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
         token: Option<String>,
         /// Limit `coding` to workspaces under this directory; repeat for
         /// several. A leading `~` is expanded. Any workspace when omitted.

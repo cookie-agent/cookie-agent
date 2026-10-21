@@ -592,6 +592,52 @@ fn cli_commands_and_removed_flags_are_exact() {
 }
 
 #[test]
+fn every_token_flag_takes_a_token_that_starts_with_a_hyphen() {
+    // Tokens written before generated ones avoided a leading `-` stay valid.
+    let token = format!("-e{}", &TEST_TOKEN[2..]);
+    assert_eq!(
+        Cli::try_parse_from(["cookie", "attach", "--token", &token])
+            .unwrap()
+            .command,
+        Some(Command::Attach {
+            url: None,
+            token: Some(token.clone()),
+        })
+    );
+    for arguments in [
+        &["cookie", "web", "--token"][..],
+        &["cookie", "connect", "--token"][..],
+        &["cookie", "disconnect", "--token"][..],
+        &["cookie", "mcp", "--token"][..],
+        &["cookie", "config", "status", "--token"][..],
+        &["cookie", "machine", "list", "--token"][..],
+        &["cookie", "memory", "list", "--token"][..],
+        &[
+            "cookie",
+            "runtime",
+            "serve",
+            "--daemon",
+            "ws://127.0.0.1:7419/ws",
+            "--id",
+            "devbox",
+            "--token",
+        ][..],
+    ] {
+        let mut arguments = arguments.to_vec();
+        arguments.push(&token);
+        if arguments[1] == "mcp" {
+            // `mcp`'s flags come before its subcommand.
+            arguments.push("list");
+        }
+        assert!(
+            Cli::try_parse_from(&arguments).is_ok(),
+            "{arguments:?}: {:?}",
+            Cli::try_parse_from(&arguments).err()
+        );
+    }
+}
+
+#[test]
 fn attach_connect_and_disconnect_are_cwd_independent() {
     for command in [
         Command::Attach {
