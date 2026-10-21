@@ -117,6 +117,9 @@ pub struct RuntimeListingState {
     /// The machine the runtime reported when it last connected; `None`
     /// when it reported none, or a malformed one.
     pub machine: Option<cookie_agent_protocol::runtime_protocol::RuntimeMachine>,
+    /// The home directory the runtime reported when it last connected;
+    /// `None` when it reported none, or a malformed one.
+    pub home: Option<String>,
     /// Why the last attempt to connect failed, while it is not connected.
     pub message: Option<String>,
 }

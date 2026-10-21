@@ -69,6 +69,13 @@
       },
       "type": "array"
     },
+    "home": {
+      "description": "The home directory of the user the runtime runs as, as a canonical\nabsolute path (runtime protocol 1.3.0). Clients show the paths under\nit as `~/…`, and a permission rule's leading `~` expands against it.\nAbsent when the runtime does not say; a reader treats one that\n[`is_valid_home`] refuses as absent.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "machine": {
       "anyOf": [
         {

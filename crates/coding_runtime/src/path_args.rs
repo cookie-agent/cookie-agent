@@ -1,4 +1,6 @@
 //! Lexical expansion at the file-path argument boundary, before preparation or authorization.
+//! `~` expands against the home the runtime reports ([`crate::runtime_home`]),
+//! so a path under it gets the label a `~/` permission rule expands to.
 
 use std::path::PathBuf;
 
@@ -7,7 +9,10 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 
 pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     let path = String::deserialize(deserializer)?;
-    expand_home(path, || cookie_agent_protocol::paths::home_dir().ok()).map_err(D::Error::custom)
+    expand_home(path, || {
+        crate::runtime_home().map(std::path::Path::to_owned)
+    })
+    .map_err(D::Error::custom)
 }
 
 fn expand_home(

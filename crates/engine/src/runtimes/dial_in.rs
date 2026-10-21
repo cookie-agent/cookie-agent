@@ -157,6 +157,7 @@ impl DialInTemplate {
             machine: result
                 .machine
                 .filter(cookie_agent_protocol::runtime_protocol::RuntimeMachine::is_valid),
+            home: client.home(),
             message: None,
         };
         *lock(&self.connection) = Some(client.clone());

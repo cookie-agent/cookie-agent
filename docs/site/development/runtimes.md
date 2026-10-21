@@ -46,8 +46,8 @@ The daemon sends `runtime/initialize` first, with its `protocol_version`, the
 machine, and your capabilities:
 
 ```json
-{"protocol_version":"1.2.0","platform":"linux",
- "machine":{"id":"3f9a…","host_name":"buildbox"},
+{"protocol_version":"1.3.0","platform":"linux",
+ "machine":{"id":"3f9a…","host_name":"buildbox"},"home":"/home/ada",
  "capabilities":[{"name":"console","kind":"database","takes_workspace":false,
                   "description":"A SQL console on the reporting replica"}]}
 ```
@@ -60,6 +60,10 @@ machine, and your capabilities:
   into [machines](../concepts/machines.md) by it, and the `host_name` names a
   new machine. Leave it out and the runtime gets a machine of its own. See
   [Machines](../reference/runtime-protocol.md#machines).
+- **The home** is optional: your user's home directory, canonical and
+  absolute. Clients then show your paths under it as `~/…`, and permission
+  rules starting with `~/` mean paths under it. Leave it out and clients show
+  absolute paths. See [Home](../reference/runtime-protocol.md#home).
 - **Capabilities** each have a `name`, a free-form `kind` label, a
   `description` for people choosing one, and whether they take a workspace.
   Their tools come later, per instance. See
@@ -148,7 +152,7 @@ prepared = {}
 def handle(method, params):
     if method == "runtime/initialize":
         # A real runtime refuses another major with -32002 (see Version).
-        return {"protocol_version": "1.2.0", "capabilities": [{
+        return {"protocol_version": "1.3.0", "capabilities": [{
             "name": "clock", "kind": "clock", "takes_workspace": False,
             "description": "The build server's clock"}]}
     if method == "capability/open":

@@ -18,6 +18,19 @@ use cookie_agent_runtime_api::{
 
 use super::registry::{RuntimeListingState, RuntimeTemplate, StartError, StartedRuntime};
 
+/// The home directory the built-in runtimes report: the daemon's own, as
+/// the coding runtime reports its home (canonical), once per process.
+pub(crate) fn daemon_home() -> Option<String> {
+    static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        cookie_agent_protocol::paths::canonical_home_dir()
+            .ok()
+            .map(|home| home.to_string_lossy().into_owned())
+            .filter(|home| cookie_agent_protocol::runtime_protocol::is_valid_home(home))
+    })
+    .clone()
+}
+
 /// The `global` capability: the daemon's MCP servers, plugins, and global
 /// tools, with no workspace.
 fn global_capability() -> RuntimeCapabilityInfo {
@@ -64,6 +77,7 @@ impl RuntimeTemplate for GlobalTemplate {
             capabilities: vec![global_capability()],
             platform: None,
             machine: RuntimeMachine::this_machine(),
+            home: daemon_home(),
             message: None,
         }
     }
@@ -85,7 +99,7 @@ impl GlobalTemplate {
         skills: SkillRegistry,
     ) -> StartedRuntime {
         StartedRuntime {
-            info: RuntimeInfo::global(),
+            info: RuntimeInfo::global().with_home(daemon_home()),
             providers,
             skills,
             connection: None,
@@ -112,7 +126,7 @@ impl LocalTemplate {
         let skills = cookie_agent_config::load_project_skills(workspace.root())
             .map_err(|error| format!("project skills: {error}"))?;
         Ok(StartedRuntime {
-            info: RuntimeInfo::coding(LOCAL_RUNTIME_ID, workspace.clone()),
+            info: RuntimeInfo::coding(LOCAL_RUNTIME_ID, workspace.clone()).with_home(daemon_home()),
             providers: (self.tools)(workspace),
             skills,
             connection: None,
@@ -145,6 +159,7 @@ impl RuntimeTemplate for LocalTemplate {
             capabilities: vec![coding_capability()],
             platform: self.workspace.platform().map(str::to_owned),
             machine: RuntimeMachine::this_machine(),
+            home: daemon_home(),
             message: None,
         }
     }

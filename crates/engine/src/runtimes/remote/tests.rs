@@ -1304,6 +1304,32 @@ fn fake_result(tools: serde_json::Value) -> serde_json::Value {
     })
 }
 
+/// A runtime may report its home directory (runtime protocol 1.3.0): its
+/// instances then carry it, for permission rules to expand `~` against. One
+/// that reports none, or one that is not an absolute path, has no home.
+#[tokio::test]
+async fn an_instance_carries_the_home_its_runtime_reported() {
+    let opened = || fake_result(serde_json::json!([]));
+    let with_home = |home: serde_json::Value| {
+        let mut hello = fake_hello();
+        hello["home"] = home;
+        hello
+    };
+    for (hello, expected) in [
+        (with_home(serde_json::json!("/home/ada")), Some("/home/ada")),
+        (
+            with_home(serde_json::json!(r"C:\Users\ada")),
+            Some(r"C:\Users\ada"),
+        ),
+        (fake_hello(), None),
+        (with_home(serde_json::json!("relative/home")), None),
+        (with_home(serde_json::json!("/home/a\nda")), None),
+    ] {
+        let started = initialize_fake_with(hello.clone(), opened()).await.unwrap();
+        assert_eq!(started.info.home(), expected, "{hello}");
+    }
+}
+
 /// A runtime of any kind needs only to speak the protocol: the daemon takes
 /// its self-declared kind as a label, its workspace and platform as
 /// optional, and its tools' permission actions as labels of its own.
@@ -1879,6 +1905,11 @@ async fn a_runtime_joins_the_machine_of_the_id_it_reports() {
     assert_eq!(
         listing.machine,
         cookie_agent_protocol::runtime_protocol::RuntimeMachine::this_machine()
+    );
+    // The coding runtime reports its user's home, canonical.
+    assert_eq!(
+        listing.home.map(std::path::PathBuf::from),
+        cookie_agent_protocol::paths::canonical_home_dir().ok()
     );
     assert_eq!(
         fixture.engine.runtime_machine("remote"),

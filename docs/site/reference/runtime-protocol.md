@@ -129,7 +129,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.2.0**
+The protocol version is a semver string, currently **1.3.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -173,6 +173,9 @@ the protocol: HTTP statuses with the reason before the upgrade, close code
 1011 with the reason after it, and which of them are permanent (see
 [Dial-in refusals](#dial-in-refusals)). Its messages did not change; the
 version records the contract a runtime may now rely on to stop dialing in.
+1.3.0 added the optional `home` of `runtime/initialize`'s result: the
+runtime's home directory, which clients show paths under as `~/…` and
+permission rules expand a leading `~` against (see [Home](#home)).
 
 ## Capabilities and instances
 
@@ -196,6 +199,26 @@ machine named after the host name. A runtime that reports no machine gets a
 machine of its own, named after its runtime ID. The user regroups, renames,
 and merges machines from any client; a runtime never learns its machine's
 name. See the [memory spec](../specs/memory.md#3-machines).
+
+## Home
+
+A runtime may report its **home directory** in `runtime/initialize`. Paths
+are stored canonical and absolute everywhere, and the home is only how they
+are shown and how permission rules name them:
+
+- **Display.** Clients show a path of the runtime, such as an attachment's
+  workspace, as `~` for the home itself and `~/rest` under it, and absolute
+  otherwise. A runtime that reports no home is fine: clients show its paths
+  absolute. The daemon passes the home on as `home` in `runtimes.list` (see
+  the [protocol reference](protocol.md#runtimes)).
+- **Permission rules.** A rule pattern `~` or `~/…` expands against the home
+  of the runtime the tool runs on, so `read: ~/notes/**` means the notes
+  under the home on that runtime's machine. On a runtime that reports no home
+  the pattern stays literal and matches no absolute path (see
+  [Agents](../extend/agents.md#paths-under-the-home-directory)).
+
+The coding runtime expands a path argument's leading `~` against the same
+canonical home, so the path a tool reads and the rule that governs it agree.
 
 ## Lifecycle
 
@@ -289,6 +312,7 @@ or enables OAuth, which stays with the daemon's global runtime.
 | `features` | Optional: what the runtime's configuration enables; none are defined yet. |
 | `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt with the runtime's machine. |
 | `machine` | Optional, since 1.1.0: the machine the runtime runs on, `{ id, host_name? }`. `id` is a stable, opaque ID of 1 to 128 printable ASCII bytes; runtimes reporting one ID belong to one machine. `host_name` (at most 255 bytes) names a machine the daemon has not seen. `cookie runtime serve` reports the digest `cookie` uses as its machine ID and the host name; a runtime that cannot tell leaves it out, and the daemon reads a malformed one as left out. See [Machines](#machines). |
+| `home` | Optional, since 1.3.0: the home directory of the user the runtime runs as, a canonical absolute path on its machine (`/home/ada`, `C:\Users\ada`), at most 4096 bytes without control characters. The coding runtime reports its user's home, canonicalized. The daemon reads one that is not an absolute path as left out. See [Home](#home). |
 | `capabilities` | What the runtime offers: `name` (`[a-z][a-z0-9_]{0,31}`, unique within the runtime); `kind`, a self-declared label such as `coding` (a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens) that the daemon shows to clients and in approval reviews and never branches on; `takes_workspace`; and an optional `description`. The coding runtime offers `coding`, which takes a workspace. |
 | `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |
 

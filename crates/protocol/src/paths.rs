@@ -25,6 +25,19 @@ pub fn home_dir() -> Result<PathBuf, PathError> {
     std::env::home_dir().ok_or(PathError::HomeUnavailable)
 }
 
+/// Returns the current user's home directory canonicalized, as a runtime
+/// reports it (`home` of `runtime/initialize`): see [`canonicalize`]. The
+/// home as [`home_dir`] gives it when it cannot be canonicalized.
+///
+/// # Errors
+///
+/// Returns [`PathError::HomeUnavailable`] when the standard library cannot
+/// determine a home directory for the current user.
+pub fn canonical_home_dir() -> Result<PathBuf, PathError> {
+    let home = home_dir()?;
+    Ok(canonicalize(&home).unwrap_or(home))
+}
+
 /// Returns the unified Cookie Agent per-user data root.
 ///
 /// # Errors

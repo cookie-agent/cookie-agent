@@ -199,6 +199,7 @@ impl ProtocolTemplate {
             machine: result
                 .machine
                 .filter(cookie_agent_protocol::runtime_protocol::RuntimeMachine::is_valid),
+            home: client.home(),
             message: None,
         };
         *lock(&self.connection) = Some(client.clone());
@@ -570,6 +571,9 @@ struct ClientInner {
     capabilities: OnceLock<Vec<RuntimeCapabilityInfo>>,
     /// The runtime's operating system, from its initialize reply.
     platform: Mutex<Option<String>>,
+    /// The runtime's home directory, from its initialize reply, when it
+    /// reported a valid one.
+    home: Mutex<Option<String>>,
     /// Each instance's declared tools, by instance handle (`None` for a
     /// plugin's implicit instance): from its open reply or its latest
     /// `tools_changed`.
@@ -697,6 +701,7 @@ impl RuntimeClient {
             shutdown_grace,
             capabilities: OnceLock::new(),
             platform: Mutex::default(),
+            home: Mutex::default(),
             tools: Mutex::default(),
             executions: Mutex::default(),
             presentations: Mutex::default(),
@@ -757,6 +762,10 @@ impl RuntimeClient {
         }
         let _ = inner.capabilities.set(capabilities);
         lock(&inner.platform).clone_from(&result.platform);
+        *lock(&inner.home) = result
+            .home
+            .clone()
+            .filter(|home| cookie_agent_protocol::runtime_protocol::is_valid_home(home));
         Ok((Self { inner }, result))
     }
 
@@ -788,6 +797,7 @@ impl RuntimeClient {
             shutdown_grace,
             capabilities: OnceLock::from(Vec::new()),
             platform: Mutex::default(),
+            home: Mutex::default(),
             tools: Mutex::default(),
             executions: Mutex::default(),
             presentations: Mutex::default(),
@@ -975,7 +985,8 @@ impl RuntimeClient {
             offered.kind,
             attachment_name.as_str(),
             workspace,
-        );
+        )
+        .with_home(self.home());
         Ok(StartedRuntime {
             info,
             providers: vec![Arc::new(RemoteToolProvider {
@@ -993,6 +1004,12 @@ impl RuntimeClient {
     /// The operating system the runtime reported.
     fn platform(&self) -> Option<String> {
         lock(&self.inner.platform).clone()
+    }
+
+    /// The home directory the runtime reported, when it reported a valid
+    /// one.
+    pub(crate) fn home(&self) -> Option<String> {
+        lock(&self.inner.home).clone()
     }
 
     /// What the process last wrote outside the protocol.

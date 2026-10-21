@@ -514,6 +514,9 @@ impl Server {
             features: Vec::new(),
             platform: Some(std::env::consts::OS.to_owned()),
             machine: cookie_agent_protocol::runtime_protocol::RuntimeMachine::this_machine(),
+            home: crate::runtime_home()
+                .map(|home| home.to_string_lossy().into_owned())
+                .filter(|home| cookie_agent_protocol::runtime_protocol::is_valid_home(home)),
             capabilities: vec![CapabilityDeclaration {
                 name: cookie_agent_protocol::CapabilityName::coding(),
                 kind: RuntimeKind::new(cookie_agent_runtime_api::CODING_RUNTIME_KIND)

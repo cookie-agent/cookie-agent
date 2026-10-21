@@ -263,6 +263,13 @@ pub struct InitializeResult {
     /// by (runtime protocol 1.1.0). Absent when the runtime cannot tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<RuntimeMachine>,
+    /// The home directory of the user the runtime runs as, as a canonical
+    /// absolute path (runtime protocol 1.3.0). Clients show the paths under
+    /// it as `~/…`, and a permission rule's leading `~` expands against it.
+    /// Absent when the runtime does not say; a reader treats one that
+    /// [`is_valid_home`] refuses as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
     /// What the runtime offers; sessions attach each one separately.
     pub capabilities: Vec<CapabilityDeclaration>,
     /// The runtime sends producer messages to the sessions attached to its
@@ -315,6 +322,26 @@ impl RuntimeMachine {
                 host.len() <= Self::MAX_HOST_NAME_BYTES && !host.chars().any(char::is_control)
             })
     }
+}
+
+/// The longest home directory a runtime reports, in bytes.
+pub const MAX_HOME_BYTES: usize = 4096;
+
+/// Whether `home` is a home directory a reader takes: an absolute path in
+/// POSIX (`/home/user`) or Windows (`C:\Users\user`, `C:/Users/user`,
+/// `\\server\share\user`) form, of 1 to [`MAX_HOME_BYTES`] bytes and
+/// without control characters. Only the spelling is checked: the path is on
+/// the runtime's machine, which need not be the reader's.
+#[must_use]
+pub fn is_valid_home(home: &str) -> bool {
+    let bytes = home.as_bytes();
+    let absolute = bytes.first() == Some(&b'/')
+        || home.starts_with(r"\\")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/'));
+    absolute && home.len() <= MAX_HOME_BYTES && !home.chars().any(char::is_control)
 }
 
 /// One capability a runtime offers.
@@ -890,6 +917,33 @@ mod tests {
             id: id.to_owned(),
             host_name: host_name.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn a_home_is_an_absolute_path_of_either_platform() {
+        for home in [
+            "/",
+            "/home/ada",
+            r"C:\Users\ada",
+            "C:/Users/ada",
+            r"\\server\share\ada",
+        ] {
+            assert!(super::is_valid_home(home), "{home}");
+        }
+        let long = format!("/{}", "a".repeat(super::MAX_HOME_BYTES));
+        for home in [
+            "",
+            "~",
+            "~/x",
+            "home/ada",
+            "C:",
+            "C:ada",
+            "/home/a\nda",
+            &long,
+        ] {
+            assert!(!super::is_valid_home(home), "{home:?}");
+        }
+        assert!(super::is_valid_home(&long[..super::MAX_HOME_BYTES]));
     }
 
     #[test]

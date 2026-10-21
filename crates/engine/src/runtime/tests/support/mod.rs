@@ -70,9 +70,36 @@ pub(crate) struct FakeRuntimeTemplate {
     pub(crate) fixed_workspace: Option<std::path::PathBuf>,
     pub(crate) tools: FakeRuntimeTools,
     pub(crate) starts: AtomicUsize,
+    /// The home directory it reports, which a workspace's leading `~`
+    /// expands against, as the coding runtime's does; `None` reports none
+    /// and expands nothing.
+    pub(crate) home: Option<std::path::PathBuf>,
 }
 
 impl FakeRuntimeTemplate {
+    /// A template that requires a workspace and reports `home`, expanding a
+    /// workspace's leading `~` against it.
+    pub(crate) fn with_home(
+        id: &'static str,
+        home: &std::path::Path,
+        tools: FakeRuntimeTools,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            fixed_workspace: None,
+            tools,
+            starts: AtomicUsize::new(0),
+            home: Some(home.to_owned()),
+        })
+    }
+
+    /// The home directory it reports.
+    fn reported_home(&self) -> Option<String> {
+        self.home
+            .as_ref()
+            .map(|home| home.to_string_lossy().into_owned())
+    }
+
     /// A template that requires a workspace.
     pub(crate) fn with_workspace(id: &'static str, tools: FakeRuntimeTools) -> Arc<Self> {
         Arc::new(Self {
@@ -80,6 +107,7 @@ impl FakeRuntimeTemplate {
             fixed_workspace: None,
             tools,
             starts: AtomicUsize::new(0),
+            home: None,
         })
     }
 
@@ -94,6 +122,7 @@ impl FakeRuntimeTemplate {
             fixed_workspace: Some(workspace.to_owned()),
             tools,
             starts: AtomicUsize::new(0),
+            home: None,
         })
     }
 }
@@ -125,6 +154,7 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
                 id: format!("fake-machine-{}", self.id),
                 host_name: Some(self.id.to_owned()),
             }),
+            home: self.reported_home(),
             message: None,
         }
     }
@@ -145,11 +175,16 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
         let path = workspace
             .or(self.fixed_workspace.as_deref())
             .ok_or_else(|| refused("no workspace".into()))?;
+        let path = match (&self.home, path.strip_prefix("~")) {
+            (Some(home), Ok(rest)) => home.join(rest),
+            _ => path.to_owned(),
+        };
         let workspace =
-            crate::WorkspaceContext::new(path).map_err(|error| refused(error.to_string()))?;
+            crate::WorkspaceContext::new(&path).map_err(|error| refused(error.to_string()))?;
         self.starts.fetch_add(1, Ordering::SeqCst);
         Ok(crate::StartedRuntime {
-            info: cookie_agent_runtime_api::RuntimeInfo::coding(self.id, workspace.clone()),
+            info: cookie_agent_runtime_api::RuntimeInfo::coding(self.id, workspace.clone())
+                .with_home(self.reported_home()),
             providers: (self.tools)(&workspace),
             skills: cookie_agent_config::load_project_skills(workspace.root())
                 .map_err(|error| refused(error.to_string()))?,

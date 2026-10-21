@@ -190,39 +190,34 @@ pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     if !Path::new(&path).is_absolute() {
         return path;
     }
-    #[cfg(not(windows))]
-    {
-        if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
-            return relative;
-        }
-        if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
-            let home = normalized_path(&home);
-            if let Some(relative) = strip_absolute_prefix(&path, &home) {
-                return if relative == "." {
-                    "~".into()
-                } else {
-                    format!("~/{relative}")
-                };
-            }
-        }
-        path
+    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
+        return relative;
     }
-    #[cfg(windows)]
-    {
-        if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
-            return relative;
-        }
-        if let Ok(home) = cookie_agent_protocol::paths::home_dir()
-            && let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&home))
-        {
+    // The home this runtime reports, then the home as the environment spells
+    // it, which differ when it is reached through a symbolic link.
+    let homes = [
+        runtime_home().map(Path::to_owned),
+        cookie_agent_protocol::paths::home_dir().ok(),
+    ];
+    for home in homes.into_iter().flatten() {
+        if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&home)) {
             return if relative == "." {
                 "~".into()
             } else {
                 format!("~/{relative}")
             };
         }
-        path
     }
+    path
+}
+
+/// The home directory this runtime reports in `runtime/initialize` and
+/// expands a path argument's `~` against: the user's home, canonicalized
+/// ([`cookie_agent_protocol::paths::canonical_home_dir`]) once per process.
+pub(crate) fn runtime_home() -> Option<&'static Path> {
+    static HOME: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| cookie_agent_protocol::paths::canonical_home_dir().ok())
+        .as_deref()
 }
 
 fn strip_absolute_prefix(path: &str, prefix: &str) -> Option<String> {

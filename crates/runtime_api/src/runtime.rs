@@ -76,6 +76,7 @@ pub struct RuntimeInfo {
     kind: RuntimeKind,
     attachment_name: String,
     workspace: Option<WorkspaceContext>,
+    home: Option<String>,
 }
 
 impl RuntimeInfo {
@@ -89,6 +90,7 @@ impl RuntimeInfo {
             kind: RuntimeKind::new(GLOBAL_RUNTIME_ID).expect("`global` is a valid runtime kind"),
             attachment_name: GLOBAL_RUNTIME_ID.to_owned(),
             workspace: None,
+            home: None,
         }
     }
 
@@ -108,6 +110,7 @@ impl RuntimeInfo {
             kind,
             attachment_name: attachment_name.to_owned(),
             workspace,
+            home: None,
         }
     }
 
@@ -121,6 +124,7 @@ impl RuntimeInfo {
             kind: RuntimeKind::new(CODING_RUNTIME_KIND).expect("`coding` is a valid runtime kind"),
             attachment_name: coding_attachment_name(id, workspace.root()),
             workspace: Some(workspace),
+            home: None,
         }
     }
 
@@ -151,6 +155,22 @@ impl RuntimeInfo {
     #[must_use]
     pub const fn workspace(&self) -> Option<&WorkspaceContext> {
         self.workspace.as_ref()
+    }
+
+    /// This instance, on a runtime that reported `home` as its home
+    /// directory.
+    #[must_use]
+    pub fn with_home(mut self, home: Option<String>) -> Self {
+        self.home = home;
+        self
+    }
+
+    /// The home directory the runtime reported: a canonical absolute path on
+    /// its machine, which a permission rule's leading `~` expands against.
+    /// `None` when it reported none.
+    #[must_use]
+    pub fn home(&self) -> Option<&str> {
+        self.home.as_deref()
     }
 }
 
