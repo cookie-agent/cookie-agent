@@ -77,10 +77,12 @@ const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center j
 const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
 /// A status bar indicator that does something when clicked.
 const STATUS_BUTTON: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke";
-/// A session row's buttons (rename, delete), which show only over the
-/// hovered (or focused) row: centred on its two lines, over the row's
-/// right padding, side by side.
-const ROW_ACTIONS: &str = "absolute top-1/2 right-0.5 -translate-y-1/2 items-center gap-0.5";
+/// A session row's buttons (move, rename, delete), which show only over
+/// the hovered (or focused) row: side by side, centred on its two lines,
+/// laid over the row's right end on the row's hover colour, which fades in
+/// from their left. The row keeps its layout underneath: only the part
+/// they cover is hidden.
+const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 rounded-r-md pr-0.5 pl-6 bg-[linear-gradient(to_right,transparent,var(--color-toasted)_1.5rem)] dark:bg-[linear-gradient(to_right,transparent,var(--color-ember)_1.5rem)]";
 /// One of them: at rest in the row's hover colour so it blends in (the
 /// open row's hover colour is the same), one palette step darker on hover
 /// (lighter in dark), and further still when pressed. 44 px square.
@@ -379,21 +381,6 @@ impl RowActions {
     }
 }
 
-/// The right padding a row keeps clear of its action buttons: room for
-/// them while they show (or the keyboard is in the row), else the row's
-/// own, which leaves its badges the room. A third button left of the
-/// pencil makes it wider still.
-fn row_padding(shown: bool, buttons: usize) -> &'static str {
-    match (shown, buttons) {
-        (true, 0 | 1) => "pr-12",
-        (false, 0 | 1) => "pr-3 group-has-focus-visible:pr-12",
-        (true, 2) => "pr-24",
-        (false, 2) => "pr-3 group-has-focus-visible:pr-24",
-        (true, _) => "pr-36",
-        (false, _) => "pr-3 group-has-focus-visible:pr-36",
-    }
-}
-
 /// A root session's row: a click opens it. On hover (or a long press on
 /// a touch screen) its buttons offer to rename it, in place, and to
 /// delete it, behind an inline confirmation. Its second line says where
@@ -465,7 +452,6 @@ fn session_row(
     } = actions;
     let is_renaming = move || renaming.get() == Some(session_id);
     let movable = move || workspace.has_projects.get();
-    let buttons = move || 1 + usize::from(workspace.can_delete.get()) + usize::from(movable());
     let shown = move || hovered.get() == Some(session_id) && !is_renaming();
     // A mouse drags the row onto a project's header at once; a finger
     // after a long press, which let go in place reveals the buttons.
@@ -514,8 +500,7 @@ fn session_row(
                 // One class closure for all of it: `class:` toggles beside
                 // it would be dropped each time it changes.
                 class=move || format!(
-                    "{ROW} no-callout select-none {} {} group-hover:bg-toasted group-has-focus-visible:bg-toasted dark:group-hover:bg-ember dark:group-has-focus-visible:bg-ember",
-                    row_padding(shown(), buttons()),
+                    "{ROW} no-callout select-none pr-3 {} group-hover:bg-toasted group-has-focus-visible:bg-toasted dark:group-hover:bg-ember dark:group-has-focus-visible:bg-ember",
                     if current() { "bg-toasted dark:bg-ember" } else { "" },
                 )
                 aria-current=move || current().then_some("true")

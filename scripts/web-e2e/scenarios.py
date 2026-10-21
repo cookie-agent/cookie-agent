@@ -2689,6 +2689,15 @@ def click_centred(browser, selector):
     browser.click(selector)
 
 
+# A row's title width and its shown badges, which a hover must not move.
+ROW_LAYOUT = """
+const row = document.querySelector(arguments[0]);
+const title = row.querySelector('[data-session-title]').getBoundingClientRect();
+return [Math.round(title.width), [...row.querySelectorAll('[data-session-badges] [data-badge]')]
+    .filter((b) => !b.hidden).map((b) => [b.textContent.trim(), Math.round(b.getBoundingClientRect().left)])];
+"""
+
+
 def projects(browser):
     """Projects in the sidebar: sections instead of the workspace filter,
     a project made in the editor with an emoji, default attachments, a
@@ -2795,8 +2804,14 @@ def projects(browser):
     print("a finger drag moved a session into the project")
     # Move to project… sends one back out.
     row = 'aside [data-session-row="%s"]' % second
+    hover(browser, "#transcript")
+    before = browser.script(ROW_LAYOUT, row)
     hover(browser, row)
     browser.wait("the move button", lambda: shown(browser, row + " [data-move]"))
+    # The buttons lie over the row's end: its title, time, and badges keep
+    # their layout.
+    time.sleep(0.3)
+    assert browser.script(ROW_LAYOUT, row) == before, (before, browser.script(ROW_LAYOUT, row))
     order = browser.script(
         "return [...document.querySelectorAll(arguments[0] + ' [data-row-actions] button')].map((b) => b.getAttribute('aria-label'))",
         row,
@@ -2820,6 +2835,26 @@ def projects(browser):
         header(project),
     )
     assert labels == ["Edit the project", "Delete the project", "New session in this project"], labels
+    # Its buttons are clear, so they take the header's colour, as No
+    # project's + does: the same buttons, styled the same.
+    width = browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().width", header(project))
+    perform(browser, [{
+        "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
+        "actions": [{"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find(header(project))},
+                     "x": int(-width / 2 + 30), "y": -8}],
+    }])
+    time.sleep(0.3)
+    for button in ("[data-header-edit]", "[data-header-delete]", "[data-header-new]"):
+        colour = browser.script(
+            "return getComputedStyle(document.querySelector(arguments[0])).backgroundColor",
+            header(project) + " " + button,
+        )
+        assert colour in ("rgba(0, 0, 0, 0)", "transparent"), (button, colour)
+    assert browser.script(
+        "return document.querySelector(arguments[0]).className === document.querySelector(arguments[1]).className",
+        header(project) + " [data-header-new]",
+        header("none") + " [data-header-new]",
+    ), "a project's + is styled unlike No project's"
     browser.shot("project-header-hover")
 
     # Folding is remembered across a reload.

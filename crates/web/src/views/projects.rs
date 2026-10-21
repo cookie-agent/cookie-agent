@@ -11,10 +11,7 @@ use cookie_agent_client_state::{
 use cookie_agent_protocol::{ProjectId, ProjectInfo, SessionId};
 use leptos::{ev, html, prelude::*};
 
-use super::{
-    BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, ROW_ACTION, RowActions, choice_line,
-    session_row,
-};
+use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, RowActions, choice_line, session_row};
 use crate::{
     browser,
     icons::Glyph,
@@ -30,6 +27,16 @@ const LONG_PRESS: std::time::Duration = std::time::Duration::from_millis(500);
 /// A drop target: a project section's header, named by its
 /// `data-project-drop` (the section's key).
 const DROP: &str = "[data-project-drop]";
+
+/// A header's button (pencil, trash, `+`): clear at rest, so it shows the
+/// header's own colour (hovered or pressed with it), one step darker under
+/// the pointer, darker still pressed. Pressing it never presses the header.
+const HEADER_ACTION: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
+
+/// What the pencil and trash lie on over the header's name: the header's
+/// hover colour, fading in from their left, and its pressed colour while
+/// the name is pressed.
+const HEADER_COVER: &str = "pl-6 bg-[linear-gradient(to_right,transparent,var(--color-toasted)_1.5rem)] dark:bg-[linear-gradient(to_right,transparent,var(--color-ember)_1.5rem)] group-has-[[data-section-toggle]:active]:bg-[linear-gradient(to_right,transparent,var(--color-crust)_1.5rem)] dark:group-has-[[data-section-toggle]:active]:bg-[linear-gradient(to_right,transparent,var(--color-smoke)_1.5rem)]";
 
 /// A text field of the editor.
 const FIELD: &str = "min-h-11 w-full min-w-0 rounded-md border border-crust bg-cream px-3 text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
@@ -515,12 +522,10 @@ fn project_header(
                     }
                 }
             >
-                // The name's line keeps clear of the buttons beside it; the
+                // The name's line keeps clear of `+`; the pencil and trash
+                // lie over it when they show, without moving it. The
                 // badges' line below has the width to itself.
-                <span class=move || format!(
-                    "flex min-h-11 w-full items-center gap-2 pl-2 {}",
-                    if shown_buttons() { "pr-36" } else { "pr-12" },
-                )>
+                <span class="flex min-h-11 w-full items-center gap-2 pr-12 pl-2">
                     <span class="inline-flex shrink-0 opacity-70 transition-transform" class:rotate-90=move || open.get()>
                         <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
                     </span>
@@ -541,11 +546,17 @@ fn project_header(
             </button>
             // Level with the name's line: the pencil and delete (on hover,
             // or after a long press), then `+`, always there.
-            <div class="absolute top-0 right-0.5 flex h-11 items-center gap-0.5" data-header-actions>
+            <div
+                class=move || format!(
+                    "absolute top-0 right-0 flex h-11 items-center gap-0.5 rounded-tr-md pr-0.5 {}",
+                    if shown_buttons() { HEADER_COVER } else { "" },
+                )
+                data-header-actions
+            >
                 <Show when=shown.clone()>
                     <button
                         type="button"
-                        class=ROW_ACTION
+                        class=HEADER_ACTION
                         aria-label="Edit the project"
                         title="Edit the project"
                         data-header-edit
@@ -561,7 +572,7 @@ fn project_header(
                     </button>
                     <button
                         type="button"
-                        class=ROW_ACTION
+                        class=HEADER_ACTION
                         aria-label="Delete the project"
                         title="Delete the project with its sessions and memories"
                         data-header-delete
@@ -578,7 +589,7 @@ fn project_header(
                 </Show>
                 <button
                     type="button"
-                    class=move || if shown() { ROW_ACTION.to_owned() } else { ICON_BUTTON.to_owned() }
+                    class=HEADER_ACTION
                     aria-label=if editable { "New session in this project" } else { "New session in no project" }
                     title=if editable { "New session in this project" } else { "New session in no project" }
                     data-header-new

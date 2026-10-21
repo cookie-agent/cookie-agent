@@ -146,7 +146,9 @@ pub(super) fn group_view(workspace: Workspace, group: Group, set: CardSet) -> im
     };
     let cards = group.cards.clone();
     view! {
-        <div class="flex flex-col gap-2" data-group=name data-open=move || shown.get().to_string()>
+        // Two cards a row only where the cards' own container is wide (the
+        // new session's page), one in a narrow one (the project editor).
+        <div class="@container flex flex-col gap-2" data-group=name data-open=move || shown.get().to_string()>
             <button
                 type="button"
                 class="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
@@ -164,7 +166,7 @@ pub(super) fn group_view(workspace: Workspace, group: Group, set: CardSet) -> im
                 <span class="min-w-0 flex-1 truncate text-sm" data-group-summary>{summary}</span>
             </button>
             <Show when=move || shown.get()>
-                <div class="grid grid-cols-1 items-start gap-2 sm:grid-cols-2">
+                <div class="grid grid-cols-1 items-start gap-2 @lg:grid-cols-2">
                     {cards.clone().into_iter().map(|card| card_view(workspace, card, set)).collect_view()}
                 </div>
             </Show>
