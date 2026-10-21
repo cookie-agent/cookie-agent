@@ -183,6 +183,16 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// Which attach buttons [`AttachButtons`] shows for the draft's model.
+pub(super) fn attach_buttons(workspace: Workspace) -> crate::attach::AttachButtons {
+    crate::attach::attach_buttons(
+        &workspace
+            .accepted_media()
+            .map(|accepted| accepted.media)
+            .unwrap_or_default(),
+    )
+}
+
 /// The attach and camera buttons and their hidden file inputs, offered
 /// only for the media the selected model accepts.
 #[component]

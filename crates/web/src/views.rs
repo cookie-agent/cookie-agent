@@ -1013,21 +1013,31 @@ const COMPOSER_SECONDARY: &str = "border border-crust bg-parchment text-espresso
 const COMPOSER_LINE: f64 = 20.0;
 const COMPOSER_PADDING: f64 = 24.0;
 
-/// Sizes the composer to its text, from one line to five, and keeps its
-/// text clear of the buttons on either side of the box.
+/// The composer's left padding for the attach buttons in the box's
+/// bottom left corner: 4 px in, 36 px a button, 2 px between, and 8 px of
+/// air; 12 px without one. A phone also has the camera, which wider
+/// windows (`md`) hide.
+fn attach_padding(buttons: crate::attach::AttachButtons) -> &'static str {
+    match buttons {
+        crate::attach::AttachButtons::None => "pl-3",
+        crate::attach::AttachButtons::File => "pl-12",
+        crate::attach::AttachButtons::FileAndCamera => "pl-[5.375rem] md:pl-12",
+    }
+}
+
+/// The composer's right padding for its buttons in the bottom right
+/// corner: one round button (Send or Stop), or Queue and Steer, 6 px
+/// apart.
+fn actions_padding(buttons: ComposerButtons) -> &'static str {
+    match buttons {
+        ComposerButtons::SteerAndQueue => "pr-[5.625rem]",
+        ComposerButtons::Send { .. } | ComposerButtons::Stop => "pr-12",
+    }
+}
+
+/// Sizes the composer to its text, from one line to five.
 fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) {
     let style = web_sys::HtmlElement::style(textarea);
-    let side = |selector: &str| {
-        textarea
-            .parent_element()
-            .and_then(|box_| box_.query_selector(selector).ok().flatten())
-            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
-            .map_or(0, |element| element.offset_width())
-    };
-    // The buttons' width and a little air; 12 px with none.
-    let pad = |width: i32| format!("{}px", if width > 0 { width + 8 } else { 12 });
-    let _ = style.set_property("padding-left", &pad(side("[data-composer-left]")));
-    let _ = style.set_property("padding-right", &pad(side("[data-composer-actions]")));
     let _ = style.set_property("height", "auto");
     let (height, scrolls) = crate::keys::composer_height(
         f64::from(textarea.scroll_height()),
@@ -1043,6 +1053,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let textarea = NodeRef::<html::Textarea>::new();
     let blurred = StoredValue::new(0_u64);
     let completions = move || completions(&workspace.composer.get());
+    let attach_buttons = Memo::new(move |_| crate::views::depth::attach_buttons(workspace));
     let buttons = Memo::new(move |_| {
         let has_input = workspace.composer.with(|text| !text.trim().is_empty())
             || !workspace.attachments.with(Vec::is_empty);
@@ -1165,8 +1176,17 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     node_ref=textarea
                     id="composer"
                     rows="1"
-                    class="block w-full resize-none appearance-none border-0 bg-transparent py-3 font-mono text-sm leading-5 shadow-none outline-none focus:outline-none"
-                    placeholder="Message · / for commands"
+                    // Its sides keep clear of the buttons in the box's corners,
+                    // from the first render: padding by which buttons show,
+                    // not by measuring them once they have.
+                    class=move || {
+                        format!(
+                            "block w-full resize-none appearance-none border-0 bg-transparent py-3 font-mono text-sm leading-5 shadow-none outline-none focus:outline-none {} {}",
+                            attach_padding(attach_buttons.get()),
+                            actions_padding(buttons.get()),
+                        )
+                    }
+                    placeholder="Message"
                     disabled=disabled
                     prop:value=move || workspace.composer.get()
                     on:input=move |event| {

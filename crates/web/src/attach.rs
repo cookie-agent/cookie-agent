@@ -28,6 +28,28 @@ pub fn accepts_images(media: &[InputMedia]) -> bool {
     media.iter().any(|entry| entry.kind.as_str() == "image")
 }
 
+/// The attach buttons in the composer's box, by what the model takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachButtons {
+    /// The model takes no files.
+    None,
+    /// Attach a file.
+    File,
+    /// Attach a file, and on a phone take a photo too.
+    FileAndCamera,
+}
+
+/// Which attach buttons the composer shows for a model taking `media`.
+pub fn attach_buttons(media: &[InputMedia]) -> AttachButtons {
+    if media.is_empty() {
+        AttachButtons::None
+    } else if accepts_images(media) {
+        AttachButtons::FileAndCamera
+    } else {
+        AttachButtons::File
+    }
+}
+
 /// The image limits a downscale must meet.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageLimits {
@@ -183,8 +205,8 @@ mod tests {
     use cookie_agent_client_state::uploads::{AcceptedMedia, RefusedLimits};
 
     use super::{
-        Assessment, ImageLimits, accept_attribute, accepts_images, assess, downscale_target,
-        image_limits, shrink_again, tightened,
+        Assessment, AttachButtons, ImageLimits, accept_attribute, accepts_images, assess,
+        attach_buttons, downscale_target, image_limits, shrink_again, tightened,
     };
 
     fn png_chunk(bytes: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
@@ -246,8 +268,15 @@ mod tests {
             "application/pdf,image/jpeg,image/png"
         );
         assert_eq!(accept_attribute(&[]), "");
-        assert!(accepts_images(&[pdf.clone(), image]));
-        assert!(!accepts_images(&[pdf]));
+        assert!(accepts_images(&[pdf.clone(), image.clone()]));
+        assert!(!accepts_images(std::slice::from_ref(&pdf)));
+        // The composer's buttons, whose room its padding keeps.
+        assert_eq!(attach_buttons(&[]), AttachButtons::None);
+        assert_eq!(
+            attach_buttons(std::slice::from_ref(&pdf)),
+            AttachButtons::File
+        );
+        assert_eq!(attach_buttons(&[pdf, image]), AttachButtons::FileAndCamera);
     }
 
     #[test]
