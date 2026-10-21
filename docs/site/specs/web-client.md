@@ -11,7 +11,7 @@ added browser authentication, and on the
 [runtime capabilities spec](runtime-capabilities.md), which added the
 listening daemon. The addendum of 2026-10-21
 ([section 16](#16-addendum-2026-10-21-web-layout-v2-and-session-deletion))
-adds web layout v2 and session deletion, decided and being implemented.
+adds web layout v2 and session deletion, implemented on 2026-10-21.
 
 ## 1. Goal and scope
 
@@ -689,10 +689,11 @@ None. Every choice was settled on 2026-10-19:
 
 ## 16. Addendum (2026-10-21): web layout v2 and session deletion
 
-Status: **decided** (2026-10-21) and being implemented. Session deletion
-(section 16.2) is a minor protocol addition, client protocol 1.5.0, built in
-the daemon and the TUI; the web client's layout (section 16.1) and its delete
-control build on it.
+Status: **implemented** (2026-10-21). Session deletion (section 16.2) is a
+minor protocol addition, client protocol 1.5.0, in the daemon, the shared
+client state, the TUI, and the web client; the web client's layout (section
+16.1) and its delete control build on it. Section 16.1 also records the
+decisions the web layout settled while it was built.
 
 ### 16.1 Web layout v2
 
@@ -708,15 +709,39 @@ control build on it.
   - **Chat:** sessions and the transcript;
   - **Agents:** agent documents and presets;
   - **Settings:** `config.toml`, providers, MCP, plugins, and client
-    preferences;
+    preferences, in the sections Configuration, Providers, MCP servers,
+    Plugins, and This browser;
   - **Machines and runtimes;**
   - **Memory.**
 - **Theme toggle.** At the bottom of the rail.
+- **Desktop chrome.** Once connected, the app header is gone: the
+  connection indicator and the theme toggle sit at the rail's foot.
 - **Session panel.** Keeps only the commands and settings that belong to
   the session.
 - **Deleting a session.** A trash icon appears on a session row on hover,
   or on a long press on touch screens. It opens a confirmation, and only
   the confirmation sends `session.delete`.
+
+**Decided while the layout was built (2026-10-21):**
+
+- **Subagent tree.** The open session's subagents nest under its row in the
+  sessions list, labelled "Subagents". The tree expands on its own while a
+  subagent is live; `/agent-panel show|hide|auto` controls the expansion.
+- **Children.** Child nodes have no delete control: a subagent goes with
+  its root (`not_a_root_session`).
+- **Delegate rows.** A delegation row in the transcript shows the child's
+  live activity.
+- **Title bar when viewing a child.** A breadcrumb from the root to the
+  child, which collapses on phones to ‹ followed by the child's title.
+- **The mobile layout (approved):**
+  - breakpoints below 640 px (phone), 640 to 1023 px (tablet), and 1024 px
+    and up (desktop);
+  - landscape phones use the tablet layout;
+  - a drawer holds the rail and the sessions;
+  - the session's commands open in a bottom action sheet;
+  - the bottom bar is one row, and it hides while the composer has focus;
+  - the status line shows only when it has something to say;
+  - lists open their items as list → detail views.
 
 ### 16.2 Session deletion
 
