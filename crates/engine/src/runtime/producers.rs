@@ -331,6 +331,7 @@ impl Engine {
                     _ => true,
                 });
         }
+        self.refresh_live_waiting(session);
         self.reconcile_goal_registration(session, harvested.as_ref())?;
         self.record_recovery_diagnostics(session)?;
         if self
@@ -907,6 +908,7 @@ impl Engine {
                 .or_default()
                 .registrations
                 .retain(|record| record.id != producer_id);
+            engine.refresh_live_waiting(session);
             Ok(())
         })
         .await
@@ -1286,6 +1288,7 @@ impl Engine {
                 authority,
                 registered: Instant::now(),
             });
+        self.refresh_live_waiting(session);
         Ok(id)
     }
 
@@ -1423,6 +1426,41 @@ impl Engine {
                 .registrations
                 .retain(|record| record.id != producer_id);
         }
+        self.refresh_live_waiting(session);
+    }
+
+    /// Tells the store what `session`'s live producers make it wait on
+    /// (`SessionMeta::waiting_on`), which it announces when that changed: a
+    /// background call's registration, a background delegation's, or an
+    /// external one, and a direct child running a turn on its own. Agent
+    /// mail slots, a subagent report's send, and the goal's own
+    /// registration count for nothing here; the fold reports an active goal.
+    pub(super) fn refresh_live_waiting(&self, session: SessionId) {
+        let mut kinds = Vec::new();
+        if let Some(state) = self
+            .inner
+            .sessions
+            .producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session)
+        {
+            for registration in &state.registrations {
+                let kind = match &registration.authority.owner {
+                    ProducerOwner::Tool { .. } => WaitingOn::BackgroundCall,
+                    ProducerOwner::Delegation { .. } => WaitingOn::Subagent,
+                    ProducerOwner::External { .. } => WaitingOn::ExternalProducer,
+                    _ => continue,
+                };
+                kinds.push(kind);
+            }
+        }
+        if !kinds.contains(&WaitingOn::Subagent) && self.has_running_subagent_turn(session) {
+            kinds.push(WaitingOn::Subagent);
+        }
+        kinds.sort();
+        kinds.dedup();
+        self.inner.store.set_live_waiting(session, kinds);
     }
 
     #[cfg(test)]
@@ -1572,6 +1610,7 @@ impl Engine {
                     record.id != producer_id || record.authority.owner != authority
                 });
             }
+            self.refresh_live_waiting(session);
             return Ok(false);
         }
 
@@ -1923,6 +1962,7 @@ impl Engine {
                     _ => true,
                 });
         }
+        self.refresh_live_waiting(session);
         self.kill_reverted_background_jobs(session)?;
         self.reconcile_goal_registration(session, None)
     }

@@ -5,6 +5,26 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.9.0
+
+- `SessionMeta` gains `waiting_on`: what will start the session's next run
+  without the user, each kind once, omitted when nothing will. Kinds
+  (an open enum `WaitingOn`): `goal` (the root's goal is active; folded from
+  the goal events, so the metadata cache keeps it), `background_call` (a
+  background call is running), `subagent` (a direct child runs a turn on its
+  own, or a background delegation is queued or running), and
+  `external_producer` (a plugin or runtime holds a live producer
+  registration for the session). The last three are the daemon's live state,
+  never cached, and end with it. It is reported whatever `status` says;
+  clients show a running session as running first (see
+  [What a session waits on](protocol.md#what-a-session-waits-on)).
+- `sessions.changed` `upserted` announces every change of `waiting_on`: a
+  goal activated, paused, resumed, completed, or cancelled, a background
+  call detached or reported, a child's turn started or ended, a registration
+  made or dropped.
+- A 1.8 client ignores the member; a 1.9 client reading a 1.8 daemon sees no
+  session waiting on anything.
+
 ## 1.8.0
 
 - Projects: `projects.list`, `project.get`, `project.create`,

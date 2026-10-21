@@ -2021,3 +2021,25 @@ title bar, in one column, Start pinned at the foot):
 
 **Follow-ups:** a subagent's handle truncates before its agent's name, and
 the open session's row has a chevron that turns with its tree.
+
+## 19. Addendum (2026-10-21): session row status icons
+
+Client protocol 1.9.0 adds `SessionMeta.waiting_on`: what will start a
+session's next run without the user, kept current by `sessions.changed`
+`upserted` (see [What a session waits on](../reference/protocol.md#what-a-session-waits-on)).
+Session rows show one status icon, from
+`cookie_agent_client_state::activity::session_activity`:
+
+- **Running** (`status` is `running`): the running icon. It takes precedence:
+  a running session shows as running whatever it waits on.
+- **Waiting on a producer** (not running, `waiting_on` not empty): the
+  waiting icon, for an active goal, a background call, a subagent's turn,
+  or an external producer. Its tooltip names the kinds.
+- **Completed or idle** with nothing to wait on: no icon.
+- A failed, cancelled, or interrupted last run with nothing to wait on is a
+  `Problem` to the helper; rows keep showing it as they do today.
+
+A daemon before 1.9 sends no `waiting_on`
+(`activity::daemon_reports_waiting`), so its sessions never show the waiting
+icon. The TUI's session picker marks rows `⏳` (running) and `⏰` (waiting)
+after the title; the web rows take the icons when they are reworked.

@@ -90,6 +90,7 @@ fn session_meta(session_id: SessionId) -> SessionMeta {
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
         attachments: Vec::new(),
+        waiting_on: Vec::new(),
     }
 }
 
@@ -235,6 +236,52 @@ fn session_search_groups_local_days_and_sorts_newest_first() {
             .filter(|row| matches!(row, SessionSearchRow::Header(_)))
             .all(|row| row.session_id().is_none())
     );
+}
+
+/// A row marks a running session `⏳` and one a producer will wake `⏰`,
+/// running first; an idle, completed, or failed session carries no marker.
+#[test]
+fn session_rows_mark_running_and_waiting_sessions() {
+    use cookie_agent_protocol::WaitingOn;
+    let now = "2026-08-06T12:00:00Z".parse().expect("timestamp");
+    let titled = |title: &str, status, waiting_on: &[WaitingOn]| {
+        let mut meta = session_meta(SessionId::new_v7());
+        meta.title = Some(cookie_agent_protocol::SessionTitle::new(title).expect("title"));
+        meta.status = status;
+        meta.waiting_on = waiting_on.to_vec();
+        meta
+    };
+    let sessions = [
+        titled("idle", SessionStatus::Idle, &[]),
+        titled("failed", SessionStatus::Failed, &[]),
+        titled("running", SessionStatus::Running, &[WaitingOn::Goal]),
+        titled("goal", SessionStatus::Completed, &[WaitingOn::Goal]),
+        titled("job", SessionStatus::Idle, &[WaitingOn::BackgroundCall]),
+    ];
+    let rows = session_search_rows(&sessions, "", now, &jiff::tz::TimeZone::UTC, None);
+    let label = |title: &str| {
+        rows.iter()
+            .find_map(|row| match row {
+                SessionSearchRow::Session { label, .. } if label.starts_with(title) => {
+                    Some(label.clone())
+                }
+                _ => None,
+            })
+            .expect("row")
+    };
+    assert!(label("idle").starts_with("idle  ("), "{}", label("idle"));
+    assert!(
+        label("failed").starts_with("failed  ("),
+        "{}",
+        label("failed")
+    );
+    assert!(
+        label("running").starts_with("running ⏳  ("),
+        "{}",
+        label("running")
+    );
+    assert!(label("goal").starts_with("goal ⏰  ("), "{}", label("goal"));
+    assert!(label("job").starts_with("job ⏰  ("), "{}", label("job"));
 }
 
 #[test]

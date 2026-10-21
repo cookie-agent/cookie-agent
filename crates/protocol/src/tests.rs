@@ -1935,11 +1935,16 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
             workspace: Some("/srv/api".into()),
         }],
         project: Some(crate::ProjectId::new("0199a1b2-c3d4").expect("project ID")),
+        waiting_on: vec![WaitingOn::Goal, WaitingOn::BackgroundCall],
     };
 
     let encoded = serde_json::to_value(&meta).expect("serialize session metadata");
     assert_eq!(encoded["attachments"][0]["workspace"], "/srv/api");
     assert_eq!(encoded["project"], "0199a1b2-c3d4");
+    assert_eq!(
+        encoded["waiting_on"],
+        serde_json::json!(["goal", "background_call"])
+    );
     let decoded: SessionMeta =
         serde_json::from_value(encoded.clone()).expect("deserialize session metadata");
     assert_eq!(decoded, meta);
@@ -1948,10 +1953,29 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     let mut older = encoded;
     older.as_object_mut().unwrap().remove("attachments");
     older.as_object_mut().unwrap().remove("project");
+    older.as_object_mut().unwrap().remove("waiting_on");
     let decoded: SessionMeta = serde_json::from_value(older).expect("older session metadata");
     assert!(decoded.attachments.is_empty());
     // Nor, before 1.8.0, a project.
     assert_eq!(decoded.project, None);
+    // Nor, before 1.9.0, what the session waits on.
+    assert!(decoded.waiting_on.is_empty());
+
+    // Nothing to wait on is omitted, and a kind from a newer daemon still
+    // reads as something the session waits on.
+    let idle = SessionMeta {
+        waiting_on: Vec::new(),
+        ..meta.clone()
+    };
+    let encoded = serde_json::to_value(&idle).expect("serialize idle metadata");
+    assert!(encoded.get("waiting_on").is_none());
+    let mut newer = serde_json::to_value(&meta).expect("serialize session metadata");
+    newer["waiting_on"] = serde_json::json!(["goal", "timer"]);
+    let decoded: SessionMeta = serde_json::from_value(newer).expect("newer session metadata");
+    assert_eq!(
+        decoded.waiting_on,
+        vec![WaitingOn::Goal, WaitingOn::Unknown]
+    );
 }
 
 #[test]

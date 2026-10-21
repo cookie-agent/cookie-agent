@@ -232,7 +232,7 @@ impl Engine {
             .list_roots()
             .into_iter()
             .filter(|meta| matches!(meta.origin, SessionOrigin::Root))
-            .map(|meta| self.resolve_session_project(meta, &known))
+            .map(|meta| self.client_session_meta(meta, &known))
             .collect()
     }
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
@@ -262,7 +262,7 @@ impl Engine {
                 .recv();
         }
         // A delegated session shows its root's project.
-        Ok(self.resolve_session_project(session.metadata(), &self.project_ids()))
+        Ok(self.client_session_meta(session.metadata(), &self.project_ids()))
     }
 
     #[cfg(test)]
@@ -428,7 +428,10 @@ impl Engine {
         id: SessionId,
     ) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
         Ok(cookie_agent_protocol::SessionTree {
-            session: self.inner.store.summary(id)?.meta,
+            session: self
+                .inner
+                .store
+                .with_live_waiting(self.inner.store.summary(id)?.meta),
             children: self
                 .children(id)?
                 .into_iter()
@@ -463,7 +466,7 @@ impl Engine {
         }
         self.connect_session(id).await;
         self.drain_queued_input(id).await;
-        Ok(meta)
+        Ok(self.inner.store.with_live_waiting(meta))
     }
     /// Delegated sessions a revert to `cut` deletes: children whose
     /// reservation the cut removes (and no kept reservation resumes), with all
@@ -548,6 +551,7 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|child| !deleted.contains(child));
         self.inner.delegation_events.forget_sessions(deleted);
+        self.inner.store.forget_live_waiting(deleted);
     }
 
     /// Reverts `session_id` to `through_seq`. With `expected_last_seq`, a

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs,
     path::Path,
     sync::{
@@ -29,6 +29,7 @@ use cookie_agent_protocol::{
     SessionOrigin, SessionPermissionOverlay, SessionTitle, SessionTitleChange, Sha256Digest,
     ToolCallId, Usage,
 };
+use cookie_agent_protocol::{GoalStatus, SessionStatus, WaitingOn};
 
 use crate::ownership::owner_lock_path;
 
@@ -2499,6 +2500,227 @@ fn attaching_and_detaching_keep_the_metadata_attachments_current() {
     older.as_object_mut().unwrap().remove("attachments");
     fs::write(meta_path(&dir), serde_json::to_vec(&older).unwrap()).unwrap();
     assert_eq!(read_test_meta_cache(&store, session_id), meta);
+}
+
+/// The first upserted metadata of `session_id` among `changes` received so
+/// far.
+fn announced_waiting(
+    changes: &mut tokio::sync::broadcast::Receiver<
+        cookie_agent_protocol::SessionsChangedNotification,
+    >,
+    session_id: SessionId,
+) -> Vec<WaitingOn> {
+    loop {
+        match changes.try_recv().expect("an index change") {
+            cookie_agent_protocol::SessionsChangedNotification::Upserted { session }
+                if session.session_id == session_id =>
+            {
+                break session.waiting_on;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// An active goal makes the session wait on it: activating and resuming
+/// the goal add it, pausing removes it, and the fold, the `metadata` cache,
+/// a rebuild of that cache, and `sessions.changed` all agree. It is reported
+/// while a run is going too; clients show the run.
+#[test]
+fn an_active_goal_is_what_the_session_waits_on() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+    let session_id = persist_test_session(&store);
+    let run_id = start_test_attempt(&store, session_id).run_id;
+    assert!(store.get(session_id).unwrap().meta.waiting_on.is_empty());
+    let mut changes = store.subscribe_index_changes();
+    let goal_id = cookie_agent_protocol::GoalId::new_v7();
+    let append = |payload| {
+        store
+            .append(session_id, None, test_origin(), payload)
+            .expect("append goal event");
+    };
+    let lifecycle = |status, revision| EventPayload::GoalLifecycleChanged {
+        goal_id,
+        status,
+        revision,
+        selection: None,
+    };
+
+    append(EventPayload::GoalActivated {
+        goal_id,
+        objective: "ship it".into(),
+        revision: 1,
+        selection: None,
+    });
+    let meta = store.get(session_id).unwrap().meta.clone();
+    assert_eq!(meta.waiting_on, [WaitingOn::Goal]);
+    // The run goes on: running and waiting are separate facts.
+    assert_eq!(meta.status, SessionStatus::Running);
+    assert_eq!(read_test_meta_cache(&store, session_id), meta);
+    assert_eq!(
+        announced_waiting(&mut changes, session_id),
+        [WaitingOn::Goal]
+    );
+
+    store
+        .append(
+            session_id,
+            Some(run_id),
+            test_origin(),
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
+        )
+        .unwrap();
+    let meta = store.get(session_id).unwrap().meta.clone();
+    assert_eq!(meta.status, SessionStatus::Completed);
+    assert_eq!(meta.waiting_on, [WaitingOn::Goal]);
+
+    // A checklist revision keeps the goal active.
+    append(EventPayload::GoalChecklistRevised {
+        goal_id,
+        items: vec![cookie_agent_protocol::GoalItem {
+            description: "write it".into(),
+            finished: false,
+        }],
+        revision: 2,
+    });
+    assert_eq!(
+        store.get(session_id).unwrap().meta.waiting_on,
+        [WaitingOn::Goal]
+    );
+    // An invalid transition changes nothing: completing needs every item
+    // finished.
+    append(lifecycle(GoalStatus::Completed, 3));
+    assert_eq!(
+        store.get(session_id).unwrap().meta.waiting_on,
+        [WaitingOn::Goal]
+    );
+
+    // A paused goal schedules nothing.
+    while changes.try_recv().is_ok() {}
+    append(lifecycle(GoalStatus::Paused, 4));
+    let meta = store.get(session_id).unwrap().meta.clone();
+    assert!(meta.waiting_on.is_empty());
+    assert_eq!(read_test_meta_cache(&store, session_id), meta);
+    assert!(announced_waiting(&mut changes, session_id).is_empty());
+
+    append(lifecycle(GoalStatus::Active, 5));
+    let meta = store.get(session_id).unwrap().meta.clone();
+    assert_eq!(meta.waiting_on, [WaitingOn::Goal]);
+    assert_eq!(
+        announced_waiting(&mut changes, session_id),
+        [WaitingOn::Goal]
+    );
+
+    // A fresh fold and a rebuilt cache keep it.
+    let refolded = projection(store.get(session_id).unwrap().log.clone()).unwrap();
+    assert_eq!(refolded.meta.waiting_on, [WaitingOn::Goal]);
+    let dir = store.session_dir(session_id);
+    fs::write(meta_path(&dir), b"not metadata").unwrap();
+    assert_eq!(
+        store.read_meta(session_id, &dir).unwrap().waiting_on,
+        [WaitingOn::Goal]
+    );
+    assert_eq!(
+        read_test_meta_cache(&store, session_id).waiting_on,
+        [WaitingOn::Goal]
+    );
+
+    // Cancelling ends the goal for good.
+    append(lifecycle(GoalStatus::Cancelled, 6));
+    assert!(store.get(session_id).unwrap().meta.waiting_on.is_empty());
+    let refolded = projection(store.get(session_id).unwrap().log.clone()).unwrap();
+    assert!(refolded.meta.waiting_on.is_empty());
+}
+
+/// What the engine's live producers make a session wait on joins the
+/// fold's goal wherever metadata leaves the store, is announced only when
+/// it changes, and never reaches the projection or the `metadata` cache.
+#[test]
+fn live_waits_join_the_goal_in_announcements_but_never_the_cache() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+    let session_id = persist_test_session(&store);
+    store
+        .append(
+            session_id,
+            None,
+            test_origin(),
+            EventPayload::GoalActivated {
+                goal_id: cookie_agent_protocol::GoalId::new_v7(),
+                objective: "ship it".into(),
+                revision: 1,
+                selection: None,
+            },
+        )
+        .unwrap();
+    let mut changes = store.subscribe_index_changes();
+
+    store.set_live_waiting(
+        session_id,
+        vec![WaitingOn::BackgroundCall, WaitingOn::ExternalProducer],
+    );
+    assert_eq!(
+        announced_waiting(&mut changes, session_id),
+        [
+            WaitingOn::Goal,
+            WaitingOn::BackgroundCall,
+            WaitingOn::ExternalProducer
+        ]
+    );
+    let meta = store.get(session_id).unwrap().meta.clone();
+    assert_eq!(meta.waiting_on, [WaitingOn::Goal]);
+    assert_eq!(read_test_meta_cache(&store, session_id), meta);
+    assert_eq!(
+        store.with_live_waiting(meta.clone()).waiting_on,
+        [
+            WaitingOn::Goal,
+            WaitingOn::BackgroundCall,
+            WaitingOn::ExternalProducer
+        ]
+    );
+
+    // The same waits again announce nothing.
+    store.set_live_waiting(
+        session_id,
+        vec![WaitingOn::BackgroundCall, WaitingOn::ExternalProducer],
+    );
+    assert!(changes.try_recv().is_err());
+
+    // An appended event's announcement carries them too.
+    store
+        .append(
+            session_id,
+            None,
+            test_origin(),
+            EventPayload::SessionProjectSet {
+                project: Some(cookie_agent_protocol::ProjectId::new("0199a1b2-c3d4").unwrap()),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        announced_waiting(&mut changes, session_id),
+        [
+            WaitingOn::Goal,
+            WaitingOn::BackgroundCall,
+            WaitingOn::ExternalProducer
+        ]
+    );
+
+    store.set_live_waiting(session_id, Vec::new());
+    assert_eq!(
+        announced_waiting(&mut changes, session_id),
+        [WaitingOn::Goal]
+    );
+    store.set_live_waiting(session_id, vec![WaitingOn::Subagent]);
+    store.forget_live_waiting(&HashSet::from([session_id]));
+    assert_eq!(store.with_live_waiting(meta).waiting_on, [WaitingOn::Goal]);
 }
 
 /// In-run records that only move the tip leave the `metadata` cache alone;

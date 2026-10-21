@@ -226,6 +226,8 @@ struct JobRun {
     run_id: cookie_agent_protocol::RunId,
     control: Arc<JobControl>,
     captured: tokio::task::JoinHandle<Vec<String>>,
+    /// `sessions.changed`, subscribed before the run started.
+    changes: tokio::sync::broadcast::Receiver<cookie_agent_protocol::SessionsChangedNotification>,
 }
 
 /// Starts a run whose model calls `job` with `arguments`, then answers
@@ -262,6 +264,7 @@ async fn start_job_run(
         .create_session(selection.clone())
         .expect("job session")
         .session_id;
+    let changes = fixture.engine.subscribe_session_changes();
     let run_id = fixture
         .engine
         .start_run(
@@ -283,6 +286,7 @@ async fn start_job_run(
         run_id,
         control,
         captured,
+        changes,
     }
 }
 
@@ -405,6 +409,82 @@ async fn a_call_started_in_the_background_reports_its_foreground_result_later() 
         !run.control
             .was_killed
             .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+/// A background call makes its session wait on it from detach until its
+/// result is accepted: `sessions.changed` announces both, listings agree in
+/// between, and neither the fold nor the `metadata` cache holds it.
+#[tokio::test]
+async fn a_background_call_is_what_its_session_waits_on_until_it_reports() {
+    let mut run = start_job_run(
+        serde_json::json!({"command": "finish", "background": true}),
+        vec![
+            MatchedScriptedResponse::last_message_role("tool", scripted_text_body("waiting")),
+            MatchedScriptedResponse::last_message_contains(
+                "background_result",
+                scripted_text_body("noted"),
+            ),
+        ],
+        3,
+    )
+    .await;
+    let engine = run.fixture.engine.clone();
+    let session_id = run.session_id;
+    await_upserted(
+        &mut run.changes,
+        session_id,
+        "waiting on the background call",
+        |meta| meta.waiting_on == [cookie_agent_protocol::WaitingOn::BackgroundCall],
+    )
+    .await;
+    // The run ends while the call goes on: the session is waiting, no
+    // longer running.
+    let announced = await_upserted(
+        &mut run.changes,
+        session_id,
+        "the run ended, still waiting",
+        |meta| meta.status != cookie_agent_protocol::SessionStatus::Running,
+    )
+    .await;
+    assert_eq!(
+        announced.waiting_on,
+        [cookie_agent_protocol::WaitingOn::BackgroundCall]
+    );
+    wait_for_run_inactive(&engine, run.run_id).await;
+    assert_eq!(
+        engine.get_session(session_id).expect("session").waiting_on,
+        [cookie_agent_protocol::WaitingOn::BackgroundCall]
+    );
+    assert!(
+        engine
+            .inner
+            .store
+            .get(session_id)
+            .expect("projection")
+            .meta
+            .waiting_on
+            .is_empty()
+    );
+
+    run.control.release.notify_one();
+    await_upserted(
+        &mut run.changes,
+        session_id,
+        "the background call reported",
+        |meta| meta.waiting_on.is_empty(),
+    )
+    .await;
+    assert!(background_result(&engine.inner.store.get(session_id).unwrap()).is_some());
+    with_watchdog("woken run", run.captured)
+        .await
+        .expect("requests");
+    assert!(
+        engine
+            .get_session(session_id)
+            .expect("session")
+            .waiting_on
+            .is_empty()
     );
 }
 

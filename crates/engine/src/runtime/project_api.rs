@@ -278,12 +278,15 @@ impl Engine {
     }
 
     /// `meta` as clients are shown it: a delegated session takes its root's
-    /// project, and a project that no longer exists reads as none.
-    pub(crate) fn resolve_session_project(
+    /// project, a project that no longer exists reads as none, and
+    /// `waiting_on` adds what the engine's live producers make the session
+    /// wait on.
+    pub(crate) fn client_session_meta(
         &self,
-        mut meta: SessionMeta,
+        meta: SessionMeta,
         known: &[ProjectId],
     ) -> SessionMeta {
+        let mut meta = self.inner.store.with_live_waiting(meta);
         if let SessionOrigin::Delegated {
             root_session_id, ..
         } = meta.origin
@@ -365,7 +368,7 @@ impl Engine {
         let engine = self.clone();
         Ok(crate::blocking::off_worker(move || {
             let known = engine.project_ids();
-            engine.resolve_session_project(meta, &known)
+            engine.client_session_meta(meta, &known)
         }))
     }
 

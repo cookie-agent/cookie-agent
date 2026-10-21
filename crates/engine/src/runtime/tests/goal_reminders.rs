@@ -7,7 +7,7 @@ use cookie_agent_protocol::{
     SessionGoalSetParams,
 };
 
-use cookie_agent_protocol::GoalReminderKind;
+use cookie_agent_protocol::{GoalReminderKind, WaitingOn};
 
 #[tokio::test]
 async fn consumed_goal_reminder_stays_continuation_across_pause_restart_and_resume() {
@@ -623,4 +623,120 @@ async fn discarded_initial_reminder_and_fresh_replacement_are_both_started() {
     assert!(requests[1].contains(&goal.goal_id.to_string()));
     assert!(requests[2].contains(&replacement.goal_id.to_string()));
     fixture.engine.shutdown().await;
+}
+
+/// What a root waits on follows its goal and its producers: a background
+/// delegation's registration, an active goal, and nothing once the goal is
+/// paused and the delegation reported. `sessions.changed` announces each
+/// change and `session.get` agrees.
+#[tokio::test]
+async fn sessions_changed_announces_what_a_root_waits_on() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session_id = engine
+        .create_session(selection)
+        .expect("waiting session")
+        .session_id;
+    let mut changes = engine.subscribe_session_changes();
+    let waiting = |kinds: &'static [WaitingOn]| {
+        move |meta: &cookie_agent_protocol::SessionMeta| meta.waiting_on == kinds
+    };
+
+    let blocker_authority = producer_authority();
+    let blocker = engine
+        .register_producer(session_id, blocker_authority.clone())
+        .await
+        .expect("delegation registration");
+    await_upserted(
+        &mut changes,
+        session_id,
+        "waiting on the delegation",
+        waiting(&[WaitingOn::Subagent]),
+    )
+    .await;
+
+    // The delegation holds the goal's reminder back, so no run starts.
+    let goal = engine
+        .set_session_goal(
+            SessionGoalSetParams {
+                session_id,
+                objective: "Report what the session waits on".into(),
+                selection: None,
+            },
+            client_origin(),
+        )
+        .await
+        .expect("goal")
+        .goal;
+    let announced = await_upserted(
+        &mut changes,
+        session_id,
+        "waiting on the goal too",
+        waiting(&[WaitingOn::Goal, WaitingOn::Subagent]),
+    )
+    .await;
+    assert_eq!(announced.status, cookie_agent_protocol::SessionStatus::Idle);
+    assert_eq!(
+        engine.get_session(session_id).expect("session").waiting_on,
+        [WaitingOn::Goal, WaitingOn::Subagent]
+    );
+    assert!(
+        engine
+            .list_sessions()
+            .iter()
+            .any(|meta| meta.session_id == session_id
+                && meta.waiting_on == [WaitingOn::Goal, WaitingOn::Subagent])
+    );
+
+    // Pausing tells the model, which wakes a normal run while the
+    // delegation is still out; the goal no longer counts.
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body("noted"),
+        ))
+        .expect("pause notice response");
+    engine
+        .change_session_goal_lifecycle(
+            SessionGoalLifecycleParams {
+                session_id,
+                goal_id: goal.goal_id,
+                expected_revision: goal.revision,
+                action: GoalLifecycleAction::Pause,
+                selection: None,
+            },
+            client_origin(),
+        )
+        .await
+        .expect("pause goal");
+    await_upserted(
+        &mut changes,
+        session_id,
+        "the paused goal dropped",
+        waiting(&[WaitingOn::Subagent]),
+    )
+    .await;
+
+    engine
+        .unregister_producer(session_id, blocker_authority, blocker)
+        .await
+        .expect("delegation reported");
+    await_upserted(
+        &mut changes,
+        session_id,
+        "nothing left to wait on",
+        |meta| meta.waiting_on.is_empty(),
+    )
+    .await;
+    with_watchdog("pause notice run", captured)
+        .await
+        .expect("requests");
+    assert!(
+        engine
+            .get_session(session_id)
+            .expect("session")
+            .waiting_on
+            .is_empty()
+    );
 }

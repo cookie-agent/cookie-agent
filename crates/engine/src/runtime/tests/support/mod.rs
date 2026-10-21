@@ -409,6 +409,34 @@ pub(crate) async fn await_projection(
     .await
 }
 
+/// The first `sessions.changed` upsert of `session_id` among `changes`
+/// whose metadata satisfies `predicate`.
+pub(crate) async fn await_upserted(
+    changes: &mut tokio::sync::broadcast::Receiver<
+        cookie_agent_protocol::SessionsChangedNotification,
+    >,
+    session_id: SessionId,
+    description: &str,
+    predicate: impl Fn(&cookie_agent_protocol::SessionMeta) -> bool,
+) -> cookie_agent_protocol::SessionMeta {
+    with_watchdog(description, async {
+        loop {
+            match changes.recv().await {
+                Ok(cookie_agent_protocol::SessionsChangedNotification::Upserted { session })
+                    if session.session_id == session_id && predicate(&session) =>
+                {
+                    break *session;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("session changes closed waiting for {description}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+}
+
 pub(crate) async fn await_child(
     engine: &Engine,
     parent_session_id: SessionId,

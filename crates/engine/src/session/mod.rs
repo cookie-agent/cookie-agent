@@ -55,6 +55,7 @@ use cookie_agent_protocol::{
     EventSubscriptionMessage, EventsSubscribeResult, RunId, RunSelection, SessionId, SessionMeta,
     SessionOrigin, SessionPermissionOverlay, SessionRenameRecord, SessionStatus, SessionTitle,
     SessionTitleChange, SessionTree, StoredEvent, ToolCallId, TransientEvent, Usage, UsageRollup,
+    WaitingOn,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -403,6 +404,10 @@ pub struct SessionStore {
     /// Daemon-wide session index changes, see [`Self::subscribe_index_changes`].
     index_changes:
         tokio::sync::broadcast::Sender<cookie_agent_protocol::SessionsChangedNotification>,
+    /// What the engine's live producers make each session wait on, see
+    /// [`Self::set_live_waiting`]. Never persisted: a daemon restart ends
+    /// every one of them.
+    live_waiting: Mutex<HashMap<SessionId, Vec<WaitingOn>>>,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
     closed: AtomicBool,
@@ -514,9 +519,60 @@ impl SessionStore {
     fn notify_upserted(&self, meta: &SessionMeta) {
         self.notify_index_change(
             cookie_agent_protocol::SessionsChangedNotification::Upserted {
-                session: Box::new(meta.clone()),
+                session: Box::new(self.with_live_waiting(meta.clone())),
             },
         );
+    }
+
+    /// `meta` as clients see it: its `waiting_on`, the fold's active goal,
+    /// with what the engine's live producers make the session wait on, in
+    /// `WaitingOn` order.
+    #[must_use]
+    pub(crate) fn with_live_waiting(&self, mut meta: SessionMeta) -> SessionMeta {
+        let live = self
+            .live_waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&meta.session_id)
+            .cloned();
+        if let Some(live) = live {
+            meta.waiting_on.extend(live);
+            meta.waiting_on.sort();
+            meta.waiting_on.dedup();
+        }
+        meta
+    }
+
+    /// Records `kinds`, what the engine's live producers make `id` wait on,
+    /// and announces the session when that changed. The metadata cache never
+    /// holds them, so a restart, which ends them all, leaves none behind.
+    pub(crate) fn set_live_waiting(&self, id: SessionId, kinds: Vec<WaitingOn>) {
+        let previous = {
+            let mut live = self
+                .live_waiting
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if kinds.is_empty() {
+                live.remove(&id)
+            } else {
+                live.insert(id, kinds.clone())
+            }
+        };
+        if previous.unwrap_or_default() == kinds {
+            return;
+        }
+        let projection = self.get_resident(id).or_else(|| self.get(id).ok());
+        if let Some(projection) = projection {
+            self.notify_upserted(&projection.meta);
+        }
+    }
+
+    /// Drops what deleted sessions waited on, announcing nothing.
+    pub(crate) fn forget_live_waiting(&self, deleted: &HashSet<SessionId>) {
+        self.live_waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|id, _| !deleted.contains(id));
     }
 
     /// The `<16-hex-hash>` component of the v2 work-dir key.
@@ -592,6 +648,7 @@ impl SessionStore {
             index_locks: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(HashMap::new()),
             index_changes: tokio::sync::broadcast::channel(INDEX_CHANGE_CAPACITY).0,
+            live_waiting: Mutex::default(),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             closed: AtomicBool::new(false),
             #[cfg(test)]

@@ -168,6 +168,32 @@ crate::open_enum! {
     }
 }
 
+crate::open_enum! {
+    /// A producer that will start a session's next run without the user
+    /// (client protocol 1.9.0): what `SessionMeta::waiting_on` lists. A
+    /// value this build does not know reads as `Unknown`, still something
+    /// the session waits on.
+    #[derive(
+        Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+    )]
+    #[serde(rename_all = "snake_case")]
+    pub enum WaitingOn {
+        /// The root session's goal is active: goal mode keeps scheduling
+        /// runs until the goal is paused, completed, or cancelled.
+        Goal,
+        /// A background call of the session is running; its
+        /// `<background_result>` starts a run.
+        BackgroundCall,
+        /// A direct child is running a turn on its own, or a background
+        /// delegation is queued or running; its `<subagent_report>` starts a
+        /// run.
+        Subagent,
+        /// A plugin or runtime holds a live producer registration for the
+        /// session and may send to it.
+        ExternalProducer,
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct DelegationReservation {
     pub invocation_id: InvocationId,
@@ -312,6 +338,16 @@ pub struct SessionMeta {
     /// daemon, and when the project no longer exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectId>,
+    /// What will start the session's next run without the user, in this
+    /// order and each once (client protocol 1.9.0): an active goal, folded
+    /// from the log, and the daemon's live background calls, subagent
+    /// turns, and external producer registrations. Reported whatever
+    /// `status` says; a client shows a running session as running. Empty
+    /// when nothing will wake the session, from an older daemon, and for a
+    /// session whose metadata an older build wrote and that has recorded
+    /// nothing since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_on: Vec<WaitingOn>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -361,6 +397,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             attachments: Vec<crate::RuntimeAttachment>,
             #[serde(default)]
             project: Option<ProjectId>,
+            #[serde(default)]
+            waiting_on: Vec<WaitingOn>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -385,6 +423,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             skipped_events: w.skipped_events,
             attachments: w.attachments,
             project: w.project,
+            waiting_on: w.waiting_on,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

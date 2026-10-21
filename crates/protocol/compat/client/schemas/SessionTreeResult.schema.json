@@ -218,6 +218,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "waiting_on": {
+          "description": "What will start the session's next run without the user, in this\norder and each once (client protocol 1.9.0): an active goal, folded\nfrom the log, and the daemon's live background calls, subagent\nturns, and external producer registrations. Reported whatever\n`status` says; a client shows a running session as running. Empty\nwhen nothing will wake the session, from an older daemon, and for a\nsession whose metadata an older build wrote and that has recorded\nnothing since.",
+          "items": {
+            "$ref": "#/$defs/WaitingOn"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -351,6 +358,32 @@
         "reason"
       ],
       "type": "object"
+    },
+    "WaitingOn": {
+      "description": "A producer that will start a session's next run without the user\n(client protocol 1.9.0): what `SessionMeta::waiting_on` lists. A\nvalue this build does not know reads as `Unknown`, still something\nthe session waits on.",
+      "oneOf": [
+        {
+          "const": "goal",
+          "description": "The root session's goal is active: goal mode keeps scheduling\nruns until the goal is paused, completed, or cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "background_call",
+          "description": "A background call of the session is running; its\n`<background_result>` starts a run.",
+          "type": "string"
+        },
+        {
+          "const": "subagent",
+          "description": "A direct child is running a turn on its own, or a background\ndelegation is queued or running; its `<subagent_report>` starts a\nrun.",
+          "type": "string"
+        },
+        {
+          "const": "external_producer",
+          "description": "A plugin or runtime holds a live producer registration for the\nsession and may send to it.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

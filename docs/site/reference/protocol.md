@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.8.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.9.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.8.0",
+    "protocol_version": "1.9.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.8.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.9.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -765,6 +765,37 @@ See [Events](events.md#goal-and-producer-contracts) for admission/commit
 coverage and owned-message discard, and [Plugin development](../development/plugins.md#producers)
 for method names, idempotency, recovery, and the no-implicit-registration requirement.
 
+### What a session waits on
+
+Since 1.9.0 every `SessionMeta` carries `waiting_on`: what will start the
+session's next run without the user, each kind once and in this order, and
+omitted when nothing will. It is an open enum; a client reads a kind it does
+not know as something the session waits on.
+
+| Kind | The session waits on | Source |
+|---|---|---|
+| `goal` | Its goal, which is active: goal mode keeps scheduling runs. A paused, completed, or cancelled goal schedules none. Root sessions only. | The fold of the goal events, so the metadata cache and a rebuild of it keep it |
+| `background_call` | One of its background calls, whose `<background_result>` starts a run | The daemon's live background calls |
+| `subagent` | A direct child running a turn on its own (one `session.background.list` lists), or a background delegation still queued or running; its `<subagent_report>` starts a run | The daemon's live runs and delegations |
+| `external_producer` | A plugin or runtime that holds a live producer registration for the session and may send to it | The daemon's live registrations |
+
+The last three end with the daemon: a restart kills background calls and
+drops registrations, so they are never written to the metadata cache and a
+client never shows one a restart ended. A delegated session reports its own
+background calls, subagents, and producers; its parent reports its turns as
+`subagent`. Accepted producer messages that have not started a run yet are
+not listed: a message to an idle session starts its run at once, and one
+queued behind a running run starts the next.
+
+`waiting_on` is reported whatever `status` says. A session list shows a
+session that is `running` as running, else one that waits on something as
+waiting, else a failed, cancelled, or interrupted last run as a problem, and
+nothing for an idle or completed one; `cookie_agent_client_state::activity`
+implements that order. `sessions.changed` `upserted` announces every change:
+a goal activated, paused, resumed, completed, or cancelled; a background
+call detached or reported; a child's turn started or ended; a delegation or
+external registration made or dropped. A 1.8 daemon sends no `waiting_on`.
+
 ### User steering
 
 `run.steer` requires an active target run. It immediately appends
@@ -926,7 +957,7 @@ notification methods they do not know.
 
 | `change` | Fields | Sent when |
 |---|---|---|
-| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, or project change |
+| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, project, or what it waits on (`waiting_on`) change |
 | `removed` | `session_id` | A revert deleted a delegated session, or `session.delete` deleted a session of a tree; the connection's subscription to it has ended |
 | `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
 | `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |

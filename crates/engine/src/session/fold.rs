@@ -163,6 +163,7 @@ fn projection_fold_with(
             .collect(),
         attachments: Vec::new(),
         project: None,
+        waiting_on: Vec::new(),
     };
     let mut projection = SessionProjection {
         meta,
@@ -221,8 +222,8 @@ pub(super) enum FoldStep<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Observed {
     /// The event was applied. `durable_meta` reports whether it changed the
-    /// metadata beyond its tip (title, status, or attachments), which other
-    /// processes read from the `metadata` cache.
+    /// metadata beyond its tip (title, status, attachments, project, or an
+    /// active goal), which other processes read from the `metadata` cache.
     Applied { durable_meta: bool },
     /// The event cannot be applied in place; the log needs a full fold.
     NeedsRefold,
@@ -243,6 +244,8 @@ pub(crate) struct ProjectionFoldState {
     /// Committed turns whose usage counted at their commit because no
     /// `ModelUsageRecorded` for them was known, by `model_turn_seq`.
     provisional_usage: HashMap<u64, ProvisionalUsage>,
+    /// The session's goal, which `meta.waiting_on` reports while active.
+    goals: crate::goal_projection::GoalFold,
 }
 
 /// Where a committed turn's provisionally counted usage sits in the rollup.
@@ -310,6 +313,25 @@ impl SessionProjection {
                         .insert(record.client_rename_id.clone(), record);
                 }
                 durable_meta = true;
+            }
+            EventPayload::GoalActivated { .. }
+            | EventPayload::GoalChecklistRevised { .. }
+            | EventPayload::GoalLifecycleChanged { .. } => {
+                let was_active = self.fold.goals.is_active();
+                // An invalid goal event changes nothing, as the producer
+                // projection rejects it.
+                let _ = self.fold.goals.observe(envelope);
+                let active = self.fold.goals.is_active();
+                if active != was_active {
+                    // The fold's only kind: the store adds the live ones
+                    // where metadata leaves the engine.
+                    self.meta.waiting_on = if active {
+                        vec![WaitingOn::Goal]
+                    } else {
+                        Vec::new()
+                    };
+                    durable_meta = true;
+                }
             }
             EventPayload::DelegateChildTerminated {
                 status: terminal, ..

@@ -98,7 +98,7 @@ impl GoalProducerProjection {
     #[must_use]
     pub(crate) fn from_events<E: Borrow<StoredEvent>>(events: &[E]) -> Self {
         let mut projection = Self::default();
-        let mut goal_revisions = HashMap::<cookie_agent_protocol::GoalId, u64>::new();
+        let mut goals = GoalFold::default();
         let mut message_indexes = HashMap::<ProducerMessageId, usize>::new();
         let mut dedup_indexes = HashMap::<(ProducerOwner, ProducerIdempotencyKey), usize>::new();
         let mut terminal_runs = HashSet::<RunId>::new();
@@ -106,79 +106,24 @@ impl GoalProducerProjection {
         for event in events {
             let event: &StoredEvent = event.borrow();
             match &event.payload {
-                EventPayload::GoalActivated {
-                    goal_id,
-                    objective,
-                    revision,
-                    selection,
-                } => {
-                    let replaceable = projection
-                        .goal
-                        .as_ref()
-                        .is_none_or(|goal| is_terminal(goal.status));
-                    let distinct = projection
-                        .goal
-                        .as_ref()
-                        .is_none_or(|goal| goal.goal_id != *goal_id);
-                    let unseen = !goal_revisions.contains_key(goal_id);
-                    if objective.trim().is_empty() || !replaceable || !distinct || !unseen {
-                        projection.reject(event.seq, "invalid goal activation");
-                        continue;
+                EventPayload::GoalActivated { selection, .. } => match goals.observe(event) {
+                    Ok(()) => projection.selection = selection.clone(),
+                    Err(reason) => projection.reject(event.seq, reason),
+                },
+                EventPayload::GoalChecklistRevised { .. } => {
+                    if let Err(reason) = goals.observe(event) {
+                        projection.reject(event.seq, reason);
                     }
-                    projection.goal = Some(GoalState {
-                        goal_id: *goal_id,
-                        objective: objective.clone(),
-                        status: GoalStatus::Active,
-                        items: Vec::new(),
-                        revision: *revision,
-                    });
-                    projection.selection = selection.clone();
-                    goal_revisions.insert(*goal_id, *revision);
                 }
-                EventPayload::GoalChecklistRevised {
-                    goal_id,
-                    items,
-                    revision,
-                } => {
-                    let valid_items = items.iter().all(|item| !item.description.trim().is_empty());
-                    let valid = valid_items
-                        && projection.goal.as_ref().is_some_and(|goal| {
-                            goal.goal_id == *goal_id
-                                && !is_terminal(goal.status)
-                                && *revision > goal.revision
-                        });
-                    if !valid {
-                        projection.reject(event.seq, "invalid goal checklist revision");
-                        continue;
+                EventPayload::GoalLifecycleChanged { selection, .. } => {
+                    match goals.observe(event) {
+                        Ok(()) => {
+                            if let Some(selection) = selection {
+                                projection.selection = Some(selection.clone());
+                            }
+                        }
+                        Err(reason) => projection.reject(event.seq, reason),
                     }
-                    let goal = projection.goal.as_mut().expect("validated current goal");
-                    goal.items = items.clone();
-                    goal.revision = *revision;
-                    goal_revisions.insert(*goal_id, *revision);
-                }
-                EventPayload::GoalLifecycleChanged {
-                    goal_id,
-                    status,
-                    revision,
-                    selection,
-                } => {
-                    let valid = projection.goal.as_ref().is_some_and(|goal| {
-                        goal.goal_id == *goal_id
-                            && *revision > goal.revision
-                            && valid_lifecycle_change(goal, *status)
-                            && (selection.is_none() || *status == GoalStatus::Active)
-                    });
-                    if !valid {
-                        projection.reject(event.seq, "invalid goal lifecycle transition");
-                        continue;
-                    }
-                    let goal = projection.goal.as_mut().expect("validated current goal");
-                    goal.status = *status;
-                    goal.revision = *revision;
-                    if let Some(selection) = selection {
-                        projection.selection = Some(selection.clone());
-                    }
-                    goal_revisions.insert(*goal_id, *revision);
                 }
                 EventPayload::ProducerMessageAccepted {
                     message_id,
@@ -399,11 +344,110 @@ impl GoalProducerProjection {
                 _ => {}
             }
         }
+        projection.goal = goals.goal;
         projection
     }
 
     fn reject(&mut self, seq: u64, reason: &str) {
         self.invalid.push((seq, reason.to_owned()));
+    }
+}
+
+/// The goal part of a session's log: its current goal, after the
+/// activations, checklist revisions, and lifecycle changes that were valid
+/// where they stand. Shared by the producer projection and the session
+/// projection, which reports an active goal in `SessionMeta::waiting_on`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct GoalFold {
+    pub(crate) goal: Option<GoalState>,
+    /// The latest revision of every goal the log activated.
+    revisions: HashMap<GoalId, u64>,
+}
+
+impl GoalFold {
+    /// Applies `event` when it is a goal event, or says why it is invalid
+    /// and leaves the fold unchanged. Any other event is ignored.
+    pub(crate) fn observe(&mut self, event: &StoredEvent) -> Result<(), &'static str> {
+        match &event.payload {
+            EventPayload::GoalActivated {
+                goal_id,
+                objective,
+                revision,
+                ..
+            } => {
+                let replaceable = self
+                    .goal
+                    .as_ref()
+                    .is_none_or(|goal| is_terminal(goal.status));
+                let distinct = self
+                    .goal
+                    .as_ref()
+                    .is_none_or(|goal| goal.goal_id != *goal_id);
+                let unseen = !self.revisions.contains_key(goal_id);
+                if objective.trim().is_empty() || !replaceable || !distinct || !unseen {
+                    return Err("invalid goal activation");
+                }
+                self.goal = Some(GoalState {
+                    goal_id: *goal_id,
+                    objective: objective.clone(),
+                    status: GoalStatus::Active,
+                    items: Vec::new(),
+                    revision: *revision,
+                });
+                self.revisions.insert(*goal_id, *revision);
+            }
+            EventPayload::GoalChecklistRevised {
+                goal_id,
+                items,
+                revision,
+            } => {
+                let valid_items = items.iter().all(|item| !item.description.trim().is_empty());
+                let valid = valid_items
+                    && self.goal.as_ref().is_some_and(|goal| {
+                        goal.goal_id == *goal_id
+                            && !is_terminal(goal.status)
+                            && *revision > goal.revision
+                    });
+                if !valid {
+                    return Err("invalid goal checklist revision");
+                }
+                let goal = self.goal.as_mut().expect("validated current goal");
+                goal.items = items.clone();
+                goal.revision = *revision;
+                self.revisions.insert(*goal_id, *revision);
+            }
+            EventPayload::GoalLifecycleChanged {
+                goal_id,
+                status,
+                revision,
+                selection,
+            } => {
+                let valid = self.goal.as_ref().is_some_and(|goal| {
+                    goal.goal_id == *goal_id
+                        && *revision > goal.revision
+                        && valid_lifecycle_change(goal, *status)
+                        && (selection.is_none() || *status == GoalStatus::Active)
+                });
+                if !valid {
+                    return Err("invalid goal lifecycle transition");
+                }
+                let goal = self.goal.as_mut().expect("validated current goal");
+                goal.status = *status;
+                goal.revision = *revision;
+                self.revisions.insert(*goal_id, *revision);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Whether the current goal is active, so goal mode keeps scheduling
+    /// runs. A paused, completed, or cancelled goal schedules none.
+    #[must_use]
+    pub(crate) fn is_active(&self) -> bool {
+        self.goal
+            .as_ref()
+            .is_some_and(|goal| goal.status == GoalStatus::Active)
     }
 }
 

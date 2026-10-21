@@ -20,6 +20,7 @@ async fn running_subagent_result_is_empty_waits_and_stop_background_stops_its_tu
         .engine
         .create_session(selection.clone())
         .expect("cancellable parent");
+    let mut changes = fixture.engine.subscribe_session_changes();
     fixture
         .engine
         .start_run(
@@ -86,6 +87,25 @@ async fn running_subagent_result_is_empty_waits_and_stop_background_stops_its_tu
             .any(|call| call.job == handle && call.tool == "delegate_subagent"),
         "{calls:?}"
     );
+    // The parent waits on that turn; the child, on nothing of its own.
+    await_upserted(
+        &mut changes,
+        parent.session_id,
+        "the parent waits on its subagent",
+        |meta| {
+            meta.waiting_on
+                .contains(&cookie_agent_protocol::WaitingOn::Subagent)
+        },
+    )
+    .await;
+    assert!(
+        fixture
+            .engine
+            .get_session(child_session_id)
+            .expect("child")
+            .waiting_on
+            .is_empty()
+    );
     let stopped = fixture
         .engine
         .stop_background(
@@ -108,6 +128,17 @@ async fn running_subagent_result_is_empty_waits_and_stop_background_stops_its_tu
             .iter()
             .all(|call| call.job != handle)
     );
+    await_upserted(
+        &mut changes,
+        parent.session_id,
+        "the parent's subagent reported",
+        |meta| {
+            !meta
+                .waiting_on
+                .contains(&cookie_agent_protocol::WaitingOn::Subagent)
+        },
+    )
+    .await;
     // An idle child has no turn to stop.
     let error = fixture
         .engine

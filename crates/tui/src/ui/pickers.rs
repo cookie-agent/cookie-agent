@@ -205,13 +205,27 @@ pub(crate) fn session_search_rows<'a>(
         rows.push(SessionSearchRow::Session {
             session_id: session.session_id,
             label: format!(
-                "{title}{degraded}  ({} · {}{directory})",
+                "{title}{degraded}{}  ({} · {}{directory})",
+                activity_marker(session),
                 session.creation_selection.agent,
                 short_id(session)
             ),
         });
     }
     rows
+}
+
+/// The marker a session row carries after its title: `⏳` while a run is
+/// going, `⏰` while nothing runs but a producer will start the next run (an
+/// active goal, a background call, a subagent, or an external producer),
+/// and nothing otherwise. Running takes precedence.
+pub(crate) fn activity_marker(session: &SessionMeta) -> &'static str {
+    use cookie_agent_client_state::activity::{SessionActivity, session_activity};
+    match session_activity(session) {
+        SessionActivity::Running => " ⏳",
+        SessionActivity::Waiting(_) => " ⏰",
+        SessionActivity::Problem(_) | SessionActivity::None => "",
+    }
 }
 
 fn session_day_label(date: Date, today: Date, yesterday: Option<Date>) -> String {

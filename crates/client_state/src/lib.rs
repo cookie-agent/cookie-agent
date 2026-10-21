@@ -9,6 +9,7 @@
 //! assistant header projects the canonical `Agent • Model[variant]`, with the
 //! model's display name (looked up at render time) ahead of its id.
 
+pub mod activity;
 pub mod badges;
 pub mod config;
 pub mod markdown;

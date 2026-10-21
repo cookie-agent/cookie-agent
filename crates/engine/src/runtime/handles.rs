@@ -292,6 +292,7 @@ mod tests {
             status: SessionStatus::Completed,
             skipped_events: Vec::new(),
             attachments: Vec::new(),
+            waiting_on: Vec::new(),
         }
     }
 

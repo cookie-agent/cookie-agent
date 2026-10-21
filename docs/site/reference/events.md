@@ -274,6 +274,11 @@ stale-identity and stale-revision rejection. Empty checklist revisions
 preserve the active/paused lifecycle. Completion requires nonempty all-finished
 items, including while paused.
 
+The session projection folds the goal events too: while the goal is active,
+`SessionMeta.waiting_on` lists `goal` (client protocol 1.9.0), so a rebuilt
+metadata cache keeps it. An event the goal projection rejects changes nothing
+there either.
+
 A stored checklist item carrying an `id` does not decode.
 
 `ProducerOwner` is tagged by `type`: `external { source, name }` (a plugin's

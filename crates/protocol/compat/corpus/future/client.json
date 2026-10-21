@@ -252,6 +252,52 @@
    }
   },
   {
+   "about": "an upserted session waiting on a kind this build does not know",
+   "expect": [
+    "sessions_changed"
+   ],
+   "message": {
+    "jsonrpc": "2.0",
+    "method": "sessions.changed",
+    "params": {
+     "change": "upserted",
+     "session": {
+      "agent_revision": "sha256:3db2f7404a72409c7eb3ecf5e8e88578e35176456133af418cd5cef9d59940d9",
+      "catalog_revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "creation_selection": {
+       "agent": "primary",
+       "model": {
+        "model": "custom.test/group/model",
+        "variant": null
+       }
+      },
+      "cwd_identity": "/cookie-corpus/workspace",
+      "last_activity": "2026-10-19T06:35:43.837552758Z",
+      "last_agent_activity": "2026-10-19T06:35:43.819545774Z",
+      "last_event_seq": 36,
+      "manifest_revision": "sha256:df52841441563f1ef69c2ad854653a5e255d1e1233fee1634c03485e7bd11411",
+      "model_revision": "sha256:e817e50f831242f4257d8243a420aa09a38e3b7627b4dfa40796d96a045c685c",
+      "origin": {
+       "type": "root"
+      },
+      "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+      "recipe_registry_revision": "sha256:341cf7b3b18f48f290080b7b4db1b9f30094b6d1a9d2fc68703f55f062a8d192",
+      "runtime_revision": "sha256:dbec0d923b45d864a900ae21a068777627cc0c5ed0d9ec73f19330c6fe4de8af",
+      "session_id": "01a152df-88db-7921-a0f0-d2a93176939b",
+      "short_id": "primary_3653f432",
+      "skipped_events": [],
+      "status": "hibernating",
+      "title": null,
+      "title_updated_seq": 0,
+      "waiting_on": [
+       "goal",
+       "alarm_clock"
+      ]
+     }
+    }
+   }
+  },
+  {
    "about": "a session change of a kind this build does not know",
    "expect": [
     "sessions_resync"
@@ -406,7 +452,8 @@
   {
    "method": "session.get",
    "reads": [
-    "status: Unknown"
+    "status: Unknown",
+    "waiting_on: [Goal, Unknown]"
    ],
    "result": {
     "runtimes": [
@@ -457,14 +504,19 @@
      "skipped_events": [],
      "status": "hibernating",
      "title": null,
-     "title_updated_seq": 0
+     "title_updated_seq": 0,
+     "waiting_on": [
+      "goal",
+      "alarm_clock"
+     ]
     }
    }
   },
   {
    "method": "session.list",
    "reads": [
-    "status: Unknown"
+    "status: Unknown",
+    "waiting_on: [Unknown, BackgroundCall]"
    ],
    "result": {
     "next_page": {
@@ -498,7 +550,11 @@
       "skipped_events": [],
       "status": "hibernating",
       "title": null,
-      "title_updated_seq": 0
+      "title_updated_seq": 0,
+      "waiting_on": [
+       "alarm_clock",
+       "background_call"
+      ]
      }
     ]
    }

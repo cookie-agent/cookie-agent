@@ -970,6 +970,7 @@ pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
         attachments: Vec::new(),
+        waiting_on: Vec::new(),
     }
 }
 

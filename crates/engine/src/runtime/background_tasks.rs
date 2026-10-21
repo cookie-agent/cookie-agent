@@ -145,7 +145,7 @@ impl Engine {
                     arm: Some(arm_sender),
                 },
             );
-        let _ = self.inner.background.changes.send(call.session);
+        self.notify_background_changed(call.session);
         let immediate = immediate_result(&job, call.by, call.note.as_deref());
         let runtime = self
             .inner
@@ -216,7 +216,7 @@ impl Engine {
         };
         drop(execution);
         signals.ended.cancel();
-        let _ = self.inner.background.changes.send(session);
+        self.notify_background_changed(session);
         let Some(outcome) = outcome else {
             self.release_background_job(session, tool_call_id, producer_id);
             return;
@@ -395,9 +395,17 @@ impl Engine {
             .collect()
     }
 
-    /// Tells subscribers `session`'s background calls changed.
+    /// Tells subscribers `session`'s background calls changed, and the
+    /// store what the session now waits on.
     pub(super) fn notify_background_changed(&self, session: SessionId) {
         let _ = self.inner.background.changes.send(session);
+        self.refresh_live_waiting(session);
+    }
+
+    /// Whether a direct child of `session` is running a turn on its own,
+    /// one [`Self::background_calls`] lists.
+    pub(super) fn has_running_subagent_turn(&self, session: SessionId) -> bool {
+        !self.running_subagent_turns(session).is_empty()
     }
 
     /// The sessions whose background calls change, as they change.
