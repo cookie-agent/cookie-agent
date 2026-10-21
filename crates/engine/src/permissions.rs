@@ -21,44 +21,56 @@ use thiserror::Error;
 /// Display stand-in for a permission resource the tool did not scope.
 pub(crate) const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";
 
-/// Where a permission is evaluated: the runtime that offers the tool, and
-/// that runtime's workspace.
+/// Where a permission is evaluated: the runtime that offers the tool, that
+/// runtime's workspace, and the home directory it reported.
 ///
 /// A rule with a runtime selector (`bash@labpc`) only applies when `runtime`
 /// is that runtime ID; the base layer (`runtime: None`) only sees unqualified
 /// rules. `${workspace_dir}` and relative resources resolve against
-/// `workspace`; without one they never match.
+/// `workspace`; without one they never match. A pattern `~` or `~/…`
+/// expands against `home`; without one it stays literal, so it matches no
+/// absolute path.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PermissionScope<'a> {
     pub runtime: Option<&'a str>,
     pub workspace: Option<&'a Path>,
+    pub home: Option<&'a str>,
 }
 
 impl<'a> PermissionScope<'a> {
-    /// The base layer: no runtime, no workspace.
+    /// The base layer: no runtime, no workspace, no home.
     pub const BASE: Self = Self {
         runtime: None,
         workspace: None,
+        home: None,
     };
 
     /// The scope of a tool from `origin`.
     #[must_use]
     pub fn of(origin: &'a crate::ToolOrigin) -> Self {
+        let runtime = origin.runtime();
         Self {
-            runtime: origin
-                .runtime()
-                .map(cookie_agent_runtime_api::RuntimeInfo::id),
+            runtime: runtime.map(cookie_agent_runtime_api::RuntimeInfo::id),
             workspace: origin.workspace_root(),
+            home: runtime.and_then(cookie_agent_runtime_api::RuntimeInfo::home),
         }
     }
 
-    /// The scope of the runtime with ID `runtime` working in `workspace`.
+    /// The scope of the runtime with ID `runtime` working in `workspace`,
+    /// which reported no home.
     #[must_use]
     pub const fn runtime(runtime: &'a str, workspace: Option<&'a Path>) -> Self {
         Self {
             runtime: Some(runtime),
             workspace,
+            home: None,
         }
+    }
+
+    /// This scope on a runtime that reported `home`.
+    #[must_use]
+    pub const fn with_home(self, home: Option<&'a str>) -> Self {
+        Self { home, ..self }
     }
 }
 
@@ -68,6 +80,7 @@ impl<'a> From<Option<&'a Path>> for PermissionScope<'a> {
         Self {
             runtime: None,
             workspace,
+            home: None,
         }
     }
 }
@@ -331,7 +344,7 @@ impl PermissionPipeline {
                     && rule.applies_to(scope.runtime)
                     && normalized.as_ref().is_some_and(|normalized| {
                         permission_pattern_matches(
-                            rule.resource.as_str(),
+                            &expand_home_pattern(rule.resource.as_str(), scope.home),
                             &resource.capability,
                             normalized,
                             scope.workspace,
@@ -395,7 +408,7 @@ impl PermissionPipeline {
                         policy,
                         overlay,
                         &action,
-                        grant.resource.as_str(),
+                        &expand_home_pattern(grant.resource.as_str(), scope.home),
                         scope,
                     )
                     .0 != PermissionEffect::Deny
@@ -501,7 +514,7 @@ pub(crate) fn effective_permission<'a>(
         .iter()
         .enumerate()
         .filter(|(_, rule)| rule_matches(rule, action, resource, scope, &policy.agent))
-        .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent));
+        .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent, scope.home));
     winner
         .map_or_else(
             || {
@@ -533,7 +546,7 @@ pub(crate) fn effective_permission_with_overlay<'a>(
             .iter()
             .enumerate()
             .filter(|(_, rule)| rule_matches(rule, action, resource, scope, &policy.agent))
-            .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent))
+            .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent, scope.home))
     });
     winner.map_or_else(
         || effective_permission(policy, action, resource, scope),
@@ -558,7 +571,7 @@ fn rule_matches(
     rule.action == *action
         && rule.applies_to(scope.runtime)
         && permission_pattern_matches(
-            &rule_pattern(rule, agent),
+            &rule_pattern(rule, agent, scope.home),
             action,
             resource,
             scope.workspace,
@@ -569,14 +582,47 @@ fn rule_matches(
 /// (`docs/site/specs/memory.md` section 9.1).
 pub(crate) const SELF_AGENT_PATTERN: &str = "agent://self";
 
-/// The pattern `rule` matches with for a run of `agent`: its resource, with
-/// `agent://self` read as `agent://<agent>`.
-fn rule_pattern<'rule>(rule: &'rule PermissionRule, agent: &AgentId) -> Cow<'rule, str> {
+/// The pattern `rule` matches with for a run of `agent` on a runtime with
+/// `home`: its resource, with `agent://self` read as `agent://<agent>` and a
+/// leading `~` expanded against `home` ([`expand_home_pattern`]).
+fn rule_pattern<'rule>(
+    rule: &'rule PermissionRule,
+    agent: &AgentId,
+    home: Option<&str>,
+) -> Cow<'rule, str> {
     if rule.resource.as_str() == SELF_AGENT_PATTERN {
         Cow::Owned(format!("agent://{agent}"))
     } else {
-        Cow::Borrowed(rule.resource.as_str())
+        expand_home_pattern(rule.resource.as_str(), home)
     }
+}
+
+/// `pattern` with a leading `~` (the whole pattern, or `~/` before the
+/// rest) replaced by `home`, the home directory the tool's runtime
+/// reported, spelled with `/` as path labels are. Without a home, and for
+/// any other pattern (`~user/…` included), `pattern` as it is: a literal `~`
+/// then matches no absolute path. Pure and allocation-free when nothing
+/// expands.
+pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> Cow<'p, str> {
+    let Some(home) = home else {
+        return Cow::Borrowed(pattern);
+    };
+    let rest = if pattern == "~" {
+        ""
+    } else if let Some(rest) = pattern.strip_prefix("~/") {
+        rest
+    } else {
+        return Cow::Borrowed(pattern);
+    };
+    let home = home.replace('\\', "/");
+    let home = home.trim_end_matches('/');
+    Cow::Owned(match (home.is_empty(), rest.is_empty()) {
+        // The home is the root.
+        (true, true) => "/".to_owned(),
+        (true, false) => format!("/{rest}"),
+        (false, true) => home.to_owned(),
+        (false, false) => format!("{home}/{rest}"),
+    })
 }
 
 /// The rules an agent document gives its runs (`docs/site/specs/memory.md`
@@ -682,8 +728,9 @@ fn specificity(
     rule: &PermissionRule,
     declaration_index: usize,
     agent: &AgentId,
+    home: Option<&str>,
 ) -> (usize, std::cmp::Reverse<usize>, bool, usize) {
-    let pattern = rule_pattern(rule, agent);
+    let pattern = rule_pattern(rule, agent, home);
     let wildcards = pattern
         .chars()
         .filter(|character| matches!(character, '*' | '?'))
@@ -910,29 +957,55 @@ impl crate::Engine {
         &self,
         session: &crate::session::SessionProjection,
         runtime: Option<&RuntimeId>,
-    ) -> Vec<(Option<String>, Option<std::path::PathBuf>)> {
+    ) -> Vec<OwnedScope> {
         let attachments = self.attachments_of(session);
         let mut scopes = attachments
             .iter()
             .filter(|attachment| runtime.is_none_or(|runtime| &attachment.runtime_id == runtime))
-            .map(|attachment| {
-                (
-                    Some(attachment.runtime_id.as_str().to_owned()),
-                    attachment
-                        .workspace
-                        .as_deref()
-                        .map(std::path::PathBuf::from),
-                )
+            .map(|attachment| OwnedScope {
+                runtime: Some(attachment.runtime_id.as_str().to_owned()),
+                workspace: attachment
+                    .workspace
+                    .as_deref()
+                    .map(std::path::PathBuf::from),
+                home: self.attachment_home(attachment),
             })
             .collect::<Vec<_>>();
         match runtime {
-            None => scopes.push((None, None)),
+            None => scopes.push(OwnedScope::default()),
             Some(runtime) if scopes.is_empty() => {
-                scopes.push((Some(runtime.as_str().to_owned()), None));
+                scopes.push(OwnedScope {
+                    runtime: Some(runtime.as_str().to_owned()),
+                    workspace: None,
+                    home: self.runtime_home(runtime.as_str()),
+                });
             }
             Some(_) => {}
         }
         scopes
+    }
+
+    /// The home directory the runtime of `attachment` reported: its running
+    /// instance's, else the one its runtime last reported.
+    fn attachment_home(
+        &self,
+        attachment: &cookie_agent_protocol::RuntimeAttachment,
+    ) -> Option<String> {
+        self.inner
+            .runtimes
+            .instance(attachment)
+            .and_then(|instance| instance.info().home().map(str::to_owned))
+            .or_else(|| self.runtime_home(attachment.runtime_id.as_str()))
+    }
+
+    /// The home directory the runtime with ID `runtime_id` last reported.
+    pub(crate) fn runtime_home(&self, runtime_id: &str) -> Option<String> {
+        self.inner
+            .runtimes
+            .templates()
+            .into_iter()
+            .find(|template| template.runtime_id == runtime_id)
+            .and_then(|template| template.listing.home)
     }
 
     fn invalidate_action_grants(
@@ -1039,25 +1112,37 @@ fn stricter(old: &[PermissionEffect], new: &[PermissionEffect]) -> bool {
         .any(|(old, new)| effect_rank(*new) > effect_rank(*old))
 }
 
-/// The effect of `action` on `resource` in each of `scopes`.
+/// A [`PermissionScope`] that owns its parts.
+#[derive(Clone, Debug, Default)]
+struct OwnedScope {
+    runtime: Option<String>,
+    workspace: Option<std::path::PathBuf>,
+    home: Option<String>,
+}
+
+/// The effect of `action` on `resource` in each of `scopes`. A `~` in
+/// `resource`, a rule's pattern, expands against each scope's home as the
+/// rule's own pattern does.
 fn rule_effects(
     policy: &AgentSnapshot,
     overlay: &SessionPermissionOverlay,
     action: &PermissionAction,
     resource: &str,
-    scopes: &[(Option<String>, Option<std::path::PathBuf>)],
+    scopes: &[OwnedScope],
 ) -> Vec<PermissionEffect> {
     scopes
         .iter()
-        .map(|(runtime, workspace)| {
+        .map(|owned| {
             let scope = PermissionScope {
-                runtime: runtime.as_deref(),
-                workspace: workspace.as_deref(),
+                runtime: owned.runtime.as_deref(),
+                workspace: owned.workspace.as_deref(),
+                home: owned.home.as_deref(),
             };
             if resource == "*" {
                 effective_loose_permission_with_overlay(policy, Some(overlay), action, scope).0
             } else {
-                effective_permission_with_overlay(policy, Some(overlay), action, resource, scope).0
+                let resource = expand_home_pattern(resource, scope.home);
+                effective_permission_with_overlay(policy, Some(overlay), action, &resource, scope).0
             }
         })
         .collect()

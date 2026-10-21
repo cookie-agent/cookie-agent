@@ -1756,6 +1756,136 @@ fn qualified_rules_apply_only_to_their_runtime_and_win_specificity_ties() {
     );
 }
 
+fn decide_read(
+    policy: &AgentSnapshot,
+    path: &str,
+    scope: super::PermissionScope<'_>,
+) -> PermissionEffect {
+    let resource = resource(PermissionAction::READ, path, path.as_bytes());
+    PermissionPipeline::default()
+        .decide_operation(
+            policy,
+            &operation(vec![resource]),
+            &[Some(path.to_owned())],
+            scope,
+        )
+        .effect
+}
+
+/// A leading `~` in a path pattern expands against the home of the runtime
+/// the tool runs on; on a runtime that reported none the pattern stays
+/// literal and matches no absolute path. Runtime selectors still apply.
+#[test]
+fn a_home_pattern_expands_against_the_home_its_runtime_reported() {
+    let policy = policy(vec![
+        rule("read", PermissionAction::READ, "*", PermissionEffect::Deny),
+        rule(
+            "notes",
+            PermissionAction::READ,
+            "~/notes/*",
+            PermissionEffect::Allow,
+        ),
+        rule("home", PermissionAction::READ, "~", PermissionEffect::Ask),
+        qualified(
+            PermissionAction::READ,
+            "labpc",
+            "~/secret/*",
+            PermissionEffect::Ask,
+        ),
+    ]);
+    let workspace = std::path::Path::new("/srv/api");
+    let local = super::PermissionScope::runtime("local", Some(workspace));
+    let labpc = super::PermissionScope::runtime("labpc", Some(workspace));
+    let home = Some("/home/ada");
+    // With a home: `~/notes/*` is `/home/ada/notes/*`, and `~` the home.
+    for scope in [local.with_home(home), labpc.with_home(home)] {
+        assert_eq!(
+            decide_read(&policy, "/home/ada/notes/todo.md", scope),
+            PermissionEffect::Allow
+        );
+        assert_eq!(
+            decide_read(&policy, "/home/ada", scope),
+            PermissionEffect::Ask
+        );
+        assert_eq!(
+            decide_read(&policy, "/home/bob/notes/todo.md", scope),
+            PermissionEffect::Deny
+        );
+    }
+    // The qualified rule applies only on its runtime.
+    assert_eq!(
+        decide_read(&policy, "/home/ada/secret/key", labpc.with_home(home)),
+        PermissionEffect::Ask
+    );
+    assert_eq!(
+        decide_read(&policy, "/home/ada/secret/key", local.with_home(home)),
+        PermissionEffect::Deny
+    );
+    // Without a home the patterns stay literal.
+    for scope in [local, labpc, super::PermissionScope::BASE] {
+        assert_eq!(
+            decide_read(&policy, "/home/ada/notes/todo.md", scope),
+            PermissionEffect::Deny
+        );
+        assert_eq!(
+            decide_read(&policy, "/home/ada/secret/key", scope),
+            PermissionEffect::Deny
+        );
+    }
+    // A Windows home is spelled with `/`, as path labels are.
+    assert_eq!(
+        decide_read(
+            &policy,
+            "C:/Users/ada/notes/todo.md",
+            local.with_home(Some(r"C:\Users\ada"))
+        ),
+        PermissionEffect::Allow
+    );
+}
+
+#[test]
+fn a_tool_scope_takes_the_home_of_its_instance() {
+    let workspace = tempfile::tempdir().unwrap();
+    let context = crate::WorkspaceContext::new(workspace.path()).unwrap();
+    let info = cookie_agent_runtime_api::RuntimeInfo::coding("labpc", context);
+    let without = crate::ToolOrigin::Runtime(std::sync::Arc::new(
+        cookie_agent_runtime_api::RuntimeInfo::coding(
+            "labpc",
+            crate::WorkspaceContext::new(workspace.path()).unwrap(),
+        ),
+    ));
+    let with = crate::ToolOrigin::Runtime(std::sync::Arc::new(
+        info.with_home(Some("/home/ada".into())),
+    ));
+    assert_eq!(super::PermissionScope::of(&with).home, Some("/home/ada"));
+    assert_eq!(super::PermissionScope::of(&with).runtime, Some("labpc"));
+    assert_eq!(super::PermissionScope::of(&without).home, None);
+    assert_eq!(
+        super::PermissionScope::of(&crate::ToolOrigin::Base).home,
+        None
+    );
+}
+
+#[test]
+fn only_a_leading_home_expands() {
+    use super::expand_home_pattern as expand;
+    let home = Some("/home/ada");
+    assert_eq!(expand("~", home), "/home/ada");
+    assert_eq!(expand("~/x/*", home), "/home/ada/x/*");
+    assert_eq!(expand("~/x", Some("/home/ada/")), "/home/ada/x");
+    assert_eq!(expand("~/x", Some("/")), "/x");
+    assert_eq!(expand("~", Some("/")), "/");
+    assert_eq!(expand("~/x", Some(r"C:\Users\ada")), "C:/Users/ada/x");
+    for literal in ["~bob/x", "x/~/y", "*", "/etc/*", "${workspace_dir}/*"] {
+        assert_eq!(expand(literal, home), literal);
+    }
+    assert_eq!(expand("~/x", None), "~/x");
+    assert!(matches!(
+        expand("/etc/*", home),
+        std::borrow::Cow::Borrowed(_)
+    ));
+}
+
 #[test]
 fn a_runtime_selector_limits_tool_visibility_to_that_runtime() {
     let policy = policy(vec![qualified(

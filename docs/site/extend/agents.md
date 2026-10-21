@@ -627,7 +627,8 @@ against the workspace of the runtime that prepared the call; relative path
 labels resolve against it too. Base-layer and global-runtime tools have no
 workspace, so `${workspace_dir}` and relative-path patterns never match them. Ordinary absolute patterns
 such as `/etc/*` control outside-workspace paths. Permission patterns do not
-expand environment variables. A `*` matches across directory separators, so
+expand environment variables; only a leading `~` expands (see
+[Paths under the home directory](#paths-under-the-home-directory)). A `*` matches across directory separators, so
 `"${workspace_dir}/*"` already covers nested paths such as
 `${workspace_dir}/crates/engine/src/lib.rs`; no `**` pattern is needed.
 
@@ -650,6 +651,33 @@ integrity and resource-binding checks, or govern engine configuration and prompt
 loading (such as workspace `AGENTS.md` admission). Generic approval modes and
 turn-scoped skill grants retain their documented behavior; they are not
 resource-name exceptions.
+
+### Paths under the home directory
+
+A pattern that is `~` or starts with `~/` names the home directory of the
+runtime the tool runs on, as the runtime reported it (see
+[Home](../reference/runtime-protocol.md#home)): on a runtime whose home is
+`/home/ada`, `~/notes/*` is `/home/ada/notes/*` and `~` is `/home/ada`.
+Each runtime expands it against its own home, so one rule covers the home on
+every machine, and a [runtime selector](#runtime-selectors) still limits it
+to one runtime:
+
+```yaml
+permissions:
+  read:
+    "~/notes/*": allow
+  read@labpc:
+    "~/.ssh/*": deny
+```
+
+The expanded pattern is an ordinary absolute pattern: it governs paths
+outside the workspace, whose labels are absolute, and ranks by its expanded
+length. A path argument's own leading `~` expands against the same home, so
+`read("~/notes/todo.md")` gets the label `/home/ada/notes/todo.md`. On a
+runtime that reports no home (the base layer included) the pattern stays
+literal and matches no absolute path; `~user/…` never expands. Windows homes
+are spelled with `/`, as path labels are: `C:\Users\ada` makes `~/x`
+`C:/Users/ada/x`.
 
 ### Tool availability and delegation
 
