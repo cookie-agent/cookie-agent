@@ -147,15 +147,13 @@ pub fn connects_by_itself(daemon_url: Option<&str>, token: Option<&str>) -> bool
         && token.is_some_and(|token| !token.trim().is_empty())
 }
 
-/// What the connect screen says when the daemon closed the connection before
-/// its handshake. A browser shows the page no reason, and the usual one is
-/// an origin the daemon does not allow, so it names the entry to add.
-pub fn refused_before_handshake_hint(page_origin: &str) -> String {
-    format!(
-        "The daemon closed the connection before its handshake. The likely cause: \
-         this page's origin is not allowed. Add \"{page_origin}\" to [server] \
-         allowed_origins in the daemon's config.toml and restart it."
-    )
+/// What the connect screen says when the daemon refused or closed the
+/// connection before its handshake. A browser shows the page no reason, so
+/// it names the usual causes.
+pub fn refused_before_handshake_hint() -> String {
+    "The daemon refused or closed the connection before its handshake. \
+     Check the daemon URL and that the daemon is running."
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -264,10 +262,11 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_quotes_the_page_origin_exactly() {
-        let hint = refused_before_handshake_hint("http://192.168.1.5:7419");
-        assert!(hint.contains("\"http://192.168.1.5:7419\""), "{hint}");
-        assert!(hint.contains("allowed_origins"), "{hint}");
+    fn the_refusal_hint_points_at_the_url_and_the_daemon() {
+        let hint = refused_before_handshake_hint();
+        assert!(hint.contains("daemon URL"), "{hint}");
+        assert!(hint.contains("running"), "{hint}");
+        assert!(!hint.contains("origin"), "{hint}");
         assert_eq!(token_key("ws://h/ws"), "cookie.token:ws://h/ws");
     }
 }

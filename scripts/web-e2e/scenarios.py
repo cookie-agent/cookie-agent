@@ -2,13 +2,14 @@
 
 Run by scripts/test-web-page.sh:
 
-    python3 -I scenarios.py <driver-port> <allowing-link> <refusing-link> \
-        <refusing-port> <allowing-home> <held-session> [screenshot-dir]
+    python3 -I scenarios.py <driver-port> <allowing-link> <other-link> \
+        <other-port> <allowing-home> <held-session> [screenshot-dir]
 
 The allowing daemon has a scripted model (mock-model.py) that takes images,
 an agent whose `bash` asks for approval, a `helper` subagent, and a `greet`
 skill. `held-session` is a session another process made before the daemon
-started, which the daemon lists but has not loaded.
+started, which the daemon lists but has not loaded. The other daemon is
+empty; its page is of another origin.
 """
 
 import base64
@@ -27,11 +28,23 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 
 DRIVER = "http://127.0.0.1:%s" % sys.argv[1]
-LINK, REFUSING_LINK, REFUSING_PORT, HOME, HELD_SESSION = sys.argv[2:7]
+LINK, OTHER_LINK, OTHER_PORT, HOME, HELD_SESSION = sys.argv[2:7]
+# The other daemon's page, without a token.
+OTHER_PAGE = OTHER_LINK.split("#")[0]
+# A daemon URL nothing listens on (port 9, discard): the connection fails
+# before its handshake.
+UNREACHABLE = "ws://127.0.0.1:9/ws"
+# Points the page at daemon URL `arguments[0]` with token `arguments[1]`, as
+# a past connection there would have.
+REMEMBER_DAEMON = (
+    "localStorage.setItem('cookie.daemon_url', arguments[0]);"
+    "localStorage.setItem('cookie.token:' + arguments[0], arguments[1])"
+)
 SCREENSHOTS = sys.argv[7] if len(sys.argv) > 7 else ""
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 ENTER, ALT, ESCAPE, NULL = "", "", "", ""
@@ -1662,7 +1675,7 @@ def service_worker(browser):
 
 
 def daemon_change():
-    """The worker is network-only: with the refusing daemon's page under
+    """The worker is network-only: with the other daemon's page under
     its control, the daemon stops and a reload fails, then a different
     build on the same port shows on the next reload."""
     browser = Browser()
@@ -1673,16 +1686,16 @@ def daemon_change():
 
 
 def changed_daemon(browser):
-    base = REFUSING_LINK.split("#")[0]
-    browser.go(REFUSING_LINK)
-    browser.wait("the refused page's service worker", lambda: controlled(browser))
-    with open(os.path.join(os.path.dirname(HOME), "refusing", "daemon.pid")) as file:
+    base = OTHER_PAGE
+    browser.go(OTHER_LINK)
+    browser.wait("the other page's service worker", lambda: controlled(browser))
+    with open(os.path.join(os.path.dirname(HOME), "other", "daemon.pid")) as file:
         daemon = int(file.read())
     os.kill(daemon, signal.SIGTERM)
     deadline = time.time() + 20
     while time.time() < deadline:
         with socket.socket() as probe:
-            if probe.connect_ex(("127.0.0.1", int(REFUSING_PORT))) != 0:
+            if probe.connect_ex(("127.0.0.1", int(OTHER_PORT))) != 0:
                 break
         time.sleep(0.1)
     try:
@@ -1697,7 +1710,7 @@ def changed_daemon(browser):
     with open("crates/web_assets/bundle/sw.js") as source, open(os.path.join(build, "sw.js"), "w") as copy:
         copy.write(source.read())
     handler = functools.partial(QuietFiles, directory=build)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", int(REFUSING_PORT)), handler)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", int(OTHER_PORT)), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         browser.go(base)
@@ -1808,13 +1821,13 @@ def install_on_phones():
                 assert offer(phone) == ("ios" if agent else "prompt"), offer(phone)
                 fits(phone, "%s settings" % platform)
                 phone.shot("phone-install-settings-%s-%s" % (platform, theme))
-                # The connect screen of the daemon that refuses the page.
-                phone.go(REFUSING_LINK)
-                phone.wait("the connect screen", lambda: "allowed_origins" in phone.text())
-                # Another port, another origin: its own theme choice.
+                # The connect screen, on another port (another origin, its
+                # own theme choice), of a page pointed at no daemon.
+                phone.go(OTHER_PAGE)
+                phone.script(REMEMBER_DAEMON, UNREACHABLE, "token")
                 phone.script("localStorage.setItem('cookie.theme', arguments[0])", theme)
-                phone.go(REFUSING_LINK.split("#")[0])
-                phone.wait("the connect screen", lambda: "allowed_origins" in phone.text())
+                phone.go(OTHER_PAGE)
+                phone.wait("the connect screen", lambda: "Check the daemon URL" in phone.text())
                 phone.phone(390, 844)
                 if agent is None:
                     phone.script(FAKE_PROMPT, "dismissed")
@@ -1969,15 +1982,21 @@ def main():
         browser.shot("narrow")
         print("the narrow layout fits and opens the sessions in a drawer")
 
-        # A daemon that allows no origin refuses the page before its handshake.
+        # The other daemon's page, of a foreign origin, connects to this
+        # daemon: the token is the guard.
         browser.resize(1280, 900)
-        browser.go(REFUSING_LINK)
-        expected = '"http://127.0.0.1:%s"' % REFUSING_PORT
-        browser.wait(
-            "the origin hint",
-            lambda: expected in browser.text() and "allowed_origins" in browser.text(),
-        )
-        print("the refused page names", expected)
+        page, fragment = LINK.split("#")
+        token = urllib.parse.parse_qs(fragment)["token"][0]
+        browser.go(OTHER_PAGE)
+        browser.script(REMEMBER_DAEMON, "ws" + page[len("http"):] + "ws", token)
+        browser.go(OTHER_PAGE)
+        browser.wait("the connection from a foreign origin", lambda: browser.text("#connected") != "")
+        print("a page of a foreign origin connects with the token")
+        # A connection that fails before its handshake says what to check.
+        browser.script(REMEMBER_DAEMON, UNREACHABLE, token)
+        browser.go(OTHER_PAGE)
+        browser.wait("the refusal hint", lambda: "Check the daemon URL" in browser.text())
+        print("a connection refused before its handshake points at the URL and the daemon")
         browser.shot("refused")
     finally:
         browser.close()
@@ -1994,5 +2013,5 @@ assert not problems or os.environ.get("PHONE_AUDIT_REPORT_ONLY"), "the phone lay
 print("every view fits the phone sizes with touch-sized targets")
 install_prompt()
 install_on_phones()
-# Last: it stops the refusing daemon.
+# Last: it stops the other daemon.
 daemon_change()

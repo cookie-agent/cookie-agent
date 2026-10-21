@@ -255,9 +255,7 @@ fn failure(error: &ClientError) -> Phase {
     match error {
         ClientError::ConnectionRefusedBeforeHandshake { .. } => Phase::Failed {
             message: crate::errors::describe(error),
-            hint: Some(refused_before_handshake_hint(
-                &browser::page_origin().unwrap_or_default(),
-            )),
+            hint: Some(refused_before_handshake_hint()),
         },
         _ if error.error_code() == Some("unauthenticated") => Phase::Failed {
             message: "The daemon refused the token.".into(),
