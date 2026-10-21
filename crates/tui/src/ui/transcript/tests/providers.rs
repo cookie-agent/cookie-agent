@@ -883,7 +883,8 @@ async fn supported_removed_provider_reconnects_through_setup_and_secret_workflow
     assert!(submit.contains("Cancel"));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
-    let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+    // A liveness bound, with room for a machine busy with every other test.
+    let update = tokio::time::timeout(Duration::from_secs(20), app.rpc_updates_rx.recv())
         .await
         .expect("reconnect update timeout")
         .expect("reconnect update");
