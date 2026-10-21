@@ -25,7 +25,10 @@ fn segment(stream: TerminalStream, text: &str) -> TerminalSegment {
 #[test]
 fn the_title_holds_the_whole_command_for_clients_to_cut() {
     let tool = BashTool::new(&crate::test_workspace(std::env::temp_dir()));
-    let command = format!("cargo test --locked --workspace {}", "--package x ".repeat(12));
+    let command = format!(
+        "cargo test --locked --workspace {}",
+        "--package x ".repeat(12)
+    );
     let presentation = tool.presentation(&ToolCall {
         id: ToolCallId::new_v7(),
         name: "bash".into(),
