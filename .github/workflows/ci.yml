@@ -3,9 +3,23 @@ name: CI
 on:
   # Branch pushes only: a stable release starts from a GitHub release being
   # published, so the tag it creates must not start a second run.
+  #
+  # Documentation-only changes skip this workflow; the Documentation
+  # workflow builds the site. Changes to the pages that tests keep in step
+  # with the code still run it. Later patterns override earlier ones.
   push:
     branches: ['**']
+    paths: &code-paths
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      - '!mkdocs.yml'
+      - 'docs/site/clients/cli.md'
+      - 'docs/site/reference/errors.md'
+      - 'docs/site/reference/protocol.md'
+      - 'docs/site/reference/tools.md'
   pull_request:
+    paths: *code-paths
   release:
     types: [published]
 
