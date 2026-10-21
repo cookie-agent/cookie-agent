@@ -82,6 +82,9 @@ pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
         children.len().hash(&mut hasher);
         for child in children {
             child.version().hash(&mut hasher);
+            if let AssistantChild::Thinking { id, .. } = child {
+                view.expanded.contains(&thinking_key(*id)).hash(&mut hasher);
+            }
             if let AssistantChild::Tool { call_id } = child {
                 let id = call_id.to_string();
                 view.expanded.contains(&id).hash(&mut hasher);
@@ -509,6 +512,11 @@ fn pinned_row(
     html
 }
 
+/// The expanded-set key of the thinking segment that starts at `id`.
+fn thinking_key(id: u64) -> String {
+    format!("thinking:{id}")
+}
+
 /// A row that shows `header` and, once clicked open, `detail` and `body`.
 fn collapsible(
     view: &TranscriptView<'_>,
@@ -555,10 +563,15 @@ fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
         AssistantChild::Text { markdown, .. } => {
             format!("<div class=\"markdown\">{}</div>", document_html(markdown))
         }
-        AssistantChild::Thinking { text, .. } => format!(
-            "<details class=\"{NOTE}\"><summary class=\"inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-md px-2 hover:bg-toasted hover:text-espresso active:bg-crust dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke\">{}thinking</summary><div class=\"border-l border-toasted pl-3 whitespace-pre-wrap dark:border-ember\">{}</div></details>",
-            svg(icondata::FaLightbulbRegular, ""),
-            escape(text)
+        // Open or folded like any other block, in the page's expanded set:
+        // a native <details> forgot it whenever the item drew again.
+        AssistantChild::Thinking { id, text, .. } => collapsible(
+            view,
+            &thinking_key(*id),
+            icondata::FaLightbulbRegular,
+            "thinking",
+            None,
+            text,
         ),
         AssistantChild::Tool { call_id } => match view.state.tools.get(call_id) {
             Some(tool) => tool_html(view, tool),
@@ -795,7 +808,7 @@ mod tests {
         EventLevel, ModelDisplayNames, ProducerMessageStatus, SessionState, TranscriptItem,
     };
 
-    use super::{Delegate, TranscriptView, item_html, item_key, tool_html};
+    use super::{Delegate, TranscriptView, child_html, item_html, item_key, tool_html};
 
     static NO_HOMES: std::sync::LazyLock<cookie_agent_client_state::paths::RuntimeHomes> =
         std::sync::LazyLock::new(Default::default);
@@ -880,6 +893,36 @@ mod tests {
     fn header(html: &str) -> &str {
         let start = html.find("data-header>").expect("a header") + "data-header>".len();
         &html[start..start + html[start..].find('<').expect("its end")]
+    }
+
+    #[test]
+    fn thinking_stays_open_from_the_expanded_set_whatever_draws_again() {
+        let state = SessionState::default();
+        let names = ModelDisplayNames::default();
+        let thinking = cookie_agent_client_state::AssistantChild::Thinking {
+            id: 7,
+            version: 0,
+            text: "weighing the options".into(),
+        };
+        let draw = |expanded: &HashSet<String>| {
+            let view = TranscriptView {
+                session_id: cookie_agent_protocol::SessionId::new_v7(),
+                state: &state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+            };
+            child_html(&view, &thinking)
+        };
+        let folded = draw(&HashSet::new());
+        assert!(folded.contains("data-block-key=\"thinking:7\""), "{folded}");
+        assert!(folded.contains("aria-expanded=\"false\""), "{folded}");
+        assert!(!folded.contains("weighing the options"), "{folded}");
+        let open = draw(&HashSet::from(["thinking:7".to_owned()]));
+        assert!(open.contains("aria-expanded=\"true\""), "{open}");
+        assert!(open.contains("weighing the options"), "{open}");
     }
 
     #[test]
