@@ -1651,7 +1651,7 @@ def badges(browser, row):
     """A session row's badges, as [kind, text] pairs."""
     return browser.script(
         "return [...document.querySelectorAll(arguments[0] + ' [data-session-badges] [data-badge]')]"
-        ".map((b) => [b.dataset.badge, b.textContent.trim()])",
+        ".filter((b) => !b.hidden).map((b) => [b.dataset.badge, b.textContent.trim()])",
         row,
     )
 
@@ -1662,6 +1662,27 @@ def badge_kinds(browser, row):
 
 # The text colour of a row's badge for `arguments[1]`, and of the bottom
 # bar's dot for it.
+# Whether every shown machine badge of a row shows its whole name.
+MACHINES_WHOLE = """
+return [...document.querySelectorAll(arguments[0] + ' [data-badge=machine]')]
+    .filter((b) => !b.hidden)
+    .every((b) => b.scrollWidth <= b.clientWidth + 1 && !b.textContent.includes('…'));
+"""
+# A row's line at the sidebar's width now: whether its shown machine
+# badges are whole and inside the line, whether a workspace is cut, and
+# whether the time is whole.
+LINE_STATE = """
+const row = arguments[0];
+const line = document.querySelector(row + ' [data-session-badges]');
+const time = document.querySelector(row + ' [data-session-time]');
+const edge = line.getBoundingClientRect().right;
+const whole = [...line.querySelectorAll('[data-badge=machine]')]
+    .filter((b) => !b.hidden)
+    .every((b) => b.scrollWidth <= b.clientWidth + 1 && b.getBoundingClientRect().right <= edge + 1);
+const pathCut = [...line.querySelectorAll('[data-badge=workspace]')]
+    .some((e) => e.scrollWidth > e.clientWidth + 1);
+return [whole, pathCut, time.scrollWidth <= time.clientWidth];
+"""
 BADGE_COLOUR = """
 const badge = [...document.querySelectorAll(arguments[0] + ' [data-badge]')]
     .find((b) => b.textContent.trim().startsWith(arguments[1]));
@@ -1696,6 +1717,22 @@ def session_badges(browser):
         "a badge per machine",
         lambda: badges(browser, rows["one machine"]) == [["machine", machine[1]], ["machine", "e2e-studio"]],
     )
+    # Too narrow for both machines: the first stays whole, and +1 stands for
+    # the other, which its tooltip names.
+    hover(browser, "#transcript")
+    browser.script("document.querySelector('#sidebar').style.width = '150px'")
+    browser.wait("the +N badge", lambda: browser.script(
+        "const m = document.querySelector(arguments[0] + ' [data-badge=more]');"
+        "return !!m && !m.hidden ? [m.textContent, m.title] : null", rows["one machine"]) is not None)
+    more, more_title = browser.script(
+        "const m = document.querySelector(arguments[0] + ' [data-badge=more]'); return [m.textContent, m.title]",
+        rows["one machine"],
+    )
+    assert re.fullmatch(r"\+[12]", more) and "e2e-studio" in more_title, (more, more_title)
+    assert browser.script(MACHINES_WHOLE, rows["one machine"]), "a machine badge is cut"
+    browser.shot("badges-more")
+    browser.script("document.querySelector('#sidebar').style.width = ''")
+    print("a line too narrow for its machines shows only whole ones, then", more, "for", more_title)
     # One attachment shows its machine, now the studio, and its workspace.
     browser.wait("alt on the studio", lambda: badges(browser, rows["one"]) == [["machine", "e2e-studio"], ["workspace", "~/elsewhere"]])
     alt_colour = browser.script(BADGE_COLOUR, rows["one"], "e2e-studio")
@@ -1729,32 +1766,24 @@ def session_badges(browser):
     subprocess.run([COOKIE, "machine", "unassign", "alt"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
     browser.wait("alt back on this machine", lambda: badge_kinds(browser, rows["one machine"]) == ["machine", "workspace"])
-    # A narrowing sidebar: the machine's name and the workspaces give way,
-    # while the time stays whole.
+    # A narrowing sidebar: the workspaces give way first, down to "…";
+    # a machine's name is never cut, and the time stays whole.
     hover(browser, "#transcript")
-    clipped = browser.script(
-        "const row = arguments[0], sidebar = document.querySelector('#sidebar');"
-        "const line = document.querySelector(row + ' [data-session-badges]');"
-        "const time = document.querySelector(row + ' [data-session-time]');"
-        "const cut = (kind) => [...line.querySelectorAll('[data-badge=' + kind + '] .truncate')]"
-        "  .some((e) => e.scrollWidth > e.clientWidth + 1);"
-        "for (let width = 288; width >= 120; width -= 2) {"
-        "  sidebar.style.width = width + 'px';"
-        "  if (cut('machine')) {"
-        "    const box = document.querySelector(row + ' [data-session]').getBoundingClientRect();"
-        "    return [width, time.scrollWidth <= time.clientWidth,"
-        "      time.getBoundingClientRect().right <= box.right + 1];"
-        "  }"
-        "}"
-        "return null",
-        rows["one machine"],
-    )
-    assert clipped and clipped[1:] == [True, True], clipped
-    browser.shot("badges-narrow")
+    cut_at = None
+    for width in range(288, 119, -12):
+        browser.script("document.querySelector('#sidebar').style.width = arguments[0] + 'px'", width)
+        time.sleep(0.25)
+        whole, path_cut, time_whole = browser.script(LINE_STATE, rows["one machine"])
+        assert whole and time_whole, (width, whole, time_whole)
+        if path_cut and cut_at is None:
+            cut_at = width
+            browser.shot("badges-narrow")
+    assert cut_at is not None, "the workspaces were never cut"
+    print("a narrowing sidebar cuts the workspaces from %d px; machine names and the time stay whole" % cut_at)
     browser.script("document.querySelector('#sidebar').style.width = ''")
     subprocess.run([COOKIE, "machine", "forget", "e2e-studio"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
-    print("badges: none, one machine and its workspaces, two machines; a machine keeps its colour everywhere")
+    print("badges: none, one machine and its workspaces, two machines; a machine keeps its colour everywhere; names stay whole")
 
 
 # A row's pencil and trash: the row's middle and each button's, their
@@ -2716,7 +2745,8 @@ def projects(browser):
     assert agents == "Answer in one line.\n", agents
     # Its header shows where it runs, as the rows do.
     header_badges = browser.script(
-        "return [...document.querySelectorAll(arguments[0] + ' [data-badge]')].map((b) => b.textContent.trim())",
+        "return [...document.querySelectorAll(arguments[0] + ' [data-badge]')]"
+        ".filter((b) => !b.hidden).map((b) => b.textContent.trim())",
         header(project),
     )
     assert len(header_badges) == 2 and header_badges[1] == "~/workspace", header_badges

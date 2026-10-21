@@ -426,19 +426,22 @@ fn session_row(
     let last_activity = session.last_activity;
     // Where it runs, once the runtimes are known; the tooltip lists every
     // workspace with its path.
+    // Fitted to the line: machines whole, the last ones left out for a
+    // `+N` when even the workspaces gone to `…` leave too little room.
     let badges = {
         let session = session.clone();
-        move || {
+        move |line: NodeRef<html::Span>| {
             let homes = workspace.homes();
             let listed = workspace.lists_attachments.get();
-            workspace.runtimes.with(|listing| {
-                session_badges(&session, listing.as_ref(), &homes, listed)
-                    .into_iter()
-                    .map(crate::badges::badge_view)
-                    .collect_view()
-            })
+            let shown = workspace
+                .runtimes
+                .with(|listing| session_badges(&session, listing.as_ref(), &homes, listed));
+            crate::badges::fit_soon(line);
+            crate::badges::badge_line(shown)
         }
     };
+    let badge_line = NodeRef::<html::Span>::new();
+    crate::badges::keep_fitted(badge_line);
     let title = {
         let session = session.clone();
         let status = status_text.clone();
@@ -575,8 +578,11 @@ fn session_row(
                             <Glyph icon=icondata::FaChevronRightSolid class="text-[0.625rem]" />
                         </span>
                     </Show>
-                    <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" data-session-badges>
-                        {badges.clone()}
+                    <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" node_ref=badge_line data-session-badges>
+                        {
+                            let badges = badges.clone();
+                            move || badges(badge_line)
+                        }
                     </span>
                 </span>
             </button>
@@ -739,8 +745,10 @@ fn rename_row<B: IntoView + 'static>(
     session_id: SessionId,
     mark: Option<icons::StatusMark>,
     actions: RowActions,
-    badges: impl Fn() -> B + Send + Sync + 'static,
+    badges: impl Fn(NodeRef<html::Span>) -> B + Send + Sync + Clone + 'static,
 ) -> impl IntoView {
+    let line = NodeRef::<html::Span>::new();
+    crate::badges::keep_fitted(line);
     let RowActions {
         renaming,
         draft,
@@ -817,7 +825,12 @@ fn rename_row<B: IntoView + 'static>(
                 when=empty
                 fallback=move || view! {
                     <span class=format!("flex w-full min-w-0 items-center gap-1 {NOTE}")>
-                        <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">{badges()}</span>
+                        <span class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" node_ref=line>
+                            {
+                                let badges = badges.clone();
+                                move || badges(line)
+                            }
+                        </span>
                     </span>
                 }
             >

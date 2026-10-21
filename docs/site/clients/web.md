@@ -141,8 +141,10 @@ address bar.
     eight colours, chosen from its name, so it looks the same in every row
     and every browser; the dots marking runtimes in the bottom bar and on
     the runtime cards take their machine's colour. The badges have the
-    row's second line to themselves; when it is too narrow, the machines'
-    names and the workspaces are cut short. The row's tooltip lists every
+    row's second line to themselves. A machine's name is never cut: when
+    the line is too narrow, the workspaces shrink first, down to `…`, then
+    give way, and then the last machines give way to a **+N** badge whose tooltip names
+    them. The row's tooltip lists every
     workspace with its machine, runtime, and path. A daemon older than
     client protocol 1.7 lists no attachments: the row shows the session's
     directory instead.

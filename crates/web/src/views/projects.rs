@@ -356,16 +356,17 @@ fn project_header(
     let defaults = project
         .as_ref()
         .and_then(|project| project.defaults.clone());
+    let badge_line = NodeRef::<html::Span>::new();
+    crate::badges::keep_fitted(badge_line);
     let badges = {
         let defaults = defaults.clone();
         move || {
             let homes = workspace.homes();
-            workspace.runtimes.with(|listing| {
-                project_badges(defaults.as_ref(), listing.as_ref(), &homes)
-                    .into_iter()
-                    .map(crate::badges::badge_view)
-                    .collect_view()
-            })
+            let shown = workspace
+                .runtimes
+                .with(|listing| project_badges(defaults.as_ref(), listing.as_ref(), &homes));
+            crate::badges::fit_soon(badge_line);
+            crate::badges::badge_line(shown)
         }
     };
     let has_badges = {
@@ -533,7 +534,7 @@ fn project_header(
                     </span>
                 </span>
                 <Show when=has_badges.clone()>
-                    <span class="flex min-w-0 items-center gap-1 overflow-hidden pb-1.5 pr-2 pl-9 text-xs" data-project-badges>
+                    <span class="flex min-w-0 items-center gap-1 overflow-hidden pb-1.5 pr-2 pl-9 text-xs" node_ref=badge_line data-project-badges>
                         {badges.clone()}
                     </span>
                 </Show>
