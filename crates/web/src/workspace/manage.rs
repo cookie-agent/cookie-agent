@@ -7,9 +7,9 @@
 use std::time::Duration;
 
 use cookie_agent_client_state::{
-    config::{ConfigApplyOutcome, document_text, new_agent_refusal, reload_status},
+    config::{ConfigApplyOutcome, document_text, new_agent_refusal, reload_status, restart_note},
     mcp::{McpFields, PersistChoice, edit_refusal, is_global, new_definition, sort_servers},
-    memory::{MemoryWriteOutcome, NEW_MEMORY, delete_refusal, new_memory_refusal},
+    memory::{MemoryWriteOutcome, NEW_MEMORY, delete_refusal, new_memory_refusal, saved_status},
     providers::{
         ProviderAction, ProviderOperation, action_name, retry_store_contention_once,
         store_contention_message,
@@ -30,7 +30,11 @@ use cookie_agent_protocol::{
 use leptos::{prelude::*, task::spawn_local};
 
 use super::{Panel, Workspace};
-use crate::layout::{SettingsSection, View};
+use crate::{
+    layout::{SettingsSection, View},
+    machines::{SshTemplate, has_template},
+    memory::{folder_key, project_delete_status, project_memories, project_strays},
+};
 
 /// How often an open `/runtime` or `/mcp` panel reads its list again, as the
 /// TUI polls.
@@ -468,6 +472,87 @@ impl Workspace {
                 )),
             }
             self.poll_runtimes();
+        });
+    }
+
+    /// Writes `template` into `config.toml` with a `config.apply` set of
+    /// its `[runtimes.<id>]` table, unless the daemon lists a runtime of
+    /// that ID or the file has a template of it. A set does not depend on
+    /// the rest of the file, so a revision that moved meanwhile is read
+    /// again once. `outcome` gets what the form says.
+    pub fn add_runtime_template(
+        self,
+        template: SshTemplate,
+        outcome: RwSignal<Option<Result<String, String>>>,
+    ) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        let id = template.id.clone();
+        let listed = self.runtimes.with_untracked(|listing| {
+            listing.as_ref().is_some_and(|listing| {
+                listing
+                    .runtimes
+                    .iter()
+                    .any(|runtime| runtime.runtime_id == id)
+            })
+        });
+        if listed {
+            outcome.set(Some(Err(format!(
+                "The daemon has a runtime `{id}` already."
+            ))));
+            return;
+        }
+        outcome.set(None);
+        self.status.set(format!("adding runtime {id}…"));
+        spawn_local(async move {
+            let mut retried = false;
+            let result = loop {
+                let config = match client.get_config().await {
+                    Ok(config) => config,
+                    Err(error) => break Err(crate::errors::describe(&error)),
+                };
+                let text = config
+                    .documents
+                    .iter()
+                    .find(|document| document.path == "config.toml")
+                    .map_or("", |document| document.text.as_str());
+                if has_template(text, &id) {
+                    break Err(format!(
+                        "config.toml has a [runtimes.{id}] template already."
+                    ));
+                }
+                match ConfigApplyOutcome::from_result(
+                    client
+                        .apply_config(ConfigApplyParams {
+                            expected_revision: config.revision,
+                            changes: vec![template.change()],
+                        })
+                        .await,
+                ) {
+                    ConfigApplyOutcome::Refused {
+                        reason: cookie_agent_protocol::ConfigApplyErrorCode::Conflict,
+                        ..
+                    } if !retried => retried = true,
+                    ConfigApplyOutcome::Applied(status) => {
+                        break Ok(format!(
+                            "Added [runtimes.{id}] to config.toml.{}",
+                            restart_note(&status)
+                        ));
+                    }
+                    ConfigApplyOutcome::Refused { detail, .. } => {
+                        break Err(format!("config.toml was not changed: {detail}"));
+                    }
+                    ConfigApplyOutcome::Failed(error) => break Err(error),
+                }
+            };
+            self.status.set(match &result {
+                Ok(done) | Err(done) => done.clone(),
+            });
+            outcome.set(Some(result));
+            if self.config.with_untracked(Option::is_some) {
+                self.poll_config();
+            }
         });
     }
 
@@ -1021,15 +1106,14 @@ impl Workspace {
                     .await,
             );
             match outcome {
-                MemoryWriteOutcome::Saved => {
+                MemoryWriteOutcome::Saved { notice } => {
                     self.memory_pending.set(None);
                     self.memory_edit.set(None);
-                    let verb = if edit.revision.is_some() {
-                        "Saved"
-                    } else {
-                        "Created"
-                    };
-                    self.status.set(format!("{verb} {}.", edit.url));
+                    self.status.set(saved_status(
+                        &edit.url,
+                        edit.revision.is_none(),
+                        notice.as_deref(),
+                    ));
                 }
                 MemoryWriteOutcome::Invalid(message) => {
                     self.status.set(format!("Not saved: {message}"));
@@ -1098,6 +1182,48 @@ impl Workspace {
                     Ok(_) => format!("Deleted {url}."),
                     Err(error) => delete_refusal(&url, &error),
                 });
+            self.poll_memory();
+        });
+    }
+
+    /// Deletes every memory of `project` with `memory.delete`, each at the
+    /// revision listed; the folder's other files stay, and so does the
+    /// folder when there are any. A memory that is refused does not stop
+    /// the others.
+    pub fn delete_project(self, project: String) {
+        let (Some(client), Some(Ok(listing))) = (self.client(), self.memory.get_untracked()) else {
+            return;
+        };
+        let memories = project_memories(&listing, &project);
+        let strays = project_strays(&listing, &project);
+        self.status.set(format!("deleting project {project}…"));
+        spawn_local(async move {
+            let mut deleted = 0;
+            let mut failure = None;
+            for (url, revision) in &memories {
+                match client.delete_memory(url.clone(), revision.clone()).await {
+                    Ok(_) => deleted += 1,
+                    Err(error) => {
+                        failure.get_or_insert_with(|| delete_refusal(url, &error));
+                    }
+                }
+            }
+            let mut status =
+                project_delete_status(&project, deleted, memories.len(), failure.as_deref());
+            if strays > 0 {
+                status.push_str(&format!(
+                    " Its folder keeps {} that {} not memories.",
+                    if strays == 1 {
+                        "1 file".to_owned()
+                    } else {
+                        format!("{strays} files")
+                    },
+                    if strays == 1 { "is" } else { "are" }
+                ));
+            } else if failure.is_none() {
+                crate::browser::forget(&folder_key(&project));
+            }
+            self.status.set(status);
             self.poll_memory();
         });
     }

@@ -303,6 +303,76 @@ pub fn select_text(id: &str) {
     }
 }
 
+/// A `touchmove` listener on the window that keeps the page from
+/// scrolling under a finger while it drags something; [`TouchHold::remove`]
+/// takes it away.
+pub struct TouchHold {
+    listener: Closure<dyn Fn(web_sys::Event)>,
+}
+
+/// Holds the page still under a moving finger whenever `holds()` says so.
+/// The listener is not passive, or the browser would scroll regardless;
+/// the browser decides at a move's first event, so a finger that moves
+/// before `holds()` turns true scrolls as usual.
+pub fn hold_touch_scroll(holds: impl Fn() -> bool + 'static) -> Option<TouchHold> {
+    let window = window()?;
+    let listener = Closure::<dyn Fn(web_sys::Event)>::new(move |event: web_sys::Event| {
+        if holds() && event.cancelable() {
+            event.prevent_default();
+        }
+    });
+    let options = web_sys::AddEventListenerOptions::new();
+    options.set_passive(false);
+    window
+        .add_event_listener_with_callback_and_add_event_listener_options(
+            "touchmove",
+            listener.as_ref().unchecked_ref(),
+            &options,
+        )
+        .ok()?;
+    Some(TouchHold { listener })
+}
+
+impl TouchHold {
+    pub fn remove(self) {
+        if let Some(window) = window() {
+            let _ = window.remove_event_listener_with_callback(
+                "touchmove",
+                self.listener.as_ref().unchecked_ref(),
+            );
+        }
+    }
+}
+
+/// The `attribute` of the element `selector` matches that is at `x`, `y`
+/// in the viewport or holds what is: what a drag is over.
+pub fn attribute_at(x: f64, y: f64, selector: &str, attribute: &str) -> Option<String> {
+    // A viewport coordinate is far inside `f32`.
+    let element = window()?
+        .document()?
+        .element_from_point(x as f32, y as f32)?;
+    element.closest(selector).ok()??.get_attribute(attribute)
+}
+
+/// Scrolls the element `selector` matches when `y` is near its top or
+/// bottom edge, so a drag reaches what is out of view.
+pub fn scroll_near_edge(selector: &str, y: f64) {
+    const EDGE: f64 = 48.0;
+    const STEP: f64 = 12.0;
+    let Some(element) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector(selector).ok().flatten())
+    else {
+        return;
+    };
+    let frame = element.get_bounding_client_rect();
+    if y < frame.top() + EDGE {
+        element.scroll_by_with_x_and_y(0.0, -STEP);
+    } else if y > frame.bottom() - EDGE {
+        element.scroll_by_with_x_and_y(0.0, STEP);
+    }
+}
+
 /// Keeps `--app-height` on `<html>` at the visual viewport's height, which a
 /// phone's on-screen keyboard shrinks while the layout viewport (and
 /// `100dvh`) may not, so the composer and an open sheet stay above the

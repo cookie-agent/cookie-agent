@@ -1,7 +1,7 @@
 //! The page's frame around the views: the rail that switches them, the
 //! drawer that carries the rail and the sessions on a phone (and the
-//! sessions over a tablet's transcript), and the full-page views other
-//! than Chat.
+//! sessions over a tablet's transcript; the agents, in Agents), and the
+//! full-page views other than Chat.
 //!
 //! Widths: below 640 px (Tailwind's `sm`) a phone, whose rail is in the
 //! drawer; from 640 px the rail stays on the left; from 1024 px (`lg`) the
@@ -10,11 +10,12 @@
 use leptos::prelude::*;
 
 use super::{
-    ICON_BUTTON, NOTE, ROW, SessionList, events_sheet,
-    manage::{
-        ConfigScope, config_sheet, connect_sheet, machines_page, mcp_sheet, memory_sheet,
-        plugins_sheet,
-    },
+    ICON_BUTTON, NOTE, ROW, SessionList,
+    agents::{AgentList, agents_page},
+    events_sheet,
+    machines::machines_page,
+    manage::{config_sheet, connect_sheet, mcp_sheet, plugins_sheet},
+    memory::memory_sheet,
 };
 use crate::{
     app::{Connection, ConnectionStatus, ForgetDaemon, ThemeToggle},
@@ -94,7 +95,8 @@ pub fn Rail(
 
 /// The sessions over the page: a phone's drawer (the rail beside the
 /// sessions, 85 % wide), or the sessions sliding over a tablet's
-/// transcript. A desktop pins them instead.
+/// transcript. A desktop pins them instead. In Agents it carries the
+/// agents in their place.
 #[component]
 pub fn Drawer(
     workspace: Workspace,
@@ -111,33 +113,46 @@ pub fn Drawer(
             <div
                 id="drawer"
                 role="dialog"
-                aria-label="Sessions"
+                aria-label=move || sidebar_label(workspace.view.get())
                 class="sheet-frame fixed top-0 left-0 z-40 flex w-[85%] max-w-sm shadow-xl sm:bottom-0 sm:left-14 sm:w-80 lg:hidden"
             >
                 <div class="flex sm:hidden">
                     <Rail workspace=workspace connection=connection theme=theme primary=false />
                 </div>
                 <div class="flex min-w-0 flex-1 flex-col overflow-y-auto border-r border-toasted bg-parchment dark:border-ember dark:bg-char">
-                    <SessionList workspace=workspace />
+                    {move || match workspace.view.get() {
+                        View::Agents => view! { <AgentList workspace=workspace /> }.into_any(),
+                        _ => view! { <SessionList workspace=workspace /> }.into_any(),
+                    }}
                 </div>
             </div>
         </Show>
     }
 }
 
-/// The sidebar button: it shows and hides the sessions.
+/// What the sidebar (or the drawer) holds in `view`.
+fn sidebar_label(view: View) -> &'static str {
+    if view == View::Agents {
+        "Agents"
+    } else {
+        "Sessions"
+    }
+}
+
+/// The sidebar button: it shows and hides the sessions, or the agents in
+/// Agents.
 #[component]
 pub fn SidebarButton(workspace: Workspace, #[prop(optional)] class: &'static str) -> impl IntoView {
     let shown = move || {
         workspace.sidebar_open.get()
-            || (workspace.view.get() == View::Chat && workspace.sidebar_pinned.get())
+            || (workspace.view.get().has_sidebar() && workspace.sidebar_pinned.get())
     };
     view! {
         <button
             type="button"
             class=format!("{ICON_BUTTON} {class}")
-            aria-label="Sessions"
-            title="Show or hide the sessions"
+            aria-label=move || sidebar_label(workspace.view.get())
+            title=move || format!("Show or hide the {}", sidebar_label(workspace.view.get()).to_lowercase())
             data-sidebar-toggle
             aria-expanded=move || shown().to_string()
             on:click=move |_| workspace.toggle_sidebar()
@@ -172,7 +187,13 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
             data-view=move || workspace.view.get().id()
         >
             <div class="flex h-12 shrink-0 items-center gap-1 border-b border-toasted px-2 dark:border-ember">
-                <SidebarButton workspace=workspace class="sm:hidden" />
+                // Agents has a sidebar at every width; elsewhere the
+                // button opens a phone's drawer.
+                {move || if workspace.view.get().has_sidebar() {
+                    view! { <SidebarButton workspace=workspace /> }.into_any()
+                } else {
+                    view! { <SidebarButton workspace=workspace class="sm:hidden" /> }.into_any()
+                }}
                 <Show when=detail>
                     <button
                         type="button"
@@ -189,14 +210,14 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
             </div>
             {move || match workspace.view.get() {
                 View::Settings => settings_page(workspace, connection).into_any(),
+                View::Agents => agents_page(workspace).into_any(),
                 view => view! {
                     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-page-body>
                         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-2">
                             {match view {
-                                View::Agents => config_sheet(workspace, ConfigScope::Agents).into_any(),
                                 View::Machines => machines_page(workspace).into_any(),
                                 View::Memory => memory_sheet(workspace).into_any(),
-                                View::Chat | View::Settings => ().into_any(),
+                                View::Chat | View::Settings | View::Agents => ().into_any(),
                             }}
                         </div>
                     </div>
@@ -247,7 +268,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                     <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-3" data-page-body data-section-body=section.id()>
                         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-2">
                             {match section {
-                                SettingsSection::Configuration => config_sheet(workspace, ConfigScope::Configuration).into_any(),
+                                SettingsSection::Configuration => config_sheet(workspace).into_any(),
                                 SettingsSection::Providers => connect_sheet(workspace).into_any(),
                                 SettingsSection::Mcp => mcp_sheet(workspace).into_any(),
                                 SettingsSection::Plugins => plugins_sheet(workspace).into_any(),

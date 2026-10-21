@@ -6,6 +6,7 @@
 //! The crate also compiles natively, so the workspace builds without the
 //! wasm target; its tests cover the pure logic only.
 
+pub mod agents;
 mod app;
 pub mod attach;
 pub mod browser;
@@ -21,7 +22,9 @@ pub mod icons;
 pub mod install;
 pub mod keys;
 pub mod layout;
+pub mod machines;
 mod media;
+pub mod memory;
 pub mod modes;
 pub mod render;
 pub mod skills;

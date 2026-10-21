@@ -56,10 +56,11 @@ impl Workspace {
             && (section.is_none() || untrack(|| self.shown_section()) == section)
     }
 
-    /// The sidebar button: a desktop pins or hides the sidebar, remembered
-    /// in the browser; a narrower window slides the sessions over.
+    /// The sidebar button: a desktop pins or hides the sidebar of Chat and
+    /// Agents, remembered in the browser; a narrower window slides the
+    /// sessions (the agents, in Agents) over.
     pub fn toggle_sidebar(self) {
-        if browser::matches(browser::DESKTOP_QUERY) && self.view.get_untracked() == View::Chat {
+        if browser::matches(browser::DESKTOP_QUERY) && self.view.get_untracked().has_sidebar() {
             let shown = !self.sidebar_pinned.get_untracked();
             browser::store(SIDEBAR_KEY, if shown { "shown" } else { "hidden" });
             self.sidebar_pinned.set(shown);

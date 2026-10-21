@@ -1,7 +1,7 @@
 //! The management panels: the session's `/runtime` sheet, and the parts
-//! of the daemon-wide views: the machines and the runtime registry, `/mcp`,
-//! `/connect`, `/config` and the agent documents, `/memory`, and
-//! `/plugins`.
+//! of the daemon-wide views: `/mcp`, `/connect`, `/config`, and
+//! `/plugins`. The machines are [`super::machines`], the agent documents
+//! [`super::agents`], and `/memory` [`super::memory`].
 
 use cookie_agent_client_state::{
     config::config_rows,
@@ -9,42 +9,38 @@ use cookie_agent_client_state::{
         McpFields, McpTransport, PersistChoice, definition_display, runtime_label, source_label,
         state_label as mcp_state_label,
     },
-    memory::{MemoryRow, layer_title, memory_name, memory_rows},
     plugins::{plugin_detail, state_label as plugin_state_label},
     providers::{
         ProviderOperation, ProviderRowState, action_name, catalog_status_line, credential_values,
         initial_auth_method, initial_setup_text, model_counts_summary, row_state, setup_values,
         unusable_models_note,
     },
-    runtimes::{
-        MachineAction, MachineEntry, RuntimeChoice, attach_parameters, machine_action_request,
-        machine_entries, machine_form_title, machine_name_request, runtime_choices, status_label,
-    },
+    runtimes::{RuntimeChoice, attach_parameters, runtime_choices, status_label},
 };
 use cookie_agent_protocol::{McpServerState, ProviderDescriptor, RuntimeInstanceStatus};
-use leptos::{ev, prelude::*};
+use leptos::prelude::*;
 use wasm_bindgen::JsCast as _;
 
-use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading};
+use super::{BUTTON, ERROR, NOTE, PRIMARY, ROW, empty_state, loading};
 use crate::{
     icons::Glyph,
-    workspace::{MemoryChoice, MemoryPending, PANEL_POLL, Workspace},
+    workspace::{PANEL_POLL, Workspace},
 };
 
-const FIELD: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+pub(super) const FIELD: &str = "min-h-11 w-full rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 /// A document's text: it fills what its page leaves.
-const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-md border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
+pub(super) const EDITOR: &str = "min-h-[12rem] w-full flex-1 resize-y rounded-md border border-crust bg-cream p-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
 /// A small label for a thing's state.
-const STATE: &str = "shrink-0 rounded-full bg-toasted px-2 py-0.5 text-xs dark:bg-ember";
+pub(super) const STATE: &str = "shrink-0 rounded-full bg-toasted px-2 py-0.5 text-xs dark:bg-ember";
 /// An editor's page: the text fills it and the actions stay at its foot.
-const EDITOR_PAGE: &str = "flex min-h-full flex-1 flex-col gap-2";
-const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-toasted bg-cream px-3 py-2 dark:border-ember dark:bg-night";
+pub(super) const EDITOR_PAGE: &str = "flex min-h-full flex-1 flex-col gap-2";
+pub(super) const EDITOR_ACTIONS: &str = "sticky bottom-0 -mx-3 -mb-3 flex gap-2 border-t border-toasted bg-cream px-3 py-2 dark:border-ember dark:bg-night";
 /// A confirmation before something cannot be undone.
-const CONFIRM: &str = "flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char";
+pub(super) const CONFIRM: &str = "flex flex-col gap-2 rounded-lg border border-caramel bg-parchment p-3 dark:border-maple dark:bg-char";
 
 /// Reads `poll` every second while the sheet is open, as the TUI polls its
 /// open `/runtime` and `/mcp` panels.
-fn poll_while_open(poll: impl Fn() + 'static) {
+pub(super) fn poll_while_open(poll: impl Fn() + 'static) {
     let ticker = set_interval_with_handle(poll, PANEL_POLL).ok();
     on_cleanup(move || {
         if let Some(ticker) = ticker {
@@ -54,12 +50,22 @@ fn poll_while_open(poll: impl Fn() + 'static) {
 }
 
 /// The value of the text field `id`, read once.
-fn field_value(id: &str) -> String {
+pub(super) fn field_value(id: &str) -> String {
     web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(id))
         .and_then(|element| element.dyn_into::<web_sys::HtmlInputElement>().ok())
         .map(|input| input.value())
+        .unwrap_or_default()
+}
+
+/// The value of the text area `id`, read once.
+pub(super) fn area_value(id: &str) -> String {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(id))
+        .and_then(|element| element.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+        .map(|area| area.value())
         .unwrap_or_default()
 }
 
@@ -80,58 +86,6 @@ pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
             <Glyph icon=icondata::FaServerSolid />
             "Machines & runtimes"
         </button>
-    }
-}
-
-/// The daemon's machines and its runtime registry: the Machines &
-/// runtimes view.
-pub fn machines_page(workspace: Workspace) -> impl IntoView {
-    poll_while_open(move || workspace.poll_runtimes());
-    view! {
-        <h2 class="text-sm font-bold">"Machines"</h2>
-        {machines_view(workspace)}
-        <h2 class="mt-4 text-sm font-bold">"Runtimes"</h2>
-        {move || match workspace.runtimes.get() {
-            None => loading("Reading runtimes…").into_any(),
-            Some(listing) => listing
-                .runtimes
-                .into_iter()
-                .map(|runtime| {
-                    let lifetime = match runtime.lifetime {
-                        cookie_agent_protocol::RuntimeLifetime::Builtin => "built in",
-                        cookie_agent_protocol::RuntimeLifetime::DialIn => "dials in",
-                        cookie_agent_protocol::RuntimeLifetime::Spawned => "started by the daemon",
-                    };
-                    let capabilities = runtime
-                        .capabilities
-                        .iter()
-                        .map(|capability| capability.name.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let place = [
-                        runtime.machine.as_ref().map(|machine| format!("on {machine}")),
-                        runtime.platform.clone(),
-                        Some(lifetime.to_owned()),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                    view! {
-                        <div class="registry-row flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" data-runtime=runtime.runtime_id.to_string()>
-                            <div class="flex items-center gap-2">
-                                <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{runtime.runtime_id.to_string()}</span>
-                                <span class=STATE>{if runtime.connected { "connected" } else { "not connected" }}</span>
-                            </div>
-                            <span class=NOTE>{place}</span>
-                            {(!capabilities.is_empty()).then(|| view! { <span class=format!("font-mono {NOTE}")>{capabilities}</span> })}
-                            {runtime.message.clone().map(|message| view! { <span class=ERROR>{message}</span> })}
-                        </div>
-                    }
-                })
-                .collect_view()
-                .into_any(),
-        }}
     }
 }
 
@@ -300,124 +254,6 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                 }
             }}
         </Show>
-    }
-}
-
-fn machines_view(workspace: Workspace) -> impl IntoView {
-    let form = RwSignal::new(None::<(MachineAction, MachineEntry)>);
-    let act = move |entry: MachineEntry, action: MachineAction| match machine_action_request(
-        &entry, action,
-    ) {
-        Ok(Some(request)) => workspace.change_machines(request),
-        Ok(None) => form.set(Some((action, entry))),
-        Err(error) => workspace.status.set(error),
-    };
-    move || {
-        let listing = workspace.machines.get();
-        let machines = match &listing {
-            None => return loading("Reading machines…").into_any(),
-            Some(Err(error)) => return view! { <p class=ERROR>{error.clone()}</p> }.into_any(),
-            Some(Ok(listing)) => listing.clone(),
-        };
-        let rows = machine_entries(&machines)
-            .into_iter()
-            .map(|entry| {
-                let (label, detail, indent) = match &entry {
-                    MachineEntry::Machine(name) => {
-                        let machine = machines.machines.iter().find(|machine| machine.name == *name);
-                        let platform = machine
-                            .and_then(|machine| machine.platform.clone())
-                            .map(|platform| format!(" ({platform})"))
-                            .unwrap_or_default();
-                        let memories = machine.map_or(0, |machine| machine.memories);
-                        (
-                            format!("{name}{platform}"),
-                            if memories == 1 { "1 memory".to_owned() } else { format!("{memories} memories") },
-                            false,
-                        )
-                    }
-                    MachineEntry::Runtime { runtime, assigned_by, pinned, .. } => (
-                        runtime.to_string(),
-                        match (assigned_by, pinned) {
-                            (Some(_), true) => "connected · pinned".to_owned(),
-                            (Some(_), false) => "connected".to_owned(),
-                            (None, _) => "pinned · not connected".to_owned(),
-                        },
-                        true,
-                    ),
-                };
-                let actions = entry
-                    .actions()
-                    .into_iter()
-                    .map(|action| {
-                        let entry = entry.clone();
-                        view! {
-                            <button
-                                type="button"
-                                class=BUTTON
-                                data-machine-action=action.label()
-                                on:click=move |_| act(entry.clone(), action)
-                            >
-                                {action.label()}
-                            </button>
-                        }
-                    })
-                    .collect_view();
-                view! {
-                    <div class="machine-row flex flex-col gap-1 border-b border-toasted py-2 dark:border-ember" class:pl-6=indent data-machine-entry=label.clone()>
-                        <span class="font-mono text-sm" class:font-bold=!indent>{label.clone()}</span>
-                        <span class=NOTE>{detail}</span>
-                        <div class="flex flex-wrap gap-2">{actions}</div>
-                    </div>
-                }
-            })
-            .collect_view();
-        view! {
-            {rows}
-            {move || {
-                form.get()
-                    .map(|(action, entry)| {
-                        let title = machine_form_title(action, &entry);
-                        let submit = StoredValue::new_local(move || {
-                            match machine_name_request(action, &entry, &field_value("machine-name")) {
-                                Ok(request) => {
-                                    form.set(None);
-                                    workspace.change_machines(request);
-                                }
-                                Err(error) => workspace.status.set(error),
-                            }
-                        });
-                        let submit = move || submit.with_value(|submit| submit());
-                        view! {
-                            <div class="mt-2 flex flex-col gap-2 border-t border-toasted pt-2 dark:border-ember">
-                                <label class="flex flex-col gap-1 text-sm">
-                                    <span>{title}</span>
-                                    <input
-                                        type="text"
-                                        id="machine-name"
-                                        class=FIELD
-                                        on:keydown=move |event: ev::KeyboardEvent| {
-                                            if event.key() == "Enter" {
-                                                event.prevent_default();
-                                                submit();
-                                            }
-                                        }
-                                    />
-                                </label>
-                                <div class="flex gap-2">
-                                    <button type="button" id="machine-apply" class=PRIMARY on:click=move |_| submit()>
-                                        "Apply"
-                                    </button>
-                                    <button type="button" class=BUTTON on:click=move |_| form.set(None)>
-                                        "Cancel"
-                                    </button>
-                                </div>
-                            </div>
-                        }
-                    })
-            }}
-        }
-        .into_any()
     }
 }
 
@@ -934,28 +770,14 @@ fn provider_view(
 
 // ---- /config ---------------------------------------------------------------
 
-/// Which documents a configuration list shows.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConfigScope {
-    /// `config.toml`: the Settings view's Configuration section.
-    Configuration,
-    /// The agent documents and their presets: the Agents view.
-    Agents,
-}
-
-impl ConfigScope {
-    fn holds(self, path: &str) -> bool {
-        (path == "config.toml") == (self == Self::Configuration)
-    }
-}
-
-pub fn config_sheet(workspace: Workspace, scope: ConfigScope) -> impl IntoView {
-    let confirm_delete = RwSignal::new(None::<String>);
+/// `config.toml`: the Settings view's Configuration section. The agent
+/// documents are the Agents view ([`super::agents`]).
+pub fn config_sheet(workspace: Workspace) -> impl IntoView {
     move || {
         if let Some(edit) = workspace
             .config_edit
             .get()
-            .filter(|edit| scope.holds(&edit.path))
+            .filter(|edit| edit.path == "config.toml")
         {
             let path = edit.path.clone();
             return view! {
@@ -968,15 +790,7 @@ pub fn config_sheet(workspace: Workspace, scope: ConfigScope) -> impl IntoView {
                         type="button"
                         id="config-apply"
                         class=PRIMARY
-                        on:click=move |_| {
-                            let text = web_sys::window()
-                                .and_then(|window| window.document())
-                                .and_then(|document| document.get_element_by_id("config-text"))
-                                .and_then(|element| element.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
-                                .map(|area| area.value())
-                                .unwrap_or_default();
-                            workspace.apply_config(text);
-                        }
+                        on:click=move |_| workspace.apply_config(area_value("config-text"))
                     >
                         "Apply"
                     </button>
@@ -995,273 +809,33 @@ pub fn config_sheet(workspace: Workspace, scope: ConfigScope) -> impl IntoView {
             Some(Err(error)) => return view! { <p class=ERROR>{error}</p> }.into_any(),
             Some(Ok(config)) => config,
         };
-        let drafts = workspace.config_drafts.get();
-        let rows = config_rows(&config)
+        let draft = workspace
+            .config_drafts
+            .with(|drafts| drafts.contains_key("config.toml"));
+        let label = config_rows(&config)
             .into_iter()
-            .filter(|row| match &row.path {
-                Some(path) => scope.holds(path),
-                // A preset's heading belongs with its agents.
-                None => scope == ConfigScope::Agents,
-            })
-            .map(|row| match row.path.clone() {
-                None => view! { <h3 class="mt-3 px-3 text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">{row.label}</h3> }.into_any(),
-                Some(path) => {
-                    let draft = drafts.contains_key(&path);
-                    let opened = path.clone();
-                    let deleted = path.clone();
-                    let deletable = path != "config.toml";
-                    view! {
-                        <div class="flex items-center gap-2" data-config-path=path.clone()>
-                            <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_config(&opened)>
-                                <span class="flex items-center gap-2 font-mono text-sm whitespace-pre">
-                                    <Glyph icon=icondata::FaFileLinesRegular class="opacity-70" />
-                                    {row.label.clone()}
-                                </span>
-                                {draft.then(|| view! { <span class="text-xs text-caramel dark:text-maple">"not applied"</span> })}
-                            </button>
-                            <Show when=move || deletable>
-                                <button
-                                    type="button"
-                                    class=ICON_BUTTON
-                                    aria-label="Delete"
-                                    title="Delete"
-                                    data-config-delete
-                                    on:click={
-                                        let deleted = deleted.clone();
-                                        move |_| confirm_delete.set(Some(deleted.clone()))
-                                    }
-                                >
-                                    <Glyph icon=icondata::FaTrashCanRegular />
-                                </button>
-                            </Show>
-                        </div>
-                    }
-                    .into_any()
-                }
-            })
-            .collect_view();
+            .find(|row| row.path.as_deref() == Some("config.toml"))
+            .map(|row| row.label)
+            .unwrap_or_default();
         view! {
             {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
             {config.status.error.clone().map(|error| view! { <p class=ERROR>{format!("The running configuration has an error: {error}")}</p> })}
-            {rows}
-            {move || confirm_delete.get().map(|path| {
-                let deleted = path.clone();
-                view! {
-                    <div class=CONFIRM>
-                        <p class="text-sm">{format!("Delete {path}?")}</p>
-                        <div class="flex gap-2">
-                            <button type="button" id="config-delete-confirm" class=PRIMARY on:click=move |_| {
-                                confirm_delete.set(None);
-                                workspace.delete_config(deleted.clone());
-                            }>
-                                "Delete"
-                            </button>
-                            <button type="button" class=BUTTON on:click=move |_| {
-                                confirm_delete.set(None);
-                                workspace.status.set("Delete cancelled.".into());
-                            }>
-                                "Keep it"
-                            </button>
-                        </div>
-                    </div>
-                }
-            })}
+            <div class="flex items-center gap-2" data-config-path="config.toml">
+                <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_config("config.toml")>
+                    <span class="flex items-center gap-2 font-mono text-sm whitespace-pre">
+                        <Glyph icon=icondata::FaFileLinesRegular class="opacity-70" />
+                        {label}
+                    </span>
+                    {draft.then(|| view! { <span class="text-xs text-caramel dark:text-maple">"not applied"</span> })}
+                </button>
+            </div>
             <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
-                <Show when=move || scope == ConfigScope::Agents>
-                    <label class="flex flex-col gap-1 text-sm">
-                        <span class="font-bold">"New agent"</span>
-                        <input type="text" id="config-new-path" class=FIELD value="agents/" />
-                    </label>
-                </Show>
                 <div class="flex flex-wrap gap-2">
-                    <Show when=move || scope == ConfigScope::Agents>
-                        <button type="button" id="config-new" class=PRIMARY on:click=move |_| workspace.new_agent(&field_value("config-new-path"))>
-                            <Glyph icon=icondata::FaPlusSolid />
-                            "Create"
-                        </button>
-                    </Show>
                     <button type="button" id="config-reload" class=BUTTON on:click=move |_| workspace.reload_config()>
                         <Glyph icon=icondata::FaArrowsRotateSolid />
                         "Reload from disk"
                     </button>
                 </div>
-            </div>
-        }
-        .into_any()
-    }
-}
-
-// ---- /memory ---------------------------------------------------------------
-
-pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
-    let confirm_delete = RwSignal::new(None::<(String, String)>);
-    let new_url = RwSignal::new("project://".to_owned());
-    move || {
-        if let Some(edit) = workspace.memory_edit.get() {
-            return view! {
-                <div class=EDITOR_PAGE>
-                <p class="font-mono text-sm font-bold" id="memory-url">{edit.url.clone()}</p>
-                <textarea id="memory-text" class=EDITOR spellcheck="false">{edit.text.clone()}</textarea>
-                <div class=EDITOR_ACTIONS>
-                    <button
-                        type="button"
-                        id="memory-save"
-                        class=PRIMARY
-                        on:click=move |_| {
-                            let text = web_sys::window()
-                                .and_then(|window| window.document())
-                                .and_then(|document| document.get_element_by_id("memory-text"))
-                                .and_then(|element| element.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
-                                .map(|area| area.value())
-                                .unwrap_or_default();
-                            workspace.save_memory(text);
-                        }
-                    >
-                        "Save"
-                    </button>
-                    <button type="button" class=BUTTON on:click=move |_| workspace.memory_edit.set(None)>
-                        "Cancel"
-                    </button>
-                </div>
-                </div>
-            }
-            .into_any();
-        }
-        if let Some(pending) = workspace.memory_pending.get() {
-            let choice = |id: &'static str, label: &'static str, choice: MemoryChoice| {
-                view! {
-                    <button type="button" id=id class=BUTTON on:click=move |_| workspace.resolve_memory(choice)>
-                        {label}
-                    </button>
-                }
-            };
-            return match pending {
-                MemoryPending::Invalid { edit, message } => view! {
-                    <p class=ERROR id="memory-pending">{format!("{} is not a valid memory: {message}", edit.url)}</p>
-                    <div class="flex gap-2">
-                        {choice("memory-edit-again", "Edit again", MemoryChoice::EditAgain)}
-                        {choice("memory-drop", "Drop the edit", MemoryChoice::Drop)}
-                    </div>
-                }
-                .into_any(),
-                MemoryPending::Changed { edit } => view! {
-                    <p class="text-sm" id="memory-pending">{format!("{} changed since it was opened. Reload it and lose this edit, or overwrite it with this edit?", edit.url)}</p>
-                    <div class="flex flex-wrap gap-2">
-                        {choice("memory-reload", "Reload current", MemoryChoice::Reload)}
-                        {choice("memory-overwrite", "Overwrite", MemoryChoice::Overwrite)}
-                        {choice("memory-drop", "Drop the edit", MemoryChoice::Drop)}
-                    </div>
-                }
-                .into_any(),
-            };
-        }
-        let listing = match workspace.memory.get() {
-            None => return loading("Reading memories…").into_any(),
-            Some(Err(error)) => return view! { <p class=ERROR>{error}</p> }.into_any(),
-            Some(Ok(listing)) => listing,
-        };
-        let rows = memory_rows(&listing)
-            .into_iter()
-            .map(|row| {
-                let prefix = row.new_prefix();
-                match row {
-                    MemoryRow::Layer(layer) => view! {
-                        <button
-                            type="button"
-                            class=format!("{ROW} mt-2")
-                            title="Create a memory in this layer"
-                            on:click=move |_| new_url.set(prefix.clone())
-                        >
-                            <span class="text-xs font-bold tracking-wide text-ink uppercase dark:text-sand">{layer_title(layer)}</span>
-                        </button>
-                    }
-                    .into_any(),
-                    MemoryRow::Group { name, .. } => view! {
-                        <button
-                            type="button"
-                            class=format!("{ROW} pl-6")
-                            title="Create a memory in this group"
-                            on:click=move |_| new_url.set(prefix.clone())
-                        >
-                            <span class="flex items-center gap-2 font-mono text-sm">
-                                <Glyph icon=icondata::FaFolderSolid class="opacity-70" />
-                                {name}
-                            </span>
-                        </button>
-                    }
-                    .into_any(),
-                    MemoryRow::Memory(memory) => {
-                        let url = memory.url.clone();
-                        let deleted = (memory.url.clone(), memory.revision.clone());
-                        let description = memory.description.clone().unwrap_or_default();
-                        view! {
-                            <div class="memory-row flex items-center gap-2 pl-6" data-memory=memory.url.clone()>
-                                <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_memory(url.clone())>
-                                    <span class="font-mono text-sm">{memory_name(&memory).to_owned()}</span>
-                                    <span class=NOTE>{description}</span>
-                                    {memory.invalid.clone().map(|reason| view! { <span class=ERROR>{reason}</span> })}
-                                </button>
-                                <button
-                                    type="button"
-                                    class=ICON_BUTTON
-                                    aria-label="Delete"
-                                    title="Delete"
-                                    data-memory-delete
-                                    on:click=move |_| confirm_delete.set(Some(deleted.clone()))
-                                >
-                                    <Glyph icon=icondata::FaTrashCanRegular />
-                                </button>
-                            </div>
-                        }
-                        .into_any()
-                    }
-                    MemoryRow::IgnoredHeading => view! { <p class="mt-2 text-sm font-bold">"Not memories"</p> }.into_any(),
-                    MemoryRow::Ignored(entry) => view! {
-                        <p class=format!("{NOTE} pl-6")>{format!("{} — {}", entry.path, entry.reason)}</p>
-                    }
-                    .into_any(),
-                }
-            })
-            .collect_view();
-        view! {
-            {rows}
-            {move || confirm_delete.get().map(|(url, revision)| {
-                let deleted = (url.clone(), revision);
-                view! {
-                    <div class=CONFIRM>
-                        <p class="text-sm">{format!("Delete {url}?")}</p>
-                        <div class="flex gap-2">
-                            <button type="button" id="memory-delete-confirm" class=PRIMARY on:click=move |_| {
-                                confirm_delete.set(None);
-                                workspace.delete_memory(deleted.0.clone(), deleted.1.clone());
-                            }>
-                                "Delete"
-                            </button>
-                            <button type="button" class=BUTTON on:click=move |_| {
-                                confirm_delete.set(None);
-                                workspace.status.set("Delete cancelled.".into());
-                            }>
-                                "Keep it"
-                            </button>
-                        </div>
-                    </div>
-                }
-            })}
-            <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
-                <label class="flex flex-col gap-1 text-sm">
-                    <span class="font-bold">"New memory"</span>
-                    <input
-                        type="text"
-                        id="memory-new-url"
-                        class=FIELD
-                        prop:value=move || new_url.get()
-                        on:input=move |event| new_url.set(event_target_value(&event))
-                    />
-                </label>
-                <button type="button" id="memory-new" class=PRIMARY on:click=move |_| workspace.new_memory(&new_url.get_untracked())>
-                    <Glyph icon=icondata::FaPlusSolid />
-                    "Create"
-                </button>
             </div>
         }
         .into_any()

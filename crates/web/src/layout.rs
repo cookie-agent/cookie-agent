@@ -41,6 +41,12 @@ impl View {
         }
     }
 
+    /// Whether the view has a list beside it that the sidebar button shows
+    /// and hides: Chat's sessions, and Agents' agents.
+    pub const fn has_sidebar(self) -> bool {
+        matches!(self, Self::Chat | Self::Agents)
+    }
+
     /// The `data-view` value of its rail button and page.
     pub const fn id(self) -> &'static str {
         match self {

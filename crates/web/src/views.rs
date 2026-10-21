@@ -30,9 +30,12 @@ use crate::{
     workspace::{Panel, Workspace},
 };
 
+mod agents;
 mod depth;
 mod install;
+mod machines;
 mod manage;
+mod memory;
 mod shell;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
