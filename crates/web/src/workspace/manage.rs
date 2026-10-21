@@ -165,48 +165,23 @@ impl Workspace {
         })
     }
 
-    /// Gives the new-session draft its own runtimes, starting from what
-    /// `session.create` attaches by default: `global`, and `local`'s
-    /// `coding` at the chosen directory (else where the daemon's own
-    /// instance works); their instances open at once.
+    /// Gives the new-session draft its runtimes from the cards' selection,
+    /// once it left the cards without them; their instances open at once.
     fn materialize_draft_runtimes(self) {
-        if self.draft_runtimes.with_untracked(Option::is_some) {
+        if self.draft_runtimes.with_untracked(Option::is_some) || self.new_setup.get_untracked() {
             return;
         }
-        let directory = self.new_directory.get_untracked().trim().to_owned();
-        let workspace = if directory.is_empty() {
-            self.runtimes.with_untracked(|listing| {
-                listing.as_ref().and_then(|listing| {
-                    listing
-                        .instances
-                        .iter()
-                        .find(|instance| {
-                            instance.runtime_id.as_str() == RuntimeId::LOCAL
-                                && instance.capability == CapabilityName::coding()
-                        })
-                        .and_then(|instance| instance.workspace.clone())
-                })
-            })
-        } else {
-            Some(directory)
-        };
+        let cards = untrack(|| self.cards());
+        let (global, requests) = self
+            .selection
+            .with_untracked(|selection| selection.requests(&cards));
         self.draft_runtimes.set(Some(Vec::new()));
-        let global =
-            RuntimeId::new(RuntimeId::GLOBAL)
-                .ok()
-                .map(|runtime_id| RuntimeAttachRequest {
-                    capability: Some(cookie_agent_protocol::default_capability(&runtime_id)),
-                    runtime_id,
-                    workspace: None,
-                });
-        let coding = RuntimeId::new(RuntimeId::LOCAL)
-            .ok()
-            .map(|runtime_id| RuntimeAttachRequest {
-                runtime_id,
-                capability: Some(CapabilityName::coding()),
-                workspace,
-            });
-        for request in global.into_iter().chain(coding) {
+        let global = global.then(|| RuntimeAttachRequest {
+            runtime_id: RuntimeId::global(),
+            capability: Some(CapabilityName::global()),
+            workspace: None,
+        });
+        for request in global.into_iter().chain(requests) {
             let entry = self.push_draft_runtime(request);
             // `global` is always running; opening it would only retry its
             // MCP servers.

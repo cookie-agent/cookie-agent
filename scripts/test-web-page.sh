@@ -143,9 +143,13 @@ auth = { method = "no-auth-v1", values = {} }
 display_name = "Scripted Model"
 capabilities = { input = ["text", "image"], output = ["text"], context_tokens = 65536, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = { image = { mime_types = ["image/png", "image/jpeg"], max_bytes = 200000, max_count = 4 } } }
 
-# A runtime whose instance never starts, for the retry.
+# A runtime whose instance never starts, for the retry and a refused card.
 [runtimes.box]
 command = ["false"]
+
+# A second coding runtime on this machine, started on use.
+[runtimes.alt]
+command = ["$cookie", "runtime", "serve", "--stdio"]
 
 [plugins.reference]
 command = ["python3", "$root/examples/plugins/python/reference_plugin.py"]
@@ -157,6 +161,20 @@ held_session="$(cd "$allowing/workspace" && HOME="$allowing" "$cookie" run --jso
     python3 -I -c 'import json, sys; print([json.loads(l) for l in sys.stdin if l.strip()][-1]["session_id"])')"
 start_daemon "$allowing"
 allowing_link="$link"
+mkdir -p "$allowing/second" "$allowing/elsewhere"
+# A runtime that dialled in once and went away: its card is offline.
+roamer="$scratch/roamer"
+mkdir -p -m 700 "$roamer"
+(HOME="$roamer" exec "$cookie" runtime serve --daemon "ws://127.0.0.1:$port/ws" --id roamer \
+    --token "${allowing_link##*#token=}" >"$roamer/out" 2>"$roamer/err") &
+roamer_pid="$!"
+for _ in $(seq 1 100); do
+    grep -qi "connected\|ready" "$roamer/err" "$roamer/out" 2>/dev/null && break
+    sleep 0.1
+done
+sleep 1
+kill "$roamer_pid" 2>/dev/null || true
+wait "$roamer_pid" 2>/dev/null || true
 other_port="$(free_port)"
 write_config "$scratch/other" "$other_port" </dev/null
 start_daemon "$scratch/other"

@@ -37,6 +37,14 @@ pub struct TranscriptView<'a> {
     pub expanded: &'a HashSet<String>,
     /// The subagents this session's delegate calls started, by call.
     pub delegates: &'a HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
+    /// Every runtime's home: a tool row shows its runtime's paths as
+    /// `~/…`.
+    pub homes: &'a cookie_agent_client_state::paths::RuntimeHomes,
+}
+
+/// A fingerprint of `homes`, which every cached row depends on.
+pub fn homes_key(homes: &cookie_agent_client_state::paths::RuntimeHomes) -> u64 {
+    foldhash::fast::FixedState::default().hash_one(format!("{homes:?}"))
 }
 
 impl TranscriptView<'_> {
@@ -65,6 +73,7 @@ const NOTE: &str = "text-xs text-ink dark:text-sand";
 pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
     let mut hasher = foldhash::fast::FixedState::default().build_hasher();
     view.session_id.hash(&mut hasher);
+    homes_key(view.homes).hash(&mut hasher);
     item.id().hash(&mut hasher);
     item.version().hash(&mut hasher);
     std::mem::discriminant(item).hash(&mut hasher);
@@ -491,6 +500,24 @@ pub fn all_output_key(call: &str) -> String {
     format!("{call}:all")
 }
 
+/// A tool row's header text, with the paths of the runtime it runs on
+/// shown under that runtime's home.
+fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
+    let home = match tool
+        .presentation
+        .tool
+        .source
+        .as_ref()
+        .and_then(|source| source.known())
+    {
+        Some(cookie_agent_protocol::ToolSource::Runtime { runtime_id, .. }) => {
+            view.homes.get(runtime_id)
+        }
+        _ => None,
+    };
+    crate::places::paths_under_home(&tool.header_text(), home)
+}
+
 /// A tool call: one header line, collapsed until clicked, as in the TUI.
 /// The header has the hint's icon, the title and the primary argument it
 /// does not name, the latest progress while it runs, and the status; the
@@ -563,7 +590,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
             icons::hint_icon(tool.presentation.hint.as_ref().map(|hint| hint.rendered())),
             "text-caramel dark:text-maple"
         ),
-        escape(&tool.header_text()),
+        escape(&tool_header_text(view, tool)),
     );
     if let Some(delegate) = view.delegates.get(&tool.id) {
         html.push_str(&delegate_html(delegate, tool.status == ToolStatus::Running));
@@ -665,6 +692,9 @@ mod tests {
 
     use super::{Delegate, TranscriptView, item_html, item_key, tool_html};
 
+    static NO_HOMES: std::sync::LazyLock<cookie_agent_client_state::paths::RuntimeHomes> =
+        std::sync::LazyLock::new(Default::default);
+
     static NO_DELEGATES: std::sync::LazyLock<
         std::collections::HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
     > = std::sync::LazyLock::new(Default::default);
@@ -736,6 +766,7 @@ mod tests {
             minimum_level: EventLevel::Warning,
             expanded,
             delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
         };
         tool_html(&view, tool)
     }
@@ -838,6 +869,7 @@ mod tests {
             minimum_level,
             expanded: &expanded,
             delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
         };
         assert!(tool_html(&view(EventLevel::Info), &plain).contains("raw-marker"));
         assert!(!tool_html(&view(EventLevel::Warning), &plain).contains("raw-marker"));
@@ -858,6 +890,7 @@ mod tests {
             minimum_level,
             expanded: &expanded,
             delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
         };
         let row = TranscriptItem::internal("<careful>");
         let shown = item_html(&view(EventLevel::Info), &row).expect("shown");
@@ -910,6 +943,7 @@ mod tests {
             minimum_level: EventLevel::Warning,
             expanded,
             delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
         };
         let consumed = row(ProducerMessageStatus::Consumed);
         let folded = item_html(&view(&collapsed), &consumed).expect("shown");

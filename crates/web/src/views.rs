@@ -19,7 +19,7 @@ use wasm_bindgen::JsCast as _;
 
 use crate::{
     commands::{Command, MENU},
-    format::{basename, compact_cost, compact_count, relative_time},
+    format::{compact_cost, compact_count, relative_time},
     goal::{GoalCommand, action_label, goal_actions, status_name},
     icons::{self, Glyph},
     keys::{ComposerAction, ComposerButtons, KeyPress, composer_action, composer_buttons},
@@ -31,6 +31,7 @@ use crate::{
 };
 
 mod agents;
+mod cards;
 mod depth;
 mod install;
 mod machines;
@@ -170,18 +171,26 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 }
             >
                 <TitleBar workspace=workspace />
-                <Transcript workspace=workspace />
-                <GoalBar workspace=workspace />
-                <BackgroundBar workspace=workspace />
-                <QueueStrip workspace=workspace />
-                <DraftFiles workspace=workspace />
-                <StatusLine workspace=workspace />
-                // A short window (a phone on its side) puts the bottom bar
-                // beside the composer.
-                <div class="flex flex-col short:flex-row short:items-end">
-                    <Composer workspace=workspace composing=composing />
-                    <BottomBar workspace=workspace composing=composing />
-                </div>
+                <Show
+                    when=move || workspace.new_session.get() && workspace.new_setup.get()
+                    fallback=move || view! {
+                        <Transcript workspace=workspace />
+                        <GoalBar workspace=workspace />
+                        <BackgroundBar workspace=workspace />
+                        <QueueStrip workspace=workspace />
+                        <DraftFiles workspace=workspace />
+                        <StatusLine workspace=workspace />
+                        // A short window (a phone on its side) puts the
+                        // bottom bar beside the composer.
+                        <div class="flex flex-col short:flex-row short:items-end">
+                            <Composer workspace=workspace composing=composing />
+                            <BottomBar workspace=workspace composing=composing />
+                        </div>
+                    }
+                >
+                    // A new session starts on its runtime cards.
+                    <cards::NewSessionCards workspace=workspace />
+                </Show>
             </main>
     }
 }
@@ -198,16 +207,19 @@ fn session_label(session: &SessionMeta) -> String {
 
 #[component]
 fn SessionList(workspace: Workspace) -> impl IntoView {
-    let directories = move || {
-        let mut directories = workspace.sessions.with(|sessions| {
-            sessions
+    // Each runtime at each workspace sessions work in, under its home.
+    let places = move || {
+        let homes = workspace.homes();
+        workspace.sessions.with(|sessions| {
+            let roots = sessions
                 .iter()
-                .map(|session| session.cwd_identity.to_string())
-                .collect::<Vec<_>>()
-        });
-        directories.sort();
-        directories.dedup();
-        directories
+                .filter(|session| {
+                    matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            crate::places::filter_options(&roots, &homes)
+        })
     };
     let shown = move || {
         let filter = workspace.directory_filter.get();
@@ -218,7 +230,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                     matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
                         && filter
                             .as_deref()
-                            .is_none_or(|filter| session.cwd_identity.as_str() == filter)
+                            .is_none_or(|filter| crate::places::matches(session, filter))
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -254,24 +266,25 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
                 "New session"
             </button>
             <label class="flex flex-col gap-1 text-xs font-bold text-ink dark:text-sand">
-                <span>"Directory"</span>
+                <span>"Workspace"</span>
                 <select
+                    id="place-filter"
                     class="min-h-11 rounded-md border border-crust bg-cream px-2 text-sm font-normal text-espresso hover:border-caramel dark:border-smoke dark:bg-night dark:text-latte dark:hover:border-maple"
                     on:change=move |event| {
                         let value = event_target_value(&event);
                         workspace.directory_filter.set((!value.is_empty()).then_some(value));
                     }
                 >
-                    <option value="">"All directories"</option>
+                    <option value="">"All workspaces"</option>
                     {move || {
-                        directories()
+                        places()
                             .into_iter()
-                            .map(|directory| {
+                            .map(|(value, label)| {
                                 let selected = workspace.directory_filter.get().as_deref()
-                                    == Some(directory.as_str());
+                                    == Some(value.as_str());
                                 view! {
-                                    <option value=directory.clone() selected=selected>
-                                        {directory.clone()}
+                                    <option value=value selected=selected>
+                                        {label}
                                     </option>
                                 }
                             })
@@ -330,9 +343,24 @@ fn session_row(
     let session_id = session.session_id;
     let current = move || workspace.selected.get() == Some(session_id);
     let mark = icons::session_status(session.status);
-    let directory = session.cwd_identity.to_string();
     let last_activity = session.last_activity;
-    let title = format!("{directory}\n{}", mark.label);
+    // Where it works, each workspace under its runtime's home, once the
+    // homes are known.
+    let places = {
+        let session = session.clone();
+        move || {
+            crate::places::places_label(
+                &session,
+                &workspace.homes(),
+                workspace.lists_attachments.get(),
+            )
+        }
+    };
+    let title = {
+        let places = places.clone();
+        let status = mark.label;
+        move || format!("{}\n{status}", places())
+    };
     let label = session_label(&session);
     let confirm_label = label.clone();
     let RowDeletes {
@@ -443,7 +471,7 @@ fn session_row(
                 </span>
                 <span class=format!("flex w-full min-w-0 items-center gap-1 pl-5 {NOTE}")>
                     <Glyph icon=icondata::FaFolderSolid class="opacity-70" />
-                    <span class="min-w-0 truncate">{basename(&directory).to_owned()}</span>
+                    <span class="min-w-0 truncate" data-session-places>{places}</span>
                     <span class="shrink-0">
                         {move || format!("· {}", relative_time(now.get(), last_activity))}
                     </span>
@@ -762,6 +790,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             .expanded
             .with(|expanded| expanded.get(&session_id).cloned().unwrap_or_default());
         let names = workspace.with_runtime(|runtime| runtime.model_names().clone());
+        let homes = workspace.homes();
         let delegates = workspace.tree.with(|tree| {
             tree.as_ref()
                 .map(|tree| delegates_of(tree, session_id))
@@ -808,6 +837,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 minimum_level: level,
                 expanded: &expanded,
                 delegates: &delegates,
+                homes: &homes,
             };
             cache
                 .try_update_value(|cache| {
@@ -964,7 +994,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
         >
             <Show when=move || workspace.new_session.get()>
-                <NewSessionCard workspace=workspace />
+                <cards::DraftPlaces workspace=workspace />
             </Show>
             <div class="mx-auto flex max-w-4xl flex-col gap-2">
                 <For
@@ -1086,35 +1116,6 @@ impl MessagePress {
             timer.clear();
         }
         self.timer.set_value(None);
-    }
-}
-
-#[component]
-fn NewSessionCard(workspace: Workspace) -> impl IntoView {
-    view! {
-        <div class="mx-auto my-4 flex max-w-xl flex-col gap-3 rounded-lg border border-toasted bg-parchment p-4 dark:border-ember dark:bg-char">
-            <h2 class="flex items-center gap-2 text-lg font-bold">
-                <Glyph icon=icondata::FaPlusSolid class="text-caramel dark:text-maple" />
-                "New session"
-            </h2>
-            <label class="flex flex-col gap-1 text-sm">
-                <span class="font-bold">"Directory"</span>
-                <input
-                    type="text"
-                    class="min-h-11 rounded-md border border-crust bg-cream px-3 font-mono hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple"
-                    placeholder="the daemon's own directory"
-                    prop:value=move || workspace.new_directory.get()
-                    on:input=move |event| {
-                        workspace.new_directory.set(event_target_value(&event));
-                        // The draft's runtimes follow the directory again.
-                        workspace.draft_runtimes.set(None);
-                    }
-                />
-            </label>
-            <p class=NOTE>
-                "The first message creates the session with the agent and model below."
-            </p>
-        </div>
     }
 }
 
@@ -1488,6 +1489,20 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 <span class="min-w-0 truncate compact:sr-only">{move || mode_name(mode())}</span>
                 <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
+            // Where the session (or the draft) works.
+            {move || workspace.places_label().map(|places| view! {
+                <button
+                    type="button"
+                    id="places"
+                    class=format!("{STATUS_BUTTON} min-w-0 max-w-[12rem] compact:hidden")
+                    aria-label=format!("Runtimes: {places}")
+                    title=format!("Works in {places} (click for the runtimes)")
+                    on:click=move |_| workspace.run_command(Command::Runtime)
+                >
+                    <Glyph icon=icondata::FaFolderOpenSolid class="text-caramel dark:text-maple" />
+                    <span class="min-w-0 truncate font-mono">{places.clone()}</span>
+                </button>
+            })}
             <Show when=move || { approvals.get() > 0 }>
                 <button
                     type="button"
@@ -1507,7 +1522,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 </span>
             </Show>
             <span
-                class="min-w-[8rem] flex-1 truncate px-2 text-ink compact:hidden dark:text-sand"
+                class="min-w-[4rem] flex-1 truncate px-2 text-ink compact:hidden dark:text-sand"
                 id="status"
                 role="status"
                 title=move || workspace.status.get()

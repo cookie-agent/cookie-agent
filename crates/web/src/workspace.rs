@@ -22,12 +22,11 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentMode, ApprovalListParams, ApprovalRespondParams, ApprovalStatus,
     ApprovalUserDecision, ArtifactReadParams, AvailableModelDescriptor, Client, ClientDelivery,
     ClientError, ClientResponseId, ClientRunId, EventPayload, InputDelivery, ModelSelection,
-    PermissionMode, RunCancelParams, RunSelection, RuntimeAttachRequest, RuntimeId,
-    SessionCreateParams, SessionId, SessionListParams, SessionMeta, SessionOrigin,
-    SessionPermissionGetParams, SessionRecallInputParams, SessionRecallInputResult,
-    SessionSelectModelParams, SessionSetPermissionModeParams, SessionSubmitInputParams,
-    SessionSubmitInputResult, SessionUsageParams, SessionsChangedNotification, ToolCallId,
-    UsageRollup,
+    PermissionMode, RunCancelParams, RunSelection, RuntimeAttachRequest, SessionCreateParams,
+    SessionId, SessionListParams, SessionMeta, SessionOrigin, SessionPermissionGetParams,
+    SessionRecallInputParams, SessionRecallInputResult, SessionSelectModelParams,
+    SessionSetPermissionModeParams, SessionSubmitInputParams, SessionSubmitInputResult,
+    SessionUsageParams, SessionsChangedNotification, ToolCallId, UsageRollup,
 };
 use leptos::{prelude::*, task::spawn_local};
 
@@ -35,6 +34,7 @@ use crate::{browser, connect::EVENT_LEVEL_KEY};
 
 mod attachments;
 mod background;
+mod cards;
 mod goal;
 mod history;
 mod manage;
@@ -98,10 +98,23 @@ pub struct Workspace {
     /// Composing a session that does not exist yet: the first message
     /// creates it.
     pub new_session: RwSignal<bool>,
-    /// The directory a new session works in; empty for the daemon's own.
-    pub new_directory: RwSignal<String>,
-    /// The session list shows only sessions of this directory; `None` for
-    /// all.
+    /// The daemon lists sessions' attachments (client protocol 1.7), so a
+    /// session listing none has none.
+    pub lists_attachments: RwSignal<bool>,
+    /// The new session is being set up on its runtime cards; Start opens
+    /// them and leaves the draft to compose.
+    pub new_setup: RwSignal<bool>,
+    /// The runtime cards the new session starts with.
+    pub selection: RwSignal<crate::cards::Selection>,
+    /// Why opening a card's workspace failed, by card key and field.
+    pub card_errors: RwSignal<HashMap<(String, usize), String>>,
+    /// Start is opening the selected workspaces.
+    pub starting: RwSignal<bool>,
+    /// The machine groups the user opened or closed now, by machine; the
+    /// browser remembers them too.
+    pub group_open: RwSignal<HashMap<String, bool>>,
+    /// The session list shows only sessions of this directory
+    /// (`cwd_identity`); `None` for all.
     pub directory_filter: RwSignal<Option<String>>,
     owned: StoredValue<HashSet<SessionId>>,
     pub read_only: RwSignal<HashSet<SessionId>>,
@@ -149,7 +162,8 @@ pub struct Workspace {
     pub attachments: RwSignal<Vec<cookie_agent_protocol::ArtifactRef>>,
     pub downscale_offer: RwSignal<Option<DownscaleOffer>>,
     offer_bytes: StoredValue<Vec<u8>>,
-    /// `runtimes.list` while the `/runtime` panel is open.
+    /// `runtimes.list`: read on connect and whenever runtimes or machines
+    /// change, for the runtime cards and every runtime's home.
     pub runtimes: RwSignal<Option<cookie_agent_protocol::RuntimesListResult>>,
     pub machines: RwSignal<Option<Result<cookie_agent_protocol::MachinesListResult, String>>>,
     /// The runtimes a new session attaches, once `/runtime` edited them.
@@ -217,7 +231,12 @@ impl Workspace {
             sessions: RwSignal::new(Vec::new()),
             selected: RwSignal::new(None),
             new_session: RwSignal::new(true),
-            new_directory: RwSignal::new(String::new()),
+            lists_attachments: RwSignal::new(false),
+            new_setup: RwSignal::new(true),
+            selection: RwSignal::new(crate::cards::Selection::default()),
+            card_errors: RwSignal::new(HashMap::new()),
+            starting: RwSignal::new(false),
+            group_open: RwSignal::new(HashMap::new()),
             directory_filter: RwSignal::new(None),
             owned: StoredValue::new(HashSet::new()),
             read_only: RwSignal::new(HashSet::new()),
@@ -330,6 +349,9 @@ impl Workspace {
                 client.daemon_version(),
             ),
         );
+        self.lists_attachments.set(
+            cookie_agent_client_state::paths::daemon_reports_runtime_homes(client.daemon_version()),
+        );
         self.client.set_value(Some(client));
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
@@ -370,6 +392,7 @@ impl Workspace {
             Ok(result) => self.sessions.set(result.sessions),
             Err(error) => self.status.set(crate::errors::describe(&error)),
         }
+        self.poll_runtimes();
         match client.runtime_snapshot().await {
             Ok(result) => {
                 self.runtime
@@ -429,6 +452,14 @@ impl Workspace {
             | ClientDelivery::PluginsChanged(_)
             | ClientDelivery::MachinesChanged(_)
             | ClientDelivery::MemoryChanged(_) => {
+                // The cards and every path's home follow the runtimes.
+                if matches!(
+                    delivery,
+                    ClientDelivery::RuntimesChanged(_) | ClientDelivery::MachinesChanged(_)
+                ) && self.panel.get_untracked() != Some(Panel::Runtimes)
+                {
+                    self.poll_runtimes();
+                }
                 // An open panel refreshes now instead of at its next poll.
                 self.refresh_open_panel(&delivery);
                 return;
@@ -850,6 +881,18 @@ impl Workspace {
 
     /// Starts composing a new session.
     pub fn start_new_session(self) {
+        // The open session's runtimes and workspaces, else the browser's
+        // last ones, else `global` and `local` to fill in.
+        let open = self
+            .selected
+            .get_untracked()
+            .filter(|_| !self.new_session.get_untracked())
+            .and_then(|session_id| self.root_attachments(session_id));
+        self.selection.set(self.default_selection(open.as_deref()));
+        self.card_errors.set(HashMap::new());
+        self.starting.set(false);
+        self.new_setup.set(true);
+        self.poll_runtimes();
         self.new_session.set(true);
         self.selected.set(None);
         self.tree_root.set(None);
@@ -859,9 +902,6 @@ impl Workspace {
         self.draft_rules.set(Vec::new());
         self.draft_runtimes.set(None);
         self.composer.set(String::new());
-        if let Some(directory) = self.directory_filter.get_untracked() {
-            self.new_directory.set(directory);
-        }
         self.draft.set(self.default_draft());
         self.panel.set(None);
         self.sidebar_open.set(false);
@@ -1235,34 +1275,27 @@ impl Workspace {
         let selection = selection
             .or_else(|| self.default_draft())
             .ok_or("no agent and model to start a session with")?;
-        let directory = self.new_directory.get_untracked().trim().to_owned();
-        let directory = (!directory.is_empty()).then_some(directory);
-        // Like the TUI's draft: `global`, and the daemon's `local` coding
-        // capability at the chosen directory (its own when none is given).
-        // `/runtime` may have edited the draft's runtimes.
-        let (global, runtimes) = match self.draft_runtimes.get_untracked() {
-            Some(entries) => (
-                entries.iter().any(|entry| entry.is_global()),
-                Some(
-                    entries
-                        .iter()
-                        .filter(|entry| !entry.is_global())
-                        .map(|entry| entry.request.clone())
-                        .collect(),
-                ),
-            ),
-            None => (
-                true,
-                directory.as_ref().map(|directory| {
-                    vec![RuntimeAttachRequest {
-                        runtime_id: RuntimeId::new(RuntimeId::LOCAL)
-                            .expect("`local` is a runtime ID"),
-                        capability: Some(cookie_agent_protocol::CapabilityName::coding()),
-                        workspace: Some(directory.clone()),
-                    }]
-                }),
-            ),
-        };
+        // The runtimes the cards opened (and `/runtime` may have edited), in
+        // card order, at the canonical workspaces they reported; the first
+        // workspace is the session's directory. A session with none works
+        // nowhere in particular.
+        let entries = self
+            .draft_runtimes
+            .get_untracked()
+            .ok_or("start the new session on its runtime cards first")?;
+        let global = entries.iter().any(|entry| entry.is_global());
+        let runtimes = entries
+            .iter()
+            .filter(|entry| !entry.is_global())
+            .map(|entry| RuntimeAttachRequest {
+                workspace: entry.workspace().map(str::to_owned),
+                ..entry.request.clone()
+            })
+            .collect::<Vec<_>>();
+        let directory = runtimes
+            .iter()
+            .find_map(|request| request.workspace.clone());
+        let runtimes = Some(runtimes);
         let created = client
             .create_session(SessionCreateParams {
                 permission_mode: self.new_session_mode.get_untracked(),

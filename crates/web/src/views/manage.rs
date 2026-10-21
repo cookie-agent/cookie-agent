@@ -117,7 +117,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                                 {status_label(status)}
                             </span>
                         </div>
-                        <span class=NOTE>
+                        <span class=NOTE data-runtime-place>
                             {format!(
                                 "{}/{}{}",
                                 row.attachment.runtime_id,
@@ -125,7 +125,10 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                                 row.attachment
                                     .workspace
                                     .as_ref()
-                                    .map(|workspace| format!(" at {workspace}"))
+                                    .map(|path| format!(
+                                        " at {}",
+                                        workspace.homes().display(&row.attachment.runtime_id, path)
+                                    ))
                                     .unwrap_or_default()
                             )}
                         </span>
