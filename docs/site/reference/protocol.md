@@ -65,11 +65,10 @@ closes. A connection that has not authenticated within 10 seconds is closed.
 A connection that authenticated with the header but has not handshaken gets
 `-32001` `handshake_required` for anything but `handshake`.
 
-**Web origins.** An upgrade request without an `Origin` header (every native
-client) is unaffected. One with an `Origin` header is refused with HTTP 403
-unless [`[server] allowed_origins`](../engine/server.md) allows that origin.
+**Web origins.** `/ws` accepts an upgrade request from any web origin, or
+with no `Origin` header (every native client); the token is the guard.
 Dial-in runtimes on `/runtime` always authenticate with the header, and a
-request there with an `Origin` header is refused. Refusals there name their
+request there with an `Origin` header is refused with HTTP 403. Refusals there name their
 reason in the response body or the close frame (see
 [Dial-in refusals](runtime-protocol.md#dial-in-refusals)).
 

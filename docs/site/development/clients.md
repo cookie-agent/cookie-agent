@@ -22,8 +22,7 @@ Present the token one of two ways:
   wrong token is refused with HTTP 401 before the WebSocket opens. Native
   clients should use this.
 - **The handshake**, for clients that cannot set headers, such as a browser
-  page. A browser also sends an `Origin` header, which the daemon refuses with
-  HTTP 403 unless `[server] allowed_origins` lists it; see
+  page. The daemon ignores the `Origin` header a browser sends; see
   [Web clients](../daemon/remote-access.md#web-clients).
 
 ## Handshake

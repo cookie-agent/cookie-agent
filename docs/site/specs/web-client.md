@@ -14,7 +14,10 @@ listening daemon. The addendum of 2026-10-21
 adds web layout v2 and session deletion, implemented on 2026-10-21. On
 2026-10-21 the user also reversed the "no service worker" decision of
 [section 9](#9-phones): the page installs as an app, with a network-only
-service worker.
+service worker. On 2026-10-21 the user also reversed the origin allowlist
+(sections [1](#1-goal-and-scope) and [7.1](#71-embedded-page)):
+`[server] allowed_origins` is gone, and `/ws` takes a connection from any
+origin, with the token as the guard.
 
 ## 1. Goal and scope
 
@@ -38,7 +41,8 @@ daemon holds the machine's sessions, every client should see the same ones.
 - **Hosting: both.**
   - The daemon serves the built page.
   - The same bundle also works from any static host, connecting to a daemon
-    whose `allowed_origins` lists that host.
+    whose `allowed_origins` lists that host. (Since 2026-10-21, any daemon:
+    the allowlist is removed, see the next decision but four.)
 - **Who serves the page.** `cookie daemon` always serves it. Plain `cookie`
   never does: it either connects to a running daemon (section 13) or runs
   one in-process with no port. There is no
@@ -55,6 +59,11 @@ daemon holds the machine's sessions, every client should see the same ones.
 - **Origins: no special case.** Every browser connection, the embedded
   page's included, must come from an origin `[server] allowed_origins`
   lists. Whoever sets up the daemon decides which addresses reach it.
+  **The user reversed this on 2026-10-21:** `[server] allowed_origins` is
+  removed. `/ws` accepts an upgrade from any `Origin`, or none, because a
+  reverse proxy makes browser-origin gating pointless and the token is the
+  real guard; `/runtime` still refuses any request with an `Origin`. A
+  config that still has the key fails as an unknown key.
 - **One listener.** The page and `/ws` share the daemon's one TCP listener.
   Forwarding that one port (with cloudflared, Tailscale, an SSH tunnel)
   forwards both, and the connect screen fills in the daemon URL from the
@@ -332,6 +341,11 @@ with them (`state/tests.rs`).
     `http://127.0.0.1:7419`, `http://192.168.1.5:7419`, or a tunnel's
     `https://cookie.example.com`.
   - The daemon trusts no headers to work out where it is reachable from.
+  - **The user reversed this on 2026-10-21:** `[server] allowed_origins` is
+    removed. `/ws` accepts an upgrade from any `Origin`, or none, because a
+    reverse proxy makes browser-origin gating pointless and the token is the
+    real guard; `/runtime` still refuses any request with an `Origin`. A
+    config that still has the key fails as an unknown key.
 - **Telling the user what to add.**
   - A refused connection gives the page no reason to show. When the
     handshake never happens, the connect screen names the likely cause:
@@ -341,6 +355,11 @@ with them (`state/tests.rs`).
   - When `allowed_origins` is empty, the daemon says, in a log line after
     its ready line, that the web page needs an entry before it can
     connect.
+  - **Since 2026-10-21** (the allowlist's removal) the connect screen says
+    only that the daemon refused or closed the connection before its
+    handshake, and to check the daemon URL and that the daemon is running.
+    The daemon prints the page's address after its ready line and nothing
+    about origins.
 - **Plain `cookie`** opens no port and serves nothing.
 
 ### 7.2 The connect screen
@@ -730,7 +749,8 @@ None. Every choice was settled on 2026-10-19:
 - highlight.js, a plain text area for editors, no project-site hosting,
   and a rising MSRV were confirmed.
 - `allowed_origins` keeps its current rules with no special case for the
-  embedded page.
+  embedded page. (Reversed 2026-10-21: the allowlist is removed; see
+  section 7.1.)
 
 ## 16. Addendum (2026-10-21): web layout v2 and session deletion
 
@@ -1772,12 +1792,14 @@ documentation. There is no wire change.
   the status row (L).
 - **Refused connections** cannot be told apart in a browser (close code
   1006, no HTTP status), so every refusal before the handshake shows the
-  `allowed_origins` hint (W0a, W1).
+  `allowed_origins` hint (W0a, W1). Since 2026-10-21 it is a plain hint to
+  check the daemon URL and that the daemon is running.
 - **Browser tests run in Firefox only,** not Chrome (W0a, W5).
 - **Caching:** only files whose names carry Trunk's hash are immutable;
   copied files are revalidated (W1).
 - **The ready line is unchanged;** the page address and the
-  empty-`allowed_origins` warning follow it as log lines (W1).
+  empty-`allowed_origins` warning follow it as log lines (W1). The warning
+  went with the allowlist on 2026-10-21.
 - **Gzip only,** no Brotli (W2).
 - **Shared code:** the subscription machine, panel rules, and labels moved
   to `client_state` over the phases; the ownership bookkeeping stayed in

@@ -79,8 +79,7 @@ reverts the session to before it, or forks a new session from it. See
 
 ## Next steps
 
-- **In a browser.** Run `cookie daemon`, list the page's origin in
-  `[server] allowed_origins`, and run `cookie web --open`; see
+- **In a browser.** Run `cookie daemon`, then `cookie web --open`; see
   [Web](clients/web.md#opening-the-page).
 - **A daemon that keeps running.** With `cookie daemon` running, every
   `cookie` on this machine opens on it and shares its sessions; see

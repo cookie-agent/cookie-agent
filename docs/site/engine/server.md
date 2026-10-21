@@ -9,7 +9,6 @@ host = "127.0.0.1"
 port = 7419
 token = "<43-char base64url>"
 url = "ws://127.0.0.1:7419/ws"
-allowed_origins = []
 ```
 
 Omission keeps the defaults. An authored table replaces them completely;
@@ -43,13 +42,13 @@ and TLS options; see [Remote access](../daemon/remote-access.md).
 | `port` | integer | `7419` | TCP port for the WebSocket daemon. |
 | `token` | string | *(none)* | The daemon's bearer token, exactly 43 base64url characters. The daemon writes a fresh one here when there is none; clients and dial-in runtimes on this machine use it when given no `--token`. |
 | `url` | string | `ws://<host>:<port>/ws` | The daemon clients and dial-in runtimes on this machine connect to when given no `--url` (or URL after `--daemon`): a `ws://` or `wss://` URL whose path is `/ws`. Set it on a machine whose daemon runs elsewhere. The daemon itself ignores it. |
-| `allowed_origins` | array of strings | `[]` | Web origins whose pages may connect to `/ws`: exact `scheme://host[:port]` origins as browsers send them, or the single entry `"*"` for any origin (see [Web clients](../daemon/remote-access.md#web-clients)). Empty refuses every request with an `Origin` header; a request without one is unaffected. |
 
 ## The web page
 
 The daemon serves the [web client](../clients/web.md) on its listener, over
 TLS when it serves `wss`. The page needs no token: it holds no secret, and
-the connection it opens authenticates in its handshake.
+the connection it opens authenticates in its handshake. `/ws` takes a
+connection from any web origin, or none; the token is the guard.
 
 | Path | Answer |
 |---|---|
@@ -80,5 +79,4 @@ build. A
 `cookie` built without the page (see
 [Building the page](../clients/web.md#building-the-page)) serves a
 placeholder `index.html` that says how to build it. After its ready line,
-the daemon prints the page's address. While `allowed_origins` is empty, it
-also says that the page cannot connect until its origin is listed.
+the daemon prints the page's address.

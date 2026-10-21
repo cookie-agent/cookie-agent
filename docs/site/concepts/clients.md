@@ -41,10 +41,8 @@ can work in any of them, and is told about changes another client makes:
 
 ## Browsers
 
-A browser page connects like any client, with the token in its handshake,
-but the daemon also checks the page's `Origin` against
-`[server] allowed_origins`, which is empty by default; native clients send no
-`Origin` and are not affected. See
+A browser page connects like any client, with the token in its handshake.
+The daemon takes it from any origin; the token is the guard. See
 [Web clients](../daemon/remote-access.md#web-clients).
 
 ## A client's machine

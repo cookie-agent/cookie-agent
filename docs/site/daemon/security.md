@@ -123,14 +123,14 @@ loopback unless `--listen` names another address; off loopback, serve TLS
 a plaintext `ws://` connection carries the token in the clear. Anyone holding
 the token is a fully trusted client and may also offer a runtime.
 
-**Web pages.** A request with a browser `Origin` header is refused unless
-`[server] allowed_origins` lists that origin (see [Web clients](remote-access.md#web-clients)).
-The default list is empty, so no web page can open a connection. Listing an
-origin lets that site's pages try; they still need the token. With `"*"`, any
-page in any browser on a machine that can reach the daemon can open a
-connection, and the token is the only protection. A page served over HTTPS can
-only connect to a `wss://` daemon. Runtimes never connect from a web page: a
-request to `/runtime` with an `Origin` header is always refused.
+**Web pages.** `/ws` does not check a browser's `Origin` header (see
+[Web clients](remote-access.md#web-clients)): any page in any browser on a
+machine that can reach the daemon can open a connection, and the token is the
+only protection. Gating on origins protects nothing once a reverse proxy
+serves the page, since the browser then reports the proxy's origin. A page
+served over HTTPS can only connect to a `wss://` daemon. Runtimes never
+connect from a web page: a request to `/runtime` with an `Origin` header is
+always refused.
 
 The token is durable: it is `[server] token` in the user `config.toml`. When
 the configuration has none, the daemon draws a fresh 32-byte token from the

@@ -10,20 +10,9 @@ TUI and the CLI; see [What the page does not do](#what-the-page-does-not-do).
 
 ## Opening the page
 
-Allow the page's origin first. A browser connection is accepted only from
-an origin `[server] allowed_origins` lists (see
-[Web clients](../daemon/remote-access.md#web-clients)), and the page is no
-exception. For a daemon on the default port, opened on the same machine:
-
-```toml
-[server]
-allowed_origins = ["http://127.0.0.1:7419"]
-```
-
-Restart the daemon after changing the list. While the list is empty, the
-daemon's startup output says the page cannot connect yet.
-
-Then print the page's address with the token:
+The daemon takes the page's connection from any origin, and the token is the
+guard (see [Web clients](../daemon/remote-access.md#web-clients)). Print the
+page's address with the token:
 
 ```sh
 cookie web          # prints http://127.0.0.1:7419/#token=<token>
@@ -59,9 +48,9 @@ address bar.
 - **Forget this daemon** deletes the stored token. Once connected, the
   same button is in the connection panel (below), behind a confirmation.
 - **A refused connection.** A browser shows a page no reason when the daemon
-  closes its connection before the handshake. The usual cause is an origin
-  missing from `allowed_origins`, so the page quotes its own origin as the
-  entry to add.
+  refuses or closes its connection before the handshake, or nothing answers.
+  The page says so and asks you to check the daemon URL and that the daemon
+  is running.
 - **Once connected**, the foot of the rail (see [Layout](#layout)) shows
   the connection's state: connected, connecting, reconnecting, or offline.
   Hover over it for the daemon's address and version, or click it for a
@@ -389,13 +378,8 @@ machine, with the daemon on its default loopback address:
 tailscale serve --bg 7419   # https://<host>.<tailnet>.ts.net/ → 127.0.0.1:7419
 ```
 
-Allow that origin, restart the daemon, and open the page on the phone with
-`cookie web --url wss://<host>.<tailnet>.ts.net/ws`'s link:
-
-```toml
-[server]
-allowed_origins = ["https://<host>.<tailnet>.ts.net"]
-```
+Open the page on the phone with
+`cookie web --url wss://<host>.<tailnet>.ts.net/ws`'s link.
 
 Tailscale Serve needs HTTPS certificates turned on for the tailnet (MagicDNS
 and HTTPS in its admin console).
@@ -453,8 +437,7 @@ a web font.
 
 Every release attaches the page as `cookie-agent-web.tar.gz`. Its files use
 relative paths, so any static host can serve them from any path. The page
-then fills in a URL on that host, which you edit to name the daemon. Allow
-the host's origin in the daemon's `allowed_origins`.
+then fills in a URL on that host, which you edit to name the daemon.
 
 ## Building the page
 

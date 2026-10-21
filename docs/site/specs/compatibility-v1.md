@@ -71,7 +71,8 @@ display blocks are designed so that such tools need no client changes.
   sequences.
 - **Browser access.** The token moves into the handshake.
   `[server] allowed_origins` lists web origins allowed to connect, and `"*"`
-  allows any origin.
+  allows any origin. (Reversed 2026-10-21: the allowlist is removed; see
+  section 10.1.)
 - **Display size.** Inline display stays at 64 KiB per result. A block that
   had to be truncated carries an artifact reference to its full content.
 - **Errors.** Every error carries a stable code plus a description a user
@@ -774,6 +775,14 @@ allowed_origins = ["https://cookie.example", "http://localhost:5173"]
   only protection. The configuration reference says so.
 - **TLS:** a page served over HTTPS can only connect with `wss://`, so it
   needs the daemon's TLS settings.
+
+**Reversed 2026-10-21 (user decision).** `[server] allowed_origins` is
+removed. `/ws` accepts an upgrade from any `Origin`, or none: a reverse proxy
+makes browser-origin gating pointless, since the browser reports the proxy's
+origin, and the token is the real guard. `/runtime` still refuses any request
+that carries an `Origin` header (HTTP 403), since a browser is never a
+runtime. A config that still has `allowed_origins` fails as an unknown key.
+The handshake is unchanged, so the client protocol version is too.
 
 ### 10.2 Decoding
 
@@ -1965,7 +1974,8 @@ is `0.51.0`; the exact numeric `ProtocolVersion`, `PROTOCOL_VERSION`,
   ASCII origin serialization, so an entry is spelled as a browser sends it
   (lowercase, no default port, no path or trailing slash); `*` inside an entry
   is refused, as patterns are not supported. The opaque origin `null` matches
-  only `"*"`. Like the rest of `[server]`, a change needs a restart.
+  only `"*"`. Like the rest of `[server]`, a change needs a restart. (The
+  allowlist was removed on 2026-10-21; see section 10.1.)
 - **Information types.** 102 client types and the JSON-RPC envelope
   (`Request`, `Notification`, responses, and the client's `IncomingMessage`)
   dropped `deny_unknown_fields`. The checker no longer counts
