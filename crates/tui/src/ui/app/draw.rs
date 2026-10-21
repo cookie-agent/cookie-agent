@@ -179,6 +179,7 @@ impl App {
         };
         self.hit_map.permission_mode = bottom_bar.mode_span.and_then(span_rect);
         self.hit_map.session_cost = bottom_bar.cost_span.and_then(span_rect);
+        self.hit_map.project_label = bottom_bar.project_span.and_then(span_rect);
         frame.render_widget(
             Paragraph::new(bottom_bar.line).style(self.theme.panel()),
             layout.bar,
@@ -193,6 +194,7 @@ impl App {
             Modal::Plugins => self.render_plugin_panel(frame),
             Modal::Config => self.render_config_panel(frame),
             Modal::Memory => self.render_memory_panel(frame),
+            Modal::Projects => self.render_project_picker(frame),
             Modal::Sessions => {
                 let area = centered(frame.area(), 72, 60);
                 self.render_session_search(frame, area);
@@ -451,6 +453,7 @@ impl App {
                 line: Line::default(),
                 mode_span: None,
                 cost_span: None,
+                project_span: None,
             };
         }
 
@@ -560,12 +563,35 @@ impl App {
         let right_width = UnicodeWidthStr::width(right.as_str()).min(width);
         let right_start = width.saturating_sub(right_width);
         let left_width = right_start.saturating_sub(4);
-        let left = truncate_with_ellipsis(&cwd, left_width);
-        let padding = right_start.saturating_sub(UnicodeWidthStr::width(left.as_str()));
-        let mut spans = vec![Span::styled(
+        // While no run is active the project leads, a link to its picker;
+        // where the session works follows, giving way first.
+        let mut spans = Vec::new();
+        let mut project_span = None;
+        let mut used = 0;
+        if let Some(project) = self.bar_project_label().filter(|_| left_width > 0) {
+            let project = truncate_with_ellipsis(&project, left_width);
+            used = UnicodeWidthStr::width(project.as_str());
+            project_span = Some(spans.len());
+            spans.push(Span::styled(project, self.theme.link()));
+        }
+        let rest_width = if project_span.is_some() {
+            left_width.saturating_sub(used + 3)
+        } else {
+            left_width
+        };
+        let left = if rest_width == 0 {
+            String::new()
+        } else if project_span.is_some() {
+            format!(" · {}", truncate_with_ellipsis(&cwd, rest_width))
+        } else {
+            truncate_with_ellipsis(&cwd, rest_width)
+        };
+        used += UnicodeWidthStr::width(left.as_str());
+        let padding = right_start.saturating_sub(used);
+        spans.push(Span::styled(
             format!("{left}{}", " ".repeat(padding)),
             self.theme.muted(),
-        )];
+        ));
         let mode_text = selected.map_or(right.as_str(), |_| mode);
         let mode_span = (!mode_text.is_empty()).then_some(spans.len());
         spans.push(Span::styled(mode_text.to_owned(), self.theme.link()));
@@ -589,6 +615,7 @@ impl App {
             line: Line::from(spans),
             mode_span,
             cost_span,
+            project_span,
         }
     }
 
@@ -825,6 +852,8 @@ impl App {
             }
             // Attaching is offered only when the model takes some file.
             PaletteAction::Attach => self.attachments_offered(),
+            // Projects are offered by a daemon that keeps them.
+            PaletteAction::Run(SlashCommand::Project) => self.daemon_has_projects(),
             _ => true,
         }
     }
@@ -1707,9 +1736,14 @@ impl App {
     /// attachment names. `global` alone, `no runtimes`, or `—` with neither
     /// a session nor a draft.
     fn runtime_label(&self) -> String {
+        let project_defaults = self
+            .draft_project
+            .as_ref()
+            .and_then(|project| project.defaults.as_ref())
+            .filter(|defaults| cookie_agent_client_state::projects::defaults_attach(defaults));
         let entries = if self.new_session_draft.is_some() {
-            match &self.draft_runtimes {
-                Some(entries) => entries
+            match (&self.draft_runtimes, project_defaults) {
+                (Some(entries), _) => entries
                     .iter()
                     .map(|entry| RuntimeLabelEntry {
                         runtime_id: entry.request.runtime_id.to_string(),
@@ -1723,7 +1757,25 @@ impl App {
                         home: self.home_of(entry.request.runtime_id.as_str()),
                     })
                     .collect::<Vec<_>>(),
-                None => std::iter::once(RuntimeLabelEntry {
+                // A project whose defaults name attachments: the daemon
+                // attaches them when the session is created.
+                (None, Some(defaults)) => defaults
+                    .global
+                    .then(|| RuntimeLabelEntry {
+                        runtime_id: cookie_agent_protocol::RuntimeId::GLOBAL.to_owned(),
+                        name: None,
+                        workspace: None,
+                        home: None,
+                    })
+                    .into_iter()
+                    .chain(defaults.runtimes.iter().map(|runtime| RuntimeLabelEntry {
+                        runtime_id: runtime.runtime_id.to_string(),
+                        name: None,
+                        workspace: runtime.workspace.clone(),
+                        home: self.home_of(runtime.runtime_id.as_str()),
+                    }))
+                    .collect(),
+                (None, None) => std::iter::once(RuntimeLabelEntry {
                     runtime_id: cookie_agent_protocol::RuntimeId::GLOBAL.to_owned(),
                     name: None,
                     workspace: None,

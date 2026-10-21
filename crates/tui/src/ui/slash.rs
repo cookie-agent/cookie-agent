@@ -44,6 +44,7 @@ pub(crate) enum SlashCommand {
     Permissions,
     Usage,
     Sessions,
+    Project,
     Cancel,
 }
 
@@ -213,6 +214,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &["resume", "load", "continue"],
         description: "choose a session",
         action: PaletteAction::Run(SlashCommand::Sessions),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "project",
+        aliases: &["projects"],
+        description: "choose the project of this session, or of the new one",
+        action: PaletteAction::Run(SlashCommand::Project),
         writes_session: false,
     },
     CommandSpec {

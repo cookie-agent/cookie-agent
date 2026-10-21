@@ -18,15 +18,18 @@ pub(in crate::ui) enum SessionPickerAction {
     /// Switches between this directory's sessions and every directory's
     /// (Ctrl+A).
     ToggleScope,
+    /// Cycles the project filter: all, each project, no project (Ctrl+P).
+    CycleProject,
 }
 
 impl SessionPickerAction {
-    fn label(self, all_directories: bool) -> &'static str {
+    fn label(self, all_directories: bool, project: &str) -> String {
         match self {
-            Self::Rename => " Rename (ctrl+r) ",
-            Self::Delete => " Delete (ctrl+d) ",
-            Self::ToggleScope if all_directories => " This directory (ctrl+a) ",
-            Self::ToggleScope => " All directories (ctrl+a) ",
+            Self::Rename => " Rename (ctrl+r) ".to_owned(),
+            Self::Delete => " Delete (ctrl+d) ".to_owned(),
+            Self::ToggleScope if all_directories => " This directory (ctrl+a) ".to_owned(),
+            Self::ToggleScope => " All directories (ctrl+a) ".to_owned(),
+            Self::CycleProject => format!(" {project} (ctrl+p) "),
         }
     }
 }
@@ -42,12 +45,18 @@ pub(in crate::ui) struct SessionDeletePrompt {
 }
 
 impl App {
-    /// The session picker's title for the directories it lists.
-    pub(super) fn session_scope_title(&self) -> &'static str {
-        if self.session_scope_all {
+    /// The session picker's title for the directories and the project it
+    /// lists.
+    pub(super) fn session_scope_title(&self) -> String {
+        let scope = if self.session_scope_all {
             "Sessions — all directories"
         } else {
             "Sessions — this directory"
+        };
+        if self.session_project_filter.is_some() {
+            format!("{scope} · {}", self.session_project_filter_label())
+        } else {
+            scope.to_owned()
         }
     }
 
@@ -207,13 +216,21 @@ impl App {
         }
         let mut spans = Vec::new();
         let mut x = row.x;
-        for action in [
+        let project = self.session_project_filter_label();
+        let actions = [
             SessionPickerAction::Rename,
             SessionPickerAction::Delete,
             SessionPickerAction::ToggleScope,
-        ] {
-            let label = action.label(self.session_scope_all);
-            let width = u16::try_from(UnicodeWidthStr::width(label)).unwrap_or(u16::MAX);
+            SessionPickerAction::CycleProject,
+        ];
+        let shown = if self.daemon_has_projects() {
+            &actions[..]
+        } else {
+            &actions[..3]
+        };
+        for &action in shown {
+            let label = action.label(self.session_scope_all, &project);
+            let width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
             if x.saturating_add(width) <= row.right() {
                 self.hit_map
                     .session_picker_actions
@@ -292,6 +309,7 @@ impl App {
             SessionPickerAction::Rename => self.begin_session_rename(),
             SessionPickerAction::Delete => self.begin_session_delete(),
             SessionPickerAction::ToggleScope => self.toggle_session_scope().await,
+            SessionPickerAction::CycleProject => self.cycle_session_project_filter(),
         }
     }
 }

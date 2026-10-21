@@ -25,6 +25,7 @@ mod permissions;
 mod pickers;
 mod pointer;
 mod producers;
+mod projects;
 mod providers;
 mod queue;
 mod render_preview;

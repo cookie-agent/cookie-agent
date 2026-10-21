@@ -14,6 +14,7 @@ pub(in crate::ui) mod memory_panel;
 mod pickers;
 mod plugins;
 mod pointer;
+mod projects;
 mod providers;
 mod refresh;
 mod session_delete;
@@ -165,6 +166,8 @@ pub(super) enum Modal {
     Config,
     /// `/memory`: the daemon's memories.
     Memory,
+    /// `/project` or the bottom bar's project: the project picker.
+    Projects,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -488,6 +491,8 @@ pub(super) enum PointerTarget {
     BackgroundBar,
     PermissionMode,
     SessionCost,
+    /// The bottom bar's project; a click opens the project picker.
+    ProjectLabel,
     EventLevelFilter,
     TitleSegment(TitleSegment),
     /// The composer outside its scrollbar: a click places the caret.
@@ -562,6 +567,7 @@ pub(super) struct UiHitMap {
     pub(super) user_messages: Vec<UserMessageHit>,
     pub(super) permission_mode: Option<Rect>,
     pub(super) session_cost: Option<Rect>,
+    pub(super) project_label: Option<Rect>,
     pub(super) event_level_filter: Option<Rect>,
     pub(super) provider_fields: Vec<ProviderFieldHit>,
     pub(super) provider_submit: Option<Rect>,
@@ -621,6 +627,7 @@ struct BottomBarRender {
     line: Line<'static>,
     mode_span: Option<usize>,
     cost_span: Option<usize>,
+    project_span: Option<usize>,
 }
 
 #[derive(Default)]
@@ -811,6 +818,13 @@ pub struct App {
     pub(super) session_delete: Option<session_delete::SessionDeletePrompt>,
     /// The picker's title field for the highlighted session (Ctrl+R).
     pub(super) session_rename: Option<session_rename::SessionRenamePrompt>,
+    /// `projects.list`, in name order (empty from a daemon without
+    /// projects).
+    pub(super) projects: Vec<cookie_agent_protocol::ProjectInfo>,
+    /// The project picker's new-project field, while it is open.
+    pub(super) project_create: Option<crate::ui::input::InputState>,
+    /// The session picker's project filter (Ctrl+P); `None` lists all.
+    pub(super) session_project_filter: Option<cookie_agent_protocol::ProjectFilter>,
     pub(super) agent_search: SearchPickerState,
     pub(super) model_search: SearchPickerState,
     pub(super) provider_search: SearchPickerState,
@@ -1056,6 +1070,19 @@ pub(in crate::ui) enum RpcUpdate {
     },
     RuntimesRefreshed {
         result: Result<cookie_agent_protocol::RuntimesListResult, String>,
+    },
+    /// `projects.list` answered.
+    ProjectsRefreshed {
+        projects: Vec<cookie_agent_protocol::ProjectInfo>,
+    },
+    /// `session.project.set` answered; `label` names the project.
+    SessionProjectSet {
+        label: String,
+        result: Box<Result<SessionMeta, ClientError>>,
+    },
+    /// `project.create` answered, from the project picker.
+    ProjectCreated {
+        result: Box<Result<cookie_agent_protocol::ProjectInfo, ClientError>>,
     },
     /// `runtimes.list` answered for the runtimes' homes alone.
     RuntimeHomesRefreshed {
@@ -1457,6 +1484,9 @@ impl App {
             session_scope_all: false,
             session_delete: None,
             session_rename: None,
+            projects: Vec::new(),
+            project_create: None,
+            session_project_filter: None,
             agent_search: SearchPickerState::default(),
             model_search: SearchPickerState::default(),
             provider_search: SearchPickerState::default(),

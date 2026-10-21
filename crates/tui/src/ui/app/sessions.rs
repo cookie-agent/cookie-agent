@@ -442,11 +442,13 @@ impl App {
             return;
         }
         let rows = session_search_rows(
-            self.picker_sessions(),
+            self.picker_sessions()
+                .filter(|session| self.session_passes_project_filter(session)),
             query,
             now,
             &time_zone,
             self.session_scope_all.then_some(&self.runtime_homes),
+            &self.projects,
         );
         self.session_search_rows_cache = SessionSearchRowsCache {
             query: query.to_owned(),
@@ -481,6 +483,7 @@ impl App {
         match self.modal {
             Modal::Sessions => self.session_search_ids().len(),
             Modal::Presets => self.preset_names().len() + 1,
+            Modal::Projects => self.project_picker_choices().len(),
             Modal::Agents => self.filtered_agent_picker_candidates().len(),
             Modal::Models => self.filtered_draft_models().len(),
             Modal::Variants => self.variant_step_options().len(),

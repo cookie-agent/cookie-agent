@@ -110,32 +110,25 @@ impl App {
     /// names neither, or names an agent that is gone or cannot run as root,
     /// which the status line says.
     pub(super) fn project_draft_selection(&mut self) -> Option<RunSelection> {
+        use cookie_agent_client_state::projects::{ProjectAgent, project_agent};
         let project = self.draft_project.as_ref()?;
-        let defaults = project.defaults.as_ref()?;
-        if defaults.agent.is_none() && defaults.preset.is_none() {
-            return None;
+        let fallback = self.models.first().map(Self::default_model_selection);
+        match project_agent(
+            project,
+            &self.agents,
+            |selection| self.selection_is_live(selection),
+            fallback,
+        ) {
+            ProjectAgent::Unset => None,
+            ProjectAgent::Selected(selection) => {
+                self.selected_preset = selection.preset.clone();
+                Some(selection)
+            }
+            ProjectAgent::Unavailable(message) => {
+                self.status = message;
+                None
+            }
         }
-        let selection =
-            self.draft_selection_for_preset(defaults.preset.as_deref(), defaults.agent.as_ref());
-        let found = selection.as_ref().filter(|selection| {
-            defaults
-                .agent
-                .as_ref()
-                .is_none_or(|agent| selection.agent == *agent)
-        });
-        if found.is_none() {
-            let agent = defaults
-                .agent
-                .as_ref()
-                .map_or_else(|| "its agents".to_owned(), |agent| format!("agent {agent}"));
-            self.status = format!(
-                "Project {} names {agent}, which cannot start a session here; using the usual agent.",
-                project.name
-            );
-            return None;
-        }
-        self.selected_preset = defaults.preset.clone();
-        selection
     }
 
     pub(in crate::ui) fn default_draft_selection(&self) -> Option<RunSelection> {

@@ -91,6 +91,7 @@ impl App {
         self.refresh_session_list().await;
         self.refresh_coherent_lists().await;
         self.poll_runtime_homes();
+        self.poll_projects();
     }
 
     /// Fetches the runtimes' homes in the background, from a daemon that
@@ -687,6 +688,11 @@ impl App {
                 }
             }
             RpcUpdate::RuntimeHomesRefreshed { homes } => self.install_runtime_homes(homes),
+            RpcUpdate::ProjectsRefreshed { projects } => self.install_projects(projects),
+            RpcUpdate::SessionProjectSet { label, result } => {
+                self.finish_session_project_set(label, *result);
+            }
+            RpcUpdate::ProjectCreated { result } => self.finish_project_create(*result),
             RpcUpdate::RuntimeAttachmentChanged { result } => {
                 self.status = match result {
                     Ok(message) | Err(message) => message,
@@ -1023,6 +1029,9 @@ impl App {
         }
         if matches!(delivery, ClientDelivery::PluginsChanged(_)) {
             self.poll_plugins();
+        }
+        if matches!(delivery, ClientDelivery::ProjectsChanged(_)) {
+            self.poll_projects();
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             let duplicate = self.runtime.revision() == Some(&changed.snapshot.revision);

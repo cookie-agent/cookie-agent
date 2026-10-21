@@ -50,6 +50,9 @@ impl App {
         if hits.session_cost.is_some_and(over) {
             return Some(PointerTarget::SessionCost);
         }
+        if hits.project_label.is_some_and(over) {
+            return Some(PointerTarget::ProjectLabel);
+        }
         if hits.event_level_filter.is_some_and(over) {
             return Some(PointerTarget::EventLevelFilter);
         }
@@ -197,6 +200,8 @@ impl App {
             // The title field owns the picker; it is a text field, so
             // nothing in it is a target.
             Modal::Sessions if self.session_rename.is_some() => return None,
+            // So does the new-project field.
+            Modal::Projects if self.project_create.is_some() => return None,
             Modal::Sessions => {
                 if let Some((_, action)) = hits
                     .session_picker_actions
@@ -403,6 +408,7 @@ impl App {
                 self.modal = Modal::Usage;
                 self.load_usage();
             }
+            PointerTarget::ProjectLabel => self.open_project_picker(),
             PointerTarget::EventLevelFilter => self.cycle_event_level_filter(),
             // Agent and model title segments open selectors. The bracketed
             // variant suffix cycles in place and never opens a separate panel.
@@ -672,6 +678,7 @@ impl App {
             ),
             PointerTarget::PermissionMode => (one(hits.permission_mode), text_style),
             PointerTarget::SessionCost => (one(hits.session_cost), text_style),
+            PointerTarget::ProjectLabel => (one(hits.project_label), text_style),
             PointerTarget::EventLevelFilter => (one(hits.event_level_filter), text_style),
             PointerTarget::QueueEntry(index) => (
                 one(hits

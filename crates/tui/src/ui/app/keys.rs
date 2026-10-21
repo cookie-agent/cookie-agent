@@ -1040,6 +1040,7 @@ impl App {
             Modal::Plugins => self.handle_plugin_key(key),
             Modal::Config => self.handle_config_key(key),
             Modal::Memory => self.handle_memory_key(key),
+            Modal::Projects => self.handle_project_picker(key).await,
             Modal::Sessions => self.handle_session_picker(key).await,
             Modal::Presets => self.handle_selection_picker(key).await,
             Modal::Agents => self.handle_agent_picker_key(key).await,
@@ -1510,7 +1511,7 @@ impl App {
                         self.agent_search.focus_list();
                         self.picker_entry_count()
                     }
-                    Modal::Presets | Modal::Variants => self.picker_entry_count(),
+                    Modal::Presets | Modal::Variants | Modal::Projects => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::UserMessage => USER_MENU_ITEMS.len(),
                     Modal::ConnectDetails

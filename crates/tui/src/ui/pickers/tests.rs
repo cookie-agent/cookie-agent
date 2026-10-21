@@ -214,6 +214,7 @@ fn session_search_groups_local_days_and_sorts_newest_first() {
         now,
         &time_zone,
         None,
+        &[],
     );
     assert_eq!(rows[0], SessionSearchRow::Header("Today".into()));
     assert!(
@@ -258,7 +259,7 @@ fn session_rows_mark_running_and_waiting_sessions() {
         titled("goal", SessionStatus::Completed, &[WaitingOn::Goal]),
         titled("job", SessionStatus::Idle, &[WaitingOn::BackgroundCall]),
     ];
-    let rows = session_search_rows(&sessions, "", now, &jiff::tz::TimeZone::UTC, None);
+    let rows = session_search_rows(&sessions, "", now, &jiff::tz::TimeZone::UTC, None, &[]);
     let label = |title: &str| {
         rows.iter()
             .find_map(|row| match row {

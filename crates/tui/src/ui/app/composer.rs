@@ -197,6 +197,10 @@ impl App {
         if self.modal == Modal::Sessions && self.paste_into_session_rename(text) {
             return;
         }
+        if self.modal == Modal::Projects {
+            self.paste_into_project_create(text);
+            return;
+        }
         if self.modal == Modal::Sessions {
             let sanitized = text.replace(['\r', '\n'], "");
             self.session_search.focus_input();
@@ -1067,6 +1071,7 @@ impl App {
             SlashCommand::Plugins => self.open_plugin_panel(),
             SlashCommand::Config => self.open_config_panel(),
             SlashCommand::Memory => self.open_memory_panel(),
+            SlashCommand::Project => self.open_project_picker(),
             SlashCommand::Runtime => {
                 if self.new_session_draft.is_some() {
                     // The draft's runtimes, opened now so their status shows

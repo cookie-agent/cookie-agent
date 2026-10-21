@@ -59,6 +59,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::BackgroundBar => "background bar",
         PointerTarget::PermissionMode => "permission mode",
         PointerTarget::SessionCost => "session cost",
+        PointerTarget::ProjectLabel => "project label",
         PointerTarget::EventLevelFilter => "event level filter",
         PointerTarget::TitleSegment(_) => "title segment",
         PointerTarget::ComposerText => "composer text",
@@ -351,6 +352,13 @@ async fn every_clickable_element_hovers_visibly() {
         .push(approval(session));
     seen.extend(sweep(&mut app, "approval"));
 
+    // An idle session in a project: the bottom bar's project, and its
+    // picker.
+    let (mut app, _, _, _) = super::projects::project_app().await;
+    seen.extend(sweep(&mut app, "project label"));
+    app.open_project_picker();
+    seen.extend(sweep(&mut app, "project picker"));
+
     let (mut app, _, _) = app_with_user_messages().await;
     rendered_frame(&mut app, WIDTH, HEIGHT);
     let hit = user_hit(&app, 2);
@@ -389,6 +397,7 @@ async fn every_clickable_element_hovers_visibly() {
         "background bar",
         "permission mode",
         "session cost",
+        "project label",
         "event level filter",
         "title segment",
         "composer text",

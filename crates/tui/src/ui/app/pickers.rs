@@ -527,6 +527,7 @@ impl App {
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('a') => return self.toggle_session_scope().await,
+                KeyCode::Char('p') => return self.cycle_session_project_filter(),
                 KeyCode::Char('d') => return self.begin_session_delete(),
                 KeyCode::Char('r') => return self.begin_session_rename(),
                 _ => {}
@@ -977,6 +978,7 @@ impl App {
             | Modal::Plugins
             | Modal::Config
             | Modal::Memory => {}
+            Modal::Projects => self.choose_project_entry(index),
             Modal::None => {}
         }
     }

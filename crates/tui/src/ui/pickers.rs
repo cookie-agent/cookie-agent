@@ -170,6 +170,7 @@ pub(crate) fn session_search_rows<'a>(
     now: Timestamp,
     time_zone: &TimeZone,
     homes: Option<&cookie_agent_client_state::paths::RuntimeHomes>,
+    projects: &[cookie_agent_protocol::ProjectInfo],
 ) -> Vec<SessionSearchRow> {
     let today = now.to_zoned(time_zone.clone()).date();
     let yesterday = today.yesterday().ok();
@@ -202,10 +203,20 @@ pub(crate) fn session_search_rows<'a>(
             Some(homes) => format!(" · {}", homes.session_directory(session)),
             None => String::new(),
         };
+        // The project leads the details, its emoji first.
+        let project =
+            cookie_agent_client_state::projects::find_project(projects, session.project.as_ref())
+                .map(|project| {
+                    format!(
+                        "{} · ",
+                        cookie_agent_client_state::projects::project_label(Some(project))
+                    )
+                })
+                .unwrap_or_default();
         rows.push(SessionSearchRow::Session {
             session_id: session.session_id,
             label: format!(
-                "{title}{degraded}{}  ({} · {}{directory})",
+                "{title}{degraded}{}  ({project}{} · {}{directory})",
                 activity_marker(session),
                 session.creation_selection.agent,
                 short_id(session)
