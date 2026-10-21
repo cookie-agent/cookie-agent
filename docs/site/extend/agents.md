@@ -726,6 +726,12 @@ fail closed. See the
 
 ### Memory defaults
 
+Every agent that is not internal has a memory file, `agent://<agent>`, which
+the daemon makes and whose description and keywords it keeps in line with the
+agent document: the description names the agent and repeats the document's
+`description`, and the keywords are the agent ID and its mode. See
+[Agent memory](../sessions/memory.md#agent-memory).
+
 The memory tools of the `global` runtime use two actions, `memory` for
 searching and reading and `memory_write` for writing, editing, and deleting,
 both with the memory URL as resource (`user://<category>`,

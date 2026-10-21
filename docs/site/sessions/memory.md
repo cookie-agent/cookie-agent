@@ -23,7 +23,7 @@ memory/
 | Layer | About | Created by | Deleted by |
 |---|---|---|---|
 | `user` | You, in every task: profile, preferences, feedback, references | You only (the agent may edit existing categories) | You only; the agent's delete clears the body |
-| `agent` | One agent's way of doing its job, such as what you want from reviews | The agent, by its first write to its own file, or you | You only; the agent's delete clears the body |
+| `agent` | One agent's way of doing its job, such as what you want from reviews | The daemon, one for every agent ([Agent memory](#agent-memory)) | You; the daemon removes an empty one it made when its agent goes; the agent's delete clears the body |
 | `machine` | One machine: OS quirks, toolchains, paths, rules such as "read-only unless asked" | The agent or you | The agent or you |
 | `project` | One body of work: conventions, decisions, gotchas | The agent or you; the first memory creates the project | The agent or you; the project goes with its last memory |
 
@@ -48,6 +48,37 @@ machine names. A file that breaks these rules, or is larger than
 invalid: search and the snapshot skip it. You may edit the files with any
 editor; a session that writes a memory you changed since it read it gets an
 error naming the current revision instead of overwriting your edit.
+
+## Agent memory
+
+The daemon keeps one `agents/<agent>.md` for every agent of the shared agent
+set and of every [preset](../extend/agents.md#agent-presets), internal agents
+(`approval`, `compaction`, `title`) aside. It makes the missing ones at start
+and after every configuration reload or `config.apply`, with an empty body,
+and writes nothing when there is nothing to do.
+
+The daemon owns two things in each file:
+
+- **The description**: ``Memory of the `<agent>` agent: <description>``, with
+  the agent document's description on one line and the whole cut to 200
+  characters. When an ID is in the shared set and in presets, the shared
+  document is used; otherwise the preset that comes first alphabetically.
+  Changing the agent document's description rewrites it.
+- **Two keywords**: the agent ID and the agent's mode (`primary`,
+  `subagent`, or `all`; one keyword when the ID is the mode's name). You and
+  the agent may add more; the daemon keeps them and puts its two back first
+  when they are removed.
+
+So a write of an agent's file, by the agent or by you, keeps the daemon's
+description and keywords: `memory_write` and `memory_edit` say what they
+kept, and `/memory` and `cookie memory edit` show the daemon's notice after
+saving. The body is the agent's: it starts empty, and an empty one is left
+out of the model's memory turn entirely.
+
+When an agent leaves every agent set, its file is removed only if the daemon
+made it and nobody touched it: the body is empty, and the description and
+keywords are exactly the daemon's. A file with notes stays, and `/memory`
+and `memory.list` mark it as belonging to no current agent.
 
 ## Managing memory
 
@@ -101,7 +132,7 @@ At the start of a run that has memory, the model gets a **snapshot** as one
 user turn after the `AGENTS.md` turn: every `user` category, the run's
 agent's own file, and an index of the memories of the machines the session's
 attachments run on. Project memories are never shown; the model searches for
-the project a task belongs to. The [system prompt reference](../reference/system-prompt.md#memory-turn)
+the project a task belongs to. An agent file with an empty body adds nothing. The [system prompt reference](../reference/system-prompt.md#memory-turn)
 shows the exact text.
 
 The snapshot is taken once and kept, so the provider's prompt cache survives
@@ -118,7 +149,7 @@ The `global` runtime offers five tools ([Tools](../reference/tools.md#memory_sea
 |---|---|
 | `memory_search` | Searches every memory by keywords, names, descriptions, and bodies, and shows each result as far as the `memory` rules for its URL allow |
 | `memory_read` | Reads one memory with its revision |
-| `memory_write` | Creates a memory, or replaces one at the revision it read |
+| `memory_write` | Creates a memory, or replaces one at the revision it read; `keywords` may be left out, and `description` too for the agent's file, whose description the daemon sets |
 | `memory_edit` | Replaces one occurrence of a text in a memory's body |
 | `memory_delete` | Deletes a `machine://` or `project://` memory. A `user://` or `agent://` memory cannot be deleted: its body is cleared, and the file stays with its description and keywords |
 

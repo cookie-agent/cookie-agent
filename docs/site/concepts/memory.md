@@ -14,6 +14,12 @@ them with tools, so what one session learns the next can use.
 | `machine` | `machine://<machine>/<name>` | one [machine](machines.md): toolchains, paths, services |
 | `project` | `project://<project>/<name>` | one project, wherever its checkouts live |
 
+Every agent has its `agent://` memory from the start: the daemon makes one
+file per agent, names the agent in its description and keywords, and keeps
+those in line with the agent's document; the agent writes the body. An empty
+one is not shown to the model. See
+[Agent memory](../sessions/memory.md#agent-memory).
+
 A project memory names what identifies the project across machines, such as
 repository names, remote URLs, and `<machine>:<path>` places, so an agent can
 search for it from any checkout. See

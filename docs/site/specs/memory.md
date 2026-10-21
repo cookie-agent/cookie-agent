@@ -4,7 +4,8 @@ Status: **implemented** (2026-10-19); approved the same day. Decisions are
 listed in [section 1](#1-goal-and-scope) and the sections that follow; none
 are open ([section 15](#15-open-questions)). How each phase settled, with
 its deviations, is in [section 16](#16-implementation-notes); later
-decisions are dated addenda there ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)). This spec
+decisions are dated addenda there ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete),
+[section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)). This spec
 builds on the [runtimes spec](runtimes.md) and the
 [runtime capabilities spec](runtime-capabilities.md), and adds the term
 *machine* to their vocabulary.
@@ -271,7 +272,7 @@ detaching a runtime does today.
 | Layer | About | Who creates files | Who deletes files |
 |---|---|---|---|
 | `user` | The user, in every task | The user only | The user only; the agent's delete clears the body ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
-| `agent` | One agent's way of doing its job: what the user wants from this role, lessons, checklists | The agent, by its first write to its own file, or the user | The user only; the agent's delete clears the body ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
+| `agent` | One agent's way of doing its job: what the user wants from this role, lessons, checklists | The daemon, one for every agent that is not internal ([section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)) | The user; the daemon removes an empty file it made when the agent goes ([section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)); the agent's delete clears the body ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
 | `machine` | One machine: OS quirks, toolchains, paths, hardware, rules such as "read-only unless asked" | The agent or the user | The agent or the user |
 | `project` | One body of work: conventions, decisions, gotchas, where things are | The agent or the user; writing the first memory creates the project | The agent or the user; the project disappears with its last memory |
 
@@ -281,8 +282,9 @@ frontmatter and only the body is cleared.
 
 An agent's file outlives the agent: when an agent document is removed or
 renamed, its memory stays on disk, and `memory.list` and `/memory` show the
-file as belonging to no current agent. Internal agents, such as compaction
-and titling, never get memory.
+file as belonging to no current agent; only an empty file the daemon made and
+nobody touched goes with it ([section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)). Internal agents, such as
+compaction and titling, never get memory.
 
 ### 4.2 Names
 
@@ -593,8 +595,8 @@ Rules the examples follow:
    `user_omitted` are listed on a `Not shown (too long): user://…` line;
    the model reads them with `memory_read`.
 3. **Agent section.** Headed with the agent ID. One `<memory>` element for
-   the agent's file, or `No memory yet.` when it does not exist, so the
-   model knows it can create it.
+   the agent's file. A file with an empty body, or none, leaves the section
+   out ([section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent); this replaced a `No memory yet.` line).
 4. **Machines section.** One `<machine>` element per machine, naming the
    session's attachments on it, which match the `<attachment>` names in the
    system prompt's machines block and the tool prefixes. One line per memory:
@@ -625,7 +627,7 @@ fields fail).
 |---|---|---|
 | `memory_search` | `query` (1 to 200 characters), `layer?` (`user`, `agent`, `machine`, `project`), `limit?` (1 to 25, default 10) | Ranked matches the rules let the agent see ([section 9.3](#93-search-results)): URL, description, keywords, and up to three matching body lines each. `layer` only narrows the results; it is not a permission resource. |
 | `memory_read` | `url` | Frontmatter, body, and revision |
-| `memory_write` | `url`, `description`, `keywords`, `body`, `revision?` | Creates or replaces one file; returns the new revision. Without `revision` the file must not exist; with it, it must exist at that revision. Creating a `user://` file is refused; an `agent://` file may be created only for an agent ID in the registry. |
+| `memory_write` | `url`, `description?`, `keywords?`, `body`, `revision?` | Creates or replaces one file; returns the new revision. Without `revision` the file must not exist; with it, it must exist at that revision. Creating a `user://` file is refused; an `agent://` file may be created only for an agent ID in the registry. `description` is required except for `agent://`, whose description the daemon sets ([section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent)); `keywords` defaults to none. |
 | `memory_edit` | `url`, `old`, `new`, `revision` | Replaces the one occurrence of `old` in the body; fails when `old` occurs zero or several times |
 | `memory_delete` | `url`, `revision` | Deletes a `machine://` or `project://` file. A `user://` or `agent://` file cannot be deleted: its body is cleared, its frontmatter kept as written, and the result says so with the new revision ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete)) |
 
@@ -1274,3 +1276,82 @@ last memory.
   included, since it acts for the user. No protocol, schema, or history
   format changed; only the `memory_delete` tool's description and results
   did.
+
+### 16.7 Addendum 2026-10-21: the daemon keeps one memory file per agent
+
+**Decided 2026-10-21.** The daemon manages one memory file for each agent.
+This supersedes "the agent, by its first write" as the creator of `agent`
+files (section 4.1) and the `No memory yet.` line of section 7.4.
+
+- **A file for every agent.** At start, and after every runtime publication
+  (configuration reload, `config.apply`, provider and catalog changes, which
+  can add or remove the built-in `default` agent), the daemon makes sure
+  `agents/<id>.md` exists for every agent ID of the shared registry and of
+  every preset registry. Internal agents get none (section 4.1). A new file
+  has an empty body.
+- **The daemon owns the description.** It is ``Memory of the `<id>` agent:
+  <description>``, from the agent document's `description` with every run
+  of whitespace and control characters made one space, cut to 200
+  characters (the last one `…` when cut); ``Memory of the `<id>` agent``
+  when the document's is blank. An ID in the shared registry takes the
+  shared document; one only in presets takes the alphabetically first
+  preset's. A changed description rewrites the file's at the next sync.
+- **Keywords.** The daemon's two keywords are `<id>` and the mode
+  (`primary`, `subagent`, or `all`), one when the ID is the mode's name.
+  They come first; every other keyword a writer added is kept in order,
+  except repeats and other mode names (compared case-insensitively), up to
+  the 32 allowed. `memory_write`'s `keywords` is now optional, as the file
+  format always had it.
+- **Writes keep what the daemon owns.** `memory_write` and `memory_edit` on
+  a managed `agent://` file keep the daemon's description and keywords, in
+  place of what the call gave; `memory_write` may leave `description` out
+  for `agent://` and says in its result what it kept when the call gave
+  something else. An `agent://` file the daemon does not manage (an
+  orphan's, or an internal agent's) keeps the description it has.
+- **The user's `memory.write`** follows the same rule, at the write itself
+  rather than at the next sync: deferring would let a description the user
+  typed reach snapshots until a sync that may be days away. The frontmatter
+  is replaced only when it differs, the body kept byte for byte, and
+  `MemoryWriteResult` gains an optional `notice` saying what was kept
+  (client protocol 1.6.0), which `/memory` and `cookie memory edit` show.
+- **Empty memory stays out of the prompt.** An agent file with an empty body
+  (whitespace only counts as empty, as for user categories) renders no
+  agent section at all. The `memory_loaded` event still carries the agent and
+  its empty memory, so section 7.2 is unchanged: a snapshot whose agent
+  memory is empty is kept like any other, and a first body the agent writes
+  shows from the next refresh (a compaction, a new session, and the rest of
+  section 7.2), like every other write.
+- **Removal.** When an agent leaves every registry, its file is deleted only
+  when the daemon made it and nobody touched it, with no marker on disk:
+  the body is empty, the description starts ``Memory of the `<id>` agent``,
+  the keywords are exactly the daemon's two for some mode, and the bytes are
+  exactly what the daemon writes. Any other file stays and is orphaned, as
+  before.
+- **Concurrency.** A sync takes the memory lock, reads the registries
+  published at that moment (so of two racing syncs the later state wins),
+  writes each file through a temporary file renamed over it, and signals
+  `memory.changed` only when it changed something; with nothing to do it
+  writes nothing. It skips a file that is invalid or not a regular file, and
+  a rewrite that would pass `[memory] max_file_bytes`. While the memory
+  folder does not exist it does nothing, so the next start's first start
+  (section 4.5) still runs. A `config.apply` or reload awaits a sync before
+  it answers; other publications sync in the background. A run admitted
+  while a sync is pending snapshots the files as they are: a missing file
+  and an empty one render alike, so only a description change can be one
+  snapshot late. Renaming over an existing file replaces it atomically on
+  Windows as on Unix, and the daemon's own readers open files with delete
+  sharing, so a sync does not fail for one of them; an editor holding the
+  file open without that sharing can make one sync fail, which is reported
+  on standard error and retried at the next sync.
+- **Where it is.** `crate::memory::agents` (`AgentMemorySpec`,
+  `AgentMemory`, `MemoryRoot::sync_agents`) and
+  `crates/engine/src/runtime/agent_memory.rs` (`desired_agent_memory`,
+  `Engine::agent_memory`, and the sync at start and after publications).
+- **Deviation: replay of older logs.** The rendered text depends on the
+  event alone, but the agent-section rule changed without a history format
+  change. A log written before this build renders its latest snapshot by
+  the new rule: a `No memory yet.` line, or an empty agent element, is no
+  longer shown. That costs a session one prompt-cache miss at its next run,
+  and a replay of such a log does not show that line. Keeping the old text
+  for old events would need a new event member that every snapshot carries,
+  which this change did not take on.

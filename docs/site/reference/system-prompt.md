@@ -213,10 +213,6 @@ Save what a later session should know: memory_write for a new memory, memory_edi
 
 Empty: user://feedback, user://profile, user://references
 
-## About this agent (default)
-
-No memory yet.
-
 ## Machines in this session
 
 <machine name="labpc" attachments="labpc_api">
@@ -231,9 +227,11 @@ No memory yet.
   name order; categories with an empty body are listed on the `Empty:` line,
   and those that did not fit `[memory] snapshot_user_bytes` on a
   `Not shown (too long):` line.
-- **About this agent** holds the run's agent's file, `No memory yet.` when
-  there is none, or `Not shown (too long): agent://<agent>` when its escaped
-  text exceeds `[memory] max_file_bytes`.
+- **About this agent** holds the run's agent's file, or
+  `Not shown (too long): agent://<agent>` when its escaped text exceeds
+  `[memory] max_file_bytes`. An agent file with an empty body, as the daemon
+  makes one for every agent, or none, leaves the section out, as in the
+  example above.
 - **Machines in this session** has one `<machine>` per machine of the
   session's attachments (the daemon's machine for a session with only
   `global`), naming the attachments on it, with one line per memory, newest
