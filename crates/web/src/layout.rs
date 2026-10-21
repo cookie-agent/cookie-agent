@@ -64,7 +64,8 @@ pub enum SettingsSection {
     Providers,
     Mcp,
     Plugins,
-    /// What this browser keeps: the diagnostics filter and the token.
+    /// This browser: installing the page as an app, and what it keeps:
+    /// the diagnostics filter and the token.
     Browser,
 }
 
@@ -95,7 +96,7 @@ impl SettingsSection {
             Self::Providers => "connect or disconnect a model provider",
             Self::Mcp => "every runtime's MCP servers",
             Self::Plugins => "plugin status and restarts",
-            Self::Browser => "diagnostics shown, and forgetting this daemon",
+            Self::Browser => "installing the app, diagnostics shown, and forgetting this daemon",
         }
     }
 

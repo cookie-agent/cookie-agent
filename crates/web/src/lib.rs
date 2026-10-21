@@ -18,6 +18,7 @@ pub mod format;
 pub mod goal;
 mod highlight;
 pub mod icons;
+pub mod install;
 pub mod keys;
 pub mod layout;
 mod media;

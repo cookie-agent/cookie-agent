@@ -1,7 +1,8 @@
 //! The connect screen's decisions, independent of the browser (spec 7.2,
 //! 7.3): the daemon URL a page fills in from its own address, the token a
-//! `#token=` fragment carries, whether to connect without a click, and the
-//! hint for a connection refused before its handshake.
+//! `#token=` fragment carries, what a launch starts from, whether to
+//! connect without a click, and the hint for a connection refused before
+//! its handshake.
 
 use url::Url;
 
@@ -84,6 +85,61 @@ pub fn fragment_without_token(fragment: &str) -> String {
     serializer.finish()
 }
 
+/// What the page starts from: the daemon URL and token it fills in, and
+/// what to do with a token its address carried.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Launch {
+    /// The daemon URL: the one last connected to, else the page's own.
+    pub url: String,
+    /// The token for `url`: the fragment's, else the stored one.
+    pub token: String,
+    /// A token from the fragment, to store for `url`.
+    pub store: Option<String>,
+    /// The fragment to leave in the address bar once the token is out of
+    /// it; `None` when it carried none.
+    pub fragment: Option<String>,
+}
+
+/// What a page starts from (spec 7.2, 7.3), given the daemon URL it
+/// `filled` in from its address, the URL it `remembered`, its `fragment`,
+/// and the token `stored` for a daemon URL. An installed app starts at the
+/// manifest's `start_url`, which has no token, so it connects with the
+/// token stored when a `cookie web` link was opened.
+pub fn launch(
+    filled: &str,
+    remembered: Option<&str>,
+    fragment: &str,
+    stored: impl Fn(&str) -> Option<String>,
+) -> Launch {
+    let url = remembered.unwrap_or(filled).to_owned();
+    match token_from_fragment(fragment) {
+        Some(token) => Launch {
+            url,
+            token: token.clone(),
+            store: Some(token),
+            fragment: Some(fragment_without_token(fragment)),
+        },
+        None => Launch {
+            token: stored(&url).unwrap_or_default(),
+            url,
+            store: None,
+            fragment: None,
+        },
+    }
+}
+
+/// The token in what the user typed or pasted into the token field: the
+/// text itself, or the `#token=` of a pasted `cookie web` link, which an
+/// installed app on iOS (whose storage is its own) needs once.
+pub fn token_from_input(input: &str) -> String {
+    let input = input.trim();
+    input
+        .split_once('#')
+        .filter(|(before, _)| before.contains("://"))
+        .and_then(|(_, fragment)| token_from_fragment(fragment))
+        .unwrap_or_else(|| input.to_owned())
+}
+
 /// Whether the page connects without a click: it has a daemon URL (filled
 /// in or remembered) and a token (from the fragment or stored).
 pub fn connects_by_itself(daemon_url: Option<&str>, token: Option<&str>) -> bool {
@@ -140,6 +196,54 @@ mod tests {
         assert_eq!(token_from_fragment("#other=1"), None);
         assert_eq!(fragment_without_token("#token=abc"), "");
         assert_eq!(fragment_without_token("#view=x&token=abc"), "#view=x");
+    }
+
+    #[test]
+    fn an_app_launched_without_a_token_uses_the_stored_one() {
+        let stored = |url: &str| (url == "wss://h.ts.net/ws").then(|| "kept".to_owned());
+        // The home screen opens the manifest's start_url: no fragment.
+        let launched = launch("wss://h.ts.net/ws", None, "", stored);
+        assert_eq!(
+            launched,
+            Launch {
+                url: "wss://h.ts.net/ws".into(),
+                token: "kept".into(),
+                store: None,
+                fragment: None,
+            }
+        );
+        assert!(connects_by_itself(
+            Some(&launched.url),
+            Some(&launched.token)
+        ));
+        // The URL last connected to wins over the page's own.
+        let launched = launch("wss://other/ws", Some("wss://h.ts.net/ws"), "", stored);
+        assert_eq!(launched.url, "wss://h.ts.net/ws");
+        assert_eq!(launched.token, "kept");
+        // A `cookie web` link's token is stored and leaves the address.
+        let launched = launch("wss://h.ts.net/ws", None, "#token=new&x=1", stored);
+        assert_eq!(launched.token, "new");
+        assert_eq!(launched.store.as_deref(), Some("new"));
+        assert_eq!(launched.fragment.as_deref(), Some("#x=1"));
+        // Nothing stored and no link: the screen waits.
+        let launched = launch("wss://fresh/ws", None, "", stored);
+        assert!(!connects_by_itself(
+            Some(&launched.url),
+            Some(&launched.token)
+        ));
+    }
+
+    #[test]
+    fn a_pasted_link_gives_its_token() {
+        assert_eq!(token_from_input(" abc "), "abc");
+        assert_eq!(token_from_input("https://h.ts.net/#token=abc_-1"), "abc_-1");
+        assert_eq!(
+            token_from_input("http://127.0.0.1:7419/#view=x&token=t"),
+            "t"
+        );
+        // A token is never mistaken for a link.
+        assert_eq!(token_from_input("ab#cd"), "ab#cd");
+        assert_eq!(token_from_input("https://h/#other=1"), "https://h/#other=1");
     }
 
     #[test]

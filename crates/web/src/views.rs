@@ -32,8 +32,11 @@ use crate::{
 };
 
 mod depth;
+mod install;
 mod manage;
 mod shell;
+
+pub(crate) use install::{Install, InstallAction, InstallBanner};
 
 use depth::{
     AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, goal_sheet, message_sheet,

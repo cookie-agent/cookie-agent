@@ -1,5 +1,5 @@
 //! The few browser services the page uses: its address, storage, history,
-//! the colour scheme, and visibility. Everything here is a thin call into
+//! the colour scheme, visibility, and installing the page as an app. Everything here is a thin call into
 //! `web_sys`; it compiles on every target but only works in a browser.
 
 use wasm_bindgen::{JsCast as _, closure::Closure};
@@ -119,6 +119,149 @@ pub fn set_dark(dark: bool) {
     } else {
         classes.remove_1("dark")
     };
+    set_theme_color(if dark { THEME_DARK } else { THEME_LIGHT });
+}
+
+/// The browser's colour around the page (`theme-color`) in the light and
+/// the dark theme: the palette's cream and night, as in `index.html` and
+/// the manifest.
+const THEME_LIGHT: &str = "#fbf4e6";
+const THEME_DARK: &str = "#201c16";
+
+/// Sets every `theme-color` of the page to `colour`, so the browser's bar,
+/// or an installed app's title bar, follows the user's theme rather than
+/// only the system's.
+fn set_theme_color(colour: &str) {
+    let Some(metas) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector_all("meta[name=theme-color]").ok())
+    else {
+        return;
+    };
+    for index in 0..metas.length() {
+        if let Some(meta) = metas
+            .item(index)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+        {
+            let _ = meta.set_attribute("content", colour);
+        }
+    }
+}
+
+/// `window[name]`, `undefined` outside a browser.
+fn window_value(name: &str) -> wasm_bindgen::JsValue {
+    window()
+        .and_then(|window| js_sys::Reflect::get(&window, &name.into()).ok())
+        .unwrap_or(wasm_bindgen::JsValue::UNDEFINED)
+}
+
+/// Whether the page is a secure context (HTTPS, or `localhost` and
+/// `127.0.0.1`), which installing it and its service worker need.
+pub fn is_secure_context() -> bool {
+    window().is_some_and(|window| window.is_secure_context())
+}
+
+/// Registers the page's service worker, `sw.js` beside it, which caches
+/// nothing (it makes the page installable). Only a secure page can; the
+/// browser checks it for a new build on every load, past its HTTP cache.
+pub fn register_service_worker() {
+    let Some(window) = window().filter(web_sys::Window::is_secure_context) else {
+        return;
+    };
+    let navigator = window.navigator();
+    // A private window may have no service workers.
+    if !js_sys::Reflect::has(&navigator, &"serviceWorker".into()).unwrap_or(false) {
+        return;
+    }
+    let options = web_sys::RegistrationOptions::new();
+    options.set_update_via_cache(web_sys::ServiceWorkerUpdateViaCache::None);
+    let registered = navigator
+        .service_worker()
+        .register_with_options("sw.js", &options);
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = wasm_bindgen_futures::JsFuture::from(registered).await;
+    });
+}
+
+/// Whether the page runs as an installed app: in a standalone window, or
+/// from an iOS home screen (`navigator.standalone`).
+pub fn is_standalone() -> bool {
+    matches(STANDALONE_QUERY)
+        || window()
+            .and_then(|window| js_sys::Reflect::get(&window.navigator(), &"standalone".into()).ok())
+            .is_some_and(|standalone| standalone.is_truthy())
+}
+
+/// The media query an installed app's window matches.
+pub const STANDALONE_QUERY: &str = "(display-mode: standalone)";
+
+/// The browser's `navigator.userAgent` and `navigator.maxTouchPoints`.
+pub fn user_agent() -> (String, i32) {
+    window().map_or_else(Default::default, |window| {
+        let navigator = window.navigator();
+        (
+            navigator.user_agent().unwrap_or_default(),
+            navigator.max_touch_points(),
+        )
+    })
+}
+
+/// Whether the browser handed the page an install prompt it has not used
+/// yet; `index.html` keeps it as `window.cookieInstallPrompt`.
+pub fn install_prompt_ready() -> bool {
+    window_value("cookieInstallPrompt").is_object()
+}
+
+/// Whether the browser said it installed the page during this visit.
+pub fn app_installed() -> bool {
+    window_value("cookieInstalled").is_truthy()
+}
+
+/// Calls `changed` whenever the browser offers to install the page or
+/// installs it, for as long as the page lives.
+pub fn on_install_change(changed: impl Fn() + 'static) {
+    let Some(window) = window() else {
+        return;
+    };
+    let listener = Closure::<dyn Fn()>::new(changed);
+    let _ = window
+        .add_event_listener_with_callback("cookie-install", listener.as_ref().unchecked_ref());
+    listener.forget();
+}
+
+/// Opens the browser's install prompt, which it offers once: call it from
+/// the click that asks for it. Resolves to whether the user installed the
+/// page; `None` without a prompt.
+pub fn prompt_install() -> Option<impl std::future::Future<Output = bool>> {
+    let window = window()?;
+    let event = window_value("cookieInstallPrompt");
+    if !event.is_object() {
+        return None;
+    }
+    let _ = js_sys::Reflect::set(
+        &window,
+        &"cookieInstallPrompt".into(),
+        &wasm_bindgen::JsValue::NULL,
+    );
+    let prompt = js_sys::Reflect::get(&event, &"prompt".into())
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    prompt.call0(&event).ok()?;
+    let choice = js_sys::Reflect::get(&event, &"userChoice".into())
+        .ok()
+        .and_then(|choice| choice.dyn_into::<js_sys::Promise>().ok());
+    Some(async move {
+        let Some(choice) = choice else {
+            return false;
+        };
+        wasm_bindgen_futures::JsFuture::from(choice)
+            .await
+            .ok()
+            .and_then(|choice| js_sys::Reflect::get(&choice, &"outcome".into()).ok())
+            .and_then(|outcome| outcome.as_string())
+            .is_some_and(|outcome| outcome == "accepted")
+    })
 }
 
 /// Calls `shown` whenever the page becomes visible again, as a phone's tab

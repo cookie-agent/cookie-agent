@@ -261,12 +261,13 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
     }
 }
 
-/// What this browser keeps for the daemon: the diagnostics the transcript
-/// shows, and the token.
+/// This browser: installing the page as an app, and what it keeps for the
+/// daemon: the diagnostics the transcript shows, and the token.
 fn browser_section(workspace: Workspace, connection: Connection) -> impl IntoView {
     let confirming = RwSignal::new(false);
     view! {
-        <h2 class="text-sm font-bold">"Diagnostics in the transcript"</h2>
+        {super::install::install_section()}
+        <h2 class="mt-4 text-sm font-bold">"Diagnostics in the transcript"</h2>
         <p class=NOTE>"The same choice as /events; it stays in this browser."</p>
         {events_sheet(workspace)}
         <h2 class="mt-4 text-sm font-bold">"This daemon"</h2>

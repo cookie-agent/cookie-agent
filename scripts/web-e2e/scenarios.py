@@ -13,13 +13,18 @@ started, which the daemon lists but has not loaded.
 
 import base64
 import fcntl
+import functools
+import http.server
 import json
 import os
 import random
 import re
 import signal
+import socket
 import struct
 import sys
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -45,16 +50,19 @@ def call(method, path, body=None):
 
 
 class Browser:
-    def __init__(self):
+    def __init__(self, user_agent=None):
         for _ in range(100):
             try:
                 call("GET", "/status")
                 break
             except OSError:
                 time.sleep(0.1)
+        options = {"args": ["-headless"]}
+        if user_agent:
+            options["prefs"] = {"general.useragent.override": user_agent}
         capabilities = {
             "browserName": "firefox",
-            "moz:firefoxOptions": {"args": ["-headless"]},
+            "moz:firefoxOptions": options,
         }
         self.session = call("POST", "/session", {"capabilities": {"alwaysMatch": capabilities}})[
             "sessionId"
@@ -1317,21 +1325,260 @@ def suspended_tab(browser):
 
 
 def home_screen():
-    """The page names a web app manifest whose icons the daemon serves, for
-    adding the page to a phone's home screen."""
+    """The page names a web app manifest that meets Chromium's install
+    criteria, whose icons and screenshots the daemon serves."""
     base = LINK.split("#")[0]
     with urllib.request.urlopen(base + "manifest.webmanifest") as response:
         assert response.headers["Content-Type"] == "application/manifest+json"
         manifest = json.load(response)
+    assert manifest["name"] and manifest["short_name"], manifest
+    # Relative, so the page installs from any path.
+    for field in ("id", "start_url", "scope"):
+        assert manifest[field] == "./", (field, manifest[field])
     assert manifest["display"] == "standalone"
-    purposes = set()
+    assert re.fullmatch(r"#[0-9a-f]{6}", manifest["background_color"])
+    assert re.fullmatch(r"#[0-9a-f]{6}", manifest["theme_color"])
+    assert not manifest.get("prefer_related_applications")
+    icons = set()
     for icon in manifest["icons"]:
         with urllib.request.urlopen(base + icon["src"]) as response:
             assert response.headers["Content-Type"] == icon["type"], icon
             assert response.read(), icon
-        purposes.add(icon["purpose"])
-    assert purposes == {"any", "maskable"}, purposes
-    print("the manifest and its %d icons are served" % len(manifest["icons"]))
+        icons.add((icon["sizes"], icon["purpose"]))
+    for size in ("192x192", "512x512"):
+        for purpose in ("any", "maskable"):
+            assert (size, purpose) in icons, (size, purpose)
+    form_factors = set()
+    for shot in manifest["screenshots"]:
+        with urllib.request.urlopen(base + shot["src"]) as response:
+            assert response.headers["Content-Type"] == shot["type"], shot
+            assert response.read(), shot
+        form_factors.add(shot["form_factor"])
+    assert form_factors == {"narrow", "wide"}, form_factors
+    print("the manifest, its %d icons, and its %d screenshots are served"
+          % (len(manifest["icons"]), len(manifest["screenshots"])))
+
+
+# The page's service worker registration: its scope, its script, and that
+# script's state.
+REGISTRATION = """
+return navigator.serviceWorker.getRegistration().then((r) =>
+    r && r.active ? [r.scope, r.active.scriptURL, r.active.state] : null);
+"""
+
+
+def controlled(browser):
+    return browser.script("return navigator.serviceWorker.controller !== null")
+
+
+def service_worker(browser):
+    """The service worker registers on the 127.0.0.1 page (a secure
+    context), takes control of it, and caches nothing; the daemon sends it
+    to be revalidated, under a policy that allows it. Reopening the page
+    without the token, as the home screen does, connects with the stored
+    one over the WebSocket the worker leaves alone."""
+    base = LINK.split("#")[0]
+    browser.wait("the service worker", lambda: controlled(browser))
+    scope, script, state = browser.script(REGISTRATION)
+    assert scope == base and script == base + "sw.js", (scope, script)
+    assert state == "activated", state
+    assert browser.script("return caches.keys()") == [], "the service worker cached something"
+    with urllib.request.urlopen(base + "sw.js") as response:
+        headers = response.headers
+        body = response.read().decode()
+    assert headers["Content-Type"] == "text/javascript; charset=utf-8", headers["Content-Type"]
+    assert headers["Cache-Control"] == "no-cache", headers["Cache-Control"]
+    assert headers["Service-Worker-Allowed"] is None
+    assert "worker-src 'self';" in headers["Content-Security-Policy"]
+    assert re.search(r"^// build: [0-9a-f]{16}$", body, re.M), "sw.js carries no build stamp"
+    browser.go(base)
+    browser.wait("the connection from the start URL", lambda: browser.text("#connected") != "")
+    assert controlled(browser), "the reloaded page is not the service worker's"
+    assert browser.script("return caches.keys()") == []
+    print("the service worker controls the page, caches nothing, and the page connects under it")
+
+
+def daemon_change():
+    """The worker is network-only: with the refusing daemon's page under
+    its control, the daemon stops and a reload fails, then a different
+    build on the same port shows on the next reload."""
+    browser = Browser()
+    try:
+        changed_daemon(browser)
+    finally:
+        browser.close()
+
+
+def changed_daemon(browser):
+    base = REFUSING_LINK.split("#")[0]
+    browser.go(REFUSING_LINK)
+    browser.wait("the refused page's service worker", lambda: controlled(browser))
+    with open(os.path.join(os.path.dirname(HOME), "refusing", "daemon.pid")) as file:
+        daemon = int(file.read())
+    os.kill(daemon, signal.SIGTERM)
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", int(REFUSING_PORT))) != 0:
+                break
+        time.sleep(0.1)
+    try:
+        browser.go(base)
+        loaded = browser.script("return document.querySelector('link[rel=manifest]') !== null")
+    except RuntimeError:
+        loaded = False
+    assert not loaded, "the page loaded with its daemon gone: something cached it"
+    build = tempfile.mkdtemp()
+    with open(os.path.join(build, "index.html"), "w") as file:
+        file.write("<!doctype html><title>cookie</title><p id=build>a new build</p>")
+    with open("crates/web_assets/bundle/sw.js") as source, open(os.path.join(build, "sw.js"), "w") as copy:
+        copy.write(source.read())
+    handler = functools.partial(QuietFiles, directory=build)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", int(REFUSING_PORT)), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        browser.go(base)
+        browser.wait("the new build", lambda: browser.text("#build") == "a new build")
+    finally:
+        server.shutdown()
+        server.server_close()
+    print("a reload after the daemon changed shows the new build at once")
+
+
+class QuietFiles(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+
+# A Chromium install prompt, as `beforeinstallprompt` hands it: `prompt()`
+# counts its calls, and the user's choice is `arguments[0]`. Returns whether
+# the page kept it from the browser's mini-infobar.
+FAKE_PROMPT = """
+const event = new Event('beforeinstallprompt', {cancelable: true});
+event.prompt = () => { window.promptCalls = (window.promptCalls || 0) + 1; return Promise.resolve(); };
+event.userChoice = Promise.resolve({outcome: arguments[0], platform: 'web'});
+dispatchEvent(event);
+return event.defaultPrevented;
+"""
+
+IPHONE = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1"
+)
+
+
+def offer(browser):
+    return browser.script("const e = document.querySelector('#install'); return e ? e.dataset.installOffer : ''")
+
+
+def browser_section(browser):
+    """Opens Settings › This browser by script clicks (a phone's rail is in
+    its drawer)."""
+    for selector in ("[data-rail=primary] [data-view=settings]", "[data-section=browser]"):
+        browser.script("document.querySelector(arguments[0]).click()", selector)
+        time.sleep(0.4)
+    browser.wait("the install section", lambda: offer(browser) != "")
+
+
+def fits(browser, what):
+    """Asserts the page does not scroll sideways and its targets take a
+    finger."""
+    overflow = browser.script(OVERFLOW)
+    small = browser.script(SMALL_TARGETS)
+    assert overflow <= 0 and not small, "%s: overflow %s, small %s" % (what, overflow, small)
+
+
+def install_prompt():
+    """Chromium's prompt, which Firefox does not have, handed to the page by
+    a script: Settings offers Install app, which opens it once; a dismissed
+    prompt leaves the browser's menu, and an install hides the action."""
+    browser = Browser()
+    try:
+        browser.resize(1280, 900)
+        browser.go(LINK)
+        browser.wait("the connection", lambda: browser.text("#connected") != "")
+        browser_section(browser)
+        # Firefox hands the page no prompt: its menu.
+        assert offer(browser) == "browser-menu", offer(browser)
+        assert browser.script(FAKE_PROMPT, "dismissed"), "the mini-infobar was not prevented"
+        browser.wait("the install action", lambda: offer(browser) == "prompt")
+        assert browser.text("#install [data-install-action]") == "Install app"
+        browser.shot("install-settings-prompt")
+        browser.click("#install [data-install-action]")
+        browser.wait("the used prompt", lambda: offer(browser) == "browser-menu")
+        assert browser.script("return window.promptCalls") == 1
+        browser.script(FAKE_PROMPT, "accepted")
+        browser.wait("the second prompt", lambda: offer(browser) == "prompt")
+        browser.script("dispatchEvent(new Event('appinstalled'))")
+        browser.wait("the installed page", lambda: offer(browser) == "installed")
+        assert count(browser, "[data-install-action]") == 0
+        browser.shot("install-settings-installed")
+        print("Chromium's prompt: Install app opens it once, and an install hides it")
+    finally:
+        browser.close()
+
+
+def install_on_phones():
+    """The install offer on a phone, in both themes: Chromium's prompt (from
+    a script) and iOS's steps (Firefox posing as Safari on an iPhone), in
+    the banner, Settings › This browser, and the connect screen."""
+    for platform, agent in (("android", None), ("ios", IPHONE)):
+        phone = Browser(user_agent=agent)
+        try:
+            for theme in ("light", "dark"):
+                phone.go(LINK)
+                phone.wait("the connection", lambda: phone.text("#connected") != "")
+                phone.script("localStorage.setItem('cookie.theme', arguments[0])", theme)
+                phone.go(LINK.split("#")[0])
+                phone.wait("the connection", lambda: phone.text("#connected") != "")
+                phone.phone(390, 844)
+                if agent is None:
+                    phone.script(FAKE_PROMPT, "dismissed")
+                phone.wait("the install banner", lambda: count(phone, "#install-banner") == 1)
+                if agent:
+                    assert "Add to Home Screen" in phone.text("#install-banner [data-install-steps]")
+                else:
+                    assert phone.text("#install-banner [data-install-action]") == "Install app"
+                fits(phone, "%s banner" % platform)
+                phone.shot("phone-install-banner-%s-%s" % (platform, theme))
+                browser_section(phone)
+                assert offer(phone) == ("ios" if agent else "prompt"), offer(phone)
+                fits(phone, "%s settings" % platform)
+                phone.shot("phone-install-settings-%s-%s" % (platform, theme))
+                # The connect screen of the daemon that refuses the page.
+                phone.go(REFUSING_LINK)
+                phone.wait("the connect screen", lambda: "allowed_origins" in phone.text())
+                # Another port, another origin: its own theme choice.
+                phone.script("localStorage.setItem('cookie.theme', arguments[0])", theme)
+                phone.go(REFUSING_LINK.split("#")[0])
+                phone.wait("the connect screen", lambda: "allowed_origins" in phone.text())
+                phone.phone(390, 844)
+                if agent is None:
+                    phone.script(FAKE_PROMPT, "dismissed")
+                phone.wait("the connect screen's action", lambda: count(phone, "main [data-install-action]") == 1)
+                if agent:
+                    phone.click("main [data-install-action]")
+                    phone.wait("iOS's steps", lambda: "Add to Home Screen" in phone.text("main [data-install-steps]"))
+                fits(phone, "%s connect screen" % platform)
+                phone.script("document.querySelector('main [data-install-action]').scrollIntoView({block: 'center'})")
+                phone.shot("phone-install-connect-%s-%s" % (platform, theme))
+            # The banner goes for good once dismissed.
+            phone.go(LINK)
+            phone.wait("the connection", lambda: phone.text("#connected") != "")
+            if agent is None:
+                phone.script(FAKE_PROMPT, "dismissed")
+            phone.wait("the install banner", lambda: count(phone, "#install-banner") == 1)
+            phone.click("#install-banner [data-install-dismiss]")
+            phone.wait("the dismissed banner", lambda: count(phone, "#install-banner") == 0)
+            phone.go(LINK.split("#")[0])
+            phone.wait("the connection", lambda: phone.text("#connected") != "")
+            if agent is None:
+                phone.script(FAKE_PROMPT, "dismissed")
+            time.sleep(0.5)
+            assert count(phone, "#install-banner") == 0, "the dismissed banner came back"
+            print("phone (%s): the banner, Settings, and the connect screen offer the install" % platform)
+        finally:
+            phone.close()
 
 
 def session_dir(session_id):
@@ -1374,6 +1621,7 @@ def main():
             "return document.querySelector('link[rel=manifest]').getAttribute('href')"
         ) == "manifest.webmanifest"
         home_screen()
+        service_worker(browser)
 
         # A new session from the first message; streamed markdown.
         send(browser, "show me markdown")
@@ -1476,3 +1724,7 @@ for problem in problems:
     print("phone:", problem)
 assert not problems or os.environ.get("PHONE_AUDIT_REPORT_ONLY"), "the phone layout falls short"
 print("every view fits the phone sizes with touch-sized targets")
+install_prompt()
+install_on_phones()
+# Last: it stops the refusing daemon.
+daemon_change()

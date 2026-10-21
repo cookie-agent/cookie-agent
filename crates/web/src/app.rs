@@ -1,6 +1,7 @@
 //! The page: the connect screen (spec 7.2) under a header with the
 //! connection and the theme toggle, and, once connected, the workspace,
-//! whose rail carries both instead.
+//! whose rail carries both instead. Where the browser can install the page
+//! as an app, the connect screen and a phone's banner offer it (spec 9).
 
 use cookie_agent_client_state::subscriptions::{RECONNECT_FIRST_DELAY, next_reconnect_delay};
 use cookie_agent_protocol::{Client, ClientDelivery, ClientError, ClientIdentity, ServerHello};
@@ -9,13 +10,13 @@ use leptos::{prelude::*, task::spawn_local};
 use crate::{
     browser,
     connect::{
-        DAEMON_URL_KEY, THEME_KEY, connects_by_itself, daemon_url_for_page, fragment_without_token,
-        refused_before_handshake_hint, token_from_fragment, token_key,
+        DAEMON_URL_KEY, Launch, THEME_KEY, connects_by_itself, daemon_url_for_page, launch,
+        refused_before_handshake_hint, token_from_input, token_key,
     },
     connection,
     icons::{self, Glyph},
     theme::ThemePreference,
-    views::WorkspaceView,
+    views::{Install, InstallAction, InstallBanner, WorkspaceView},
     workspace::Workspace,
 };
 
@@ -68,15 +69,25 @@ impl Connection {
             .as_deref()
             .and_then(daemon_url_for_page)
             .unwrap_or_default();
-        let url = browser::load(DAEMON_URL_KEY).unwrap_or(filled);
+        let Launch {
+            url,
+            token,
+            store,
+            fragment,
+        } = launch(
+            &filled,
+            browser::load(DAEMON_URL_KEY).as_deref(),
+            &browser::page_fragment().unwrap_or_default(),
+            |url| browser::load(&token_key(url)),
+        );
         // A token in the fragment is kept for the daemon and taken out of
         // the address bar, so it never lands in history or a bookmark.
-        let fragment = browser::page_fragment().unwrap_or_default();
-        if let Some(token) = token_from_fragment(&fragment) {
+        if let Some(token) = store {
             browser::store(&token_key(&url), &token);
-            browser::replace_fragment(&fragment_without_token(&fragment));
         }
-        let token = browser::load(&token_key(&url)).unwrap_or_default();
+        if let Some(fragment) = fragment {
+            browser::replace_fragment(&fragment);
+        }
         Self {
             url: RwSignal::new(url),
             token: RwSignal::new(token),
@@ -101,7 +112,10 @@ impl Connection {
     /// Connects with the URL and token the screen holds.
     fn connect(self) {
         let url = self.url.get_untracked().trim().to_owned();
-        let token = self.token.get_untracked().trim().to_owned();
+        let token = token_from_input(&self.token.get_untracked());
+        if token != self.token.get_untracked() {
+            self.token.set(token.clone());
+        }
         if !connects_by_itself(Some(&url), Some(&token)) {
             self.phase.set(Phase::Failed {
                 message: "Enter the daemon URL and its token.".into(),
@@ -272,6 +286,7 @@ pub fn App() -> impl IntoView {
         browser::store(THEME_KEY, preference.as_str());
     });
 
+    Install::provide();
     let connection = Connection::new();
     browser::on_visible(move || connection.check());
     browser::follow_visual_viewport();
@@ -289,7 +304,11 @@ pub fn App() -> impl IntoView {
                 let attached = connection.attached.get();
                 match phase {
                     Phase::Connected { .. } => {
-                        view! { <WorkspaceView workspace=connection.workspace connection=connection theme=theme /> }.into_any()
+                        view! {
+                            <InstallBanner />
+                            <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
+                        }
+                            .into_any()
                     }
                     Phase::Reconnecting { reason } if attached => {
                         view! {
@@ -297,6 +316,7 @@ pub fn App() -> impl IntoView {
                                 <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
                                 <span class="min-w-0 flex-1">{format!("Connection lost ({reason}); reconnecting…")}</span>
                             </div>
+                            <InstallBanner />
                             <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
                         }
                             .into_any()
@@ -673,7 +693,10 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                     </button>
                 </div>
             </form>
-            <footer class="px-2 text-center">
+            <footer class="flex flex-col items-center gap-2 px-2 text-center">
+                <div class="flex w-full flex-wrap justify-center gap-2 text-left">
+                    <InstallAction />
+                </div>
                 <Credits />
             </footer>
         </div>
