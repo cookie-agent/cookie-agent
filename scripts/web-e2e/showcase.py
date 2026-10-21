@@ -487,7 +487,7 @@ if ALL:
             browser.script("document.querySelector('aside [data-new-session]').click()")
             time.sleep(1)
             both_themes("%s-new-session" % size)
-            browser.script("document.querySelector('aside nav[aria-label=Sessions] button').click()")
+            browser.script("document.querySelector('aside nav[aria-label=Sessions] [data-session]').click()")
             time.sleep(1)
             # The sidebar hidden.
             browser.script("document.querySelector('main [data-sidebar-toggle]').click()")

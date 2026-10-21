@@ -375,7 +375,7 @@ def tool_rows(browser):
     print("a call starts collapsed; its output stops at the budget until clicked")
     # Kept for this session across a switch.
     title = browser.text("#session-title")
-    browser.click("aside nav[aria-label=Sessions] [data-session]:not([aria-current])")
+    click_row(browser, "aside nav[aria-label=Sessions] [data-session]:not([aria-current])")
     browser.wait("another session", lambda: browser.text("#session-title") != title)
     browser.script(
         "[...document.querySelectorAll('aside nav[aria-label=Sessions] [data-session]')]"
@@ -485,7 +485,7 @@ def session_depth(browser):
     browser.wait("the empty collapsed tree", lambda: count(browser, nested) == 0)
     print("collapsed, the tree shows only running subagents")
     # A click on the open session's row expands it: the whole hierarchy.
-    browser.click(open_row(browser))
+    click_row(browser, open_row(browser))
     browser.wait("the expanded tree", lambda: tree_state(browser) == "expanded" and count(browser, nested) == 1)
     assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", open_row(browser)) == "true"
     # A finished subagent shows no status mark, as a finished session does.
@@ -529,11 +529,11 @@ def session_depth(browser):
         browser.wait("the connection", lambda: browser.text("#connected") != "")
         browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % root) == 1)
         if count(browser, 'aside [data-session="%s"][aria-current=true]' % root) == 0:
-            browser.click('aside [data-session="%s"]' % root)
+            click_row(browser, 'aside [data-session="%s"]' % root)
         browser.wait("the session again", lambda: browser.text("#session-title") == root_title)
     reopen()
     browser.wait("the remembered expanded tree", lambda: tree_state(browser) == "expanded" and count(browser, nested) == 1)
-    browser.click(open_row(browser))
+    click_row(browser, open_row(browser))
     browser.wait("the collapsed tree", lambda: tree_state(browser) == "collapsed" and count(browser, nested) == 0)
     reopen()
     browser.wait("the remembered collapsed tree", lambda: tree_state(browser) == "collapsed" and count(browser, nested) == 0)
@@ -559,24 +559,24 @@ def session_depth(browser):
     assert count(browser, "aside [data-subagents]") == 1, "another session shows a tree"
     deep = browser.script("return document.querySelector(arguments[0]).dataset.session", open_row(browser))
     browser.shot("tree-collapsed-running")
-    browser.click(open_row(browser))
+    click_row(browser, open_row(browser))
     browser.wait(
         "the expanded tree",
         lambda: tree_state(browser) == "expanded" and count(browser, "aside [data-subagents] [data-dimmed]") == 0,
     )
     assert count(browser, nested) == 2
     browser.shot("tree-expanded")
-    browser.click(open_row(browser))
+    click_row(browser, open_row(browser))
     browser.wait("the collapsed tree", lambda: tree_state(browser) == "collapsed")
     # Another session opened: the running grandchild's session shows no tree.
-    browser.click('aside [data-session="%s"]' % root)
+    click_row(browser, 'aside [data-session="%s"]' % root)
     browser.wait("another session", lambda: browser.text("#session-title") == root_title)
     time.sleep(1)
     assert count(browser, nested) == 0, "a session other than the open one shows its tree"
     assert count(browser, "aside [data-subagents]") <= 1
     assert count(browser, "aside [data-subagents]") == 0 or browser.script(NESTED_UNDER_OPEN_ROW)
     print("a running subagent sits under its dimmed parent; only the open session has a tree")
-    browser.click('aside [data-session="%s"]' % deep)
+    click_row(browser, 'aside [data-session="%s"]' % deep)
     browser.wait("the deep session", lambda: count(browser, 'aside [data-session="%s"][aria-current=true]' % deep) == 1)
     browser.wait("the grandchild's end", lambda: count(browser, nested) == 0, timeout=90)
 
@@ -1029,7 +1029,7 @@ def management(browser):
     close_sheet(browser)
 
     # A session's attachment detached and attached again.
-    browser.click("aside nav[aria-label=Sessions] button")
+    click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
     menu(browser, "runtime")
     browser.wait("the attachments", lambda: "local/coding" in browser.text("#sheet"))
@@ -1175,12 +1175,12 @@ def management(browser):
     print("restarted the reference plugin")
 
 
-def drag(browser, source, target, touch=False):
+def drag(browser, source, target, touch=False, dx=0):
     """Drags `source` onto `target`: a mouse at once, a finger after a long
-    press."""
+    press. `dx` moves the press off the source's middle."""
     pointer = "touch" if touch else "mouse"
     steps = [
-        {"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find(source)}, "x": 0, "y": 0},
+        {"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find(source)}, "x": dx, "y": 0},
         {"type": "pointerDown", "button": 0},
     ]
     if touch:
@@ -1191,6 +1191,13 @@ def drag(browser, source, target, touch=False):
         {"type": "pointerUp", "button": 0},
     ]
     perform(browser, [{"type": "pointer", "id": pointer, "parameters": {"pointerType": pointer}, "actions": steps}])
+
+
+def drag_row(browser, source, target, touch=False):
+    """Drags a session row by its title: over a hovered row, its buttons
+    cover the middle."""
+    width = browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().width", source)
+    drag(browser, source, target, touch=touch, dx=int(-width / 2 + 40))
 
 
 def under(browser, machine, runtime):
@@ -1369,6 +1376,21 @@ def hover(browser, selector):
     perform(browser, [{
         "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
         "actions": [{"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": 0}],
+    }])
+
+
+def click_row(browser, selector):
+    """Clicks a session row near its left end, by its title: over a
+    hovered row, its three buttons cover the middle."""
+    width = browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().width", selector)
+    origin = {ELEMENT: browser.find(selector)}
+    perform(browser, [{
+        "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
+        "actions": [
+            {"type": "pointerMove", "duration": 0, "origin": origin, "x": int(-width / 2 + 40), "y": 0},
+            {"type": "pointerDown", "button": 0},
+            {"type": "pointerUp", "button": 0},
+        ],
     }])
 
 
@@ -1565,7 +1587,7 @@ def runtime_cards(browser):
     print("a new session preselects the open session's runtimes and workspaces")
 
     # One runtime alone: the session's directory is its workspace, which
-    # the filter names by its runtime, under its home.
+    # its row names by its runtime, under its home.
     browser.click(card("local/coding") + " [data-card-toggle]")
     browser.click("#start-session")
     browser.wait("the draft", lambda: count(browser, "#composer") == 1, timeout=40)
@@ -1574,19 +1596,6 @@ def runtime_cards(browser):
     browser.wait("its row", lambda: badge_kinds(browser, row) == ["runtime", "workspace"])
     assert badges(browser, row)[1][1] == "~/elsewhere", badges(browser, row)
     MADE["one"] = open_session_id(browser)
-    options = browser.script("return [...document.querySelectorAll('#place-filter option')].map((o) => o.innerText)")
-    for expected in ("local · ~/workspace", "alt · ~/elsewhere"):
-        assert expected in options, (expected, options)
-    browser.script(
-        "const s = document.querySelector('#place-filter');"
-        "s.value = [...s.options].find((o) => o.innerText === 'alt · ~/elsewhere').value;"
-        "s.dispatchEvent(new Event('change'))"
-    )
-    browser.wait("the filtered list", lambda: count(browser, "aside [data-session-row]") == 1)
-    browser.script(
-        "const s = document.querySelector('#place-filter'); s.value = ''; s.dispatchEvent(new Event('change'))"
-    )
-    print("the filter names each session directory by its runtime, under its home:", [o for o in options if "·" in o])
 
     open_cards(browser)
     # Global deselected, and no coding card: a session with no workspace.
@@ -1691,7 +1700,7 @@ def session_badges(browser):
     assert count(browser, rows["one machine"] + " [data-badge=machine] svg") == 2
     browser.shot("badges")
     # The bottom bar and the runtime cards mark alt in its colour.
-    browser.click(rows["one"] + " [data-session]")
+    click_row(browser, rows["one"] + " [data-session]")
     browser.wait("the alt session", lambda: count(browser, '#places [data-runtime-dot="alt"]') == 1)
     dot = browser.script(
         "return getComputedStyle(document.querySelector('#places [data-runtime-dot=alt]')).backgroundColor"
@@ -1708,7 +1717,7 @@ def session_badges(browser):
         "return getComputedStyle(document.querySelector('#new-session [data-runtime-dot=alt]')).backgroundColor"
     ) == alt_colour
     browser.shot("badges-cards")
-    browser.click(rows["one machine"] + " [data-session]")
+    click_row(browser, rows["one machine"] + " [data-session]")
     browser.wait("the session", lambda: count(browser, "#new-session") == 0)
     subprocess.run([COOKIE, "machine", "unassign", "alt"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
@@ -1869,7 +1878,7 @@ def desktop_layout(browser):
         assert icon and "/" not in text and "\n" in text, (name, text, icon)
     browser.shot("session-menu")
     close_sheet(browser)
-    browser.click("aside nav[aria-label=Sessions] button")
+    click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
     # Rename edits the title in place (renaming); the others open sheets.
     for name in names[1:]:
@@ -1918,7 +1927,7 @@ def desktop_layout(browser):
     print("the rail's theme button cycles", " → ".join(seen))
 
     # The bottom bar's pickers.
-    browser.click("aside nav[aria-label=Sessions] button")
+    click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
     browser.click("#agent-chip")
     browser.wait("the agent picker", lambda: "primary" in browser.text("#sheet"))
@@ -2047,7 +2056,7 @@ def phone_layout():
             "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
         )
         phone.click("main [data-sidebar-toggle]")
-        phone.click("#drawer nav[aria-label=Sessions] [data-session]:not([aria-current])")
+        click_row(phone, "#drawer nav[aria-label=Sessions] [data-session]:not([aria-current])")
         phone.wait("another session", lambda: count(phone, "#drawer") == 0 and phone.text("#transcript") != "")
         opened = phone.text("#session-title")
         phone.click("main [data-sidebar-toggle]")
@@ -2086,7 +2095,7 @@ def phone_layout():
         if phone.script("return document.querySelector(arguments[0]).getAttribute('aria-current')", latest) == "true":
             phone.script("document.querySelector('[data-drawer-backdrop]').click()")
         else:
-            phone.click(latest)
+            click_row(phone, latest)
         phone.wait("the transcript", lambda: page_view(phone) == "chat" and phone.text("#transcript") != "")
         phone.wait("the closed drawer", lambda: count(phone, "#drawer") == 0)
         # One row of 44 px targets.
@@ -2242,7 +2251,7 @@ def phone_audit():
                 # Already open: a tap would switch its tree.
                 phone.script("document.querySelector('[data-drawer-backdrop]').click()")
             else:
-                phone.click(latest)
+                click_row(phone, latest)
             phone.wait("the transcript", lambda: phone.text("#transcript") != "")
             time.sleep(1)
             views = [("transcript", None)] + SHEETS
@@ -2580,7 +2589,7 @@ def foreign_session(browser):
             "the held session in the list",
             lambda: count(browser, 'aside [data-session="%s"]' % HELD_SESSION) == 1,
         )
-        browser.click('aside [data-session="%s"]' % HELD_SESSION)
+        click_row(browser, 'aside [data-session="%s"]' % HELD_SESSION)
         browser.wait("the read-only snapshot", lambda: "read-only snapshot" in browser.text("main"))
         browser.wait(
             "the snapshot's transcript",
@@ -2589,6 +2598,303 @@ def foreign_session(browser):
         assert browser.script("return document.querySelector('#composer').disabled")
         print("a session another process holds opens as a read-only snapshot")
         browser.shot("read-only")
+
+
+def section(project):
+    """The sidebar section of `project` (an ID, or `none`)."""
+    key = "none" if project == "none" else "project:" + project
+    return 'aside [data-project-section="%s"]' % key
+
+
+def header(project):
+    return 'aside [data-project-header="%s"]' % project
+
+
+def section_of(browser, session):
+    """The section key a session's row is listed under."""
+    return browser.script(
+        "const r = document.querySelector('aside [data-session-row=\"' + arguments[0] + '\"]');"
+        "const s = r && r.closest('[data-project-section]'); return s ? s.dataset.projectSection : null",
+        session,
+    )
+
+
+def project_on_disk(project):
+    """A project's `project.toml` and `AGENTS.md` (or None)."""
+    folder = os.path.join(HOME, ".cookie-agent", "projects", project)
+    with open(os.path.join(folder, "project.toml")) as file:
+        toml = file.read()
+    agents = os.path.join(folder, "AGENTS.md")
+    if not os.path.exists(agents):
+        return toml, None
+    with open(agents) as file:
+        return toml, file.read()
+
+
+def sheet_card(key):
+    return '#sheet [data-card="%s"]' % key
+
+
+def click_centred(browser, selector):
+    """Scrolls `selector` to the middle of its scroller first, clear of a
+    sheet's pinned foot, then clicks it."""
+    browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", selector)
+    browser.click(selector)
+
+
+def projects(browser):
+    """Projects in the sidebar: sections instead of the workspace filter,
+    a project made in the editor with an emoji, default attachments, a
+    default agent, and an AGENTS.md; a new session in it from its header's
+    +, prefilled; sessions moved by mouse and by finger onto a header and
+    with Move to project…; folding remembered; the editor's unsaved-edit
+    guard, its rename, and its conflict; and the delete, refused while a
+    session runs, then confirmed with what goes."""
+    close_sheet(browser)
+    assert count(browser, "#place-filter") == 0, "the workspace filter stayed"
+    browser.wait("the sections", lambda: count(browser, section("none")) == 1)
+    # The adopted project from the memory scenario's folder is a section;
+    # "No project" is last and has no pencil or trash.
+    keys = browser.script(
+        "return [...document.querySelectorAll('aside#sidebar [data-project-section]')].map((s) => s.dataset.projectSection)"
+    )
+    assert keys[-1] == "none", keys
+    assert count(browser, header("none") + " [data-header-edit]") == 0
+    print("the sidebar lists project sections, No project last:", keys)
+
+    # A new project from the sidebar's button.
+    browser.click("#new-project")
+    browser.wait("the editor", lambda: count(browser, "#project-editor") == 1)
+    assert browser.text("#sheet h2") == "New project"
+    set_text(browser, "#project-name", "e2e-web")
+    click_centred(browser, "#project-emoji")
+    browser.wait("the emoji picker", lambda: count(browser, "#emoji-picker") == 1)
+    browser.shot("project-emoji-picker")
+    set_text(browser, "#emoji-search", "cookie")
+    browser.wait("the search", lambda: count(browser, '#emoji-picker [data-emoji]') >= 1)
+    assert count(browser, '#emoji-picker [data-emoji="🍪"]') == 1
+    # Typed text is checked as the daemon checks it.
+    set_text(browser, "#emoji-typed", "ab")
+    browser.wait("the refusal", lambda: "Not one emoji" in browser.text("[data-emoji-error]"))
+    assert browser.script("return document.querySelector('#emoji-use').disabled")
+    set_text(browser, "#emoji-typed", "🍪🍪")
+    browser.wait("the refusal", lambda: "more than one" in browser.text("[data-emoji-error]"))
+    browser.click('#emoji-picker [data-emoji="🍪"]')
+    browser.wait("the chosen emoji", lambda: browser.text("[data-chosen-emoji]") == "🍪")
+    # Default attachments: global and local at the daemon's workspace.
+    browser.wait("the editor's cards", lambda: count(browser, sheet_card("local/coding")) == 1)
+    click_centred(browser, sheet_card("local/coding") + " [data-card-toggle]")
+    browser.wait("its field", lambda: count(browser, sheet_card("local/coding") + " [data-workspace-field]") == 1)
+    assert "Enter a workspace" in browser.text("[data-editor-blocker]") or browser.script(
+        "return document.querySelector('#project-save').disabled"
+    )
+    set_text(browser, sheet_card("local/coding") + ' [data-workspace-field="0"]', "~/workspace")
+    click_centred(browser, "#project-agent")
+    browser.wait("the agents", lambda: count(browser, "[data-agent-choices]") == 1)
+    click_centred(browser, '[data-agent-choice="builder · review"]')
+    browser.wait("the default agent", lambda: browser.text("[data-project-agent]") == "builder · review")
+    set_text(browser, "#project-agents-md", "Answer in one line.\n")
+    browser.shot("project-editor-new")
+    browser.click("#project-save")
+    browser.wait("the saved project", lambda: count(browser, "#sheet") == 0)
+    project = browser.script(
+        "const h = [...document.querySelectorAll('aside#sidebar [data-project-header]')]"
+        ".find((h) => h.innerText.includes('e2e-web')); return h ? h.dataset.projectHeader : null"
+    )
+    assert project, "no e2e-web header"
+    assert browser.text(header(project) + " [data-project-emoji]") == "🍪"
+    toml, agents = project_on_disk(project)
+    assert 'emoji = "🍪"' in toml and 'agent = "builder"' in toml and 'preset = "review"' in toml, toml
+    assert "~/workspace" in toml or "workspace" in toml, toml
+    assert agents == "Answer in one line.\n", agents
+    # Its header shows where it runs, as the rows do.
+    header_badges = browser.script(
+        "return [...document.querySelectorAll(arguments[0] + ' [data-badge]')].map((b) => b.textContent.trim())",
+        header(project),
+    )
+    assert header_badges and header_badges[0] == "local", header_badges
+    print("made project e2e-web with an emoji, defaults, and AGENTS.md; its header shows", header_badges)
+
+    # A new session in it from its +: the cards and the agent prefilled.
+    browser.click(header(project) + " [data-header-new]")
+    browser.wait("the new session", lambda: count(browser, "#new-session-project") == 1)
+    assert browser.script("return document.querySelector('#new-session-project').value") == project
+    browser.wait("the prefilled card", lambda: field_values(browser, "local/coding") == ["~/workspace"])
+    assert "global/global" in selected_cards(browser)
+    browser.shot("project-new-session")
+    browser.click("#start-session")
+    browser.wait("the draft", lambda: count(browser, "#composer") == 1, timeout=40)
+    browser.wait("the default agent", lambda: "builder" in browser.text("#agent-chip"))
+    send(browser, "hello from the project")
+    browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
+    made = open_session_id(browser)
+    browser.wait("its row in the section", lambda: section_of(browser, made) == "project:" + project)
+    print("a new session from the header's + starts in the project with its runtimes and agent")
+
+    # Moving: a mouse drags a row from No project onto the header.
+    loose = browser.script(
+        "return [...document.querySelectorAll(arguments[0] + ' [data-session-row]')].map((r) => r.dataset.sessionRow)",
+        section("none"),
+    )
+    assert len(loose) >= 2, loose
+    first, second = loose[0], loose[1]
+    drag_row(browser, 'aside [data-session-row="%s"] [data-session]' % first, header(project) + " [data-section-toggle]")
+    browser.wait("the dragged session", lambda: section_of(browser, first) == "project:" + project)
+    print("a mouse drag moved a session into the project")
+    # A finger lifts the row after a long press, then drags it.
+    drag_row(browser, 'aside [data-session-row="%s"] [data-session]' % second, header(project) + " [data-section-toggle]", touch=True)
+    browser.wait("the finger-dragged session", lambda: section_of(browser, second) == "project:" + project)
+    print("a finger drag moved a session into the project")
+    # Move to project… sends one back out.
+    row = 'aside [data-session-row="%s"]' % second
+    hover(browser, row)
+    browser.wait("the move button", lambda: shown(browser, row + " [data-move]"))
+    order = browser.script(
+        "return [...document.querySelectorAll(arguments[0] + ' [data-row-actions] button')].map((b) => b.getAttribute('aria-label'))",
+        row,
+    )
+    assert order[:2] == ["Move to project…", "Rename the session"], order
+    browser.shot("project-row-buttons")
+    browser.click(row + " [data-move]")
+    browser.wait("the picker", lambda: count(browser, "#sheet [data-move-to]") >= 2)
+    browser.shot("project-move-picker")
+    browser.click('#sheet [data-move-to="none"]')
+    browser.wait("the moved session", lambda: section_of(browser, second) == "none")
+    print("Move to project… moved a session out of its project")
+
+    # The header's pencil and trash show on hover, left of its +.
+    hover(browser, "#transcript")
+    assert count(browser, header(project) + " [data-header-edit]") == 0
+    hover(browser, header(project))
+    browser.wait("the header's buttons", lambda: count(browser, header(project) + " [data-header-edit]") == 1)
+    labels = browser.script(
+        "return [...document.querySelectorAll(arguments[0] + ' [data-header-actions] button')].map((b) => b.getAttribute('aria-label'))",
+        header(project),
+    )
+    assert labels == ["Edit the project", "Delete the project", "New session in this project"], labels
+    browser.shot("project-header-hover")
+
+    # Folding is remembered across a reload.
+    click_row(browser, header(project) + " [data-section-toggle]")
+    browser.wait("the folded section", lambda: browser.script(
+        "return document.querySelector(arguments[0]).dataset.open", section(project)) == "false")
+    browser.shot("project-folded")
+    browser.go(LINK.split("#")[0])
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    browser.wait("the sections", lambda: count(browser, section(project)) == 1)
+    assert browser.script("return document.querySelector(arguments[0]).dataset.open", section(project)) == "false"
+    click_row(browser, header(project) + " [data-section-toggle]")
+    browser.wait("the open section", lambda: browser.script(
+        "return document.querySelector(arguments[0]).dataset.open", section(project)) == "true")
+    print("a folded section stays folded after a reload")
+
+    # The editor: closing with unsaved edits asks first; a rename saves.
+    hover(browser, header(project))
+    browser.wait("the pencil", lambda: count(browser, header(project) + " [data-header-edit]") == 1)
+    browser.click(header(project) + " [data-header-edit]")
+    browser.wait("the editor", lambda: browser.script(
+        "const e = document.querySelector('#project-agents-md'); return !!e && !e.disabled && e.value.includes('one line')"))
+    assert browser.text("#sheet h2") == "Project"
+    set_text(browser, "#project-name", "e2e-renamed")
+    browser.click("#sheet h2 ~ button")
+    browser.wait("the question", lambda: count(browser, "[data-discard-box]") == 1)
+    browser.shot("project-discard")
+    browser.click("#sheet [data-discard-box] button:not([data-discard])")
+    browser.wait("the editor kept", lambda: count(browser, "[data-discard-box]") == 0)
+    assert browser.script("return document.querySelector('#project-name').value") == "e2e-renamed"
+    browser.click("#project-save")
+    browser.wait("the renamed header", lambda: "e2e-renamed" in browser.text(header(project)))
+    print("the editor asks before dropping edits, and renamed the project")
+
+    # A change made elsewhere meanwhile: the save is refused and reloads.
+    hover(browser, header(project))
+    browser.wait("the pencil", lambda: count(browser, header(project) + " [data-header-edit]") == 1)
+    browser.click(header(project) + " [data-header-edit]")
+    browser.wait("the editor", lambda: browser.script(
+        "const e = document.querySelector('#project-agents-md'); return !!e && !e.disabled"))
+    with open(os.path.join(HOME, ".cookie-agent", "projects", project, "AGENTS.md"), "w") as file:
+        file.write("Changed on disk.\n")
+    set_text(browser, "#project-agents-md", "Mine.\n")
+    browser.click("#project-save")
+    browser.wait("the conflict", lambda: count(browser, "[data-editor-reload]") == 1)
+    assert "changed since" in browser.text("[data-editor-error]"), browser.text("[data-editor-error]")
+    browser.shot("project-conflict")
+    browser.click("[data-editor-reload]")
+    browser.wait("the reloaded editor", lambda: browser.script(
+        "return document.querySelector('#project-agents-md').value") == "Changed on disk.\n")
+    browser.click("#sheet h2 ~ button")
+    browser.wait("the closed editor", lambda: count(browser, "#sheet") == 0)
+    print("a project changed meanwhile refuses the save and reloads")
+
+    # Delete: refused while a session of the project runs, naming it.
+    click_row(browser, 'aside [data-session-row="%s"] [data-session]' % made)
+    browser.wait("the session", lambda: open_session_id(browser) == made)
+    send(browser, "go slow")
+    browser.wait("the slow run", lambda: "word3" in browser.text("#transcript"))
+    hover(browser, header(project))
+    browser.wait("the trash", lambda: count(browser, header(project) + " [data-header-delete]") == 1)
+    browser.click(header(project) + " [data-header-delete]")
+    browser.wait("the confirmation", lambda: count(browser, "aside [data-project-confirm-box]") == 1)
+    question = browser.text("aside [data-project-confirm-box] p")
+    assert "e2e-renamed" in question and "2 sessions" in question and "memor" in question, question
+    browser.shot("project-delete-confirm")
+    browser.click("aside [data-project-delete-confirm]")
+    browser.wait("the refusal", lambda: "running" in browser.text("aside [data-project-error]"))
+    print("a project with a running session is not deleted:", browser.text("aside [data-project-error]"))
+    browser.type("#composer", ESCAPE)
+    browser.wait("the cancelled run", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    time.sleep(1)
+    hover(browser, header(project))
+    browser.wait("the trash", lambda: count(browser, header(project) + " [data-header-delete]") == 1)
+    browser.click(header(project) + " [data-header-delete]")
+    browser.wait("the confirmation", lambda: count(browser, "aside [data-project-confirm-box]") == 1)
+    browser.click("aside [data-project-delete-confirm]")
+    browser.wait("the deleted project", lambda: count(browser, section(project)) == 0)
+    assert not os.path.exists(os.path.join(HOME, ".cookie-agent", "projects", project))
+    assert count(browser, 'aside [data-session-row="%s"]' % made) == 0
+    print("deleted the project with its sessions:", browser.text("#status"))
+
+
+def projects_phone():
+    """Projects on a phone: a long press on a header shows its buttons, a
+    long press on a row offers Move, Rename, and Delete, and a finger drags
+    a row onto a header."""
+    phone = Browser()
+    try:
+        phone.phone(375, 800)
+        phone.go(LINK)
+        phone.wait("the connection", lambda: phone.text("#connected") != "")
+        phone.click("main [data-sidebar-toggle]")
+        phone.wait("the drawer", lambda: count(phone, "#drawer [data-project-section]") >= 2)
+        project = phone.script(
+            "const h = document.querySelector('#drawer [data-project-header]:not([data-project-header=none])');"
+            "return h ? h.dataset.projectHeader : null"
+        )
+        assert project, "no project section"
+        target = '#drawer [data-project-header="%s"]' % project
+        long_press(phone, target + " [data-section-toggle]")
+        phone.wait("the header's buttons", lambda: count(phone, target + " [data-header-edit]") == 1)
+        phone.shot("phone-project-header")
+        row = phone.script(
+            "const r = document.querySelector('#drawer [data-project-section=none] [data-session-row]');"
+            "return r ? r.dataset.sessionRow : null"
+        )
+        long_press(phone, '#drawer [data-session-row="%s"] [data-session]' % row)
+        phone.wait("the row's actions", lambda: count(phone, "#drawer [data-delete-actions] [data-move-reveal]") == 1)
+        labels = phone.script(
+            "return [...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => b.innerText.trim() || b.getAttribute('aria-label'))"
+        )
+        assert labels == ["Move", "Rename", "Delete", "Cancel"], labels
+        fits(phone, "the row's actions")
+        phone.shot("phone-row-actions")
+        phone.click("#drawer [data-actions-cancel]")
+        drag_row(phone, '#drawer [data-session-row="%s"] [data-session]' % row, target + " [data-section-toggle]", touch=True)
+        phone.wait("the moved row", lambda: phone.script(
+            "const r = document.querySelector('#drawer [data-session-row=\"' + arguments[0] + '\"]');"
+            "return r && r.closest('[data-project-section]').dataset.projectSection", row) == "project:" + project)
+        print("phone: long presses show the header's and the row's buttons; a finger drags a row onto a header")
+    finally:
+        phone.close()
 
 
 def main():
@@ -2677,6 +2983,7 @@ def main():
         session_badges(browser)
         renaming(browser)
         deleting(browser)
+        projects(browser)
 
         # A phone-sized window: no sideways scroll, the sessions in a drawer.
         browser.resize(375, 800)
@@ -2717,6 +3024,7 @@ main()
 # geckodriver runs one browser at a time: the phone sizes get theirs last.
 phone_layout()
 touch_message_menu()
+projects_phone()
 problems = phone_audit()
 for problem in problems:
     print("phone:", problem)

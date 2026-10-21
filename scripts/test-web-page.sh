@@ -111,6 +111,20 @@ permissions:
 ---
 Answer briefly.
 AGENT
+# A preset with its own root agent, for a project's default agent.
+mkdir -p -m 700 "$allowing/.cookie-agent/agents/review"
+cat >"$allowing/.cookie-agent/agents/review/builder.md" <<'AGENT'
+---
+description: Browser scenario preset agent
+mode: primary
+enabled: true
+models:
+  - { model: "custom.local/test", variant: null }
+permissions:
+  read: allow
+---
+Build.
+AGENT
 cat >"$allowing/.cookie-agent/skills/greet/SKILL.md" <<'SKILL'
 ---
 name: greet
