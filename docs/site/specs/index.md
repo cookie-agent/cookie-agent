@@ -32,6 +32,7 @@ Drafts and preserved proposals, and records of finished refactors.
 | Specification | Status |
 |---|---|
 | [Projects](projects.md) | Approved (2026-10-21), phases 1 and 2 implemented; sessions belong to projects with default attachments, an `AGENTS.md`, and project memory in the snapshot; session rename and badges in the clients |
+| [Delegating to runtimes](runtime-delegation.md) | Approved (2026-10-21), queued after projects; the root delegates to chosen runtimes, `list_runtimes` in `global`, web New session starts global-only |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |
