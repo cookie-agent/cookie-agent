@@ -703,8 +703,6 @@ async fn goal_bar_formats_each_status_without_progress() {
     for (status, suffix) in [
         (GoalStatus::Active, "[Pause] [Cancel]"),
         (GoalStatus::Paused, "[Resume] [Cancel]"),
-        (GoalStatus::Completed, " · completed"),
-        (GoalStatus::Cancelled, " · cancelled"),
     ] {
         let mut goal = goal(status);
         goal.objective = "finish\n the parser".into();
@@ -922,4 +920,19 @@ async fn producer_reminders_never_restore_into_the_user_composer() {
     app.restore_voided_inputs();
     assert_eq!(app.input.as_str(), "user pending text");
     assert!(app.store.sessions[&session_id].voided_inputs.is_empty());
+}
+
+#[tokio::test]
+async fn a_finished_or_cancelled_goal_leaves_the_bar_but_keeps_its_details() {
+    let (mut app, _) = app_with_replies(Vec::new()).await;
+    let session = SessionId::new_v7();
+    for status in [GoalStatus::Completed, GoalStatus::Cancelled] {
+        mount_goal(&mut app, session, goal(status));
+        assert!(!app.goal_bar_visible(), "{status:?}");
+        app.open_goal_detail();
+        assert_eq!(app.modal, Modal::GoalDetail, "{status:?}");
+        app.modal = Modal::None;
+    }
+    mount_goal(&mut app, session, goal(GoalStatus::Paused));
+    assert!(app.goal_bar_visible());
 }

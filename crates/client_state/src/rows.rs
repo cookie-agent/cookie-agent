@@ -50,6 +50,13 @@ pub fn goal_status_label(status: GoalStatus) -> &'static str {
     }
 }
 
+/// Whether the bar above the composer shows a goal in `status`: only while
+/// it is still being pursued. A completed or cancelled goal stays reachable
+/// through the goal details, not the bar.
+pub fn goal_bar_shows(status: GoalStatus) -> bool {
+    matches!(status, GoalStatus::Active | GoalStatus::Paused)
+}
+
 /// How many lines `text` has, as the collapsed rows count them.
 pub fn display_line_count(text: &str) -> usize {
     text.split('\n').count()

@@ -1,5 +1,6 @@
 //! User-owned goal commands, persistent summary bar, and read-only details.
 
+use cookie_agent_client_state::rows::goal_bar_shows;
 use cookie_agent_protocol::{
     GoalLifecycleAction, GoalState, GoalStatus, SessionGoalGetParams, SessionGoalLifecycleParams,
     SessionGoalSetParams, SessionId,
@@ -140,7 +141,8 @@ impl App {
     }
 
     pub(super) fn goal_bar_visible(&self) -> bool {
-        self.projected_goal().is_some()
+        self.projected_goal()
+            .is_some_and(|goal| goal_bar_shows(goal.status))
     }
 
     pub(super) fn render_goal_bar(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -148,7 +150,11 @@ impl App {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let Some(goal) = self.projected_goal().cloned() else {
+        let Some(goal) = self
+            .projected_goal()
+            .filter(|goal| goal_bar_shows(goal.status))
+            .cloned()
+        else {
             return;
         };
 
@@ -171,10 +177,7 @@ impl App {
         } else {
             ""
         };
-        let mut summary = single_line(&goal.objective);
-        if matches!(goal.status, GoalStatus::Completed | GoalStatus::Cancelled) {
-            summary.push_str(&format!(" · {}", status_name(goal.status)));
-        }
+        let summary = single_line(&goal.objective);
         let objective_width = details_width.saturating_sub(UnicodeWidthStr::width(prefix));
         let mut details = truncate_with_ellipsis(&summary, objective_width);
         details.push_str(

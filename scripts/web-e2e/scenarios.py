@@ -623,6 +623,13 @@ def session_depth(browser):
     )
     browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
     print("goal control messages fold under their summary and open on a click")
+    # A cancelled goal leaves the bar; its details stay in the goal sheet.
+    browser.click("#goal-bar [data-goal-action=cancel]")
+    browser.wait("the bar gone with the cancelled goal", lambda: count(browser, "#goal-bar") == 0)
+    menu(browser, "goal")
+    browser.wait("the cancelled goal's sheet", lambda: "cancelled" in browser.text("#sheet"))
+    close_sheet(browser)
+    print("a cancelled goal leaves the bar and keeps its details")
 
     # Move a slow call to the background, list it, and stop it.
     send(browser, "be sleepy")

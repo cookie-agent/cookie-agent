@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use cookie_agent_client_state::attachment_chip;
+use cookie_agent_client_state::{attachment_chip, rows::goal_bar_shows};
 use leptos::{ev, prelude::*};
 
 use super::{
@@ -33,16 +33,10 @@ pub fn GoalBar(workspace: Workspace) -> impl IntoView {
     view! {
         {move || {
             goal.get()
+                .filter(|goal| goal_bar_shows(goal.status))
                 .map(|goal| {
                     let read_only = !workspace.writable();
-                    let mut summary = goal.objective.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if matches!(
-                        goal.status,
-                        cookie_agent_protocol::GoalStatus::Completed
-                            | cookie_agent_protocol::GoalStatus::Cancelled
-                    ) {
-                        summary.push_str(&format!(" · {}", status_name(goal.status)));
-                    }
+                    let summary = goal.objective.split_whitespace().collect::<Vec<_>>().join(" ");
                     let controls = goal_actions(goal.status, read_only)
                         .iter()
                         .map(|action| {
