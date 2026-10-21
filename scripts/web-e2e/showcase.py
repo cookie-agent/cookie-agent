@@ -326,6 +326,12 @@ if COMPOSER:
             " t.click()"
         )
         time.sleep(0.5)
+        show_tools = (
+            "const t = document.querySelector('#transcript');"
+            "const r = t.querySelector('[data-tool]');"
+            "t.scrollTop += r.getBoundingClientRect().top - t.getBoundingClientRect().top - 80"
+        )
+        browser.script(show_tools)
         for theme in ("light", "dark"):
             browser.theme(theme)
             browser.shot("composer/%s-tools-collapsed-%s.png" % (size, theme))
@@ -333,6 +339,7 @@ if COMPOSER:
             "for (const t of document.querySelectorAll('#transcript [data-action=toggle-tool]')) t.click()"
         )
         time.sleep(0.5)
+        browser.script(show_tools)
         for theme in ("light", "dark"):
             browser.theme(theme)
             browser.shot("composer/%s-tools-expanded-%s.png" % (size, theme))
