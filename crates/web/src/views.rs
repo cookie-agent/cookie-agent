@@ -889,6 +889,12 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         })
     };
     let user_scrolling = StoredValue::new(false);
+    let message_press = MessagePress {
+        workspace,
+        press: StoredValue::new(Press::default()),
+        timer: StoredValue::new(None),
+        seq: StoredValue::new(None),
+    };
     let on_scroll = move |_| {
         if near_bottom() {
             following.set_value(true);
@@ -910,8 +916,28 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
             on:touchstart=move |_| user_scrolling.set_value(true)
             on:touchend=move |_| user_scrolling.set_value(false)
-            on:pointerdown=move |_| user_scrolling.set_value(true)
-            on:pointerup=move |_| user_scrolling.set_value(false)
+            on:pointerdown=move |event: ev::PointerEvent| {
+                user_scrolling.set_value(true);
+                message_press.down(&event);
+            }
+            on:pointermove=move |event: ev::PointerEvent| message_press.moved(&event)
+            on:pointerup=move |_| {
+                user_scrolling.set_value(false);
+                message_press.cancel();
+            }
+            on:pointercancel=move |_| message_press.cancel()
+            on:pointerover=move |event: ev::PointerEvent| mark_message_row(&event)
+            on:pointerleave=move |_| {
+                if let Some(element) = container.get_untracked() {
+                    unmark_message_rows(&element, None);
+                }
+            }
+            on:contextmenu=move |event: ev::MouseEvent| {
+                // A long press on a bubble is its menu, not the browser's.
+                if message_press.held() {
+                    event.prevent_default();
+                }
+            }
         >
             <Show when=move || workspace.new_session.get()>
                 <NewSessionCard workspace=workspace />
@@ -926,6 +952,116 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 />
             </div>
         </div>
+    }
+}
+
+/// Shows the ⋯ of the user message row a mouse or pen is over (the class
+/// `pointer-over`, which style/main.css follows), and of no other row.
+fn mark_message_row(event: &ev::PointerEvent) {
+    if event.pointer_type() == "touch" {
+        return;
+    }
+    let Some(target) = event
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    else {
+        return;
+    };
+    let row = target.closest(".user-row").ok().flatten();
+    if let Some(transcript) = target.closest("#transcript").ok().flatten() {
+        unmark_message_rows(&transcript, row.as_ref());
+    }
+    if let Some(row) = row {
+        let _ = row.class_list().add_1("pointer-over");
+    }
+}
+
+/// Hides the ⋯ of every user message row under `within` but `keep`.
+fn unmark_message_rows(within: &web_sys::Element, keep: Option<&web_sys::Element>) {
+    let Ok(rows) = within.query_selector_all(".user-row.pointer-over") else {
+        return;
+    };
+    for index in 0..rows.length() {
+        if let Some(row) = rows
+            .item(index)
+            .and_then(|row| row.dyn_into::<web_sys::Element>().ok())
+            && keep != Some(&row)
+        {
+            let _ = row.class_list().remove_1("pointer-over");
+        }
+    }
+}
+
+/// A touch held on a user message's bubble: after [`LONG_PRESS`] without
+/// moving it opens the message's menu, as the ⋯ does with a mouse.
+#[derive(Clone, Copy)]
+struct MessagePress {
+    workspace: Workspace,
+    press: StoredValue<Press>,
+    timer: StoredValue<Option<TimeoutHandle>>,
+    /// The message the press is on, until it ends.
+    seq: StoredValue<Option<u64>>,
+}
+
+impl MessagePress {
+    fn down(self, event: &ev::PointerEvent) {
+        self.cancel();
+        self.seq.set_value(None);
+        if event.pointer_type() != "touch" {
+            return;
+        }
+        let Some(seq) = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|target| target.closest("[data-bubble]").ok().flatten())
+            .and_then(|bubble| bubble.closest(".user-row").ok().flatten())
+            .and_then(|row| row.get_attribute("data-seq"))
+            .and_then(|seq| seq.parse().ok())
+        else {
+            return;
+        };
+        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+        self.press.update_value(|press| press.start(x, y));
+        self.seq.set_value(Some(seq));
+        let timer = set_timeout_with_handle(
+            move || {
+                if self.press.try_update_value(Press::elapse).unwrap_or(false) {
+                    self.workspace.open_user_menu(seq);
+                }
+            },
+            LONG_PRESS,
+        )
+        .ok();
+        self.timer.set_value(timer);
+    }
+
+    fn moved(self, event: &ev::PointerEvent) {
+        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+        if self
+            .press
+            .try_update_value(|press| press.moved(x, y))
+            .unwrap_or(false)
+        {
+            self.stop_timer();
+        }
+    }
+
+    /// The finger lifted or the browser took the gesture over.
+    fn cancel(self) {
+        self.press.update_value(Press::cancel);
+        self.stop_timer();
+    }
+
+    /// Whether a press is on a bubble now, held or just fired.
+    fn held(self) -> bool {
+        self.seq.get_value().is_some()
+    }
+
+    fn stop_timer(self) {
+        if let Some(timer) = self.timer.get_value() {
+            timer.clear();
+        }
+        self.timer.set_value(None);
     }
 }
 

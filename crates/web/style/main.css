@@ -99,6 +99,30 @@ html.dark {
   right: min(0px, calc((100% - 2.75rem) / 2));
 }
 
+/* A user message's ⋯ shows while a mouse or pen is over its row (the
+   page marks it `pointer-over`) or the keyboard is in it; its room stays,
+   so the bubble never moves. A touch screen has no ⋯: a long press on the
+   bubble opens the same menu, without the browser's callout or a text
+   selection. */
+.user-row [data-action="user-menu"] {
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.user-row.pointer-over [data-action="user-menu"],
+.user-row:focus-within [data-action="user-menu"] {
+  opacity: 1;
+}
+@media (pointer: coarse) {
+  .user-row [data-action="user-menu"] {
+    display: none;
+  }
+  .user-row [data-bubble] {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
 /* A session row's long press offers to delete it, not the browser's
    callout. */
 .no-callout {
