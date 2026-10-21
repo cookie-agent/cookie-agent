@@ -203,6 +203,8 @@ def view(name):
 
 
 def close_all():
+    # Project folders start folded at every size.
+    browser.script("localStorage.removeItem('cookie.memory_project:greeter')")
     browser.script(
         "const s = document.querySelector('#sheet h2 ~ button'); if (s) s.click();"
         "const c = document.querySelector('#connection-close'); if (c) c.click();"
@@ -215,6 +217,39 @@ def close_all():
         "c.dispatchEvent(new Event('input')); c.blur()"
     )
     time.sleep(0.3)
+
+
+def click(selector):
+    browser.script("document.querySelector(arguments[0]).click()", selector)
+    time.sleep(0.8)
+
+
+def drag_and_shoot(source, target, name):
+    """Drags `source` with the mouse until it is over `target`, photographs
+    it there in both themes, then takes it back and lets go where it
+    started, so nothing moves."""
+    start = {ELEMENT: browser.find(source)}
+    over = {ELEMENT: browser.find(target)}
+    # Where it started, in the viewport: the lifted row moves with the
+    # pointer, so its own centre would be over the target by then.
+    x, y = browser.script(
+        "const r = document.querySelector(arguments[0]).getBoundingClientRect();"
+        "return [Math.round(r.left + r.width / 2) - 120, Math.round(r.top + r.height / 2)]",
+        source,
+    )
+    mouse = {"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}}
+    call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
+        {"type": "pointerMove", "duration": 0, "origin": start, "x": -120, "y": 0},
+        {"type": "pointerDown", "button": 0},
+        {"type": "pointerMove", "duration": 200, "origin": start, "x": -100, "y": 20},
+        {"type": "pointerMove", "duration": 300, "origin": over, "x": -100, "y": 10},
+    ])]})
+    both_themes(name)
+    call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
+        {"type": "pointerMove", "duration": 200, "origin": "viewport", "x": x, "y": y},
+        {"type": "pointerUp", "button": 0},
+    ])]})
+    call("DELETE", browser.path("/actions"))
 
 
 def both_themes(name):
@@ -248,6 +283,38 @@ if ALL:
             browser.script("document.querySelector('[data-section=%s]').click()" % section)
             time.sleep(1.2)
             both_themes("%s-settings-%s" % (size, section))
+        # The views of 2026-10: an agent open beside the agents (and the
+        # agents in a narrow window's drawer), the machines' Add a runtime,
+        # Move to…, and a drag, and a project folder open, its delete's
+        # confirmation, and an agent's memory.
+        close_all()
+        view("agents")
+        click("[data-config-path=\"agents/reviewer.md\"] button")
+        both_themes("%s-agents-open" % size)
+        if width < 1024:
+            click("#page [data-sidebar-toggle]")
+            both_themes("%s-agents-drawer" % size)
+        close_all()
+        view("machines")
+        click("#machines-add")
+        both_themes("%s-machines-add" % size)
+        click("#add-runtime button[aria-label=Close]")
+        click("[data-runtime=labpc] [data-machine-action=\"move to machine\"]")
+        both_themes("%s-machines-move" % size)
+        if width >= 1024:
+            close_all()
+            view("machines")
+            drag_and_shoot("[data-runtime=local]", "[data-machine-drop=labpc]", "%s-machines-drag" % size)
+        close_all()
+        view("memory")
+        click("[data-project=greeter] [data-project-toggle]")
+        both_themes("%s-memory-project-open" % size)
+        click("[data-project=greeter] [data-project-delete]")
+        both_themes("%s-memory-project-delete" % size)
+        close_all()
+        view("memory")
+        click("[data-memory=\"agent://reviewer\"] button")
+        both_themes("%s-memory-agent" % size)
         # An editor: config.toml, then a memory.
         close_all()
         view("settings")

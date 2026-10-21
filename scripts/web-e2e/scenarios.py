@@ -625,9 +625,12 @@ def session_depth(browser):
     browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
     # Attach an image; one too large is offered downscaled.
-    # Under the checkout's target directory: a sandboxed Firefox may not see
-    # the system's temporary directory.
-    uploads = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "web-e2e")
+    # Under the checkout's target directory, or WEB_E2E_UPLOADS: a sandboxed
+    # Firefox (a snap) may not see the system's temporary directory, nor a
+    # checkout under it.
+    uploads = os.environ.get("WEB_E2E_UPLOADS") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "web-e2e"
+    )
     os.makedirs(uploads, exist_ok=True)
     small = png(os.path.join(uploads, "small.png"), 64, 48)
     browser.type("#attach-input", small)
@@ -1030,7 +1033,11 @@ def management(browser):
     browser.click("#memory-edit-again")
     set_text(browser, "#memory-text", "---\ndescription: Browser scenario notes\n---\nfirst\n")
     browser.click("#memory-save")
+    # Its project's folder starts folded.
+    browser.wait("its folder", lambda: count(browser, '#page [data-project="e2e"]') == 1)
+    browser.click('#page [data-project="e2e"] [data-project-toggle]')
     browser.wait("its row", lambda: count(browser, '#page [data-memory="project://e2e/notes"]') == 1)
+    first = browser.script("return document.querySelector('#page [data-memory=\"project://e2e/notes\"]')?.dataset.revision")
     browser.click('#page [data-memory="project://e2e/notes"] button')
     browser.wait("the editor", lambda: "first" in browser.script("const e = document.querySelector('#memory-text'); return e ? e.value : ''"))
     path = os.path.join(HOME, ".cookie-agent", "memory", "projects", "e2e", "notes.md")
@@ -1048,6 +1055,9 @@ def management(browser):
         with open(path) as file:
             return "second" in file.read()
     browser.wait("the overwritten file", overwritten)
+    # The trash deletes the revision listed: wait for the overwrite's.
+    browser.wait("the overwrite listed", lambda: browser.script(
+        "return document.querySelector('#page [data-memory=\"project://e2e/notes\"]')?.dataset.revision") not in (None, first))
     browser.click('#page [data-memory="project://e2e/notes"] [data-memory-delete]')
     browser.click("#memory-delete-confirm")
     browser.wait("the deleted memory", lambda: count(browser, '#page [data-memory="project://e2e/notes"]') == 0)
@@ -1063,6 +1073,158 @@ def management(browser):
     close_sheet(browser)
     browser.wait("the restart", lambda: "is restarting" in browser.text("#status"))
     print("restarted the reference plugin")
+
+
+def drag(browser, source, target, touch=False):
+    """Drags `source` onto `target`: a mouse at once, a finger after a long
+    press."""
+    pointer = "touch" if touch else "mouse"
+    steps = [
+        {"type": "pointerMove", "duration": 0, "origin": {ELEMENT: browser.find(source)}, "x": 0, "y": 0},
+        {"type": "pointerDown", "button": 0},
+    ]
+    if touch:
+        steps.append({"type": "pause", "duration": 800})
+    steps += [
+        {"type": "pointerMove", "duration": 150, "origin": "pointer", "x": 0, "y": 12},
+        {"type": "pointerMove", "duration": 300, "origin": {ELEMENT: browser.find(target)}, "x": 0, "y": 0},
+        {"type": "pointerUp", "button": 0},
+    ]
+    perform(browser, [{"type": "pointer", "id": pointer, "parameters": {"pointerType": pointer}, "actions": steps}])
+
+
+def under(browser, machine, runtime):
+    return count(browser, '#page [data-machine-drop="%s"] [data-runtime="%s"]' % (machine, runtime)) == 1
+
+
+def views_2026(browser):
+    """The Agents view's sidebar, the machines' drag and drop, Move to…,
+    and Add a runtime, and the Memory view's project folders and agent
+    files."""
+    # Agents: the documents beside the open one; New agent, then Delete.
+    view(browser, "agents")
+    browser.wait("the agents", lambda: count(browser, '#agents-sidebar [data-config-path="agents/primary.md"]') == 1)
+    assert shown(browser, "#agents-sidebar"), "a desktop does not pin the agents"
+    assert count(browser, "#agents-sidebar [data-config-path] svg") >= 2, "the agents have no icons"
+    browser.click('#agents-sidebar [data-config-path="agents/helper.md"] button')
+    browser.wait("the agent's editor", lambda: browser.text("#agent-name") == "helper")
+    assert count(browser, '#agents-sidebar [data-config-path="agents/helper.md"] [aria-current=true]') == 1
+    browser.shot("agents-open")
+    browser.click("#page [data-sidebar-toggle]")
+    browser.wait("the hidden agents", lambda: not shown(browser, "#agents-sidebar"))
+    browser.click("#page [data-sidebar-toggle]")
+    browser.wait("the agents again", lambda: shown(browser, "#agents-sidebar"))
+    browser.click("#agents-sidebar [data-new-agent]")
+    set_text(browser, "#agents-sidebar #config-new-path", "agents/e2e.md")
+    browser.click("#agents-sidebar #config-new")
+    browser.wait("the new agent's editor", lambda: browser.text("#agent-name") == "e2e")
+    set_text(browser, "#config-text", "---\ndescription: Browser scenario agent\nmode: subagent\nenabled: true\n"
+             "models:\n  - { model: \"custom.local/test\", variant: null }\npermissions: {}\n---\nHelp.\n")
+    browser.click("#config-apply")
+    browser.wait("the new agent's row", lambda: count(browser, '#agents-sidebar [data-config-path="agents/e2e.md"]') == 1)
+    assert os.path.exists(os.path.join(HOME, ".cookie-agent", "agents", "e2e.md"))
+    browser.click('#agents-sidebar [data-config-path="agents/e2e.md"] button')
+    browser.wait("its editor", lambda: browser.text("#agent-name") == "e2e")
+    browser.click("#page [data-config-delete]")
+    browser.click("#config-delete-confirm")
+    browser.wait("the deleted agent", lambda: count(browser, '#agents-sidebar [data-config-path="agents/e2e.md"]') == 0)
+    assert not os.path.exists(os.path.join(HOME, ".cookie-agent", "agents", "e2e.md"))
+    print("agents: the sidebar opens one beside the others; one was created and deleted")
+
+    # Machines: `box` has never connected, so it is on no machine. A mouse
+    # drags it onto one, Move to… takes it to a new one, a finger drags it
+    # back after a long press, and a long press let go offers Move to….
+    view(browser, "machines")
+    browser.wait("box on no machine", lambda: count(browser, '#page [data-unplaced] [data-runtime="box"]') == 1)
+    machine = browser.script("return document.querySelector('#page [data-machine-drop]').dataset.machineDrop")
+    browser.shot("machines-cards")
+    drag(browser, '#page [data-runtime="box"]', '#page [data-machine-drop="%s"]' % machine)
+    browser.wait("box dropped on %s" % machine, lambda: under(browser, machine, "box"))
+    print("machines: a mouse dragged a runtime onto a machine")
+    browser.click('#page [data-runtime="box"] [data-machine-action="move to machine"]')
+    browser.wait("Move to…", lambda: count(browser, '#page [data-move-picker="box"]') == 1)
+    browser.shot("machines-move")
+    browser.type("#machine-name", "e2e-lab")
+    browser.click("#machine-apply")
+    browser.wait("box on e2e-lab", lambda: under(browser, "e2e-lab", "box"))
+    print("machines: Move to… took a runtime to a new machine")
+    drag(browser, '#page [data-runtime="box"]', '#page [data-machine-drop="%s"]' % machine, touch=True)
+    browser.wait("box dragged back by a finger", lambda: under(browser, machine, "box"))
+    print("machines: a finger dragged a runtime after a long press")
+    long_press(browser, '#page [data-runtime="box"]')
+    browser.wait("Move to… after a long press", lambda: count(browser, '#page [data-move-picker="box"]') == 1)
+    click_row_button(browser, '#page [data-move-picker="box"] div', "Cancel", "button:last-child")
+    browser.wait("Move to… closed", lambda: count(browser, '#page [data-move-picker="box"]') == 0)
+    browser.click('#page [data-runtime="box"] [data-machine-action="unpin"]')
+    browser.wait("box unpinned", lambda: count(browser, '#page [data-unplaced] [data-runtime="box"]') == 1)
+    browser.click('#page [data-machine-drop="e2e-lab"] [data-machine-action="forget"]')
+    browser.wait("e2e-lab forgotten", lambda: count(browser, '#page [data-machine-drop="e2e-lab"]') == 0)
+
+    # Add a runtime: an ssh template into config.toml, the dial-in
+    # command, and the guides.
+    browser.click("#machines-add")
+    browser.wait("the add panel", lambda: count(browser, "#add-runtime") == 1)
+    browser.type("#ssh-id", "e2essh")
+    browser.type("#ssh-host", "me@localhost")
+    browser.wait("the template", lambda: "[runtimes.e2essh]" in browser.text("#ssh-preview"))
+    browser.shot("machines-add")
+    browser.click("#ssh-add")
+    browser.wait("the template written", lambda: "Added [runtimes.e2essh]" in browser.text("#ssh-outcome"))
+    with open(os.path.join(HOME, ".cookie-agent", "config.toml")) as file:
+        written = file.read()
+    assert "[runtimes.e2essh]" in written and '"me@localhost"' in written, written
+    browser.click("#ssh-add")
+    browser.wait("the second add refused", lambda: "already" in browser.text("#ssh-outcome"))
+    command = browser.script("return document.querySelector('#dial-in-command').value")
+    assert command.startswith("cookie runtime serve --daemon ws://<daemon host>:") and "<the daemon's token>" in command, command
+    guides = browser.script("return [...document.querySelectorAll('#add-runtime [data-guide]')].map((a) => a.href)")
+    assert len(guides) == 5 and all(g.startswith("https://cookie-agent.github.io/doc/latest/") for g in guides), guides
+    print("machines: Add a runtime wrote an ssh template and shows the dial-in command and the guides")
+
+    # Memory: a project's folder folds until opened, the browser keeps it
+    # open, and deleting the project keeps its other files.
+    folder = os.path.join(HOME, ".cookie-agent", "memory", "projects", "e2eproj")
+    os.makedirs(folder, exist_ok=True)
+    for name in ("build", "test"):
+        with open(os.path.join(folder, name + ".md"), "w") as file:
+            file.write("---\ndescription: How to %s\nkeywords: [e2e]\n---\n%s it.\n" % (name, name))
+    with open(os.path.join(folder, "notes.txt"), "w") as file:
+        file.write("not a memory\n")
+    view(browser, "memory")
+    browser.wait("the project folder", lambda: count(browser, '#page [data-project="e2eproj"]') == 1)
+    assert count(browser, '#page [data-memory^="project://e2eproj/"]') == 0, "a project starts open"
+    browser.click('#page [data-project="e2eproj"] [data-project-toggle]')
+    browser.wait("the open folder", lambda: count(browser, '#page [data-memory^="project://e2eproj/"]') == 2)
+    browser.go(LINK)
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    view(browser, "memory")
+    browser.wait("the folder after a reload", lambda: count(browser, '#page [data-memory^="project://e2eproj/"]') == 2)
+    browser.shot("memory-project-open")
+    browser.click('#page [data-project="e2eproj"] [data-project-delete]')
+    browser.wait("the confirmation", lambda: "1 file that is not a memory" in browser.text("#page [data-project-confirm]"))
+    browser.shot("memory-project-delete")
+    browser.click("#project-delete-confirm")
+    browser.wait("the deleted project", lambda: count(browser, '#page [data-memory^="project://e2eproj/"]') == 0)
+    assert sorted(os.listdir(folder)) == ["notes.txt"], os.listdir(folder)
+    print("memory: a project folder stays open across a reload; deleting it kept its other file")
+
+    # An agent's memory: the daemon's description and keywords are fixed.
+    browser.wait("the agent's memory", lambda: count(browser, '#page [data-memory="agent://helper"]') == 1)
+    browser.click('#page [data-memory="agent://helper"] button')
+    browser.wait("the agent memory editor", lambda: count(browser, "#memory-description") == 1)
+    fixed = browser.script("return [...document.querySelectorAll('[data-fixed-keyword]')].map((k) => k.innerText.trim())")
+    assert fixed == ["helper", "subagent"], fixed
+    assert "Browser scenario subagent" in browser.text("#memory-description"), browser.text("#memory-description")
+    browser.shot("memory-agent")
+    set_text(browser, "#memory-keywords", "e2e-keyword")
+    set_text(browser, "#memory-text", "Prefers short answers.\n")
+    browser.click("#memory-save")
+    browser.wait("the saved agent memory", lambda: count(browser, "#memory-description") == 0)
+    with open(os.path.join(HOME, ".cookie-agent", "memory", "agents", "helper.md")) as file:
+        saved = file.read()
+    assert "e2e-keyword" in saved and "Prefers short answers." in saved and "subagent" in saved, saved
+    print("memory: an agent's file keeps the daemon's description and keywords and takes the user's")
+    close_sheet(browser)
 
 
 def shown(browser, selector):
@@ -1512,6 +1674,11 @@ SCRIPTED = [
     ]),
     ("editor-agent", ["[data-rail=primary] [data-view=agents]", '[data-config-path^="agents/"] button']),
     ("editor-memory", ["[data-rail=primary] [data-view=memory]", "#page .memory-row button"]),
+    ("agents-open", ["[data-rail=primary] [data-view=agents]", '[data-config-path="agents/helper.md"] button']),
+    ("agents-drawer", ["[data-rail=primary] [data-view=agents]", "#page [data-sidebar-toggle]"]),
+    ("machines-add", ["[data-rail=primary] [data-view=machines]", "#machines-add"]),
+    ("machines-move", ["[data-rail=primary] [data-view=machines]", '#page [data-machine-action="move to machine"]']),
+    ("memory-agent", ["[data-rail=primary] [data-view=memory]", '[data-memory="agent://helper"] button']),
 ]
 
 
@@ -1961,6 +2128,7 @@ def main():
         message_menu(browser)
         session_depth(browser)
         management(browser)
+        views_2026(browser)
         suspended_tab(browser)
         foreign_session(browser)
 

@@ -86,6 +86,40 @@ permissions:
 ---
 Help with the code in this workspace.
 AGENT
+# More agents for the Agents view: a subagent, and a preset with one.
+mkdir -p "$home/.cookie-agent/agents/fast"
+cat >"$home/.cookie-agent/agents/reviewer.md" <<'AGENT'
+---
+description: Reviews a diff for bugs and missing tests
+mode: subagent
+enabled: true
+models:
+  - { model: "openai/gpt-5", variant: null }
+permissions:
+  read: allow
+---
+Review the change you are given.
+AGENT
+cat >"$home/.cookie-agent/agents/fast/primary.md" <<'AGENT'
+---
+description: Quick answers with a small model
+mode: primary
+enabled: true
+models:
+  - { model: "openai/gpt-5", variant: null }
+permissions:
+  read: allow
+---
+Answer briefly.
+AGENT
+# Project memories in two folders for the Memory view, and a file in one
+# that is not a memory.
+memory="$home/.cookie-agent/memory/projects"
+mkdir -p "$memory/greeter" "$memory/website"
+printf -- '---\ndescription: Run the checks with python3 test_greet.py\nkeywords: [python, test]\n---\nRun `python3 test_greet.py` from the repository root.\n' >"$memory/greeter/checks.md"
+printf -- '---\ndescription: Greetings end with an exclamation mark\nkeywords: [style]\n---\nGreet as "Hello, <name>!".\n' >"$memory/greeter/style.md"
+printf -- '---\ndescription: Deploys go through the staging site first\nkeywords: [deploy]\n---\nPush to staging, check, then promote.\n' >"$memory/website/deploy.md"
+printf 'scratch notes\n' >"$memory/greeter/notes.txt"
 cat >"$workspace/greet.py" <<'PY'
 def greet(name):
     """Greets `name` by name."""
@@ -101,6 +135,10 @@ port="$(free_port)"
 cat >"$home/.cookie-agent/config.toml" <<TOML
 [server]
 port = $port
+
+# A runtime on another machine over ssh, never started here.
+[runtimes.labpc]
+command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "serve", "--stdio"]
 
 [providers."openai"]
 source = "custom"
@@ -126,6 +164,8 @@ if ! grep -q '^daemon-ready ' "$home/daemon.out"; then
     exit 1
 fi
 link="$(HOME="$home" "$cookie" web)"
+# A second machine for the Machines view: labpc pinned to it.
+HOME="$home" "$cookie" machine assign labpc labpc >/dev/null
 
 driver_port="$(free_port)"
 # System access lets the driver zoom the page to a phone's width.
