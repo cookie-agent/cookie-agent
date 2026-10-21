@@ -345,25 +345,30 @@ impl TouchHold {
 }
 
 /// Marks the page as pressed, or not: while it is, nothing on the page can
-/// be selected (`html.pressing` in the style sheet), and what a long press
-/// already selected is cleared. A phone otherwise selects the words under
-/// and around a finger held on a row, and extends that selection as the
-/// finger drags.
+/// be selected (`html.pressing` in the style sheet). A phone otherwise
+/// selects the words under and around a finger held on a row, and extends
+/// that selection as the finger drags. Pressing also clears what is
+/// selected; letting go touches nothing else, since every pointer release
+/// on the page lets go, and clearing the selection then would take the
+/// focus from a field just clicked.
 pub fn set_pressing(pressing: bool) {
     let Some(window) = window() else {
         return;
     };
-    if let Some(root) = window
+    let Some(root) = window
         .document()
         .and_then(|document| document.document_element())
-    {
-        let classes = root.class_list();
-        let _ = if pressing {
-            classes.add_1("pressing")
-        } else {
-            classes.remove_1("pressing")
-        };
+    else {
+        return;
+    };
+    let classes = root.class_list();
+    if !pressing {
+        if classes.contains("pressing") {
+            let _ = classes.remove_1("pressing");
+        }
+        return;
     }
+    let _ = classes.add_1("pressing");
     if let Ok(Some(selection)) = window.get_selection() {
         let _ = selection.remove_all_ranges();
     }

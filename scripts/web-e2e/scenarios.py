@@ -1215,7 +1215,15 @@ def views_2026(browser):
     # command, and the guides.
     browser.click("#machines-add")
     browser.wait("the add panel", lambda: count(browser, "#add-runtime") == 1)
-    browser.type("#ssh-id", "e2essh")
+    # A click and then keys, as a person types: the field keeps the focus
+    # after the mouse button comes up. (A release once cleared the page's
+    # selection, which in Chromium also takes a focused field's caret;
+    # Firefox keeps it, so this only guards the focus here.)
+    browser.click("#ssh-id")
+    keys = [step for key in "e2essh" for step in ({"type": "keyDown", "value": key}, {"type": "keyUp", "value": key})]
+    perform(browser, [{"type": "key", "id": "keyboard", "actions": keys}])
+    assert browser.script("return document.activeElement.id") == "ssh-id", "the clicked field lost the focus"
+    assert browser.script("return document.querySelector('#ssh-id').value") == "e2essh", "keys after a click typed nothing"
     browser.type("#ssh-host", "me@localhost")
     browser.wait("the template", lambda: "[runtimes.e2essh]" in browser.text("#ssh-preview"))
     browser.shot("machines-add")
