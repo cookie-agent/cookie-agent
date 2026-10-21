@@ -1054,7 +1054,8 @@ def management(browser):
     close_sheet(browser)
 
     # Memory: an invalid one is refused, then created, edited over a change
-    # made meanwhile, and deleted.
+    # made meanwhile, and deleted, in the project `e2e` the daemon adopted
+    # from its memory folder at start.
     open_section(browser, "memory")
     browser.wait("the memories", lambda: count(browser, "#memory-new") == 1)
     set_text(browser, "#memory-new-url", "project://e2e/notes")

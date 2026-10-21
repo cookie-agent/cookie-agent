@@ -159,6 +159,9 @@ TOML
 # as another cookie process would.
 held_session="$(cd "$allowing/workspace" && HOME="$allowing" "$cookie" run --json "hello from another process" |
     python3 -I -c 'import json, sys; print([json.loads(l) for l in sys.stdin if l.strip()][-1]["session_id"])')"
+# A memory folder from before projects: the daemon makes it the project
+# `e2e` at start, which the memory scenario writes into.
+mkdir -p "$allowing/.cookie-agent/memory/projects/e2e"
 start_daemon "$allowing"
 allowing_link="$link"
 mkdir -p "$allowing/second" "$allowing/elsewhere"
