@@ -150,7 +150,16 @@ its own machine; the runtime reports the canonical path on its machine, and
 that path identifies the instance. Two requests that resolve to the same
 directory, such as `~/cookie-agent` and `/home/me/cookie-agent`, share one
 instance. A session records the reported path, and reopening the session
-asks for that path.
+asks for that path. A new session's directory is the reported path of its
+first workspace too, so both spellings list the session under one directory
+(see [Where sessions live](../concepts/sessions.md#where-sessions-live)).
+
+A runtime may report its home directory when it connects; `cookie runtime
+serve` and the built-in `global` and `local` report their user's, canonical.
+`runtimes.list` gives it as `home`. Clients show the runtime's paths under it
+as `~/…` and absolute without one, and permission rules starting with `~/`
+expand against it (see
+[Paths under the home directory](../extend/agents.md#paths-under-the-home-directory)).
 
 ## Lifecycle and failures
 
@@ -210,7 +219,8 @@ for every workspace the daemon opens. `--root` (repeatable) limits `coding`
 to workspaces under those directories; a root that does not exist fails at
 start. It needs no provider configuration and reads no `config.toml`; a
 leading `~` in a workspace or root is expanded, and paths are resolved on the
-machine it runs on. Standard output carries only protocol messages and
+machine it runs on. It reports its user's home directory, canonicalized, and
+expands a tool's `~/…` path argument against the same home. Standard output carries only protocol messages and
 diagnostics go to standard error. It exits on `runtime/shutdown`, when
 standard input closes, or on a stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`). A template normally runs it; running it by hand is
 only useful for debugging.

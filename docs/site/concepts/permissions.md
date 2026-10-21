@@ -56,6 +56,12 @@ allow}` lets git run freely on `labpc` and asks for everything else. Actions of
 the daemon's own tools, `delegate`, `message`, and `skill`, take no selector.
 See [Runtime selectors](../extend/agents.md#runtime-selectors).
 
+A path pattern starting with `~/` means the home directory of the runtime the
+tool runs on, so `read: {"~/notes/*": allow}` allows the notes under each
+runtime's own home. On a runtime that does not report its home the pattern
+matches nothing. See
+[Paths under the home directory](../extend/agents.md#paths-under-the-home-directory).
+
 ## Modes and approvals
 
 A rule that says `ask` is resolved by the session tree's *permission mode*,

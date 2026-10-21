@@ -40,6 +40,18 @@ runtime tool never takes the name of a built-in tool such as
 Permission rules can target one runtime's tools with `action@runtime`; see
 [Permissions](permissions.md#rules-for-one-runtime).
 
+## Workspaces and homes
+
+A workspace is stored as the runtime reports it: canonical and absolute on the
+runtime's machine. A runtime may also report its home directory. Clients then
+show its paths as `~/…` under that home, the runtime's and not their own, so a
+remote `/home/lab/api` reads `~/api` only on the runtime whose home is
+`/home/lab`; a runtime that reports none shows its paths absolute. Permission
+rules written `~/…` expand against the same home (see
+[Paths under the home directory](../extend/agents.md#paths-under-the-home-directory)).
+A session's directory is its first workspace (see
+[Where sessions live](sessions.md#where-sessions-live)).
+
 ## Instances
 
 Attaching a capability at a workspace opens an *instance* of it. One runtime

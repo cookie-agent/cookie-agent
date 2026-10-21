@@ -30,6 +30,21 @@ started in, and Ctrl+A in its session picker switches to every directory's;
 the web page lists every directory's. See
 [Lifecycle and persistence](../sessions/index.md#lifecycle-and-persistence).
 
+A session's directory is decided once, when it is created, after its
+runtimes have attached: it is the workspace of its first attachment that has
+one, as that runtime reported it, canonical and absolute on the runtime's
+machine. What a client typed never decides it, so `~/web` typed in the
+browser and `/home/ada/web` sent by the TUI are one directory, listed
+together. A session without a workspace keeps the client's directory as the
+daemon resolves it, or as typed when it cannot. Subagents share their
+parent's directory, and sessions created before this rule keep the directory
+they recorded.
+
+Paths are stored canonical and absolute and shown short: a path of a runtime
+that reports its home directory reads `~` and `~/…` under that home, the
+runtime's own and not the client's, and a path of a runtime that reports none
+stays absolute. See [Home](../reference/runtime-protocol.md#home).
+
 ## Ownership
 
 One process writes a tree at a time. The daemon that opens a tree takes its

@@ -1813,3 +1813,103 @@ documentation. There is no wire change.
   with its reason recorded (W2–W4). After the UI polish of 2026-10-21 the
   release build (Rust 1.88.0) measured 1.75 MB, and the budget was raised
   to 10 MB, a backstop against runaway growth rather than a target.
+
+## 18. Addendum (2026-10-21): canonical paths and runtime homes
+
+Status: **protocol, daemon, and TUI implemented** (2026-10-21): runtime
+protocol 1.3.0 and client protocol 1.7.0. The web client's display and its
+runtime cards build on it next, on their own branch; until then the page
+compiles against the new types and shows paths as before.
+
+The web client's directory filter listed one directory twice: the page sent
+the `~/x` the user typed as `cwd`, which the daemon stored verbatim because
+it canonicalized on its own machine and kept the text when that failed,
+while the TUI sent `/home/ada/x`. Runtimes already resolved and reported the
+canonical workspace, and nothing reported a home, so permission rules
+written `~/…` never matched either.
+
+### 18.1 Decisions (2026-10-21)
+
+1. **Paths are stored canonical and absolute, and shown as `~/…`**
+   everywhere a client shows them.
+2. **A session's directory identity (`cwd_identity`) is its first
+   workspace attachment's canonical workspace,** as the runtime reported it,
+   never the client's typed text.
+   - It is decided once, in `session.create`, after the attachments have
+     opened and before the creation event is written: the first attachment
+     in attach order whose capability reported a workspace. The daemon does
+     not branch on the attachment's kind; in practice it is the first
+     `coding` attachment.
+   - A session with no workspace attachment keeps the old rule: `cwd`
+     canonicalized on the daemon's machine, or the raw text when that fails
+     (the daemon's working directory without `cwd`).
+   - Existing sessions keep what they stored: there is no migration.
+   - Delegated children copy their parent's identity, as before.
+3. **Runtimes may report their home directory:** an optional `home` in the
+   result of `runtime/initialize`, a canonical absolute path on the
+   runtime's machine (runtime protocol 1.2.0 → 1.3.0).
+   - It is on the result, not on `RuntimeMachine`: one machine runs
+     runtimes of several users, and the machine ID is the operating
+     system's.
+   - A reader takes an absolute POSIX or Windows path of at most 4096 bytes
+     without control characters (`runtime_protocol::is_valid_home`) and
+     reads anything else as unreported.
+   - `cookie runtime serve` reports its user's home, canonicalized; the
+     built-in `global` and `local` report the daemon's. A runtime that
+     reports none is fine: clients show its paths absolute.
+4. **The client protocol exposes homes and attachments** (client protocol
+   1.6.0 → 1.7.0; decided as 1.5.0 → 1.6.0, but `memory.write`'s `notice`
+   took 1.6.0 first):
+   - `RuntimeListing.home` in `runtimes.list`. Only there, not on
+     `RuntimeAttachment`: the home belongs to the runtime, and attachments
+     are folded from the persisted `runtime_attached` events, so a home on
+     them would need a history change or go stale. A client maps an
+     attachment's `runtime_id` to its listing.
+   - `SessionMeta.attachments`: the session's `RuntimeAttachment`s now
+     (`name`, `runtime_id`, `capability`, `kind`, `workspace`), so session
+     lists show and filter by runtime and workspace without a `session.get`
+     each.
+   - The daemon keeps them current on attach and detach: the metadata
+     cache is written through and `sessions.changed` `upserted` goes out.
+     Metadata an older build wrote decodes with none until the session
+     records an event.
+   - Clients gate on minor 7: the TUI fetches homes only from a 1.7 daemon
+     (`client_state::paths::daemon_reports_runtime_homes`).
+5. **Permission rules:** a pattern `~` or `~/…` expands against the home
+   of the runtime the tool runs on, when that runtime reported one.
+   - Without a home (the base layer included) it stays literal and so
+     matches no absolute label; `~user/…` never expands.
+   - A Windows home is spelled with `/`, as path labels are.
+   - Expansion is pure and allocation-free when it does not apply. It is
+     used wherever a pattern is matched or ranked: agent and overlay rules,
+     specificity, skill grants, and the stricter-overlay check.
+   - `action@runtime` selectors apply as before.
+   - The coding runtime expands a path argument's `~` against the same
+     canonical home, so labels and rules agree.
+6. **A shared display helper:** `client_state::paths::display_path(path,
+   home)` gives `~` for the home itself, `~/rest` under it, and the absolute
+   path otherwise.
+   - A Windows path keeps its separators (`~\src`) and matches its home
+     ignoring case and either separator. There is never a `~` without a
+     home, or for a root home.
+   - `RuntimeHomes` collects the homes from `runtimes.list` and names a
+     session's directory under the home of the runtime whose attachment has
+     that workspace.
+   - The TUI uses them in the bottom bar's runtime label (replacing its
+     `shorten_home`, which used the client's home and mislabelled remote
+     runtimes), the session picker's directory labels (now `~/…` rather
+     than the basename), and the `/runtime` panel's workspaces.
+
+### 18.2 What the web client does next
+
+- Fetch `runtimes.list` on connect and on `runtimes.changed` and
+  `machines.changed` from a 1.7 daemon, and keep `RuntimeHomes`.
+- Show every path through `display_path` or `RuntimeHomes`: the sessions
+  list's directory names and filter labels (`session_directory`), the
+  session panel's runtimes, and the runtime cards' workspaces.
+- Filter and group sessions by `cwd_identity` as before; it now agrees
+  across clients for new sessions. Runtime cards read
+  `SessionMeta.attachments` to show which sessions use a runtime and
+  workspace.
+- Keep sending what the user typed as `cwd` and `workspace`; the daemon and
+  the runtime resolve it.
