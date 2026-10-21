@@ -35,6 +35,10 @@ pub enum IdentityError {
     Capability,
     #[error("invalid machine name")]
     Machine,
+    #[error("invalid project id")]
+    Project,
+    #[error("invalid project name")]
+    ProjectName,
 }
 
 macro_rules! string_identity {
@@ -308,6 +312,22 @@ string_identity!(
 );
 
 string_identity!(
+    ProjectId,
+    Project,
+    valid_project_id,
+    64,
+    "^[a-z0-9][a-z0-9-]{0,63}$"
+);
+
+string_identity!(
+    ProjectName,
+    ProjectName,
+    valid_project_name,
+    64,
+    "^[a-z0-9][a-z0-9-]{0,63}$"
+);
+
+string_identity!(
     CapabilityName,
     Capability,
     valid_capability_name,
@@ -505,6 +525,31 @@ fn valid_machine_name(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
         })
+}
+
+/// A project ID: the daemon generates it, and it names the project's folder,
+/// so it is a lowercase letter or digit, then up to 63 lowercase letters,
+/// digits, or `-`.
+fn valid_project_id(value: &str) -> bool {
+    valid_lower_kebab(value)
+}
+
+/// A project name follows the memory name rule
+/// (`docs/site/specs/memory.md` section 4.2): a lowercase letter or digit,
+/// then up to 63 lowercase letters, digits, or `-`.
+fn valid_project_name(value: &str) -> bool {
+    valid_lower_kebab(value)
+}
+
+fn valid_lower_kebab(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn valid_capability_name(value: &str) -> bool {
@@ -779,6 +824,41 @@ variant_reference_schema!(ConfiguredModelDefault);
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn project_ids_and_names_follow_the_memory_name_rule() {
+        let longest = format!("a{}", "-".repeat(63));
+        for valid in [
+            "web",
+            "0199a1b2-c3d4",
+            "cookie-agent",
+            "7",
+            longest.as_str(),
+        ] {
+            assert!(ProjectName::new(valid).is_ok(), "{valid}");
+            assert!(ProjectId::new(valid).is_ok(), "{valid}");
+        }
+        for invalid in [
+            "",
+            "-web",
+            "Web",
+            "web_api",
+            "web.api",
+            "web api",
+            &format!("{longest}x"),
+        ] {
+            assert_eq!(
+                ProjectName::new(invalid),
+                Err(IdentityError::ProjectName),
+                "{invalid}"
+            );
+            assert_eq!(
+                ProjectId::new(invalid),
+                Err(IdentityError::Project),
+                "{invalid}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

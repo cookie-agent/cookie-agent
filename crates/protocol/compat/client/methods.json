@@ -340,6 +340,54 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "project.create",
+      "params": "ProjectCreateParams",
+      "params_role": "command",
+      "result": "ProjectResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "project.delete",
+      "params": "ProjectDeleteParams",
+      "params_role": "command",
+      "result": "ProjectDeleteResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "project.get",
+      "params": "ProjectGetParams",
+      "params_role": "command",
+      "result": "ProjectGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "project.update",
+      "params": "ProjectUpdateParams",
+      "params_role": "command",
+      "result": "ProjectResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "projects.changed",
+      "params": "ProjectsChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "projects.list",
+      "params": "ProjectsListParams",
+      "params_role": "command",
+      "result": "ProjectsListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "provider.connect",
       "params": "ProviderConnectParams",
       "params_role": "command",
@@ -568,6 +616,14 @@
       "params": "SessionProducersParams",
       "params_role": "command",
       "result": "SessionProducersResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.project.set",
+      "params": "SessionProjectSetParams",
+      "params_role": "command",
+      "result": "SessionProjectSetResult"
     },
     {
       "direction": "to_daemon",

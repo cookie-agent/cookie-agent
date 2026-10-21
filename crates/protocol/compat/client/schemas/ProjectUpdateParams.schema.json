@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "ProjectDefaults": {
+      "description": "What a new session in the project starts with. `global` and `runtimes`\nhave the shape of `session.create`'s members of the same names, and a\n`session.create` that names the project and omits `runtimes` attaches\nthem. `agent` and `preset` name an agent and its preset as a\n[`crate::RunSelection`] does; an agent without a preset is one of the\nshared registry. The daemon never applies them: clients put them in a\nnew session's selection.",
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "global": {
+          "description": "Whether a new session attaches the global runtime; `true` when\nomitted.",
+          "type": "boolean"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimes": {
+          "description": "The runtimes a new session attaches besides `global`, in order.",
+          "items": {
+            "$ref": "#/$defs/ProjectRuntime"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ProjectRuntime": {
+      "description": "One runtime a project's new sessions attach, as `session.create`'s\n`runtimes` names it.",
+      "properties": {
+        "capability": {
+          "description": "The capability to attach; the runtime's only capability when\nomitted.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Required exactly when the capability takes a workspace.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Change a project at the revision last read. Only the members present\nchange.",
+  "properties": {
+    "agents_md": {
+      "description": "The `AGENTS.md` text, which replaces the file; an empty string\nremoves it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "defaults": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProjectDefaults"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "New defaults, or `null` to clear them."
+    },
+    "emoji": {
+      "description": "A new emoji, or `null` to clear it.",
+      "maxLength": 32,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "description": "A new name: its memory folder moves with it, and old\n`project://<old>/…` URLs no longer resolve.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "project": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "type": "string"
+    },
+    "revision": {
+      "description": "[`ProjectInfo::revision`] as last read; a project changed since is\nrefused with `project_changed`.",
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "project",
+    "revision"
+  ],
+  "title": "ProjectUpdateParams",
+  "type": "object"
+}

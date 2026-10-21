@@ -416,6 +416,12 @@ pub struct SessionCreateParams {
     /// given when that fails). The daemon's own directory when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// The project the session belongs to (client protocol 1.8.0); an
+    /// unknown ID is refused before anything is attached. When `runtimes`
+    /// is omitted, the session attaches the project's default `global` and
+    /// `runtimes` instead of the usual ones, if it has defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
 }
 
 const fn attach_global() -> bool {
@@ -439,6 +445,7 @@ impl SessionCreateParams {
             runtimes: None,
             global: true,
             cwd: None,
+            project: None,
         }
     }
 }
@@ -916,6 +923,10 @@ pub struct RuntimeFailure {
 pub struct SessionListParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd_identity: Option<CwdIdentity>,
+    /// Only the sessions of one project, or with `"none"` those in no
+    /// project (client protocol 1.8.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectFilter>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct SessionListResult {

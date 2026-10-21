@@ -32,6 +32,29 @@
       ],
       "type": "object"
     },
+    "AgentMdProject": {
+      "description": "The project an `agent_md_loaded` event's `AGENTS.md` belongs to.",
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "The project's name when the file was read.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
     "AgentMode": {
       "description": "A value this build does not know reads as `internal`: an internal agent,\nwhich is neither runnable as a root nor a delegation target.",
       "enum": [
@@ -2379,7 +2402,7 @@
       "type": "object"
     },
     "MemorySnapshotIndexEntry": {
-      "description": "One line of a machine's memory index.",
+      "description": "One line of a machine's or a project's memory index.",
       "properties": {
         "description": {
           "type": "string"
@@ -2391,7 +2414,7 @@
           "type": "array"
         },
         "url": {
-          "description": "The memory URL, `machine://<machine>/<name>`.",
+          "description": "The memory URL, `machine://<machine>/<name>` or\n`project://<project>/<name>`.",
           "type": "string"
         }
       },
@@ -2458,6 +2481,46 @@
       "required": [
         "description",
         "body"
+      ],
+      "type": "object"
+    },
+    "MemorySnapshotProject": {
+      "description": "The session's project and what the snapshot holds of its memories.",
+      "properties": {
+        "memories": {
+          "description": "The project's other memories that fit, newest file first.",
+          "items": {
+            "$ref": "#/$defs/MemorySnapshotIndexEntry"
+          },
+          "type": "array"
+        },
+        "omitted": {
+          "description": "How many more memories the project has.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "overview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemorySnapshotMemory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`project://<project>/overview`, whole; absent when it is empty,\nmissing, invalid, or larger than what the snapshot had room for, in\nwhich case `memories` lists it."
+        },
+        "project": {
+          "description": "The project's name when the snapshot was taken.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project"
       ],
       "type": "object"
     },
@@ -5431,7 +5494,7 @@
     {
       "properties": {
         "attachment": {
-          "description": "The coding-runtime attachment whose workspace the files came\nfrom.",
+          "description": "The coding-runtime attachment whose workspace the files came\nfrom; `global` for a project's `AGENTS.md`, which lives in the\ndaemon's data directory.",
           "maxLength": 40,
           "minLength": 1,
           "pattern": "^[a-z][a-z0-9_]{0,39}$",
@@ -5444,6 +5507,17 @@
           "maxItems": 2,
           "minItems": 1,
           "type": "array"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentMdProject"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The project whose `AGENTS.md` this is, when it is a project's\nrather than a workspace's (client protocol 1.8.0). It comes\nfirst in the `AGENTS.md` turn."
         },
         "type": {
           "const": "agent_md_loaded",
@@ -5481,6 +5555,17 @@
             "$ref": "#/$defs/MemorySnapshotMachine"
           },
           "type": "array"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemorySnapshotProject"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session's project: its overview whole and an index of its other\nmemories (client protocol 1.8.0). Only root runs of a session in a\nproject have it."
         },
         "type": {
           "const": "memory_loaded",
@@ -7163,6 +7248,28 @@
         "type",
         "change",
         "input_through_seq"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The root session moved into `project`, or out of any project when it\nis absent (client protocol 1.8.0). Only root sessions record it; a\ndelegated session belongs to its root's project.",
+      "properties": {
+        "project": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "session_project_set",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
       ],
       "type": "object"
     },

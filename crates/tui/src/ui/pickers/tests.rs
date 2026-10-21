@@ -62,6 +62,7 @@ where
 
 fn session_meta(session_id: SessionId) -> SessionMeta {
     SessionMeta {
+        project: None,
         session_id,
         origin: SessionOrigin::Root,
         short_id: None,

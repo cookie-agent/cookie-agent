@@ -169,6 +169,16 @@
         "origin": {
           "$ref": "#/$defs/SessionOrigin"
         },
+        "project": {
+          "description": "The project the session belongs to: for a root session the fold of\nits `session_project_set` events, for a delegated one its root's\n(client protocol 1.8.0). Absent outside a project, from an older\ndaemon, and when the project no longer exists.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "provider_state_revision": {
           "maxLength": 71,
           "minLength": 71,

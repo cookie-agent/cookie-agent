@@ -1306,12 +1306,17 @@ pub(super) fn reduce_event_from(
         EventPayload::AgentMdLoaded {
             entries,
             attachment,
+            project,
         } => {
-            // Every root run reloads AGENTS.md, one event per attachment; a
-            // row appears only when an attachment's context differs from its
-            // previous run's. A run that loaded none for an attachment
-            // breaks its chain, so re-enabling shows a row again.
-            let attachment = attachment.as_str().to_owned();
+            // Every root run reloads AGENTS.md, one event per attachment and
+            // one for the session's project; a row appears only when a
+            // source's context differs from its previous run's. A run that
+            // loaded none for a source breaks its chain, so re-enabling
+            // shows a row again.
+            let attachment = match project {
+                Some(project) => format!("project:{}", project.id),
+                None => attachment.as_str().to_owned(),
+            };
             let unchanged = state.agent_md_previous_run.get(&attachment) == Some(&entries);
             state
                 .agent_md_latest_run
@@ -1356,6 +1361,7 @@ pub(super) fn reduce_event_from(
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::SessionProjectSet { .. }
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}

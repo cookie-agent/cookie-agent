@@ -382,6 +382,42 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::MemoryDeleteResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_projects(
+        &self,
+        _: crate::ProjectsListParams,
+    ) -> Result<crate::ProjectsListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn get_project(
+        &self,
+        _: crate::ProjectGetParams,
+    ) -> Result<crate::ProjectGetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn create_project(
+        &self,
+        _: crate::ProjectCreateParams,
+    ) -> Result<crate::ProjectResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn update_project(
+        &self,
+        _: crate::ProjectUpdateParams,
+    ) -> Result<crate::ProjectResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn delete_project(
+        &self,
+        _: crate::ProjectDeleteParams,
+    ) -> Result<crate::ProjectDeleteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn set_session_project(
+        &self,
+        _: crate::SessionProjectSetParams,
+    ) -> Result<crate::SessionProjectSetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: crate::PluginsListParams,

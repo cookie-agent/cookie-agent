@@ -939,6 +939,7 @@ pub(crate) fn tool_terminated(
 
 pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
     SessionMeta {
+        project: None,
         short_id: None,
         session_id: id,
         origin: SessionOrigin::Root,

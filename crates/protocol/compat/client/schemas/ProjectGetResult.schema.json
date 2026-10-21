@@ -1,0 +1,177 @@
+{
+  "$defs": {
+    "ProjectAgentsMd": {
+      "description": "A project's `AGENTS.md`.",
+      "properties": {
+        "revision": {
+          "description": "The first 16 hex digits of the SHA-256 of the file's bytes.",
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "ProjectDefaults": {
+      "description": "What a new session in the project starts with. `global` and `runtimes`\nhave the shape of `session.create`'s members of the same names, and a\n`session.create` that names the project and omits `runtimes` attaches\nthem. `agent` and `preset` name an agent and its preset as a\n[`crate::RunSelection`] does; an agent without a preset is one of the\nshared registry. The daemon never applies them: clients put them in a\nnew session's selection.",
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "global": {
+          "description": "Whether a new session attaches the global runtime; `true` when\nomitted.",
+          "type": "boolean"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimes": {
+          "description": "The runtimes a new session attaches besides `global`, in order.",
+          "items": {
+            "$ref": "#/$defs/ProjectRuntime"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ProjectInfo": {
+      "description": "One project.",
+      "properties": {
+        "defaults": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "emoji": {
+          "description": "One emoji clients show before the name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "has_agents_md": {
+          "default": false,
+          "description": "Whether the project has an `AGENTS.md`.",
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": "string"
+        },
+        "memories": {
+          "description": "The memory files in the project's memory folder.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "The project's name: its memory folder's name and the `<name>` of its\n`project://<name>/…` memories.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": "string"
+        },
+        "revision": {
+          "description": "The first 16 hex digits of the SHA-256 of the project's\n`project.toml` and `AGENTS.md`; every change sends it back.",
+          "type": "string"
+        },
+        "sessions": {
+          "description": "The root sessions in the project.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "revision",
+        "sessions",
+        "memories"
+      ],
+      "type": "object"
+    },
+    "ProjectRuntime": {
+      "description": "One runtime a project's new sessions attach, as `session.create`'s\n`runtimes` names it.",
+      "properties": {
+        "capability": {
+          "description": "The capability to attach; the runtime's only capability when\nomitted.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Required exactly when the capability takes a workspace.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "agents_md": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProjectAgentsMd"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The project's `AGENTS.md`; absent when it has none."
+    },
+    "project": {
+      "$ref": "#/$defs/ProjectInfo"
+    }
+  },
+  "required": [
+    "project"
+  ],
+  "title": "ProjectGetResult",
+  "type": "object"
+}

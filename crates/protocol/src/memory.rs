@@ -5,7 +5,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AttachmentName, EventSchemaError, MachineName};
+use crate::{AgentId, AttachmentName, EventSchemaError, MachineName, ProjectName};
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(value: &bool) -> bool {
@@ -45,6 +45,29 @@ pub struct MemorySnapshot {
     /// attachments first name them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<MemorySnapshotMachine>,
+    /// The session's project: its overview whole and an index of its other
+    /// memories (client protocol 1.8.0). Only root runs of a session in a
+    /// project have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<MemorySnapshotProject>,
+}
+
+/// The session's project and what the snapshot holds of its memories.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemorySnapshotProject {
+    /// The project's name when the snapshot was taken.
+    pub project: ProjectName,
+    /// `project://<project>/overview`, whole; absent when it is empty,
+    /// missing, invalid, or larger than what the snapshot had room for, in
+    /// which case `memories` lists it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overview: Option<MemorySnapshotMemory>,
+    /// The project's other memories that fit, newest file first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memories: Vec<MemorySnapshotIndexEntry>,
+    /// How many more memories the project has.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted: u64,
 }
 
 /// One user category file, whole.
@@ -95,10 +118,11 @@ pub struct MemorySnapshotMachine {
     pub omitted: u64,
 }
 
-/// One line of a machine's memory index.
+/// One line of a machine's or a project's memory index.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct MemorySnapshotIndexEntry {
-    /// The memory URL, `machine://<machine>/<name>`.
+    /// The memory URL, `machine://<machine>/<name>` or
+    /// `project://<project>/<name>`.
     pub url: String,
     pub description: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -127,8 +151,10 @@ impl MemorySnapshot {
     /// delegated one holds only its agent, and the writer's size cap.
     pub fn validate(&self) -> Result<(), EventSchemaError> {
         let invalid = Err(EventSchemaError::InvalidMemorySnapshot);
-        let holds_more =
-            !self.user.is_empty() || !self.user_omitted.is_empty() || !self.machines.is_empty();
+        let holds_more = !self.user.is_empty()
+            || !self.user_omitted.is_empty()
+            || !self.machines.is_empty()
+            || self.project.is_some();
         match &self.agent {
             None if holds_more || self.delegated || self.writable => return invalid,
             None => {}
@@ -152,6 +178,16 @@ impl MemorySnapshot {
                     .memories
                     .iter()
                     .any(|memory| blank(&memory.url) || blank(&memory.description))
+            })
+            || self.project.as_ref().is_some_and(|project| {
+                project
+                    .overview
+                    .as_ref()
+                    .is_some_and(|overview| blank(&overview.description))
+                    || project
+                        .memories
+                        .iter()
+                        .any(|memory| blank(&memory.url) || blank(&memory.description))
             })
         {
             return invalid;

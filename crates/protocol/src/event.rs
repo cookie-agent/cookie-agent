@@ -306,6 +306,12 @@ pub struct SessionMeta {
     /// metadata an older build wrote and that has recorded nothing since.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::RuntimeAttachment>,
+    /// The project the session belongs to: for a root session the fold of
+    /// its `session_project_set` events, for a delegated one its root's
+    /// (client protocol 1.8.0). Absent outside a project, from an older
+    /// daemon, and when the project no longer exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -353,6 +359,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             skipped_events: Vec<SkippedEvent>,
             #[serde(default)]
             attachments: Vec<crate::RuntimeAttachment>,
+            #[serde(default)]
+            project: Option<ProjectId>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -376,6 +384,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             status: w.status,
             skipped_events: w.skipped_events,
             attachments: w.attachments,
+            project: w.project,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -1927,6 +1936,14 @@ pub struct AgentMdEntry {
     pub content: String,
     pub byte_length: u64,
 }
+/// The project an `agent_md_loaded` event's `AGENTS.md` belongs to.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentMdProject {
+    pub id: ProjectId,
+    /// The project's name when the file was read.
+    pub name: ProjectName,
+}
+
 impl AgentMdEntry {
     pub const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 
@@ -2418,8 +2435,14 @@ pub enum EventPayload {
         #[schemars(length(min = 1, max = 2))]
         entries: Vec<AgentMdEntry>,
         /// The coding-runtime attachment whose workspace the files came
-        /// from.
+        /// from; `global` for a project's `AGENTS.md`, which lives in the
+        /// daemon's data directory.
         attachment: AttachmentName,
+        /// The project whose `AGENTS.md` this is, when it is a project's
+        /// rather than a workspace's (client protocol 1.8.0). It comes
+        /// first in the `AGENTS.md` turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<AgentMdProject>,
     },
     /// The memory snapshot the session's model sees from this run on
     /// (`docs/site/specs/memory.md` section 7). An empty snapshot records
@@ -2809,6 +2832,13 @@ pub enum EventPayload {
         change: SessionTitleChange,
         input_through_seq: u64,
     },
+    /// The root session moved into `project`, or out of any project when it
+    /// is absent (client protocol 1.8.0). Only root sessions record it; a
+    /// delegated session belongs to its root's project.
+    SessionProjectSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
+    },
     /// In place of a record of type `omitted_type` that the writer
     /// deliberately did not carry over, at that record's sequence, run, and
     /// time: a fork writes it for each of its source's delegation records,
@@ -2868,6 +2898,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "session_created",
     "session_model_selected",
     "session_permission_overlay_set",
+    "session_project_set",
     "session_title_committed",
     "skill_invocation_noted",
     "skill_loaded",
@@ -3016,6 +3047,7 @@ impl EventPayload {
             | Self::SkillLoaded { .. }
             | Self::AgentMdLoaded { .. }
             | Self::MemoryLoaded { .. }
+            | Self::SessionProjectSet { .. }
             | Self::GoalActivated { .. }
             | Self::GoalChecklistRevised { .. }
             | Self::GoalLifecycleChanged { .. }
@@ -3108,6 +3140,7 @@ impl EventPayload {
                 | Self::ProducerMessageAccepted { .. }
                 | Self::ProducerMessageDiscarded { .. }
                 | Self::SessionTitleCommitted { .. }
+                | Self::SessionProjectSet { .. }
                 | Self::UserInputAdmitted { .. }
                 | Self::UserInputRecalled { .. }
                 | Self::UserInputQueued { .. }

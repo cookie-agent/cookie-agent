@@ -1125,15 +1125,42 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
                 content: "project rules".into(),
                 byte_length: 13,
             }],
+            project: None,
         },
     };
     let value = serde_json::to_value(&event).unwrap();
+    assert!(value["payload"].get("project").is_none());
     assert_eq!(serde_json::from_value::<StoredEvent>(value).unwrap(), event);
+
+    // A project's `AGENTS.md` names its project; an older reader ignores it.
+    let project = StoredEvent {
+        payload: EventPayload::AgentMdLoaded {
+            attachment: crate::AttachmentName::new("global").unwrap(),
+            entries: vec![AgentMdEntry {
+                source: SafeDisplayText::new("project:web/AGENTS.md").unwrap(),
+                content: "web rules".into(),
+                byte_length: 9,
+            }],
+            project: Some(AgentMdProject {
+                id: crate::ProjectId::new("0199a1b2-c3d4").unwrap(),
+                name: crate::ProjectName::new("web").unwrap(),
+            }),
+        },
+        ..event.clone()
+    };
+    assert_eq!(project.validate(), Ok(()));
+    let value = serde_json::to_value(&project).unwrap();
+    assert_eq!(value["payload"]["project"]["name"], "web");
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(value).unwrap(),
+        project
+    );
 
     let invalid = StoredEvent {
         payload: EventPayload::AgentMdLoaded {
             attachment: crate::AttachmentName::new("local").unwrap(),
             entries: Vec::new(),
+            project: None,
         },
         ..event
     };
@@ -1172,6 +1199,20 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
             }],
             omitted: 2,
         }],
+        project: Some(MemorySnapshotProject {
+            project: crate::ProjectName::new("web").unwrap(),
+            overview: Some(MemorySnapshotMemory {
+                description: "Overview of the `web` project".into(),
+                keywords: Vec::new(),
+                body: "A web shop.\n".into(),
+            }),
+            memories: vec![MemorySnapshotIndexEntry {
+                url: "project://web/release".into(),
+                description: "How releases are cut".into(),
+                keywords: vec!["release".into()],
+            }],
+            omitted: 1,
+        }),
     };
     let event = |snapshot: MemorySnapshot| StoredEvent {
         engine_version: None,
@@ -1188,6 +1229,8 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
     let value = serde_json::to_value(&stored).unwrap();
     assert_eq!(value["payload"]["type"], "memory_loaded");
     assert_eq!(value["payload"]["machines"][0]["omitted"], 2);
+    assert_eq!(value["payload"]["project"]["project"], "web");
+    assert_eq!(value["payload"]["project"]["omitted"], 1);
     assert_eq!(
         serde_json::from_value::<StoredEvent>(value).unwrap(),
         stored
@@ -1220,6 +1263,16 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
     invalid(MemorySnapshot {
         delegated: true,
         ..root.clone()
+    });
+    invalid(MemorySnapshot {
+        delegated: true,
+        agent: Some(agent.clone()),
+        project: root.project.clone(),
+        ..MemorySnapshot::default()
+    });
+    invalid(MemorySnapshot {
+        project: root.project.clone(),
+        ..MemorySnapshot::unavailable()
     });
     assert_eq!(
         event(MemorySnapshot {
@@ -1881,10 +1934,12 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
             kind: RuntimeKind::new("coding").expect("kind"),
             workspace: Some("/srv/api".into()),
         }],
+        project: Some(crate::ProjectId::new("0199a1b2-c3d4").expect("project ID")),
     };
 
     let encoded = serde_json::to_value(&meta).expect("serialize session metadata");
     assert_eq!(encoded["attachments"][0]["workspace"], "/srv/api");
+    assert_eq!(encoded["project"], "0199a1b2-c3d4");
     let decoded: SessionMeta =
         serde_json::from_value(encoded.clone()).expect("deserialize session metadata");
     assert_eq!(decoded, meta);
@@ -1892,8 +1947,11 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     // A daemon before client protocol 1.7.0 sends no attachments.
     let mut older = encoded;
     older.as_object_mut().unwrap().remove("attachments");
+    older.as_object_mut().unwrap().remove("project");
     let decoded: SessionMeta = serde_json::from_value(older).expect("older session metadata");
     assert!(decoded.attachments.is_empty());
+    // Nor, before 1.8.0, a project.
+    assert_eq!(decoded.project, None);
 }
 
 #[test]
@@ -3121,4 +3179,122 @@ fn approval_records_with_values_a_newer_build_added_read_without_coherence_check
         ))
         .is_err()
     );
+}
+
+#[test]
+fn session_project_set_round_trips_as_a_runless_state_event() {
+    let project = crate::ProjectId::new("0199a1b2-c3d4").unwrap();
+    let event = StoredEvent {
+        engine_version: None,
+        origin: Some(EventOrigin::new("user").unwrap()),
+        session_id: SessionId::new_v7(),
+        run_id: None,
+        seq: 3,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::SessionProjectSet {
+            project: Some(project),
+        },
+    };
+    assert!(!event.payload.is_audit());
+    assert_eq!(event.validate(), Ok(()));
+    let value = serde_json::to_value(&event).unwrap();
+    assert_eq!(
+        value["payload"],
+        json!({"type": "session_project_set", "project": "0199a1b2-c3d4"})
+    );
+    assert_eq!(serde_json::from_value::<StoredEvent>(value).unwrap(), event);
+    // Moving out of any project is the bare event.
+    let out = EventPayload::SessionProjectSet { project: None };
+    assert_eq!(
+        serde_json::to_value(&out).unwrap(),
+        json!({"type": "session_project_set"})
+    );
+}
+
+#[test]
+fn project_wire_types_round_trip_and_commands_stay_strict() {
+    let info = ProjectInfo {
+        id: crate::ProjectId::new("0199a1b2-c3d4").unwrap(),
+        name: crate::ProjectName::new("cookie-agent").unwrap(),
+        emoji: Some("🍪".into()),
+        revision: "0123456789abcdef".into(),
+        defaults: Some(ProjectDefaults {
+            preset: Some("rust".into()),
+            agent: Some(AgentId::new("builder").unwrap()),
+            global: true,
+            runtimes: vec![ProjectRuntime {
+                runtime_id: RuntimeId::new("labpc").unwrap(),
+                capability: None,
+                workspace: Some("/home/u/cookie-agent".into()),
+            }],
+        }),
+        has_agents_md: true,
+        sessions: 3,
+        memories: 5,
+    };
+    let value = serde_json::to_value(&info).unwrap();
+    // `global` is left out when it is the default.
+    assert!(value["defaults"].get("global").is_none(), "{value}");
+    assert_eq!(
+        serde_json::from_value::<ProjectInfo>(value.clone()).unwrap(),
+        info
+    );
+    // Information ignores members it does not know.
+    let mut newer = value;
+    newer["color"] = json!("teal");
+    newer["defaults"]["model"] = json!("x");
+    assert_eq!(serde_json::from_value::<ProjectInfo>(newer).unwrap(), info);
+
+    // An update tells an absent emoji from a cleared one.
+    let id = info.id.clone();
+    let absent: ProjectUpdateParams =
+        serde_json::from_value(json!({"project": id, "revision": "r"})).unwrap();
+    assert_eq!(absent, ProjectUpdateParams::new(id.clone(), "r".into()));
+    let cleared: ProjectUpdateParams = serde_json::from_value(
+        json!({"project": id, "revision": "r", "emoji": null, "defaults": null}),
+    )
+    .unwrap();
+    assert_eq!(cleared.emoji, Some(None));
+    assert_eq!(cleared.defaults, Some(None));
+    let set: ProjectUpdateParams =
+        serde_json::from_value(json!({"project": id, "revision": "r", "emoji": "🚀"})).unwrap();
+    assert_eq!(set.emoji, Some(Some("🚀".into())));
+    assert_eq!(
+        serde_json::to_value(&cleared).unwrap(),
+        json!({"project": id, "revision": "r", "emoji": null, "defaults": null})
+    );
+    // Commands refuse what they do not know, wherever it is.
+    let unknown = crate::strict::decode_command::<ProjectCreateParams>(
+        json!({"name": "web", "defaults": {"runtimes": [{"runtime_id": "local", "shell": "zsh"}]}}),
+    );
+    assert!(matches!(
+        unknown,
+        Err(crate::strict::CommandDecodeError::UnknownField { field }) if field == "defaults.runtimes[0].shell"
+    ));
+
+    // Moving a session names the project, or null; never nothing.
+    let session = SessionId::new_v7();
+    let moved: SessionProjectSetParams =
+        serde_json::from_value(json!({"session_id": session, "project": null})).unwrap();
+    assert_eq!(moved.project, None);
+    assert!(
+        serde_json::from_value::<SessionProjectSetParams>(json!({"session_id": session})).is_err()
+    );
+}
+
+#[test]
+fn a_project_filter_is_a_project_id_or_none() {
+    let none: ProjectFilter = serde_json::from_value(json!("none")).unwrap();
+    assert_eq!(none, ProjectFilter::None);
+    assert!(none.admits(None));
+    let id = crate::ProjectId::new("0199a1b2-c3d4").unwrap();
+    assert!(!none.admits(Some(&id)));
+    let one: ProjectFilter = serde_json::from_value(json!("0199a1b2-c3d4")).unwrap();
+    assert_eq!(one, ProjectFilter::Project(id.clone()));
+    assert!(one.admits(Some(&id)));
+    assert!(!one.admits(None));
+    assert_eq!(serde_json::to_value(&one).unwrap(), json!("0199a1b2-c3d4"));
+    assert!(serde_json::from_value::<ProjectFilter>(json!("Not An ID")).is_err());
+    let params: SessionListParams = serde_json::from_value(json!({"project": "none"})).unwrap();
+    assert_eq!(params.project, Some(ProjectFilter::None));
 }

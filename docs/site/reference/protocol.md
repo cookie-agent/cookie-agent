@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.7.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.8.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.7.0",
+    "protocol_version": "1.8.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.7.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.8.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -220,8 +220,8 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied |
-| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory) | Session metadata with skipped-event diagnostics and its `attachments`, and the session's `runtimes` |
-| `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
+| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
+| `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0) | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
 | `session.goal.set` | Session ID, objective, optional `selection: RunSelection` | Activated `goal: GoalState` |
@@ -233,6 +233,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.tree` | Session ID | Recursive session tree |
 | `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
+| `session.project.set` | Root session ID, required nullable `project` | The session's metadata; it moved into the project, or out of any with `null` (see [Projects](#projects)) |
 | `session.permission.get` | Session ID | Effective permissions per action and the tree's current mode |
 | `session.permission.set` | Session ID, action, optional `runtime` selector, wildcard pattern, effect | Effective permissions after the overlay change |
 | `session.permission.clear` | Session ID, action, optional `runtime` selector, wildcard pattern | Effective permissions after the overlay change |
@@ -251,6 +252,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `memory.read` | Memory `url` | The file's whole `text`, its `revision`, and why it is `invalid` when it is |
 | `memory.write` | Memory `url`, whole-file `text`, `revision` of the file it replaces | The new `revision`, and a `notice` when an `agent://` file kept the daemon's description or keywords; without `revision` the memory must not exist |
 | `memory.delete` | Memory `url`, `revision` | Empty object |
+| `projects.list` | Empty object | Every `projects` entry, in name order (see [Projects](#projects)) |
+| `project.get` | `project` ID | The `project` and its `agents_md` (`{ text, revision }`) when it has one |
+| `project.create` | `name`, optional `emoji`, optional `defaults` | The new `project` |
+| `project.update` | `project` ID, `revision`, optional `name`, `emoji` (`null` clears), `defaults` (`null` clears), `agents_md` (`""` removes) | The `project` afterwards |
+| `project.delete` | `project` ID, `revision` | `deleted_sessions` and `deleted_memories` |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -565,6 +571,65 @@ file that cannot be read or written is `memory_store_failed`. Each change
 sends `memory.changed` to every connection; changes another daemon sharing
 the data folder makes are not announced.
 
+A `project://` URL must name a project that exists: a write to another is
+`memory_refused`, naming the projects there are (since 1.8.0). Every project
+has `project://<name>/overview`, whose description the daemon owns, kept by a
+write and reported in its `notice` like an agent file's.
+
+### Projects
+
+Since 1.8.0 the daemon keeps projects: named bodies of work a session may
+belong to (see [Projects](../concepts/projects.md) and the
+[projects spec](../specs/projects.md)). `projects.list` returns each project
+as a `ProjectInfo`: its opaque `id`, which sessions refer to it by; its
+`name`, which follows the memory name rule and is the name of its memory
+folder; an optional `emoji`; its `revision`; its `defaults`; whether it
+`has_agents_md`; and the counts of its root `sessions` and its `memories`.
+
+`defaults` is `{ preset?, agent?, global, runtimes }`: `global` and
+`runtimes` (`[{ runtime_id, capability?, workspace? }]`) have the shape of
+`session.create`'s members of the same names; `agent` and `preset` name an
+agent and its preset as a `RunSelection` does. `project.create` and
+`project.update` check them like `session.create`'s `runtimes`, except that
+the runtimes need not be connected, and refuse an agent the daemon does not
+list in that preset, or one that cannot run as root (`project_invalid`). An
+`emoji` is exactly one emoji: one extended grapheme cluster of at most 32
+bytes that Unicode marks as an emoji, not ASCII, whitespace, or a control
+character.
+
+A project's **revision** is the first 16 hex digits of the SHA-256 of its
+`project.toml` and its `AGENTS.md`; `project.update` and `project.delete`
+send the revision last read, and a project changed since is
+`project_changed` with its current `revision`. `project.get` returns the
+`AGENTS.md` text with the revision of the file alone. A name another project
+has is `project_name_taken`; an unknown ID is `project_not_found`.
+
+- **Sessions.** `session.create` with `project` records it with the
+  creation (`session_project_set`); an unknown ID is `project_not_found`,
+  checked before anything is attached. When the creation omits `runtimes`
+  and the project's defaults name runtimes or leave out `global`, the
+  session attaches the defaults' `global` and `runtimes`; an explicit
+  `runtimes`, even an empty one, wins. The daemon never applies the default
+  `agent` and `preset`: the creation's selection is the client's to set.
+- **Membership.** `SessionMeta.project` is the project a session belongs to:
+  a root's own, a delegated session's root's. A session whose project no
+  longer exists has none. `session.project.set` moves a root session, also
+  while it runs, which takes effect at its next run; a delegated session is
+  `project_root_session_only`. Moving announces `sessions.changed`
+  `upserted`, and never changes the session's attachments or agent.
+- **Rename.** `project.update` with `name` moves the memory folder under the
+  memory lock before it rewrites the project; when the move fails nothing
+  changes. Old `project://<old>/…` URLs no longer resolve.
+- **Delete.** `project.delete` is `project_sessions_running`, naming the
+  root sessions in `session_ids`, while any session tree of the project is
+  busy. Otherwise it deletes every session tree of the project as
+  `session.delete` does (each announced as `removed`), then the project's
+  whole memory folder, non-memory files included, then the project, and
+  returns the counts.
+
+Each change sends `projects.changed` to every connection. A failure to read
+or write a project is `project_store_failed`.
+
 ### Plugins
 
 `plugins.list` returns every configured [plugin](../extend/plugins.md) in the
@@ -839,6 +904,7 @@ subscriptions to the deleted sessions end with them: no further
 | `plugins.changed` | A plugin's status changed; an empty object |
 | `machines.changed` | The machine registry changed, or a runtime joined a new machine; an empty object |
 | `memory.changed` | A memory file changed through the daemon; an empty object |
+| `projects.changed` | A project was created, changed, or deleted; an empty object |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
@@ -851,7 +917,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, and `memory.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, and `projects.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -860,7 +926,7 @@ notification methods they do not know.
 
 | `change` | Fields | Sent when |
 |---|---|---|
-| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, or attachments change |
+| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, or project change |
 | `removed` | `session_id` | A revert deleted a delegated session, or `session.delete` deleted a session of a tree; the connection's subscription to it has ended |
 | `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
 | `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |
@@ -877,8 +943,8 @@ than trusting either. A status `mcp.changed` is an empty object;
 bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `runtimes.changed` and `plugins.changed` work the same way for
 `runtimes.list` and `plugins.list`, `machines.changed` for
-`machines.list` and `runtimes.list`, and `memory.changed` for
-`memory.list`.
+`machines.list` and `runtimes.list`, `memory.changed` for
+`memory.list`, and `projects.changed` for `projects.list`.
 
 ### Connection failures
 

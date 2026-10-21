@@ -5,6 +5,35 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.8.0
+
+- Projects: `projects.list`, `project.get`, `project.create`,
+  `project.update`, and `project.delete` manage named bodies of work, each
+  with an ID, a name, an optional emoji, default attachments and agent, an
+  `AGENTS.md`, and a memory folder; `projects.changed` announces every
+  change (see [Projects](protocol.md#projects)). They come with the error
+  codes `project_not_found`, `project_name_taken`, `project_changed`,
+  `project_invalid`, `project_sessions_running`,
+  `project_root_session_only`, and `project_store_failed`.
+- Sessions in projects: `session.create` takes an optional `project`, whose
+  default runtimes the session attaches when the creation omits `runtimes`;
+  `session.project.set` moves a root session into a project or out of one;
+  `session.list` takes an optional `project` filter (an ID, or `"none"`);
+  `SessionMeta` gains `project`.
+- Events (plugin protocol 1.3.0 too): the state event `session_project_set`,
+  `memory_loaded`'s optional `project` (the overview and an index of the
+  project's memories), and `agent_md_loaded`'s optional `project`, which
+  names a project's `AGENTS.md`. History format 1 is unchanged; older logs
+  read as having no project.
+- A `project://` memory write, from `memory.write` as from a model, is
+  `memory_refused` unless the project exists; the first write no longer
+  creates the project. A project's `overview` memory keeps the daemon's
+  description, reported in `memory.write`'s `notice`.
+- A 1.7 client ignores the new members and notification, and sees sessions
+  without projects; a project's `AGENTS.md` and memory still reach its
+  sessions' prompts, which the daemon renders. A 1.8 client calling a project
+  method on a 1.7 daemon gets `method_not_found`.
+
 ## 1.7.0
 
 - Paths and runtimes: `SessionMeta` gains `attachments`, the session's

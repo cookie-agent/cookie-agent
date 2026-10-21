@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.7, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.8, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
@@ -202,6 +202,7 @@ pub mod paths;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 mod producer;
+mod project;
 mod provider;
 mod rpc;
 mod runtime;
@@ -226,10 +227,10 @@ pub use cookie_agent_identity::{
     AdapterId, AgentId, AgentRevision, AttachmentName, AuthFieldName, AuthMethodId,
     AuthParameterId, AuthRecipeId, CacheEntryId, CacheRevision, CanonicalModelId, CapabilityName,
     CatalogRevision, ConfigRevision, IdentityError, MachineName, ManifestEntryId, ManifestRevision,
-    ModelKey, ModelRevision, ModelSelection, ModelSnapshotRevision, ProtocolRecipeId, ProviderId,
-    ProviderModelId, ProviderRecipeId, ProviderSetupRecipeId, ProviderStateRevision,
-    ProviderStoreRevision, RecipeCompilerVersion, RecipeRegistryRevision, RuntimeId,
-    RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
+    ModelKey, ModelRevision, ModelSelection, ModelSnapshotRevision, ProjectId, ProjectName,
+    ProtocolRecipeId, ProviderId, ProviderModelId, ProviderRecipeId, ProviderSetupRecipeId,
+    ProviderStateRevision, ProviderStoreRevision, RecipeCompilerVersion, RecipeRegistryRevision,
+    RuntimeId, RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
 };
 pub use display::*;
 pub use event::*;
@@ -242,6 +243,7 @@ pub use memory::*;
 pub use model::*;
 pub use open::*;
 pub use producer::*;
+pub use project::*;
 pub use provider::*;
 pub use rpc::*;
 pub use runtime::*;

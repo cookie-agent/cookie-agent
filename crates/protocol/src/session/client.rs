@@ -120,6 +120,9 @@ pub enum ClientDelivery {
     MachinesChanged(crate::MachinesChangedNotification),
     /// A memory file changed through the daemon; refetch `memory.list`.
     MemoryChanged(crate::MemoryChangedNotification),
+    /// A project was created, changed, or deleted; refetch
+    /// `projects.list`.
+    ProjectsChanged(crate::ProjectsChangedNotification),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -1025,6 +1028,73 @@ impl Client {
             &crate::MemoryDeleteParams {
                 url: url.into(),
                 revision: revision.into(),
+            },
+        )
+        .await
+    }
+
+    /// Every project, in name order.
+    pub async fn list_projects(&self) -> Result<crate::ProjectsListResult, ClientError> {
+        self.call(crate::PROJECTS_LIST_METHOD, &crate::ProjectsListParams {})
+            .await
+    }
+
+    /// One project with its `AGENTS.md`.
+    pub async fn get_project(
+        &self,
+        project: crate::ProjectId,
+    ) -> Result<crate::ProjectGetResult, ClientError> {
+        self.call(
+            crate::PROJECT_GET_METHOD,
+            &crate::ProjectGetParams { project },
+        )
+        .await
+    }
+
+    /// Creates a project.
+    pub async fn create_project(
+        &self,
+        params: crate::ProjectCreateParams,
+    ) -> Result<crate::ProjectResult, ClientError> {
+        self.call(crate::PROJECT_CREATE_METHOD, &params).await
+    }
+
+    /// Changes a project at the revision last read.
+    pub async fn update_project(
+        &self,
+        params: crate::ProjectUpdateParams,
+    ) -> Result<crate::ProjectResult, ClientError> {
+        self.call(crate::PROJECT_UPDATE_METHOD, &params).await
+    }
+
+    /// Deletes a project at `revision`, with its sessions and memories.
+    pub async fn delete_project(
+        &self,
+        project: crate::ProjectId,
+        revision: impl Into<String>,
+    ) -> Result<crate::ProjectDeleteResult, ClientError> {
+        self.call(
+            crate::PROJECT_DELETE_METHOD,
+            &crate::ProjectDeleteParams {
+                project,
+                revision: revision.into(),
+            },
+        )
+        .await
+    }
+
+    /// Moves the root session `session_id` into `project`, or out of any
+    /// project with `None`.
+    pub async fn set_session_project(
+        &self,
+        session_id: SessionId,
+        project: Option<crate::ProjectId>,
+    ) -> Result<crate::SessionProjectSetResult, ClientError> {
+        self.call(
+            crate::SESSION_PROJECT_SET_METHOD,
+            &crate::SessionProjectSetParams {
+                session_id,
+                project,
             },
         )
         .await
@@ -1940,6 +2010,10 @@ async fn route_notification(
         crate::MEMORY_CHANGED_METHOD => {
             let changed: crate::MemoryChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::MemoryChanged(changed));
+        }
+        crate::PROJECTS_CHANGED_METHOD => {
+            let changed: crate::ProjectsChangedNotification = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::ProjectsChanged(changed));
         }
         _ => {}
     }

@@ -621,6 +621,74 @@ error_codes! {
         hint: Some("See the details, then check that the cookie data directory is readable and writable."),
         description: "Reading or writing a file in the memory folder failed.",
     }
+    PROJECT_NOT_FOUND {
+        code: "project_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("project", "The project ID.")],
+        message: "There is no project {project}.",
+        hint: Some("See `projects.list` for the projects."),
+        description: "A `project.*`, `session.create`, or `session.project.set` request named a project the daemon does not have.",
+    }
+    PROJECT_NAME_TAKEN {
+        code: "project_name_taken",
+        rpc: APPLICATION_ERROR,
+        fields: [required("name", "The project name.")],
+        message: "The project name {name} is taken.",
+        hint: Some("Choose another name."),
+        description: "`project.create` or a rename by `project.update` to the name of another project.",
+    }
+    PROJECT_CHANGED {
+        code: "project_changed",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("project", "The project ID."),
+            required("revision", "The project's current revision."),
+        ],
+        message: "The project changed since it was read.",
+        hint: Some("Read the project again, then repeat the change."),
+        description: "`project.update` or `project.delete` with a revision that is no longer the project's; nothing changed.",
+    }
+    PROJECT_INVALID {
+        code: "project_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("field", "The member that was refused."),
+            required("reason", "Why, in the daemon's words."),
+        ],
+        message: "The project's {field} was refused: {reason}.",
+        hint: None,
+        description: "A `project.create` or `project.update` value the daemon does not accept: an emoji that is not exactly one emoji, defaults that repeat a runtime, an agent the preset does not list or that cannot run as root, or an `AGENTS.md` over the size limit.",
+    }
+    PROJECT_SESSIONS_RUNNING {
+        code: "project_sessions_running",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("project", "The project ID."),
+            required("session_ids", "The project's root sessions with a running tree."),
+        ],
+        message: "Sessions of this project are running, so it cannot be deleted.",
+        hint: Some("Wait for them to finish, or cancel them, then delete the project."),
+        description: "`project.delete` while a session tree of the project has an active run, a compaction, or a subagent waiting for a slot.",
+    }
+    PROJECT_ROOT_SESSION_ONLY {
+        code: "project_root_session_only",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("session_id", "The session."),
+            required("root_session_id", "The root of its tree."),
+        ],
+        message: "This session is a subagent and belongs to its root session's project.",
+        hint: Some("Move its root session instead."),
+        description: "`session.project.set` named a delegated session instead of a root.",
+    }
+    PROJECT_STORE_FAILED {
+        code: "project_store_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The project could not be read or changed.",
+        hint: Some("See the details, then check that the cookie data directory is readable and writable."),
+        description: "Reading or writing a project's folder, taking the memory lock, or moving the project's memory folder failed; nothing changed.",
+    }
     CONFIG_APPLY_REFUSED {
         code: "config_apply_refused",
         rpc: APPLICATION_ERROR,

@@ -547,6 +547,36 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::MemoryDeleteParams,
     ) -> Result<crate::MemoryDeleteResult, ServerFault>;
+    /// Lists the projects.
+    async fn list_projects(
+        &self,
+        params: crate::ProjectsListParams,
+    ) -> Result<crate::ProjectsListResult, ServerFault>;
+    /// Reads one project with its `AGENTS.md`.
+    async fn get_project(
+        &self,
+        params: crate::ProjectGetParams,
+    ) -> Result<crate::ProjectGetResult, ServerFault>;
+    /// Creates a project.
+    async fn create_project(
+        &self,
+        params: crate::ProjectCreateParams,
+    ) -> Result<crate::ProjectResult, ServerFault>;
+    /// Changes a project at the revision last read.
+    async fn update_project(
+        &self,
+        params: crate::ProjectUpdateParams,
+    ) -> Result<crate::ProjectResult, ServerFault>;
+    /// Deletes a project with its sessions and memories.
+    async fn delete_project(
+        &self,
+        params: crate::ProjectDeleteParams,
+    ) -> Result<crate::ProjectDeleteResult, ServerFault>;
+    /// Moves a root session into a project or out of one.
+    async fn set_session_project(
+        &self,
+        params: crate::SessionProjectSetParams,
+    ) -> Result<crate::SessionProjectSetResult, ServerFault>;
     /// Lists the configured plugins.
     async fn list_plugins(
         &self,
@@ -1052,6 +1082,14 @@ async fn dispatch<S: ServerProtocol>(
         crate::MEMORY_READ_METHOD => value(server.read_memory(decode(params)?).await?),
         crate::MEMORY_WRITE_METHOD => value(server.write_memory(decode(params)?).await?),
         crate::MEMORY_DELETE_METHOD => value(server.delete_memory(decode(params)?).await?),
+        crate::PROJECTS_LIST_METHOD => value(server.list_projects(decode_default(params)?).await?),
+        crate::PROJECT_GET_METHOD => value(server.get_project(decode(params)?).await?),
+        crate::PROJECT_CREATE_METHOD => value(server.create_project(decode(params)?).await?),
+        crate::PROJECT_UPDATE_METHOD => value(server.update_project(decode(params)?).await?),
+        crate::PROJECT_DELETE_METHOD => value(server.delete_project(decode(params)?).await?),
+        crate::SESSION_PROJECT_SET_METHOD => {
+            value(server.set_session_project(decode(params)?).await?)
+        }
         crate::PLUGINS_LIST_METHOD => value(server.list_plugins(decode_default(params)?).await?),
         crate::PLUGINS_RESTART_METHOD => value(server.restart_plugin(decode(params)?).await?),
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),

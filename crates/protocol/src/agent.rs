@@ -474,7 +474,7 @@ pub struct AgentDescriptor {
 }
 
 struct AgentDescriptionSchema;
-struct AgentPresetNameSchema;
+pub(crate) struct AgentPresetNameSchema;
 struct AgentPromptSchema;
 impl JsonSchema for AgentDescriptionSchema {
     fn inline_schema() -> bool {
@@ -564,7 +564,9 @@ fn valid_preset_name(name: &str) -> bool {
         })
 }
 
-fn deserialize_optional_preset<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(crate) fn deserialize_optional_preset<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

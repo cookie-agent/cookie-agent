@@ -385,10 +385,7 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
-        match client
-            .list_sessions(SessionListParams { cwd_identity: None })
-            .await
-        {
+        match client.list_sessions(SessionListParams::default()).await {
             Ok(result) => self.sessions.set(result.sessions),
             Err(error) => self.status.set(crate::errors::describe(&error)),
         }

@@ -136,7 +136,10 @@ impl App {
         };
         match self
             .client
-            .list_sessions(SessionListParams { cwd_identity })
+            .list_sessions(SessionListParams {
+                cwd_identity,
+                ..SessionListParams::default()
+            })
             .await
         {
             Ok(result) => {

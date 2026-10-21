@@ -136,7 +136,7 @@ async fn a_page_authenticates_with_the_token_in_its_handshake() {
     assert_eq!(hello.origin, identity.origin());
     assert_eq!(client.origin(), Some(identity.origin()));
     let listed = client
-        .list_sessions(cookie_agent_protocol::SessionListParams { cwd_identity: None })
+        .list_sessions(cookie_agent_protocol::SessionListParams::default())
         .await;
     assert!(listed.is_ok(), "{listed:?}");
     client.shutdown();

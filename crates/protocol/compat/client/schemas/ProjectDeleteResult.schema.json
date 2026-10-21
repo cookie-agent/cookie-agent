@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What a delete removed.",
+  "properties": {
+    "deleted_memories": {
+      "description": "The memory files deleted with the memory folder.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "deleted_sessions": {
+      "description": "The root sessions deleted, each with its whole tree.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "deleted_sessions",
+    "deleted_memories"
+  ],
+  "title": "ProjectDeleteResult",
+  "type": "object"
+}
