@@ -8,7 +8,7 @@ cargo doc --locked --workspace --no-deps
 
 rm -rf docs/site/api site
 mkdir -p docs/site/api
-cp -R target/doc/. docs/site/api/
+cp -R "${CARGO_TARGET_DIR:-target}/doc/." docs/site/api/
 cp scripts/rustdoc-index.html docs/site/api/index.html
 
 # The client, plugin, and runtime protocols' schemas, published as committed.
