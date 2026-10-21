@@ -1122,6 +1122,9 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             .with(|expanded| expanded.get(&session_id).cloned().unwrap_or_default());
         let names = workspace.with_runtime(|runtime| runtime.model_names().clone());
         let homes = workspace.homes();
+        let draft_agent = workspace
+            .draft
+            .with(|draft| draft.as_ref().map(|draft| draft.agent.clone()));
         let delegates = workspace.tree.with(|tree| {
             tree.as_ref()
                 .map(|tree| delegates_of(tree, session_id))
@@ -1170,13 +1173,16 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 delegates: &delegates,
                 homes: &homes,
             };
+            // The system prompt and the tools, pinned at the top.
+            let pinned =
+                crate::render::transcript::pinned_rows(state, &expanded, draft_agent.as_ref())
+                    .map(|(key, html)| (key, Arc::from(html)))
+                    .into_iter();
             cache
                 .try_update_value(|cache| {
                     let mut kept = HashMap::new();
-                    let rows = state
-                        .transcript
-                        .iter()
-                        .filter_map(|item| {
+                    let rows = pinned
+                        .chain(state.transcript.iter().filter_map(|item| {
                             let key = item_key(&view, item);
                             let html = match cache.get(&key) {
                                 Some(html) => Arc::clone(html),
@@ -1184,7 +1190,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                             };
                             kept.insert(key, Arc::clone(&html));
                             Some((key, html))
-                        })
+                        }))
                         .collect::<Vec<_>>();
                     *cache = kept;
                     rows

@@ -11,8 +11,9 @@ use cookie_agent_client_state::{
     AssistantChild, CompactingSource, EventLevel, ModelDisplayNames, ProducerMessageStatus,
     SessionState, ToolCallState, ToolStatus, TranscriptItem,
     rows::{
-        display_line_count, goal_status_label, producer_mode_label, producer_owner_label,
-        producer_summary,
+        MAX_SYSTEM_PROMPT_BODY_BYTES, MAX_SYSTEM_PROMPT_BODY_LINES, bounded_text, bounded_tools,
+        display_line_count, goal_status_label, model_tools_summary, producer_mode_label,
+        producer_owner_label, producer_summary, system_prompt_source, system_prompt_summary,
     },
 };
 use cookie_agent_protocol::{ContextCheckpoint, ExtensionMessageRole, PersistedFileSource};
@@ -402,6 +403,110 @@ fn block_key(item: &TranscriptItem) -> Option<String> {
         TranscriptItem::ProducerMessage { message_id, .. } => format!("producer:{message_id}"),
         _ => return None,
     })
+}
+
+/// The block keys of the rows pinned at the transcript's top.
+pub const SYSTEM_PROMPT_KEY: &str = "system-prompt";
+pub const MODEL_TOOLS_KEY: &str = "model-tools";
+
+/// The rows pinned at the top of the transcript, as the TUI pins them:
+/// the system prompt the latest run used (else the one the session was
+/// created with), and the tools the latest model request offered. Both
+/// start folded, side by side on one compact line; an opened one takes a
+/// line of its own with its body under it. They are one item, keyed by
+/// its HTML, which changes with what it shows.
+pub fn pinned_rows(
+    state: &SessionState,
+    expanded: &HashSet<String>,
+    draft_agent: Option<&cookie_agent_protocol::AgentId>,
+) -> Option<(u64, String)> {
+    let (snapshot, from_run) = system_prompt_source(state)?;
+    let mut rows = vec![pinned_row(
+        SYSTEM_PROMPT_KEY,
+        icondata::FaScrollSolid,
+        &system_prompt_summary(snapshot, from_run, draft_agent),
+        expanded,
+        || {
+            let body = bounded_text(
+                &snapshot.composed_prompt,
+                MAX_SYSTEM_PROMPT_BODY_LINES,
+                MAX_SYSTEM_PROMPT_BODY_BYTES,
+            );
+            let mut html = format!(
+                "<pre class=\"max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-parchment p-2 font-mono text-xs dark:bg-char\" data-system-prompt>{}</pre>",
+                escape(&body.lines.join("\n"))
+            );
+            if body.omitted_lines > 0 {
+                html.push_str(&format!(
+                    "<p class=\"{NOTE}\">… truncated ({} more lines)</p>",
+                    body.omitted_lines
+                ));
+            }
+            html
+        },
+    )];
+    if let Some(tools) = state.model_tools.as_deref() {
+        rows.push(pinned_row(
+            MODEL_TOOLS_KEY,
+            icondata::FaToolboxSolid,
+            &model_tools_summary(tools),
+            expanded,
+            || {
+                let (shown, omitted) = bounded_tools(tools);
+                let mut html =
+                    String::from("<ul class=\"flex flex-wrap gap-1\" data-model-tools>");
+                for tool in shown {
+                    html.push_str(&format!(
+                        "<li class=\"rounded border border-toasted px-1.5 font-mono text-xs leading-5 dark:border-ember\">{}</li>",
+                        escape(tool)
+                    ));
+                }
+                html.push_str("</ul>");
+                if omitted > 0 {
+                    html.push_str(&format!("<p class=\"{NOTE}\">… and {omitted} more</p>"));
+                }
+                html
+            },
+        ));
+    }
+    let html = format!(
+        "<div class=\"flex flex-wrap items-start gap-x-3 gap-y-1\" data-pinned-rows>{}</div>",
+        rows.concat()
+    );
+    Some((foldhash::fast::FixedState::default().hash_one(&html), html))
+}
+
+/// A pinned row: its folded title, a compact line that a finger still
+/// reaches at 44 px (`hit-area`), and once opened, `body`'s HTML.
+fn pinned_row(
+    key: &str,
+    icon: Icon,
+    header: &str,
+    expanded: &HashSet<String>,
+    body: impl FnOnce() -> String,
+) -> String {
+    let open = expanded.contains(key);
+    let chevron = if open {
+        icondata::FaChevronDownSolid
+    } else {
+        icondata::FaChevronRightSolid
+    };
+    let width = if open { "w-full" } else { "min-w-0 max-w-full" };
+    let mut html = format!(
+        "<div class=\"collapsible-row {width}\" data-pinned=\"{key}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{key}\" aria-expanded=\"{open}\" class=\"hit-area flex h-7 max-w-full items-center gap-1.5 rounded-md px-2 text-left {NOTE} hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}{}<span class=\"min-w-0 truncate\">{}</span></button>",
+        svg(chevron, "text-[0.625rem] opacity-70"),
+        svg(icon, ""),
+        escape(header)
+    );
+    if open {
+        html.push_str(
+            "<div class=\"mt-1 flex flex-col gap-1 border-l border-toasted pl-3 dark:border-ember\">",
+        );
+        html.push_str(&body());
+        html.push_str("</div>");
+    }
+    html.push_str("</div>");
+    html
 }
 
 /// A row that shows `header` and, once clicked open, `detail` and `body`.
@@ -959,5 +1064,52 @@ mod tests {
             item_html(&view(&collapsed), &row(ProducerMessageStatus::Discarded)),
             None
         );
+    }
+
+    #[test]
+    fn the_system_prompt_and_tools_rows_fold_and_open() {
+        use super::{MODEL_TOOLS_KEY, SYSTEM_PROMPT_KEY, pinned_rows};
+        let mut state = SessionState::default();
+        let mut expanded = HashSet::new();
+        // Nothing to pin before the session's agent is known.
+        assert!(pinned_rows(&state, &expanded, None).is_none());
+        let primary = cookie_agent_protocol::AgentId::new("primary").unwrap();
+        state.run_snapshot = Some(Box::new(cookie_agent_protocol::AgentSnapshot {
+            agent: primary.clone(),
+            mode: cookie_agent_protocol::AgentMode::Primary,
+            description: "Test primary agent".into(),
+            document_source: cookie_agent_protocol::AgentDocumentSource::User,
+            document_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"document"),
+            composed_prompt: "You help.\n  Indented <b>line</b>".into(),
+            prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+            max_output_tokens: 0,
+            permissions: Vec::new(),
+            delegation: None,
+            fallback_chain: Vec::new(),
+            selected_suffix_start: 0,
+        }));
+        state.model_tools = Some(std::sync::Arc::from(vec![
+            "read".to_owned(),
+            "bash".to_owned(),
+        ]));
+        let fast = cookie_agent_protocol::AgentId::new("fast").unwrap();
+        let (folded_key, folded) = pinned_rows(&state, &expanded, Some(&fast)).unwrap();
+        assert!(folded.contains("system prompt · primary (last run) · next: fast (2 lines)"));
+        assert!(folded.contains("tools · 2 available (last request)"));
+        assert!(!folded.contains("data-system-prompt") && !folded.contains("data-model-tools"));
+        // Folded, both share one line.
+        assert_eq!(folded.matches("min-w-0 max-w-full").count(), 2);
+        let (_, same) = pinned_rows(&state, &expanded, Some(&primary)).unwrap();
+        assert!(!same.contains("next:"));
+        expanded.insert(SYSTEM_PROMPT_KEY.to_owned());
+        expanded.insert(MODEL_TOOLS_KEY.to_owned());
+        let (open_key, open) = pinned_rows(&state, &expanded, None).unwrap();
+        // The prompt keeps its whitespace, escaped; the tools are chips.
+        assert!(
+            open.contains("You help.\n  Indented &lt;b&gt;line&lt;/b&gt;</pre>"),
+            "{open}"
+        );
+        assert_eq!(open.matches("<li ").count(), 2);
+        assert_ne!(open_key, folded_key, "opening changes its key");
     }
 }

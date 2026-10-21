@@ -2,19 +2,15 @@
 
 use super::*;
 
-pub(super) use cookie_agent_client_state::rows::display_line_count;
-
-pub(super) const MAX_EXPANDED_BODY_LINES: usize = 64;
-
-pub(super) const MAX_EXPANDED_BODY_BYTES: usize = 8 * 1024;
+// The opened rows' bounds every client shares.
+pub(super) use cookie_agent_client_state::rows::{
+    MAX_EXPANDED_BODY_BYTES, MAX_EXPANDED_BODY_LINES, MAX_SYSTEM_PROMPT_BODY_BYTES,
+    MAX_SYSTEM_PROMPT_BODY_LINES, display_line_count,
+};
 
 pub(super) const MAX_EXPANDED_TOOL_OUTPUT_LINES: usize = 1024;
 
 pub(super) const MAX_EXPANDED_TOOL_OUTPUT_BYTES: usize = 128 * 1024;
-
-pub(super) const MAX_SYSTEM_PROMPT_BODY_LINES: usize = 256;
-
-pub(super) const MAX_SYSTEM_PROMPT_BODY_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Copy)]
 pub(super) struct RenderLimits {

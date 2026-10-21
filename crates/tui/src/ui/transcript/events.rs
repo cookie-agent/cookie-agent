@@ -143,16 +143,11 @@ pub(super) fn system_prompt_layout(
 ) -> ItemLayout {
     let block_id = BlockId::SystemPrompt;
     let is_expanded = expanded.is_some_and(|blocks| blocks.contains(&block_id));
-    let line_count = display_line_count(&snapshot.composed_prompt);
     let chevron = if is_expanded { '▾' } else { '▸' };
-    let next_agent = draft_agent
-        .filter(|draft_agent| *draft_agent != &snapshot.agent)
-        .map(|draft_agent| format!(" · next: {draft_agent}"))
-        .unwrap_or_default();
     let mut body = vec![Line::styled(
         format!(
-            "📜 {chevron} system prompt · {} (last run){next_agent} ({line_count} lines)",
-            snapshot.agent
+            "📜 {chevron} {}",
+            cookie_agent_client_state::rows::system_prompt_summary(snapshot, true, draft_agent)
         ),
         theme.internal(),
     )];
@@ -179,8 +174,8 @@ pub(super) fn model_tools_layout(
     let chevron = if is_expanded { '▾' } else { '▸' };
     let mut body = vec![Line::styled(
         format!(
-            "🧰 {chevron} tools · {} available (last request)",
-            tools.len()
+            "🧰 {chevron} {}",
+            cookie_agent_client_state::rows::model_tools_summary(tools)
         ),
         theme.internal(),
     )];
