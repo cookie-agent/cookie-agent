@@ -76,7 +76,10 @@ At depth 0 the schema gains:
     inherit the root's attachments.
   - **Required** when the root has `global` and nothing else.
   - **Optional** when the root has `global` and other attachments.
-- **The description** says what the parameter does in each case. With
+- **The description** says what the parameter does in each case, and
+  how to write `runtime`: the runtime's ID from `list_runtimes`, plus
+  `/<capability>` when the runtime has several capabilities. `list_runtimes`
+  prints no separate "delegate as" string (decided 2026-10-21). With
   only `global` attached, it also says that the root has no workspace and
   must name where the work happens, and it points to `list_runtimes`.
 - **Capability.** `<id>` alone is valid when the runtime offers exactly
