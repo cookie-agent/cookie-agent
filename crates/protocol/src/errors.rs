@@ -353,8 +353,8 @@ error_codes! {
             required("session_id", "The session."),
             required("current_last_seq", "The session's last event now."),
         ],
-        message: "The session changed after it was shown, so it was not deleted.",
-        hint: Some("Look at the session again, then delete it if you still want to."),
+        message: "The session has new activity since it was shown, so it was not deleted.",
+        hint: Some("Review the new turns, then delete the session again if you still want to."),
         description: "`session.delete` named an expected last event that is no longer the root's last.",
     }
     SESSION_REQUIRES_NEWER_ENGINE {

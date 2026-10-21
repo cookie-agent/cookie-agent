@@ -220,6 +220,12 @@ async fn a_running_tree_is_not_deleted_until_it_finishes() {
         engine.delete_session(parent, last).await,
         Err(EngineError::SessionTreeRunning { root, busy }) if root == parent && busy == child
     ));
+    // A guard that lags the run, as a listing does while a run streams, is
+    // still refused as running rather than as changed.
+    assert!(matches!(
+        engine.delete_session(parent, last - 1).await,
+        Err(EngineError::SessionTreeRunning { root, busy }) if root == parent && busy == child
+    ));
     assert!(engine.get_session(child).is_ok(), "nothing was deleted");
 
     release.notify_waiters();

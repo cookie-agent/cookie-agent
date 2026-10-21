@@ -784,6 +784,10 @@ confirmed. The delete is refused, changing nothing, when:
 - the root's last event is no longer `expected_last_seq`
   (`session_changed`, with `current_last_seq`).
 
+The checks run in this order, so a running tree is `session_tree_running`
+even when its guard is stale too, as it is while a run streams past the
+listed `last_event_seq`; `session_changed` means the tree is idle and moved.
+
 A tree this daemon does not hold is deleted under its lock without being
 opened, so nothing is appended to it first. The tree's background calls are
 stopped without a report and its uploads in progress are dropped. The daemon

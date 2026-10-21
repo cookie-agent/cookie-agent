@@ -68,18 +68,20 @@ impl Engine {
                 SessionError::TreeBusy(_) => EngineError::SessionTreeRunning { root, busy: root },
                 error => error.into(),
             })?;
+        // A running tree is refused as running even when the caller's guard
+        // is stale too: a streaming run moves the root past what was listed.
+        let members = deletion.members().iter().copied().collect::<HashSet<_>>();
+        if deletion.was_held()
+            && let Some(busy) = self.busy_member(&members).or(deletion.running_member())
+        {
+            return Err(EngineError::SessionTreeRunning { root, busy });
+        }
         let current_last_seq = deletion.root_last_seq();
         if current_last_seq != expected_last_seq {
             return Err(EngineError::StaleDelete {
                 session_id: root,
                 current_last_seq,
             });
-        }
-        let members = deletion.members().iter().copied().collect::<HashSet<_>>();
-        if deletion.was_held()
-            && let Some(busy) = self.busy_member(&members).or(deletion.running_member())
-        {
-            return Err(EngineError::SessionTreeRunning { root, busy });
         }
         // Nothing of the tree may keep running or keep a file open in it.
         self.kill_deleted_background_jobs(&members);
