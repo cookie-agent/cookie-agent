@@ -698,6 +698,9 @@ pub struct App {
     /// `session.create`; `None` until `/runtime` edits them, when the
     /// session attaches `session.create`'s defaults.
     pub(super) draft_runtimes: Option<Vec<crate::ui::management::DraftRuntime>>,
+    /// The project the next new session is created in (`cookie --project`);
+    /// it applies to the first one only.
+    pub(super) draft_project: Option<cookie_agent_protocol::ProjectInfo>,
     pub(super) next_draft_runtime: u64,
     pub(super) models: Vec<AvailableModelDescriptor>,
     pub(super) providers: Vec<ProviderDescriptor>,
@@ -1367,6 +1370,7 @@ impl App {
             new_session_draft: None,
             draft_permissions: DraftPermissions::default(),
             draft_runtimes: None,
+            draft_project: placement.project,
             next_draft_runtime: 0,
             models: Vec::new(),
             providers: Vec::new(),
@@ -1466,9 +1470,11 @@ impl App {
             title_sequences: HashMap::new(),
         };
         app.refresh_lists().await;
-        if create_new_session {
+        if create_new_session || app.draft_project.is_some() {
             // Keep a fresh root entirely client-side until the first prompt.
-            app.new_session_draft = app.default_draft_selection();
+            app.new_session_draft = app
+                .project_draft_selection()
+                .or_else(|| app.default_draft_selection());
             app.selected = None;
         } else if let Some(session_id) = Self::preferred_startup_session(&app.sessions) {
             app.open_session(session_id).await;
@@ -1604,6 +1610,16 @@ impl App {
 
     async fn create_root_session(&mut self, selection: RunSelection) -> bool {
         let agent = selection.agent.clone();
+        let project = self
+            .draft_project
+            .as_ref()
+            .map(|project| project.id.clone());
+        // A project whose defaults name runtimes gets them from the daemon.
+        let project_attachments = self
+            .draft_project
+            .as_ref()
+            .and_then(|project| project.defaults.as_ref())
+            .is_some_and(|defaults| !defaults.runtimes.is_empty() || !defaults.global);
         let (global, runtimes) = match &self.draft_runtimes {
             Some(entries) => (
                 entries
@@ -1617,6 +1633,7 @@ impl App {
                         .collect(),
                 ),
             ),
+            None if project_attachments => (true, None),
             None => (
                 true,
                 self.client_runtime
@@ -1634,12 +1651,14 @@ impl App {
                 cwd: self.cwd.clone(),
                 runtimes,
                 global,
+                project,
                 ..SessionCreateParams::new(selection)
             })
             .await
         {
             Ok(result) => {
                 let session_id = result.session.session_id;
+                self.draft_project = None;
                 if let Some(mode) = self.draft_permissions.mode {
                     self.permission_modes.insert(session_id, mode);
                 }
@@ -1797,6 +1816,10 @@ pub struct SessionPlacement {
     /// The capability of `runtime` new sessions attach; `coding` when
     /// omitted.
     pub capability: Option<cookie_agent_protocol::CapabilityName>,
+    /// The project the TUI starts a new session in (`cookie --project`):
+    /// the session takes the project's default agent and preset, and the
+    /// daemon its default runtimes.
+    pub project: Option<cookie_agent_protocol::ProjectInfo>,
 }
 
 /// Where the TUI's daemon runs, as the TUI shows it.

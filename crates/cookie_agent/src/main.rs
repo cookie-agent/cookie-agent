@@ -93,6 +93,11 @@ struct Cli {
     /// on this machine, without looking for it. Plain `cookie` only.
     #[arg(long)]
     standalone: bool,
+    /// Start a new session in this project: it takes the project's default
+    /// agent and runtimes. Plain `cookie` only; nothing is picked from the
+    /// current directory.
+    #[arg(long, value_name = "NAME", value_parser = project_command::parse_project_name)]
+    project: Option<cookie_agent_protocol::ProjectName>,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -224,6 +229,26 @@ enum Command {
     Machine {
         #[command(subcommand)]
         command: machine_command::MachineCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
+    /// List, create, rename, delete, and edit a daemon's projects: named
+    /// bodies of work that sessions belong to.
+    Project {
+        #[command(subcommand)]
+        command: project_command::ProjectCommand,
         /// The daemon's client URL; `[server] url` in this machine's
         /// `config.toml`, or the local daemon, when omitted.
         #[arg(long, global = true)]
@@ -469,12 +494,20 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
     let Cli {
         command,
         standalone,
+        project,
         ..
     } = cli;
     if standalone && command.is_some() {
         clap::Error::raw(
             clap::error::ErrorKind::ArgumentConflict,
             "--standalone applies to plain `cookie` only, not to a subcommand\n",
+        )
+        .exit();
+    }
+    if project.is_some() && command.is_some() {
+        clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--project applies to plain `cookie` only, not to a subcommand\n",
         )
         .exit();
     }
@@ -622,6 +655,14 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             let target = daemon_target(url, token)?;
             memory_command::run_memory(&target.url, &target.token, command).await
         }
+        Some(Command::Project {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            project_command::run_project(&target.url, &target.token, command).await
+        }
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
@@ -634,7 +675,7 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             cookie_agent_tui::markdown::warm_up_syntax_assets();
             let workspace = workspace.expect("local workspace");
             if standalone {
-                return run_local_frontend(compose(&workspace).await?, Vec::new()).await;
+                return run_local_frontend(compose(&workspace).await?, Vec::new(), project).await;
             }
             let configuration = cookie_agent_config::load()
                 .context("load user configuration, agents, and skills")?;
@@ -649,12 +690,13 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
                         identity,
                         &daemon.url,
                         &daemon.token,
+                        project,
                     )
                     .await
                 }
                 probe => {
                     let runtime = compose_loaded(&workspace, configuration).await?;
-                    run_local_frontend(runtime, probe.notice().into_iter().collect()).await
+                    run_local_frontend(runtime, probe.notice().into_iter().collect(), project).await
                 }
             }
         }
@@ -676,6 +718,7 @@ fn local_workspace(
                 | Command::Config { .. }
                 | Command::Machine { .. }
                 | Command::Memory { .. }
+                | Command::Project { .. }
                 | Command::Runtime { .. },
         )
     ) {
@@ -1039,7 +1082,11 @@ fn client_directory() -> Option<String> {
 /// Runs the TUI against the daemon `runtime` composes in this process,
 /// showing `notices` from the start.
 #[cfg(feature = "tui")]
-async fn run_local_frontend(mut runtime: Runtime, notices: Vec<String>) -> anyhow::Result<()> {
+async fn run_local_frontend(
+    mut runtime: Runtime,
+    notices: Vec<String>,
+    project: Option<cookie_agent_protocol::ProjectName>,
+) -> anyhow::Result<()> {
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(128);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(
         server_stream,
@@ -1051,10 +1098,15 @@ async fn run_local_frontend(mut runtime: Runtime, notices: Vec<String>) -> anyho
             .handshake_as(client_identity("tui"))
             .await
             .context("handshake with daemon")?;
+        let project = match &project {
+            Some(name) => Some(project_command::find_project(&client, name).await?),
+            None => None,
+        };
         cookie_agent_tui::run_with_new_session(
             client,
             cookie_agent_tui::SessionPlacement {
                 cwd: client_directory(),
+                project,
                 ..Default::default()
             },
             cookie_agent_tui::ConnectionView {
@@ -1076,7 +1128,11 @@ async fn run_local_frontend(mut runtime: Runtime, notices: Vec<String>) -> anyho
 }
 
 #[cfg(not(feature = "tui"))]
-async fn run_local_frontend(mut runtime: Runtime, _notices: Vec<String>) -> anyhow::Result<()> {
+async fn run_local_frontend(
+    mut runtime: Runtime,
+    _notices: Vec<String>,
+    _project: Option<cookie_agent_protocol::ProjectName>,
+) -> anyhow::Result<()> {
     runtime.server.shutdown();
     runtime.stop_catalog_refresh().await;
     runtime.engine.shutdown().await;
@@ -1100,7 +1156,7 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
         .handshake_as(identity.clone())
         .await
         .context("handshake with daemon")?;
-    run_daemon_tui(client, &hello, identity, url, token).await
+    run_daemon_tui(client, &hello, identity, url, token, None).await
 }
 
 /// Runs the TUI against the daemon `client` reaches at `url`, connected and
@@ -1115,7 +1171,12 @@ async fn run_daemon_tui(
     identity: cookie_agent_protocol::ClientIdentity,
     url: &str,
     token: &str,
+    project: Option<cookie_agent_protocol::ProjectName>,
 ) -> anyhow::Result<()> {
+    let project = match &project {
+        Some(name) => Some(project_command::find_project(&client, name).await?),
+        None => None,
+    };
     let cwd = client_directory();
     let own_runtime = client_runtime_id(&host_name());
     let choice = local_daemon::runtime_for(
@@ -1161,6 +1222,7 @@ async fn run_daemon_tui(
             cwd,
             runtime,
             capability,
+            project,
         },
         cookie_agent_tui::ConnectionView {
             label: Some(address),
@@ -1201,6 +1263,7 @@ async fn run_daemon_tui(
     _identity: cookie_agent_protocol::ClientIdentity,
     _url: &str,
     _token: &str,
+    _project: Option<cookie_agent_protocol::ProjectName>,
 ) -> anyhow::Result<()> {
     anyhow::bail!("cookie was built without TUI support")
 }
@@ -2068,6 +2131,7 @@ mod config_command;
 mod local_daemon;
 mod machine_command;
 mod memory_command;
+mod project_command;
 
 #[cfg(test)]
 mod cli_reference;

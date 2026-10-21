@@ -48,7 +48,7 @@ pub(crate) trait MemoryIo {
 }
 
 /// The terminal and `$VISUAL`, else `$EDITOR`, else `vi`.
-struct StdioMemoryIo;
+pub(crate) struct StdioMemoryIo;
 
 impl MemoryIo for StdioMemoryIo {
     fn write_line(&mut self, line: &str) -> anyhow::Result<()> {
