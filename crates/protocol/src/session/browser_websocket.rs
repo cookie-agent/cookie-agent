@@ -23,10 +23,10 @@ impl Client {
     /// under a subpath).
     /// Authenticate with [`Self::handshake_with_token`] next.
     ///
-    /// A connection the daemon refuses before its handshake, as it refuses
-    /// a page whose origin `[server] allowed_origins` does not list, fails
-    /// with [`ClientError::ConnectionRefusedBeforeHandshake`]: the browser
-    /// shows the page no HTTP status, so that is all it can tell.
+    /// A connection the daemon refuses or closes before its handshake, or
+    /// one nothing answers, fails with
+    /// [`ClientError::ConnectionRefusedBeforeHandshake`]: the browser shows
+    /// the page no HTTP status, so that is all it can tell.
     pub async fn connect_browser_websocket(url: &str) -> Result<Self, ClientError> {
         BrowserWebSocketTransport::connect(url)
             .await

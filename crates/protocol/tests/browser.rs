@@ -2,10 +2,9 @@
 //! headless browser. `scripts/test-wasm-client.sh` starts the daemons and
 //! passes their endpoints in at compile time:
 //!
-//! - `COOKIE_WASM_TEST_URL` and `COOKIE_WASM_TEST_TOKEN`: a daemon whose
-//!   `[server] allowed_origins` is `["*"]`;
-//! - `COOKIE_WASM_TEST_WORKSPACE`: a directory sessions there may use;
-//! - `COOKIE_WASM_TEST_REFUSING_URL`: a daemon that allows no origin.
+//! - `COOKIE_WASM_TEST_URL` and `COOKIE_WASM_TEST_TOKEN`: a daemon, which
+//!   takes the test page from its foreign origin like any other;
+//! - `COOKIE_WASM_TEST_WORKSPACE`: a directory sessions there may use.
 //!
 //! Built without them, each test passes without connecting.
 
@@ -26,7 +25,6 @@ wasm_bindgen_test_configure!(run_in_browser);
 const URL: Option<&str> = option_env!("COOKIE_WASM_TEST_URL");
 const TOKEN: Option<&str> = option_env!("COOKIE_WASM_TEST_TOKEN");
 const WORKSPACE: Option<&str> = option_env!("COOKIE_WASM_TEST_WORKSPACE");
-const REFUSING_URL: Option<&str> = option_env!("COOKIE_WASM_TEST_REFUSING_URL");
 
 /// How long one delivery may take to arrive.
 const DELIVERY_WAIT: Duration = Duration::from_secs(10);
@@ -157,25 +155,6 @@ async fn a_wrong_token_is_refused_in_the_handshake() {
         .await
         .expect_err("a wrong token is refused");
     assert_eq!(error.error_code(), Some("unauthenticated"), "{error}");
-}
-
-#[wasm_bindgen_test]
-async fn an_origin_the_daemon_does_not_allow_is_refused_before_the_handshake() {
-    let Some(url) = REFUSING_URL else {
-        log("no refusing daemon given at compile time; skipping");
-        return;
-    };
-    let error = Client::connect_browser_websocket(url)
-        .await
-        .err()
-        .expect("the upgrade is refused");
-    assert!(
-        matches!(
-            error,
-            ClientError::ConnectionRefusedBeforeHandshake { code: 1006, .. }
-        ),
-        "{error:?}"
-    );
 }
 
 #[wasm_bindgen_test]

@@ -315,8 +315,6 @@ struct Runtime {
     port: u16,
     /// `[server] token`, when the configuration has one.
     token: Option<String>,
-    /// `[server] allowed_origins`.
-    allowed_origins: cookie_agent_server::AllowedOrigins,
     /// The user `config.toml`, where the daemon keeps a token it creates.
     config_path: Option<PathBuf>,
     catalog_refresh_shutdown: CancellationToken,
@@ -848,9 +846,6 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
     }
     let port = configuration.runtime.server.port;
     let token = configuration.runtime.server.token.clone();
-    let allowed_origins = cookie_agent_server::AllowedOrigins::from_config(
-        &configuration.runtime.server.allowed_origins,
-    );
     let config_path = configuration.config_paths.user.clone();
 
     // Startup never waits on the network: it serves the validated cache (or
@@ -893,7 +888,6 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         server,
         port,
         token,
-        allowed_origins,
         config_path,
         catalog_refresh_shutdown,
         catalog_refresh_task: Some(catalog_refresh_task),
@@ -1952,26 +1946,10 @@ fn open_in_browser(link: &str) -> anyhow::Result<()> {
 }
 
 /// What the daemon prints after its ready line about its web page: where
-/// it is, and, while `[server] allowed_origins` is empty, that the page
-/// cannot connect until its origin is listed.
-fn web_page_lines(client_url: &str, origins_empty: bool) -> Vec<String> {
-    let Some(page) = cookie_agent_server::page_url(client_url) else {
-        return Vec::new();
-    };
-    let mut lines = vec![format!(
-        "web page at {page} (`cookie web` prints it with the token)"
-    )];
-    if origins_empty {
-        let origin = page.split_once("://").map_or_else(
-            || page.clone(),
-            |(scheme, rest)| format!("{scheme}://{}", rest.split('/').next().unwrap_or(rest)),
-        );
-        lines.push(format!(
-            "the web page cannot connect until [server] allowed_origins lists the origin it is \
-             opened from, such as \"{origin}\""
-        ));
-    }
-    lines
+/// it is.
+fn web_page_line(client_url: &str) -> Option<String> {
+    cookie_agent_server::page_url(client_url)
+        .map(|page| format!("web page at {page} (`cookie web` prints it with the token)"))
 }
 
 /// Where and how `cookie daemon` listens.
@@ -1997,7 +1975,7 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
         Ok(signals) => runtime
             .server
             .clone()
-            .serve_on(address, token.clone(), tls, runtime.allowed_origins.clone())
+            .serve_on(address, token.clone(), tls)
             .await
             .map(|listener| (signals, listener))
             .map_err(|error| anyhow::Error::new(error).context("start WebSocket daemon")),
@@ -2019,11 +1997,7 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
         "cookie daemon listening on {url} (client protocol {})",
         cookie_agent_protocol::CLIENT_PROTOCOL_VERSION
     );
-    let origins_empty = matches!(
-        runtime.allowed_origins,
-        cookie_agent_server::AllowedOrigins::None
-    );
-    for line in web_page_lines(&url, origins_empty) {
+    if let Some(line) = web_page_line(&url) {
         println!("{line}");
     }
     signals.recv().await;

@@ -166,51 +166,8 @@ pub fn load_tls(cert: &Path, key: &Path) -> Result<TlsConfig, ServerError> {
         .map_err(|error| failed(cert, error.to_string()))
 }
 
-/// The web origins whose pages may open a client connection
-/// (`[server] allowed_origins`). A request without `Origin` is a native
-/// client and is never refused for it.
-#[derive(Clone, Debug, Default)]
-pub enum AllowedOrigins {
-    /// No web origin: every request with `Origin` is refused.
-    #[default]
-    None,
-    /// Any web origin; the token is the only protection.
-    Any,
-    /// Exactly these origins, as browsers send them.
-    Only(Arc<std::collections::BTreeSet<String>>),
-}
-
-impl AllowedOrigins {
-    /// The origins a validated `[server] allowed_origins` names.
-    #[must_use]
-    pub fn from_config(entries: &[String]) -> Self {
-        if entries
-            .iter()
-            .any(|entry| entry == cookie_agent_config::ANY_ORIGIN)
-        {
-            Self::Any
-        } else if entries.is_empty() {
-            Self::None
-        } else {
-            Self::Only(Arc::new(entries.iter().cloned().collect()))
-        }
-    }
-
-    fn allows(&self, origin: &header::HeaderValue) -> bool {
-        match self {
-            Self::None => false,
-            Self::Any => true,
-            Self::Only(origins) => origin.to_str().is_ok_and(|origin| origins.contains(origin)),
-        }
-    }
-}
-
 impl Server {
-    pub fn router(
-        self: Arc<Self>,
-        token: Arc<Zeroizing<String>>,
-        origins: AllowedOrigins,
-    ) -> Router {
+    pub fn router(self: Arc<Self>, token: Arc<Zeroizing<String>>) -> Router {
         Router::new()
             .route("/ws", get(websocket_upgrade))
             .route("/runtime", get(runtime_upgrade))
@@ -218,7 +175,6 @@ impl Server {
             .with_state(WebSocketState {
                 server: self,
                 token,
-                origins,
             })
     }
 
@@ -232,7 +188,6 @@ impl Server {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
             token,
             None,
-            AllowedOrigins::None,
         )
         .await
     }
@@ -240,15 +195,15 @@ impl Server {
     /// Serves clients (`/ws`) and dial-in runtimes (`/runtime`) on
     /// `address`, over TLS when `tls` is given. Every connection presents
     /// `token`: a runtime in `Authorization`, a client there or in its
-    /// handshake. Web pages of `origins` may open client connections.
+    /// handshake. A client may come from any web origin, or none: the
+    /// token is the guard.
     pub async fn serve_on(
         self: Arc<Self>,
         address: SocketAddr,
         token: Zeroizing<String>,
         tls: Option<Arc<rustls::ServerConfig>>,
-        origins: AllowedOrigins,
     ) -> Result<RunningServer, ServerError> {
-        let router = self.clone().router(Arc::new(token), origins);
+        let router = self.clone().router(Arc::new(token));
         let listener = TcpListener::bind(address)
             .await
             .map_err(ServerError::Listen)?;
@@ -339,7 +294,6 @@ impl axum::serve::Listener for TlsListener {
 struct WebSocketState {
     server: Arc<Server>,
     token: Arc<Zeroizing<String>>,
-    origins: AllowedOrigins,
 }
 
 /// Refuses a runtime's request that carries a browser `Origin` or lacks the
@@ -379,17 +333,12 @@ fn dial_in_status(refusal: &cookie_agent_engine::DialInRefusal) -> StatusCode {
 }
 
 /// How a client's upgrade request authenticates: with the token in
-/// `Authorization`, or, without that header, in its handshake. A page of an
-/// origin `origins` does not allow, and a wrong `Authorization`, are refused.
+/// `Authorization`, or, without that header, in its handshake. Its `Origin`,
+/// if any, plays no part; a wrong `Authorization` is refused.
 fn client_authentication(
     headers: &HeaderMap,
     state: &WebSocketState,
 ) -> Result<Authentication, StatusCode> {
-    if let Some(origin) = headers.get(header::ORIGIN)
-        && !state.origins.allows(origin)
-    {
-        return Err(StatusCode::FORBIDDEN);
-    }
     if !headers.contains_key(header::AUTHORIZATION) {
         return Ok(Authentication::Token(Arc::clone(&state.token)));
     }
@@ -583,7 +532,6 @@ mod tls_tests {
                 std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
                 token.clone(),
                 Some(tls),
-                super::AllowedOrigins::None,
             )
             .await
             .unwrap();
@@ -653,8 +601,6 @@ mod authentication_tests {
     use serde_json::{Value, json};
     use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest as _};
 
-    use super::AllowedOrigins;
-
     type Socket = tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >;
@@ -666,11 +612,11 @@ mod authentication_tests {
     }
 
     impl Daemon {
-        async fn start(origins: AllowedOrigins) -> Self {
-            Self::start_on(0, origins).await
+        async fn start() -> Self {
+            Self::start_on(0).await
         }
 
-        async fn start_on(port: u16, origins: AllowedOrigins) -> Self {
+        async fn start_on(port: u16) -> Self {
             let fixture = crate::tests::harness();
             let token = crate::generate_token().unwrap();
             let running = Arc::clone(&fixture.server)
@@ -678,7 +624,6 @@ mod authentication_tests {
                     std::net::SocketAddr::from(([127, 0, 0, 1], port)),
                     token.clone(),
                     None,
-                    origins,
                 )
                 .await
                 .unwrap();
@@ -768,7 +713,7 @@ mod authentication_tests {
 
     #[tokio::test]
     async fn a_client_authenticates_with_the_header_or_in_its_handshake() {
-        let daemon = Daemon::start(AllowedOrigins::None).await;
+        let daemon = Daemon::start().await;
         // With the header, the handshake needs no token.
         let mut socket = daemon
             .connect("/ws", Some(daemon.token.as_str()), None)
@@ -825,40 +770,31 @@ mod authentication_tests {
         daemon.stop().await;
     }
 
+    /// `/ws` takes a client from any web origin, which then authenticates
+    /// in its handshake like any other; `/runtime` refuses every request
+    /// that carries an origin, since a browser is never a runtime.
     #[tokio::test]
-    async fn web_origins_connect_only_when_allowed() {
-        let daemon = Daemon::start(AllowedOrigins::None).await;
-        let error = daemon
-            .connect("/ws", None, Some("http://localhost:5173"))
-            .await
-            .expect_err("no origin is allowed by default");
-        assert!(error.to_string().contains("403"), "{error}");
-        daemon.stop().await;
-
-        let daemon = Daemon::start(AllowedOrigins::from_config(&[
-            "http://localhost:5173".to_owned()
-        ]))
-        .await;
-        let mut socket = daemon
-            .connect("/ws", None, Some("http://localhost:5173"))
-            .await
-            .expect("an allowed origin");
-        let reply = call(
-            &mut socket,
-            1,
-            "handshake",
-            hello(Some(daemon.token.as_str())),
-        )
-        .await;
-        assert!(reply["result"]["origin"].is_string(), "{reply}");
-        for refused in ["http://localhost:5174", "https://localhost:5173", "null"] {
-            let error = daemon
-                .connect("/ws", None, Some(refused))
+    async fn any_web_origin_connects_and_a_runtime_never_carries_one() {
+        let daemon = Daemon::start().await;
+        for origin in ["https://anything.example", "http://localhost:5173", "null"] {
+            let mut socket = daemon
+                .connect("/ws", None, Some(origin))
                 .await
-                .expect_err("an origin the list does not name");
-            assert!(error.to_string().contains("403"), "{refused}: {error}");
+                .unwrap_or_else(|error| panic!("{origin}: {error}"));
+            // The token stays the guard.
+            let reply = call(&mut socket, 1, "session.list", json!({})).await;
+            assert_eq!(reply["error"]["code"], -32003, "{origin}: {reply}");
+            let reply = call(
+                &mut socket,
+                2,
+                "handshake",
+                hello(Some(daemon.token.as_str())),
+            )
+            .await;
+            assert!(reply["result"]["origin"].is_string(), "{origin}: {reply}");
+            let reply = call(&mut socket, 3, "session.list", json!({})).await;
+            assert!(reply["result"]["sessions"].is_array(), "{origin}: {reply}");
         }
-        // Runtimes are never web pages.
         let error = daemon
             .connect(
                 "/runtime?id=devbox",
@@ -867,19 +803,13 @@ mod authentication_tests {
             )
             .await
             .expect_err("a runtime with an origin");
-        assert!(error.to_string().contains("403"), "{error}");
-        daemon.stop().await;
-
-        let daemon = Daemon::start(AllowedOrigins::from_config(&["*".to_owned()])).await;
-        for origin in ["https://anything.example", "null"] {
-            let mut socket = daemon
-                .connect("/ws", None, Some(origin))
-                .await
-                .expect("any origin");
-            // The token stays the only protection.
-            let reply = call(&mut socket, 1, "session.list", json!({})).await;
-            assert_eq!(reply["error"]["code"], -32003, "{reply}");
-        }
+        assert_eq!(
+            refusal(error),
+            (
+                403,
+                "a runtime's request must not carry an Origin header".to_owned()
+            )
+        );
         daemon.stop().await;
     }
 
@@ -993,7 +923,7 @@ mod authentication_tests {
 
     #[tokio::test]
     async fn the_daemon_serves_the_page_beside_its_endpoints() {
-        let daemon = Daemon::start(AllowedOrigins::None).await;
+        let daemon = Daemon::start().await;
         let index = cookie_agent_web_assets::get("index.html").expect("an index");
         let (status, headers, body) = http(&daemon, "GET", "/", &[]).await;
         assert_eq!(status, 200);
@@ -1088,7 +1018,7 @@ mod authentication_tests {
     }
 
     #[tokio::test]
-    async fn the_page_connects_only_from_an_origin_the_daemon_allows() {
+    async fn the_page_connects_from_its_own_origin() {
         // The page's origin names the daemon's own port, so pick it first.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -1096,28 +1026,15 @@ mod authentication_tests {
             .unwrap()
             .port();
         let origin = format!("http://127.0.0.1:{port}");
-        let daemon = Daemon::start_on(port, AllowedOrigins::None).await;
-        // The page loads without a token, but its own origin is no
-        // exception for `/ws`.
+        let daemon = Daemon::start_on(port).await;
+        // The page loads without a token, then authenticates in its
+        // handshake.
         let (status, _, _) = http(&daemon, "GET", "/", &[("origin", &origin)]).await;
         assert_eq!(status, 200);
-        let error = daemon
-            .connect("/ws", None, Some(&origin))
-            .await
-            .expect_err("the page's origin is not listed");
-        assert!(error.to_string().contains("403"), "{error}");
-        daemon.stop().await;
-
-        // Listed, it connects and authenticates in its handshake.
-        let daemon = Daemon::start_on(
-            port,
-            AllowedOrigins::from_config(std::slice::from_ref(&origin)),
-        )
-        .await;
         let mut socket = daemon
             .connect("/ws", None, Some(&origin))
             .await
-            .expect("the page's origin is listed");
+            .expect("the page's own origin");
         let reply = call(
             &mut socket,
             1,
@@ -1159,7 +1076,7 @@ mod authentication_tests {
     /// and the ID is free again.
     #[tokio::test]
     async fn a_refused_dial_in_learns_why() {
-        let daemon = Daemon::start(AllowedOrigins::None).await;
+        let daemon = Daemon::start().await;
         let token = Some(daemon.token.as_str());
         for (path, status, reason) in [
             (

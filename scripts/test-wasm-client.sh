@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the protocol client's browser tests (crates/protocol/tests/browser.rs)
-# in headless Firefox against two real `cookie daemon`s in scratch homes: one
-# whose `[server] allowed_origins` is ["*"], and one that allows no origin.
+# in headless Firefox against a real `cookie daemon` in a scratch home. The
+# test page's origin is foreign to the daemon, which takes it like any other.
 #
 # Needs the wasm32-unknown-unknown target, `wasm-bindgen-test-runner` of the
 # wasm-bindgen version in Cargo.lock (`cargo install wasm-bindgen-cli
@@ -71,11 +71,8 @@ json_field() {
     python3 -I -c 'import json, sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$1" "$2"
 }
 
-allowing="$scratch/allowing"
-write_config "$allowing" <<'EOF'
-[server]
-allowed_origins = ["*"]
-
+home="$scratch/home"
+write_config "$home" <<'EOF'
 [providers."custom.local"]
 source = "custom"
 endpoint = "http://127.0.0.1:9/v1"
@@ -86,8 +83,8 @@ auth = { method = "no-auth-v1", values = {} }
 display_name = "Browser Test"
 capabilities = { input = ["text"], output = ["text"], context_tokens = 65536, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 EOF
-mkdir -p -m 700 "$allowing/.cookie-agent/agents"
-cat >"$allowing/.cookie-agent/agents/primary.md" <<'EOF'
+mkdir -p -m 700 "$home/.cookie-agent/agents"
+cat >"$home/.cookie-agent/agents/primary.md" <<'EOF'
 ---
 description: Browser test agent
 mode: primary
@@ -98,21 +95,12 @@ models:
 Help.
 EOF
 
-refusing="$scratch/refusing"
-write_config "$refusing" <<'EOF'
-[server]
-allowed_origins = []
-EOF
-
-start_daemon "$allowing"
+start_daemon "$home"
 ready="$ready_json"
-start_daemon "$refusing"
-refusing_ready="$ready_json"
 
 COOKIE_WASM_TEST_URL="$(json_field "$ready" url)" \
 COOKIE_WASM_TEST_TOKEN="$(json_field "$ready" token)" \
-COOKIE_WASM_TEST_WORKSPACE="$allowing/workspace" \
-COOKIE_WASM_TEST_REFUSING_URL="$(json_field "$refusing_ready" url)" \
+COOKIE_WASM_TEST_WORKSPACE="$home/workspace" \
 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
     cargo test --locked --target wasm32-unknown-unknown -p cookie_agent_protocol \
     --features websocket --test browser "$@"

@@ -397,13 +397,6 @@ pub struct ServerConfig {
     /// or `wss://` URL ending in `/ws`. The daemon itself ignores it.
     #[serde(default)]
     pub url: Option<String>,
-    /// Web origins whose pages may connect to `/ws`: exact
-    /// `scheme://host[:port]` origins as browsers send them, or the single
-    /// entry `"*"` for any origin. A connection without an `Origin` header
-    /// (every native client) is unaffected; one with an origin this list
-    /// does not allow is refused.
-    #[serde(default)]
-    pub allowed_origins: Vec<String>,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -412,7 +405,6 @@ impl Default for ServerConfig {
             port: default_port(),
             token: None,
             url: None,
-            allowed_origins: Vec::new(),
         }
     }
 }
@@ -431,34 +423,6 @@ impl ServerConfig {
     pub fn local_url(&self) -> String {
         format!("ws://{}:{}/ws", self.host, self.port)
     }
-}
-
-/// The `[server] allowed_origins` entry that allows every origin.
-pub const ANY_ORIGIN: &str = "*";
-
-/// Whether `origins` is a valid `[server] allowed_origins`: the single entry
-/// `"*"`, or entries that are each a web origin exactly as a browser sends
-/// it in `Origin` (lowercase `scheme://host`, and `:port` only when it is not
-/// the scheme's default).
-#[must_use]
-pub fn valid_allowed_origins(origins: &[String]) -> bool {
-    if origins.iter().any(|origin| origin == ANY_ORIGIN) {
-        return origins.len() == 1;
-    }
-    origins.iter().all(|origin| valid_origin(origin))
-}
-
-fn valid_origin(origin: &str) -> bool {
-    // No patterns: `*` is only the whole-list wildcard.
-    !origin.contains('*')
-        && url::Url::parse(origin).is_ok_and(|url| {
-            url.host_str().is_some_and(|host| !host.is_empty())
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none()
-                && url.origin().ascii_serialization() == origin
-        })
 }
 
 /// Whether `url` names a daemon's client endpoint: `ws://` or `wss://`, a
@@ -484,7 +448,6 @@ impl std::fmt::Debug for ServerConfig {
             .field("port", &self.port)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("url", &self.url)
-            .field("allowed_origins", &self.allowed_origins)
             .finish()
     }
 }
@@ -1052,10 +1015,6 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
                 .as_deref()
                 .is_some_and(|url| !valid_daemon_url(url)),
             "server.url must be a ws:// or wss:// URL whose path is /ws",
-        ),
-        (
-            !valid_allowed_origins(&runtime.server.allowed_origins),
-            "server.allowed_origins must be exact scheme://host[:port] origins, or the single entry \"*\"",
         ),
         (
             runtime.tool_output.max_lines == 0,

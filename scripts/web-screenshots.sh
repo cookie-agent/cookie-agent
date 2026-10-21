@@ -101,7 +101,6 @@ port="$(free_port)"
 cat >"$home/.cookie-agent/config.toml" <<TOML
 [server]
 port = $port
-allowed_origins = ["http://127.0.0.1:$port"]
 
 [providers."openai"]
 source = "custom"

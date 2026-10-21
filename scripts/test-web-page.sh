@@ -2,9 +2,9 @@
 # Runs the web client's browser scenarios (scripts/web-e2e/scenarios.py) in
 # headless Firefox against real `cookie daemon`s in scratch homes: one with
 # a scripted model (scripts/web-e2e/mock-model.py), a subagent, a skill, a
-# runtime that never starts, and the reference plugin, whose
-# `[server] allowed_origins` lists the page's origin, and one that allows no
-# origin. Run scripts/build-web.sh first so the daemons embed the real page.
+# runtime that never starts, and the reference plugin, and a second, empty
+# one whose page is of another origin. Run scripts/build-web.sh first so the
+# daemons embed the real page.
 #
 # Needs Firefox and geckodriver (on PATH, or set GECKODRIVER). With
 # SCREENSHOT_DIR set, it saves a screenshot of each step.
@@ -49,13 +49,12 @@ for _ in $(seq 1 100); do
 done
 model_port="$(cat "$scratch/model.port")"
 
-# Writes home $1's config.toml: a `[server]` table on port $2 with
-# `allowed_origins = $3`, then stdin.
+# Writes home $1's config.toml: a `[server]` table on port $2, then stdin.
 write_config() {
-    local home="$1" port="$2" origins="$3"
+    local home="$1" port="$2"
     mkdir -p -m 700 "$home/.cookie-agent/agents" "$home/workspace"
     {
-        printf '[server]\nport = %s\nallowed_origins = %s\n\n' "$port" "$origins"
+        printf '[server]\nport = %s\n\n' "$port"
         cat
     } >"$home/.cookie-agent/config.toml"
     chmod 600 "$home/.cookie-agent/config.toml"
@@ -130,7 +129,7 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 32, 8, 2
 png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)
 PY
-write_config "$allowing" "$port" "[\"http://127.0.0.1:$port\"]" <<TOML
+write_config "$allowing" "$port" <<TOML
 [session_title]
 generate_on_first_turn = false
 
@@ -158,10 +157,10 @@ held_session="$(cd "$allowing/workspace" && HOME="$allowing" "$cookie" run --jso
     python3 -I -c 'import json, sys; print([json.loads(l) for l in sys.stdin if l.strip()][-1]["session_id"])')"
 start_daemon "$allowing"
 allowing_link="$link"
-refusing_port="$(free_port)"
-write_config "$scratch/refusing" "$refusing_port" "[]" </dev/null
-start_daemon "$scratch/refusing"
-refusing_link="$link"
+other_port="$(free_port)"
+write_config "$scratch/other" "$other_port" </dev/null
+start_daemon "$scratch/other"
+other_link="$link"
 
 if [[ -n "${SCREENSHOT_DIR:-}" ]]; then
     mkdir -p "$SCREENSHOT_DIR"
@@ -171,5 +170,5 @@ driver_port="$(free_port)"
 "$geckodriver" --port "$driver_port" --allow-system-access >"$scratch/geckodriver.log" 2>&1 &
 pids+=("$!")
 
-python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$refusing_link" \
-    "$refusing_port" "$allowing" "$held_session" "${SCREENSHOT_DIR:-}"
+python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \
+    "$other_port" "$allowing" "$held_session" "${SCREENSHOT_DIR:-}"

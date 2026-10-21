@@ -3,8 +3,7 @@
 //! gzip-compressed when the browser accepts it, under the page's
 //! Content-Security-Policy.
 //! The page holds no secret, so it needs no token; the connections it opens
-//! authenticate in their handshake and follow `[server] allowed_origins`
-//! like any other browser connection.
+//! authenticate in their handshake like any other client connection.
 
 use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},

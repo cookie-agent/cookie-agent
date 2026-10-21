@@ -110,41 +110,12 @@ fn the_daemon_url_names_a_websocket_client_endpoint() {
 }
 
 #[test]
-fn allowed_origins_are_exact_web_origins_or_the_single_wildcard() {
-    for (origins, valid) in [
-        (
-            r#"["https://cookie.example", "http://localhost:5173"]"#,
-            true,
-        ),
-        (r#"["http://127.0.0.1:8080", "https://[::1]:8443"]"#, true),
-        (r#"["*"]"#, true),
-        (r#"[]"#, true),
-        // `*` cannot be combined with other entries.
-        (r#"["*", "https://cookie.example"]"#, false),
-        (r#"["*", "*"]"#, false),
-        // An origin has no path, query, fragment, or credentials, and is
-        // spelled as a browser sends it: lowercase, without a default port.
-        (r#"["https://cookie.example/"]"#, false),
-        (r#"["https://cookie.example/app"]"#, false),
-        (r#"["https://cookie.example?x=1"]"#, false),
-        (r#"["https://user@cookie.example"]"#, false),
-        (r#"["https://Cookie.Example"]"#, false),
-        (r#"["https://cookie.example:443"]"#, false),
-        (r#"["cookie.example"]"#, false),
-        (r#"["https://*.cookie.example"]"#, false),
-        (r#"[""]"#, false),
-        (r#"["null"]"#, false),
-    ] {
-        let authored = root(&format!("[server]\nallowed_origins = {origins}\n"));
-        let loaded = load_from_user_root(Some(authored.path()));
-        assert_eq!(loaded.is_ok(), valid, "allowed_origins = {origins}");
-        if let Ok(loaded) = loaded {
-            let expected: Vec<String> = serde_json::from_str(origins).unwrap();
-            assert_eq!(loaded.runtime.server.allowed_origins, expected);
-        }
-    }
-    let wrong_type = root("[server]\nallowed_origins = \"*\"\n");
-    assert!(load_from_user_root(Some(wrong_type.path())).is_err());
-    let unknown = root("[server]\nallowed_origin = [\"*\"]\n");
-    assert!(load_from_user_root(Some(unknown.path())).is_err());
+fn the_server_table_has_no_origin_allowlist() {
+    // `/ws` takes any web origin, so `[server]` names none: the removed
+    // `allowed_origins` is an unknown key like any other.
+    let removed = root("[server]\nallowed_origins = [\"*\"]\n");
+    let error = load_from_user_root(Some(removed.path()))
+        .expect_err("allowed_origins is no key")
+        .to_string();
+    assert!(error.contains("allowed_origins"), "{error}");
 }

@@ -144,8 +144,7 @@ pub enum ClientError {
     WebSocket(String),
     /// The connection closed before the daemon answered its handshake, as
     /// when the daemon refuses the WebSocket upgrade. A browser shows a page
-    /// no HTTP status for that: a page whose origin `[server]
-    /// allowed_origins` does not list sees only this, with `code` 1006.
+    /// no HTTP status for that: it sees only this, with `code` 1006.
     #[error("{}", refused_before_handshake(*.code, .reason))]
     ConnectionRefusedBeforeHandshake { code: u16, reason: String },
     #[error("a subscription replay is already in progress")]

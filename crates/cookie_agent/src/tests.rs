@@ -2270,7 +2270,6 @@ impl ListeningDaemon {
                 std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
                 Zeroizing::new(TEST_TOKEN.to_owned()),
                 None,
-                runtime.allowed_origins.clone(),
             )
             .await
             .unwrap();
@@ -2571,22 +2570,16 @@ fn cookie_web_prints_the_page_with_the_token_in_its_fragment() {
 }
 
 #[test]
-fn the_daemon_names_its_page_and_the_origin_entry_it_still_needs() {
+fn the_daemon_names_its_page() {
     assert_eq!(
-        web_page_lines("ws://127.0.0.1:7419/ws", false),
-        ["web page at http://127.0.0.1:7419/ (`cookie web` prints it with the token)"]
+        web_page_line("ws://127.0.0.1:7419/ws").as_deref(),
+        Some("web page at http://127.0.0.1:7419/ (`cookie web` prints it with the token)")
     );
-    let lines = web_page_lines("wss://lab.example:8443/ws", true);
-    assert_eq!(lines.len(), 2, "{lines:?}");
+    let line = web_page_line("wss://lab.example:8443/ws").expect("a page");
     assert!(
-        lines[0].starts_with("web page at https://lab.example:8443/ "),
-        "{lines:?}"
+        line.starts_with("web page at https://lab.example:8443/ "),
+        "{line}"
     );
-    assert!(lines[1].contains("allowed_origins"), "{lines:?}");
-    assert!(
-        lines[1].contains("\"https://lab.example:8443\""),
-        "{lines:?}"
-    );
-    // The ready line itself carries no page and no change.
-    assert!(!lines.iter().any(|line| line.contains("token=")));
+    // The line carries no token.
+    assert!(!line.contains("token="), "{line}");
 }
