@@ -1,6 +1,7 @@
 //! The `/memory` panel's rules every client shares: the memories as rows
 //! by layer and group, what a new memory starts from and where, what
-//! `memory.write` answered, and how a delete's refusal reads.
+//! `memory.write` answered, how a delete's refusal reads, and the parts of
+//! an `agent://` file the daemon owns.
 
 use cookie_agent_protocol::{
     ClientError, MemoryIgnoredEntry, MemoryInfo, MemoryLayer, MemoryListResult, MemoryWriteResult,
@@ -13,7 +14,11 @@ pub const NEW_MEMORY: &str = "---\ndescription: \nkeywords: []\n---\n";
 /// What `memory.write` answered.
 #[derive(Debug, Eq, PartialEq)]
 pub enum MemoryWriteOutcome {
-    Saved,
+    /// Written; `notice` says what the daemon kept in place of what the
+    /// text gave (an `agent://` file's description and first keywords).
+    Saved {
+        notice: Option<String>,
+    },
     /// The text is not a valid memory: why.
     Invalid(String),
     /// The memory changed, appeared, or went away since it was read.
@@ -24,7 +29,9 @@ pub enum MemoryWriteOutcome {
 impl MemoryWriteOutcome {
     pub fn from_result(result: Result<MemoryWriteResult, ClientError>) -> Self {
         match result {
-            Ok(_) => Self::Saved,
+            Ok(written) => Self::Saved {
+                notice: written.notice,
+            },
             Err(error) if error.is(&errors::MEMORY_INVALID) => Self::Invalid(message_of(&error)),
             Err(error)
                 if error.is(&errors::MEMORY_REVISION_MISMATCH)
@@ -35,6 +42,16 @@ impl MemoryWriteOutcome {
             }
             Err(error) => Self::Failed(message_of(&error)),
         }
+    }
+}
+
+/// What the status line says once `url` is saved: `Created` for a new
+/// memory, else `Saved`, then the daemon's notice when it gave one.
+pub fn saved_status(url: &str, created: bool, notice: Option<&str>) -> String {
+    let verb = if created { "Created" } else { "Saved" };
+    match notice {
+        Some(notice) => format!("{verb} {url}. {notice}"),
+        None => format!("{verb} {url}."),
     }
 }
 
@@ -142,6 +159,105 @@ pub fn memory_name(memory: &MemoryInfo) -> &str {
     rest.rsplit_once('/').map_or(rest, |(_, name)| name)
 }
 
+/// The keywords an agent's mode gives its memory, after its ID.
+const MODE_KEYWORDS: [&str; 3] = ["primary", "subagent", "all"];
+
+/// An `agent://` file as an editor shows it: the daemon owns its
+/// description and its first keywords (the agent's ID, then its mode) and
+/// keeps them whatever a write gives; the other keywords and the body are
+/// the user's.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentMemoryParts {
+    pub description: String,
+    /// The daemon's keywords: the agent's ID, then its mode.
+    pub fixed: Vec<String>,
+    pub extra: Vec<String>,
+    pub body: String,
+}
+
+/// The parts of `memory`, an `agent://` file whose whole text is `text`,
+/// as `memory.list` describes it; `None` for any other memory, an invalid
+/// one, or a text without frontmatter, which an editor shows whole.
+pub fn agent_memory_parts(memory: &MemoryInfo, text: &str) -> Option<AgentMemoryParts> {
+    if memory.layer != MemoryLayer::Agent || memory.invalid.is_some() {
+        return None;
+    }
+    let agent = memory.url.strip_prefix("agent://")?;
+    let body = frontmatter_body(text)?;
+    let mut keywords = memory.keywords.iter();
+    let mut fixed = Vec::new();
+    let mut extra = Vec::new();
+    for keyword in keywords.by_ref() {
+        let owned = match fixed.len() {
+            0 => keyword == agent,
+            1 => agent != keyword && MODE_KEYWORDS.contains(&keyword.as_str()),
+            _ => false,
+        };
+        if owned {
+            fixed.push(keyword.clone());
+        } else {
+            extra.push(keyword.clone());
+            break;
+        }
+    }
+    extra.extend(keywords.cloned());
+    Some(AgentMemoryParts {
+        description: memory.description.clone().unwrap_or_default(),
+        fixed,
+        extra,
+        body: body.to_owned(),
+    })
+}
+
+/// What follows the frontmatter of `text`: the lines after the `---` that
+/// closes the one that opens it.
+fn frontmatter_body(text: &str) -> Option<&str> {
+    let rest = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))?;
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end() == "---" {
+            return Some(&rest[offset..]);
+        }
+    }
+    None
+}
+
+impl AgentMemoryParts {
+    /// The extra keywords of a comma-separated field.
+    pub fn typed_keywords(typed: &str) -> Vec<String> {
+        typed
+            .split(',')
+            .map(str::trim)
+            .filter(|keyword| !keyword.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The whole file to write: the frontmatter with the daemon's
+    /// description and keywords (it keeps them anyway), the extra
+    /// keywords, then the body. Scalars are double-quoted JSON strings,
+    /// which YAML reads as the same text.
+    pub fn text(&self) -> String {
+        let quote = |value: &str| serde_json::to_string(value).unwrap_or_default();
+        let mut text = format!("---\ndescription: {}\n", quote(&self.description));
+        let keywords = self
+            .fixed
+            .iter()
+            .chain(&self.extra)
+            .map(|keyword| quote(keyword))
+            .collect::<Vec<_>>();
+        if !keywords.is_empty() {
+            text.push_str(&format!("keywords: [{}]\n", keywords.join(", ")));
+        }
+        text.push_str("---\n");
+        text.push_str(&self.body);
+        text
+    }
+}
+
 /// The heading of a layer.
 pub const fn layer_title(layer: MemoryLayer) -> &'static str {
     match layer {
@@ -157,7 +273,10 @@ pub const fn layer_title(layer: MemoryLayer) -> &'static str {
 mod tests {
     use cookie_agent_protocol::MemoryListResult;
 
-    use super::{MemoryRow, memory_rows, new_memory_refusal};
+    use super::{
+        AgentMemoryParts, MemoryRow, agent_memory_parts, memory_rows, new_memory_refusal,
+        saved_status,
+    };
 
     fn listing() -> MemoryListResult {
         serde_json::from_value(serde_json::json!({
@@ -188,5 +307,68 @@ mod tests {
         assert!(new_memory_refusal(&listing(), "project://shop/test").is_none());
         assert!(new_memory_refusal(&listing(), "project://shop/build").is_some());
         assert!(new_memory_refusal(&listing(), "project://shop/").is_some());
+    }
+
+    fn agent_memory(keywords: &[&str]) -> cookie_agent_protocol::MemoryInfo {
+        serde_json::from_value(serde_json::json!({
+            "url": "agent://reviewer", "layer": "agent", "revision": "r1", "size": 10,
+            "description": "Memory of the `reviewer` agent: reviews diffs",
+            "keywords": keywords
+        }))
+        .expect("memory")
+    }
+
+    #[test]
+    fn an_agent_file_splits_the_daemons_keywords_from_the_users() {
+        let text = "---\ndescription: x\nkeywords: [reviewer, subagent, rust]\n---\nPrefers small diffs.\n";
+        let parts = agent_memory_parts(&agent_memory(&["reviewer", "subagent", "rust"]), text)
+            .expect("an agent file");
+        assert_eq!(parts.fixed, ["reviewer", "subagent"]);
+        assert_eq!(parts.extra, ["rust"]);
+        assert_eq!(parts.body, "Prefers small diffs.\n");
+        assert_eq!(
+            parts.description,
+            "Memory of the `reviewer` agent: reviews diffs"
+        );
+        // A file whose keywords lost the mode keeps the rest as the user's.
+        let parts = agent_memory_parts(&agent_memory(&["reviewer", "rust", "subagent"]), text)
+            .expect("an agent file");
+        assert_eq!(parts.fixed, ["reviewer"]);
+        assert_eq!(parts.extra, ["rust", "subagent"]);
+        assert!(agent_memory_parts(&agent_memory(&["reviewer"]), "no frontmatter").is_none());
+        let mut project = agent_memory(&[]);
+        project.layer = cookie_agent_protocol::MemoryLayer::Project;
+        assert!(agent_memory_parts(&project, text).is_none());
+    }
+
+    #[test]
+    fn an_agent_file_is_written_with_its_parts_quoted() {
+        let parts = AgentMemoryParts {
+            description: "Memory of the `reviewer` agent: \"diffs\"".into(),
+            fixed: vec!["reviewer".into(), "subagent".into()],
+            extra: AgentMemoryParts::typed_keywords(" rust , ,a: b"),
+            body: "Body.\n".into(),
+        };
+        assert_eq!(
+            parts.text(),
+            "---\ndescription: \"Memory of the `reviewer` agent: \\\"diffs\\\"\"\n\
+             keywords: [\"reviewer\", \"subagent\", \"rust\", \"a: b\"]\n---\nBody.\n"
+        );
+    }
+
+    #[test]
+    fn a_save_says_what_the_daemon_kept() {
+        assert_eq!(
+            saved_status("user://style", false, None),
+            "Saved user://style."
+        );
+        assert_eq!(
+            saved_status(
+                "agent://reviewer",
+                true,
+                Some("The daemon kept its description.")
+            ),
+            "Created agent://reviewer. The daemon kept its description."
+        );
     }
 }

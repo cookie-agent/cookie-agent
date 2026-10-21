@@ -11,6 +11,7 @@ pub(in crate::ui) use cookie_agent_client_state::memory::{
 };
 use cookie_agent_client_state::memory::{
     delete_refusal, layer_title, memory_name, memory_rows, message_of, new_memory_refusal,
+    saved_status,
 };
 #[cfg(test)]
 use cookie_agent_protocol::MemoryIgnoredEntry;
@@ -314,16 +315,8 @@ impl App {
                     request.revision.clone(),
                 )
                 .await;
-            let notice = result
-                .as_ref()
-                .ok()
-                .and_then(|written| written.notice.clone());
             let outcome = MemoryWriteOutcome::from_result(result);
-            let _ = updates.send(RpcUpdate::MemoryWritten {
-                request,
-                outcome,
-                notice,
-            });
+            let _ = updates.send(RpcUpdate::MemoryWritten { request, outcome });
         });
     }
 
@@ -331,21 +324,12 @@ impl App {
         &mut self,
         request: MemoryEditRequest,
         outcome: MemoryWriteOutcome,
-        notice: Option<String>,
     ) {
         match outcome {
-            MemoryWriteOutcome::Saved => {
+            MemoryWriteOutcome::Saved { notice } => {
                 self.memory_panel.pending = None;
-                let verb = if request.revision.is_some() {
-                    "Saved"
-                } else {
-                    "Created"
-                };
-                self.status = format!("{verb} {}.", request.url);
-                if let Some(notice) = notice {
-                    self.status.push(' ');
-                    self.status.push_str(&notice);
-                }
+                self.status =
+                    saved_status(&request.url, request.revision.is_none(), notice.as_deref());
             }
             MemoryWriteOutcome::Invalid(message) => {
                 self.status = format!("Not saved: {message}");

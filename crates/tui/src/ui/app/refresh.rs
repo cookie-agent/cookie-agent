@@ -662,12 +662,8 @@ impl App {
                 purpose,
                 result,
             } => self.install_memory_read(url, purpose, result),
-            RpcUpdate::MemoryWritten {
-                request,
-                outcome,
-                notice,
-            } => {
-                self.install_memory_write(request, outcome, notice);
+            RpcUpdate::MemoryWritten { request, outcome } => {
+                self.install_memory_write(request, outcome);
             }
             RpcUpdate::MemoryDeleted { result } => self.install_memory_delete(result),
             RpcUpdate::MachinesRefreshed { result } => self.runtime_panel.install_machines(result),
