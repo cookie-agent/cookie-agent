@@ -1425,6 +1425,20 @@ impl Workspace {
         self.with_store(|store| store.sessions.get(&session_id)?.active_run)
     }
 
+    /// Whether the viewed session has a run or a compaction to stop, as
+    /// the composer's Stop and Escape do.
+    pub fn stoppable(self) -> bool {
+        let Some(session_id) = self.selected.get() else {
+            return false;
+        };
+        self.with_store(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .is_some_and(|state| state.active_run.is_some() || state.is_compacting())
+        })
+    }
+
     /// Cancels the viewed session's running run (`run.cancel`).
     pub fn cancel(self) {
         let (Some(client), Some(run_id)) = (self.client(), self.active_run()) else {

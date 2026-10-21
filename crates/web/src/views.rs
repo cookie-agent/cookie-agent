@@ -23,7 +23,7 @@ use crate::{
     format::{basename, compact_cost, compact_count, relative_time},
     goal::{GoalCommand, action_label, goal_actions, status_name},
     icons::{self, Glyph},
-    keys::{ComposerAction, KeyPress, composer_action},
+    keys::{ComposerAction, ComposerButtons, KeyPress, composer_action, composer_buttons},
     render::{
         blocks::{BlockPlace, display_html},
         transcript::{Delegate, TranscriptView, item_html, item_key},
@@ -50,7 +50,7 @@ use crate::{
     tree::{Activity, delegates_of, path, subagent_label, tree_rows},
 };
 
-/// How long a press on Send must last to queue instead of steer.
+/// How long a touch must hold a session row to offer its delete.
 const LONG_PRESS: Duration = Duration::from_millis(500);
 
 /// How long after the composer loses focus a phone's bottom bar returns.
@@ -166,7 +166,7 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 <StatusLine workspace=workspace />
                 // A short window (a phone on its side) puts the bottom bar
                 // beside the composer.
-                <div class="flex flex-col border-t border-toasted short:flex-row short:items-end dark:border-ember">
+                <div class="flex flex-col short:flex-row short:items-end">
                     <Composer workspace=workspace composing=composing />
                     <BottomBar workspace=workspace composing=composing />
                 </div>
@@ -998,14 +998,67 @@ fn QueueStrip(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// A round button inside the composer: 36 px to see, 44 px to hit.
+const COMPOSER_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40";
+/// The composer's main action: Send, Steer, or Stop.
+const COMPOSER_PRIMARY: &str = "bg-espresso text-cream hover:bg-caramel active:bg-ink disabled:hover:bg-espresso dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand dark:disabled:hover:bg-latte";
+/// Its second action: Queue.
+const COMPOSER_SECONDARY: &str = "border border-crust bg-parchment text-espresso hover:border-caramel hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-char dark:text-latte dark:hover:border-maple dark:hover:bg-ember dark:active:bg-smoke";
+
+/// The composer's text sizes: a line, and the padding above and below.
+const COMPOSER_LINE: f64 = 20.0;
+const COMPOSER_PADDING: f64 = 24.0;
+
+/// Sizes the composer to its text, from one line to five, and keeps its
+/// text clear of the buttons on either side of the box.
+fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) {
+    let style = web_sys::HtmlElement::style(textarea);
+    let side = |selector: &str| {
+        textarea
+            .parent_element()
+            .and_then(|box_| box_.query_selector(selector).ok().flatten())
+            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+            .map_or(0, |element| element.offset_width())
+    };
+    // The buttons' width and a little air; 12 px with none.
+    let pad = |width: i32| format!("{}px", if width > 0 { width + 8 } else { 12 });
+    let _ = style.set_property("padding-left", &pad(side("[data-composer-left]")));
+    let _ = style.set_property("padding-right", &pad(side("[data-composer-actions]")));
+    let _ = style.set_property("height", "auto");
+    let (height, scrolls) = crate::keys::composer_height(
+        f64::from(textarea.scroll_height()),
+        COMPOSER_LINE,
+        COMPOSER_PADDING,
+    );
+    let _ = style.set_property("height", &format!("{height}px"));
+    let _ = style.set_property("overflow-y", if scrolls { "auto" } else { "hidden" });
+}
+
 #[component]
 fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let textarea = NodeRef::<html::Textarea>::new();
-    let long_pressed = StoredValue::new(false);
-    let press_timer = StoredValue::new(None::<TimeoutHandle>);
-    let menu_open = RwSignal::new(false);
     let blurred = StoredValue::new(0_u64);
     let completions = move || completions(&workspace.composer.get());
+    let buttons = Memo::new(move |_| {
+        let has_input = workspace.composer.with(|text| !text.trim().is_empty())
+            || !workspace.attachments.with(Vec::is_empty);
+        composer_buttons(workspace.stoppable(), has_input)
+    });
+    // The box follows its text: typed, pasted, recalled, or sent away; and
+    // its buttons, whose number changes the room the text has.
+    let fit = move || {
+        if let Some(textarea) = textarea.get_untracked() {
+            fit_composer(&textarea);
+        }
+    };
+    Effect::new(move |_| {
+        workspace.composer.track();
+        buttons.track();
+        workspace.selected.track();
+        request_animation_frame(fit);
+    });
+    let resize = window_event_listener(ev::resize, move |_| fit());
+    on_cleanup(move || resize.remove());
     let insert_newline = move || {
         let Some(textarea) = textarea.get() else {
             return;
@@ -1035,6 +1088,30 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             ComposerAction::Recall => workspace.recall_newest(),
         }
         event.prevent_default();
+    };
+    let disabled = move || !workspace.writable();
+    let button = move |id: &'static str,
+                       label: &'static str,
+                       key: &'static str,
+                       icon: icons::Icon,
+                       primary: bool,
+                       action: fn(Workspace)| {
+        view! {
+            <button
+                type="button"
+                id=id
+                class=format!("{COMPOSER_BUTTON} {}", if primary { COMPOSER_PRIMARY } else { COMPOSER_SECONDARY })
+                data-composer-button=id
+                aria-label=label
+                title=format!("{label} · {key}")
+                disabled=move || {
+                    disabled() || buttons.get() == ComposerButtons::Send { enabled: false }
+                }
+                on:click=move |_| action(workspace)
+            >
+                <Glyph icon=icon class="text-sm" />
+            </button>
+        }
     };
     view! {
         <div class="relative min-w-0 px-3 pt-2 pb-1 short:flex-1 short:pb-2">
@@ -1073,24 +1150,31 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     }}
                 </div>
             </Show>
-            // On a phone the buttons go below a text field too narrow to
-            // write in.
-            <div class="flex flex-wrap items-end gap-2">
+            // One border, the box's: the text field inside has none, and
+            // the buttons sit in its bottom corners.
+            <div
+                id="composer-box"
+                class="relative rounded-xl border border-crust bg-cream hover:border-caramel focus-within:border-caramel dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus-within:border-maple"
+                class:opacity-60=disabled
+            >
                 <textarea
                     node_ref=textarea
                     id="composer"
-                    rows="2"
-                    class="min-h-11 min-w-[12rem] flex-1 resize-y rounded-md border border-crust bg-cream px-3 py-2 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none disabled:opacity-60 dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple"
+                    rows="1"
+                    class="block w-full resize-none appearance-none border-0 bg-transparent py-3 font-mono text-sm leading-5 shadow-none outline-none focus:outline-none"
                     placeholder="Message · / for commands"
-                    disabled=move || !workspace.writable()
+                    disabled=disabled
                     prop:value=move || workspace.composer.get()
-                    on:input=move |event| workspace.composer.set(event_target_value(&event))
+                    on:input=move |event| {
+                        workspace.composer.set(event_target_value(&event));
+                        fit();
+                    }
                     on:focus=move |_| {
                         blurred.update_value(|blurred| *blurred += 1);
                         composing.set(true);
                     }
                     on:blur=move |_| {
-                        // Later, so a tap on Send lands before the bar
+                        // Later, so a tap on a button lands before the bar
                         // reappears and moves it.
                         blurred.update_value(|blurred| *blurred += 1);
                         let current = blurred.get_value();
@@ -1114,101 +1198,33 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         }
                     }
                 ></textarea>
-                <div class="ml-auto flex items-end gap-1">
-                <AttachButtons workspace=workspace />
-                <div class="relative flex">
-                    <button
-                        type="button"
-                        id="send"
-                        aria-label="Send"
-                        title="Send (Enter); hold to queue behind the run"
-                        class="inline-flex min-h-11 min-w-12 items-center justify-center rounded-l-md bg-espresso px-3 text-cream hover:bg-caramel active:bg-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-espresso dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand dark:disabled:hover:bg-latte"
-                        disabled=move || !workspace.writable()
-                        on:pointerdown=move |_| {
-                            long_pressed.set_value(false);
-                            let handle = set_timeout_with_handle(
-                                move || {
-                                    long_pressed.set_value(true);
-                                    workspace.submit(InputDelivery::Queue);
-                                },
-                                LONG_PRESS,
-                            )
-                            .ok();
-                            press_timer.set_value(handle);
-                        }
-                        on:pointerup=move |_| {
-                            if let Some(handle) = press_timer.get_value() {
-                                handle.clear();
-                            }
-                        }
-                        on:pointerleave=move |_| {
-                            if let Some(handle) = press_timer.get_value() {
-                                handle.clear();
-                            }
-                        }
-                        on:click=move |_| {
-                            if !long_pressed.get_value() {
-                                workspace.submit(InputDelivery::Steer);
-                            }
-                            long_pressed.set_value(false);
-                        }
-                    >
-                        <Glyph icon=icondata::FaPaperPlaneSolid class="text-base" />
-                    </button>
-                    <button
-                        type="button"
-                        aria-label="More ways to send"
-                        title="More ways to send"
-                        aria-haspopup="menu"
-                        aria-expanded=move || menu_open.get().to_string()
-                        class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-r-md border-l border-cream/40 bg-espresso text-cream hover:bg-caramel active:bg-ink dark:border-night/40 dark:bg-latte dark:text-night dark:hover:bg-maple dark:active:bg-sand"
-                        on:click=move |_| menu_open.update(|open| *open = !*open)
-                    >
-                        <Glyph
-                            icon=Signal::derive(move || {
-                                if menu_open.get() { icondata::FaChevronDownSolid } else { icondata::FaChevronUpSolid }
-                            })
-                            class="text-xs"
-                        />
-                    </button>
-                    <Show when=move || menu_open.get()>
-                        <div class="fixed inset-0 z-10" on:click=move |_| menu_open.set(false)></div>
-                        <div role="menu" class="absolute right-0 bottom-full z-20 mb-1 flex w-60 flex-col rounded-lg border border-crust bg-cream p-1 shadow-lg dark:border-smoke dark:bg-night">
-                            <button
-                                type="button"
-                                id="queue-send"
-                                role="menuitem"
-                                class=ROW
-                                on:click=move |_| {
-                                    menu_open.set(false);
-                                    workspace.submit(InputDelivery::Queue);
-                                }
-                            >
-                                <span class="flex w-full items-center gap-2 text-sm">
-                                    <Glyph icon=icondata::FaClockSolid />
-                                    <span class="flex-1">"Queue behind the run"</span>
-                                    <kbd class="font-mono text-xs text-ink dark:text-sand">"Alt+Enter"</kbd>
-                                </span>
-                            </button>
-                            <button
-                                type="button"
-                                id="cancel-run"
-                                role="menuitem"
-                                class=ROW
-                                on:click=move |_| {
-                                    menu_open.set(false);
-                                    workspace.cancel();
-                                }
-                            >
-                                <span class="flex w-full items-center gap-2 text-sm">
-                                    <Glyph icon=icondata::FaCircleStopSolid />
-                                    <span class="flex-1">"Cancel the run"</span>
-                                    <kbd class="font-mono text-xs text-ink dark:text-sand">"Esc"</kbd>
-                                </span>
-                            </button>
-                        </div>
-                    </Show>
+                <div class="absolute bottom-1 left-1 flex items-center gap-0.5" data-composer-left>
+                    <AttachButtons workspace=workspace />
                 </div>
+                <div class="absolute right-1 bottom-1 flex items-center gap-1.5" data-composer-actions>
+                    {move || match buttons.get() {
+                        ComposerButtons::Send { .. } => button(
+                            "send", "Send", "Enter", icondata::FaPaperPlaneSolid, true,
+                            |workspace| workspace.submit(InputDelivery::Steer),
+                        )
+                        .into_any(),
+                        ComposerButtons::Stop => button(
+                            "stop", "Stop", "Esc", icondata::FaStopSolid, true,
+                            Workspace::cancel,
+                        )
+                        .into_any(),
+                        ComposerButtons::SteerAndQueue => view! {
+                            {button(
+                                "queue-send", "Queue", "Alt+Enter", icondata::FaClockRegular, false,
+                                |workspace| workspace.submit(InputDelivery::Queue),
+                            )}
+                            {button(
+                                "steer", "Steer", "Enter", icondata::FaPaperPlaneSolid, true,
+                                |workspace| workspace.submit(InputDelivery::Steer),
+                            )}
+                        }
+                        .into_any(),
+                    }}
                 </div>
             </div>
         </div>

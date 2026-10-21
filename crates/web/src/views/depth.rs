@@ -19,6 +19,9 @@ use crate::{
     workspace::Workspace,
 };
 
+/// The attach and camera buttons, round inside the composer's box: 36 px
+/// to see, 44 px to hit.
+const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink hover:bg-toasted hover:text-espresso active:bg-crust disabled:cursor-not-allowed disabled:opacity-40 dark:text-sand dark:hover:bg-ember dark:hover:text-latte dark:active:bg-smoke";
 const BAR: &str =
     "flex flex-wrap items-center gap-2 border-t border-toasted px-3 py-1 text-sm dark:border-ember";
 const FIELD: &str = "min-h-11 rounded-md border border-crust bg-cream px-3 font-mono text-sm hover:border-caramel focus:border-caramel focus:outline-none dark:border-smoke dark:bg-night dark:hover:border-maple dark:focus:border-maple";
@@ -223,13 +226,13 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
             <button
                 type="button"
                 id="attach"
-                class=ICON_BUTTON
+                class=ATTACH_BUTTON
                 aria-label="Attach a file"
                 title="Attach a file"
                 disabled=move || !workspace.writable()
                 on:click=move |_| pick_files(false)
             >
-                <Glyph icon=icondata::FaPaperclipSolid class="text-lg" />
+                <Glyph icon=icondata::FaPaperclipSolid class="text-base" />
             </button>
             <Show when=move || accepts_images(&media.get())>
                 <input
@@ -242,13 +245,13 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
                 />
                 <button
                     type="button"
-                    class=format!("{ICON_BUTTON} md:hidden")
+                    class=format!("{ATTACH_BUTTON} md:hidden")
                     aria-label="Take a photo"
                     title="Take a photo"
                     disabled=move || !workspace.writable()
                     on:click=move |_| pick_files(true)
                 >
-                    <Glyph icon=icondata::FaCameraSolid class="text-lg" />
+                    <Glyph icon=icondata::FaCameraSolid class="text-base" />
                 </button>
             </Show>
         </Show>
