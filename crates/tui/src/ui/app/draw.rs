@@ -194,7 +194,9 @@ impl App {
             Modal::Config => self.render_config_panel(frame),
             Modal::Memory => self.render_memory_panel(frame),
             Modal::Sessions => {
-                self.render_session_search(frame, centered(frame.area(), 72, 60));
+                let area = centered(frame.area(), 72, 60);
+                self.render_session_search(frame, area);
+                self.render_session_rename(frame, area);
             }
             Modal::Agents => {
                 // Normal delegated-session selection is pinned to its frozen
@@ -1596,6 +1598,11 @@ impl App {
                         "Compact".to_owned(),
                         "Optional focus to emphasize; enter alone compacts".to_owned(),
                         "enter: compact · esc: back",
+                    ),
+                    TextTarget::SessionTitle { .. } => (
+                        "Rename session".to_owned(),
+                        "The session's title; empty for the automatic one".to_owned(),
+                        crate::ui::app::session_rename::TITLE_HINT,
                     ),
                     TextTarget::AttachPath { accepts } => (
                         "Attach".to_owned(),

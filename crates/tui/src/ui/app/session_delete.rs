@@ -1,5 +1,6 @@
-//! The `/sessions` picker's session deletion and its choice between this
-//! directory's sessions and every directory's.
+//! The `/sessions` picker's session deletion, its action row (rename,
+//! delete), and its choice between this directory's sessions and every
+//! directory's.
 
 use cookie_agent_client_state::session_delete::{
     self, DAEMON_TOO_OLD_TO_DELETE, SessionDeleteOutcome,
@@ -10,6 +11,8 @@ use super::*;
 /// A button on the session picker's action row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::ui) enum SessionPickerAction {
+    /// Opens a title field for the highlighted session (Ctrl+R).
+    Rename,
     /// Asks to delete the highlighted session (Ctrl+D).
     Delete,
     /// Switches between this directory's sessions and every directory's
@@ -20,6 +23,7 @@ pub(in crate::ui) enum SessionPickerAction {
 impl SessionPickerAction {
     fn label(self, all_directories: bool) -> &'static str {
         match self {
+            Self::Rename => " Rename (ctrl+r) ",
             Self::Delete => " Delete (ctrl+d) ",
             Self::ToggleScope if all_directories => " This directory (ctrl+a) ",
             Self::ToggleScope => " All directories (ctrl+a) ",
@@ -204,6 +208,7 @@ impl App {
         let mut spans = Vec::new();
         let mut x = row.x;
         for action in [
+            SessionPickerAction::Rename,
             SessionPickerAction::Delete,
             SessionPickerAction::ToggleScope,
         ] {
@@ -284,6 +289,7 @@ impl App {
         action: SessionPickerAction,
     ) {
         match action {
+            SessionPickerAction::Rename => self.begin_session_rename(),
             SessionPickerAction::Delete => self.begin_session_delete(),
             SessionPickerAction::ToggleScope => self.toggle_session_scope().await,
         }

@@ -194,6 +194,9 @@ impl App {
             self.paste_into_palette(text);
             return;
         }
+        if self.modal == Modal::Sessions && self.paste_into_session_rename(text) {
+            return;
+        }
         if self.modal == Modal::Sessions {
             let sanitized = text.replace(['\r', '\n'], "");
             self.session_search.focus_input();

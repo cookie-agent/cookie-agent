@@ -532,6 +532,9 @@ impl App {
                 session_id,
                 subagents,
             } => self.note_session_delete_subagents(session_id, subagents),
+            RpcUpdate::SessionRenamed { change, result } => {
+                self.finish_session_rename(change, *result);
+            }
             RpcUpdate::SessionDeleted { title, outcome } => {
                 self.finish_session_delete(title, outcome);
             }

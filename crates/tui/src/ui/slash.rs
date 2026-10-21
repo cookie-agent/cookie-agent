@@ -57,6 +57,17 @@ pub(crate) enum PaletteAction {
     Events,
     Skills,
     Attach,
+    /// `/rename`: sets the title typed after it, resets it with `--auto`,
+    /// or asks for it.
+    Rename,
+}
+
+impl PaletteAction {
+    /// Whether the command reads text typed after its name in the search
+    /// (`/rename <title>`).
+    pub(crate) fn takes_argument(self) -> bool {
+        self == Self::Rename
+    }
 }
 
 pub(crate) struct CommandSpec {
@@ -205,6 +216,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         writes_session: false,
     },
     CommandSpec {
+        name: "rename",
+        aliases: &["title"],
+        description: "rename this session: /rename <title>, or --auto for the automatic title",
+        action: PaletteAction::Rename,
+        writes_session: true,
+    },
+    CommandSpec {
         name: "usage",
         aliases: &[],
         description: "show session and global token usage",
@@ -283,10 +301,14 @@ pub(crate) fn match_rank<'a>(
 /// Commands matching `query`, best match first and registry order within a
 /// rank.
 pub(crate) fn entries(query: &str) -> Vec<&'static CommandSpec> {
+    let raw = query;
     let query = normalized_query(query);
     let mut ranked = COMMANDS
         .iter()
         .filter_map(|spec| {
+            if command_argument(spec, raw).is_some() {
+                return Some((0, spec));
+            }
             match_rank(
                 std::iter::once(spec.name).chain(spec.aliases.iter().copied()),
                 &query,
@@ -296,6 +318,20 @@ pub(crate) fn entries(query: &str) -> Vec<&'static CommandSpec> {
         .collect::<Vec<_>>();
     ranked.sort_by_key(|(rank, _)| *rank);
     ranked.into_iter().map(|(_, spec)| spec).collect()
+}
+
+/// The text typed after `spec`'s name (or an alias) and a space in the
+/// palette's search, as typed, for a command that takes one.
+pub(crate) fn command_argument<'a>(spec: &CommandSpec, query: &'a str) -> Option<&'a str> {
+    if !spec.action.takes_argument() {
+        return None;
+    }
+    let query = query.trim_start();
+    let (head, rest) = query.split_once(char::is_whitespace)?;
+    std::iter::once(spec.name)
+        .chain(spec.aliases.iter().copied())
+        .any(|name| head.eq_ignore_ascii_case(name))
+        .then_some(rest)
 }
 
 pub(crate) fn normalized_query(query: &str) -> String {
@@ -314,6 +350,10 @@ pub(crate) enum TextTarget {
     /// The path of a file to attach; `accepts` names what the model takes.
     AttachPath {
         accepts: String,
+    },
+    /// The title of `session_id`, prefilled with its current one.
+    SessionTitle {
+        session_id: cookie_agent_protocol::SessionId,
     },
 }
 
@@ -517,7 +557,7 @@ pub(crate) fn render_text(
 mod tests {
     use ratatui::{Terminal, backend::TestBackend, widgets::ListState};
 
-    use super::{COMMANDS, PaletteAction, SlashCommand, entries, match_rank};
+    use super::{COMMANDS, PaletteAction, SlashCommand, command_argument, entries, match_rank};
 
     fn names(query: &str) -> Vec<&'static str> {
         entries(query).into_iter().map(|spec| spec.name).collect()
@@ -587,6 +627,28 @@ mod tests {
         assert_eq!(action("events"), Some(PaletteAction::Events));
         assert_eq!(action("skills"), Some(PaletteAction::Skills));
         assert_eq!(action("quit"), Some(PaletteAction::Run(SlashCommand::Quit)));
+        assert_eq!(action("rename"), Some(PaletteAction::Rename));
+    }
+
+    #[test]
+    fn rename_keeps_the_text_typed_after_it() {
+        let rename = COMMANDS
+            .iter()
+            .find(|spec| spec.name == "rename")
+            .expect("rename");
+        assert_eq!(names("rename Fix The Parser"), ["rename"]);
+        assert_eq!(names("Title --auto"), ["rename"]);
+        assert_eq!(
+            command_argument(rename, "rename Fix The Parser"),
+            Some("Fix The Parser")
+        );
+        assert_eq!(command_argument(rename, "  title --auto"), Some("--auto"));
+        assert_eq!(command_argument(rename, "rename"), None);
+        assert_eq!(command_argument(rename, "renamed x"), None);
+        // Other commands never read an argument.
+        let goal = COMMANDS.iter().find(|spec| spec.name == "goal").unwrap();
+        assert_eq!(command_argument(goal, "goal ship it"), None);
+        assert!(names("goal ship it").is_empty());
     }
 
     #[test]

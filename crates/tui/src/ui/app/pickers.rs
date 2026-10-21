@@ -407,6 +407,11 @@ impl App {
                 self.close_command_palette();
                 self.invoke_skill(name, args).await;
             }
+            PaletteSubmit::Text(TextTarget::SessionTitle { session_id }, title) => {
+                if self.submit_session_title(session_id, &title) {
+                    self.close_command_palette();
+                }
+            }
             PaletteSubmit::Text(TextTarget::AttachPath { .. }, path) => {
                 if path.trim().is_empty() {
                     self.status = "enter the path of a file to attach".into();
@@ -449,6 +454,17 @@ impl App {
                     },
                     input: InputState::default(),
                 });
+            }
+            PaletteAction::Rename => {
+                let arguments = self
+                    .palette
+                    .as_ref()
+                    .and_then(|palette| {
+                        crate::ui::slash::command_argument(spec, palette.search.as_str())
+                    })
+                    .unwrap_or_default()
+                    .to_owned();
+                self.run_rename_command(&arguments);
             }
             PaletteAction::Compact => self.push_palette_step(PaletteStep::Text {
                 target: TextTarget::CompactFocus,
@@ -505,13 +521,14 @@ impl App {
     }
 
     pub(in crate::ui) async fn handle_session_picker(&mut self, key: KeyEvent) {
-        if self.handle_session_delete_key(key) {
+        if self.handle_session_delete_key(key) || self.handle_session_rename_key(key) {
             return;
         }
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('a') => return self.toggle_session_scope().await,
                 KeyCode::Char('d') => return self.begin_session_delete(),
+                KeyCode::Char('r') => return self.begin_session_rename(),
                 _ => {}
             }
         }

@@ -32,6 +32,7 @@ mod runtimes;
 mod scrolling;
 mod selection;
 mod session_delete;
+mod session_rename;
 mod sessions_tree;
 mod streaming;
 mod subscriptions;

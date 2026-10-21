@@ -17,6 +17,7 @@ mod pointer;
 mod providers;
 mod refresh;
 mod session_delete;
+mod session_rename;
 mod sessions;
 #[cfg(test)]
 pub(in crate::ui) use session_delete::{SessionDeletePrompt, SessionPickerAction};
@@ -808,6 +809,8 @@ pub struct App {
     pub(super) session_scope_all: bool,
     /// The session delete waiting for the user to confirm it.
     pub(super) session_delete: Option<session_delete::SessionDeletePrompt>,
+    /// The picker's title field for the highlighted session (Ctrl+R).
+    pub(super) session_rename: Option<session_rename::SessionRenamePrompt>,
     pub(super) agent_search: SearchPickerState,
     pub(super) model_search: SearchPickerState,
     pub(super) provider_search: SearchPickerState,
@@ -1006,6 +1009,11 @@ pub(in crate::ui) enum RpcUpdate {
     SessionDeleted {
         title: String,
         outcome: cookie_agent_client_state::session_delete::SessionDeleteOutcome,
+    },
+    /// A `session.rename` ended: the change sent, and the session it left.
+    SessionRenamed {
+        change: cookie_agent_protocol::SessionRenameChange,
+        result: Box<Result<SessionMeta, ClientError>>,
     },
     Tree {
         session_id: SessionId,
@@ -1448,6 +1456,7 @@ impl App {
             session_search: SearchPickerState::default(),
             session_scope_all: false,
             session_delete: None,
+            session_rename: None,
             agent_search: SearchPickerState::default(),
             model_search: SearchPickerState::default(),
             provider_search: SearchPickerState::default(),

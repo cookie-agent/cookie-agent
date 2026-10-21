@@ -194,6 +194,9 @@ impl App {
                     .find(|(rect, _)| over(*rect))
                     .map(|(_, button)| PointerTarget::ConfirmButton(*button));
             }
+            // The title field owns the picker; it is a text field, so
+            // nothing in it is a target.
+            Modal::Sessions if self.session_rename.is_some() => return None,
             Modal::Sessions => {
                 if let Some((_, action)) = hits
                     .session_picker_actions
