@@ -16,13 +16,15 @@ spec makes a project something the daemon knows and sessions belong to.
 - A session may belong to one project. It is chosen at `session.create`,
   and the session can later move to another project or out of any project.
   Projects can be created, renamed, and deleted.
-- A project carries default attachments, its own `AGENTS.md`, and its
-  memory folder.
+- A project carries default attachments, a default agent and agent
+  preset, its own `AGENTS.md`, and its memory folder.
 - Choosing a project in a client's New session prefills the runtime cards
   from the project's defaults, which stay editable. A `session.create` that
   names a project and omits `runtimes` gets the defaults from the daemon,
-  so the TUI and the CLI get them too. Moving a session into a project
-  never changes its attachments.
+  so the TUI and the CLI get them too. The default agent and preset prefill
+  the draft's agent selection in every client (added 2026-10-21,
+  [section 4](#4-sessions-in-a-project)). Moving a session into a project
+  never changes its attachments or its agent.
 - Sessions in a project see its memory in the snapshot: the reserved
   `project://<name>/overview` in full, and an index (URL, description,
   keywords) of every other memory in the project.
@@ -67,6 +69,8 @@ project between daemons, and per-project permission rules.
   created = "2026-10-21T18:00:00Z"
 
   [defaults]
+  preset = "rust"
+  agent = "builder"
   global = true
   runtimes = [
     { runtime_id = "local", capability = "coding", workspace = "/home/u/src/cookie-agent" },
@@ -77,8 +81,11 @@ project between daemons, and per-project permission rules.
   `emoji` is optional. When set, it is exactly one emoji: a single
   extended grapheme cluster of at most 32 bytes that Unicode marks as an
   emoji. It cannot be ASCII, whitespace, or a control character.
-  `[defaults]` has the shape of `session.create`'s `global` and `runtimes`.
-  A project with no `[defaults]` gets the daemon's usual defaults.
+  `global` and `runtimes` in `[defaults]` have the shape of
+  `session.create`'s fields of the same names. `agent` and `preset` name an
+  agent and its preset, as in `RunSelection`; both are optional, and an
+  agent without a preset is one from the shared registry. A project with
+  no `[defaults]` gets the daemon's usual defaults.
 - Each project file carries a revision, as memory files do, and every
   change is compare-and-swap on it.
 - **The memory folder stays where it is**, so `project://` URLs, the memory
@@ -114,6 +121,18 @@ project between daemons, and per-project permission rules.
 - **Defaults at creation:** when `project` is set and `runtimes` is omitted,
   the daemon attaches the project's `[defaults]`. An explicit `runtimes`,
   even an empty one, wins.
+- **Default agent.**
+  - `session.create` always carries a `RunSelection`, so the daemon never
+    replaces it. Clients apply the project's `agent` and `preset` when a
+    project is chosen for a draft: the web project picker, the TUI picker,
+    and `cookie --project`.
+  - The model is the agent's own default model, as when the user switches
+    agents. The selection stays editable before the first message.
+  - If the agent no longer exists or cannot run as root, the client keeps
+    its usual default and says so.
+  - `project.update` refuses an agent the daemon does not list in that
+    preset, or one that cannot run as root. An agent removed later
+    produces no error until a client tries to use it.
 - `session.list` gains `project: Option<ProjectFilter>`, which is a project
   ID or "none". A session whose project no longer exists lists as having
   none.
@@ -281,7 +300,8 @@ Web session rows replace the folder-and-paths line with badges. The
 - **New session.**
   - A project picker sits above the runtime cards. It starts at the section
     whose `+` was used, else "No project".
-  - Picking a project prefills the cards from its defaults.
+  - Picking a project prefills the cards from its defaults, and the agent
+    chip from its default agent and preset.
   - A "New project…" entry opens the project editor, empty.
 - **Project editor.** A right-side panel on desktop, the same width as
   the model picker's, and a full-height sheet on a phone. It holds:
@@ -289,6 +309,7 @@ Web session rows replace the folder-and-paths line with badges. The
   - emoji, chosen with an emoji picker
     ([section 10.3](#103-emoji-picker));
   - default attachments, edited with the same runtime cards;
+  - default agent and preset, chosen with the agent picker, or "None";
   - an "Use this session's attachments" shortcut;
   - an `AGENTS.md` editor;
   - a link to the project's folder in the Memory view.
@@ -323,7 +344,8 @@ Web session rows replace the folder-and-paths line with badges. The
   - For a draft, the picker sets the project the session will be created
     in. If that project has defaults, the draft takes them, and the label
     shows their workspaces before anything is sent. Otherwise the draft
-    keeps the TUI's usual attachments.
+    keeps the TUI's usual attachments. The draft also takes the project's
+    default agent and preset, if set.
 - `/project` opens the same picker from the keyboard.
 - **Starting in a project.** A new session belongs to no project unless one
   is chosen. `cookie --project <name>` starts in that project, and nothing
