@@ -798,8 +798,12 @@ def management(browser):
     browser.shot("memory-conflict")
     browser.click("#memory-overwrite")
     browser.wait("the overwrite", lambda: count(browser, "#memory-text") == 0)
-    with open(path) as file:
-        assert "second" in file.read()
+    # The editor closes when the page has the answer; the file may land a
+    # moment later, so wait for it rather than read it once.
+    def overwritten():
+        with open(path) as file:
+            return "second" in file.read()
+    browser.wait("the overwritten file", overwritten)
     browser.click('#page [data-memory="project://e2e/notes"] [data-memory-delete]')
     browser.click("#memory-delete-confirm")
     browser.wait("the deleted memory", lambda: count(browser, '#page [data-memory="project://e2e/notes"]') == 0)

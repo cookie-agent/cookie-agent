@@ -638,7 +638,9 @@ async fn fresh_session_selection_discovers_skill_slash_commands() {
     app.handle_key_for_test(key(crossterm::event::KeyCode::Enter, none))
         .await;
     assert!(!app.palette_open_for_test());
-    let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    // A hang guard for a whole skill run, not a timing assertion: a loaded
+    // Windows runner has taken more than 2 s.
+    let loaded = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             let mut run_id = None;
             loop {
                 let event = match deliveries.recv().await.expect("delivery") {
