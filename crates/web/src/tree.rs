@@ -1,7 +1,14 @@
 //! The subagents nested under their session in the sessions list: which
-//! rows a session tree shows, folded where the user folded it, whether the
-//! session's row expands at all (`/agent-panel`), the title bar's path to
-//! a viewed subagent, and the subagent a delegate call started.
+//! rows the open session's tree shows, collapsed or expanded, the title
+//! bar's path to a viewed subagent, and the subagent a delegate call
+//! started.
+//!
+//! Only the open session's row has a tree. Collapsed (the default), it
+//! shows the subagents that run, at any depth, with their finished
+//! ancestors dimmed so each sits in its place, and the subagent the page
+//! shows; with nothing running it shows nothing. Expanded, it shows the
+//! whole hierarchy. A click on the open session's row switches between the
+//! two, and the browser remembers the choice per session.
 
 use std::collections::HashSet;
 
@@ -9,15 +16,15 @@ use cookie_agent_protocol::{
     SessionId, SessionMeta, SessionOrigin, SessionStatus, SessionTree, ToolCallId,
 };
 
-/// Whether the open session's row shows its subagents, as
-/// `/agent-panel show|hide|auto` sets.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum PanelMode {
-    /// While a delegated agent is live, or a child session is viewed.
-    #[default]
-    Auto,
-    Shown,
-    Hidden,
+/// The `localStorage` key of whether `session_id`'s tree is expanded.
+pub fn expanded_key(session_id: SessionId) -> String {
+    format!("cookie.tree:{session_id}")
+}
+
+/// Whether the value stored under [`expanded_key`] expands the tree: only
+/// `expanded` does, so a tree starts collapsed.
+pub fn expanded_from_storage(stored: Option<&str>) -> bool {
+    stored == Some("expanded")
 }
 
 /// One row of the tree.
@@ -34,10 +41,13 @@ pub struct TreeRow {
     pub status: SessionStatus,
     pub has_children: bool,
     pub collapsed: bool,
+    /// Shown only to place a running subagent under it: it does not run
+    /// itself, and the tree is collapsed.
+    pub dimmed: bool,
 }
 
-/// The rows of `tree`, depth first, without the children of collapsed
-/// sessions.
+/// The rows of the expanded `tree`, depth first, without the children of
+/// the sessions the user folded.
 pub fn tree_rows(tree: &SessionTree, collapsed: &HashSet<SessionId>) -> Vec<TreeRow> {
     let mut rows = Vec::new();
     push_rows(tree, 0, collapsed, &mut rows);
@@ -52,21 +62,61 @@ fn push_rows(
 ) {
     let session_id = tree.session.session_id;
     let folded = collapsed.contains(&session_id);
-    rows.push(TreeRow {
-        session_id,
+    rows.push(row(tree, depth, folded, false));
+    if !folded {
+        for child in &tree.children {
+            push_rows(child, depth + 1, collapsed, rows);
+        }
+    }
+}
+
+fn row(tree: &SessionTree, depth: usize, collapsed: bool, dimmed: bool) -> TreeRow {
+    TreeRow {
+        session_id: tree.session.session_id,
         depth,
         agent: tree.session.creation_selection.agent.to_string(),
         task: task(&tree.session),
         handle: tree.session.short_id.clone(),
         status: tree.session.status,
         has_children: !tree.children.is_empty(),
-        collapsed: folded,
-    });
-    if !folded {
-        for child in &tree.children {
-            push_rows(child, depth + 1, collapsed, rows);
-        }
+        collapsed,
+        dimmed,
     }
+}
+
+/// The rows of the collapsed `tree`, depth first: the subagents that run
+/// and `viewed` (the session the page shows), each under its ancestors,
+/// which are dimmed unless they run (or are viewed) too. The root's row is
+/// first when anything shows; nothing shows when nothing runs.
+pub fn running_rows(tree: &SessionTree, viewed: Option<SessionId>) -> Vec<TreeRow> {
+    let mut rows = Vec::new();
+    push_running(tree, 0, viewed, &mut rows);
+    rows
+}
+
+/// Pushes `tree`'s rows when it, or a session below it, runs or is
+/// viewed; whether it pushed any.
+fn push_running(
+    tree: &SessionTree,
+    depth: usize,
+    viewed: Option<SessionId>,
+    rows: &mut Vec<TreeRow>,
+) -> bool {
+    let at = rows.len();
+    let shown_below = tree.children.iter().fold(Vec::new(), |mut below, child| {
+        push_running(child, depth + 1, viewed, &mut below);
+        below
+    });
+    // The root's own state does not count: its row is the session's.
+    let shown_itself = depth > 0
+        && (tree.session.status == SessionStatus::Running
+            || viewed == Some(tree.session.session_id));
+    if !shown_itself && shown_below.is_empty() {
+        return false;
+    }
+    rows.insert(at, row(tree, depth, false, !shown_itself && depth > 0));
+    rows.extend(shown_below);
+    true
 }
 
 fn task(session: &SessionMeta) -> String {
@@ -158,26 +208,6 @@ impl Activity {
     }
 }
 
-/// Whether a delegated session of `tree` is still live (idle or running).
-pub fn has_live_delegate(tree: &SessionTree) -> bool {
-    tree.children.iter().any(|child| {
-        matches!(
-            child.session.status,
-            SessionStatus::Idle | SessionStatus::Running
-        ) || has_live_delegate(child)
-    })
-}
-
-/// Whether the panel shows in `mode` for `tree`, with `viewing_child` when
-/// the viewed session is not the tree's root.
-pub fn panel_visible(mode: PanelMode, tree: Option<&SessionTree>, viewing_child: bool) -> bool {
-    match mode {
-        PanelMode::Shown => true,
-        PanelMode::Hidden => false,
-        PanelMode::Auto => viewing_child || tree.is_some_and(has_live_delegate),
-    }
-}
-
 /// The metadata of `session_id` in `tree`.
 pub fn find(tree: &SessionTree, session_id: SessionId) -> Option<&SessionMeta> {
     if tree.session.session_id == session_id {
@@ -204,7 +234,7 @@ mod tests {
     use cookie_agent_protocol::{SessionId, SessionMeta, SessionStatus, SessionTree};
 
     use super::{
-        Activity, PanelMode, contains, delegates_of, has_live_delegate, panel_visible, path,
+        Activity, contains, delegates_of, expanded_from_storage, expanded_key, path, running_rows,
         subagent_label, tree_rows,
     };
 
@@ -279,25 +309,104 @@ mod tests {
         assert!(!contains(&tree, SessionId::new_v7()));
     }
 
+    /// The (depth, agent, dimmed) of `rows` below the root.
+    fn shown(rows: &[super::TreeRow]) -> Vec<(usize, &str, bool)> {
+        rows.iter()
+            .filter(|row| row.depth > 0)
+            .map(|row| (row.depth, row.agent.as_str(), row.dimmed))
+            .collect()
+    }
+
     #[test]
-    fn the_auto_panel_shows_for_live_delegates_or_a_viewed_child() {
-        let finished = node(
+    fn a_collapsed_tree_shows_running_subagents_under_dimmed_ancestors() {
+        // primary ─ planner (completed) ─ coder (running)
+        //         │                     └ tester (completed)
+        //         ├ reviewer (failed)
+        //         └ scout (running) ─ reader (completed)
+        let tree = node(
             "primary",
             SessionStatus::Idle,
-            vec![node("worker", SessionStatus::Completed, Vec::new())],
+            vec![
+                node(
+                    "planner",
+                    SessionStatus::Completed,
+                    vec![
+                        node("coder", SessionStatus::Running, Vec::new()),
+                        node("tester", SessionStatus::Completed, Vec::new()),
+                    ],
+                ),
+                node("reviewer", SessionStatus::Failed, Vec::new()),
+                node(
+                    "scout",
+                    SessionStatus::Running,
+                    vec![node("reader", SessionStatus::Completed, Vec::new())],
+                ),
+            ],
         );
-        let live = node(
+        let rows = running_rows(&tree, None);
+        assert_eq!(rows[0].depth, 0, "the root leads");
+        assert_eq!(
+            shown(&rows),
+            [
+                (1, "planner", true),
+                (2, "coder", false),
+                (1, "scout", false),
+            ]
+        );
+        // The viewed session shows too, though it finished.
+        let reviewer = tree.children[1].session.session_id;
+        assert_eq!(
+            shown(&running_rows(&tree, Some(reviewer))),
+            [
+                (1, "planner", true),
+                (2, "coder", false),
+                (1, "reviewer", false),
+                (1, "scout", false),
+            ]
+        );
+        // Expanded, everything shows and nothing is dimmed.
+        assert_eq!(
+            shown(&tree_rows(&tree, &HashSet::new())),
+            [
+                (1, "planner", false),
+                (2, "coder", false),
+                (2, "tester", false),
+                (1, "reviewer", false),
+                (1, "scout", false),
+                (2, "reader", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_collapsed_tree_with_nothing_running_shows_nothing() {
+        let tree = node(
             "primary",
             SessionStatus::Running,
-            vec![node("worker", SessionStatus::Running, Vec::new())],
+            vec![node(
+                "worker",
+                SessionStatus::Completed,
+                vec![node("helper", SessionStatus::Idle, Vec::new())],
+            )],
         );
-        assert!(!has_live_delegate(&finished));
-        assert!(has_live_delegate(&live));
-        assert!(!panel_visible(PanelMode::Auto, Some(&finished), false));
-        assert!(panel_visible(PanelMode::Auto, Some(&finished), true));
-        assert!(panel_visible(PanelMode::Auto, Some(&live), false));
-        assert!(panel_visible(PanelMode::Shown, None, false));
-        assert!(!panel_visible(PanelMode::Hidden, Some(&live), true));
+        assert!(
+            running_rows(&tree, None).is_empty(),
+            "the root's run does not count"
+        );
+        assert!(running_rows(&tree, Some(tree.session.session_id)).is_empty());
+        assert!(running_rows(&node("primary", SessionStatus::Idle, Vec::new()), None).is_empty());
+    }
+
+    #[test]
+    fn a_tree_starts_collapsed_until_expanded_is_stored() {
+        assert!(expanded_from_storage(Some("expanded")));
+        assert!(!expanded_from_storage(Some("collapsed")));
+        assert!(!expanded_from_storage(None));
+        let session_id = SessionId::new_v7();
+        assert_eq!(
+            expanded_key(session_id),
+            format!("cookie.tree:{session_id}")
+        );
     }
 
     /// `child` as delegated by `parent`'s call `call`.

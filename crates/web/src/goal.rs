@@ -1,31 +1,17 @@
-//! The root session's goal: what `/goal` asks for, and which lifecycle
-//! actions the goal bar offers, as the TUI's bar does.
+//! The root session's goal: what the goal sheet asks for, and which
+//! lifecycle actions the goal bar offers, as the TUI's bar does.
 
 use cookie_agent_protocol::{GoalLifecycleAction, GoalStatus};
 
-/// What a `/goal` argument asks for.
+/// What the goal sheet or bar asks for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GoalCommand {
-    /// No argument: show the goal and its controls.
+    /// Show the goal and its controls.
     Show,
     /// Set a new objective.
     Objective(String),
     /// Pause, resume, or cancel the goal.
     Lifecycle(GoalLifecycleAction),
-}
-
-impl GoalCommand {
-    /// `pause`, `resume`, and `cancel` control the goal; any other text is
-    /// the new objective.
-    pub fn parse(argument: &str) -> Self {
-        match argument.trim() {
-            "" => Self::Show,
-            "pause" => Self::Lifecycle(GoalLifecycleAction::Pause),
-            "resume" => Self::Lifecycle(GoalLifecycleAction::Resume),
-            "cancel" => Self::Lifecycle(GoalLifecycleAction::Cancel),
-            objective => Self::Objective(objective.to_owned()),
-        }
-    }
 }
 
 /// The lifecycle actions a goal in `status` offers; none in a read-only
@@ -68,24 +54,7 @@ pub fn needs_selection(action: GoalLifecycleAction) -> bool {
 mod tests {
     use cookie_agent_protocol::{GoalLifecycleAction, GoalStatus};
 
-    use super::{GoalCommand, goal_actions};
-
-    #[test]
-    fn goal_arguments_control_the_goal_or_set_its_objective() {
-        assert_eq!(GoalCommand::parse("  "), GoalCommand::Show);
-        assert_eq!(
-            GoalCommand::parse("pause"),
-            GoalCommand::Lifecycle(GoalLifecycleAction::Pause)
-        );
-        assert_eq!(
-            GoalCommand::parse(" resume "),
-            GoalCommand::Lifecycle(GoalLifecycleAction::Resume)
-        );
-        assert_eq!(
-            GoalCommand::parse("ship the release"),
-            GoalCommand::Objective("ship the release".into())
-        );
-    }
+    use super::goal_actions;
 
     #[test]
     fn the_bar_offers_what_the_goal_status_allows() {

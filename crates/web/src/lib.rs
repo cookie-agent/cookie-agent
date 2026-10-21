@@ -22,6 +22,7 @@ pub mod install;
 pub mod keys;
 pub mod layout;
 mod media;
+pub mod modes;
 pub mod render;
 pub mod skills;
 pub mod theme;

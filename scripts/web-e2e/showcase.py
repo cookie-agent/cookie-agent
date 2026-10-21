@@ -176,17 +176,20 @@ for theme in ("light", "dark"):
     )
     browser.shot("web-phone-%s.png" % theme)
 
-# Every sheet and menu of the chat view: a slash command typed in the
-# composer, or a click.
+# Every sheet and menu of the chat view: the bottom bar's pickers, then the
+# ⋮ menu's entries, each by its clicks.
 COMMANDS = [
-    "/agent", "/model", "/preset", "/approvals", "/usage", "/events",
-    "/goal", "/background", "/skills", "/permissions", "/runtime",
+    ("agent", ["#agent-chip"]),
+    ("model", ["#model-chip"]),
+    ("modes", ["#permission-mode"]),
+] + [
+    (name, ["main button[aria-label=Commands]", "#sheet [data-command=%s]" % name])
+    for name in ("compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset")
 ]
 CLICKS = [
     ("commands", "button[aria-label=Commands]"),
     ("message-menu", "#transcript [data-action=user-menu]"),
     ("connection", "[data-rail] button[aria-haspopup=dialog]"),
-    ("composer-completions", None),
     ("drawer", "main [data-sidebar-toggle]"),
 ]
 # The rail's views, and the Settings sections.
@@ -228,12 +231,13 @@ if ALL:
         time.sleep(1)
         close_all()
         both_themes("%s-transcript" % size)
-        for command in COMMANDS:
+        for name, clicks in COMMANDS:
             close_all()
-            browser.type("#composer", command)
-            browser.type("#composer", ENTER)
-            time.sleep(1.2)
-            both_themes("%s-%s" % (size, command[1:]))
+            for selector in clicks:
+                browser.script("document.querySelector(arguments[0]).click()", selector)
+                time.sleep(0.6)
+            time.sleep(0.6)
+            both_themes("%s-%s" % (size, name))
         for name in VIEWS:
             close_all()
             view(name)
@@ -256,12 +260,7 @@ if ALL:
         time.sleep(0.5)
         for name, selector in CLICKS:
             close_all()
-            if selector is None:
-                browser.script(
-                    "const c = document.querySelector('#composer'); c.value = '/m';"
-                    "c.dispatchEvent(new Event('input')); c.focus()"
-                )
-            elif name == "drawer" and width >= 1024:
+            if name == "drawer" and width >= 1024:
                 # A desktop pins the sidebar instead (photographed below).
                 continue
             elif browser.count(selector):
@@ -361,8 +360,11 @@ if COMPOSER:
                 top, height = chips_line_up()
                 browser.shot("composer/%s-bar-%s-%s.png" % (size, mode, theme), "#status-bar")
             print("%s %s: chips at %s px, %s px tall" % (size, mode, top, height))
+            following = MODES[(MODES.index(mode) + 1) % len(MODES)]
             browser.script("document.querySelector('#permission-mode').click()")
-            time.sleep(2.4)
+            time.sleep(0.6)
+            browser.script("document.querySelector('#sheet [data-mode=\"%s\"]').click()" % following)
+            time.sleep(0.6)
         # A run going: Stop with an empty box, Steer and Queue with text.
         browser.type("#composer", "Explain the change; take your time")
         browser.type("#composer", ENTER)

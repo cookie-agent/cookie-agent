@@ -91,7 +91,7 @@ pub fn BackgroundBar(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     class=format!("{ROW} min-w-0 flex-1 justify-center")
-                    on:click=move |_| workspace.run_command(Command::Background, String::new())
+                    on:click=move |_| workspace.run_command(Command::Background)
                 >
                     <span class="flex w-full items-center gap-2">
                     <Glyph icon=icondata::FaHourglassHalfSolid class="text-caramel dark:text-maple" />
@@ -264,6 +264,62 @@ pub fn AttachButtons(workspace: Workspace) -> impl IntoView {
                     <Glyph icon=icondata::FaCameraSolid class="text-base" />
                 </button>
             </Show>
+        </Show>
+    }
+}
+
+/// Compacting the context: an optional focus, **Compact**, and, while it
+/// compacts, the way to cancel it (as the composer's Stop does).
+pub fn compact_sheet(workspace: Workspace) -> impl IntoView {
+    let focus = RwSignal::new(String::new());
+    let started = RwSignal::new(false);
+    let compacting = move || workspace.compacting_now();
+    view! {
+        <p class=NOTE>
+            "Replaces the history so far with a summary, so the session has room to go on. A focus says what the summary must keep."
+        </p>
+        <label class="flex flex-col gap-1 text-sm">
+            <span class="font-bold">"Focus " <span class="font-normal text-ink dark:text-sand">"(optional)"</span></span>
+            <textarea
+                id="compact-focus"
+                rows="2"
+                class=FIELD
+                placeholder="e.g. keep the API decisions"
+                prop:value=move || focus.get()
+                on:input=move |event| focus.set(event_target_value(&event))
+            ></textarea>
+        </label>
+        <div class="flex flex-wrap items-center gap-2">
+            <button
+                type="button"
+                id="compact-run"
+                class=PRIMARY
+                disabled=move || compacting() || !workspace.writable()
+                on:click=move |_| {
+                    started.set(true);
+                    workspace.compact(focus.get_untracked());
+                }
+            >
+                <Glyph icon=icondata::FaCompressSolid />
+                "Compact"
+            </button>
+            <Show when=compacting>
+                <span class="inline-flex min-h-11 items-center gap-2 text-sm" role="status">
+                    <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin text-caramel dark:text-maple" />
+                    "Compacting…"
+                </span>
+                <button
+                    type="button"
+                    id="compact-cancel"
+                    class=BUTTON
+                    on:click=move |_| workspace.cancel_compaction()
+                >
+                    "Cancel compaction"
+                </button>
+            </Show>
+        </div>
+        <Show when=move || started.get() && !compacting()>
+            <p id="compact-outcome" class="text-sm" role="status">{move || workspace.status.get()}</p>
         </Show>
     }
 }
@@ -479,7 +535,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                     let hint = skill.argument_hint.clone().unwrap_or_else(|| "arguments".into());
                     view! {
                         <div class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
-                            <p class="font-mono text-sm">{format!("/{}", skill.name)}</p>
+                            <p class="font-mono text-sm font-bold">{skill.name.clone()}</p>
                             <input
                                 type="text"
                                 id="skill-args"

@@ -50,7 +50,7 @@ def call(method, path, body=None):
 
 
 class Browser:
-    def __init__(self, user_agent=None):
+    def __init__(self, user_agent=None, prefs=None):
         for _ in range(100):
             try:
                 call("GET", "/status")
@@ -58,8 +58,9 @@ class Browser:
             except OSError:
                 time.sleep(0.1)
         options = {"args": ["-headless"]}
+        options["prefs"] = dict(prefs or {})
         if user_agent:
-            options["prefs"] = {"general.useragent.override": user_agent}
+            options["prefs"]["general.useragent.override"] = user_agent
         capabilities = {
             "browserName": "firefox",
             "moz:firefoxOptions": options,
@@ -372,13 +373,14 @@ def tool_rows(browser):
 def session_depth(browser):
     """Subagents, history edits, goals, background calls, media, skills, and
     permission overrides."""
-    # A delegation whose subagent answers slowly: the open session's row
-    # expands to show it while it is live, and its delegate call says what
-    # it does.
+    # A delegation whose subagent answers slowly. Collapsed (the default),
+    # the open session's row shows the subagent while it runs, and its
+    # delegate call says what it does.
     new_session(browser)
     send(browser, "delegate slowly")
     nested = "aside [data-subagents] [data-tree-session]"
-    browser.wait("the live subagent under its session", lambda: count(browser, nested) == 1, timeout=60)
+    browser.wait("the running subagent under its session", lambda: count(browser, nested) == 1, timeout=60)
+    assert tree_state(browser) == "collapsed", tree_state(browser)
     assert browser.script(NESTED_UNDER_OPEN_ROW), "the subagents are not under the open session's row"
     assert count(browser, "aside [data-subagents] [data-delete]") == 0, "a subagent offers deleting"
     assert "helper" in browser.text("aside [data-subagents]"), browser.text("aside [data-subagents]")
@@ -387,16 +389,19 @@ def session_depth(browser):
         lambda: browser.text("#transcript [data-delegate-activity]") != "",
         timeout=30,
     )
-    print("a live subagent shows nested under its session:", browser.text("#transcript [data-delegate-activity]"))
+    print("a running subagent shows under its session:", browser.text("#transcript [data-delegate-activity]"))
     browser.shot("subagent-live")
     browser.wait("the delegation", lambda: "The tool ran." in browser.text("#transcript"), timeout=90)
-    # The finished subagent is no longer live, so `auto` folds the row.
-    browser.wait("the folded row", lambda: count(browser, nested) == 0)
-    print("the session's row expands only while its subagent is live")
-    send(browser, "/agent-panel show")
-    browser.wait("the subagents", lambda: count(browser, nested) == 1)
+    # Nothing runs: the collapsed tree shows nothing.
+    browser.wait("the empty collapsed tree", lambda: count(browser, nested) == 0)
+    print("collapsed, the tree shows only running subagents")
+    # A click on the open session's row expands it: the whole hierarchy.
+    browser.click(open_row(browser))
+    browser.wait("the expanded tree", lambda: tree_state(browser) == "expanded" and count(browser, nested) == 1)
+    assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", open_row(browser)) == "true"
     browser.shot("subagent-tree")
     root_title = browser.text("#session-title")
+    root = browser.script("return document.querySelector(arguments[0]).dataset.session", open_row(browser))
     # A subagent opens from the nested tree; the breadcrumb leads back.
     browser.click(nested)
     browser.wait("the child session", lambda: "child task" in browser.text("#transcript"))
@@ -415,14 +420,64 @@ def session_depth(browser):
     )
     browser.click("#transcript [data-action=open-session]")
     browser.wait("the child session", lambda: "child task" in browser.text("#transcript"))
-    # `/agent-panel hide` folds the row even while the child is open.
-    send(browser, "/agent-panel hide")
-    browser.wait("the hidden subagents", lambda: count(browser, nested) == 0)
-    send(browser, "/agent-panel auto")
-    browser.wait("the subagents of the open child", lambda: count(browser, nested) == 1)
     browser.click("main [data-crumb]")
     browser.wait("back at the root", lambda: browser.text("#session-title") == root_title)
-    print("/agent-panel hide folds the subagents")
+    # The browser remembers the expanded tree, and the click that collapses it.
+    def reopen():
+        browser.go(LINK.split("#")[0])
+        browser.wait("the connection", lambda: browser.text("#connected") != "")
+        browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % root) == 1)
+        if count(browser, 'aside [data-session="%s"][aria-current=true]' % root) == 0:
+            browser.click('aside [data-session="%s"]' % root)
+        browser.wait("the session again", lambda: browser.text("#session-title") == root_title)
+    reopen()
+    browser.wait("the remembered expanded tree", lambda: tree_state(browser) == "expanded" and count(browser, nested) == 1)
+    browser.click(open_row(browser))
+    browser.wait("the collapsed tree", lambda: tree_state(browser) == "collapsed" and count(browser, nested) == 0)
+    reopen()
+    browser.wait("the remembered collapsed tree", lambda: tree_state(browser) == "collapsed" and count(browser, nested) == 0)
+    print("a click on the open session's row expands or collapses its tree; the browser remembers it")
+
+    # A subagent that runs under one that finished: collapsed, the finished
+    # one shows dimmed to place the running one; other sessions show no tree.
+    new_session(browser)
+    send(browser, "delegate deeply")
+    browser.wait(
+        "the running grandchild under its dimmed parent",
+        lambda: count(browser, nested) == 2
+        and count(browser, "aside [data-subagents] [data-dimmed]") == 1
+        and "grandchild task" in browser.text("aside [data-subagents]"),
+        timeout=90,
+    )
+    rows = browser.script(
+        "return [...document.querySelectorAll('aside [data-subagents] [data-tree-session]')]"
+        ".map((b) => [b.innerText, b.parentElement.dataset.dimmed === 'true'])"
+    )
+    assert rows[0][1] and not rows[1][1], rows
+    assert "grandchild task" in rows[1][0], rows
+    assert count(browser, "aside [data-subagents]") == 1, "another session shows a tree"
+    deep = browser.script("return document.querySelector(arguments[0]).dataset.session", open_row(browser))
+    browser.shot("tree-collapsed-running")
+    browser.click(open_row(browser))
+    browser.wait(
+        "the expanded tree",
+        lambda: tree_state(browser) == "expanded" and count(browser, "aside [data-subagents] [data-dimmed]") == 0,
+    )
+    assert count(browser, nested) == 2
+    browser.shot("tree-expanded")
+    browser.click(open_row(browser))
+    browser.wait("the collapsed tree", lambda: tree_state(browser) == "collapsed")
+    # Another session opened: the running grandchild's session shows no tree.
+    browser.click('aside [data-session="%s"]' % root)
+    browser.wait("another session", lambda: browser.text("#session-title") == root_title)
+    time.sleep(1)
+    assert count(browser, nested) == 0, "a session other than the open one shows its tree"
+    assert count(browser, "aside [data-subagents]") <= 1
+    assert count(browser, "aside [data-subagents]") == 0 or browser.script(NESTED_UNDER_OPEN_ROW)
+    print("a running subagent sits under its dimmed parent; only the open session has a tree")
+    browser.click('aside [data-session="%s"]' % deep)
+    browser.wait("the deep session", lambda: count(browser, 'aside [data-session="%s"][aria-current=true]' % deep) == 1)
+    browser.wait("the grandchild's end", lambda: count(browser, nested) == 0, timeout=90)
 
     # Fork at a message, then revert one.
     new_session(browser)
@@ -462,17 +517,39 @@ def session_depth(browser):
     browser.shot("revert")
     clear_composer(browser)
 
-    # Compact the context.
-    send(browser, "/compact keep the greetings")
-    browser.wait(
-        "the compaction",
-        lambda: any(
-            word in browser.text("#status")
-            for word in ("context compacted", "checkpoint", "compaction failed")
-        ),
-        timeout=60,
-    )
-    print("compact:", browser.text("#status"))
+    # Text that starts with a slash is a message: there are no slash
+    # commands, and no menu pops up while typing one.
+    browser.type("#composer", "/comp")
+    time.sleep(0.4)
+    assert count(browser, "#sheet, [data-command]") == 0, "typing a slash opened a menu"
+    clear_composer(browser)
+    sent = answers(browser)
+    send(browser, "/compact")
+    browser.wait("the slash message's answer", lambda: answers(browser) > sent)
+    assert browser.script(
+        "return [...document.querySelectorAll('#transcript .user-message')].some((m) => m.innerText.includes('/compact'))"
+    ), "the text was not sent as a message"
+    assert count(browser, "#sheet") == 0, "a sheet opened for a slash text"
+    print("typing /compact sends it as a message")
+
+    # Compact the context from the ⋮ menu, with a focus, then without.
+    for focus in ("keep the greetings", ""):
+        menu(browser, "compact")
+        browser.wait("the compact sheet", lambda: count(browser, "#compact-run") == 1)
+        if focus:
+            browser.type("#compact-focus", focus)
+            browser.shot("compact-sheet")
+        browser.click("#compact-run")
+        browser.wait(
+            "the compaction",
+            lambda: any(
+                word in browser.text("#compact-outcome")
+                for word in ("context compacted", "checkpoint", "compaction failed")
+            ),
+            timeout=60,
+        )
+        print("compact (focus %r): %s" % (focus, browser.text("#compact-outcome")))
+        close_sheet(browser)
     browser.shot("compact")
 
     # A goal, paused while its run streams. The engine tells the agent of a
@@ -480,7 +557,11 @@ def session_depth(browser):
     # the objective makes the scripted model answer slowly, and the pause
     # waits for that answer to stream: pausing between the goal's runs would
     # send no control message.
-    send(browser, "/goal finish the scenario slowly")
+    menu(browser, "goal")
+    browser.wait("the goal sheet", lambda: count(browser, "#goal-input") == 1)
+    browser.type("#goal-input", "finish the scenario slowly")
+    browser.shot("goal-sheet")
+    browser.click("#goal-set")
     browser.wait("the goal bar", lambda: "finish the scenario" in browser.text("#goal-bar"))
     browser.shot("goal")
     browser.wait("the pause control", lambda: count(browser, "#goal-bar [data-goal-action=pause]") == 1)
@@ -512,7 +593,7 @@ def session_depth(browser):
     browser.click("#transcript [data-action=background]")
     browser.wait("the background bar", lambda: "in background" in browser.text("#background-bar"))
     browser.shot("background")
-    send(browser, "/background")
+    menu(browser, "background")
     browser.wait("the background sheet", lambda: count(browser, "#sheet [data-stop]") > 0)
     browser.shot("background-sheet")
     browser.click("#sheet [data-stop]")
@@ -572,7 +653,9 @@ def session_depth(browser):
     browser.shot("media-block")
 
     # Run a skill.
-    send(browser, "/skills gre")
+    menu(browser, "skills")
+    browser.wait("the skill search", lambda: count(browser, "#skill-search") == 1)
+    browser.type("#skill-search", "gre")
     browser.wait("the skills", lambda: count(browser, "#sheet [data-skill=greet]") == 1)
     browser.click("#sheet [data-skill=greet]")
     browser.type("#skill-args", "Ada")
@@ -583,7 +666,7 @@ def session_depth(browser):
     browser.wait("the skill run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
 
     # A permission override, then its removal.
-    send(browser, "/permissions")
+    menu(browser, "permissions")
     browser.wait("the permissions", lambda: count(browser, "#sheet .permission-row") > 0)
     browser.script(
         "const s = document.querySelector('#permission-action'); s.value = 'bash';"
@@ -605,7 +688,7 @@ def session_depth(browser):
 
     # A new session's draft rules are previewed against its agent.
     new_session(browser)
-    send(browser, "/permissions")
+    menu(browser, "permissions")
     browser.wait("the draft preview", lambda: "Rules for the new session" in browser.text("#sheet"))
     browser.wait("the previewed rules", lambda: count(browser, "#sheet .permission-row") > 0)
     browser.script(
@@ -649,6 +732,146 @@ def view(browser, name):
         "const p = document.querySelector('#page'); return p ? p.dataset.view : 'chat'") == name)
 
 
+# How far the composer's text starts right of its attach buttons, and ends
+# left of its action buttons; `null` until the attach button shows.
+COMPOSER_CLEARANCE = """
+const t = document.querySelector('#composer');
+if (!t || !document.querySelector('#attach')) return null;
+const box = t.getBoundingClientRect(), style = getComputedStyle(t);
+const visible = (selector) => [...document.querySelectorAll(selector)].filter((b) => b.getClientRects().length);
+const left = Math.max(...visible('[data-composer-left] button').map((b) => b.getBoundingClientRect().right));
+const right = Math.min(...visible('[data-composer-actions] button').map((b) => b.getBoundingClientRect().left));
+return [box.left + parseFloat(style.paddingLeft) - left, right - (box.right - parseFloat(style.paddingRight))];
+"""
+
+
+def composer_clear(browser, what):
+    """Asserts, with no interaction since the page connected, that the
+    composer's text keeps clear of the buttons in its box."""
+    browser.wait("the attach button", lambda: browser.script(COMPOSER_CLEARANCE) is not None)
+    time.sleep(0.5)
+    left, right = browser.script(COMPOSER_CLEARANCE)
+    assert left >= 0 and right >= 0, "%s: the composer's text overlaps its buttons by %s, %s px" % (what, left, right)
+    assert browser.script("return document.querySelector('#composer').placeholder") == "Message"
+
+
+def hover_at(browser, selector, dx=0):
+    """Moves a mouse to `dx` px right of `selector`'s centre."""
+    origin = {ELEMENT: browser.find(selector)}
+    perform(browser, [{
+        "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
+        "actions": [{"type": "pointerMove", "duration": 0, "origin": origin, "x": dx, "y": 0}],
+    }])
+
+
+# The opacity of the newest user message's ⋯, and whether the bubble moved
+# since `arguments[0]` (its left edge then).
+MESSAGE_MENU = """
+const rows = document.querySelectorAll('#transcript .user-row');
+const row = rows[rows.length - 1];
+const button = row.querySelector('[data-action=user-menu]');
+const style = getComputedStyle(button);
+return [style.display, parseFloat(style.opacity), Math.round(row.querySelector('[data-bubble]').getBoundingClientRect().left)];
+"""
+
+
+def message_menu(browser):
+    """A user message's ⋯ shows only while a mouse is over its row, the
+    whole band at the bubble's height, or the keyboard is in it; the bubble
+    never moves for it."""
+    browser.wait("a user message", lambda: count(browser, "#transcript .user-row") > 0)
+    rows = "#transcript .user-row"
+    newest = "document.querySelectorAll('%s')[document.querySelectorAll('%s').length - 1]" % (rows, rows)
+    browser.script("%s.scrollIntoView({block: 'center'})" % newest)
+    hover(browser, "#composer")
+    browser.wait("the hidden ⋯", lambda: browser.script(MESSAGE_MENU)[1] == 0)
+    display, _, left = browser.script(MESSAGE_MENU)
+    assert display != "none", "the ⋯ takes no room"
+    browser.shot("message-menu-hidden")
+    # The far left of the row's band, well away from the bubble.
+    width = browser.script("return %s.getBoundingClientRect().width" % newest)
+    browser.script("%s.id = 'newest-user-row'" % newest)
+    hover_at(browser, "#newest-user-row", -round(width / 2) + 8)
+    browser.wait("the ⋯ over the row's band", lambda: browser.script(MESSAGE_MENU)[1] == 1)
+    assert browser.script(MESSAGE_MENU)[2] == left, "the bubble moved for the ⋯"
+    browser.shot("message-menu-hovered")
+    hover(browser, "#newest-user-row [data-action=user-menu]")
+    assert browser.script(MESSAGE_MENU)[1] == 1, "the ⋯ hid on the way to it"
+    hover(browser, "#composer")
+    browser.wait("the hidden ⋯ again", lambda: browser.script(MESSAGE_MENU)[1] == 0)
+    # Keyboard focus in the row shows it too.
+    browser.script("document.querySelector('#newest-user-row [data-action=user-menu]').focus()")
+    browser.wait("the focused ⋯", lambda: browser.script(MESSAGE_MENU)[1] == 1)
+    browser.script("document.activeElement.blur(); document.querySelector('#newest-user-row').removeAttribute('id')")
+    browser.wait("the blurred ⋯", lambda: browser.script(MESSAGE_MENU)[1] == 0)
+    print("a message's ⋯ shows only over its row or with focus in it, and the bubble stays put")
+
+
+def touch_message_menu():
+    """On a touch screen the ⋯ is gone: a long press on the bubble opens
+    the message's menu."""
+    # A coarse pointer that cannot hover: a phone's.
+    phone = Browser(prefs={"ui.primaryPointerCapabilities": 1, "ui.allPointerCapabilities": 1})
+    try:
+        phone.go(LINK)
+        phone.wait("the connection", lambda: phone.text("#connected") != "")
+        phone.phone(390, 844)
+        assert phone.script("return matchMedia('(pointer: coarse)').matches"), "the pointer is not coarse"
+        phone.click("main [data-sidebar-toggle]")
+        phone.wait("the drawer", lambda: count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0)
+        phone.script(
+            "const rows = [...document.querySelectorAll('#drawer nav[aria-label=Sessions] [data-session]')];"
+            "const other = rows.find((r) => r.getAttribute('aria-current') !== 'true');"
+            "if (other) other.click(); else document.querySelector('[data-drawer-backdrop]').click();"
+        )
+        phone.wait("a user message", lambda: count(phone, "#transcript .user-row") > 0, timeout=30)
+        phone.script(
+            "const rows = document.querySelectorAll('#transcript .user-row');"
+            "const row = rows[rows.length - 1]; row.id = 'pressed-row'; row.scrollIntoView({block: 'center'})"
+        )
+        assert phone.script(MESSAGE_MENU)[0] == "none", "a touch screen shows the ⋯"
+        # A scroll cancels the press; a held finger opens the menu.
+        long_press(phone, "#pressed-row [data-bubble]", drag=40)
+        time.sleep(0.3)
+        assert count(phone, "#sheet") == 0, "a scroll opened the message menu"
+        long_press(phone, "#pressed-row [data-bubble]")
+        phone.wait("the message menu", lambda: "Fork" in phone.text("#sheet") and "Copy" in phone.text("#sheet"))
+        phone.shot("phone-message-long-press")
+        small = phone.script(SMALL_TARGETS)
+        assert not small, "small targets in the message menu: %s" % small
+        print("phone: no ⋯ on a touch screen; a long press on the bubble opens the message menu")
+    finally:
+        phone.close()
+
+
+def menu(browser, command):
+    """Runs `command` (its `data-command`) from the session's ⋮ menu."""
+    browser.script("document.querySelector('main button[aria-label=Commands]').click()")
+    browser.wait("the session menu", lambda: count(browser, "#sheet [data-command=%s]" % command) == 1)
+    browser.click("#sheet [data-command=%s]" % command)
+
+
+def open_section(browser, name, section=None):
+    """Opens a view from the rail, and a Settings section in it."""
+    view(browser, name)
+    if section:
+        browser.click("#page [data-section=%s]" % section)
+        browser.wait(
+            "the %s section" % section,
+            lambda: count(browser, "#page [data-section-body=%s]" % section) == 1,
+        )
+
+
+def open_row(browser):
+    return "aside [data-session-row] [data-session][aria-current=true]"
+
+
+def tree_state(browser):
+    return browser.script(
+        "const t = document.querySelector('aside [data-subagents]'); return t ? t.dataset.tree : ''"
+    )
+
+
 def click_row_button(browser, rows, text, button):
     """Clicks `button` inside the first of `rows` whose text has `text`."""
     clicked = browser.script(
@@ -669,7 +892,7 @@ def management(browser):
     # A new session's draft runtimes: one that never starts fails, a retry
     # fails again, and it can be taken out.
     new_session(browser)
-    send(browser, "/runtime")
+    menu(browser, "runtime")
     browser.wait("the draft runtimes", lambda: count(browser, "#sheet .runtime-row") >= 2)
     browser.click("#runtime-attach")
     browser.type("#runtime-search", "box")
@@ -693,7 +916,7 @@ def management(browser):
     # A session's attachment detached and attached again.
     browser.click("aside nav[aria-label=Sessions] button")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
-    send(browser, "/runtime")
+    menu(browser, "runtime")
     browser.wait("the attachments", lambda: "local/coding" in browser.text("#sheet"))
     click_row_button(browser, "#sheet .runtime-row", "local/coding", "[data-detach]")
     browser.wait("the detached runtime", lambda: "local/coding" not in browser.text("#sheet .runtime-row:last-of-type") and "detached" in browser.text("#status"))
@@ -722,7 +945,7 @@ def management(browser):
     close_sheet(browser)
 
     # An MCP server that cannot start: added, disabled, removed.
-    send(browser, "/mcp")
+    open_section(browser, "settings", "mcp")
     browser.wait("the MCP panel", lambda: count(browser, "#mcp-new") == 1)
     browser.click("#mcp-new")
     browser.type("#mcp-name", "broken")
@@ -743,7 +966,7 @@ def management(browser):
     close_sheet(browser)
 
     # Connect a provider with an API key, then disconnect it.
-    send(browser, "/connect")
+    open_section(browser, "settings", "providers")
     browser.type("#provider-search", "openai")
     browser.wait("the provider", lambda: count(browser, '#page [data-provider="openai"]') == 1)
     browser.click('#page [data-provider="openai"]')
@@ -764,7 +987,7 @@ def management(browser):
 
     # Edit config.toml: an unknown key is refused and stays to be fixed; a
     # valid edit applies.
-    send(browser, "/config")
+    open_section(browser, "settings", "configuration")
     browser.wait("the documents", lambda: count(browser, '#page [data-config-path="config.toml"]') == 1)
     browser.click('#page [data-config-path="config.toml"] button')
     browser.wait("the editor", lambda: count(browser, "#config-text") == 1)
@@ -783,7 +1006,7 @@ def management(browser):
 
     # Memory: an invalid one is refused, then created, edited over a change
     # made meanwhile, and deleted.
-    send(browser, "/memory")
+    open_section(browser, "memory")
     browser.wait("the memories", lambda: count(browser, "#memory-new") == 1)
     set_text(browser, "#memory-new-url", "project://e2e/notes")
     browser.click("#memory-new")
@@ -819,7 +1042,7 @@ def management(browser):
     close_sheet(browser)
 
     # Restart the reference plugin.
-    send(browser, "/plugins")
+    open_section(browser, "settings", "plugins")
     browser.wait("the plugin", lambda: count(browser, '#page [data-plugin="reference"]') == 1)
     browser.wait("its start", lambda: browser.text('#page [data-plugin="reference"] .plugin-state') == "connected", timeout=40)
     browser.shot("plugins")
@@ -927,8 +1150,8 @@ def deleting(browser):
 
 
 def desktop_layout(browser):
-    """The rail's views, slash commands that open them, the session menu,
-    the sidebar toggle, the theme toggle, and the bottom bar's pickers."""
+    """The rail's views, the session menu, the sidebar toggle, the theme
+    toggle, and the bottom bar's pickers."""
     # The rail switches views and marks the one shown.
     for name in ("agents", "settings", "machines", "memory", "chat"):
         view(browser, name)
@@ -945,39 +1168,31 @@ def desktop_layout(browser):
     print("the rail switches views and marks the current one")
     browser.shot("rail-settings")
 
-    # Daemon-wide commands open views; the session's own open sheets.
+    # The ⋮ menu: every session command by name, icon, and description, no
+    # slash syntax; each opens a sheet.
     new_session(browser)
-    for command, name, section in (
-        ("/config", "settings", "configuration"),
-        ("/connect", "settings", "providers"),
-        ("/mcp", "settings", "mcp"),
-        ("/plugins", "settings", "plugins"),
-        ("/memory", "memory", None),
-    ):
-        send(browser, command)
-        browser.wait("the %s view" % command, lambda: page_view(browser) == name)
-        if section:
-            browser.wait(
-                "the %s section" % section,
-                lambda: count(browser, "#page [data-section-body=%s]" % section) == 1,
-            )
-        close_sheet(browser)
-    send(browser, "/permissions")
-    browser.wait("the permissions sheet", lambda: count(browser, "#sheet") == 1)
-    assert page_view(browser) == "chat"
-    close_sheet(browser)
     browser.click("button[aria-label=Commands]")
     browser.wait("the session menu", lambda: count(browser, "#sheet [data-command]") > 0)
-    names = browser.script(
-        "return [...document.querySelectorAll('#sheet [data-command]')].map((b) => b.dataset.command)"
+    entries = browser.script(
+        "return [...document.querySelectorAll('#sheet [data-command]')].map((b) =>"
+        " [b.dataset.command, b.innerText, b.querySelector('svg') !== null])"
     )
-    for name in ("runtime", "permissions", "goal", "background", "usage", "compact", "skills", "events"):
-        assert name in names, (name, names)
-    for name in ("config", "mcp", "connect", "memory", "plugins"):
-        assert name not in names, (name, names)
+    names = [entry[0] for entry in entries]
+    assert names == [
+        "compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset",
+    ], names
+    for name, text, icon in entries:
+        assert icon and "/" not in text and "\n" in text, (name, text, icon)
     browser.shot("session-menu")
     close_sheet(browser)
-    print("slash commands open views; the ⋮ menu lists only the session's commands")
+    browser.click("aside nav[aria-label=Sessions] button")
+    browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
+    for name in names:
+        menu(browser, name)
+        browser.wait("the %s sheet" % name, lambda: count(browser, "#sheet [data-command]") == 0 and count(browser, "#sheet") == 1)
+        assert page_view(browser) == "chat"
+        close_sheet(browser)
+    print("the ⋮ menu lists the session's commands by name, and each opens its sheet")
 
     # The sidebar toggle hides the sessions on a desktop, and the browser
     # remembers it.
@@ -1029,29 +1244,41 @@ def desktop_layout(browser):
     click_row_button(browser, "#sheet .flex.flex-col", "Scripted Model", "button")
     browser.wait("the picked model", lambda: count(browser, "#sheet") == 0)
     assert "Scripted Model" in browser.text("#model-chip"), browser.text("#model-chip")
-    before = browser.script("return document.querySelector('#permission-mode').getAttribute('aria-label')")
-    browser.click("#permission-mode")
-    browser.wait(
-        "the next mode",
-        lambda: browser.script("return document.querySelector('#permission-mode').getAttribute('aria-label')") != before,
-    )
-    for _ in range(4):
+    # The mode chip opens a picker of every mode; a click sets one.
+    assert count(browser, "#permission-mode svg") == 2, "the mode chip has no chevron"
+    for mode in ("auto-approve-n", "auto-approve-y", "ask", "yolo", "auto-approve"):
         browser.click("#permission-mode")
-    browser.wait(
-        "the mode again",
-        lambda: browser.script("return document.querySelector('#permission-mode').getAttribute('aria-label')") == before,
-    )
+        browser.wait("the mode picker", lambda: count(browser, "#sheet [data-mode]") == 5)
+        assert "loop guard" in browser.text("#sheet"), browser.text("#sheet")
+        if mode == "auto-approve-n":
+            browser.shot("mode-picker")
+        browser.click('#sheet [data-mode="%s"]' % mode)
+        browser.wait("the %s mode" % mode, lambda: count(browser, "#sheet") == 0)
+        browser.wait(
+            "the chip's %s" % mode,
+            lambda: browser.script("return document.querySelector('#permission-mode').getAttribute('aria-label')")
+            == "Permission mode: %s" % mode,
+        )
+        browser.click("#permission-mode")
+        browser.wait("the picker again", lambda: count(browser, "#sheet [data-mode]") == 5)
+        assert browser.script(
+            "return document.querySelector('#sheet [data-mode=\"' + arguments[0] + '\"]').getAttribute('aria-pressed')", mode
+        ) == "true", "%s is not checked" % mode
+        close_sheet(browser)
+    assert count(browser, "#mode-toast") == 0
     print("the bottom bar's agent, model, and mode pickers work")
 
 
 def phone_layout():
-    """The phone's drawer, Back, the bottom sheets, the mode toast, and the
+    """The phone's drawer, Back, the bottom sheets, the mode picker, and the
     bottom bar that gives way to the keyboard."""
     phone = Browser()
     try:
         phone.go(LINK)
         phone.wait("the connection", lambda: phone.text("#connected") != "")
         phone.phone(390, 844)
+        composer_clear(phone, "phone")
+        phone.shot("phone-fresh-connect")
         assert not shown(phone, "[data-rail=primary]"), "a phone shows the rail outside the drawer"
         # The drawer: the rail beside the sessions, over the dimmed chat.
         phone.click("main [data-sidebar-toggle]")
@@ -1138,9 +1365,16 @@ def phone_layout():
         print("phone: a long press offers the delete without opening the session; a scroll cancels it")
         phone.script("document.querySelector('[data-drawer-backdrop]').click()")
 
-        # Back to Chat and the latest session, from the drawer.
+        # Back to Chat and the latest session, from the drawer. A tap on the
+        # open session's own row switches its subagent tree instead, and
+        # leaves the drawer open.
         phone.click("main [data-sidebar-toggle]")
-        phone.click("#drawer nav[aria-label=Sessions] button")
+        phone.wait("the drawer", lambda: count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0)
+        latest = "#drawer nav[aria-label=Sessions] [data-session]"
+        if phone.script("return document.querySelector(arguments[0]).getAttribute('aria-current')", latest) == "true":
+            phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+        else:
+            phone.click(latest)
         phone.wait("the transcript", lambda: page_view(phone) == "chat" and phone.text("#transcript") != "")
         phone.wait("the closed drawer", lambda: count(phone, "#drawer") == 0)
         # One row of 44 px targets.
@@ -1158,13 +1392,30 @@ def phone_layout():
         assert rect[0] > 40 and abs(rect[1] - rect[2]) <= 2, "the sheet is not a bottom sheet: %s" % rect
         phone.shot("phone-bottom-sheet")
         close_sheet(phone)
-        # The mode toggle is an icon with a toast.
+        # The mode chip is a shield that opens a bottom sheet of the modes.
         phone.click("#permission-mode")
-        phone.wait("the mode toast", lambda: phone.text("#mode-toast").startswith("now: "))
-        phone.shot("phone-mode-toast")
-        for _ in range(4):
-            phone.click("#permission-mode")
-        print("phone: the bottom bar is one row; pickers are bottom sheets; the mode toggle toasts")
+        phone.wait("the mode sheet", lambda: count(phone, "#sheet [data-mode]") == 5)
+        rect = phone.script(
+            "const r = document.querySelector('#sheet').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]"
+        )
+        assert abs(rect[1] - rect[2]) <= 2, "the mode picker is not a bottom sheet: %s" % rect
+        phone.shot("phone-mode-picker")
+        phone.click('#sheet [data-mode="ask"]')
+        phone.wait("the ask mode", lambda: "ask" in phone.script("return document.querySelector('#permission-mode').getAttribute('aria-label')"))
+        phone.click("#permission-mode")
+        phone.click('#sheet [data-mode="auto-approve"]')
+        phone.wait("the default mode", lambda: count(phone, "#sheet") == 0)
+        # The ⋮ menu and its sheets rise from the bottom too.
+        for name, field in (("compact", "#compact-focus"), ("goal", "#goal-input")):
+            menu(phone, name)
+            phone.wait("the %s sheet" % name, lambda: count(phone, field) == 1)
+            rect = phone.script(
+                "const r = document.querySelector('#sheet').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]"
+            )
+            assert abs(rect[1] - rect[2]) <= 2, "the %s sheet is not a bottom sheet: %s" % (name, rect)
+            phone.shot("phone-%s-sheet" % name)
+            close_sheet(phone)
+        print("phone: the bottom bar is one row; pickers and the menu's sheets are bottom sheets")
         # The keyboard's room: the bar hides while the composer has focus.
         phone.script("document.querySelector('#composer').focus()")
         phone.wait("the hidden bar", lambda: not shown(phone, "#status-bar"))
@@ -1227,10 +1478,14 @@ return Math.max(page, inner);
 # What the audit opens at each size: the chat's sheets by their commands,
 # the ⋮ menu and the drawer by a click, then every view, Settings section,
 # and editor by a script click (the rail is in the drawer on a phone).
-SHEETS = (
-    "/agent", "/model", "/preset", "/approvals", "/usage", "/events", "/goal",
-    "/background", "/skills", "/permissions", "/runtime",
-)
+SHEETS = [
+    ("agent", ["#agent-chip"]),
+    ("model", ["#model-chip"]),
+    ("modes", ["#permission-mode"]),
+] + [
+    (name, ["main button[aria-label=Commands]", "#sheet [data-command=%s]" % name])
+    for name in ("compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset")
+]
 SCRIPTED = [
     ("view-%s" % name, ["[data-rail=primary] [data-view=%s]" % name])
     for name in ("agents", "settings", "machines", "memory")
@@ -1262,11 +1517,16 @@ def phone_audit():
             # from the drawer (a phone's) or the sessions over the transcript
             # (a phone on its side).
             phone.click("main [data-sidebar-toggle]")
-            phone.wait("the drawer", lambda: count(phone, "#drawer nav button") > 0)
-            phone.click("#drawer nav[aria-label=Sessions] button")
+            phone.wait("the drawer", lambda: count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0)
+            latest = "#drawer nav[aria-label=Sessions] [data-session]"
+            if phone.script("return document.querySelector(arguments[0]).getAttribute('aria-current')", latest) == "true":
+                # Already open: a tap would switch its tree.
+                phone.script("document.querySelector('[data-drawer-backdrop]').click()")
+            else:
+                phone.click(latest)
             phone.wait("the transcript", lambda: phone.text("#transcript") != "")
             time.sleep(1)
-            views = [("transcript", None)] + [(command[1:], command) for command in SHEETS]
+            views = [("transcript", None)] + SHEETS
             views += [("commands", "menu"), ("drawer", "drawer"), ("subagents", "subagents")] + SCRIPTED
             for view, command in views:
                 close_sheet(phone)
@@ -1275,10 +1535,13 @@ def phone_audit():
                 elif command == "drawer":
                     phone.click("main [data-sidebar-toggle]")
                 elif command == "subagents":
-                    # The drawer with the open session's subagents under it.
-                    send(phone, "/agent-panel show")
-                    time.sleep(0.6)
+                    # The drawer with the open session's tree expanded.
                     phone.click("main [data-sidebar-toggle]")
+                    time.sleep(0.6)
+                    phone.script(
+                        "const row = document.querySelector('#drawer [data-session][aria-current=true]');"
+                        "if (row && row.getAttribute('aria-expanded') !== 'true') row.click()"
+                    )
                 elif isinstance(command, list):
                     for selector in command:
                         time.sleep(0.6)
@@ -1617,6 +1880,9 @@ def main():
         browser.wait("the connection", lambda: browser.text("#connected") != "")
         assert browser.script("return location.hash") == "", "the token stayed in the address bar"
         print("connected:", browser.text("#connected"))
+        composer_clear(browser, "desktop")
+        browser.shot("fresh-connect")
+        print("the fresh page's composer keeps its text clear of its buttons")
         assert browser.script(
             "return document.querySelector('link[rel=manifest]').getAttribute('href')"
         ) == "manifest.webmanifest"
@@ -1679,6 +1945,7 @@ def main():
 
         composer(browser)
         tool_rows(browser)
+        message_menu(browser)
         session_depth(browser)
         management(browser)
         suspended_tab(browser)
@@ -1719,6 +1986,7 @@ def main():
 main()
 # geckodriver runs one browser at a time: the phone sizes get theirs last.
 phone_layout()
+touch_message_menu()
 problems = phone_audit()
 for problem in problems:
     print("phone:", problem)

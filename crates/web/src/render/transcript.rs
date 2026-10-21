@@ -290,11 +290,15 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             goal, activation, ..
         } => {
             if *activation {
-                // The canonical `/goal` action, rebuilt from the activation
-                // event: shown like a message, with no message menu.
+                // The goal the user set, rebuilt from the activation event:
+                // shown like a message, with no message menu.
                 format!(
-                    "<div class=\"goal-activation ml-auto max-w-[90%] rounded-lg border border-caramel px-3 py-2 font-mono text-sm whitespace-pre-wrap dark:border-maple\">{}</div>",
-                    escape(&format!("/goal {}", goal.objective))
+                    "<div class=\"goal-activation ml-auto max-w-[90%] rounded-lg border border-caramel px-3 py-2 text-sm whitespace-pre-wrap dark:border-maple\">{}<span class=\"font-bold\">Goal:</span> {}</div>",
+                    svg(
+                        icondata::FaBullseyeSolid,
+                        "mr-1.5 text-caramel dark:text-maple"
+                    ),
+                    escape(&goal.objective)
                 )
             } else {
                 let finished = goal.items.iter().filter(|item| item.finished).count();

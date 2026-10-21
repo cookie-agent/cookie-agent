@@ -200,7 +200,21 @@ impl Workspace {
         })
     }
 
-    /// Compacts the viewed session's context (`/compact [focus]`).
+    /// Whether the viewed session compacts its context now, tracked.
+    pub fn compacting_now(self) -> bool {
+        let Some(session_id) = self.selected.get() else {
+            return false;
+        };
+        self.with_store(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .is_some_and(|state| state.active_run.is_none() && state.is_compacting())
+        })
+    }
+
+    /// Compacts the viewed session's context, with an optional focus
+    /// (`session.compact`).
     pub fn compact(self, focus: String) {
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {
@@ -245,7 +259,7 @@ impl Workspace {
     }
 
     /// Cancels the viewed session's compaction.
-    pub(super) fn cancel_compaction(self) {
+    pub fn cancel_compaction(self) {
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {
             return;

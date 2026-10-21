@@ -9,7 +9,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use cookie_agent_client_state::{
     EventLevel, ToolStatus,
     permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
-    session_actions::permission_mode_label,
 };
 use cookie_agent_protocol::{
     ApprovalUserDecision, InputDelivery, ModelSelection, PermissionAction, PermissionEffect,
@@ -19,7 +18,7 @@ use leptos::{ev, html, prelude::*};
 use wasm_bindgen::JsCast as _;
 
 use crate::{
-    commands::{Command, completions},
+    commands::{Command, MENU},
     format::{basename, compact_cost, compact_count, relative_time},
     goal::{GoalCommand, action_label, goal_actions, status_name},
     icons::{self, Glyph},
@@ -39,8 +38,8 @@ mod shell;
 pub(crate) use install::{Install, InstallAction, InstallBanner};
 
 use depth::{
-    AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, goal_sheet, message_sheet,
-    permissions_sheet, skills_sheet,
+    AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, compact_sheet, goal_sheet,
+    message_sheet, permissions_sheet, skills_sheet,
 };
 
 use manage::runtimes_sheet;
@@ -48,9 +47,10 @@ use shell::{Drawer, PageView, Rail, SidebarButton};
 
 use crate::{
     app::Connection,
-    layout::{Press, View, session_menu},
+    layout::{Press, View},
+    modes::{FOOTNOTE, MODES, mode_name},
     theme::ThemePreference,
-    tree::{Activity, delegates_of, path, subagent_label, tree_rows},
+    tree::{Activity, delegates_of, path, subagent_label},
 };
 
 /// How long a touch must hold a session row to offer its delete.
@@ -180,7 +180,6 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                     <BottomBar workspace=workspace composing=composing />
                 </div>
             </main>
-            <ModeToast workspace=workspace />
     }
 }
 
@@ -409,9 +408,16 @@ fn session_row(
                         event.prevent_default();
                     }
                 }
+                // The open session's row switches its subagent tree between
+                // the running ones and all of them.
+                aria-expanded=move || current().then(|| workspace.tree_expanded.get().to_string())
                 on:click=move |_| {
                     if press.try_update_value(Press::click).unwrap_or(true) {
-                        workspace.open_session(session_id);
+                        if current() && !workspace.new_session.get_untracked() {
+                            workspace.toggle_tree();
+                        } else {
+                            workspace.open_session(session_id);
+                        }
                     }
                 }
             >
@@ -505,36 +511,37 @@ fn session_row(
                 .filter(|(failed, _)| *failed == session_id)
                 .map(|(_, message)| view! { <p class=format!("{ERROR} mx-2 mb-1") data-delete-error>{message}</p> })
         }}
-        <Show when=move || workspace.tree_root.get() == Some(session_id) && workspace.subagents_shown()>
+        <Show when=move || workspace.tree_root.get() == Some(session_id)>
             <Subagents workspace=workspace />
         </Show>
     }
 }
 
 /// The open session's subagents, nested under its row: each with its
-/// status, agent, handle, and task; a click opens one, the chevron folds
-/// its own.
+/// status, agent, handle, and task; a click opens one. Collapsed, only the
+/// running ones show, under their dimmed ancestors; expanded, all of them,
+/// and a chevron folds a subagent's own.
 #[component]
 fn Subagents(workspace: Workspace) -> impl IntoView {
-    let rows = move || {
-        let collapsed = workspace.collapsed.get();
-        workspace
-            .tree
-            .with(|tree| tree.as_ref().map(|tree| tree_rows(tree, &collapsed)))
-            .unwrap_or_default()
-    };
+    let rows = move || workspace.subagent_rows();
     view! {
-        <div role="group" aria-label="Subagents" data-subagents class="flex flex-col gap-0.5 pb-1">
+        <div
+            role="group"
+            aria-label="Subagents"
+            data-subagents
+            data-tree=move || if workspace.tree_expanded.get() { "expanded" } else { "collapsed" }
+            class="flex flex-col gap-0.5 pb-1"
+        >
             {move || {
+                let expanded = workspace.tree_expanded.get();
                 rows()
                     .into_iter()
-                    .filter(|row| row.depth > 0)
                     .map(|row| {
                         let session_id = row.session_id;
                         let current = move || workspace.selected.get() == Some(session_id);
                         let mark = icons::session_status(row.status);
                         let indent = format!("{}rem", 0.75 * (row.depth - 1) as f64);
-                        let fold = if row.has_children {
+                        let fold = if expanded && row.has_children {
                             view! {
                                 <button
                                     type="button"
@@ -554,8 +561,9 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                         } else {
                             view! { <span class="w-11 shrink-0" aria-hidden="true"></span> }.into_any()
                         };
+                        let dimmed = row.dimmed;
                         view! {
-                            <div class="flex items-start" style:padding-left=indent>
+                            <div class="flex items-start" class:opacity-60=dimmed data-dimmed=dimmed.then_some("true") style:padding-left=indent>
                                 {fold}
                                 <button
                                     type="button"
@@ -1188,7 +1196,6 @@ fn fit_composer(textarea: &web_sys::HtmlTextAreaElement) {
 fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     let textarea = NodeRef::<html::Textarea>::new();
     let blurred = StoredValue::new(0_u64);
-    let completions = move || completions(&workspace.composer.get());
     let attach_buttons = Memo::new(move |_| crate::views::depth::attach_buttons(workspace));
     let buttons = Memo::new(move |_| {
         let has_input = workspace.composer.with(|text| !text.trim().is_empty())
@@ -1266,41 +1273,6 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     };
     view! {
         <div class="relative min-w-0 px-3 pt-2 pb-1 short:flex-1 short:pb-2">
-            <Show when=move || !completions().is_empty()>
-                <div class="absolute bottom-full left-3 z-20 mb-1 flex max-h-64 w-80 max-w-[calc(100%-1.5rem)] flex-col overflow-y-auto rounded-lg border border-crust bg-cream p-1 shadow-lg dark:border-smoke dark:bg-night">
-                    {move || {
-                        completions()
-                            .into_iter()
-                            .map(|spec| {
-                                let command = spec.command;
-                                let name = spec.name;
-                                let takes_argument = spec.takes_argument;
-                                view! {
-                                    <button
-                                        type="button"
-                                        class=ROW
-                                        on:click=move |_| {
-                                            if takes_argument {
-                                                // The argument follows, typed after the name.
-                                                workspace.composer.set(format!("/{name} "));
-                                                if let Some(textarea) = textarea.get() {
-                                                    let _ = textarea.focus();
-                                                }
-                                            } else {
-                                                workspace.composer.set(String::new());
-                                                workspace.run_command(command, String::new());
-                                            }
-                                        }
-                                    >
-                                        <span class="font-mono text-sm font-bold">{format!("/{}", spec.name)}</span>
-                                        <span class=NOTE>{spec.description}</span>
-                                    </button>
-                                }
-                            })
-                            .collect_view()
-                    }}
-                </div>
-            </Show>
             // One border, the box's: the text field inside has none, and
             // the buttons sit in its bottom corners.
             <div
@@ -1490,21 +1462,15 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 type="button"
                 id="permission-mode"
                 class=CHIP.replace("min-w-0", "min-w-11 justify-center")
-                aria-label=move || format!("Permission mode: {}", permission_mode_label(mode()))
-                title=move || {
-                    let mode = mode();
-                    format!(
-                        "Permission mode: {}, {}. Click for the next mode.",
-                        permission_mode_label(mode),
-                        icons::permission_mode(mode).1
-                    )
-                }
-                on:click=move |_| workspace.cycle_permission_mode()
+                aria-label=move || format!("Permission mode: {}", mode_name(mode()))
+                aria-haspopup="dialog"
+                title=move || format!("Permission mode: {} (click to change)", mode_name(mode()))
+                on:click=move |_| workspace.panel.set(Some(Panel::Modes))
             >
                 <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-caramel dark:text-maple" />
-                // A toggle, not a picker: no chevron. A phone shows the
-                // shield alone and says the new mode in a toast.
-                <span class="min-w-0 truncate compact:sr-only">{move || permission_mode_label(mode())}</span>
+                // A phone shows the shield alone.
+                <span class="min-w-0 truncate compact:sr-only">{move || mode_name(mode())}</span>
+                <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
             <Show when=move || { approvals.get() > 0 }>
                 <button
@@ -1548,7 +1514,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     class=STATUS_BUTTON
                     aria-label=format!("Session cost {}: usage", cost_label(cost))
                     title="Session cost: click for usage"
-                    on:click=move |_| workspace.run_command(Command::Usage, String::new())
+                    on:click=move |_| workspace.run_command(Command::Usage)
                 >
                     <Glyph icon=icondata::FaCoinsSolid class="text-caramel dark:text-maple compact:hidden" />
                     <span class="font-mono compact:hidden">{cost_label(cost)}</span>
@@ -1619,62 +1585,6 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// How long the permission mode's toast shows.
-const TOAST: Duration = Duration::from_millis(2000);
-
-/// "now: <mode>" for a moment after the permission mode changes, on a phone
-/// whose bottom bar shows only the mode's icon.
-#[component]
-fn ModeToast(workspace: Workspace) -> impl IntoView {
-    let shown = RwSignal::new(None::<String>);
-    let generation = StoredValue::new(0_u64);
-    Effect::new(
-        move |previous: Option<(
-            Option<cookie_agent_protocol::SessionId>,
-            bool,
-            cookie_agent_protocol::PermissionMode,
-        )>| {
-            let now = (
-                workspace.selected.get(),
-                workspace.new_session.get(),
-                workspace.permission_mode(),
-            );
-            // Only a change of the same session's mode: not a session switch.
-            if let Some(previous) = previous
-                && previous.0 == now.0
-                && previous.1 == now.1
-                && previous.2 != now.2
-            {
-                generation.update_value(|generation| *generation += 1);
-                let current = generation.get_value();
-                shown.set(Some(format!("now: {}", permission_mode_label(now.2))));
-                set_timeout(
-                    move || {
-                        if generation.get_value() == current {
-                            shown.set(None);
-                        }
-                    },
-                    TOAST,
-                );
-            }
-            now
-        },
-    );
-    view! {
-        {move || shown.get().map(|text| view! {
-            <div
-                id="mode-toast"
-                role="status"
-                class="pointer-events-none fixed inset-x-0 bottom-28 z-30 hidden justify-center px-4 compact:flex"
-            >
-                <span class="rounded-full bg-espresso px-4 py-2 font-mono text-sm text-cream shadow-lg dark:bg-latte dark:text-night">
-                    {text}
-                </span>
-            </div>
-        })}
-    }
-}
-
 /// The session's cost as a wide window's bottom bar shows it.
 fn cost_label(cost: f64) -> String {
     format!("${cost:.4}")
@@ -1692,6 +1602,8 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Events) => "Events",
         Some(Panel::Commands) => "Session commands",
         Some(Panel::Goal) => "Goal",
+        Some(Panel::Compact) => "Compact context",
+        Some(Panel::Modes) => "Permission mode",
         Some(Panel::Background) => "Background calls",
         Some(Panel::Skills) => "Skills",
         Some(Panel::Permissions) => "Permissions",
@@ -1730,6 +1642,8 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::Events) => events_sheet(workspace).into_any(),
                             Some(Panel::Commands) => commands_sheet(workspace).into_any(),
                             Some(Panel::Goal) => goal_sheet(workspace).into_any(),
+                            Some(Panel::Compact) => compact_sheet(workspace).into_any(),
+                            Some(Panel::Modes) => modes_sheet(workspace).into_any(),
                             Some(Panel::Background) => background_sheet(workspace).into_any(),
                             Some(Panel::Skills) => skills_sheet(workspace).into_any(),
                             Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
@@ -1794,7 +1708,7 @@ fn models_sheet(workspace: Workspace) -> impl IntoView {
     if models.is_empty() {
         return empty_state(
             icondata::FaMicrochipSolid,
-            "No model is available. Connect a provider with /connect.",
+            "No model is available. Connect a provider in Settings › Providers.",
         )
         .into_any();
     }
@@ -2030,26 +1944,70 @@ fn events_sheet(workspace: Workspace) -> impl IntoView {
     .collect_view()
 }
 
-/// The session's ⋮ menu: its own commands, in rows a finger can hit.
+/// The session's ⋮ menu: every command, by name, icon, and what it does,
+/// in rows a finger can hit; each opens its sheet.
 fn commands_sheet(workspace: Workspace) -> impl IntoView {
-    session_menu()
-        .into_iter()
-        .map(|spec| {
-            let command = spec.command;
+    MENU.iter()
+        .map(|entry| {
+            let command = entry.command;
             view! {
                 <button
                     type="button"
                     class=format!("{ROW} min-h-12")
-                    data-command=spec.name
+                    data-command=entry.id
                     on:click=move |_| {
                         workspace.panel.set(None);
-                        workspace.run_command(command, String::new());
+                        workspace.run_command(command);
                     }
                 >
-                    <span class="font-mono text-sm font-bold">{format!("/{}", spec.name)}</span>
-                    <span class=NOTE>{spec.description}</span>
+                    <span class="flex w-full items-center gap-3">
+                        <Glyph icon=entry.icon class="w-5 justify-center text-caramel dark:text-maple" />
+                        <span class="flex min-w-0 flex-1 flex-col">
+                            <span class="text-sm font-bold">{entry.label}</span>
+                            <span class=NOTE>{entry.description}</span>
+                        </span>
+                    </span>
                 </button>
             }
         })
         .collect_view()
+}
+
+/// The permission mode picker: every mode with its shield and what it
+/// does, the current one checked; a click sets it.
+fn modes_sheet(workspace: Workspace) -> impl IntoView {
+    view! {
+        {MODES
+            .into_iter()
+            .map(|choice| {
+                let chosen = move || workspace.permission_mode() == choice.mode;
+                view! {
+                    <button
+                        type="button"
+                        class=ROW
+                        class:bg-toasted=chosen
+                        class:dark:bg-ember=chosen
+                        aria-pressed=move || chosen().to_string()
+                        data-mode=choice.name
+                        on:click=move |_| {
+                            workspace.set_permission_mode(choice.mode);
+                            workspace.panel.set(None);
+                        }
+                    >
+                        <span class="flex w-full items-center gap-3">
+                            <Glyph icon=icons::permission_mode(choice.mode).0 class="w-5 justify-center text-caramel dark:text-maple" />
+                            <span class="flex min-w-0 flex-1 flex-col">
+                                {move || choice_line(choice.name.to_owned(), chosen(), "font-mono text-sm font-bold")}
+                                <span class=NOTE>{choice.description}</span>
+                            </span>
+                        </span>
+                    </button>
+                }
+            })
+            .collect_view()}
+        <p class=format!("mt-2 flex items-start gap-2 border-t border-toasted px-3 pt-3 dark:border-ember {NOTE}")>
+            <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5" />
+            {FOOTNOTE}
+        </p>
+    }
 }

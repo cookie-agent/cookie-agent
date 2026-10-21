@@ -108,6 +108,7 @@ models:
   - { model: "custom.local/test", variant: null }
 permissions:
   read: allow
+  delegate: allow
 ---
 Answer briefly.
 AGENT

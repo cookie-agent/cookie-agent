@@ -1,322 +1,167 @@
-//! The slash commands the page has, with the TUI's names and aliases. The
-//! command menu lists every one, as phones lack a convenient `/`.
+//! The session's commands, as the title bar's ⋮ menu lists them. The web
+//! composer has no slash commands: text that starts with `/` is a message
+//! like any other, and every command is a menu entry with a readable name,
+//! an icon, and a line saying what it does. Commands with somewhere else to
+//! live are not here: the bottom bar picks the agent, the model, and the
+//! permission mode, the composer attaches and stops, the sessions list
+//! starts and opens sessions, and the rail opens the daemon-wide views.
 
-/// A command the page runs.
+use icondata::Icon;
+
+/// A command of the session's ⋮ menu. Each opens a sheet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
-    /// Start a new session.
-    New,
-    /// Pick a session to open.
-    Sessions,
-    Agent,
-    Model,
-    Preset,
-    /// The session's usage and cost.
-    Usage,
-    /// Cancel the running run.
-    Cancel,
-    /// Choose which diagnostic rows the transcript shows.
-    Events,
-    /// The approvals waiting for an answer.
-    Approvals,
-    /// Cycle the session tree's permission mode.
-    Mode,
-    /// Set the root session's goal (`/goal <objective>`), or pause,
-    /// resume, or cancel it.
-    Goal,
     /// Compact the session's context, with an optional focus.
     Compact,
-    /// The background calls, to stop one.
-    Background,
+    /// Set the root session's goal, or pause, resume, or cancel it.
+    Goal,
     /// Search the skills and run one.
     Skills,
-    /// The session's permission overrides.
-    Permissions,
-    /// Attach a file to the next message.
-    Attach,
-    AgentPanelShow,
-    AgentPanelHide,
-    AgentPanelAuto,
+    /// The background calls, to stop one.
+    Background,
     /// The session's runtimes and the daemon's machines.
     Runtime,
-    /// The MCP servers.
-    Mcp,
-    /// Connect or disconnect a model provider.
-    Connect,
-    /// The daemon's `config.toml` and agent documents.
-    Config,
-    /// The daemon's memories.
-    Memory,
-    /// The plugins.
-    Plugins,
+    /// The session's permission overrides.
+    Permissions,
+    /// The session's usage and cost.
+    Usage,
+    /// Choose which diagnostic rows the transcript shows.
+    Events,
+    /// The agent preset for new sessions.
+    Preset,
 }
 
-/// A command as the menu and `/` know it.
-pub struct CommandSpec {
+/// A menu entry: what it runs, its `data-command` id, its name, its icon,
+/// and what it does.
+pub struct MenuEntry {
     pub command: Command,
-    pub name: &'static str,
-    pub aliases: &'static [&'static str],
+    pub id: &'static str,
+    pub label: &'static str,
+    pub icon: Icon,
     pub description: &'static str,
-    /// What follows the name is the command's argument, as for `/goal`.
-    pub takes_argument: bool,
 }
 
-/// Every command, in menu order.
-pub const COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        command: Command::New,
-        name: "new",
-        aliases: &[],
-        description: "start a new session",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Sessions,
-        name: "sessions",
-        aliases: &["resume", "load", "continue"],
-        description: "open a session",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Agent,
-        name: "agent",
-        aliases: &[],
-        description: "pick the agent",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Model,
-        name: "model",
-        aliases: &[],
-        description: "pick the model and its variant",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Preset,
-        name: "preset",
-        aliases: &[],
-        description: "pick the agent preset for new sessions",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Approvals,
-        name: "approvals",
-        aliases: &[],
-        description: "answer waiting approvals",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Mode,
-        name: "mode",
-        aliases: &[],
-        description: "cycle the permission mode",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Usage,
-        name: "usage",
-        aliases: &[],
-        description: "show usage and cost",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Cancel,
-        name: "cancel",
-        aliases: &[],
-        description: "cancel the running run",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Events,
-        name: "events",
-        aliases: &[],
-        description: "choose which diagnostics show",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Goal,
-        name: "goal",
-        aliases: &[],
-        description: "set the goal, or pause, resume, or cancel it",
-        takes_argument: true,
-    },
-    CommandSpec {
+/// The ⋮ menu, in its order: what changes the conversation first, then
+/// what the session runs with, then what it shows.
+pub const MENU: &[MenuEntry] = &[
+    MenuEntry {
         command: Command::Compact,
-        name: "compact",
-        aliases: &[],
-        description: "compact the context, with an optional focus",
-        takes_argument: true,
+        id: "compact",
+        label: "Compact context",
+        icon: icondata::FaCompressSolid,
+        description: "Summarize the history so far, with an optional focus",
     },
-    CommandSpec {
-        command: Command::Background,
-        name: "background",
-        aliases: &["bg"],
-        description: "the calls running in the background",
-        takes_argument: false,
+    MenuEntry {
+        command: Command::Goal,
+        id: "goal",
+        label: "Goal",
+        icon: icondata::FaBullseyeSolid,
+        description: "Set an objective to work toward; pause, resume, or cancel it",
     },
-    CommandSpec {
+    MenuEntry {
         command: Command::Skills,
-        name: "skills",
-        aliases: &[],
-        description: "search and run a skill",
-        takes_argument: true,
+        id: "skills",
+        label: "Skills",
+        icon: icondata::FaWandMagicSparklesSolid,
+        description: "Search the skills and run one",
     },
-    CommandSpec {
-        command: Command::Permissions,
-        name: "permissions",
-        aliases: &["perms"],
-        description: "the session's permission overrides",
-        takes_argument: false,
+    MenuEntry {
+        command: Command::Background,
+        id: "background",
+        label: "Background calls",
+        icon: icondata::FaHourglassHalfSolid,
+        description: "The calls running in the background; stop one",
     },
-    CommandSpec {
-        command: Command::Attach,
-        name: "attach",
-        aliases: &["file", "image"],
-        description: "attach a file to the next message",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::AgentPanelShow,
-        name: "agent-panel show",
-        aliases: &[],
-        description: "always show the subagent tree",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::AgentPanelHide,
-        name: "agent-panel hide",
-        aliases: &[],
-        description: "never show the subagent tree",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::AgentPanelAuto,
-        name: "agent-panel auto",
-        aliases: &[],
-        description: "show the subagent tree while agents run",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Connect,
-        name: "connect",
-        aliases: &[],
-        description: "securely connect a model provider",
-        takes_argument: false,
-    },
-    CommandSpec {
-        command: Command::Mcp,
-        name: "mcp",
-        aliases: &[],
-        description: "manage MCP servers",
-        takes_argument: false,
-    },
-    CommandSpec {
+    MenuEntry {
         command: Command::Runtime,
-        name: "runtime",
-        aliases: &["runtimes"],
-        description: "attach and detach the session's runtimes; the machines",
-        takes_argument: false,
+        id: "runtime",
+        label: "Runtimes",
+        icon: icondata::FaServerSolid,
+        description: "Attach and detach the session's runtimes",
     },
-    CommandSpec {
-        command: Command::Plugins,
-        name: "plugins",
-        aliases: &["plugin"],
-        description: "show plugin status and restart a plugin",
-        takes_argument: false,
+    MenuEntry {
+        command: Command::Permissions,
+        id: "permissions",
+        label: "Permission rules",
+        icon: icondata::FaListUlSolid,
+        description: "The session's own allow, ask, and deny rules",
     },
-    CommandSpec {
-        command: Command::Config,
-        name: "config",
-        aliases: &[],
-        description: "edit the daemon's config.toml and agent documents",
-        takes_argument: false,
+    MenuEntry {
+        command: Command::Usage,
+        id: "usage",
+        label: "Usage",
+        icon: icondata::FaCoinsSolid,
+        description: "Tokens, cost, and the context size",
     },
-    CommandSpec {
-        command: Command::Memory,
-        name: "memory",
-        aliases: &["memories"],
-        description: "browse, edit, create, and delete the daemon's memories",
-        takes_argument: false,
+    MenuEntry {
+        command: Command::Events,
+        id: "events",
+        label: "Diagnostics",
+        icon: icondata::FaFilterSolid,
+        description: "Which diagnostic rows the transcript shows",
+    },
+    MenuEntry {
+        command: Command::Preset,
+        id: "preset",
+        label: "Agent preset",
+        icon: icondata::FaSlidersSolid,
+        description: "The agents' preset for new sessions",
     },
 ];
 
-/// The command a composer text names and its argument: `/<name>` or an
-/// alias, followed by an argument only for a command that takes one.
-pub fn parse(text: &str) -> Option<(Command, String)> {
-    let text = text.trim().strip_prefix('/')?;
-    COMMANDS.iter().find_map(|spec| {
-        std::iter::once(spec.name)
-            .chain(spec.aliases.iter().copied())
-            .find_map(|name| {
-                let rest = text.strip_prefix(name)?;
-                let argument = if rest.is_empty() {
-                    ""
-                } else {
-                    rest.strip_prefix(char::is_whitespace)?.trim()
-                };
-                (argument.is_empty() || spec.takes_argument)
-                    .then(|| (spec.command, argument.to_owned()))
-            })
-    })
-}
-
-/// The commands whose names or aliases start with what follows `/` in
-/// `text`, for the menu while the user types one.
-pub fn completions(text: &str) -> Vec<&'static CommandSpec> {
-    let Some(prefix) = text.trim_start().strip_prefix('/') else {
-        return Vec::new();
-    };
-    COMMANDS
-        .iter()
-        .filter(|spec| {
-            spec.name.starts_with(prefix)
-                || spec.aliases.iter().any(|alias| alias.starts_with(prefix))
-        })
-        .collect()
+/// The menu entry of `command`.
+pub fn entry(command: Command) -> &'static MenuEntry {
+    MENU.iter()
+        .find(|entry| entry.command == command)
+        .expect("every command is in the menu")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, completions, parse};
+    use super::{Command, MENU, entry};
 
     #[test]
-    fn names_and_aliases_parse_as_in_the_tui() {
-        let command = |text: &str| parse(text).map(|(command, _)| command);
-        assert_eq!(command("/new"), Some(Command::New));
-        assert_eq!(command("/runtimes"), Some(Command::Runtime));
-        assert_eq!(command("/memories"), Some(Command::Memory));
-        assert_eq!(command("/plugin"), Some(Command::Plugins));
-        assert_eq!(command(" /resume "), Some(Command::Sessions));
-        assert_eq!(command("/continue"), Some(Command::Sessions));
-        assert_eq!(command("/usage"), Some(Command::Usage));
-        assert_eq!(command("/events"), Some(Command::Events));
-        assert_eq!(command("/bg"), Some(Command::Background));
-        assert_eq!(command("/perms"), Some(Command::Permissions));
-        assert_eq!(command("/image"), Some(Command::Attach));
-        assert_eq!(command("/agent-panel hide"), Some(Command::AgentPanelHide));
-        assert_eq!(command("new"), None);
-        assert_eq!(command("/nothing"), None);
-        assert_eq!(command("/new session"), None);
-        assert_eq!(command("/newer"), None);
+    fn the_menu_lists_every_command_once_by_a_readable_name() {
+        for command in [
+            Command::Compact,
+            Command::Goal,
+            Command::Skills,
+            Command::Background,
+            Command::Runtime,
+            Command::Permissions,
+            Command::Usage,
+            Command::Events,
+            Command::Preset,
+        ] {
+            assert_eq!(
+                MENU.iter().filter(|entry| entry.command == command).count(),
+                1,
+                "{command:?}"
+            );
+            assert_eq!(entry(command).command, command);
+        }
+        assert_eq!(MENU.len(), 9);
+        let mut ids = MENU.iter().map(|entry| entry.id).collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), MENU.len(), "ids are distinct");
+        for entry in MENU {
+            // A name and a sentence, not slash syntax.
+            assert!(!entry.label.contains('/'), "{}", entry.label);
+            assert!(
+                entry.label.starts_with(char::is_uppercase),
+                "{}",
+                entry.label
+            );
+            assert!(!entry.description.contains('/'), "{}", entry.description);
+            assert!(!entry.description.is_empty());
+        }
         assert_eq!(
-            parse("/goal ship the release "),
-            Some((Command::Goal, "ship the release".into()))
+            MENU.iter()
+                .map(|entry| entry.id)
+                .take(3)
+                .collect::<Vec<_>>(),
+            ["compact", "goal", "skills"]
         );
-        assert_eq!(parse("/goal"), Some((Command::Goal, String::new())));
-        assert_eq!(
-            parse("/compact keep the API notes"),
-            Some((Command::Compact, "keep the API notes".into()))
-        );
-    }
-
-    #[test]
-    fn completions_follow_the_typed_prefix() {
-        let names = completions("/m")
-            .into_iter()
-            .map(|spec| spec.name)
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["model", "mode", "mcp", "memory"]);
-        assert!(completions("hello").is_empty());
-        assert_eq!(completions("/").len(), super::COMMANDS.len());
     }
 }

@@ -9,7 +9,10 @@ use cookie_agent_protocol::{
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
-use crate::tree::{PanelMode, contains};
+use crate::{
+    browser,
+    tree::{TreeRow, contains, expanded_from_storage, expanded_key, running_rows, tree_rows},
+};
 
 impl Workspace {
     /// Whether `session_id` is in the tree of the viewed session.
@@ -23,7 +26,9 @@ impl Workspace {
     /// Makes `session_id` the root of the tree the page shows.
     pub(super) fn reroot_tree(self, session_id: SessionId) {
         if self.tree_root.get_untracked() != Some(session_id) {
-            self.panel_mode.set(PanelMode::Auto);
+            self.tree_expanded.set(expanded_from_storage(
+                browser::load(&expanded_key(session_id)).as_deref(),
+            ));
             self.collapsed.set(Default::default());
         }
         self.tree_root.set(Some(session_id));
@@ -131,17 +136,20 @@ impl Workspace {
         }
     }
 
-    /// Sets `/agent-panel show|hide|auto`.
-    pub fn set_panel_mode(self, mode: PanelMode) {
-        self.panel_mode.set(mode);
-        self.status.set(
-            match mode {
-                PanelMode::Shown => "subagents: always shown",
-                PanelMode::Hidden => "subagents: hidden",
-                PanelMode::Auto => "subagents: shown while one runs or is open",
-            }
-            .into(),
-        );
+    /// Switches the open session's tree between collapsed (running
+    /// subagents only) and expanded (all of them), remembered in the
+    /// browser.
+    pub fn toggle_tree(self) {
+        let Some(root) = self.tree_root.get_untracked() else {
+            return;
+        };
+        let expanded = !self.tree_expanded.get_untracked();
+        if expanded {
+            browser::store(&expanded_key(root), "expanded");
+        } else {
+            browser::forget(&expanded_key(root));
+        }
+        self.tree_expanded.set(expanded);
     }
 
     /// Folds or unfolds `session_id`'s subagents.
@@ -153,15 +161,27 @@ impl Workspace {
         });
     }
 
-    /// Whether the open session's row shows its subagents now.
-    pub fn subagents_shown(self) -> bool {
-        let viewing_child = self.selected.get().is_some_and(|session_id| {
-            !self.new_session.get() && self.tree_root.get() != Some(session_id)
-        });
-        let mode = self.panel_mode.get();
+    /// The subagent rows under the open session's row, its own row
+    /// excluded: all of them when the tree is expanded, else the running
+    /// ones and the viewed one, under their dimmed ancestors.
+    pub fn subagent_rows(self) -> Vec<TreeRow> {
+        let expanded = self.tree_expanded.get();
+        let viewed = self.selected.get();
+        let collapsed = self.collapsed.get();
         self.tree
-            .with(|tree| crate::tree::panel_visible(mode, tree.as_ref(), viewing_child))
-            && self.tree.with(Option::is_some)
+            .with(|tree| {
+                tree.as_ref().map(|tree| {
+                    if expanded {
+                        tree_rows(tree, &collapsed)
+                    } else {
+                        running_rows(tree, viewed)
+                    }
+                })
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|row| row.depth > 0)
+            .collect()
     }
 }
 

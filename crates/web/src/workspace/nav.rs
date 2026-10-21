@@ -68,18 +68,6 @@ impl Workspace {
         }
     }
 
-    /// `/sessions`: the sidebar on a desktop, the drawer elsewhere.
-    pub(super) fn show_sessions(self) {
-        self.panel.set(None);
-        self.view.set(View::Chat);
-        if browser::matches(browser::DESKTOP_QUERY) {
-            browser::store(SIDEBAR_KEY, "shown");
-            self.sidebar_pinned.set(true);
-        } else {
-            self.sidebar_open.set(true);
-        }
-    }
-
     /// The layers open now that browser Back closes, innermost last.
     pub fn open_layers(self) -> Vec<Layer> {
         let mut layers = Vec::new();

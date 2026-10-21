@@ -23,13 +23,9 @@ impl Workspace {
         })
     }
 
-    /// Opens `/background`.
+    /// Opens the background calls sheet.
     pub(super) fn open_background(self) {
-        if self.background_calls().is_empty() {
-            self.status
-                .set("no calls are running in the background".into());
-            return;
-        }
+        // Empty, it says no call runs in the background.
         self.panel.set(Some(Panel::Background));
     }
 

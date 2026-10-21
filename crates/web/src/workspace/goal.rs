@@ -54,11 +54,12 @@ impl Workspace {
         None
     }
 
-    /// Runs `/goal`.
+    /// Opens the goal sheet, sets an objective, or pauses, resumes, or
+    /// cancels the goal.
     pub fn goal_command(self, command: GoalCommand) {
         if self.selected.get_untracked().is_none() || self.new_session.get_untracked() {
             self.status
-                .set("select a root session before using /goal".into());
+                .set("select a root session before setting a goal".into());
             return;
         }
         if command == GoalCommand::Show {

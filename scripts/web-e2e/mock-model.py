@@ -8,9 +8,12 @@ otherwise the last user text decides.
 - containing "markdown": a streamed markdown answer with a code block;
 - containing "tool": a `bash` call to `printf`;
 - containing "slow": a long answer streamed slowly, to steer, queue, and
-  cancel while it runs;
+  cancel while it runs ("very slow": slower still);
 - containing "delegate": a `delegate_subagent` call to the `helper` agent,
   whose task asks for a slow answer (below) when the text says "slowly";
+  "delegate deeply" asks the helper to delegate in the background, and a
+  task to "delegate in the background" delegates a `helper` of its own in
+  the background, whose very slow answer outlasts the delegating turn;
 - containing "sleepy": a `bash` call that sleeps, to move to the background;
 - containing "chatty": a `bash` call that prints a line, then sleeps, so it
   reports progress while it runs;
@@ -79,9 +82,9 @@ def reply(request):
         # A compaction or other tool-less request: a summary.
         return text_reply(["A short summary of the conversation."])
     text = last_text(messages).lower()
-    if "<background_result" in text or "[engine goal control]" in text:
-        # A stopped background call's report or a paused goal: nothing more
-        # to do.
+    if "<background_result" in text or "[engine goal control]" in text or "<subagent_report" in text:
+        # A stopped background call's report, a paused goal, or a subagent's
+        # report: nothing more to do.
         return text_reply(["ok"])
     if "markdown" in text:
         return text_reply(
@@ -91,6 +94,25 @@ def reply(request):
                 "```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n",
             ],
             pause=0.2,
+        )
+    if "delegate in the background" in text:
+        return tool_reply(
+            "delegate_subagent",
+            {
+                "description": "grandchild task",
+                "prompt": "grandchild task: answer very slowly",
+                "agent_type": "helper",
+                "background": True,
+            },
+        )
+    if "delegate deeply" in text:
+        return tool_reply(
+            "delegate_subagent",
+            {
+                "description": "child task",
+                "prompt": "child task: delegate in the background",
+                "agent_type": "helper",
+            },
         )
     if "delegate" in text:
         prompt = "child task: answer slowly" if "slowly" in text else "child task: answer"
@@ -108,6 +130,8 @@ def reply(request):
         return tool_reply("read", {"filePath": "dot.png"})
     if "tool" in text:
         return tool_reply()
+    if "very slow" in text:
+        return text_reply(["word%d " % index for index in range(60)], pause=0.6)
     if "slow" in text:
         return text_reply(["word%d " % index for index in range(60)], pause=0.25)
     return text_reply(["ok"])

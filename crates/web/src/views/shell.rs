@@ -268,7 +268,7 @@ fn browser_section(workspace: Workspace, connection: Connection) -> impl IntoVie
     view! {
         {super::install::install_section()}
         <h2 class="mt-4 text-sm font-bold">"Diagnostics in the transcript"</h2>
-        <p class=NOTE>"The same choice as /events; it stays in this browser."</p>
+        <p class=NOTE>"The same choice as Diagnostics in the session's ⋮ menu; it stays in this browser."</p>
         {events_sheet(workspace)}
         <h2 class="mt-4 text-sm font-bold">"This daemon"</h2>
         <p class=NOTE>"The browser keeps the daemon's token to connect again without a link."</p>

@@ -1,9 +1,7 @@
 //! Where the page is, independent of the browser: the rail's views, the
-//! Settings sections, which view a slash command opens, the commands the
-//! session's ⋮ menu offers, the history entries browser Back closes, and
-//! the press that offers to delete a session row on a touch screen.
-
-use crate::commands::{COMMANDS, Command, CommandSpec};
+//! Settings sections, the history entries browser Back closes, and the
+//! press that offers to delete a session row on a touch screen. The
+//! session's ⋮ menu is [`crate::commands`].
 
 /// A full view the rail switches to.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -112,46 +110,6 @@ impl SettingsSection {
     }
 }
 
-/// The view, and the Settings section, a command opens: the daemon-wide
-/// commands open views; the session's own open sheets (`None`).
-pub const fn command_view(command: Command) -> Option<(View, Option<SettingsSection>)> {
-    match command {
-        Command::Config => Some((View::Settings, Some(SettingsSection::Configuration))),
-        Command::Connect => Some((View::Settings, Some(SettingsSection::Providers))),
-        Command::Mcp => Some((View::Settings, Some(SettingsSection::Mcp))),
-        Command::Plugins => Some((View::Settings, Some(SettingsSection::Plugins))),
-        Command::Memory => Some((View::Memory, None)),
-        _ => None,
-    }
-}
-
-/// What the session's ⋮ menu lists, in its order: the session's own
-/// commands that have no other place in the chat view (the bottom bar has
-/// the agent, model, mode, and approvals; the composer attaches, sends,
-/// and cancels; the sessions sidebar starts and opens sessions).
-pub const SESSION_MENU: &[Command] = &[
-    Command::Runtime,
-    Command::Permissions,
-    Command::Goal,
-    Command::Background,
-    Command::Usage,
-    Command::Compact,
-    Command::Skills,
-    Command::Events,
-    Command::Preset,
-    Command::AgentPanelShow,
-    Command::AgentPanelHide,
-    Command::AgentPanelAuto,
-];
-
-/// The specs of [`SESSION_MENU`], in its order.
-pub fn session_menu() -> Vec<&'static CommandSpec> {
-    SESSION_MENU
-        .iter()
-        .filter_map(|command| COMMANDS.iter().find(|spec| spec.command == *command))
-        .collect()
-}
-
 /// Something open that browser Back closes, innermost last.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Layer {
@@ -257,65 +215,6 @@ impl Press {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::parse;
-
-    #[test]
-    fn daemon_wide_commands_open_views_and_session_ones_open_sheets() {
-        let opens = |text: &str| parse(text).and_then(|(command, _)| command_view(command));
-        assert_eq!(
-            opens("/config"),
-            Some((View::Settings, Some(SettingsSection::Configuration)))
-        );
-        assert_eq!(
-            opens("/connect"),
-            Some((View::Settings, Some(SettingsSection::Providers)))
-        );
-        assert_eq!(
-            opens("/mcp"),
-            Some((View::Settings, Some(SettingsSection::Mcp)))
-        );
-        assert_eq!(
-            opens("/plugin"),
-            Some((View::Settings, Some(SettingsSection::Plugins)))
-        );
-        assert_eq!(opens("/memories"), Some((View::Memory, None)));
-        for text in [
-            "/runtime",
-            "/goal",
-            "/permissions",
-            "/usage",
-            "/events",
-            "/new",
-        ] {
-            assert_eq!(opens(text), None, "{text}");
-        }
-    }
-
-    #[test]
-    fn the_session_menu_holds_only_commands_without_a_view_or_another_place() {
-        let menu = session_menu();
-        assert_eq!(menu.len(), SESSION_MENU.len());
-        for spec in &menu {
-            assert_eq!(command_view(spec.command), None, "/{}", spec.name);
-        }
-        for elsewhere in [
-            Command::New,
-            Command::Sessions,
-            Command::Agent,
-            Command::Model,
-            Command::Mode,
-            Command::Approvals,
-            Command::Attach,
-            Command::Cancel,
-        ] {
-            assert!(!SESSION_MENU.contains(&elsewhere), "{elsewhere:?}");
-        }
-        let names = menu.iter().map(|spec| spec.name).collect::<Vec<_>>();
-        assert_eq!(
-            &names[..4],
-            ["runtime", "permissions", "goal", "background"]
-        );
-    }
 
     #[test]
     fn settings_is_the_last_view_on_the_rail() {

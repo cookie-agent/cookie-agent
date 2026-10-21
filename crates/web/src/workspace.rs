@@ -14,7 +14,6 @@ use cookie_agent_client_state::{
     ComposerInput, DeliveryOutcome, EventLevel, FullContentState, RuntimeState, StateStore,
     model_draft::{DRAFT_PUBLISH_DELAY, DraftPublish, is_foreign_model_pick},
     ownership::{SessionOwnershipOutcome, classify_session},
-    session_actions::next_permission_mode,
     subscriptions::{
         SUBSCRIPTION_RETRY_DELAY, Subscribe, SubscribeIntent, SubscriptionOutcome, Subscriptions,
     },
@@ -32,7 +31,7 @@ use cookie_agent_protocol::{
 };
 use leptos::{prelude::*, task::spawn_local};
 
-use crate::{browser, connect::EVENT_LEVEL_KEY, tree::PanelMode};
+use crate::{browser, connect::EVENT_LEVEL_KEY};
 
 mod attachments;
 mod background;
@@ -64,9 +63,13 @@ pub enum Panel {
     Events,
     Commands,
     Goal,
+    /// Compacting the context, with an optional focus.
+    Compact,
     Background,
     Skills,
     Permissions,
+    /// The permission mode picker.
+    Modes,
     /// A user message's actions: copy, revert, fork.
     Message,
     /// The session's attached runtimes.
@@ -124,7 +127,9 @@ pub struct Workspace {
     /// The viewed session's tree (`session.tree` of its root).
     pub tree: RwSignal<Option<cookie_agent_protocol::SessionTree>>,
     pub tree_root: RwSignal<Option<SessionId>>,
-    pub panel_mode: RwSignal<PanelMode>,
+    /// Whether the open session's tree shows every subagent, not only
+    /// the running ones.
+    pub tree_expanded: RwSignal<bool>,
     pub collapsed: RwSignal<HashSet<SessionId>>,
     tree_request: StoredValue<u64>,
     pub user_menu: RwSignal<Option<UserMenu>>,
@@ -236,7 +241,7 @@ impl Workspace {
             panel: RwSignal::new(None),
             tree: RwSignal::new(None),
             tree_root: RwSignal::new(None),
-            panel_mode: RwSignal::new(PanelMode::default()),
+            tree_expanded: RwSignal::new(false),
             collapsed: RwSignal::new(HashSet::new()),
             tree_request: StoredValue::new(0),
             user_menu: RwSignal::new(None),
@@ -1132,15 +1137,12 @@ impl Workspace {
 
     /// Submits the composer's text: to the viewed session (steering or
     /// queueing behind a running run), or creating the new session first.
+    /// Text that starts with `/` is a message too: commands are in the
+    /// session's ⋮ menu.
     pub fn submit(self, delivery: InputDelivery) {
         let text = self.composer.get_untracked();
         let files = self.attachments.get_untracked();
         if text.trim().is_empty() && files.is_empty() {
-            return;
-        }
-        if let Some((command, argument)) = crate::commands::parse(&text) {
-            self.composer.set(String::new());
-            self.run_command(command, argument);
             return;
         }
         if !self.writable() {
@@ -1590,9 +1592,9 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    /// Moves to the next permission mode.
-    pub fn cycle_permission_mode(self) {
-        let mode = next_permission_mode(self.permission_mode());
+    /// Sets the permission mode: the new session's, or the viewed
+    /// session tree's (`session.set_permission_mode`).
+    pub fn set_permission_mode(self, mode: PermissionMode) {
         if self.new_session.get_untracked() {
             self.new_session_mode.set(Some(mode));
             return;
@@ -1723,42 +1725,29 @@ impl Workspace {
         self.level.set(level);
     }
 
-    /// Runs a slash command or a menu entry with its argument.
-    pub fn run_command(self, command: crate::commands::Command, argument: String) {
+    /// Opens the sheet of a ⋮ menu entry.
+    pub fn run_command(self, command: crate::commands::Command) {
         use crate::commands::Command;
-        if let Some((view, section)) = crate::layout::command_view(command) {
-            self.open_view(view, section);
-            return;
-        }
         match command {
-            Command::New => self.start_new_session(),
-            Command::Sessions => self.show_sessions(),
-            Command::Agent => self.panel.set(Some(Panel::Agents)),
-            Command::Model => self.panel.set(Some(Panel::Models)),
-            Command::Preset => self.panel.set(Some(Panel::Presets)),
-            Command::Approvals => self.panel.set(Some(Panel::Approvals)),
-            Command::Mode => self.cycle_permission_mode(),
+            Command::Compact => {
+                if self.selected.get_untracked().is_none() || self.new_session.get_untracked() {
+                    self.status
+                        .set("select a session before compacting context".into());
+                    return;
+                }
+                self.panel.set(Some(Panel::Compact));
+            }
+            Command::Goal => self.goal_command(crate::goal::GoalCommand::Show),
+            Command::Skills => self.open_skills(String::new()),
+            Command::Background => self.open_background(),
+            Command::Runtime => self.open_runtimes(),
+            Command::Permissions => self.open_permissions(),
             Command::Usage => {
                 self.load_usage();
                 self.panel.set(Some(Panel::Usage));
             }
-            Command::Cancel => self.cancel(),
             Command::Events => self.panel.set(Some(Panel::Events)),
-            Command::Goal => self.goal_command(crate::goal::GoalCommand::parse(&argument)),
-            Command::Compact => self.compact(argument),
-            Command::Background => self.open_background(),
-            Command::Skills => self.open_skills(argument),
-            Command::Permissions => self.open_permissions(),
-            Command::Attach => crate::files::pick_files(false),
-            Command::AgentPanelShow => self.set_panel_mode(PanelMode::Shown),
-            Command::AgentPanelHide => self.set_panel_mode(PanelMode::Hidden),
-            Command::AgentPanelAuto => self.set_panel_mode(PanelMode::Auto),
-            Command::Runtime => self.open_runtimes(),
-            Command::Mcp
-            | Command::Connect
-            | Command::Config
-            | Command::Memory
-            | Command::Plugins => {}
+            Command::Preset => self.panel.set(Some(Panel::Presets)),
         }
     }
 
