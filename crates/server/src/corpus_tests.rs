@@ -341,13 +341,21 @@ async fn drive(client: &Client) {
         .list_sessions(params(json!({})))
         .await
         .expect("session.list");
+    // Since 1.8.0 the session belongs to a project.
+    let project = client
+        .create_project(params(json!({"name": "corpus", "emoji": "🍪"})))
+        .await
+        .expect("project.create");
+    client.list_projects().await.expect("projects.list");
     let selection = json!({
         "agent": "primary",
         "model": {"model": MODEL, "variant": null},
         "preset": null,
     });
     let created = client
-        .create_session(params(json!({"selection": selection})))
+        .create_session(params(
+            json!({"selection": selection, "project": project.project.id}),
+        ))
         .await
         .expect("session.create");
     let session: SessionId = created.session.session_id;
@@ -462,26 +470,74 @@ async fn drive(client: &Client) {
         .expect("events.unsubscribe");
 }
 
-/// The messages of `recording` with the daemon's machine ID replaced.
-fn anonymized(recording: &Recording) -> Vec<Recorded> {
-    let messages = recording.messages();
-    let machine = messages
+/// What identifies the recording machine and its user in `recordings`,
+/// with the placeholder each is written as: the daemon's machine ID, and
+/// what the runtime reports of its machine and its user (runtime protocol
+/// 1.1.0 and 1.3.0), including the machine name the daemon derives from the
+/// host name.
+fn identifying(recordings: &[&Recording]) -> Vec<(String, &'static str)> {
+    let messages = recordings
         .iter()
-        .find_map(|message| message.message["result"]["machine_id"].as_str())
-        .map(str::to_owned);
-    messages
+        .flat_map(|recording| recording.messages())
+        .collect::<Vec<_>>();
+    let found = |pointer: &str| {
+        messages
+            .iter()
+            .find_map(|message| message.message.pointer(pointer)?.as_str())
+            .map(str::to_owned)
+    };
+    let host = found("/result/machine/host_name");
+    let machine_name = host.as_deref().map(|host| {
+        let label = host
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        label
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    });
+    [
+        (found("/result/machine_id"), corpus::MACHINE_ID_PLACEHOLDER),
+        (found("/result/machine/id"), corpus::MACHINE_ID_PLACEHOLDER),
+        (host, CORPUS_HOST_NAME),
+        (machine_name, CORPUS_HOST_NAME),
+        (found("/result/home"), CORPUS_HOME),
+    ]
+    .into_iter()
+    .filter_map(|(value, placeholder)| {
+        Some((value.filter(|value| !value.is_empty())?, placeholder))
+    })
+    .collect()
+}
+
+/// The messages of `recording` with what [`identifying`] found replaced.
+fn anonymized(recording: &Recording, replacements: &[(String, &str)]) -> Vec<Recorded> {
+    recording
+        .messages()
         .into_iter()
         .map(|mut message| {
-            if let Some(machine) = &machine {
-                let text = serde_json::to_string(&message.message)
-                    .expect("message")
-                    .replace(machine.as_str(), corpus::MACHINE_ID_PLACEHOLDER);
-                message.message = serde_json::from_str(&text).expect("message");
+            let mut text = serde_json::to_string(&message.message).expect("message");
+            for (value, placeholder) in replacements {
+                text = text.replace(value.as_str(), placeholder);
             }
+            message.message = serde_json::from_str(&text).expect("message");
             message
         })
         .collect()
 }
+
+/// The host name a recorded runtime reports.
+const CORPUS_HOST_NAME: &str = "corpus-host";
+/// The home directory a recorded runtime reports.
+const CORPUS_HOME: &str = "/home/corpus";
 
 /// Records the client and runtime corpora of this build's versions into
 /// the corpus root `COOKIE_RECORD_CORPUS` names (a relative one from the
@@ -514,18 +570,19 @@ async fn record_the_client_and_runtime_corpora() {
     client.shutdown();
     let scratch = daemon.directory.path().to_owned();
     daemon.shutdown().await;
+    let replacements = identifying(&[&recording, &runtime]);
     for (surface, version, file, messages) in [
         (
             "client",
             &client_version,
             "session.jsonl",
-            anonymized(&recording),
+            anonymized(&recording, &replacements),
         ),
         (
             "runtime",
             &runtime_version,
             "coding.jsonl",
-            anonymized(&runtime),
+            anonymized(&runtime, &replacements),
         ),
     ] {
         let path = Recording::write_new(&root, surface, version, file, &messages, &scratch)

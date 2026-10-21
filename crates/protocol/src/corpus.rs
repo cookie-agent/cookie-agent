@@ -20,6 +20,12 @@
 //!     runtime during that session: the handshake, `capability/open`,
 //!     `runtime/context`, the `bash` call's preparation, revalidation, and
 //!     execution with its detach point and progress, and the shutdown.
+//!   - `client/1.8.0/session.jsonl` and `runtime/1.3.0/coding.jsonl`: the
+//!     same session recorded by client protocol 1.8.0 and runtime protocol
+//!     1.3.0, created in a project (`project.create`, `projects.list`, and
+//!     `session.create` with `project`). The recorder writes the runtime's
+//!     host name, the machine name derived from it, and its home directory
+//!     as placeholders too.
 //!   - `plugin/1.0.0/reference.jsonl`: the scripted conversation of
 //!     `examples/plugins/python/check_reference_plugin.py` with the reference
 //!     plugin: the handshake, producer recovery, a tool call with its hook
@@ -125,6 +131,11 @@ pub const FROZEN: &[(&str, &str, &str)] = &[
         "30b9835b7a8a3ba22e06dcfdaa0cc2914a47dabc9cbbd44f4a1c51862bd71600",
     ),
     (
+        "client",
+        "1.8.0",
+        "1d433b6e170bf86e1009b90e7f855a2f8a3247e8733bb22ce3dec2410a1fca75",
+    ),
+    (
         "plugin",
         "1.0.0",
         "faf1d3e6fdb93b10ace75fe609801c36ab863399f1188d2da5b6ae0ade79610f",
@@ -133,6 +144,11 @@ pub const FROZEN: &[(&str, &str, &str)] = &[
         "runtime",
         "1.0.0",
         "0d52ff3f3e6921f2144708d9cfb8881f89abe0d8a73bc3a3e0a2eb444b99a57c",
+    ),
+    (
+        "runtime",
+        "1.3.0",
+        "6d2c196d2d00f942a829d1b979f2c148bb038a0855a4facb213c2f005477ba98",
     ),
 ];
 
