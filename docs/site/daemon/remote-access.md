@@ -50,6 +50,11 @@ port forwards both. The page then finds the daemon at its own address.
 
 - **An SSH tunnel:** `ssh -L 7419:127.0.0.1:7419 host`. Open
   `http://127.0.0.1:7419/` and allow `http://127.0.0.1:7419`.
+- **Tailscale Serve** gives the loopback daemon an HTTPS address on the
+  tailnet without listening anywhere else: `tailscale serve --bg 7419`
+  serves `https://<host>.<tailnet>.ts.net/`. Allow that origin. An HTTPS
+  page can be [installed as an app](../clients/web.md#installing-as-an-app)
+  on a phone.
 - **Tailscale or a LAN.** Run `cookie daemon --listen 0.0.0.0:7419` and
   allow the address you open, such as `http://100.101.102.103:7419`.
   Without TLS the token crosses the network in the clear, so keep this to a

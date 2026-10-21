@@ -64,14 +64,19 @@ takes gzip (`Vary: Accept-Encoding`, with its own `ETag`). Every response
 carries the page's `Content-Security-Policy`:
 
 - scripts only from the daemon, including WebAssembly and the page's
-  inline loader by hash;
+  inline scripts by hash;
 - WebSocket connections to any daemon (`ws:`, `wss:`), since the page may
   name one on another host;
+- its service worker and manifest only from the daemon;
 - `blob:` media;
 - no framing.
 
-The page includes a web app manifest and its icons, so a phone can add it to
-the home screen; it has no service worker. A
+The page includes a web app manifest, its icons and screenshots, and a
+service worker (`sw.js`, sent with `no-cache` like `index.html`), so a
+browser can install it as an app (see
+[Installing as an app](../clients/web.md#installing-as-an-app)). The
+service worker caches nothing, so the page always matches the daemon's
+build. A
 `cookie` built without the page (see
 [Building the page](../clients/web.md#building-the-page)) serves a
 placeholder `index.html` that says how to build it. After its ready line,

@@ -11,7 +11,10 @@ added browser authentication, and on the
 [runtime capabilities spec](runtime-capabilities.md), which added the
 listening daemon. The addendum of 2026-10-21
 ([section 16](#16-addendum-2026-10-21-web-layout-v2-and-session-deletion))
-adds web layout v2 and session deletion, implemented on 2026-10-21.
+adds web layout v2 and session deletion, implemented on 2026-10-21. On
+2026-10-21 the user also reversed the "no service worker" decision of
+[section 9](#9-phones): the page installs as an app, with a network-only
+service worker.
 
 ## 1. Goal and scope
 
@@ -308,8 +311,9 @@ with them (`state/tests.rs`).
   - Files whose names carry Trunk's content hash (the WebAssembly module,
     its glue, the stylesheet) are sent with `Cache-Control: immutable`.
     `index.html` and the files Trunk copies under their own names (fonts,
-    highlighter, manifest, icons) are sent with `no-cache` and an `ETag`, so
-    a restarted daemon's page always matches its own build.
+    highlighter, manifest, icons, screenshots, the service worker) are sent
+    with `no-cache` and an `ETag`, so a restarted daemon's page always
+    matches its own build.
   - A compressible file is sent gzip-compressed to a browser that takes
     gzip; there is no Brotli.
 - **Serving the page needs no token.** The page holds no secret. Every
@@ -431,8 +435,47 @@ where each feature lands.
   - The bundle has a web app manifest and icons (any and maskable, 192 and
     512 px, an SVG, and an Apple touch icon), `display: standalone`, and a
     theme colour for light and dark, so it can be added to the home screen.
-  - A service worker is not part of this spec. It would need a secure
+  - The spec first left a service worker out: it would need a secure
     context and adds caching the daemon's version matching does not want.
+    **The user reversed this on 2026-10-21:** the page advertises itself as
+    an installable app, with a service worker that caches nothing (below).
+- **Installable app (user decision, 2026-10-21).** Users opening the page in
+  a browser, typically over `tailscale serve` HTTPS
+  (`https://<host>.<tailnet>.ts.net/` in front of the loopback daemon), can
+  install it to a phone or desktop.
+  - **Manifest.** `name`, `short_name`, and `id`, `start_url`, and `scope`
+    of `./` (relative, so the page installs from any path), `display:
+    standalone`, background and theme colours, the icons above, and a
+    narrow and a wide screenshot for Chromium's richer install dialog.
+  - **Service worker, network-only.** `sw.js` beside `index.html`, so its
+    scope is the page's directory without `Service-Worker-Allowed`. It
+    caches nothing: no Cache Storage, and its fetch handler passes the
+    page's own `GET` requests to the network (`respondWith(fetch(request))`)
+    and leaves every other request, and `/ws` and `/runtime`, to the
+    browser. The page must always match its daemon's build, which is why
+    caching stays out. It calls `skipWaiting` and `clients.claim`, and
+    `scripts/build-web.sh` stamps the build on its last line, so a new
+    build replaces it on the next load. The page registers it only in a
+    secure context, with `updateViaCache: "none"`.
+  - **Serving.** `sw.js` keeps its name, so it is sent with `no-cache`
+    and an `ETag` like `index.html`, as `text/javascript`. The
+    Content-Security-Policy adds `worker-src 'self'` and
+    `manifest-src 'self'`.
+  - **Advertising it.** An inline script keeps Chromium's
+    `beforeinstallprompt` (it may fire before the WebAssembly runs) and
+    prevents the mini-infobar. Settings › This browser, the connect screen,
+    and a phone's one-time dismissible banner offer **Install app**, which
+    opens the prompt; `appinstalled` or running standalone
+    (`display-mode: standalone`, iOS's `navigator.standalone`) hides it.
+    iOS and iPadOS have no prompt, so they get the steps instead: Share,
+    then Add to Home Screen. A page that is not a secure context cannot be
+    installed, and Settings says it needs HTTPS. The decision is pure logic
+    in `crates/web/src/install.rs`.
+  - **Launching.** The app opens at `start_url`, which has no token, and
+    connects with the stored one. iOS keeps a home-screen app's storage
+    apart from Safari's, so there the token field takes a pasted
+    `cookie web` link once. The `theme-color` follows the page's theme,
+    the user's override included.
 - **On-screen keyboard.** The page's frame and sheets take the visual
   viewport's height, which the keyboard shrinks, so the composer and an
   open sheet stay above it; the frame keeps clear of safe-area insets.

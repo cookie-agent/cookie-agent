@@ -354,16 +354,72 @@ address bar.
   leaves visible, so the composer and an open sheet stay above it. While
   the composer has focus, the bottom bar steps aside, so only the composer
   (and the status line, when it shows) sits above the keyboard.
-- **Home screen.** Add the page to the home screen from the browser's menu.
-  It opens on its own, without the browser's address bar, with the cookie
-  icon. The page keeps working only while it reaches the daemon: it stores
-  nothing for offline use.
+- **Home screen.** The page installs as an app; see
+  [Installing as an app](#installing-as-an-app).
 - **Background tabs.** A phone suspends a tab it does not show. When the tab
   shows again, the page checks its connection, reconnects if the daemon
   stopped answering, and catches up on what happened meanwhile.
 - **Reaching the daemon** from a phone takes one of the ways in
   [Forwarding and tunnels](../daemon/remote-access.md#forwarding-and-tunnels). Without
   TLS the token crosses the network in the clear.
+
+## Installing as an app
+
+The page installs to a phone's home screen, or as a desktop app, and then
+opens in its own window without the browser's address bar, with the cookie
+icon. It still works only while it reaches the daemon: it stores nothing
+for offline use, so it always matches the daemon's own build.
+
+**It needs HTTPS.** A browser installs only a page from a secure origin:
+HTTPS, or `localhost` and `127.0.0.1` on the daemon's own machine. A page
+opened over plain HTTP on a LAN or Tailscale address cannot be installed,
+and Settings › This browser says so. The easy way to HTTPS is
+[Tailscale Serve](https://tailscale.com/kb/1312/serve) on the daemon's
+machine, with the daemon on its default loopback address:
+
+```sh
+tailscale serve --bg 7419   # https://<host>.<tailnet>.ts.net/ → 127.0.0.1:7419
+```
+
+Allow that origin, restart the daemon, and open the page on the phone with
+`cookie web --url wss://<host>.<tailnet>.ts.net/ws`'s link:
+
+```toml
+[server]
+allowed_origins = ["https://<host>.<tailnet>.ts.net"]
+```
+
+Tailscale Serve needs HTTPS certificates turned on for the tailnet (MagicDNS
+and HTTPS in its admin console).
+
+Where the browser can install the page, the page offers it:
+
+- **Android (Chrome and other Chromium browsers) and desktop Chrome or
+  Edge.**
+  **Install app** opens the browser's install prompt. It is in Settings ›
+  This browser and under the connect screen, and on a phone a banner over
+  the page offers it once (× dismisses it for good). Chrome offers the
+  prompt once the page has been used for a moment; before that, or in a
+  browser without one (Firefox), Settings › This browser points to the
+  browser's own menu (**Install app**, **Add to Home screen**).
+- **iPhone and iPad.** iOS has no install prompt, so the same places say
+  how: tap **Share** in the browser's toolbar, then **Add to Home Screen**
+  and **Add**. The app iOS adds keeps its own storage, apart from the
+  browser's, so the first time it opens it asks for the token: paste the
+  link `cookie web` prints into its Token field (the page takes the token
+  out of it).
+- **Already installed.** Running as an app, the page offers nothing, and
+  Settings › This browser says it runs as an installed app.
+
+The app opens at the page's own address without a token and connects with
+the token the browser stored when a `cookie web` link was opened. Its title
+bar follows the page's theme, the user's choice included.
+
+The page has a service worker, `sw.js`, which installing needs on some
+browsers. It caches nothing and passes every request to the daemon, so a
+daemon that is not running shows the browser's own error, and a restarted
+daemon of a new build serves its own page at once. It never touches the
+`/ws` and `/runtime` WebSockets.
 
 ## What the page does not do
 
