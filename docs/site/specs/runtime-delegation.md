@@ -18,7 +18,7 @@ the daemon's runtimes.
 
 - At depth 0, `delegate_subagent` gains a `capabilities` parameter: the
   runtime capabilities the child works through. Each is written
-  `<runtime>/<capability>`, with a workspace when the capability takes
+  `<runtime_id>/<capability_id>`, with a workspace when the capability takes
   one. The name went from `runtimes` to `attachments` to `capabilities`,
   all on 2026-10-21.
   - It is **absent** when the root session does not have `global`
@@ -64,7 +64,7 @@ At depth 0 the schema gains:
     "additionalProperties": false,
     "required": ["capability"],
     "properties": {
-      "capability": { "type": "string", "description": "`<runtime>/<capability>`, from list_runtimes, e.g. `labpc/coding`" },
+      "capability": { "type": "string", "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`" },
       "workspace": { "type": "string", "description": "Directory on that runtime's machine; required when the capability takes a workspace" }
     }
   }
@@ -83,7 +83,7 @@ At depth 0 the schema gains:
   - **What each item does:** it gives the child that runtime capability,
     at the workspace when the capability takes one. These are runtime
     capabilities, not the subagent's tools or permissions.
-  - **How to write one:** always the full `<runtime>/<capability>`, from
+  - **How to write one:** always the full `<runtime_id>/<capability_id>`, from
     a `<runtime id=…>` and one of its `<capability name=…>` in
     `list_runtimes`. `list_runtimes` prints no separate "delegate as"
     string (decided 2026-10-21).
