@@ -92,9 +92,10 @@ impl Workspace {
                     self.follow_live_sessions(&result.tree);
                     self.tree.set(Some(result.tree));
                 }
-                Err(error) => self
-                    .status
-                    .set(format!("session tree unavailable: {error}")),
+                Err(error) => self.status.set(format!(
+                    "session tree unavailable: {}",
+                    crate::errors::describe(&error)
+                )),
             }
         });
     }

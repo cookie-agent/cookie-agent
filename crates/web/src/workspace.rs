@@ -363,7 +363,7 @@ impl Workspace {
             .await
         {
             Ok(result) => self.sessions.set(result.sessions),
-            Err(error) => self.status.set(error.to_string()),
+            Err(error) => self.status.set(crate::errors::describe(&error)),
         }
         match client.runtime_snapshot().await {
             Ok(result) => {
@@ -374,9 +374,10 @@ impl Workspace {
                     self.draft.set(self.default_draft());
                 }
             }
-            Err(error) => self
-                .status
-                .set(format!("runtime snapshot unavailable: {error}")),
+            Err(error) => self.status.set(format!(
+                "runtime snapshot unavailable: {}",
+                crate::errors::describe(&error)
+            )),
         }
     }
 
@@ -633,7 +634,7 @@ impl Workspace {
                     return;
                 }
                 SessionDeleteOutcome::DaemonTooOld => DAEMON_TOO_OLD_TO_DELETE.to_owned(),
-                SessionDeleteOutcome::Failed(error) => delete_refusal(&error),
+                SessionDeleteOutcome::Failed(error) => crate::errors::describe(&error),
             };
             self.delete_error.set(Some((session_id, message)));
         });
@@ -832,7 +833,8 @@ impl Workspace {
                         .await
                     {
                         self.status.set(format!(
-                            "model selection not shared with other clients: {error}"
+                            "model selection not shared with other clients: {}",
+                            crate::errors::describe(&error)
                         ));
                     }
                 });
@@ -1045,7 +1047,7 @@ impl Workspace {
                     SubscriptionOutcome::Established
                 }
                 Err(ClientError::ReplayInProgress) => SubscriptionOutcome::ReplayInProgress,
-                Err(error) => SubscriptionOutcome::Failed(error.to_string()),
+                Err(error) => SubscriptionOutcome::Failed(crate::errors::describe(&error)),
             };
             if !self.is_current(connection) {
                 return;
@@ -1217,7 +1219,7 @@ impl Workspace {
                             *attachments = files;
                         }
                     });
-                    self.status.set(error.to_string());
+                    self.status.set(crate::errors::describe(&error));
                 }
             }
         });
@@ -1269,7 +1271,7 @@ impl Workspace {
                 ..SessionCreateParams::new(selection)
             })
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| crate::errors::describe_full(&error))?;
         let session_id = created.session.session_id;
         self.owned.update_value(|owned| {
             owned.insert(session_id);
@@ -1417,7 +1419,7 @@ impl Workspace {
                 Ok(SessionRecallInputResult::NotOwner) => self
                     .status
                     .set("only the client that sent a message can recall it".into()),
-                Err(error) => self.status.set(error.to_string()),
+                Err(error) => self.status.set(crate::errors::describe(&error)),
             }
         });
     }
@@ -1469,7 +1471,7 @@ impl Workspace {
         spawn_local(async move {
             match client.cancel_run(RunCancelParams { run_id }).await {
                 Ok(_) => self.status.set("cancelling…".into()),
-                Err(error) => self.status.set(error.to_string()),
+                Err(error) => self.status.set(crate::errors::describe(&error)),
             }
         });
     }
@@ -1492,9 +1494,10 @@ impl Workspace {
                         store.apply_approval_list(&[root_session_id], result)
                     });
                 }
-                Err(error) => self
-                    .status
-                    .set(format!("approval list refresh failed: {error}")),
+                Err(error) => self.status.set(format!(
+                    "approval list refresh failed: {}",
+                    crate::errors::describe(&error)
+                )),
             }
         });
     }
@@ -1544,7 +1547,10 @@ impl Workspace {
                 .await;
             match result {
                 Ok(_) => self.status.set("approval answered".into()),
-                Err(error) => self.status.set(format!("approval not answered: {error}")),
+                Err(error) => self.status.set(format!(
+                    "approval not answered: {}",
+                    crate::errors::describe(&error)
+                )),
             }
             if let Some(session_id) = self.selected.get_untracked() {
                 self.refresh_approvals(session_id);
@@ -1614,8 +1620,10 @@ impl Workspace {
                         modes.remove(&session_id);
                     }
                 });
-                self.status
-                    .set(format!("permission mode update failed: {error}"));
+                self.status.set(format!(
+                    "permission mode update failed: {}",
+                    crate::errors::describe(&error)
+                ));
             }
         });
     }
@@ -1664,12 +1672,12 @@ impl Workspace {
                 .session_usage(SessionUsageParams { session_id })
                 .await
                 .map(|result| result.usage)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             let tree = client
                 .session_tree_usage(SessionUsageParams { session_id })
                 .await
                 .map(|result| (result.usage, result.session_count))
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.usage.set(Some(UsageView { session, tree }));
         });
     }
@@ -1698,7 +1706,7 @@ impl Workspace {
                         length: read.length,
                     })
                     .await
-                    .map_err(|error| error.to_string()),
+                    .map_err(|error| crate::errors::describe_full(&error)),
             );
             self.update_store(|store| {
                 if let Some(session) = store.sessions.get_mut(&session_id) {
@@ -1770,7 +1778,7 @@ impl Workspace {
                     length: cookie_agent_protocol::ARTIFACT_CHUNK_BYTES,
                 })
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| crate::errors::describe_full(&error))?;
             use base64::Engine as _;
             let chunk = base64::engine::general_purpose::STANDARD
                 .decode(read.data)
@@ -1793,21 +1801,6 @@ pub fn level_from_storage(stored: Option<&str>) -> EventLevel {
         Some("warning") => EventLevel::Warning,
         Some("error") => EventLevel::Error,
         _ => EventLevel::DEFAULT_MINIMUM,
-    }
-}
-
-/// What a refused delete shows: the daemon's registry message, and its
-/// hint when the message does not already say it.
-fn delete_refusal(error: &ClientError) -> String {
-    let ClientError::Rpc(rpc) = error else {
-        return error.to_string();
-    };
-    let hint = error.error_data().and_then(|data| data.hint);
-    match hint {
-        Some(hint) if !hint.is_empty() && !rpc.message.contains(hint.as_str()) => {
-            format!("{} {hint}", rpc.message)
-        }
-        _ => rpc.message.clone(),
     }
 }
 

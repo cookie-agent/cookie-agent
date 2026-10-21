@@ -99,7 +99,7 @@ impl Workspace {
                     })
                     .await
                     .map(|result| result.goal)
-                    .map_err(|error| error.to_string()),
+                    .map_err(|error| crate::errors::describe_full(&error)),
                 GoalCommand::Lifecycle(action) => {
                     lifecycle(&client, session_id, action, selection).await
                 }
@@ -126,7 +126,7 @@ async fn lifecycle(
     let goal = client
         .get_session_goal(SessionGoalGetParams { session_id })
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| crate::errors::describe_full(&error))?
         .goal
         .ok_or_else(|| "no goal is set for this session".to_owned())?;
     client
@@ -139,5 +139,5 @@ async fn lifecycle(
         })
         .await
         .map(|result| result.goal)
-        .map_err(|error| error.to_string())
+        .map_err(|error| crate::errors::describe_full(&error))
 }

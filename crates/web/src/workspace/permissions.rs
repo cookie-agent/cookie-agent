@@ -51,7 +51,7 @@ impl Workspace {
                     })
                     .await
                     .map(|result| result.permissions)
-                    .map_err(|error| error.to_string());
+                    .map_err(|error| crate::errors::describe_full(&error));
                 self.install_permissions(request, result);
             });
             return;
@@ -64,7 +64,7 @@ impl Workspace {
                 .get_session_permissions(SessionPermissionGetParams { session_id })
                 .await
                 .map(|result| result.permissions)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.install_permissions(request, result);
         });
     }
@@ -135,7 +135,7 @@ impl Workspace {
                 })
                 .await
                 .map(|result| result.permissions)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.install_permissions(request, result);
         });
     }
@@ -167,7 +167,7 @@ impl Workspace {
                 })
                 .await
                 .map(|result| result.permissions)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.install_permissions(request, result);
         });
     }

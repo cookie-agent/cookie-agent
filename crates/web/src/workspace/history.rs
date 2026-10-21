@@ -120,7 +120,10 @@ impl Workspace {
                             .into(),
                     );
                 }
-                Err(error) => self.status.set(format!("revert failed: {error}")),
+                Err(error) => self.status.set(format!(
+                    "revert failed: {}",
+                    crate::errors::describe(&error)
+                )),
             }
         });
     }
@@ -158,7 +161,9 @@ impl Workspace {
                     self.open_session(forked);
                     self.status.set("forked the session; switched to it".into());
                 }
-                Err(error) => self.status.set(format!("fork failed: {error}")),
+                Err(error) => self
+                    .status
+                    .set(format!("fork failed: {}", crate::errors::describe(&error))),
             }
         });
     }
@@ -228,7 +233,10 @@ impl Workspace {
                 Ok(result) => result.cancellation_reason.unwrap_or_else(|| {
                     "context did not require or could not produce a smaller checkpoint".into()
                 }),
-                Err(error) => format!("context compaction failed: {error}"),
+                Err(error) => format!(
+                    "context compaction failed: {}",
+                    crate::errors::describe(&error)
+                ),
             };
             if self.selected.get_untracked() == Some(session_id) {
                 self.status.set(status);
@@ -249,7 +257,7 @@ impl Workspace {
             {
                 Ok(result) if result.cancelled => "compaction cancellation requested".into(),
                 Ok(_) => "no compaction to cancel".into(),
-                Err(error) => error.to_string(),
+                Err(error) => crate::errors::describe(&error),
             };
             self.status.set(status);
         });

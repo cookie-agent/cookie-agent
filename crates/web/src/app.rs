@@ -188,7 +188,7 @@ impl Connection {
                             return;
                         }
                         self.phase.set(Phase::Reconnecting {
-                            reason: error.to_string(),
+                            reason: crate::errors::describe(&error),
                         });
                         delay = next_reconnect_delay(delay);
                     }
@@ -240,7 +240,7 @@ impl Connection {
 fn failure(error: &ClientError) -> Phase {
     match error {
         ClientError::ConnectionRefusedBeforeHandshake { .. } => Phase::Failed {
-            message: error.to_string(),
+            message: crate::errors::describe(error),
             hint: Some(refused_before_handshake_hint(
                 &browser::page_origin().unwrap_or_default(),
             )),
@@ -254,7 +254,7 @@ fn failure(error: &ClientError) -> Phase {
             ),
         },
         _ => Phase::Failed {
-            message: error.to_string(),
+            message: crate::errors::describe(error),
             hint: None,
         },
     }

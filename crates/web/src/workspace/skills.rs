@@ -26,7 +26,7 @@ impl Workspace {
                 .list_skills(SkillsListParams { session_id })
                 .await
                 .map(|result| result.skills)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.skills.set(Some(result));
         });
     }
@@ -65,7 +65,10 @@ impl Workspace {
                     self.send_content(content, InputDelivery::Steer, String::new(), Vec::new());
                 }
                 Ok(_) => self.status.set("skill is not user-invocable".into()),
-                Err(error) => self.status.set(format!("load skill failed: {error}")),
+                Err(error) => self.status.set(format!(
+                    "load skill failed: {}",
+                    crate::errors::describe(&error)
+                )),
             }
         });
     }

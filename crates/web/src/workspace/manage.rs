@@ -9,7 +9,7 @@ use std::time::Duration;
 use cookie_agent_client_state::{
     config::{ConfigApplyOutcome, document_text, new_agent_refusal, reload_status},
     mcp::{McpFields, PersistChoice, edit_refusal, is_global, new_definition, sort_servers},
-    memory::{MemoryWriteOutcome, NEW_MEMORY, delete_refusal, message_of, new_memory_refusal},
+    memory::{MemoryWriteOutcome, NEW_MEMORY, delete_refusal, new_memory_refusal},
     providers::{
         ProviderAction, ProviderOperation, action_name, retry_store_contention_once,
         store_contention_message,
@@ -125,12 +125,15 @@ impl Workspace {
                         self.materialize_draft_runtimes();
                     }
                 }
-                Err(error) => self.status.set(format!("runtimes unavailable: {error}")),
+                Err(error) => self.status.set(format!(
+                    "runtimes unavailable: {}",
+                    crate::errors::describe(&error)
+                )),
             }
             let machines = client
                 .list_machines()
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.machines.set(Some(machines));
         });
     }
@@ -237,7 +240,7 @@ impl Workspace {
                 })
                 .await
                 .map(|result| result.instance)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.install_draft_runtime(id, result);
         });
     }
@@ -337,7 +340,7 @@ impl Workspace {
                 .await
             {
                 Ok(result) => format!("attached runtime as `{}`", result.attachment.name),
-                Err(error) => format!("attach failed: {error}"),
+                Err(error) => format!("attach failed: {}", crate::errors::describe(&error)),
             };
             self.status.set(status);
             self.poll_runtimes();
@@ -377,7 +380,7 @@ impl Workspace {
                 .await
             {
                 Ok(_) => format!("detached runtime `{name}`"),
-                Err(error) => format!("detach failed: {error}"),
+                Err(error) => format!("detach failed: {}", crate::errors::describe(&error)),
             };
             self.status.set(status);
             self.poll_runtimes();
@@ -427,7 +430,7 @@ impl Workspace {
                 .await
             {
                 Ok(result) => reconnect_status(&runtime_id, &result.instance),
-                Err(error) => format!("retry failed: {error}"),
+                Err(error) => format!("retry failed: {}", crate::errors::describe(&error)),
             };
             self.status.set(status);
             self.poll_runtimes();
@@ -459,7 +462,10 @@ impl Workspace {
                     self.status.set(done);
                     self.machines.set(Some(Ok(machines)));
                 }
-                Err(error) => self.status.set(format!("machine change failed: {error}")),
+                Err(error) => self.status.set(format!(
+                    "machine change failed: {}",
+                    crate::errors::describe(&error)
+                )),
             }
             self.poll_runtimes();
         });
@@ -480,7 +486,7 @@ impl Workspace {
                     sort_servers(&mut servers);
                     servers
                 })
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.mcp_servers.set(Some(result));
         });
     }
@@ -526,13 +532,13 @@ impl Workspace {
                         })
                         .await
                 }
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| crate::errors::describe_full(&error))?;
                 if let Some(target) = target {
                     return client
                         .persist_mcp_server(McpServerPersistParams { name, target })
                         .await
                         .map(|result| result.server)
-                        .map_err(|error| error.to_string());
+                        .map_err(|error| crate::errors::describe_full(&error));
                 }
                 Ok(mutation.server)
             }
@@ -551,7 +557,7 @@ impl Workspace {
                 .remove_mcp_server(McpServerNameParams { name })
                 .await
                 .map(|result| result.server)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.finish_mcp(result);
         });
     }
@@ -565,7 +571,7 @@ impl Workspace {
                 .set_mcp_server_enabled(McpServerSetEnabledParams { name, enabled })
                 .await
                 .map(|result| result.server)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.finish_mcp(result);
         });
     }
@@ -586,7 +592,7 @@ impl Workspace {
                 .reconnect_mcp_server(params)
                 .await
                 .map(|result| result.server)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             self.finish_mcp(result);
         });
     }
@@ -761,7 +767,10 @@ impl Workspace {
             return;
         };
         spawn_local(async move {
-            let result = client.get_config().await.map_err(|error| error.to_string());
+            let result = client
+                .get_config()
+                .await
+                .map_err(|error| crate::errors::describe_full(&error));
             if let Err(error) = &result {
                 self.status
                     .set(format!("configuration unavailable: {error}"));
@@ -911,7 +920,7 @@ impl Workspace {
         spawn_local(async move {
             match client.reload_config().await {
                 Ok(result) => self.status.set(reload_status(&result.status)),
-                Err(error) => self.status.set(error.to_string()),
+                Err(error) => self.status.set(crate::errors::describe(&error)),
             }
             self.poll_config();
         });
@@ -933,7 +942,7 @@ impl Workspace {
             let result = client
                 .list_memory(MemoryListParams::default())
                 .await
-                .map_err(|error| message_of(&error));
+                .map_err(|error| crate::errors::describe_full(&error));
             self.memory.set(Some(result));
         });
     }
@@ -962,9 +971,10 @@ impl Workspace {
                 Err(error) if error.is(&errors::MEMORY_NOT_FOUND) => {
                     self.memory_edit.set(Some(new_memory(url)));
                 }
-                Err(error) => self
-                    .status
-                    .set(format!("{url} could not be read: {}", message_of(&error))),
+                Err(error) => self.status.set(format!(
+                    "{url} could not be read: {}",
+                    crate::errors::describe(&error)
+                )),
             }
         });
     }
@@ -1103,7 +1113,7 @@ impl Workspace {
                 .list_plugins()
                 .await
                 .map(|listing| listing.plugins)
-                .map_err(|error| error.to_string());
+                .map_err(|error| crate::errors::describe_full(&error));
             if let Err(error) = &result {
                 self.status.set(format!("plugin refresh failed: {error}"));
             }
@@ -1120,7 +1130,7 @@ impl Workspace {
             self.status
                 .set(match client.restart_plugin(name.clone()).await {
                     Ok(_) => format!("plugin `{name}` is restarting"),
-                    Err(error) => error.to_string(),
+                    Err(error) => crate::errors::describe(&error),
                 });
             self.poll_plugins();
         });

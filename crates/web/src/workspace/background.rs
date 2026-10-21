@@ -48,7 +48,7 @@ impl Workspace {
                 Ok(result) if result.accepted => "the call moves to the background once it can",
                 Ok(_) => "this call cannot move to the background",
                 Err(error) => {
-                    self.status.set(error.to_string());
+                    self.status.set(crate::errors::describe(&error));
                     return;
                 }
             };
@@ -67,7 +67,7 @@ impl Workspace {
         spawn_local(async move {
             match client.stop_background(session_id, job.clone()).await {
                 Ok(_) => self.status.set(format!("stopped {job}")),
-                Err(error) => self.status.set(error.to_string()),
+                Err(error) => self.status.set(crate::errors::describe(&error)),
             }
         });
     }
