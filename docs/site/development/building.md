@@ -31,11 +31,21 @@ Their public interfaces are available in the [Rust API documentation](../referen
 
 ## Required gates
 
-Use locked dependency resolution for workspace builds and tests:
+CI runs every gate below. Locally, `scripts/check-changed.sh [base]` runs
+the ones a change needs: formatting always, Clippy and the tests of the
+changed crates and the crates that depend on them, and the wasm32, web,
+compatibility, and documentation checks only when their inputs changed (`-n`
+prints the commands without running them). `AGENTS.md` lists the rules.
+
+Use locked dependency resolution for workspace builds and tests. Tests run
+under [cargo-nextest](https://nexte.st) (`cargo install cargo-nextest
+--locked`), configured in `.config/nextest.toml`, and the doctests, which
+nextest does not run, under `cargo test`:
 
 ```sh
 cargo build --locked --workspace --all-targets
-cargo test --locked --workspace
+cargo nextest run --workspace --locked --no-fail-fast
+cargo test --doc --workspace --locked
 ```
 
 Run formatting and Clippy with warnings denied under stable and the Rust 1.88
@@ -60,7 +70,9 @@ protocols freeze, any change to a wire type, method, or protocol version needs
 regenerated baselines: run `crates/protocol/scripts/update-compat-baseline.sh`
 and commit `crates/protocol/compat/`. For the documentation, install
 `requirements-docs.txt` before running `./scripts/build-docs.sh`. That
-script builds workspace rustdoc and runs MkDocs in strict mode.
+script builds workspace rustdoc and runs MkDocs in strict mode;
+`./scripts/build-docs.sh --no-rustdoc` skips rustdoc when only the prose
+changed.
 
 ## Windows targets
 

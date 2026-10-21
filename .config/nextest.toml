@@ -1,0 +1,15 @@
+# cargo-nextest (https://nexte.st): `cargo nextest run --workspace --locked
+# --no-fail-fast`, with `cargo test --doc --workspace --locked` for the
+# doctests, which nextest does not run. Each test runs in its own process.
+
+[profile.default]
+# A flaky test is fixed, not retried.
+retries = 0
+# Name a test once it has run this long; nextest never kills it for that.
+slow-timeout = { period = "30s" }
+
+[profile.ci]
+# The run's summary lists the slow tests as well as the failures.
+final-status-level = "slow"
+# Each failure's output as it happens, and again at the end of the run.
+failure-output = "immediate-final"

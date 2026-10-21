@@ -64,8 +64,8 @@ The local tier is:
   `crates/protocol` changed;
 - `scripts/build-web.sh` and `scripts/test-web-page.sh` only when
   `crates/web`, `crates/web_assets`, or `scripts/web-e2e` changed;
-- `./scripts/build-docs.sh` only when `docs/` or `mkdocs.yml` changed, and
-  the tests that keep `docs/site/clients/cli.md` and the tools, protocol,
+- `./scripts/build-docs.sh` only when `docs/` or `mkdocs.yml` changed, with
+  `--no-rustdoc` unless a crate changed too, and the tests that keep `docs/site/clients/cli.md` and the tools, protocol,
   and errors references in step with the code when those pages changed.
 
 The CI-only tier is the Rust 1.88 MSRV build, the Windows build and tests,
@@ -84,11 +84,15 @@ commit on `main` therefore publishes no prerelease.
 ## Gates
 
 CI runs all of these; the local tier above picks among them. Use locked
-dependency resolution for builds and tests:
+dependency resolution for builds and tests. Tests run under
+[cargo-nextest](https://nexte.st) (`.config/nextest.toml`), each in its own
+process and never retried, and the doctests, which nextest skips, under
+`cargo test`:
 
 ```sh
 cargo build --locked --workspace --all-targets
-cargo test --locked --workspace --no-fail-fast
+cargo nextest run --workspace --locked --no-fail-fast
+cargo test --doc --workspace --locked
 ```
 
 Run formatting and Clippy with warnings denied under stable and the Rust 1.88
@@ -128,7 +132,7 @@ cargo deny --locked check advisories licenses sources
 ```
 
 `./scripts/build-docs.sh` builds workspace rustdoc and runs MkDocs in strict
-mode. `check-schema-additive.sh` compares the generated protocol schemas with
+mode; `--no-rustdoc` skips rustdoc for changes to the prose alone. `check-schema-additive.sh` compares the generated protocol schemas with
 the baselines in `crates/protocol/compat/`; after changing a wire type, a
 method, or a protocol version, regenerate them with
 `crates/protocol/scripts/update-compat-baseline.sh` and commit the result.

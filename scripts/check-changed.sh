@@ -11,7 +11,8 @@
 #   - the protocol compatibility check when crates/protocol changed;
 #   - the web bundle and the browser scenarios when the web client or its
 #     scenarios changed;
-#   - the documentation build when docs/ or mkdocs.yml changed.
+#   - the documentation build when docs/ or mkdocs.yml changed, without
+#     rustdoc unless a crate changed too.
 #
 # A change outside these paths that may affect every crate (Cargo.toml,
 # Cargo.lock, test-support/, examples/, ...) checks the whole workspace.
@@ -110,14 +111,24 @@ done
 
 steps=()
 step() { steps+=("$*"); }
+# Tests under cargo-nextest when it is installed, as CI runs them, with the
+# doctests, which nextest does not run, under cargo test.
+tests() {
+    if cargo nextest --version >/dev/null 2>&1; then
+        step cargo nextest run --locked --no-fail-fast "$1"
+        step cargo test --doc --locked "$1"
+    else
+        step cargo test --locked --no-fail-fast "$1"
+    fi
+}
 step cargo fmt --all -- --check
 if ((${#packages[@]})); then
     selection="$(printf -- '-p %s ' "${packages[@]}")"
     step cargo clippy --locked "$selection"--all-targets -- -D warnings
-    step cargo test --locked --no-fail-fast "$selection"
+    tests "$selection"
 fi
 if ((${#extra_tests[@]})); then
-    step cargo test --locked --no-fail-fast "$(printf -- '-p %s ' "${extra_tests[@]}")"
+    tests "$(printf -- '-p %s ' "${extra_tests[@]}")"
 fi
 if $wasm; then
     step cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_protocol --features websocket \
@@ -129,7 +140,14 @@ if $web; then
     step scripts/build-web.sh
     step scripts/test-web-page.sh
 fi
-$docs && step ./scripts/build-docs.sh
+# Rustdoc only when a crate changed too: CI builds it with warnings denied.
+if $docs; then
+    if $workspace || ((${#crate_dirs[@]})); then
+        step ./scripts/build-docs.sh
+    else
+        step ./scripts/build-docs.sh --no-rustdoc
+    fi
+fi
 if $workflows && command -v actionlint >/dev/null; then
     step actionlint
 fi
