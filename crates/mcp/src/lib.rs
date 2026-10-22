@@ -53,13 +53,14 @@ use process_wrap::tokio::ProcessGroup;
 use rmcp::{
     ClientHandler, ClientLifecycleMode, ClientServiceExt, Peer,
     model::{
-        CallToolRequestParams, ContentBlock, CreateMessageRequestParams, CreateMessageResult,
-        ElicitRequestParams, ElicitResult, ErrorCode, ErrorData, ListRootsResult,
-        ProgressNotificationParam, ProtocolVersion, ResourceContents, Tool,
+        CallToolRequest, CallToolRequestParams, CallToolResult, ClientRequest, ContentBlock,
+        CreateMessageRequestParams, CreateMessageResult, ElicitRequestParams, ElicitResult,
+        ErrorCode, ErrorData, ListRootsResult, ProgressNotificationParam, ProtocolVersion,
+        ResourceContents, ServerResult, Tool,
     },
     service::{
-        NotificationContext, RequestContext, RoleClient, RunningService, RxJsonRpcMessage,
-        TxJsonRpcMessage,
+        NotificationContext, PeerRequestOptions, RequestContext, RoleClient, RunningService,
+        RxJsonRpcMessage, TxJsonRpcMessage,
     },
     transport::{StreamableHttpClientTransport, TokioChildProcess, Transport},
 };
@@ -73,6 +74,8 @@ mod oauth;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const TOOL_LIST_DEBOUNCE: Duration = Duration::from_millis(750);
+/// How long a call that stops waiting may spend telling its server so.
+const MCP_CANCEL_NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1777,57 +1780,109 @@ impl PreparedExecutor for McpExecutor {
         context: ToolExecutionContext,
     ) -> Result<ToolCompletion, ToolError> {
         let result: Result<ToolResult, ToolError> = async move {
-        self.revalidate().await?;
-        let params = CallToolRequestParams::new(self.raw_name.clone())
-            .with_arguments(self.arguments.clone());
-        let timeout = self.server.timeout();
-        if self.server.current_state() == McpServerState::Reconnecting {
-            return Err(ToolError::runtime_unavailable(format!(
-                "MCP server `{}` is reconnecting",
-                self.server.name
-            )));
+            self.revalidate().await?;
+            let params = CallToolRequestParams::new(self.raw_name.clone())
+                .with_arguments(self.arguments.clone());
+            let timeout = self.server.timeout();
+            if self.server.current_state() == McpServerState::Reconnecting {
+                return Err(ToolError::runtime_unavailable(format!(
+                    "MCP server `{}` is reconnecting",
+                    self.server.name
+                )));
+            }
+            // Another call may hold the connection; cancelling stops the wait.
+            let service = tokio::select! {
+                service = self.server.service.lock() => service,
+                () = context.cancellation.cancelled() => {
+                    return Err(ToolError::execution("MCP tool call cancelled"));
+                }
+            };
+            let Some(service) = service.as_ref() else {
+                return Err(ToolError::runtime_unavailable(format!(
+                    "MCP server `{}` is not connected",
+                    self.server.name
+                )));
+            };
+            self.server
+                .progress
+                .lock()
+                .await
+                .insert(self.call_id, context.progress.clone());
+            let result = self
+                .call(service, params, timeout, &context.cancellation)
+                .await;
+            self.server.progress.lock().await.remove(&self.call_id);
+            map_tool_result(&context, &self.generated_name, result?)
         }
-        let service = self.server.service.lock().await;
-        let Some(service) = service.as_ref() else {
-            return Err(ToolError::runtime_unavailable(format!(
-                "MCP server `{}` is not connected",
-                self.server.name
-            )));
-        };
-        self.server
-            .progress
-            .lock()
-            .await
-            .insert(self.call_id, context.progress.clone());
-        let call = service.call_tool(params);
-        tokio::pin!(call);
-        let result = tokio::select! {
-            result = &mut call => match result {
-                Err(error) => Err(match self.server.service_auth_failure(&error) {
-                    Some(error) => error,
-                    None if matches!(error, rmcp::ServiceError::TransportClosed) => {
-                        self.server.signal_lost();
-                        ToolError::runtime_unavailable(format!(
-                            "MCP server `{}` disconnected during the call",
-                            self.server.name
-                        ))
-                    }
-                    None => ToolError::execution(error.to_string()),
-                }),
-                Ok(result) => Ok(result),
-            },
-            _ = context.cancellation.cancelled() => Err(ToolError::execution("MCP tool call cancelled")),
-            _ = tokio::time::sleep(timeout) => Err(ToolError::execution("MCP tool call timed out")),
-        };
-        self.server.progress.lock().await.remove(&self.call_id);
-        map_tool_result(&context, &self.generated_name, result?)
-}.await;
+        .await;
         result.map(|result| {
             let failed = result.metadata["mcp"]["is_error"] == true;
             let mut completion = ToolCompletion::single(result);
             completion.failed = failed;
             completion
         })
+    }
+}
+
+impl McpExecutor {
+    /// Sends the `tools/call` request and waits for its result. A call that
+    /// is cancelled or times out tells the server with
+    /// `notifications/cancelled` and stops waiting at once.
+    async fn call(
+        &self,
+        service: &ClientService,
+        params: CallToolRequestParams,
+        timeout: Duration,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<CallToolResult, ToolError> {
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        let sent = tokio::select! {
+            sent = service.send_cancellable_request(request, PeerRequestOptions::no_options()) => sent,
+            () = cancellation.cancelled() => return Err(ToolError::execution("MCP tool call cancelled")),
+            () = &mut deadline => return Err(ToolError::execution("MCP tool call timed out")),
+        };
+        let mut handle = sent.map_err(|error| self.service_error(error))?;
+        let (reply, reason) = tokio::select! {
+            reply = &mut handle.rx => (Some(reply), None),
+            () = cancellation.cancelled() => (None, Some("cancelled")),
+            () = &mut deadline => (None, Some("timed out")),
+        };
+        let Some(reply) = reply else {
+            let reason = reason.expect("a call stops waiting for a reason");
+            // Telling the server is best effort and must not hold the call.
+            let _ = tokio::time::timeout(
+                MCP_CANCEL_NOTIFICATION_TIMEOUT,
+                handle.cancel(Some(format!("tool call {reason}"))),
+            )
+            .await;
+            return Err(ToolError::execution(format!("MCP tool call {reason}")));
+        };
+        let reply = reply
+            .unwrap_or(Err(rmcp::ServiceError::TransportClosed))
+            .map_err(|error| self.service_error(error))?;
+        match reply {
+            ServerResult::CallToolResult(result) => Ok(result),
+            ServerResult::InputRequiredResult(_) => Err(ToolError::execution(
+                "MCP server asked for input during the call, which is not supported",
+            )),
+            _ => Err(self.service_error(rmcp::ServiceError::UnexpectedResponse)),
+        }
+    }
+
+    fn service_error(&self, error: rmcp::ServiceError) -> ToolError {
+        match self.server.service_auth_failure(&error) {
+            Some(error) => error,
+            None if matches!(error, rmcp::ServiceError::TransportClosed) => {
+                self.server.signal_lost();
+                ToolError::runtime_unavailable(format!(
+                    "MCP server `{}` disconnected during the call",
+                    self.server.name
+                ))
+            }
+            None => ToolError::execution(error.to_string()),
+        }
     }
 }
 

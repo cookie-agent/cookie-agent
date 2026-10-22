@@ -88,6 +88,9 @@ for line in sys.stdin:
         if params["arguments"].get("text") == "exit":
             # Simulates a crash in the middle of a call.
             sys.exit(0)
+        if params["arguments"].get("text") == "hang":
+            # Simulates a call that never finishes; only a cancellation ends it.
+            continue
         if params["name"] == "image":
             response(request_id, {
                 "content": [
@@ -109,6 +112,10 @@ for line in sys.stdin:
             if params["arguments"]["text"] == "refresh":
                 refreshed = True
                 send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+    elif method == "notifications/cancelled":
+        if os.environ.get("MCP_FIXTURE_CANCEL_FILE"):
+            with open(os.environ["MCP_FIXTURE_CANCEL_FILE"], "a", encoding="utf-8") as cancel_file:
+                cancel_file.write(json.dumps(message["params"]) + "\n")
     elif request_id is not None:
         send({
             "jsonrpc": "2.0",

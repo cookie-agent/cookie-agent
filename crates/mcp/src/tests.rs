@@ -690,6 +690,58 @@ async fn stdio_lists_calls_and_refreshes_tools() {
     registry.shutdown().await;
 }
 
+/// A call that times out tells the server with `notifications/cancelled`,
+/// and the connection keeps serving calls.
+#[tokio::test]
+async fn a_call_that_times_out_tells_the_server() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let cancel_file = directory.path().join("cancelled.jsonl");
+    let mut config = fixture_config();
+    config.timeout_ms = Some(300);
+    config.env.insert(
+        "MCP_FIXTURE_CANCEL_FILE".into(),
+        cancel_file.to_string_lossy().into_owned(),
+    );
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "fixture".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        McpRegistryOptions::default(),
+    )
+    .expect("MCP registry");
+    registry
+        .server("fixture")
+        .expect("fixture server")
+        .connect()
+        .await
+        .expect("connect fixture");
+    let error = try_execute(&registry, "fixture_echo_text", json!({"text":"hang"}))
+        .await
+        .expect_err("the call times out");
+    assert!(error.to_string().contains("timed out"), "{error}");
+    let cancelled = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&cancel_file)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the server hears the cancellation");
+    let params: Value = serde_json::from_str(cancelled.lines().next().unwrap()).unwrap();
+    assert_eq!(params["reason"], "tool call timed out");
+    let result = execute(&registry, "fixture_echo_text", json!({"text":"still here"})).await;
+    assert_eq!(result.output, "still here");
+    registry.shutdown().await;
+}
+
 #[test]
 fn an_mcp_call_shows_its_arguments_as_json() {
     let registry = registry(McpServerSource::UserFile);
