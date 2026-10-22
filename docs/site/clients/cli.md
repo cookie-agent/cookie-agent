@@ -48,7 +48,8 @@ the two may also follow the nested subcommand. They resolve the daemon this way:
   be `ws://` or `wss://` with the path `/ws`.
 - **Token:** `--token`, else the `COOKIE_DAEMON_TOKEN` environment variable,
   else `[server] token`. With none of them the command fails with
-  `no daemon token`.
+  `no daemon token`. cookie removes `COOKIE_DAEMON_TOKEN` from its
+  environment at startup, so the processes it starts do not inherit it.
 
 When both `--url` and a token are given, `config.toml` is not read. See
 [Server](../engine/server.md) for the `[server]` keys and

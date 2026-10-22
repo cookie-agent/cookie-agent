@@ -136,7 +136,7 @@ daemon's machine can bring one in for a while with the tools it has:
    runtime in:
 
     ```sh
-    ssh labpc cookie runtime serve --daemon ws://daemon-host:7419/ws --id labpc --token "$TOKEN"
+    ssh labpc cookie runtime serve --daemon ws://daemon-host:7419/ws --id labpc --token <token>
     ```
 
 3. The root calls `list_runtimes`, sees `labpc`, and delegates to it with

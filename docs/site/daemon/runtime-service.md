@@ -15,7 +15,7 @@ running, see [Persistent daemon](persistent.md#running-as-a-service).
 ## What the service runs
 
 ```sh
-cookie runtime serve --daemon <daemon-url> --id <id>
+cookie runtime serve --daemon <daemon-url> --id <id> --token <token>
 ```
 
 - `<daemon-url>` is the daemon's client URL, `wss://host.example.ts.net/ws`
@@ -25,11 +25,13 @@ cookie runtime serve --daemon <daemon-url> --id <id>
 - `--id <id>` names the runtime; without it, it is the host name. Only one
   runtime may be connected under an ID. See
   [Runtimes that dial in](runtimes.md#runtimes-that-dial-in).
-- The token is `--token`, the `COOKIE_DAEMON_TOKEN` environment variable, or
-  `[server] token` in this machine's `config.toml`, in that order. Prefer
-  the environment variable or `config.toml` to `--token`: a command line is
-  visible to every user of the machine. Copy the token from the daemon's
-  `config.toml`.
+- `--token <token>` is the daemon's token: copy it from `[server] token`
+  in the daemon's `config.toml`. The examples below put it in the service
+  definition. An inline token is visible in that definition and in the
+  process's command line on that machine; the runtime does not pass it on
+  to the processes it starts, such as its `bash` calls and MCP servers.
+  `COOKIE_DAEMON_TOKEN` and `[server] token` in this machine's
+  `config.toml` work too; see [Reaching a daemon](../clients/cli.md#reaching-a-daemon).
 - `--root <dir>`, repeated, limits the workspaces the runtime serves.
 
 Four things decide how a service has to be set up:
@@ -72,8 +74,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=%h/.cargo/bin/cookie runtime serve --daemon wss://host.example.ts.net/ws --id <id>
-EnvironmentFile=%h/.config/cookie-agent/runtime.env
+ExecStart=%h/.cargo/bin/cookie runtime serve --daemon wss://host.example.ts.net/ws --id <id> --token <token>
 Restart=on-failure
 RestartSec=5
 
@@ -81,14 +82,10 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-With the token in a file only you can read, `~/.config/cookie-agent/runtime.env`:
-
-```text
-COOKIE_DAEMON_TOKEN=<token>
-```
+The unit holds the token, so make it readable only by you, then start it:
 
 ```sh
-chmod 600 ~/.config/cookie-agent/runtime.env
+chmod 600 ~/.config/systemd/user/cookie-runtime.service
 systemctl --user daemon-reload
 systemctl --user enable --now cookie-runtime
 loginctl enable-linger "$USER"
@@ -96,23 +93,24 @@ loginctl enable-linger "$USER"
 
 `enable-linger` starts the user's services at boot without a login session.
 Without it the runtime runs only while you are logged in. Follow the output
-with `journalctl --user -u cookie-runtime -f`. If the token and URL are
-already in `[server]` of that machine's `config.toml`, drop the
-`EnvironmentFile=` line and the URL and keep `--daemon` alone.
+with `journalctl --user -u cookie-runtime -f`.
 
 A user service starts with a minimal environment: MCP servers that need
 `PATH` entries or variables of your shell need `Environment=` lines in the
 unit.
 
-To remove the service, stop it, delete the unit and the token file, and
-tell systemd:
+To remove the service, stop it, delete the unit, which holds the token,
+and tell systemd:
 
 ```sh
 systemctl --user disable --now cookie-runtime
 rm ~/.config/systemd/user/cookie-runtime.service
-rm -f ~/.config/cookie-agent/runtime.env
 systemctl --user daemon-reload
 ```
+
+A unit set up under earlier versions of this page read the token from
+`~/.config/cookie-agent/runtime.env`; delete that file too
+(`rm -f ~/.config/cookie-agent/runtime.env`).
 
 Lingering is per user, not per service: run `loginctl disable-linger "$USER"`
 only when no other user service of yours, such as the
@@ -141,12 +139,9 @@ paths because launchd expands neither `~` nor `$HOME`:
     <string>wss://host.example.ts.net/ws</string>
     <string>--id</string>
     <string><id></string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>COOKIE_DAEMON_TOKEN</key>
+    <string>--token</string>
     <string><token></string>
-  </dict>
+  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -164,11 +159,10 @@ paths because launchd expands neither `~` nor `$HOME`:
 </plist>
 ```
 
-The plist holds the token: `chmod 600` it, or leave the
-`EnvironmentVariables` block out and keep the token in `[server]` of
-`config.toml`.
+The plist holds the token, so make it readable only by you, then load it:
 
 ```sh
+chmod 600 ~/Library/LaunchAgents/dev.cookie-agent.runtime.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.cookie-agent.runtime.plist
 launchctl bootout gui/$(id -u)/dev.cookie-agent.runtime
 ```
@@ -177,8 +171,8 @@ launchctl bootout gui/$(id -u)/dev.cookie-agent.runtime
 and `tail -f ~/Library/Logs/cookie-runtime.log` shows what it prints. A
 LaunchAgent starts when you log in, not at boot.
 
-To remove the agent, unload it and delete the plist, which holds the token
-unless you left it out, and the log:
+To remove the agent, unload it and delete the plist, which holds the token,
+and the log:
 
 ```sh
 launchctl bootout gui/$(id -u)/dev.cookie-agent.runtime
@@ -190,20 +184,13 @@ rm -f ~/Library/Logs/cookie-runtime.log
 
 A Task Scheduler task at your logon is the recommended path: it runs in your
 session, with your profile, and so reaches your Chrome for browser MCP
-servers. First set the token for your user, if it is not in `config.toml`:
-
-```powershell
-setx COOKIE_DAEMON_TOKEN "<token>"
-```
-
-`setx` applies to processes started afterwards, not to the shell that ran
-it; a task that starts at your next logon sees it. Then register the task:
+servers. Register it, with the token in its action:
 
 ```powershell
 $cookie = "$env:USERPROFILE\.cargo\bin\cookie.exe"
 $logs = "$env:LOCALAPPDATA\cookie-agent"
 New-Item -ItemType Directory -Force $logs | Out-Null
-$action = New-ScheduledTaskAction -Execute "conhost.exe" -Argument "--headless cmd.exe /c `"`"$cookie`" runtime serve --daemon <daemon-url> --id <id> >> `"$logs\runtime.log`" 2>&1`""
+$action = New-ScheduledTaskAction -Execute "conhost.exe" -Argument "--headless cmd.exe /c `"`"$cookie`" runtime serve --daemon <daemon-url> --id <id> --token <token> >> `"$logs\runtime.log`" 2>&1`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet `
   -ExecutionTimeLimit (New-TimeSpan) `
@@ -229,19 +216,23 @@ limit. The task's output goes to `%LOCALAPPDATA%\cookie-agent\runtime.log`.
   your Chrome, so browser MCP servers do not work through it. Use it only
   for a runtime that needs files and shell commands, not your session.
 
-To remove the task, unregister it, delete its log, and delete the token
-`setx` stored in your user environment:
+To remove the task, which holds the token, unregister it and delete its log:
 
 ```powershell
 Stop-ScheduledTask -TaskName "Cookie Agent runtime" -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName "Cookie Agent runtime" -Confirm:$false
 Remove-Item "$env:LOCALAPPDATA\cookie-agent\runtime.log" -ErrorAction SilentlyContinue
+```
+
+A task set up under earlier versions of this page read the token from a
+`COOKIE_DAEMON_TOKEN` user variable that `setx` stored. Delete it from the
+registry (`HKCU\Environment`) for processes started afterwards:
+
+```powershell
 [Environment]::SetEnvironmentVariable('COOKIE_DAEMON_TOKEN', $null, 'User')
 ```
 
-Skip the last line if you did not run `setx`. It removes the variable from
-the registry (`HKCU\Environment`) for processes started afterwards; a shell
-that is already open keeps its copy until you close it. Do not use
+A shell that is already open keeps its copy until you close it. Do not use
 `setx COOKIE_DAEMON_TOKEN ""`: that stores an empty value instead of
 deleting the variable. `%LOCALAPPDATA%\cookie-agent` also holds the
 [daemon task's](persistent.md#windows) log; delete the folder when neither

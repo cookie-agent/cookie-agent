@@ -153,6 +153,11 @@ daemon-ready {"url":"ws://127.0.0.1:<port>/ws","token":"<43-char base64url>"}
 
 A supervisor that logs daemon stdout verbatim persists the token in its
 logs, and a token pasted on a shell command line is visible in shell history.
+A `--token` argument is also visible in the process's command line, and a
+service definition that carries it holds it on disk. cookie removes
+`COOKIE_DAEMON_TOKEN` from its environment once it has read it, so neither
+form reaches the processes cookie starts: `bash` calls, MCP servers,
+plugins, runtime templates, or an editor.
 Treat the ready line as secret and do not archive it.
 
 ### AGENTS.md context files
