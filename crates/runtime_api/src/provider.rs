@@ -194,20 +194,15 @@ pub fn tool_title_only(name: &str) -> PreparedPresentation {
 }
 
 /// A call's presentation: the tool name as the title and `primary` as its
-/// byte-bounded display argument.
+/// byte-bounded display argument, or none when `primary` is blank, as for a
+/// tool that takes no arguments: a header then shows the title alone.
 #[must_use]
 pub fn tool_presentation(name: &str, primary: &str) -> PreparedPresentation {
     let argument = truncate_utf8(primary.trim(), BoundedDisplayText::MAX_BYTES);
     PreparedPresentation::new(
         safe_display(name),
-        Some(
-            BoundedDisplayText::new(if argument.is_empty() {
-                "unavailable".into()
-            } else {
-                argument
-            })
-            .expect("byte-bounded display argument"),
-        ),
+        (!argument.is_empty())
+            .then(|| BoundedDisplayText::new(argument).expect("byte-bounded display argument")),
     )
 }
 
@@ -260,6 +255,19 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_argument_is_no_argument() {
+        // A tool that takes none, such as list_runtimes, shows its title
+        // alone, not a placeholder word after it.
+        for blank in ["", "   ", "  \n\t "] {
+            assert!(
+                tool_presentation("List runtimes", blank)
+                    .primary_argument
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn presentation_byte_caps_arguments_and_preserves_controls() {
         let presentation = tool_presentation("bash", "cat secret.txt; TOKEN=visible\u{1b}");
         assert_eq!(presentation.title.as_str(), "bash");
@@ -283,12 +291,10 @@ mod tests {
             "→".repeat(BoundedDisplayText::MAX_BYTES / 3)
         );
 
-        assert_eq!(
+        assert!(
             tool_presentation("bash", "  \n\t ")
                 .primary_argument
-                .unwrap()
-                .as_str(),
-            "unavailable"
+                .is_none()
         );
     }
 }
