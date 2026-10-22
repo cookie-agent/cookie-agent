@@ -799,7 +799,7 @@ fn position(machines: &[Machine], name: &MachineName) -> Result<usize, MachineEr
 
 /// The registry in `path`, sorted; empty when it does not exist.
 fn read(path: &Path) -> Result<Registry, MachineError> {
-    let bytes = match fs::read(path) {
+    let bytes = match cookie_agent_models::secure_store::read_replaced(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Registry::default()),
         Err(error) => {

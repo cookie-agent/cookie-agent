@@ -75,14 +75,19 @@ fn windows_private_files_support_long_paths_and_keep_private_acls() {
     }
 }
 
-/// A by-name reader must never observe the target absent while it is replaced.
-/// The session metadata cache is rewritten on every persisted append and
-/// discovery reads it by name, so a replacement window that leaves the name
-/// unresolvable surfaces as a spurious `NotFound` during listing.
+/// A reader through `read_replaced` must never observe the target absent or
+/// partial while it is replaced. The session metadata cache is rewritten on
+/// every persisted append and discovery reads it by name, so a replacement
+/// window that leaves the name unresolvable would surface as a spurious
+/// `NotFound` during listing. NTFS has such a window even for the superseding
+/// POSIX rename: beside a full run of the workspace tests, a plain
+/// `fs::read` caught the target missing from its directory, with only the
+/// staged source listed, about once in 30,000 replacements.
 #[test]
 fn windows_replacement_is_never_observed_absent_by_a_concurrent_reader() {
     use cookie_agent_models::secure_store::{
-        create_windows_private_dir_all, create_windows_private_file, replace_windows_path,
+        create_windows_private_dir_all, create_windows_private_file, read_replaced,
+        replace_windows_path,
     };
     use std::{
         io::Write as _,
@@ -121,7 +126,7 @@ fn windows_replacement_is_never_observed_absent_by_a_concurrent_reader() {
         let reads = Arc::clone(&reads);
         move || {
             while !stop.load(Ordering::Relaxed) {
-                let bytes = std::fs::read(&target).unwrap_or_else(|error| {
+                let bytes = read_replaced(&target).unwrap_or_else(|error| {
                     panic!(
                         "replaced target stopped resolving by name: {error} (kind {:?})",
                         error.kind()
@@ -155,4 +160,51 @@ fn windows_replacement_is_never_observed_absent_by_a_concurrent_reader() {
         ODD,
         "the last replacement wins"
     );
+}
+
+/// Without a staged replacement beside it, a missing file is missing:
+/// `read_replaced` reports it without waiting for one.
+#[test]
+fn windows_read_replaced_reports_a_missing_file_at_once() {
+    use cookie_agent_models::secure_store::read_replaced;
+
+    let temporary = tempfile::tempdir().expect("temporary root");
+    let target = temporary.path().join("metadata");
+    // An unrelated staged file does not count as a replacement of `metadata`.
+    std::fs::write(temporary.path().join(".other.1.tmp"), b"x").expect("unrelated staging");
+    let started = std::time::Instant::now();
+    let error = read_replaced(&target).expect_err("missing file");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "waited {:?} for a file nothing was replacing",
+        started.elapsed()
+    );
+}
+
+/// While a staged replacement is beside a missing target, `read_replaced`
+/// waits for the rename to land; a staged file left behind by a writer that
+/// died still ends in `NotFound`.
+#[test]
+fn windows_read_replaced_waits_for_a_staged_replacement() {
+    use cookie_agent_models::secure_store::read_replaced;
+
+    let temporary = tempfile::tempdir().expect("temporary root");
+    let target = temporary.path().join("metadata");
+    let staged = temporary.path().join(".metadata.0.tmp");
+    std::fs::write(&staged, b"new").expect("staged replacement");
+    let rename = std::thread::spawn({
+        let (staged, target) = (staged.clone(), target.clone());
+        move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::fs::rename(staged, target).expect("land the replacement");
+        }
+    });
+    assert_eq!(read_replaced(&target).expect("landed replacement"), b"new");
+    rename.join().expect("rename thread");
+
+    std::fs::remove_file(&target).expect("remove the target");
+    std::fs::write(&staged, b"abandoned").expect("abandoned staging");
+    let error = read_replaced(&target).expect_err("never replaced");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
 }

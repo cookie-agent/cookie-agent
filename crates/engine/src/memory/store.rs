@@ -3,7 +3,8 @@
 //!
 //! Reads never take the lock: every write replaces a file by renaming a
 //! flushed temporary file over it, so a reader sees the old or the new file
-//! whole. Writes, edits, and deletes take [`super::MemoryLock`] for their
+//! whole. On Windows that rename can leave the name briefly unresolvable,
+//! so reads go through `secure_store::read_replaced` and its kin. Writes, edits, and deletes take [`super::MemoryLock`] for their
 //! whole check-and-change, and may wait for it up to a few seconds, so
 //! async callers run them on a blocking thread.
 
@@ -14,6 +15,7 @@ use std::{
 };
 
 use cookie_agent_identity::AgentId;
+use cookie_agent_models::secure_store::{read_replaced, while_replacing as replaced};
 use cookie_agent_protocol::MachineName;
 
 use super::{
@@ -232,7 +234,7 @@ fn not_found(error: &io::Error) -> bool {
 /// than a regular file, a symbolic link included, reads as no bytes and
 /// parses as invalid.
 pub(super) fn read_bytes(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>, MemoryError> {
-    let metadata = match fs::symlink_metadata(path) {
+    let metadata = match replaced(path, || fs::symlink_metadata(path)) {
         Ok(metadata) => metadata,
         Err(error) if not_found(&error) => return Ok(None),
         Err(source) => return Err(io_error(path)(source)),
@@ -240,7 +242,7 @@ pub(super) fn read_bytes(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>,
     if !metadata.is_file() {
         return Ok(Some((Vec::new(), metadata)));
     }
-    let bytes = fs::read(path).map_err(io_error(path))?;
+    let bytes = read_replaced(path).map_err(io_error(path))?;
     Ok(Some((bytes, metadata)))
 }
 
@@ -267,11 +269,11 @@ fn entry(
 /// Reads a memory file for listing and search. A file over the limit is not
 /// read whole: it is invalid, and its revision is hashed while streaming.
 fn load(path: &Path, url: MemoryUrl, max_file_bytes: usize) -> Result<MemoryEntry, MemoryError> {
-    let metadata = fs::metadata(path).map_err(io_error(path))?;
+    let metadata = replaced(path, || fs::metadata(path)).map_err(io_error(path))?;
     if metadata.len() > max_file_bytes as u64 {
         use sha2::{Digest as _, Sha256};
         let mut hasher = Sha256::new();
-        let mut file = fs::File::open(path).map_err(io_error(path))?;
+        let mut file = replaced(path, || fs::File::open(path)).map_err(io_error(path))?;
         let size = io::copy(&mut file, &mut hasher).map_err(io_error(path))?;
         return Ok(MemoryEntry {
             url,
@@ -284,7 +286,7 @@ fn load(path: &Path, url: MemoryUrl, max_file_bytes: usize) -> Result<MemoryEntr
             )),
         });
     }
-    let bytes = fs::read(path).map_err(io_error(path))?;
+    let bytes = read_replaced(path).map_err(io_error(path))?;
     Ok(entry(url, &bytes, &metadata, max_file_bytes))
 }
 

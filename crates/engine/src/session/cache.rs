@@ -194,9 +194,12 @@ pub(super) fn windows_replace_is_contended(error: &std::io::Error) -> bool {
 }
 
 pub(super) fn read_cache(path: &Path, events_path: &Path) -> Result<SessionMeta, SessionError> {
-    let bytes = fs::read(path).map_err(|source| SessionError::Io {
-        path: path.to_owned(),
-        source,
+    // Listing reads the cache while its session's writer replaces it.
+    let bytes = cookie_agent_models::secure_store::read_replaced(path).map_err(|source| {
+        SessionError::Io {
+            path: path.to_owned(),
+            source,
+        }
     })?;
     // Every cache this build writes decodes straight into its type; only
     // one written without `last_activity` takes the repairing path below.

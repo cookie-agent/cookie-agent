@@ -708,7 +708,7 @@ impl ProjectStore {
 /// that is being made or removed).
 fn read_project(dir: &Path, id: &ProjectId) -> Result<Option<Project>, ProjectError> {
     let path = dir.join(PROJECT_FILE);
-    let bytes = match fs::read(&path) {
+    let bytes = match cookie_agent_models::secure_store::read_replaced(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(store_error(&path)(error)),

@@ -255,6 +255,63 @@ pub fn replace_path(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
+/// Runs `read` of `path` until it succeeds, fails for good, or no staged
+/// replacement of `path` remains (see `super::read_replaced`). A run of the
+/// workspace tests beside a writer replacing a file in a loop showed the
+/// target absent from its directory listing, with only the staged source
+/// there, for tens of milliseconds inside the rename call; the patience
+/// bounds a writer that died with its staged file left behind.
+pub(super) fn while_replacing<T>(
+    path: &Path,
+    mut read: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    const PATIENCE: Duration = Duration::from_secs(2);
+    const LONGEST_PAUSE: Duration = Duration::from_millis(16);
+
+    let deadline = Instant::now() + PATIENCE;
+    let mut pause = Duration::from_millis(1);
+    let mut read_again = true;
+    loop {
+        let error = match read() {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        if !matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+        ) {
+            return Err(error);
+        }
+        // The replacement may have finished since the failed open.
+        if std::mem::take(&mut read_again) {
+            continue;
+        }
+        if Instant::now() >= deadline || !replacement_staged(path) {
+            return Err(error);
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(LONGEST_PAUSE);
+    }
+}
+
+/// Whether the directory of `path` holds a staged `.<name>.<unique>.tmp`
+/// replacement of it.
+fn replacement_staged(path: &Path) -> bool {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(OsStr::to_str))
+    else {
+        return false;
+    };
+    let prefix = format!(".{name}.");
+    fs::read_dir(parent).is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|staged| staged.starts_with(&prefix) && staged.ends_with(".tmp"))
+        })
+    })
+}
+
 /// Pre-1607 kernels and filesystems without `FileRenameInfoEx` reject the class
 /// itself rather than the request, so only these two codes fall back.
 fn unsupported_rename_information(error: &io::Error) -> bool {

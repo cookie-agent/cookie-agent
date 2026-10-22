@@ -309,6 +309,34 @@ pub enum SecureStoreError {
     Io(#[source] io::Error),
 }
 
+/// Reads `path`, a file its writers replace by renaming a staged
+/// `.<name>.<unique>.tmp` beside it over it, without taking their lock.
+///
+/// On Unix that rename is atomic, so this is `fs::read`. On Windows even the
+/// superseding POSIX rename `replace_windows_path` issues is not atomic for
+/// an open by name: under load, NTFS lets a concurrent open see the target
+/// gone while the source still has its staged name (`NotFound`), or catch
+/// the replaced file being deleted (`PermissionDenied`). This reads again once
+/// at once, then waits for as long as a staged replacement of `path` is in
+/// the directory, so only a file that is really missing or unreadable fails.
+pub fn read_replaced(path: &Path) -> io::Result<Vec<u8>> {
+    while_replacing(path, || fs::read(path))
+}
+
+/// Runs `read`, which opens or inspects `path` by name, under the rules of
+/// [`read_replaced`]: for the metadata of such a file, or to open it.
+#[cfg(not(windows))]
+pub fn while_replacing<T>(_path: &Path, mut read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    read()
+}
+
+/// Runs `read`, which opens or inspects `path` by name, under the rules of
+/// [`read_replaced`]: for the metadata of such a file, or to open it.
+#[cfg(windows)]
+pub fn while_replacing<T>(path: &Path, read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    windows::while_replacing(path, read)
+}
+
 /// Default budget for bounded cross-process store locks.
 pub const DEFAULT_LOCK_BUDGET: Duration = Duration::from_secs(5);
 
