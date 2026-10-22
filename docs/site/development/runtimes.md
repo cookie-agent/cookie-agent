@@ -35,8 +35,13 @@ and [Framing](../reference/runtime-protocol.md#framing).
   underscores; `global`, `local`, and the IDs of configured templates are
   taken, as is an ID already connected. The daemon allows 30 seconds for
   initializing and for each capability opening. Reconnecting after a drop is
-  your job; the daemon reopens the session's instances when you are back. See
-  [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in).
+  your job; the daemon reopens the session's instances when you are back.
+  Answer `runtime/ping` at once: the daemon pings a connection that has been
+  quiet for 15 s and drops one it has heard nothing on for 45 s. Watch your
+  end the same way (WebSocket pings, which the daemon answers with pongs), so
+  a connection that died without a close does not keep you waiting. See
+  [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in) and
+  [Liveness](../reference/runtime-protocol.md#liveness).
 
 ## Initialize
 
@@ -46,7 +51,7 @@ The daemon sends `runtime/initialize` first, with its `protocol_version`, the
 machine, and your capabilities:
 
 ```json
-{"protocol_version":"1.3.0","platform":"linux",
+{"protocol_version":"1.4.0","platform":"linux",
  "machine":{"id":"3f9a…","host_name":"buildbox"},"home":"/home/ada",
  "capabilities":[{"name":"console","kind":"database","takes_workspace":false,
                   "description":"A SQL console on the reporting replica"}]}
@@ -152,7 +157,7 @@ prepared = {}
 def handle(method, params):
     if method == "runtime/initialize":
         # A real runtime refuses another major with -32002 (see Version).
-        return {"protocol_version": "1.3.0", "capabilities": [{
+        return {"protocol_version": "1.4.0", "capabilities": [{
             "name": "clock", "kind": "clock", "takes_workspace": False,
             "description": "The build server's clock"}]}
     if method == "capability/open":
@@ -175,7 +180,7 @@ def handle(method, params):
         return {"outcome": {"status": "completed",
                             "output": {"kind": "single", "text": now}},
                 "media": []}
-    if method == "runtime/shutdown":
+    if method in ("runtime/ping", "runtime/shutdown"):
         return {}
     return None
 

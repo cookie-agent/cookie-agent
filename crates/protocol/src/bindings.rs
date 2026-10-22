@@ -438,6 +438,7 @@ fn runtime_methods() -> Vec<MethodSpec> {
         ),
         request!(runtime_method::CONTEXT, FromDaemon, ContextParams => ContextResult),
         request!(runtime_method::SHUTDOWN, FromDaemon, Empty => Empty),
+        request!(runtime_method::PING, FromDaemon, Empty => Empty),
         declaration!(runtime_method::MCP_CHANGED, McpChangedParams),
         request!(runtime_method::MCP_RECONNECT, FromDaemon, McpReconnectParams => Outcome),
     ]

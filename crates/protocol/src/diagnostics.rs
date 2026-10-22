@@ -304,6 +304,18 @@ pub fn rpc(error: &crate::JsonRpcError) -> String {
     detail(&text).to_string()
 }
 
+/// `duration` as a message names a deadline: whole seconds as `45 s`,
+/// anything finer in milliseconds, as `250 ms`.
+#[must_use]
+pub fn duration(duration: std::time::Duration) -> String {
+    let millis = duration.as_millis();
+    if millis.is_multiple_of(1000) {
+        format!("{} s", millis / 1000)
+    } else {
+        format!("{millis} ms")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

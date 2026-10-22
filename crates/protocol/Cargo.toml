@@ -73,6 +73,8 @@ insta.workspace = true
 # Checks the hand-written control-character table against Unicode's.
 regex = "1"
 tempfile.workspace = true
+# Paused time, for the peer's and the WebSocket transport's liveness tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.76"

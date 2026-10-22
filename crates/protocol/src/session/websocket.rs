@@ -18,6 +18,16 @@ use crate::diagnostics;
 /// Length of the base64url encoding of the daemon's 32-byte bearer token.
 const TOKEN_ENCODED_BYTES: usize = 43;
 
+/// How long a dial-in runtime's connection may be quiet before the runtime
+/// sends a WebSocket ping, which the daemon answers with a pong.
+pub const DIAL_IN_PING_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long a dial-in runtime's connection may go without any frame, a pong
+/// included, before the runtime takes the daemon for gone and dials in
+/// again: a connection that died without a close, such as across a sleep
+/// or a network change, otherwise looks open for good.
+pub const DIAL_IN_DEAD_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
+
 impl Client {
     /// Connect to a validated daemon endpoint using the per-run bearer token.
     pub async fn connect_websocket_with_token(url: &str, token: &str) -> Result<Self, ClientError> {
@@ -83,6 +93,62 @@ impl DialInError {
 /// Tokio WebSocket transport for protocol clients.
 pub struct WebSocketTransport {
     socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    /// Pings a quiet connection and ends a silent one; `None` waits for the
+    /// other end as long as it takes.
+    keepalive: Option<Keepalive>,
+}
+
+/// A connection's keepalive: when it last heard a frame, and whether a ping
+/// has gone out since.
+struct Keepalive {
+    ping_after: std::time::Duration,
+    dead_after: std::time::Duration,
+    heard: tokio::time::Instant,
+    pinged: bool,
+}
+
+/// What a keepalive whose deadline passed does.
+enum KeepaliveDue {
+    Ping,
+    Dead,
+    /// The deadline moved; wait again.
+    Nothing,
+}
+
+impl Keepalive {
+    fn new(ping_after: std::time::Duration, dead_after: std::time::Duration) -> Self {
+        Self {
+            ping_after,
+            dead_after,
+            heard: tokio::time::Instant::now(),
+            pinged: false,
+        }
+    }
+
+    fn deadline(&self) -> tokio::time::Instant {
+        if self.pinged {
+            self.heard + self.dead_after
+        } else {
+            self.heard + self.ping_after.min(self.dead_after)
+        }
+    }
+
+    fn due(&mut self) -> KeepaliveDue {
+        let now = tokio::time::Instant::now();
+        if now >= self.heard + self.dead_after {
+            KeepaliveDue::Dead
+        } else if !self.pinged && now >= self.heard + self.ping_after {
+            self.pinged = true;
+            KeepaliveDue::Ping
+        } else {
+            KeepaliveDue::Nothing
+        }
+    }
+
+    fn heard(&mut self) {
+        self.heard = tokio::time::Instant::now();
+        self.pinged = false;
+    }
 }
 
 impl WebSocketTransport {
@@ -107,7 +173,11 @@ impl WebSocketTransport {
         match tokio_tungstenite::connect_async_with_config(request, Some(websocket_config()), false)
             .await
         {
-            Ok((socket, _)) => Ok(Self { socket }),
+            Ok((socket, _)) => Ok(Self {
+                socket,
+                keepalive: None,
+            }
+            .keep_alive(DIAL_IN_PING_AFTER, DIAL_IN_DEAD_AFTER)),
             Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
                 let status = response.status();
                 let body = response
@@ -156,7 +226,66 @@ impl WebSocketTransport {
         )
         .await
         .map_err(|error| websocket_error(&error))?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            keepalive: None,
+        })
+    }
+
+    /// Pings the other end once the connection has been quiet for
+    /// `ping_after`, and ends the connection with an error once it has gone
+    /// `dead_after` without any frame. A dial-in runtime's connection does
+    /// this with [`DIAL_IN_PING_AFTER`] and [`DIAL_IN_DEAD_AFTER`].
+    #[must_use]
+    pub fn keep_alive(
+        mut self,
+        ping_after: std::time::Duration,
+        dead_after: std::time::Duration,
+    ) -> Self {
+        self.keepalive = Some(Keepalive::new(ping_after, dead_after));
+        self
+    }
+
+    /// The next message, pinging a quiet connection and ending a silent
+    /// one. Cancel-safe: the keepalive's state lives in `self`.
+    async fn next_message(
+        &mut self,
+    ) -> Result<Option<Result<Message, tokio_tungstenite::tungstenite::Error>>, TransportError>
+    {
+        loop {
+            let Some(keepalive) = &mut self.keepalive else {
+                return Ok(self.socket.next().await);
+            };
+            let deadline = keepalive.deadline();
+            let next = tokio::select! {
+                next = self.socket.next() => Some(next),
+                () = tokio::time::sleep_until(deadline) => None,
+            };
+            let Some(keepalive) = &mut self.keepalive else {
+                unreachable!("checked above");
+            };
+            match next {
+                Some(next) => {
+                    keepalive.heard();
+                    return Ok(next);
+                }
+                None => match keepalive.due() {
+                    KeepaliveDue::Ping => {
+                        self.socket
+                            .send(Message::Ping(Vec::new().into()))
+                            .await
+                            .map_err(|error| websocket_error(&error))?;
+                    }
+                    KeepaliveDue::Dead => {
+                        return Err(TransportError::Other(format!(
+                            "nothing arrived from the daemon for {}",
+                            crate::diagnostics::duration(keepalive.dead_after)
+                        )));
+                    }
+                    KeepaliveDue::Nothing => {}
+                },
+            }
+        }
     }
 
     async fn connect_request(url: &str, token: &str) -> Result<Self, TransportError> {
@@ -165,7 +294,10 @@ impl WebSocketTransport {
             tokio_tungstenite::connect_async_with_config(request, Some(websocket_config()), false)
                 .await
                 .map_err(|error| websocket_error(&error))?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            keepalive: None,
+        })
     }
 }
 
@@ -199,7 +331,7 @@ impl Transport for WebSocketTransport {
 
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
         loop {
-            match self.socket.next().await {
+            match self.next_message().await? {
                 Some(Ok(Message::Text(text))) => {
                     return Ok(Some(MessageFrame::Bytes(text.into())));
                 }
@@ -323,6 +455,67 @@ mod tests {
             .expect("large response");
         assert_eq!(result["blob"].as_str().map(str::len), Some(BLOB_BYTES));
         client.shutdown();
+        server.abort();
+    }
+
+    /// A transport with a keepalive pings a quiet daemon, which answers
+    /// with pongs while it reads, and gives up on one that stopped reading,
+    /// as a daemon whose connection died without a close looks.
+    #[tokio::test]
+    async fn a_keepalive_pings_a_quiet_daemon_and_ends_a_silent_one() {
+        use crate::Transport as _;
+        const PING_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+        const DEAD_AFTER: std::time::Duration = std::time::Duration::from_millis(250);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let (pings_sender, mut pings) = tokio::sync::mpsc::unbounded_channel();
+        let (stop_reading, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("WebSocket accept");
+            // Reading answers each ping with a pong.
+            let reading = async {
+                while let Some(Ok(message)) = socket.next().await {
+                    if matches!(message, Message::Ping(_)) {
+                        let _ = pings_sender.send(());
+                    }
+                }
+            };
+            tokio::select! {
+                () = reading => {}
+                _ = stopped => {}
+            }
+            // Holds the socket open without reading, so no pong goes out.
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+        let mut transport = super::WebSocketTransport::connect_with_token(
+            &format!("ws://{address}/ws"),
+            &"A".repeat(43),
+        )
+        .await
+        .expect("connect")
+        .keep_alive(PING_AFTER, DEAD_AFTER);
+        // Answered pings keep it open well past the silence it allows.
+        let quiet = tokio::time::timeout(DEAD_AFTER * 4, transport.recv()).await;
+        assert!(quiet.is_err(), "a daemon that answers keeps it open");
+        assert!(
+            pings.recv().await.is_some(),
+            "the quiet connection was pinged"
+        );
+        stop_reading.send(()).expect("server running");
+        let error = tokio::time::timeout(DEAD_AFTER * 8, transport.recv())
+            .await
+            .expect("a silent daemon ends the connection")
+            .expect_err("ends with an error");
+        assert_eq!(
+            error.to_string(),
+            "transport error: nothing arrived from the daemon for 250 ms"
+        );
         server.abort();
     }
 

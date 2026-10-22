@@ -336,6 +336,11 @@ impl Server {
             let result = self.initialize(&request);
             return reply(request, result).await;
         }
+        // Liveness needs no handshake: the daemon may ask at any time.
+        if method == method::PING {
+            let result = request.params::<Empty>();
+            return reply(request, result).await;
+        }
         let Some(state) = self.state.get().cloned() else {
             if let Some(admitted) = admitted {
                 lock(&self.executions).remove(&admitted.params.prepared_id);

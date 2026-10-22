@@ -159,7 +159,7 @@ def add_method(surfaces):
         {
             "direction": "from_daemon",
             "kind": "request",
-            "method": "runtime/ping",
+            "method": "runtime/example",
             "params": "Empty",
             "result": "Empty",
         }

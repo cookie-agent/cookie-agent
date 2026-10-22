@@ -14,6 +14,11 @@
 //! between receiving and sending. When the connection ends, for whatever
 //! reason, the peer closes the transport ([`Transport::close`]) before it
 //! reports the connection ended, within [`CLOSE_GRACE`].
+//!
+//! The peer notes when a frame last arrived ([`Peer::last_heard`]), so an
+//! end can tell a quiet connection from a dead one, and
+//! [`Peer::close_with`] ends one found dead at once, even while a frame is
+//! stuck being sent.
 
 use std::{
     collections::HashMap,
@@ -142,8 +147,21 @@ struct Shared {
     next_id: AtomicU64,
     /// Stops the I/O task.
     stop: CancellationToken,
+    /// Stops it at once, abandoning a frame being sent; see
+    /// [`Peer::close_with`].
+    abort: CancellationToken,
+    /// Why [`Peer::close_with`] ended the connection.
+    abort_reason: Mutex<Option<String>>,
+    /// When a frame last arrived, or the peer started.
+    heard: Mutex<tokio::time::Instant>,
     /// Cancelled when the connection has ended.
     ended: CancellationToken,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// One end of a runtime protocol connection. Clones share it. The
@@ -394,6 +412,9 @@ impl Peer {
             }),
             next_id: AtomicU64::new(1),
             stop: CancellationToken::new(),
+            abort: CancellationToken::new(),
+            abort_reason: Mutex::new(None),
+            heard: Mutex::new(tokio::time::Instant::now()),
             ended: CancellationToken::new(),
         });
         tokio::spawn(run_io(
@@ -485,10 +506,29 @@ impl Peer {
         self.shared.stop.cancel();
     }
 
-    /// Whether the connection has ended.
+    /// Ends the connection at once for `reason`, as when the other end
+    /// stopped answering: pending requests fail with `reason`, and a frame
+    /// being sent, which a dead connection may never take, is abandoned.
+    pub fn close_with(&self, reason: impl Into<String>) {
+        lock(&self.shared.abort_reason).get_or_insert_with(|| reason.into());
+        self.shared.abort.cancel();
+        self.shared.stop.cancel();
+    }
+
+    /// Whether the connection has ended or is ending: no request sent now
+    /// can be answered.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.shared.ended.is_cancelled()
+        self.shared.stop.is_cancelled()
+            || self.shared.ended.is_cancelled()
+            || lock(&self.shared.pending).closed.is_some()
+    }
+
+    /// When a frame last arrived from the other end, or the peer started
+    /// when none has.
+    #[must_use]
+    pub fn last_heard(&self) -> tokio::time::Instant {
+        *lock(&self.shared.heard)
     }
 
     /// Waits for the connection to end and returns why it did.
@@ -524,6 +564,9 @@ async fn run_io(
     let reason = loop {
         tokio::select! {
             () = shared.stop.cancelled() => {
+                if let Some(reason) = lock(&shared.abort_reason).clone() {
+                    break reason;
+                }
                 // Messages queued before the close, such as the reply to
                 // `runtime/shutdown`, still go out.
                 while let Ok(text) = outbound.try_recv() {
@@ -537,12 +580,23 @@ async fn run_io(
                 let Some(text) = text else {
                     break "connection closed locally".to_owned();
                 };
-                if let Err(error) = transport.send(MessageFrame::Text(text)).await {
+                // A connection that went dead without closing can hold a
+                // send up for good; `close_with` gives up on it.
+                let sent = tokio::select! {
+                    sent = transport.send(MessageFrame::Text(text)) => sent,
+                    () = shared.abort.cancelled() => {
+                        break lock(&shared.abort_reason)
+                            .clone()
+                            .unwrap_or_else(|| "connection closed locally".to_owned());
+                    }
+                };
+                if let Err(error) = sent {
                     break transport_reason(&error);
                 }
             }
             frame = transport.recv() => match frame {
                 Ok(Some(frame)) => {
+                    *lock(&shared.heard) = tokio::time::Instant::now();
                     if let Err(reason) = dispatch(&shared, frame, &incoming).await {
                         break reason;
                     }
@@ -781,5 +835,68 @@ mod tests {
         peer.close();
         assert_eq!(peer.closed().await, "connection closed locally");
         assert!(closed.load(Ordering::SeqCst));
+    }
+
+    /// A transport whose sends never complete, as a dead connection's may
+    /// not once its buffers are full.
+    struct Stuck;
+
+    #[async_trait]
+    impl Transport for Stuck {
+        async fn send(&mut self, _frame: MessageFrame) -> Result<(), TransportError> {
+            std::future::pending().await
+        }
+
+        async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
+            std::future::pending().await
+        }
+    }
+
+    /// A connection found dead ends at once with the reason, which its
+    /// pending requests fail with, even while a frame is stuck being sent.
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_closed_as_dead_fails_its_requests_with_the_reason() {
+        let (peer, _incoming) = Peer::start(Box::new(Stuck));
+        let started = peer.last_heard();
+        let request = {
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                peer.request::<_, serde_json::Value>("test/stuck", &serde_json::json!({}))
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        assert!(!peer.is_closed());
+        // Nothing arrived, so the peer was last heard when it started.
+        assert_eq!(peer.last_heard(), started);
+        peer.close_with("nothing arrived for 45 s");
+        assert!(peer.is_closed(), "closing counts as closed at once");
+        match request.await.unwrap() {
+            Err(super::RpcError::Closed(reason)) => {
+                assert_eq!(reason, "nothing arrived for 45 s");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(peer.closed().await, "nothing arrived for 45 s");
+    }
+
+    /// Every frame that arrives counts as hearing from the other end.
+    #[tokio::test(start_paused = true)]
+    async fn a_frame_that_arrives_counts_as_heard() {
+        let (mut other, ours) = crate::in_process_pair(4);
+        let (peer, mut incoming) = Peer::start(Box::new(ours));
+        let started = peer.last_heard();
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        other
+            .send(MessageFrame::Text(
+                r#"{"jsonrpc":"2.0","method":"test/note","params":{}}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert!(incoming.recv().await.is_some());
+        assert_eq!(
+            peer.last_heard() - started,
+            std::time::Duration::from_secs(10)
+        );
     }
 }

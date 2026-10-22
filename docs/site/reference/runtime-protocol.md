@@ -129,7 +129,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.3.0**
+The protocol version is a semver string, currently **1.4.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -176,6 +176,9 @@ version records the contract a runtime may now rely on to stop dialing in.
 1.3.0 added the optional `home` of `runtime/initialize`'s result: the
 runtime's home directory, which clients show paths under as `~/…` and
 permission rules expand a leading `~` against (see [Home](#home)).
+1.4.0 added `runtime/ping`, which the daemon sends a quiet connection to
+tell it from a dead one (see [Liveness](#liveness)); any answer counts, so
+an older runtime's `-32601` does too.
 
 ## Capabilities and instances
 
@@ -244,6 +247,46 @@ canonical home, so the path a tool reads and the rule that governs it agree.
    call, backgrounded ones included, and stops. It also stops when its transport
    ends.
 
+## Liveness
+
+A connection can die without closing: a dial-in machine that sleeps or
+loses its network leaves a half-open WebSocket, and a hung `ssh` keeps a
+spawned runtime's pipes open. So the daemon watches every runtime
+connection it keeps (an in-process `local` runtime's aside):
+
+- Once nothing has arrived on a connection for **15 s**, the daemon sends
+  `runtime/ping`. Any frame counts as hearing from the runtime: the answer,
+  an error answer such as an older runtime's `-32601`, or any other message.
+- Once nothing has arrived for **45 s**, the daemon ends the connection
+  ("nothing arrived from it for 45 s"), exactly as if it had closed: calls
+  in flight fail with `runtime_unavailable`, a dial-in runtime shows as
+  disconnected, and its instances reconnect, then fail, as below.
+- Every request has a deadline. `tool/prepare`, `tool/revalidate`, and
+  `runtime/context` get **30 s**; `mcp/reconnect` gets 6 minutes, since it
+  may wait for a server to start or a user to sign in; `runtime/initialize`
+  and `capability/open` get the template's `startup_timeout_ms`, or 30 s for
+  a dial-in runtime; `runtime/shutdown` gets the shutdown grace. A request
+  past its deadline fails as `runtime_unavailable` ("it did not answer
+  `tool/prepare` within 30 s"), and the connection becomes suspect: the
+  daemon pings it at once and ends it unless something arrives within
+  **10 s** ("it did not answer a liveness check within 10 s").
+  `tool/execute` has no deadline of its own, since a call runs as long as
+  its tool allows, but a dead connection ends it within the 45 s above.
+- Before a session gets an instance that is already open, as creating a
+  session, attaching a runtime, or delegating with capabilities does, the
+  daemon checks the connection: one heard from in the last 15 s passes;
+  another must answer a ping within 10 s, or it is ended and the instance is
+  not handed out.
+
+A runtime answers `runtime/ping` with `{}` at once, before
+`runtime/initialize` too. A dial-in runtime also watches its end: the
+`cookie runtime` WebSocket sends a ping frame once the connection has been
+quiet for 15 s, which the daemon answers with a pong, and dials in again once
+nothing, a pong included, has arrived for 45 s. When a runtime dials in
+while its old connection still looks open, the daemon refuses it as
+connected (409) and checks the old connection at once, so a retry gets in
+within about 10 s.
+
 When the connection is lost while it is in use, every call in flight fails
 with `runtime_unavailable`; a backgrounded call reports that failure as its
 background result. Every instance of the runtime becomes `reconnecting`: its
@@ -270,6 +313,7 @@ that dials in after its instances failed reopens them. Calls are never retried t
 | `capability/tools_changed` | runtime → daemon | notification | An instance's whole new tool list |
 | `runtime/context` | daemon → runtime | request | An instance's `AGENTS.md` context for a run's preset |
 | `runtime/shutdown` | daemon → runtime | request | Stop gracefully |
+| `runtime/ping` | daemon → runtime | request | Answer `{}` at once; since 1.4.0 (see [Liveness](#liveness)) |
 | `tool/prepare` | daemon → runtime | request | Prepare one turn's calls to an instance |
 | `tool/revalidate` | daemon → runtime | request | Check a prepared call can still run as approved |
 | `tool/execute` | daemon → runtime | request | Run a prepared call; returns its terminal result |

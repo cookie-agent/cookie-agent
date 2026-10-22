@@ -119,6 +119,28 @@ fn turn() -> ToolTurn {
     ToolTurn::from(crate::test_turn_context().as_ref())
 }
 
+/// `runtime/ping` is answered with an empty result before and after the
+/// handshake, so the daemon can check a connection's liveness at any time.
+#[tokio::test]
+async fn a_ping_is_answered_before_and_after_initialize() {
+    let harness = start(ServeOptions::default());
+    let _: Empty = harness
+        .daemon
+        .request(method::PING, &Empty {})
+        .await
+        .expect("answered before initialize");
+    let _: InitializeResult = harness
+        .daemon
+        .request(method::INITIALIZE, &initialize_params())
+        .await
+        .unwrap();
+    let _: Empty = harness
+        .daemon
+        .request(method::PING, &Empty {})
+        .await
+        .expect("answered after initialize");
+}
+
 #[tokio::test]
 async fn a_daemon_of_another_version_fails_initialize_with_both_versions() {
     let next_major = cookie_agent_protocol::SemVer::new(RUNTIME_PROTOCOL_VERSION.major() + 1, 0, 0);

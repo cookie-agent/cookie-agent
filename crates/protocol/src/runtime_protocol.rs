@@ -92,6 +92,11 @@ pub mod method {
     pub const CONTEXT: &str = "runtime/context";
     /// daemon → runtime: stop gracefully.
     pub const SHUTDOWN: &str = "runtime/shutdown";
+    /// daemon → runtime: answer at once, with an empty result, while the
+    /// connection is up (since 1.4.0). The daemon pings a connection it has
+    /// heard nothing on for a while and drops one that stays silent; any
+    /// answer counts, so an older runtime's `unknown_method` error does too.
+    pub const PING: &str = "runtime/ping";
     /// daemon → runtime: prepare a batch of calls.
     pub const TOOL_PREPARE: &str = "tool/prepare";
     /// daemon → runtime: check a prepared call can still run as approved.
