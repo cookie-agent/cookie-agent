@@ -2563,6 +2563,68 @@ def phone_audit():
     return problems
 
 
+# Counts the page's popstate listeners as they come and go from now on.
+COUNT_POPSTATE = """
+window.popstateListeners = 0;
+const add = window.addEventListener.bind(window);
+const remove = window.removeEventListener.bind(window);
+window.addEventListener = (type, ...rest) => {
+  if (type === 'popstate') window.popstateListeners += 1;
+  return add(type, ...rest);
+};
+window.removeEventListener = (type, ...rest) => {
+  if (type === 'popstate') window.popstateListeners -= 1;
+  return remove(type, ...rest);
+};
+"""
+
+
+def reconnects():
+    """The connected page remounts with every reconnection; its browser
+    listeners must go with it. After several reconnections the page has
+    no more popstate listeners than before, and Back moves exactly one
+    step: from an agent to the agents' list, not further."""
+    phone = Browser()
+    try:
+        phone.go(LINK)
+        phone.wait("the connection", lambda: phone.text("#connected") != "")
+        phone.phone(390, 844)
+        with open(os.path.join(HOME, "daemon.pid")) as file:
+            daemon = int(file.read())
+        visibility = (
+            "Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => arguments[0]});"
+            "document.dispatchEvent(new Event('visibilitychange'))"
+        )
+        phone.script(COUNT_POPSTATE)
+        for round in range(1, 4):
+            os.kill(daemon, signal.SIGSTOP)
+            try:
+                phone.script(visibility, "hidden")
+                phone.script(visibility, "visible")
+                phone.wait("the reconnect", lambda: "stopped answering" in phone.text("#reconnecting"), timeout=20)
+            finally:
+                os.kill(daemon, signal.SIGCONT)
+            phone.wait("the reconnection", lambda: phone.text("#connected") != "", timeout=60)
+            print("reconnection", round)
+        listeners = phone.script("return window.popstateListeners")
+        assert listeners == 0, "%s popstate listeners were added and not removed" % listeners
+        agent = '#agents-sidebar [data-config-path="agents/helper.md"]'
+        phone.click("main [data-sidebar-toggle]")
+        phone.click("#drawer [data-view=agents]")
+        phone.wait("the agents", lambda: page_view(phone) == "agents" and shown(phone, agent))
+        phone.click(agent + " button")
+        phone.wait("the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
+        phone.script("history.back()")
+        phone.wait("Back to the agents", lambda: count(phone, "#config-text") == 0 and shown(phone, agent))
+        time.sleep(1)
+        assert page_view(phone) == "agents" and shown(phone, agent), "Back went past the agents' list"
+        phone.check()
+        print("after reconnections, Back moves one step and no listener is left behind")
+    finally:
+        phone.close()
+    return []
+
+
 def suspended_tab(browser):
     """A phone suspends a background tab; when it shows again the page
     checks its connection. A daemon that stopped answering (here, paused)
@@ -3474,6 +3536,7 @@ SCENARIOS = [
     ("management", management, "chat", []),
     ("views", views_2026, "chat", []),
     ("suspended_tab", suspended_tab, "chat", ["basics"]),
+    ("reconnects", reconnects, "chat", []),
     ("foreign_session", foreign_session, "chat", []),
     ("desktop_layout", desktop_layout, "chat", ["basics"]),
     ("runtime_cards", runtime_cards, "chat", []),

@@ -81,6 +81,46 @@ pub fn store_tab(key: &str, value: &str) {
     }
 }
 
+/// An event listener added by this module; [`Listener::remove`] takes it
+/// away, and [`Listener::keep`] leaves it for the life of the page.
+pub struct Listener {
+    target: web_sys::EventTarget,
+    event: &'static str,
+    callback: Closure<dyn Fn(web_sys::Event)>,
+}
+
+impl Listener {
+    fn add(
+        target: web_sys::EventTarget,
+        event: &'static str,
+        callback: impl Fn(web_sys::Event) + 'static,
+    ) -> Option<Self> {
+        let callback = Closure::<dyn Fn(web_sys::Event)>::new(callback);
+        target
+            .add_event_listener_with_callback(event, callback.as_ref().unchecked_ref())
+            .ok()?;
+        Some(Self {
+            target,
+            event,
+            callback,
+        })
+    }
+
+    /// Removes the listener.
+    pub fn remove(self) {
+        let _ = self.target.remove_event_listener_with_callback(
+            self.event,
+            self.callback.as_ref().unchecked_ref(),
+        );
+    }
+
+    /// Leaves the listener on for as long as the page lives. Only for
+    /// listeners the app registers once at startup.
+    pub fn keep(self) {
+        self.callback.forget();
+    }
+}
+
 fn dark_query() -> Option<web_sys::MediaQueryList> {
     window()?
         .match_media("(prefers-color-scheme: dark)")
@@ -94,14 +134,14 @@ pub fn system_prefers_dark() -> bool {
 }
 
 /// Calls `changed` whenever the system's colour scheme changes, for as long
-/// as the page lives.
+/// as the page lives. Called once, at startup.
 pub fn on_system_scheme_change(changed: impl Fn() + 'static) {
     let Some(query) = dark_query() else {
         return;
     };
-    let listener = Closure::<dyn Fn()>::new(changed);
-    let _ = query.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
-    listener.forget();
+    if let Some(listener) = Listener::add(query.into(), "change", move |_| changed()) {
+        listener.keep();
+    }
 }
 
 /// Turns the dark palette on or off: the `dark` class on `<html>`, which
@@ -218,15 +258,14 @@ pub fn app_installed() -> bool {
 }
 
 /// Calls `changed` whenever the browser offers to install the page or
-/// installs it, for as long as the page lives.
+/// installs it, for as long as the page lives. Called once, at startup.
 pub fn on_install_change(changed: impl Fn() + 'static) {
     let Some(window) = window() else {
         return;
     };
-    let listener = Closure::<dyn Fn()>::new(changed);
-    let _ = window
-        .add_event_listener_with_callback("cookie-install", listener.as_ref().unchecked_ref());
-    listener.forget();
+    if let Some(listener) = Listener::add(window.into(), "cookie-install", move |_| changed()) {
+        listener.keep();
+    }
 }
 
 /// Opens the browser's install prompt, which it offers once: call it from
@@ -265,20 +304,21 @@ pub fn prompt_install() -> Option<impl std::future::Future<Output = bool>> {
 }
 
 /// Calls `shown` whenever the page becomes visible again, as a phone's tab
-/// does after it was suspended, for as long as the page lives.
+/// does after it was suspended, for as long as the page lives. Called once,
+/// at startup.
 pub fn on_visible(shown: impl Fn() + 'static) {
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
     };
     let watched = document.clone();
-    let listener = Closure::<dyn Fn()>::new(move || {
+    let listener = Listener::add(document.into(), "visibilitychange", move |_| {
         if watched.visibility_state() == web_sys::VisibilityState::Visible {
             shown();
         }
     });
-    let _ = document
-        .add_event_listener_with_callback("visibilitychange", listener.as_ref().unchecked_ref());
-    listener.forget();
+    if let Some(listener) = listener {
+        listener.keep();
+    }
 }
 
 /// Copies `text` with `navigator.clipboard`, which browsers offer only on
@@ -446,7 +486,8 @@ pub fn scroll_element_near_edge(element: &web_sys::Element, y: f64) {
 /// Keeps `--app-height` on `<html>` at the visual viewport's height, which a
 /// phone's on-screen keyboard shrinks while the layout viewport (and
 /// `100dvh`) may not, so the composer and an open sheet stay above the
-/// keyboard. The page's frame and sheets size themselves from it.
+/// keyboard. The page's frame and sheets size themselves from it. Called
+/// once, at startup.
 pub fn follow_visual_viewport() {
     let Some(window) = window() else {
         return;
@@ -476,9 +517,9 @@ pub fn follow_visual_viewport() {
         }
     };
     update();
-    let listener = Closure::<dyn Fn()>::new(update);
-    let _ = viewport.add_event_listener_with_callback("resize", listener.as_ref().unchecked_ref());
-    listener.forget();
+    if let Some(listener) = Listener::add(viewport.into(), "resize", move |_| update()) {
+        listener.keep();
+    }
 }
 
 /// The media query a phone matches: narrower than Tailwind's `sm`.
@@ -498,15 +539,11 @@ pub fn matches(query: &str) -> bool {
 }
 
 /// Calls `changed` with whether the page matches `query` whenever that
-/// changes, for as long as the page lives.
-pub fn on_media_change(query: &str, changed: impl Fn(bool) + 'static) {
-    let Some(list) = media_query(query) else {
-        return;
-    };
+/// changes, until the returned listener is removed.
+pub fn on_media_change(query: &str, changed: impl Fn(bool) + 'static) -> Option<Listener> {
+    let list = media_query(query)?;
     let watched = list.clone();
-    let listener = Closure::<dyn Fn()>::new(move || changed(watched.matches()));
-    let _ = list.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
-    listener.forget();
+    Listener::add(list.into(), "change", move |_| changed(watched.matches()))
 }
 
 /// Adds a history entry for the page as it is, carrying `depth`: how many
@@ -526,16 +563,15 @@ pub fn history_back(steps: usize) {
 }
 
 /// Calls `arrived` with the depth of the history entry the browser moved
-/// to (0 for one the page did not add), for as long as the page lives.
-pub fn on_history_move(arrived: impl Fn(usize) + 'static) {
-    let Some(window) = window() else {
-        return;
-    };
-    let listener =
-        Closure::<dyn Fn(web_sys::PopStateEvent)>::new(move |event: web_sys::PopStateEvent| {
-            let depth = event.state().as_f64().map_or(0, |depth| depth as usize);
-            arrived(depth);
-        });
-    let _ = window.add_event_listener_with_callback("popstate", listener.as_ref().unchecked_ref());
-    listener.forget();
+/// to (0 for one the page did not add), until the returned listener is
+/// removed.
+pub fn on_history_move(arrived: impl Fn(usize) + 'static) -> Option<Listener> {
+    Listener::add(window()?.into(), "popstate", move |event| {
+        let depth = event
+            .unchecked_into::<web_sys::PopStateEvent>()
+            .state()
+            .as_f64()
+            .map_or(0, |depth| depth as usize);
+        arrived(depth);
+    })
 }

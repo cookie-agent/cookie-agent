@@ -128,16 +128,28 @@ pub fn WorkspaceView(
     connection: Connection,
     theme: RwSignal<ThemePreference>,
 ) -> impl IntoView {
-    crate::browser::on_media_change(crate::browser::PHONE_QUERY, move |narrow| {
+    // The view remounts with every connection, so its listeners go with it.
+    let phone = crate::browser::on_media_change(crate::browser::PHONE_QUERY, move |narrow| {
         workspace.narrow.set(narrow);
     });
     // A window that grows to a desktop's pins the sidebar instead.
-    crate::browser::on_media_change(crate::browser::DESKTOP_QUERY, move |desktop| {
+    let desktop = crate::browser::on_media_change(crate::browser::DESKTOP_QUERY, move |desktop| {
         if desktop {
             workspace.sidebar_open.set(false);
         }
     });
-    workspace.follow_history();
+    let history = workspace.follow_history();
+    let listeners = StoredValue::new_local(vec![phone, desktop, history]);
+    on_cleanup(move || {
+        for listener in listeners
+            .try_update_value(std::mem::take)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            listener.remove();
+        }
+    });
     let chat = move || workspace.view.get() == View::Chat;
     view! {
         <div class="flex min-h-0 flex-1">

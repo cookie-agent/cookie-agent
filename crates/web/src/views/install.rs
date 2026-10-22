@@ -40,11 +40,14 @@ impl Install {
                 context.installed |= browser::app_installed();
             });
         });
-        browser::on_media_change(browser::STANDALONE_QUERY, move |standalone| {
+        // `provide` runs once, for the page's lifetime.
+        let _ = browser::on_media_change(browser::STANDALONE_QUERY, move |standalone| {
             context.update(|context| context.standalone = standalone);
-        });
+        })
+        .map(browser::Listener::keep);
         let phone = RwSignal::new(browser::matches(browser::PHONE_QUERY));
-        browser::on_media_change(browser::PHONE_QUERY, move |narrow| phone.set(narrow));
+        let _ = browser::on_media_change(browser::PHONE_QUERY, move |narrow| phone.set(narrow))
+            .map(browser::Listener::keep);
         let dismissed = RwSignal::new(banner_dismissed(browser::load(BANNER_KEY).as_deref()));
         browser::register_service_worker();
         provide_context(Self {

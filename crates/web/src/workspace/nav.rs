@@ -106,9 +106,9 @@ impl Workspace {
         layers
     }
 
-    /// Keeps one history entry per open layer, for as long as the page
-    /// lives.
-    pub fn follow_history(self) {
+    /// Keeps one history entry per open layer, until the returned listener
+    /// is removed.
+    pub fn follow_history(self) -> Option<browser::Listener> {
         Effect::new(move || {
             let open = self.open_layers();
             self.sync_history(&open);
@@ -123,7 +123,7 @@ impl Workspace {
             }
             let open = untrack(|| self.open_layers());
             self.sync_history(&open);
-        });
+        })
     }
 
     fn sync_history(self, open: &[Layer]) {

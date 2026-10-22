@@ -66,6 +66,7 @@ fn load() {
         }
     });
     let _ = script.add_event_listener_with_callback("load", loaded.as_ref().unchecked_ref());
+    // Fires once, when the script loads, and the page never unloads it.
     loaded.forget();
     if let Some(head) = document.head() {
         let _ = head.append_child(&script);
