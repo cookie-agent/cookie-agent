@@ -339,6 +339,20 @@ jobs:
               gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.txt"
             fi
           else
+            # GITHUB_TOKEN never holds the `workflows` permission, and GitHub
+            # refuses it a new ref whose commit has other workflow files than
+            # the default branch has now (HTTP 403 "Resource not accessible by
+            # integration"). Once a later push changed .github/workflows, this
+            # commit cannot be tagged; that push's own run publishes the next
+            # prerelease.
+            workflows() {
+              gh api "repos/$GITHUB_REPOSITORY/contents/.github?ref=$1" --jq '.[] | select(.name == "workflows") | .sha'
+            }
+            tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/${{ github.event.repository.default_branch }}" --jq .sha)
+            if [[ "$(workflows "$RELEASE_COMMIT")" != "$(workflows "$tip")" ]]; then
+              echo "::notice::No prerelease for $RELEASE_COMMIT: ${tip:0:9} on the default branch changed the workflows since, and this token cannot tag a commit with others."
+              exit 0
+            fi
             gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
           fi
 
