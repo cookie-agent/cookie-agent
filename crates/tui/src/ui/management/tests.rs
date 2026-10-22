@@ -1027,6 +1027,182 @@ fn runtime_panel_shows_workspaces_under_their_runtime_home() {
     assert!(text.contains("workspace: ~/api"), "{text}");
 }
 
+/// A server of `runtime` at `workspace` for the runtime panel's tests.
+fn hosted_server(
+    runtime: &str,
+    workspace: Option<&str>,
+    name: &str,
+    state: McpServerState,
+    tool_count: u32,
+    message: Option<&str>,
+) -> McpServerInfo {
+    McpServerInfo {
+        runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
+        workspace: workspace.map(str::to_owned),
+        name: name.into(),
+        source: McpConfigSource::UserFile,
+        definition: McpServerDefinition {
+            command: Some("server".into()),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            url: None,
+            headers: BTreeMap::new(),
+            oauth: None,
+            enabled: true,
+            timeout_ms: None,
+        },
+        state,
+        tool_count,
+        message: message.map(str::to_owned),
+        auth_in_progress: None,
+    }
+}
+
+fn render_runtime_panel(
+    panel: &mut super::RuntimePanel,
+    rows: &[super::RuntimeRow],
+    width: u16,
+    height: u16,
+) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::render_runtimes(
+                frame,
+                frame.area(),
+                panel,
+                rows,
+                &crate::theme::Theme::default(),
+            );
+        })
+        .expect("render runtime panel");
+    let buffer = terminal.backend().buffer().clone();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn runtime_panel_lists_each_attachments_mcp_servers() {
+    let attached = [
+        attachment("global", "global", "global", None),
+        attachment("labpc_api", "labpc", "coding", Some("/srv/api")),
+    ];
+    let rows = super::runtime_rows(&attached, Some(&runtime_listing()));
+    let mut panel = super::RuntimePanel::default();
+    panel.install(runtime_listing());
+    panel.selection.select(Some(1));
+    let text = render_runtime_panel(&mut panel, &rows, 110, 30);
+    assert!(text.contains("MCP servers: loading..."), "{text}");
+
+    panel.install_mcp_servers(vec![
+        hosted_server(
+            "global",
+            None,
+            "github",
+            McpServerState::NeedsAuth,
+            0,
+            Some("Sign in: run `cookie mcp auth github`"),
+        ),
+        hosted_server(
+            "labpc",
+            Some("/srv/api"),
+            "rust_analyzer",
+            McpServerState::Connected,
+            3,
+            None,
+        ),
+        hosted_server(
+            "labpc",
+            Some("/srv/api"),
+            "lsp",
+            McpServerState::Failed,
+            0,
+            Some("MCP server `lsp` disconnected and did not reconnect after 3 attempts: exited"),
+        ),
+        // Another instance of the runtime: not this row's.
+        hosted_server(
+            "labpc",
+            Some("/srv/web"),
+            "web_only",
+            McpServerState::Connected,
+            1,
+            None,
+        ),
+    ]);
+    let text = render_runtime_panel(&mut panel, &rows, 110, 30);
+    // Each row counts its instance's servers by state.
+    assert!(text.contains("ready  MCP 1 needs_auth"), "{text}");
+    assert!(text.contains("failed  MCP 1 failed, 1 connected"), "{text}");
+    // The selected row's details list its servers with tools and reasons.
+    assert!(text.contains("MCP servers:"), "{text}");
+    assert!(text.contains("lsp  failed  0 tools"), "{text}");
+    assert!(text.contains("rust_analyzer  connected  3 tools"), "{text}");
+    assert!(
+        text.contains("did not reconnect after 3 attempts: exited"),
+        "{text}"
+    );
+    assert!(!text.contains("web_only"), "{text}");
+    let lsp = text.find("lsp  failed").expect("lsp listed");
+    let rust_analyzer = text.find("rust_analyzer  connected").expect("listed");
+    assert!(lsp < rust_analyzer, "servers in name order: {text}");
+
+    // `global`'s server waits for a sign-in and says so.
+    panel.selection.select(Some(0));
+    let text = render_runtime_panel(&mut panel, &rows, 110, 30);
+    assert!(text.contains("github  needs_auth  0 tools"), "{text}");
+    assert!(
+        text.contains("Sign in: run `cookie mcp auth github`"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_machines_view_counts_a_runtimes_mcp_servers() {
+    let mut panel = super::RuntimePanel::default();
+    panel.install(runtime_listing());
+    panel.install_machines(Ok(super::sample_machines()));
+    panel.install_mcp_servers(vec![
+        hosted_server(
+            "labpc",
+            Some("/srv/api"),
+            "lsp",
+            McpServerState::Failed,
+            0,
+            Some("exited"),
+        ),
+        hosted_server(
+            "labpc",
+            Some("/srv/web"),
+            "lsp",
+            McpServerState::Connected,
+            2,
+            None,
+        ),
+    ]);
+    panel.view = super::RuntimeView::Machines;
+    // The `labpc` runtime under the `labpc` machine.
+    panel.machine_selection.select(Some(1));
+    let text = render_runtime_panel(&mut panel, &[], 110, 30);
+    assert!(
+        text.contains("labpc  pinned  MCP 1 failed, 1 connected"),
+        "{text}"
+    );
+    assert!(
+        text.contains("2 MCP servers: 1 failed, 1 connected"),
+        "{text}"
+    );
+    assert!(text.contains("lsp  failed  0 tools  at /srv/api"), "{text}");
+}
+
 #[test]
 fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
     let server = |runtime: &str, workspace: Option<&str>, name: &str| McpServerInfo {

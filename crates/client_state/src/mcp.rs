@@ -1,6 +1,7 @@
 //! The `/mcp` panel's rules every client shares: the servers in display
 //! order, which ones `mcp.server.*` edits, a server's add or edit form as
-//! text and the definition it makes, and the labels the list shows.
+//! text and the definition it makes, and the labels the list shows; and the
+//! servers each runtime instance hosts, as the runtime panels list them.
 
 use std::collections::BTreeMap;
 
@@ -299,27 +300,166 @@ pub const fn state_label(state: McpServerState) -> &'static str {
     }
 }
 
+/// The servers among `servers` that the instance of `runtime_id` at
+/// `workspace` hosts, in name order. Instances of one runtime are told
+/// apart by their workspace; a runtime's instance without one (as `global`
+/// has) hosts the servers listed without one.
+pub fn instance_servers(
+    servers: &[McpServerInfo],
+    runtime_id: &RuntimeId,
+    workspace: Option<&str>,
+) -> Vec<McpServerInfo> {
+    let mut hosted = servers
+        .iter()
+        .filter(|server| {
+            server.runtime_id == *runtime_id && server.workspace.as_deref() == workspace
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    hosted.sort_by(|left, right| left.name.cmp(&right.name));
+    hosted
+}
+
+/// The servers among `servers` that any instance of `runtime_id` hosts,
+/// grouped by workspace, then in name order.
+pub fn runtime_servers(servers: &[McpServerInfo], runtime_id: &RuntimeId) -> Vec<McpServerInfo> {
+    let mut hosted = servers
+        .iter()
+        .filter(|server| server.runtime_id == *runtime_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    hosted
+        .sort_by(|left, right| (&left.workspace, &left.name).cmp(&(&right.workspace, &right.name)));
+    hosted
+}
+
+/// `count` tools, in words.
+pub fn tools_label(count: u32) -> String {
+    match count {
+        1 => "1 tool".to_owned(),
+        count => format!("{count} tools"),
+    }
+}
+
+/// How a server's state reads at a glance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StateTone {
+    /// Connected: its tools are offered.
+    Ready,
+    /// On its way, or waiting for a sign-in: no failure yet.
+    Pending,
+    /// Failed: its tools are missing.
+    Failed,
+    /// Disabled, disconnected, or a state this build does not know.
+    Off,
+}
+
+pub const fn state_tone(state: McpServerState) -> StateTone {
+    match state {
+        McpServerState::Connected => StateTone::Ready,
+        McpServerState::Connecting | McpServerState::Reconnecting | McpServerState::NeedsAuth => {
+            StateTone::Pending
+        }
+        McpServerState::Failed => StateTone::Failed,
+        McpServerState::Disabled | McpServerState::Disconnected | McpServerState::Unknown => {
+            StateTone::Off
+        }
+    }
+}
+
+/// A server's line in a runtime panel: its name, state, and tool count, as
+/// `docs  connected  3 tools`.
+pub fn server_summary(server: &McpServerInfo) -> String {
+    format!(
+        "{}  {}  {}",
+        server.name,
+        state_label(server.state),
+        tools_label(server.tool_count)
+    )
+}
+
+/// What a runtime panel says under a server: why it failed, or what it
+/// waits for, with whitespace runs folded so a long reason wraps as prose;
+/// nothing for a server whose state needs no words.
+pub fn server_message(server: &McpServerInfo) -> Option<String> {
+    let message = server.message.as_deref()?;
+    let readable = message
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!readable.is_empty()).then_some(readable)
+}
+
+/// `servers` counted by state in first-seen order, as `2 connected, 1 failed`.
+fn state_counts(servers: &[McpServerInfo]) -> String {
+    let mut counts = Vec::<(&'static str, usize)>::new();
+    for server in servers {
+        let label = state_label(server.state);
+        match counts.iter_mut().find(|(known, _)| *known == label) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((label, 1)),
+        }
+    }
+    counts
+        .iter()
+        .map(|(label, count)| format!("{count} {label}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A count of `servers` by state, as `2 MCP servers: 1 connected, 1 failed`;
+/// `None` when there are none.
+pub fn servers_overview(servers: &[McpServerInfo]) -> Option<String> {
+    if servers.is_empty() {
+        return None;
+    }
+    let noun = if servers.len() == 1 {
+        "MCP server"
+    } else {
+        "MCP servers"
+    };
+    Some(format!(
+        "{} {noun}: {}",
+        servers.len(),
+        state_counts(servers)
+    ))
+}
+
+/// The short form a list row shows, as `MCP 1 connected, 1 failed`; `None`
+/// when there are no servers.
+pub fn servers_badge(servers: &[McpServerInfo]) -> Option<String> {
+    (!servers.is_empty()).then(|| format!("MCP {}", state_counts(servers)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        McpFields, McpTransport, daemon_accepts_page_redirects, edit_refusal, new_definition,
-        server_definition_display,
+        McpFields, McpTransport, StateTone, daemon_accepts_page_redirects, edit_refusal,
+        instance_servers, new_definition, runtime_servers, server_definition_display,
+        server_message, server_summary, servers_badge, servers_overview, state_tone,
     };
     use cookie_agent_protocol::{
         McpConfigSource, McpServerDefinition, McpServerInfo, McpServerState, RuntimeId, SemVer,
     };
 
-    #[test]
-    fn a_machine_server_says_where_it_is_defined() {
-        let machine = McpServerInfo {
-            runtime_id: RuntimeId::new("client_box").unwrap(),
-            workspace: Some("/home/me/app".into()),
-            name: "chrome".into(),
-            source: McpConfigSource::Machine,
+    fn server(
+        runtime: &str,
+        workspace: Option<&str>,
+        name: &str,
+        state: McpServerState,
+        message: Option<&str>,
+    ) -> McpServerInfo {
+        McpServerInfo {
+            runtime_id: RuntimeId::new(runtime).unwrap(),
+            workspace: workspace.map(str::to_owned),
+            name: name.into(),
+            source: McpConfigSource::UserFile,
             definition: McpServerDefinition {
-                command: None,
+                command: Some("server".into()),
                 args: Vec::new(),
                 env: BTreeMap::new(),
                 cwd: None,
@@ -329,11 +469,128 @@ mod tests {
                 enabled: true,
                 timeout_ms: None,
             },
-            state: McpServerState::Connected,
-            tool_count: 3,
-            message: None,
+            state,
+            tool_count: 0,
+            message: message.map(str::to_owned),
             auth_in_progress: None,
-        };
+        }
+    }
+
+    fn names(servers: &[McpServerInfo]) -> Vec<(Option<&str>, &str)> {
+        servers
+            .iter()
+            .map(|server| (server.workspace.as_deref(), server.name.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn an_instance_lists_the_servers_of_its_runtime_and_workspace_by_name() {
+        let servers = [
+            server(
+                "labpc",
+                Some("/srv/web"),
+                "lsp",
+                McpServerState::Connected,
+                None,
+            ),
+            server(
+                "labpc",
+                Some("/srv/api"),
+                "lsp",
+                McpServerState::Failed,
+                None,
+            ),
+            server(
+                "labpc",
+                Some("/srv/api"),
+                "docs",
+                McpServerState::Connected,
+                None,
+            ),
+            server("global", None, "github", McpServerState::NeedsAuth, None),
+        ];
+        let labpc = RuntimeId::new("labpc").unwrap();
+        assert_eq!(
+            names(&instance_servers(&servers, &labpc, Some("/srv/api"))),
+            [(Some("/srv/api"), "docs"), (Some("/srv/api"), "lsp")]
+        );
+        assert!(instance_servers(&servers, &labpc, None).is_empty());
+        assert_eq!(
+            names(&instance_servers(
+                &servers,
+                &RuntimeId::new("global").unwrap(),
+                None
+            )),
+            [(None, "github")]
+        );
+        assert_eq!(
+            names(&runtime_servers(&servers, &labpc)),
+            [
+                (Some("/srv/api"), "docs"),
+                (Some("/srv/api"), "lsp"),
+                (Some("/srv/web"), "lsp")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_server_reads_as_name_state_tools_and_a_readable_reason() {
+        let mut failed = server(
+            "local",
+            Some("/srv/api"),
+            "lsp",
+            McpServerState::Failed,
+            Some("  MCP server `lsp` disconnected\n\n   and did not   reconnect  "),
+        );
+        assert_eq!(server_summary(&failed), "lsp  failed  0 tools");
+        assert_eq!(
+            server_message(&failed).as_deref(),
+            Some("MCP server `lsp` disconnected\nand did not reconnect")
+        );
+        failed.message = Some("   ".into());
+        assert_eq!(server_message(&failed), None);
+        let mut ready = server("global", None, "docs", McpServerState::Connected, None);
+        ready.tool_count = 1;
+        assert_eq!(server_summary(&ready), "docs  connected  1 tool");
+        assert_eq!(state_tone(ready.state), StateTone::Ready);
+        assert_eq!(state_tone(McpServerState::NeedsAuth), StateTone::Pending);
+        assert_eq!(state_tone(McpServerState::Failed), StateTone::Failed);
+        assert_eq!(state_tone(McpServerState::Disabled), StateTone::Off);
+    }
+
+    #[test]
+    fn servers_are_counted_by_state() {
+        assert_eq!(servers_overview(&[]), None);
+        let servers = [
+            server("local", None, "a", McpServerState::Connected, None),
+            server("local", None, "b", McpServerState::Failed, None),
+            server("local", None, "c", McpServerState::Connected, None),
+        ];
+        assert_eq!(
+            servers_overview(&servers).as_deref(),
+            Some("3 MCP servers: 2 connected, 1 failed")
+        );
+        assert_eq!(
+            servers_overview(&servers[1..2]).as_deref(),
+            Some("1 MCP server: 1 failed")
+        );
+        assert_eq!(
+            servers_badge(&servers).as_deref(),
+            Some("MCP 2 connected, 1 failed")
+        );
+        assert_eq!(servers_badge(&[]), None);
+    }
+
+    #[test]
+    fn a_machine_server_says_where_it_is_defined() {
+        let mut machine = server(
+            "client_box",
+            Some("/home/me/app"),
+            "chrome",
+            McpServerState::Connected,
+            None,
+        );
+        machine.source = McpConfigSource::Machine;
         assert_eq!(
             server_definition_display(&machine),
             "defined in [runtimes.local.mcp] on the runtime's machine"

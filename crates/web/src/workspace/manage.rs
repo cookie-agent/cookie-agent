@@ -90,7 +90,7 @@ impl Workspace {
                 }
             }
             ClientDelivery::McpChanged(_)
-                if self.showing(View::Settings, Some(SettingsSection::Mcp)) =>
+                if runtimes || self.showing(View::Settings, Some(SettingsSection::Mcp)) =>
             {
                 self.poll_mcp();
             }
@@ -113,8 +113,9 @@ impl Workspace {
         self.poll_runtimes();
     }
 
-    /// Reads `runtimes.list` and `machines.list`; a new session's draft
-    /// gets its runtimes once the listing says where `local` works.
+    /// Reads `runtimes.list`, `machines.list`, and `mcp.server.list`; a new
+    /// session's draft gets its runtimes once the listing says where `local`
+    /// works.
     pub fn poll_runtimes(self) {
         let Some(client) = self.client() else {
             return;
@@ -140,6 +141,8 @@ impl Workspace {
                 .map_err(|error| crate::errors::describe_full(&error));
             self.machines.set(Some(machines));
         });
+        // The MCP servers each runtime hosts, which its rows list.
+        self.poll_mcp();
     }
 
     /// The attachments the panel shows: the viewed session's, or the

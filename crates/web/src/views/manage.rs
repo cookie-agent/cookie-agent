@@ -6,8 +6,9 @@
 use cookie_agent_client_state::{
     config::config_rows,
     mcp::{
-        McpFields, McpTransport, PersistChoice, definition_display, runtime_label, source_label,
-        state_label as mcp_state_label,
+        McpFields, McpTransport, PersistChoice, StateTone, runtime_label,
+        server_definition_display, server_message, source_label, state_label as mcp_state_label,
+        state_tone, tools_label,
     },
     plugins::{plugin_detail, state_label as plugin_state_label},
     providers::{
@@ -17,7 +18,9 @@ use cookie_agent_client_state::{
     },
     runtimes::{RuntimeChoice, attach_parameters, runtime_choices, status_label},
 };
-use cookie_agent_protocol::{McpServerState, ProviderDescriptor, RuntimeInstanceStatus};
+use cookie_agent_protocol::{
+    McpServerInfo, McpServerState, ProviderDescriptor, RuntimeInstanceStatus,
+};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast as _;
 
@@ -106,6 +109,10 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                     .as_ref()
                     .and_then(|instance| instance.message.clone());
                 let failed = status == Some(RuntimeInstanceStatus::Failed);
+                let servers = workspace.mcp_servers.with(|listing| match listing {
+                    Some(Ok(servers)) => row.mcp_servers(servers),
+                    _ => Vec::new(),
+                });
                 let detach_name = row.attachment.name.clone();
                 let retry_row = row.clone();
                 view! {
@@ -135,6 +142,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         </span>
                         {row.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
                         {message.map(|message| view! { <span class=ERROR>{message}</span> })}
+                        {(!servers.is_empty()).then(|| runtime_mcp_servers(servers))}
                         <div class="flex gap-2">
                             <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone(), index)>
                                 <Glyph icon=icondata::FaArrowsRotateSolid />
@@ -261,6 +269,53 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// The MCP servers a runtime row's instance hosts: each one's name, tool
+/// count, and state, and under it why it failed or what it waits for.
+fn runtime_mcp_servers(servers: Vec<McpServerInfo>) -> impl IntoView {
+    let items = servers
+        .into_iter()
+        .map(|server| {
+            let tone = state_tone(server.state);
+            let (dot, dot_class) = match tone {
+                StateTone::Ready => (icondata::FaCircleSolid, "text-green-700 dark:text-green-400"),
+                StateTone::Pending => (icondata::FaCircleHalfStrokeSolid, "text-amber-700 dark:text-amber-400"),
+                StateTone::Failed => (icondata::FaCircleExclamationSolid, "text-red-700 dark:text-red-400"),
+                StateTone::Off => (icondata::FaCircleRegular, "opacity-60"),
+            };
+            let failed = tone == StateTone::Failed;
+            let state = mcp_state_label(server.state);
+            view! {
+                <li class="flex min-w-0 flex-col gap-0.5" data-mcp-server=server.name.clone() data-mcp-state=state>
+                    <div class="flex min-w-0 items-center gap-2">
+                        <Glyph icon=dot class=format!("shrink-0 text-[0.6rem] {dot_class}") />
+                        <span class="min-w-0 flex-1 truncate font-mono text-sm">{server.name.clone()}</span>
+                        <span class=format!("shrink-0 {NOTE}")>{tools_label(server.tool_count)}</span>
+                        <span class=STATE class:text-red-700=failed class:dark:text-red-400=failed>{state}</span>
+                    </div>
+                    {server_message(&server).map(|message| view! {
+                        <span
+                            class=if failed {
+                                "pl-4 text-xs whitespace-pre-wrap break-words text-red-800 dark:text-red-300"
+                            } else {
+                                "pl-4 text-xs whitespace-pre-wrap break-words opacity-80"
+                            }
+                            data-mcp-message
+                        >
+                            {message}
+                        </span>
+                    })}
+                </li>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="runtime-mcp flex flex-col gap-1 rounded-md bg-parchment px-2 py-1.5 dark:bg-char" data-runtime-mcp>
+            <span class="text-xs font-bold opacity-70">"MCP servers"</span>
+            <ul class="flex flex-col gap-1">{items}</ul>
+        </div>
+    }
+}
+
 // ---- /mcp ------------------------------------------------------------------
 
 pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
@@ -301,7 +356,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                                 server.tool_count
                             )}
                         </span>
-                        <span class=format!("{NOTE} font-mono whitespace-pre-wrap break-all")>{definition_display(&server.definition)}</span>
+                        <span class=format!("{NOTE} font-mono whitespace-pre-wrap break-all")>{server_definition_display(&server)}</span>
                         {server.message.clone().map(|message| if needs_auth {
                             // Why it waits for a sign-in, not a failure.
                             view! { <span class=format!("{NOTE} whitespace-pre-wrap break-words") data-mcp-message>{message}</span> }.into_any()

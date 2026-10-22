@@ -1073,6 +1073,10 @@ pub(in crate::ui) enum RpcUpdate {
     RuntimesRefreshed {
         result: Result<cookie_agent_protocol::RuntimesListResult, String>,
     },
+    /// `mcp.server.list` answered for the `/runtime` panel.
+    RuntimeMcpRefreshed {
+        result: Result<cookie_agent_protocol::McpServerListResult, String>,
+    },
     /// `projects.list` answered.
     ProjectsRefreshed {
         projects: Vec<cookie_agent_protocol::ProjectInfo>,

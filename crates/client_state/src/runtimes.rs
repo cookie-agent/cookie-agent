@@ -1,12 +1,13 @@
 //! The `/runtime` panel's rules every client shares: a session's
-//! attachments matched to their instances, the runtimes a new-session draft
+//! attachments matched to their instances and the MCP servers each hosts,
+//! the runtimes a new-session draft
 //! attaches, what attaching offers and asks for, and the machines view's
 //! rows and changes (`machines.*`).
 
 use cookie_agent_protocol::{
     AttachmentName, CapabilityName, MachineAssignment, MachineName, MachinesListResult,
-    RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId, RuntimeInstanceInfo,
-    RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
+    McpServerInfo, RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId,
+    RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
 };
 
 /// One attachment row: what the session records and the instance it refers
@@ -17,6 +18,19 @@ pub struct RuntimeRow {
     pub instance: Option<RuntimeInstanceInfo>,
     /// What the runtime says its capability offers, once it has connected.
     pub description: Option<String>,
+}
+
+impl RuntimeRow {
+    /// The MCP servers the row's instance hosts, from `mcp.server.list`, in
+    /// name order: those of its runtime at the instance's workspace (the
+    /// attachment's until the instance reports one).
+    pub fn mcp_servers(&self, servers: &[McpServerInfo]) -> Vec<McpServerInfo> {
+        let workspace = match &self.instance {
+            Some(instance) => instance.workspace.as_deref(),
+            None => self.attachment.workspace.as_deref(),
+        };
+        crate::mcp::instance_servers(servers, &self.attachment.runtime_id, workspace)
+    }
 }
 
 /// The description `listing` has for `capability` of `runtime_id`.
@@ -635,6 +649,64 @@ mod tests {
             machine_name_request(MachineAction::Rename, &entries[0], "Not A Name")
                 .unwrap_err()
                 .contains("is not a machine name")
+        );
+    }
+
+    #[test]
+    fn a_row_lists_the_mcp_servers_of_its_instance() {
+        let servers: Vec<cookie_agent_protocol::McpServerInfo> =
+            serde_json::from_value(serde_json::json!([
+                {"runtime_id": "global", "name": "github", "source": "user_file",
+                 "definition": {"command": null, "args": [], "env": {}, "cwd": null,
+                                "url": "https://example.test/mcp", "headers": {},
+                                "enabled": true, "timeout_ms": null},
+                 "state": "needs_auth", "tool_count": 0, "message": "sign in"},
+                {"runtime_id": "labpc", "workspace": "/srv/api", "name": "lsp",
+                 "source": "machine",
+                 "definition": {"command": null, "args": [], "env": {}, "cwd": null,
+                                "url": null, "headers": {}, "enabled": true,
+                                "timeout_ms": null},
+                 "state": "failed", "tool_count": 0, "message": "exited"},
+                {"runtime_id": "labpc", "workspace": "/srv/web", "name": "lsp",
+                 "source": "user_file",
+                 "definition": {"command": "lsp", "args": [], "env": {}, "cwd": null,
+                                "url": null, "headers": {}, "enabled": true,
+                                "timeout_ms": null},
+                 "state": "connected", "tool_count": 4, "message": null}
+            ]))
+            .expect("servers");
+        let attachments: Vec<cookie_agent_protocol::RuntimeAttachment> =
+            serde_json::from_value(serde_json::json!([
+                {"name": "global", "runtime_id": "global", "capability": "global",
+                 "kind": "global"},
+                {"name": "labpc_api", "runtime_id": "labpc", "capability": "coding",
+                 "kind": "coding", "workspace": "/srv/api"}
+            ]))
+            .expect("attachments");
+        let rows = super::runtime_rows(&attachments, None);
+        let hosted = |row: &super::RuntimeRow| {
+            row.mcp_servers(&servers)
+                .into_iter()
+                .map(|server| (server.name, server.state))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            hosted(&rows[0]),
+            [(
+                "github".to_owned(),
+                cookie_agent_protocol::McpServerState::NeedsAuth
+            )]
+        );
+        assert_eq!(
+            hosted(&rows[1]),
+            [(
+                "lsp".to_owned(),
+                cookie_agent_protocol::McpServerState::Failed
+            )]
+        );
+        assert_eq!(
+            servers[1].source,
+            cookie_agent_protocol::McpConfigSource::Machine
         );
     }
 

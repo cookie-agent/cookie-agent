@@ -3,7 +3,8 @@
 # headless Chrome against real `cookie daemon`s in scratch homes: one with
 # a scripted model (scripts/web-e2e/mock-model.py), a subagent, a skill, a
 # runtime that never starts, the reference plugin, and MCP servers that want
-# OAuth (scripts/web-e2e/mock-oauth.py), and a second, empty
+# OAuth (scripts/web-e2e/mock-oauth.py), with, for the runtime_mcp group,
+# MCP servers in its `local` runtime, and a second, empty
 # one whose page is of another origin. Run scripts/build-web.sh first so the
 # daemons embed the real page.
 #
@@ -184,6 +185,18 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 48, 32, 8, 2
 png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)
 PY
+    # The runtime_mcp group's `local` runtime hosts the stdio fixture MCP
+    # server and one that cannot start, which the runtime panels list.
+    runtime_mcp=""
+    if [[ " $* " == *" runtime_mcp "* ]]; then
+        runtime_mcp="
+[runtimes.local.mcp.servers.fixture]
+command = \"python3\"
+args = [\"$root/crates/mcp/tests/fixtures/mcp_server.py\"]
+
+[runtimes.local.mcp.servers.broken]
+command = \"false\""
+    fi
     write_config "$allowing" "$port" <<TOML
 [session_title]
 generate_on_first_turn = false
@@ -219,6 +232,7 @@ url = "http://127.0.0.1:$oauth_port/mcp"
 
 [mcp.servers.oauth-paste]
 url = "http://127.0.0.1:$oauth_port/mcp"
+$runtime_mcp
 TOML
     # A session made before the daemon starts, by another process: the daemon
     # lists it but has not loaded it, so the scenarios can hold its owner lock

@@ -138,8 +138,12 @@ command = "docs-mcp"
   created or opened, when the instance is attached or retried (`r` in
   `/runtime`), and with `r` on the server in `/mcp`.
 - **Status.** `/mcp` lists the servers of every instance as
-  `<runtime> at <workspace>`. They cannot be edited there; change the
-  template and restart the daemon.
+  `<runtime> at <workspace>`, and the `/runtime` panels list each
+  attachment's servers with their state, tool count, and failure. They
+  cannot be edited there; change the template and restart the daemon. A
+  dial-in runtime's own servers (`[runtimes.local.mcp]` on its machine) are
+  listed too, with the source `runtime machine config`, since client
+  protocol 1.12.0.
 
 ## Instances and workspaces
 

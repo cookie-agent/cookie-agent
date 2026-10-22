@@ -1,12 +1,13 @@
 //! The `/runtime` panel: the selected session's attachments, or the
-//! runtimes a new-session draft will attach, with their instance status;
+//! runtimes a new-session draft will attach, with their instance status
+//! and the MCP servers each hosts;
 //! attaching a runtime's capability, detaching, and retrying a failed
 //! instance. Its machines view groups the daemon's runtimes by machine and
 //! renames, merges, and forgets machines and moves runtimes between them.
 
 use cookie_agent_protocol::{
-    CapabilityName, MachineAssignment, MachineInfo, MachineName, MachinesListResult, RuntimeId,
-    RuntimeListing, RuntimesListResult,
+    CapabilityName, MachineAssignment, MachineInfo, MachineName, MachinesListResult, McpServerInfo,
+    RuntimeId, RuntimeListing, RuntimesListResult,
 };
 use ratatui::{
     Frame,
@@ -19,9 +20,12 @@ pub(in crate::ui) use cookie_agent_client_state::runtimes::{
     DraftRuntime, MachineAction, MachineEntry, MachineRequest, RuntimeChoice, RuntimeRow,
     draft_runtime_rows, runtime_rows,
 };
-use cookie_agent_client_state::runtimes::{
-    attach_parameters, machine_action_request, machine_entries, machine_form_title,
-    machine_name_request, reconnect_request, runtime_choices, status_label,
+use cookie_agent_client_state::{
+    mcp::{runtime_servers, server_message, server_summary, servers_badge, servers_overview},
+    runtimes::{
+        attach_parameters, machine_action_request, machine_entries, machine_form_title,
+        machine_name_request, reconnect_request, runtime_choices, status_label,
+    },
 };
 
 use crate::{theme::Theme, ui::input::InputState};
@@ -109,12 +113,29 @@ pub(in crate::ui) struct RuntimePanel {
     pub(in crate::ui) machine_selection: ListState,
     pub(in crate::ui) machine_form: Option<MachineForm>,
     pub(in crate::ui) machines_in_flight: bool,
+    /// `mcp.server.list`, for the MCP servers each runtime hosts; `None`
+    /// until it answers.
+    pub(in crate::ui) mcp_servers: Option<Vec<McpServerInfo>>,
 }
 
 impl RuntimePanel {
     pub(in crate::ui) fn install(&mut self, listing: RuntimesListResult) {
         self.listing = Some(listing);
         self.refresh_in_flight = false;
+    }
+
+    pub(in crate::ui) fn install_mcp_servers(&mut self, servers: Vec<McpServerInfo>) {
+        self.mcp_servers = Some(servers);
+    }
+
+    /// The MCP servers `row`'s instance hosts.
+    fn row_mcp_servers(&self, row: &RuntimeRow) -> Vec<McpServerInfo> {
+        row.mcp_servers(self.mcp_servers.as_deref().unwrap_or_default())
+    }
+
+    /// The MCP servers any instance of `runtime_id` hosts.
+    fn runtime_mcp_servers(&self, runtime_id: &RuntimeId) -> Vec<McpServerInfo> {
+        runtime_servers(self.mcp_servers.as_deref().unwrap_or_default(), runtime_id)
     }
 
     pub(in crate::ui) fn install_machines(&mut self, machines: Result<MachinesListResult, String>) {
@@ -372,9 +393,14 @@ fn render_attachments(
     theme: &Theme,
 ) {
     panel.clamp(rows.len());
+    // The list takes what its rows need, up to a little over half; the
+    // details, which list each server the instance hosts, take the rest.
+    let list_height = u16::try_from(rows.len().max(1) + 2)
+        .unwrap_or(u16::MAX)
+        .clamp(3, (area.height * 55 / 100).max(3));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .constraints([Constraint::Length(list_height), Constraint::Min(0)])
         .split(area);
     let items = rows
         .iter()
@@ -392,6 +418,9 @@ fn render_attachments(
             );
             if let Some(machine) = panel.machine_of(&row.attachment.runtime_id) {
                 line.push_str(&format!("  on {machine}"));
+            }
+            if let Some(badge) = servers_badge(&panel.row_mcp_servers(row)) {
+                line.push_str(&format!("  {badge}"));
             }
             ListItem::new(line)
         })
@@ -466,7 +495,7 @@ fn render_machines(
     };
     let items = entries
         .iter()
-        .map(|entry| ListItem::new(machine_entry_line(entry, machines, theme)))
+        .map(|entry| ListItem::new(machine_entry_line(entry, machines, panel, theme)))
         .collect::<Vec<_>>();
     let block = crate::ui::panel_block()
         .border_style(theme.panel_border())
@@ -503,7 +532,7 @@ fn render_machines(
         (None, _) => "Loading machines...".to_owned(),
         (Some(Err(error)), _) => format!("Machines are unavailable: {error}"),
         (Some(Ok(_)), None) => "No machines yet.".to_owned(),
-        (Some(Ok(_)), Some(entry)) => machine_entry_detail(entry, machines),
+        (Some(Ok(_)), Some(entry)) => machine_entry_detail(entry, machines, panel),
     };
     frame.render_widget(
         Paragraph::new(detail).wrap(Wrap { trim: false }).block(
@@ -544,6 +573,7 @@ fn render_machines(
 fn machine_entry_line(
     entry: &MachineEntry,
     machines: &[MachineInfo],
+    panel: &RuntimePanel,
     theme: &Theme,
 ) -> Line<'static> {
     match entry {
@@ -568,13 +598,19 @@ fn machine_entry_line(
             assigned_by,
             pinned,
             ..
-        } => Line::from(vec![
-            Span::styled(format!("  {runtime}"), theme.body()),
-            Span::styled(
-                format!("  {}", runtime_placement(*assigned_by, *pinned)),
-                theme.muted(),
-            ),
-        ]),
+        } => {
+            let mut spans = vec![
+                Span::styled(format!("  {runtime}"), theme.body()),
+                Span::styled(
+                    format!("  {}", runtime_placement(*assigned_by, *pinned)),
+                    theme.muted(),
+                ),
+            ];
+            if let Some(badge) = servers_badge(&panel.runtime_mcp_servers(runtime)) {
+                spans.push(Span::styled(format!("  {badge}"), theme.muted()));
+            }
+            Line::from(spans)
+        }
     }
 }
 
@@ -589,7 +625,11 @@ fn runtime_placement(assigned_by: Option<MachineAssignment>, pinned: bool) -> &'
     }
 }
 
-fn machine_entry_detail(entry: &MachineEntry, machines: &[MachineInfo]) -> String {
+fn machine_entry_detail(
+    entry: &MachineEntry,
+    machines: &[MachineInfo],
+    panel: &RuntimePanel,
+) -> String {
     match entry {
         MachineEntry::Machine(name) => {
             let Some(machine) = machines.iter().find(|machine| machine.name == *name) else {
@@ -619,10 +659,24 @@ fn machine_entry_detail(entry: &MachineEntry, machines: &[MachineInfo]) -> Strin
             runtime,
             assigned_by,
             pinned,
-        } => format!(
-            "runtime {runtime} on machine {machine}: {}",
-            runtime_placement(*assigned_by, *pinned)
-        ),
+        } => {
+            let mut text = format!(
+                "runtime {runtime} on machine {machine}: {}",
+                runtime_placement(*assigned_by, *pinned)
+            );
+            let servers = panel.runtime_mcp_servers(runtime);
+            if let Some(overview) = servers_overview(&servers) {
+                text.push_str(&format!("\n{overview}"));
+                for server in &servers {
+                    text.push_str(&format!("\n  {}", server_summary(server)));
+                    if let Some(workspace) = &server.workspace {
+                        let shown = panel.display_workspace(runtime, workspace);
+                        text.push_str(&format!("  at {shown}"));
+                    }
+                }
+            }
+            text
+        }
     }
 }
 
@@ -664,6 +718,29 @@ fn row_detail(row: &RuntimeRow, panel: &RuntimePanel) -> String {
     {
         text.push_str("\n\n");
         text.push_str(message);
+    }
+    text.push_str(&mcp_detail(&panel.row_mcp_servers(row), panel));
+    text
+}
+
+/// The MCP servers of a runtime row's details: each one's state and tools,
+/// and below it why it failed or what it waits for.
+fn mcp_detail(servers: &[McpServerInfo], panel: &RuntimePanel) -> String {
+    if panel.mcp_servers.is_none() {
+        return "\n\nMCP servers: loading...".to_owned();
+    }
+    if servers.is_empty() {
+        return "\n\nMCP servers: none".to_owned();
+    }
+    let mut text = "\n\nMCP servers:".to_owned();
+    for server in servers {
+        text.push_str(&format!("\n  {}", server_summary(server)));
+        for line in server_message(server)
+            .iter()
+            .flat_map(|message| message.lines())
+        {
+            text.push_str(&format!("\n    {line}"));
+        }
     }
     text
 }

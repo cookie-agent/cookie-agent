@@ -687,6 +687,10 @@ impl App {
                     Err(error) => self.status = format!("runtime refresh failed: {error}"),
                 }
             }
+            RpcUpdate::RuntimeMcpRefreshed { result } => match result {
+                Ok(listing) => self.runtime_panel.install_mcp_servers(listing.servers),
+                Err(error) => self.status = format!("MCP refresh failed: {error}"),
+            },
             RpcUpdate::RuntimeHomesRefreshed { homes } => self.install_runtime_homes(homes),
             RpcUpdate::ProjectsRefreshed { projects } => self.install_projects(projects),
             RpcUpdate::SessionProjectSet { label, result } => {
@@ -1377,6 +1381,12 @@ impl App {
                 .await
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::RuntimesRefreshed { result });
+            // The MCP servers each runtime hosts, for the rows' details.
+            let result = client
+                .list_mcp_servers()
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::RuntimeMcpRefreshed { result });
         });
     }
 

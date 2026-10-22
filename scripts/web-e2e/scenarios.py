@@ -3951,6 +3951,62 @@ def audit():
 # scenario builds on, which run first when it is picked alone. The phone
 # audit stays last in its group, after every scenario that fills the
 # daemon it looks through.
+def runtime_mcp(browser):
+    """The runtime panels list each runtime's MCP servers: the daemon's
+    `local` runtime hosts the stdio fixture server, which connects, and one
+    that cannot start, which fails with its reason (test-web-page.sh adds
+    them to this group's daemon)."""
+    new_session(browser)
+    menu(browser, "runtime")
+    local = '#sheet .runtime-row[data-attachment^="local"]'
+    browser.wait("the local runtime", lambda: count(browser, local) == 1, timeout=40)
+    browser.wait(
+        "the connected fixture server",
+        lambda: count(browser, local + ' [data-mcp-server="fixture"][data-mcp-state="connected"]') == 1,
+        timeout=40,
+    )
+    browser.wait(
+        "the failed server",
+        lambda: count(browser, local + ' [data-mcp-server="broken"][data-mcp-state="failed"]') == 1,
+        timeout=40,
+    )
+    fixture = browser.text(local + ' [data-mcp-server="fixture"]')
+    assert "2 tools" in fixture, fixture
+    reason = browser.text(local + ' [data-mcp-server="broken"] [data-mcp-message]')
+    assert "broken" in reason and not reason.startswith("tool failed"), reason
+    # `global` hosts the daemon's top-level servers, which wait for a
+    # sign-in and say so; the local runtime's are not among them.
+    global_row = '#sheet .runtime-row[data-attachment="global"]'
+    browser.wait(
+        "the global servers waiting for a sign-in",
+        lambda: count(browser, global_row + ' [data-mcp-state="needs_auth"]') == 3,
+        timeout=40,
+    )
+    assert count(browser, global_row + ' [data-mcp-server="fixture"]') == 0
+    settle(browser)
+    browser.shot("runtime-mcp-desktop")
+    browser.phone(390, 844)
+    settle(browser)
+    browser.shot("runtime-mcp-phone")
+    browser.resize(1280, 900)
+    print("the runtime sheet lists the local runtime's MCP servers with state, tools, and reason")
+
+    # The Machines view counts them by state on the runtime's row.
+    browser.click("#runtime-open-machines")
+    machine_mcp = '#page [data-runtime="local"] [data-runtime-mcp]'
+    browser.wait("the local runtime's MCP servers", lambda: count(browser, machine_mcp) == 1, timeout=40)
+    counted = browser.text(machine_mcp)
+    assert "1 connected" in counted and "1 failed" in counted, counted
+    settle(browser)
+    browser.shot("runtime-mcp-machines-desktop")
+    browser.phone(390, 844)
+    settle(browser)
+    browser.shot("runtime-mcp-machines-phone")
+    browser.resize(1280, 900)
+    print("the Machines view counts the local runtime's MCP servers")
+    close_sheet(browser)
+
+
 SCENARIOS = [
     ("basics", basics, "chat", []),
     ("torn_down", torn_down, "chat", ["basics"]),
@@ -3979,6 +4035,8 @@ SCENARIOS = [
     ("projects_phone", projects_phone, "chat", []),
     ("phone_audit", audit, "chat", []),
     ("mcp_sign_in", mcp_sign_in, "oauth", []),
+    # Its daemon's `local` runtime hosts MCP servers (test-web-page.sh).
+    ("runtime_mcp", runtime_mcp, "runtime_mcp", []),
     ("install_prompt", install_prompt, "install", []),
     ("install_on_phones", install_on_phones, "install", []),
     ("panic_hook", panic_hook, "install", []),

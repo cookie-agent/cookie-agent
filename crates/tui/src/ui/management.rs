@@ -20,8 +20,8 @@ use super::{
 };
 
 use cookie_agent_client_state::mcp::{
-    McpFields, definition_display, edit_refusal, new_definition, runtime_label, sort_servers,
-    source_label, state_label as mcp_state_label,
+    McpFields, edit_refusal, new_definition, runtime_label, server_definition_display,
+    sort_servers, source_label, state_label as mcp_state_label,
 };
 pub(super) use cookie_agent_client_state::mcp::{McpTransport, PersistChoice, is_global};
 
@@ -341,7 +341,7 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
     let detail = panel.selected().map_or_else(
         || "No MCP servers configured.".to_owned(),
         |server| {
-            let connection = definition_display(&server.definition);
+            let connection = server_definition_display(server);
             let mut text = format!(
                 "{} (runtime {})\n{}",
                 server.name,

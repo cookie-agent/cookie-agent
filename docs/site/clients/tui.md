@@ -502,10 +502,14 @@ a session with none.
 [runtime attachments](../specs/runtimes.md#5-session-attachments): each
 attachment's name, runtime and capability (`labpc/coding`), workspace, and
 instance status (`starting`, `ready`, `reconnecting`, `failed`, `stopped`, or
-`not running`). The details pane shows the selected attachment's kind,
-what its capability offers (the runtime's description of it), platform, and,
-for a failed instance, the reason. The panel refreshes on every runtime change and while it
-is open.
+`not running`), and the MCP servers its instance hosts counted by state
+(`MCP 1 connected, 1 failed`). The details pane shows the selected
+attachment's kind, what its capability offers (the runtime's description of
+it), platform, for a failed instance the reason, and each MCP server the
+instance hosts with its state, tool count, and why it failed or what it
+waits for (from `mcp.server.list`). The machines view counts each runtime's
+MCP servers the same way and lists them in the selected runtime's details.
+The panel refreshes on every runtime change and while it is open.
 
 Press `a` to attach: the panel lists every capability of every runtime
 (`labpc/coding`, `devbox/computer_use`), with its description and whether

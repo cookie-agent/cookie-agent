@@ -5,17 +5,20 @@
 //! first, and a press let go in place opens "Move to…"), or with its
 //! "Move to…" button, which the keyboard reaches. A machine lists the
 //! offline runtimes it remembers under its connected ones, dimmed, with
-//! when they were last seen and a Forget. [`crate::machines`] holds the
-//! rules.
+//! when they were last seen and a Forget. A runtime that hosts MCP servers
+//! counts them by state. [`crate::machines`] holds the rules.
 
 use std::time::Duration;
 
-use cookie_agent_client_state::runtimes::{
-    MachineAction, MachineEntry, machine_action_request, machine_entries, machine_form_title,
-    machine_name_request,
+use cookie_agent_client_state::{
+    mcp::{runtime_servers, servers_badge},
+    runtimes::{
+        MachineAction, MachineEntry, machine_action_request, machine_entries, machine_form_title,
+        machine_name_request,
+    },
 };
 use cookie_agent_protocol::{
-    MachineName, MachinesListResult, RememberedRuntime, RuntimeId, RuntimeListing,
+    MachineName, MachinesListResult, McpServerInfo, RememberedRuntime, RuntimeId, RuntimeListing,
     RuntimesListResult,
 };
 use leptos::{ev, prelude::*, task::spawn_local};
@@ -52,6 +55,8 @@ struct RuntimeCard {
     listing: Option<RuntimeListing>,
     /// What the machine remembers of it while it is offline.
     remembered: Option<RememberedRuntime>,
+    /// Its instances' MCP servers counted by state, when it hosts any.
+    mcp: Option<String>,
 }
 
 /// The open form: a machine's rename or merge, or a runtime's "Move to…".
@@ -196,6 +201,7 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
     dragging.follow(workspace, form);
     let machines = Memo::new(move |_| workspace.machines.get());
     let registry = Memo::new(move |_| workspace.runtimes.get());
+    let mcp = Memo::new(move |_| workspace.mcp_servers.get().and_then(Result::ok));
     view! {
         <div class="flex flex-wrap items-center gap-2">
             <h2 class="min-w-0 flex-1 text-sm font-bold">"Machines"</h2>
@@ -230,7 +236,8 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
                 Some(Ok(listing)) => listing,
             };
             let registry = registry.get();
-            machine_cards(workspace, &machines, registry.as_ref(), form, dragging).into_any()
+            let mcp = mcp.get().unwrap_or_default();
+            machine_cards(workspace, &machines, registry.as_ref(), &mcp, form, dragging).into_any()
         }}
     }
 }
@@ -240,9 +247,11 @@ fn machine_cards(
     workspace: Workspace,
     machines: &MachinesListResult,
     registry: Option<&RuntimesListResult>,
+    mcp: &[McpServerInfo],
     form: RwSignal<Option<Form>>,
     dragging: Dragging,
 ) -> impl IntoView {
+    let mcp_badge = |id: &RuntimeId| servers_badge(&runtime_servers(mcp, id));
     let listing = |id: &RuntimeId| {
         registry.and_then(|registry| {
             registry
@@ -285,6 +294,7 @@ fn machine_cards(
                             .any(|connected| connected.runtime_id == runtime)
                 });
                 let card = RuntimeCard {
+                    mcp: mcp_badge(&runtime),
                     remembered,
                     connected: listed
                         .as_ref()
@@ -312,6 +322,7 @@ fn machine_cards(
                 .iter()
                 .filter(|runtime| !placed(&runtime.runtime_id))
                 .map(|runtime| RuntimeCard {
+                    mcp: mcp_badge(&runtime.runtime_id),
                     id: runtime.runtime_id.clone(),
                     machine: None,
                     pinned: false,
@@ -719,6 +730,12 @@ fn runtime_row(
                         {capabilities.into_iter().map(|capability| view! {
                             <span class="rounded bg-toasted px-1.5 font-mono text-[0.7rem] dark:bg-ember">{capability}</span>
                         }).collect_view()}
+                    </span>
+                })}
+                {card.mcp.clone().map(|mcp| view! {
+                    <span class=format!("flex min-w-0 items-center gap-1.5 {NOTE}") data-runtime-mcp>
+                        <Glyph icon=icondata::FaServerSolid class="text-[0.6rem] opacity-70" />
+                        <span class="min-w-0 truncate">{mcp}</span>
                     </span>
                 })}
                 {message.map(|message| view! { <span class="text-xs break-words text-red-800 dark:text-red-300">{message}</span> })}
