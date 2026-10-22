@@ -1645,33 +1645,27 @@ This replaces section 8.1's scoring.
 #### 16.9.4 What search and read return
 
 - **Search results.** A hit shows its URL and description, then a line
-  with its owner, whether this run may change it, and its age, then its
-  keywords. There are no body excerpts:
+  with whether it is related to the session, whether this run may change
+  it, and its age, then its keywords. There are no body excerpts:
 
   ```text
   project://cookie-agent/release — How releases are cut: gh release create starts it; publish oven-sdk first
-    owner: project cookie-agent · related · editable · 3 weeks old
+    related · editable · 3 weeks old
     keywords: release, cargo-dist, oven-sdk
 
   agent://builder — Memory of the `builder` agent: Primary agent for building features
-    owner: you · related · editable · 5 days old
+    related · editable · 5 days old
     keywords: builder, primary
 
   agent://reviewer — Memory of the `reviewer` agent: Reviews a diff for bugs and missing tests
-    owner: agent reviewer · unrelated · editable · 2 days old
+    unrelated · editable · 2 days old
     keywords: reviewer, subagent
 
   user://preferences — How the user likes to work
-    owner: user · related · read-only · 1 month old
+    related · read-only · 1 month old
     (reading it needs approval)
   ```
 
-- **`owner`** is one of:
-  - `you`, for the run's own `agent://` file;
-  - `agent <id>`, for another agent's file;
-  - `user`;
-  - `machine <name>`;
-  - `project <name>`.
 - **`related` or `unrelated`** says whether the memory is related to
   this session (section 16.9.11).
 - **`editable` or `read-only`** comes from the run's `memory_write` rules
@@ -1683,7 +1677,6 @@ This replaces section 8.1's scoring.
   and no revision (section 16.9.8):
 
   ```text
-  owner: project cookie-agent
   related: yes
   editable: yes
   created: 2026-10-01T09:12:44Z (3 weeks ago)
@@ -1693,8 +1686,10 @@ This replaces section 8.1's scoring.
   <body>
   ```
 
-- **The snapshot** marks the agent's own file as `you`. Everything it
-  shows is related by definition.
+- **No owner label** (decided 2026-10-22): the URL already says whose
+  memory it is (`user://`, `agent://<id>`, `machine://<name>/…`,
+  `project://<name>/…`), and `related` says whether it belongs to this
+  session. Everything the snapshot shows is related by definition.
 
 #### 16.9.5 Similar memories before a new one
 
@@ -1848,7 +1843,7 @@ mode it rejects writes that fail the rubric.
 
 - **Client protocol minor**, additive:
   - the transcript event for memory changes;
-  - the snapshot's owner words, fullness and over-limit marks;
+  - the snapshot's fullness and over-limit marks;
   - stamps in `memory.*` results.
 - **Plugin protocol minor**, because plugins see events.
 - **No protocol change for the tools.** Tool arguments and outputs are
