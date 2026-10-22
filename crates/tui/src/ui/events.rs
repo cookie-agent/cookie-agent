@@ -215,14 +215,26 @@ pub(super) fn resume_terminal() -> io::Result<()> {
     restore.alternate_screen_entered();
     execute!(stdout, EnableMouseCapture)?;
     restore.mouse_capture_enabled();
-    execute!(stdout, EnableBracketedPaste)?;
-    restore.bracketed_paste_enabled();
+    // Best effort, as at start: a console without ANSI support refuses it.
+    if execute!(stdout, EnableBracketedPaste).is_ok() {
+        restore.bracketed_paste_enabled();
+    }
+    if enable_keyboard_enhancement(&mut stdout) {
+        restore.keyboard_enhancement_enabled();
+    }
+    Ok(())
+}
+
+/// Asks the terminal to disambiguate escape codes, and says whether it did.
+/// Best effort: Windows' console API refuses the request ("Keyboard
+/// progressive enhancement not implemented for the legacy Windows API"),
+/// and needs none, since it reports keys as distinct events already.
+pub(super) fn enable_keyboard_enhancement(stdout: &mut io::Stdout) -> bool {
     execute!(
         stdout,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    )?;
-    restore.keyboard_enhancement_enabled();
-    Ok(())
+    )
+    .is_ok()
 }
 
 /// What the event loop does when the process is stopped and continued

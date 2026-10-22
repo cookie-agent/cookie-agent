@@ -75,8 +75,7 @@ use cookie_agent_protocol::{
 use crossterm::{
     event::{
         EnableBracketedPaste, EnableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode,
-        KeyEvent, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-        PushKeyboardEnhancementFlags,
+        KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, enable_raw_mode},
@@ -1928,14 +1927,14 @@ async fn run_terminal(
     restore.alternate_screen_entered();
     execute!(stdout, EnableMouseCapture).context("enable mouse capture")?;
     restore.mouse_capture_enabled();
-    execute!(stdout, EnableBracketedPaste).context("enable bracketed paste")?;
-    restore.bracketed_paste_enabled();
-    execute!(
-        stdout,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    )
-    .context("enable keyboard enhancement")?;
-    restore.keyboard_enhancement_enabled();
+    // Best effort: a Windows console without ANSI support refuses it ("not
+    // implemented in the legacy Windows API"), and delivers a paste as keys.
+    if execute!(stdout, EnableBracketedPaste).is_ok() {
+        restore.bracketed_paste_enabled();
+    }
+    if super::events::enable_keyboard_enhancement(&mut stdout) {
+        restore.keyboard_enhancement_enabled();
+    }
     let backend = EmojiBackend::new(CrosstermBackend::new(stdout));
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let deliveries = app.take_deliveries();
