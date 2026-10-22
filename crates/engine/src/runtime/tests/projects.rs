@@ -16,7 +16,7 @@ fn origin() -> EventOrigin {
 }
 
 fn agent() -> String {
-    "---\ndescription: Project test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWork on projects.\n".to_owned()
+    "---\ndescription: Project test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: allow, memory_write: allow }\n---\nWork on projects.\n".to_owned()
 }
 
 fn name(value: &str) -> ProjectName {

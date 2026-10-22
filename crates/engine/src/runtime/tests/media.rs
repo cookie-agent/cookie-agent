@@ -1052,15 +1052,17 @@ async fn an_image_in_history_reaches_a_text_only_model_as_a_placeholder() {
         "[image omitted: custom.test/group/fallback does not accept images (pixel.png, {} B)]",
         bytes.len()
     );
-    // The memory snapshot comes first.
-    let user = &second["messages"][1];
     assert!(
-        user["content"]
+        second["messages"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|part| part["text"] == placeholder),
-        "{user}"
+            .any(|message| {
+                message["content"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part["text"] == placeholder))
+            }),
+        "{second}"
     );
     fixture.engine.shutdown().await;
 }

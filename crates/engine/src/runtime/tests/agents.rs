@@ -101,8 +101,9 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    // The memory and MCP actions have defaults by mode (memory spec 9.2,
-    // runtimes spec 7.1).
+    // `list_runtimes` and `mcp` have defaults by mode (runtimes spec 7.1);
+    // memory has none, and the built-in agent's own rules name none
+    // (memory spec 9.2, note of 2026-10-22).
     assert_eq!(
         tool_names,
         [
@@ -110,11 +111,6 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             "edit",
             "fixture_mcp",
             "list_runtimes",
-            "memory_delete",
-            "memory_edit",
-            "memory_read",
-            "memory_search",
-            "memory_write",
             "read",
             "write"
         ]
@@ -244,18 +240,9 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        // A primary agent that names no memory or MCP rule gets them by
-        // default.
-        [
-            "fixture_mcp",
-            "list_runtimes",
-            "memory_delete",
-            "memory_edit",
-            "memory_read",
-            "memory_search",
-            "memory_write",
-            "read"
-        ]
+        // A primary agent that names no MCP or `list_runtimes` rule gets
+        // them by default; memory has no default.
+        ["fixture_mcp", "list_runtimes", "read"]
     );
     assert!(
         !serde_json::to_string(&definitions)
@@ -305,11 +292,6 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "edit",
             "fixture_mcp",
             "list_runtimes",
-            "memory_delete",
-            "memory_edit",
-            "memory_read",
-            "memory_search",
-            "memory_write",
             "read",
             "write"
         ]
@@ -410,17 +392,7 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        [
-            "alpha",
-            "list_runtimes",
-            "memory_delete",
-            "memory_edit",
-            "memory_read",
-            "memory_search",
-            "memory_write",
-            "middle",
-            "zeta"
-        ]
+        ["alpha", "list_runtimes", "middle", "zeta"]
     );
     assert_eq!(
         serde_json::to_value(forward).unwrap(),

@@ -625,42 +625,29 @@ pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> C
     })
 }
 
-/// The rules the daemon supplies for an agent of `mode` (`docs/site/specs/memory.md`
-/// section 9.2, `docs/site/specs/runtime-delegation.md` section 4, and
+/// The rules the daemon supplies for an agent of `mode`
+/// (`docs/site/specs/runtime-delegation.md` section 4 and
 /// `docs/site/specs/runtimes.md` section 7.1), each applying only to an
-/// action its document names no key for. `primary` and `all` agents may
-/// read and write all memory, list runtimes, and call MCP tools after
-/// asking; `subagent` agents read all memory, write their own agent file,
-/// and call MCP tools after asking; internal agents get nothing.
+/// action its document names no key for. `primary` and `all` agents may list
+/// runtimes, and they and `subagent` agents call MCP tools after asking;
+/// internal agents get nothing. Memory has no default
+/// (`docs/site/specs/memory.md` section 9.2, note of 2026-10-22): an agent
+/// without `memory` or `memory_write` rules gets no memory tools.
 pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
-    let defaults: &[(PermissionAction, &str, PermissionEffect)] = match mode {
+    let defaults: &[(PermissionAction, PermissionEffect)] = match mode {
         AgentMode::Primary | AgentMode::All => &[
-            (PermissionAction::MEMORY, "*", PermissionEffect::Allow),
-            (PermissionAction::MEMORY_WRITE, "*", PermissionEffect::Allow),
-            (
-                PermissionAction::LIST_RUNTIMES,
-                "*",
-                PermissionEffect::Allow,
-            ),
-            (PermissionAction::MCP, "*", PermissionEffect::Ask),
+            (PermissionAction::LIST_RUNTIMES, PermissionEffect::Allow),
+            (PermissionAction::MCP, PermissionEffect::Ask),
         ],
-        AgentMode::Subagent => &[
-            (PermissionAction::MEMORY, "*", PermissionEffect::Allow),
-            (
-                PermissionAction::MEMORY_WRITE,
-                SELF_AGENT_PATTERN,
-                PermissionEffect::Allow,
-            ),
-            (PermissionAction::MCP, "*", PermissionEffect::Ask),
-        ],
+        AgentMode::Subagent => &[(PermissionAction::MCP, PermissionEffect::Ask)],
         AgentMode::Internal => &[],
     };
     defaults
         .iter()
-        .map(|(action, resource, effect)| {
+        .map(|(action, effect)| {
             PermissionRule::new(
                 action.clone(),
-                WildcardPattern::new(*resource).expect("static default pattern"),
+                WildcardPattern::new("*").expect("static default pattern"),
                 *effect,
             )
         })

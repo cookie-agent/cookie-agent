@@ -2130,52 +2130,65 @@ fn mode_defaults_follow_the_agent_mode() {
         let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
         assert_eq!(
             rule_triples(&rules),
-            [
-                triple("memory", "*", allow),
-                triple("memory_write", "*", allow),
-                triple("list_runtimes", "*", allow),
-                triple("mcp", "*", ask),
-            ],
+            [triple("list_runtimes", "*", allow), triple("mcp", "*", ask)],
             "{mode:?}"
         );
     }
     let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Subagent, &[]));
-    assert_eq!(
-        rule_triples(&rules),
-        [
-            triple("memory", "*", allow),
-            triple("memory_write", "agent://self", allow),
-            triple("mcp", "*", ask),
-        ]
-    );
+    assert_eq!(rule_triples(&rules), [triple("mcp", "*", ask)]);
     let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(rules.is_empty());
 }
 
+/// Memory is opt-in (memory spec section 9.2, note of 2026-10-22): no mode
+/// supplies `memory` or `memory_write` rules, so an agent without them sees
+/// no memory tools.
 #[test]
-fn a_declared_memory_key_replaces_that_actions_default_only() {
+fn memory_has_no_default_in_any_mode() {
+    for mode in [
+        AgentMode::Primary,
+        AgentMode::All,
+        AgentMode::Subagent,
+        AgentMode::Internal,
+    ] {
+        let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
+        for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
+            assert!(
+                action_rules(&rules, &action).is_empty(),
+                "{mode:?} {action:?}"
+            );
+            assert!(
+                !super::tool_visible(&rules, None, &action, Some("global")),
+                "{mode:?} {action:?}"
+            );
+        }
+    }
+    // Declaring them grants exactly what they say.
     let document = agent_document(
         "worker",
-        AgentMode::Primary,
-        &[("memory", effect_value(PermissionEffect::Deny))],
+        AgentMode::Subagent,
+        &[
+            ("memory", effect_value(PermissionEffect::Allow)),
+            ("memory_write@global", effect_value(PermissionEffect::Ask)),
+        ],
+    );
+    let rules = super::agent_permission_rules(&document);
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MEMORY),
+        [(None, "*".to_owned(), PermissionEffect::Allow)]
     );
     assert_eq!(
-        rule_triples(&super::agent_permission_rules(&document)),
-        [
-            ("memory".to_owned(), "*".to_owned(), PermissionEffect::Deny),
-            (
-                "memory_write".to_owned(),
-                "*".to_owned(),
-                PermissionEffect::Allow
-            ),
-            (
-                "list_runtimes".to_owned(),
-                "*".to_owned(),
-                PermissionEffect::Allow
-            ),
-            ("mcp".to_owned(), "*".to_owned(), PermissionEffect::Ask),
-        ]
+        action_rules(&rules, &PermissionAction::MEMORY_WRITE),
+        [(
+            Some("global".to_owned()),
+            "*".to_owned(),
+            PermissionEffect::Ask
+        )]
     );
+}
+
+#[test]
+fn a_declared_list_runtimes_key_replaces_its_default() {
     // `list_runtimes` is a subagent's only when its document grants it, and
     // a primary agent's document can turn it off.
     let granted = agent_document(
@@ -2183,52 +2196,24 @@ fn a_declared_memory_key_replaces_that_actions_default_only() {
         AgentMode::Subagent,
         &[("list_runtimes", effect_value(PermissionEffect::Allow))],
     );
-    assert!(
-        rule_triples(&super::agent_permission_rules(&granted)).contains(&(
-            "list_runtimes".to_owned(),
-            "*".to_owned(),
-            PermissionEffect::Allow
-        ))
+    assert_eq!(
+        action_rules(
+            &super::agent_permission_rules(&granted),
+            &PermissionAction::LIST_RUNTIMES
+        ),
+        [(None, "*".to_owned(), PermissionEffect::Allow)]
     );
     let denied = agent_document(
         "worker",
         AgentMode::Primary,
         &[("list_runtimes", effect_value(PermissionEffect::Deny))],
     );
-    let denied = rule_triples(&super::agent_permission_rules(&denied));
     assert_eq!(
-        denied
-            .iter()
-            .filter(|(action, _, _)| action == "list_runtimes")
-            .collect::<Vec<_>>(),
-        [&(
-            "list_runtimes".to_owned(),
-            "*".to_owned(),
-            PermissionEffect::Deny
-        )]
-    );
-    // A key with a runtime selector declares the action too.
-    let document = agent_document(
-        "worker",
-        AgentMode::Subagent,
-        &[("memory_write@global", effect_value(PermissionEffect::Ask))],
-    );
-    let rules = super::agent_permission_rules(&document);
-    assert_eq!(
-        rule_triples(&rules),
-        [
-            (
-                "memory_write".to_owned(),
-                "*".to_owned(),
-                PermissionEffect::Ask
-            ),
-            ("memory".to_owned(), "*".to_owned(), PermissionEffect::Allow),
-            ("mcp".to_owned(), "*".to_owned(), PermissionEffect::Ask),
-        ]
-    );
-    assert_eq!(
-        rules[0].runtime.as_ref().map(|runtime| runtime.as_str()),
-        Some("global")
+        action_rules(
+            &super::agent_permission_rules(&denied),
+            &PermissionAction::LIST_RUNTIMES
+        ),
+        [(None, "*".to_owned(), PermissionEffect::Deny)]
     );
 }
 
@@ -2369,10 +2354,16 @@ fn the_permission_view_reports_mode_defaults_as_defaults() {
         (mcp.effect, mcp.source),
         (PermissionEffect::Ask, PermissionRuleSource::Default)
     );
+    let list = entry(defaulted.clone(), &PermissionAction::LIST_RUNTIMES);
+    assert_eq!(
+        (list.effect, list.source),
+        (PermissionEffect::Allow, PermissionRuleSource::Default)
+    );
+    // Memory has no default: denied, its tools hidden.
     let memory = entry(defaulted, &PermissionAction::MEMORY);
     assert_eq!(
         (memory.effect, memory.source),
-        (PermissionEffect::Allow, PermissionRuleSource::Default)
+        (PermissionEffect::Deny, PermissionRuleSource::Default)
     );
     // A document's own rule is the agent's, even beside a default.
     let declared = super::agent_permission_rules(&agent_document(
@@ -2384,26 +2375,6 @@ fn the_permission_view_reports_mode_defaults_as_defaults() {
     assert_eq!(
         (mcp.effect, mcp.source),
         (PermissionEffect::Allow, PermissionRuleSource::AgentDocument)
-    );
-    // A subagent's `agent://self` write default is a default pattern.
-    let mut subagent = policy(super::agent_permission_rules(&agent_document(
-        "worker",
-        AgentMode::Subagent,
-        &[],
-    )));
-    subagent.mode = AgentMode::Subagent;
-    let write =
-        super::effective_permission_view(&subagent, &SessionPermissionOverlay::empty(), &[])
-            .into_iter()
-            .find(|entry| entry.action == PermissionAction::MEMORY_WRITE)
-            .expect("memory_write");
-    assert_eq!(
-        write
-            .patterns
-            .iter()
-            .map(|pattern| (pattern.resource.as_str(), pattern.source))
-            .collect::<Vec<_>>(),
-        [("agent://self", PermissionRuleSource::Default)]
     );
 }
 

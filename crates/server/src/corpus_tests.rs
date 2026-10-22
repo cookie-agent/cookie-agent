@@ -60,7 +60,9 @@ const IMAGE: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN
 
 const MODEL: &str = "custom.test/group/model";
 
-const AGENT: &str = "---\ndescription: Corpus agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: ask\n---\nAnswer briefly.\n";
+/// The recorder's agent. Its memory rules keep the snapshot the corpus was
+/// recorded with, from when memory had a default by mode.
+const AGENT: &str = "---\ndescription: Corpus agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: ask\n  memory: allow\n  memory_write: allow\n---\nAnswer briefly.\n";
 
 /// The model's answers, as OpenAI-compatible event streams: a `bash` call,
 /// the approval reviewer's decision to ask the user, and the final answer.

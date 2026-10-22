@@ -602,12 +602,9 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
         disk_events[3].payload,
         EventPayload::RunStarted { .. }
     ));
+    // The agent names no memory rule, so the run has no memory snapshot.
     assert!(matches!(
         disk_events[4].payload,
-        EventPayload::MemoryLoaded { .. }
-    ));
-    assert!(matches!(
-        disk_events[5].payload,
         EventPayload::UserInputSubmitted { .. }
     ));
     assert!(

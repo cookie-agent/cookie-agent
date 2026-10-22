@@ -26,6 +26,10 @@ fn origin() -> EventOrigin {
     EventOrigin::new("client:memory-test").unwrap()
 }
 
+/// The rules that give a test agent memory, which has no default
+/// (memory spec section 9.2, note of 2026-10-22).
+const MEMORY: &str = "{ memory: allow, memory_write: allow }";
+
 fn agent(permissions: &str) -> String {
     format!(
         "---\ndescription: Memory test agent\nmode: primary\nenabled: true\nmodels: [{{ model: \"custom.test/group/model\", variant: base }}]\npermissions: {permissions}\n---\nRemember things.\n"
@@ -191,7 +195,7 @@ async fn set_overlay(fixture: &Fixture, session: SessionId, rules: Vec<Permissio
 async fn a_root_run_sees_its_snapshot_after_agents_md_until_something_changes() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     write_private_test_file(
         &fixture._directory.path().join("AGENTS.md"),
         "workspace rules",
@@ -392,7 +396,7 @@ async fn losing_write_access_takes_a_snapshot_without_the_save_paragraph() {
 async fn detaching_global_turns_memory_off_and_attaching_it_back_on() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     for input in ["one", "two", "three"] {
         responses
             .send(MatchedScriptedResponse::last_message_contains(
@@ -439,11 +443,11 @@ async fn detaching_global_turns_memory_off_and_attaching_it_back_on() {
 #[tokio::test]
 async fn a_new_agent_takes_a_new_snapshot() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
-    let worker = "---\ndescription: Second root agent\nmode: all\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWork.\n";
+    let worker = "---\ndescription: Second root agent\nmode: all\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: allow, memory_write: allow }\n---\nWork.\n";
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            &agent("{}"),
+            &agent(MEMORY),
             None,
             None,
             false,
@@ -488,7 +492,7 @@ async fn a_new_agent_takes_a_new_snapshot() {
 async fn the_memory_tools_write_read_edit_search_and_delete() {
     let (endpoint, responses, captured) = scripted_channel_server(10).await;
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     create_project(&fixture, "web").await;
     let created = revision_of("Build conventions", &["cargo"], "- run cargo test\n");
     let edited = revision_of("Build conventions", &["cargo"], "- run cargo nextest\n");
@@ -631,7 +635,7 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
 async fn deleting_user_and_agent_memories_clears_their_bodies() {
     let (endpoint, responses, captured) = scripted_channel_server(8).await;
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     let root = fixture.engine.memory_root().clone();
     let feedback_frontmatter = "---\n# kept as written\ndescription: \"Feedback: corrections\"\nkeywords:\n  - feedback\n---\n";
     // The daemon made the agent's file at start, with an empty body.
@@ -972,7 +976,7 @@ async fn search_results_follow_the_memory_rules_and_the_limit_counts_what_is_sho
 async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     user_write(&fixture, "user://feedback", "Feedback", "- root only\n");
     let parent = fixture
         .engine
@@ -1074,7 +1078,7 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
 async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{}"));
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1136,5 +1140,33 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
         .unwrap();
     assert!(memory < summary, "{texts:?}");
     assert!(texts[memory].contains("edited later"));
+    fixture.engine.shutdown().await;
+}
+
+/// Memory is opt-in (section 9.2, note of 2026-10-22): an agent document
+/// with no `memory` key gets no memory tools and no snapshot.
+#[tokio::test]
+async fn an_agent_without_a_memory_key_gets_no_memory_tools_or_snapshot() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{ read: allow }"));
+    user_write(&fixture, "user://feedback", "Feedback", "- never shown\n");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "hello",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    run(&fixture, session, &selection, "hello", "hello").await;
+    assert!(snapshots(&fixture, session).is_empty());
+    let requests = captured.await.unwrap();
+    assert!(memory_tool_names(&requests[0]).is_empty());
+    assert!(!requests[0].contains("# Memory"));
+    assert!(!requests[0].contains("never shown"));
     fixture.engine.shutdown().await;
 }
