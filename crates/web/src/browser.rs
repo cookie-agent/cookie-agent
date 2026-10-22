@@ -42,6 +42,14 @@ pub fn replace_fragment(fragment: &str) {
     }
 }
 
+/// Replaces the page's address in the address bar and history without
+/// reloading: `address` is its path, query, and fragment.
+pub fn replace_address(address: &str) {
+    if let Some(history) = window().and_then(|window| window.history().ok()) {
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(address));
+    }
+}
+
 fn local_storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok().flatten()
 }

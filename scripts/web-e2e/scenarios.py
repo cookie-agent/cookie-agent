@@ -99,9 +99,10 @@ DESKTOP_POINTER = (
 
 
 class Browser:
-    def __init__(self, user_agent=None, touch=False):
+    def __init__(self, user_agent=None, touch=False, switches=()):
         """A new headless Chrome; `touch` makes it a touch screen, whose
-        pointer is coarse and cannot hover."""
+        pointer is coarse and cannot hover. `switches` are more of
+        Chrome's command-line switches."""
         for _ in range(100):
             try:
                 call("GET", "/status")
@@ -112,6 +113,7 @@ class Browser:
         args += ["--window-size=1280,900", "--hide-scrollbars", DESKTOP_POINTER]
         if user_agent:
             args.append("--user-agent=" + user_agent)
+        args += list(switches)
         options = {"args": args}
         if os.environ.get("CHROME"):
             options["binary"] = os.environ["CHROME"]
@@ -3424,6 +3426,224 @@ def projects_phone():
         phone.close()
 
 
+# The mock OAuth server the daemon's `oauth-*` MCP servers sign in to
+# (mock-oauth.py).
+OAUTH_SERVER = os.environ.get("OAUTH_SERVER", "")
+
+
+def mcp_state(browser, server):
+    return browser.text('#page [data-server="%s"] .mcp-state' % server)
+
+
+def window_handles(browser):
+    return call("GET", browser.path("/window/handles"))
+
+
+def signed_in(browser, server):
+    """Waits for the page to say it signed in to `server`, and for the
+    server to connect."""
+    browser.wait(
+        "the sign-in to %s" % server,
+        lambda: "Signed in to %s" % server in browser.text("#mcp-sign-in-outcome"),
+        timeout=40,
+    )
+    browser.wait("%s connected" % server, lambda: mcp_state(browser, server) == "connected", timeout=40)
+
+
+def authorization_redirect(authorization_url):
+    """Where the mock authorization server sends the browser: the page with
+    a code and the state."""
+
+    class Stop(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_):
+            return None
+
+    try:
+        urllib.request.build_opener(Stop).open(authorization_url, timeout=10)
+    except urllib.error.HTTPError as error:
+        if error.code == 302:
+            return error.headers["location"]
+        raise
+    raise AssertionError("the authorization server did not redirect")
+
+
+# Makes `window.open` hand the page a stand-in tab, so the authorization URL
+# goes nowhere and the scenario reads it, as when the sign-in ends in a
+# browser that cannot hand it back.
+FAKE_TAB = "window.open = () => (window.fakeTab = {location: {}, close() {}})"
+
+
+def address_is_clean(browser):
+    href = browser.script("return location.href")
+    assert "code=" not in href and "state=" not in href and "oauth=" not in href, href
+
+
+def sign_in_shots(browser):
+    """With SCREENSHOT_DIR set, the MCP servers with a sign-in waiting, on a
+    desktop and a phone, light and dark."""
+    if not SCREENSHOTS:
+        return
+    for scheme in ("light", "dark"):
+        browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": scheme}]})
+        browser.resize(1280, 900)
+        settle(browser)
+        browser.shot("mcp-sign-in-desktop-" + scheme)
+        browser.phone(390, 844)
+        settle(browser)
+        browser.shot("mcp-sign-in-phone-" + scheme)
+    browser.cdp("Emulation.setEmulatedMedia", {"features": []})
+    browser.resize(1280, 900)
+
+
+def mcp_sign_in(browser):
+    """Signing in to MCP servers that want OAuth, with the page as the
+    redirect: through a new tab that hands the callback back over the
+    BroadcastChannel and closes, in the same tab when the browser blocks
+    the new one, and by pasting the address the browser landed on, with a
+    cancel. A callback is cleaned out of the address bar at once, and one
+    whose state is stale or unknown is refused."""
+    page = LINK.split("#")[0]
+    redirect = page + "?oauth=callback"
+    browser.resize(1280, 900)
+    open_section(browser, "settings", "mcp")
+    for server in ("oauth-tab", "oauth-same", "oauth-paste"):
+        browser.wait("%s to need a sign-in" % server, lambda: mcp_state(browser, server) == "needs_auth", timeout=40)
+    browser.wait("the sign-in buttons", lambda: count(browser, "#page [data-mcp-sign-in]") == 3)
+    assert count(browser, "#page [data-https-warning]") == 0, "a loopback page warned about http"
+    browser.shot("mcp-sign-in")
+
+    # A new tab: it comes back to the page, which hands the callback to
+    # this tab and closes.
+    before = window_handles(browser)
+    browser.click('#page [data-server="oauth-tab"] [data-mcp-sign-in]')
+    signed_in(browser, "oauth-tab")
+    browser.wait("the callback tab to close", lambda: window_handles(browser) == before)
+    registrations = json.load(urllib.request.urlopen(OAUTH_SERVER + "/registrations", timeout=10))
+    assert registrations[-1]["redirect_uris"] == [redirect], registrations[-1]
+    assert registrations[-1]["application_type"] == "native", registrations[-1]
+    assert count(browser, "#mcp-sign-ins") == 0, "the finished sign-in still waits"
+    browser.shot("mcp-signed-in")
+    print("signed in through a new tab, which handed the callback back and closed")
+
+    # The same tab, when the browser blocks the new one.
+    browser.script("window.open = () => null")
+    browser.click('#page [data-server="oauth-same"] [data-mcp-sign-in]')
+    browser.wait("the page to come back", lambda: browser.script("return document.readyState") == "complete"
+                 and count(browser, "#page [data-section-body=mcp]") == 1, timeout=40)
+    address_is_clean(browser)
+    signed_in(browser, "oauth-same")
+    address_is_clean(browser)
+    print("signed in in the same tab; the callback left the address bar at once")
+
+    # The paste fallback: a mistaken address leaves the sign-in waiting, a
+    # tampered state ends it, a cancel clears it, and the right address
+    # finishes it.
+    browser.script(FAKE_TAB)
+    paste = '#page [data-sign-in="oauth-paste"]'
+    browser.click('#page [data-server="oauth-paste"] [data-mcp-sign-in]')
+    browser.wait("the waiting sign-in", lambda: count(browser, paste) == 1)
+    browser.shot("mcp-sign-in-paste")
+    browser.click(paste + " [data-sign-in-cancel]")
+    browser.wait("the cancelled sign-in", lambda: count(browser, paste) == 0)
+    browser.wait("the cancel", lambda: "cancelled" in browser.text('#page [data-server="oauth-paste"]'))
+    print("cancelled a sign-in")
+
+    browser.click('#page [data-server="oauth-paste"] [data-mcp-sign-in]')
+    browser.wait("the waiting sign-in", lambda: count(browser, paste) == 1)
+    sign_in_shots(browser)
+    callback = authorization_redirect(browser.script("return window.fakeTab.location.href"))
+    assert callback.startswith(redirect + "&code="), callback
+    set_text(browser, paste + " [data-sign-in-paste]", callback.replace(page, page + "elsewhere/"))
+    browser.click(paste + " [data-sign-in-finish]")
+    browser.wait("the mistake", lambda: "not the OAuth callback" in browser.text("#mcp-sign-in-outcome"))
+    assert count(browser, paste) == 1, "a mistaken address ended the sign-in"
+    tampered = re.sub(r"state=[^&]+", "state=tampered", callback)
+    set_text(browser, paste + " [data-sign-in-paste]", tampered)
+    browser.click(paste + " [data-sign-in-finish]")
+    browser.wait("the refused state", lambda: browser.script(
+        "const e = document.querySelector('#mcp-sign-in-outcome'); return e && e.dataset.outcome") == "failed"
+        and "not the OAuth callback" not in browser.text("#mcp-sign-in-outcome"))
+    browser.wait("the ended sign-in", lambda: count(browser, paste) == 0)
+    print("a mismatched state is refused and ends the sign-in")
+
+    browser.click('#page [data-server="oauth-paste"] [data-mcp-sign-in]')
+    browser.wait("the waiting sign-in", lambda: count(browser, paste) == 1)
+    callback = authorization_redirect(browser.script("return window.fakeTab.location.href"))
+    set_text(browser, paste + " [data-sign-in-paste]", callback)
+    browser.click(paste + " [data-sign-in-finish]")
+    signed_in(browser, "oauth-paste")
+    browser.wait("the finished sign-in", lambda: count(browser, paste) == 0)
+    print("signed in by pasting the address the browser landed on")
+
+    # A callback whose sign-in waited too long, or that this browser did not
+    # start, is refused and leaves the address bar too.
+    browser.script(
+        "localStorage.setItem('cookie.oauth_pending', JSON.stringify("
+        "{stale: {server: 'oauth-tab', expires_at: Date.now() - 1000}}))"
+    )
+    browser.go(redirect + "&code=old&state=stale")
+    browser.wait("the expired sign-in", lambda: browser.script(
+        "const e = document.querySelector('#oauth-landing'); return e && e.dataset.landing") == "expired")
+    address_is_clean(browser)
+    assert "stale" not in (browser.script("return localStorage.getItem('cookie.oauth_pending')") or "")
+    browser.shot("oauth-landing-expired")
+    browser.go(redirect + "&code=unknown-code&state=unknown")
+    browser.wait("the unknown sign-in", lambda: browser.script(
+        "const e = document.querySelector('#oauth-landing'); return e && e.dataset.landing") == "unknown")
+    address_is_clean(browser)
+    shown = browser.script("return document.querySelector('#oauth-landing-address').value")
+    assert "code=unknown-code" in shown and "state=unknown" in shown, shown
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    browser.shot("oauth-landing-unknown")
+    browser.click("#oauth-landing-close")
+    browser.wait("the dismissed banner", lambda: count(browser, "#oauth-landing") == 0)
+    for server in ("oauth-tab", "oauth-same", "oauth-paste"):
+        open_section(browser, "settings", "mcp")
+        browser.wait("%s still connected" % server, lambda: mcp_state(browser, server) == "connected")
+    print("stale and unknown callbacks are refused and leave the address bar")
+    http_warning()
+
+
+def http_warning():
+    """A page on plain http at an address that is not loopback warns that
+    most authorization servers refuse its redirect, and still offers
+    sign-in. Chrome resolves the name to this machine's loopback, where the
+    daemon listens; a server added from the page (runtime only) needs the
+    sign-in, as the others are signed in by now."""
+    host = "cookie-agent.test"
+    browser = Browser(switches=["--host-resolver-rules=MAP %s 127.0.0.1" % host])
+    try:
+        browser.resize(1280, 900)
+        browser.go(LINK.replace("127.0.0.1", host))
+        browser.wait("the connection", lambda: browser.text("#connected") != "")
+        open_section(browser, "settings", "mcp")
+        browser.wait("the MCP panel", lambda: count(browser, "#mcp-new") == 1)
+        browser.click("#mcp-new")
+        browser.type("#mcp-name", "oauth-http")
+        browser.script(
+            "const select = document.querySelector('#mcp-transport');"
+            "select.value = 'http'; select.dispatchEvent(new Event('change'))"
+        )
+        browser.type("#mcp-endpoint", OAUTH_SERVER + "/mcp")
+        browser.click("#mcp-save")
+        row = '#page [data-server="oauth-http"]'
+        browser.wait("the new server to need a sign-in", lambda: mcp_state(browser, "oauth-http") == "needs_auth", timeout=40)
+        browser.wait("the warning", lambda: count(browser, row + " [data-https-warning]") == 1)
+        assert count(browser, row + " [data-mcp-sign-in]") == 1, "the warning took the sign-in away"
+        assert "remote-access" in browser.script(
+            "return document.querySelector(arguments[0]).getAttribute('href')", row + " [data-https-warning] a")
+        browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'start'})", row)
+        browser.shot("mcp-sign-in-http-warning")
+        browser.phone(390, 844)
+        browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'start'})", row)
+        browser.shot("mcp-sign-in-http-warning-phone")
+        browser.click(row + " [data-mcp-remove]")
+        browser.wait("the removed server", lambda: count(browser, row) == 0)
+        print("a plain http page away from loopback warns, and still offers sign-in")
+    finally:
+        browser.close()
+
+
 def connect(browser):
     """Opens the page from the link `cookie web` prints, as a desktop."""
     browser.resize(1280, 900)
@@ -3604,6 +3824,7 @@ SCENARIOS = [
     ("touch_message_menu", touch_message_menu, "chat", []),
     ("projects_phone", projects_phone, "chat", []),
     ("phone_audit", audit, "chat", []),
+    ("mcp_sign_in", mcp_sign_in, "oauth", []),
     ("install_prompt", install_prompt, "install", []),
     ("install_on_phones", install_on_phones, "install", []),
     ("panic_hook", panic_hook, "install", []),

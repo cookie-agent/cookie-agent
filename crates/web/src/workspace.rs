@@ -39,6 +39,7 @@ mod goal;
 mod history;
 mod manage;
 mod nav;
+mod oauth;
 mod permissions;
 mod projects;
 mod rename;
@@ -179,6 +180,18 @@ pub struct Workspace {
     pub draft_runtimes: RwSignal<Option<Vec<cookie_agent_client_state::runtimes::DraftRuntime>>>,
     next_draft_runtime: StoredValue<u64>,
     pub mcp_servers: RwSignal<Option<Result<Vec<cookie_agent_protocol::McpServerInfo>, String>>>,
+    /// The daemon takes the page's own address as the OAuth redirect
+    /// (client protocol 1.11), so the MCP servers offer sign-in.
+    pub can_sign_in: RwSignal<bool>,
+    /// The sign-ins this browser started that still wait, as
+    /// `(state, server)`.
+    pub sign_ins: RwSignal<Vec<(String, String)>>,
+    /// How the last sign-in ended: `Ok` with the server signed in to, or
+    /// the error.
+    pub sign_in_outcome: RwSignal<Option<Result<String, String>>>,
+    /// A callback to finish once the page is connected: the server, the
+    /// address, and the sign-in's state.
+    sign_in_waiting: StoredValue<Option<(String, String, Option<String>)>>,
     pub provider_operations: RwSignal<
         HashMap<
             cookie_agent_protocol::ProviderId,
@@ -310,6 +323,10 @@ impl Workspace {
             draft_runtimes: RwSignal::new(None),
             next_draft_runtime: StoredValue::new(0),
             mcp_servers: RwSignal::new(None),
+            can_sign_in: RwSignal::new(false),
+            sign_ins: RwSignal::new(crate::oauth::waiting()),
+            sign_in_outcome: RwSignal::new(None),
+            sign_in_waiting: StoredValue::new(None),
             provider_operations: RwSignal::new(HashMap::new()),
             config: RwSignal::new(None),
             config_drafts: RwSignal::new(HashMap::new()),
@@ -396,9 +413,13 @@ impl Workspace {
             .set(cookie_agent_client_state::projects::daemon_has_projects(
                 client.daemon_version(),
             ));
+        self.can_sign_in.set(
+            cookie_agent_client_state::mcp::daemon_accepts_page_redirects(client.daemon_version()),
+        );
         self.client.set_value(Some(client));
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
+        self.finish_waiting_sign_in();
         let selected = self.selected.get_untracked();
         spawn_local(async move {
             self.refresh_lists().await;

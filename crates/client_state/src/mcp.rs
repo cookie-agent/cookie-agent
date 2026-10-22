@@ -199,6 +199,20 @@ pub fn sort_servers(servers: &mut [McpServerInfo]) {
     });
 }
 
+/// The client protocol minor from which `mcp.auth.begin` takes an `https`
+/// redirect, such as a web page's own address.
+pub const PAGE_REDIRECT_MINOR: u32 = 11;
+
+/// Whether a daemon whose handshake reported `version` accepts a web
+/// page's own address as the OAuth redirect, so the page can offer sign-in.
+pub fn daemon_accepts_page_redirects(version: Option<cookie_agent_protocol::SemVer>) -> bool {
+    version.is_some_and(|version| {
+        version
+            .shared_minor(cookie_agent_protocol::CLIENT_PROTOCOL_VERSION)
+            .is_some_and(|minor| minor >= PAGE_REDIRECT_MINOR)
+    })
+}
+
 pub fn is_global(server: &McpServerInfo) -> bool {
     server.runtime_id.as_str() == RuntimeId::GLOBAL
 }
@@ -268,7 +282,17 @@ pub const fn state_label(state: McpServerState) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpFields, McpTransport, new_definition};
+    use super::{McpFields, McpTransport, daemon_accepts_page_redirects, new_definition};
+    use cookie_agent_protocol::SemVer;
+
+    #[test]
+    fn only_a_1_11_daemon_takes_a_page_redirect() {
+        assert!(!daemon_accepts_page_redirects(None));
+        assert!(!daemon_accepts_page_redirects(Some(SemVer::new(1, 10, 0))));
+        assert!(daemon_accepts_page_redirects(Some(SemVer::new(1, 11, 0))));
+        assert!(daemon_accepts_page_redirects(Some(SemVer::new(1, 14, 2))));
+        assert!(!daemon_accepts_page_redirects(Some(SemVer::new(2, 11, 0))));
+    }
 
     #[test]
     fn a_form_makes_a_stdio_or_http_definition_or_says_what_is_wrong() {

@@ -15,6 +15,7 @@ use crate::{
     },
     connection,
     icons::{self, Glyph},
+    oauth::{self, Lookup},
     theme::ThemePreference,
     views::{Install, InstallAction, InstallBanner, WorkspaceView},
     workspace::Workspace,
@@ -285,7 +286,25 @@ pub fn App() -> impl IntoView {
     });
 
     Install::provide();
+    // A sign-in's callback leaves the address bar before anything else
+    // reads or rewrites the address.
+    let callback = oauth::take_callback();
     let connection = Connection::new();
+    let landing = RwSignal::new(None::<Landing>);
+    let workspace = connection.workspace;
+    // The tab that started a sign-in takes the callback another tab of the
+    // page landed with.
+    oauth::listen(move |state, url| {
+        if let Some(server) = oauth::started_here(&state) {
+            oauth::post(&oauth::ChannelMessage::Taken {
+                state: state.clone(),
+            });
+            workspace.finish_sign_in(server, url, Some(state));
+        }
+    });
+    if let Some(callback) = callback {
+        spawn_local(land(callback, workspace, landing));
+    }
     browser::on_visible(move || connection.check());
     browser::follow_visual_viewport();
     if connects_by_itself(
@@ -297,6 +316,7 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app-frame flex flex-col overflow-hidden bg-cream text-espresso dark:bg-night dark:text-latte">
+            <OAuthLanding landing=landing />
             {move || {
                 let phase = connection.phase.get();
                 let attached = connection.attached.get();
@@ -698,5 +718,140 @@ fn ConnectScreen(connection: Connection, phase: Phase) -> impl IntoView {
                 <Credits />
             </footer>
         </div>
+    }
+}
+
+/// What a tab the authorization server sent back says about its sign-in,
+/// when it does not finish it in the MCP servers.
+#[derive(Clone, Debug, PartialEq)]
+enum Landing {
+    /// Offering the callback to the tab that started the sign-in.
+    HandingOver,
+    /// That tab took it; this one closes when the browser lets it.
+    HandedOver { server: String },
+    /// The sign-in waited too long.
+    Expired { server: String },
+    /// No sign-in this browser started, or one that already ended: the
+    /// address, to paste where the sign-in started.
+    Unknown { url: String },
+}
+
+/// Finishes the sign-in `callback` answers: in the tab that started it when
+/// that tab takes it, else here. A callback whose sign-in this browser does
+/// not know, or that waited too long, is refused.
+async fn land(callback: oauth::Callback, workspace: Workspace, landing: RwSignal<Option<Landing>>) {
+    let lookup = callback
+        .state
+        .as_deref()
+        .map_or(Lookup::Unknown, oauth::lookup);
+    match lookup {
+        Lookup::Unknown => landing.set(Some(Landing::Unknown { url: callback.url })),
+        Lookup::Expired(server) => {
+            if let Some(state) = &callback.state {
+                oauth::forget(state);
+            }
+            workspace.refresh_sign_ins();
+            landing.set(Some(Landing::Expired { server }));
+        }
+        Lookup::Found(server) => {
+            let state = callback.state.unwrap_or_default();
+            landing.set(Some(Landing::HandingOver));
+            if oauth::hand_off(&state, &callback.url).await {
+                landing.set(Some(Landing::HandedOver { server }));
+                oauth::close_this_tab();
+            } else {
+                landing.set(None);
+                workspace.finish_sign_in(server, callback.url, Some(state));
+            }
+        }
+    }
+}
+
+/// The banner of a tab the authorization server sent back.
+#[component]
+fn OAuthLanding(landing: RwSignal<Option<Landing>>) -> impl IntoView {
+    const BANNER: &str = "flex items-start gap-2 border-b border-caramel bg-toasted px-3 py-2 text-sm dark:border-maple dark:bg-ember";
+    let dismiss = move || {
+        view! {
+            <button
+                type="button"
+                id="oauth-landing-close"
+                class=format!("{HEADER_BUTTON} -my-2 -mr-2")
+                aria-label="Dismiss"
+                title="Dismiss"
+                on:click=move |_| landing.set(None)
+            >
+                <Glyph icon=icondata::FaXmarkSolid />
+            </button>
+        }
+    };
+    move || {
+        landing.get().map(|shown| match shown {
+            Landing::HandingOver => view! {
+                <div id="oauth-landing" data-landing="handing-over" role="status" class=BANNER>
+                    <Glyph icon=icondata::FaArrowsRotateSolid class="mt-0.5 shrink-0 animate-spin text-caramel dark:text-maple" />
+                    <span class="min-w-0 flex-1">"Finishing the sign-in…"</span>
+                </div>
+            }
+            .into_any(),
+            Landing::HandedOver { server } => view! {
+                <div id="oauth-landing" data-landing="handed-over" role="status" class=BANNER>
+                    <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                    <span class="min-w-0 flex-1">
+                        {format!("The sign-in to {server} finishes in the tab that started it. You can close this tab.")}
+                    </span>
+                    {dismiss()}
+                </div>
+            }
+            .into_any(),
+            Landing::Expired { server } => view! {
+                <div id="oauth-landing" data-landing="expired" role="alert" class=BANNER>
+                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                    <span class="min-w-0 flex-1">
+                        {format!("The sign-in to {server} waited too long and was not finished. Start it again from Settings › MCP servers.")}
+                    </span>
+                    {dismiss()}
+                </div>
+            }
+            .into_any(),
+            Landing::Unknown { url } => {
+                let copied = url.clone();
+                view! {
+                    <div id="oauth-landing" data-landing="unknown" role="alert" class=BANNER>
+                        <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                        <div class="flex min-w-0 flex-1 flex-col gap-2">
+                            <span>
+                                "This sign-in was not started in this browser, or it has already ended, so it was not finished here. If you started it in the installed app or another browser, copy this address and paste it there, under Settings › MCP servers."
+                            </span>
+                            <textarea
+                                id="oauth-landing-address"
+                                readonly
+                                rows="2"
+                                class="w-full resize-none rounded-md border border-crust bg-cream p-2 font-mono text-xs break-all dark:border-smoke dark:bg-night"
+                                prop:value=url
+                            ></textarea>
+                            <button
+                                type="button"
+                                id="oauth-landing-copy"
+                                class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-crust bg-cream px-3 text-sm hover:bg-parchment active:bg-crust dark:border-smoke dark:bg-night dark:hover:bg-char dark:active:bg-smoke"
+                                on:click=move |_| {
+                                    let text = copied.clone();
+                                    spawn_local(async move {
+                                        if !browser::copy_text(&text).await {
+                                            browser::select_text("oauth-landing-address");
+                                        }
+                                    });
+                                }
+                            >
+                                <Glyph icon=icondata::FaCopyRegular />
+                                "Copy the address"
+                            </button>
+                        </div>
+                        {dismiss()}
+                    </div>
+                }
+                .into_any()
+            }
+        })
     }
 }

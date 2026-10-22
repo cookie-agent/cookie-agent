@@ -23,6 +23,7 @@ use wasm_bindgen::JsCast as _;
 
 use super::{BUTTON, ERROR, NOTE, PRIMARY, ROW, empty_state, loading};
 use crate::{
+    browser,
     icons::Glyph,
     workspace::{PANEL_POLL, Workspace},
 };
@@ -301,14 +302,13 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                             )}
                         </span>
                         <span class=format!("{NOTE} font-mono whitespace-pre-wrap break-all")>{definition_display(&server.definition)}</span>
-                        {server.message.clone().map(|message| view! { <span class=ERROR>{message}</span> })}
-                        {needs_auth.then(|| view! {
-                            <span class="mcp-auth text-sm">
-                                {format!(
-                                    "This server needs authorization, which the page cannot do: run `cookie mcp auth {name}` on a machine with a browser, or authorize it from the TUI."
-                                )}
-                            </span>
+                        {server.message.clone().map(|message| if needs_auth {
+                            // Why it waits for a sign-in, not a failure.
+                            view! { <span class=format!("{NOTE} whitespace-pre-wrap break-words") data-mcp-message>{message}</span> }.into_any()
+                        } else {
+                            view! { <span class=ERROR data-mcp-message>{message}</span> }.into_any()
                         })}
+                        {needs_auth.then(|| sign_in_offer(workspace, &server))}
                         {refusal.clone().map(|refusal| view! { <span class=NOTE>{refusal}</span> })}
                         <div class="flex flex-wrap gap-2">
                             <Show when=move || editable>
@@ -348,6 +348,8 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
     view! {
         {move || match form.get() {
             None => view! {
+                {move || sign_in_outcome(workspace)}
+                {move || sign_ins(workspace)}
                 {list}
                 <button
                     type="button"
@@ -366,6 +368,177 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
             Some((fields, editing)) => mcp_form(workspace, form, persist, error, fields, editing).into_any(),
         }}
     }
+}
+
+/// What a server that needs authorization offers: signing in from the
+/// page when the daemon takes the page as the redirect, else the commands
+/// that can.
+fn sign_in_offer(workspace: Workspace, server: &cookie_agent_protocol::McpServerInfo) -> AnyView {
+    let name = server.name.clone();
+    if !cookie_agent_client_state::mcp::is_global(server) {
+        return view! {
+            <span class="mcp-auth text-sm">
+                "Only the daemon's own (global) MCP servers can sign in."
+            </span>
+        }
+        .into_any();
+    }
+    if !workspace.can_sign_in.get_untracked() {
+        return view! {
+            <span class="mcp-auth text-sm">
+                {format!(
+                    "This server needs authorization. The daemon is too old to sign in from the page (that needs client protocol 1.11): run `cookie mcp auth {name}` on a machine with a browser, or authorize it from the TUI."
+                )}
+            </span>
+        }
+        .into_any();
+    }
+    let warns = browser::page_href().is_some_and(|page| crate::oauth::warns_about_http(&page));
+    let waiting = workspace
+        .sign_ins
+        .get_untracked()
+        .iter()
+        .any(|(_, waiting)| *waiting == name);
+    view! {
+        <div class="mcp-auth flex flex-col items-start gap-2">
+            <span class="text-sm">
+                {if waiting {
+                    "Waiting for you to finish signing in, above."
+                } else {
+                    "This server needs you to sign in."
+                }}
+            </span>
+            {warns.then(|| view! {
+                <p class=format!("{NOTE} flex items-start gap-1.5") data-https-warning>
+                    <Glyph icon=icondata::FaTriangleExclamationSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" />
+                    <span>
+                        "This page is on plain http away from this machine, and most sign-in servers refuse to send you back to such an address. Put the daemon behind https, for example with "
+                        <code>"tailscale serve"</code>
+                        ", as the "
+                        <a
+                            href=format!("{}daemon/remote-access/", crate::machines::DOCS)
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="font-bold text-caramel underline-offset-2 hover:underline dark:text-maple"
+                        >
+                            "remote access guide"
+                        </a>
+                        " shows. Some servers allow it, so you can still try."
+                    </span>
+                </p>
+            })}
+            <button
+                type="button"
+                class=if waiting { BUTTON } else { PRIMARY }
+                data-mcp-sign-in
+                on:click=move |_| workspace.sign_in_mcp(name.clone())
+            >
+                <Glyph icon=icondata::FaRightToBracketSolid />
+                {if waiting { "Open the sign-in again" } else { "Sign in" }}
+            </button>
+        </div>
+    }
+    .into_any()
+}
+
+/// How the last sign-in ended, above the servers.
+fn sign_in_outcome(workspace: Workspace) -> impl IntoView {
+    workspace.sign_in_outcome.get().map(|outcome| {
+        let ok = outcome.is_ok();
+        let text = match outcome {
+            Ok(server) => view! { "Signed in to " <code class="font-mono font-bold">{server}</code> }.into_any(),
+            Err(error) => error.into_any(),
+        };
+        view! {
+            <div
+                id="mcp-sign-in-outcome"
+                role="status"
+                data-outcome=if ok { "signed-in" } else { "failed" }
+                class=if ok {
+                    "flex items-start gap-2 rounded-md border border-caramel bg-parchment px-3 py-2 text-sm dark:border-maple dark:bg-char"
+                } else {
+                    ERROR
+                }
+            >
+                {ok.then(|| view! { <Glyph icon=icondata::FaCircleCheckSolid class="mt-0.5 shrink-0 text-caramel dark:text-maple" /> })}
+                <span class="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
+            </div>
+        }
+    })
+}
+
+/// The sign-ins this browser started that still wait: each can be
+/// finished with the address the browser landed on, or cancelled.
+fn sign_ins(workspace: Workspace) -> impl IntoView {
+    let waiting = workspace.sign_ins.get();
+    (!waiting.is_empty()).then(|| {
+        let entries = waiting
+            .into_iter()
+            .map(|(state, server)| {
+                let pasted = RwSignal::new(String::new());
+                let finish = {
+                    let (server, state) = (server.clone(), state.clone());
+                    move || {
+                        let address = pasted.get_untracked().trim().to_owned();
+                        if !address.is_empty() {
+                            workspace.finish_sign_in(server.clone(), address, Some(state.clone()));
+                        }
+                    }
+                };
+                let submit = finish.clone();
+                let cancelled = (server.clone(), state.clone());
+                view! {
+                    <div class=format!("{CONFIRM} mb-2") data-sign-in=server.clone()>
+                        <span class="flex items-center gap-2 text-sm font-bold">
+                            <Glyph icon=icondata::FaArrowsRotateSolid class="animate-spin text-caramel dark:text-maple" />
+                            {format!("Signing in to {server}")}
+                        </span>
+                        <span class=NOTE>
+                            "Finish in the tab that opened. If the sign-in ends on a page that cannot continue here, such as another browser or a phone's browser, paste the address you landed on."
+                        </span>
+                        <label class="flex flex-col gap-1">
+                            <span class="sr-only">"Paste the address you landed on"</span>
+                            <input
+                                type="url"
+                                class=FIELD
+                                data-sign-in-paste
+                                placeholder="Paste the address you landed on"
+                                autocomplete="off"
+                                spellcheck="false"
+                                prop:value=move || pasted.get()
+                                on:input=move |event| pasted.set(event_target_value(&event))
+                                on:keydown=move |event| {
+                                    if event.key() == "Enter" {
+                                        submit();
+                                    }
+                                }
+                            />
+                        </label>
+                        <div class="flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                class=PRIMARY
+                                data-sign-in-finish
+                                disabled=move || pasted.get().trim().is_empty()
+                                on:click=move |_| finish()
+                            >
+                                "Finish sign-in"
+                            </button>
+                            <button
+                                type="button"
+                                class=BUTTON
+                                data-sign-in-cancel
+                                on:click=move |_| workspace.cancel_sign_in(cancelled.0.clone(), cancelled.1.clone())
+                            >
+                                "Cancel"
+                            </button>
+                        </div>
+                    </div>
+                }
+            })
+            .collect_view();
+        view! { <section id="mcp-sign-ins" aria-label="Sign-ins in progress">{entries}</section> }
+    })
 }
 
 fn mcp_form(

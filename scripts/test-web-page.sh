@@ -2,7 +2,8 @@
 # Runs the web client's browser scenarios (scripts/web-e2e/scenarios.py) in
 # headless Chrome against real `cookie daemon`s in scratch homes: one with
 # a scripted model (scripts/web-e2e/mock-model.py), a subagent, a skill, a
-# runtime that never starts, and the reference plugin, and a second, empty
+# runtime that never starts, the reference plugin, and MCP servers that want
+# OAuth (scripts/web-e2e/mock-oauth.py), and a second, empty
 # one whose page is of another origin. Run scripts/build-web.sh first so the
 # daemons embed the real page.
 #
@@ -81,6 +82,13 @@ run_set() {
         sleep 0.1
     done
     model_port="$(cat "$scratch/model.port")"
+    python3 -I scripts/web-e2e/mock-oauth.py "$scratch/oauth.port" &
+    pids+=("$!")
+    for _ in $(seq 1 100); do
+        [[ -s "$scratch/oauth.port" ]] && break
+        sleep 0.1
+    done
+    oauth_port="$(cat "$scratch/oauth.port")"
 
     # Writes home $1's config.toml: a `[server]` table on port $2, then stdin.
     write_config() {
@@ -200,6 +208,17 @@ command = ["$cookie", "runtime", "serve", "--stdio"]
 
 [plugins.reference]
 command = ["python3", "$root/examples/plugins/python/reference_plugin.py"]
+
+# Remote MCP servers that want OAuth (mock-oauth.py), one for each way the
+# page signs in.
+[mcp.servers.oauth-tab]
+url = "http://127.0.0.1:$oauth_port/mcp"
+
+[mcp.servers.oauth-same]
+url = "http://127.0.0.1:$oauth_port/mcp"
+
+[mcp.servers.oauth-paste]
+url = "http://127.0.0.1:$oauth_port/mcp"
 TOML
     # A session made before the daemon starts, by another process: the daemon
     # lists it but has not loaded it, so the scenarios can hold its owner lock
@@ -234,7 +253,7 @@ TOML
     "$CHROMEDRIVER" --port="$driver_port" >"$scratch/chromedriver.log" 2>&1 &
     pids+=("$!")
 
-    COOKIE="$cookie" python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \
+    COOKIE="$cookie" OAUTH_SERVER="http://127.0.0.1:$oauth_port" python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \
         "$other_port" "$allowing" "$held_session" "${SCREENSHOT_DIR:-}" "$@"
 }
 

@@ -29,6 +29,7 @@ pub mod machines;
 mod media;
 pub mod memory;
 pub mod modes;
+pub mod oauth;
 pub mod panics;
 pub mod places;
 pub mod render;
