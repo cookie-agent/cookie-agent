@@ -87,7 +87,8 @@ Skills are not reloaded.
 
 In the TUI, `/config` lists `config.toml`, the shared agents, and each preset
 with its agents. Enter opens the selected document in `$VISUAL` (else
-`$EDITOR`, else `vi`); saving and quitting applies it. A document the daemon
+`$EDITOR`, else `vi`, or on Windows `code --wait` when VS Code is on `PATH`,
+else Notepad); saving and quitting applies it. A document the daemon
 refuses, because the result does not validate, is not applied: the panel shows
 why and marks the document *not applied*, and Enter reopens your text to fix
 it. `n` creates an agent document (`agents/<id>.md`, or

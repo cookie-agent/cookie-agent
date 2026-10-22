@@ -72,6 +72,7 @@ web-sys = { version = "0.3.103", optional = true, features = [
 insta.workspace = true
 # Checks the hand-written control-character table against Unicode's.
 regex = "1"
+tempfile.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.76"

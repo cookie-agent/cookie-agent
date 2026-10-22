@@ -184,6 +184,8 @@ mod content;
 pub mod corpus;
 pub mod diagnostics;
 mod display;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod editor;
 pub mod errors;
 mod event;
 mod extension;

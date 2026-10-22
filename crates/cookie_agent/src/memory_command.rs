@@ -47,7 +47,7 @@ pub(crate) trait MemoryIo {
     fn confirm(&mut self, prompt: &str, default: bool) -> anyhow::Result<bool>;
 }
 
-/// The terminal and `$VISUAL`, else `$EDITOR`, else `vi`.
+/// The terminal and the editor of [`cookie_agent_protocol::editor::editor`].
 pub(crate) struct StdioMemoryIo;
 
 impl MemoryIo for StdioMemoryIo {

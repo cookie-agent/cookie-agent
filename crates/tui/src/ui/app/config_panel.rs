@@ -429,37 +429,12 @@ pub(super) fn run_editor(path: &str, text: &str) -> Result<String, String> {
         .map_err(|error| format!("create a file to edit: {error}"))?;
     std::io::Write::write_all(&mut file, text.as_bytes())
         .map_err(|error| format!("write the file to edit: {error}"))?;
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .ok()
-        .filter(|editor| !editor.trim().is_empty())
-        .unwrap_or_else(|| "vi".to_owned());
-    let status = editor_command(&editor, file.path())
+    let editor = cookie_agent_protocol::editor::editor();
+    let status = cookie_agent_protocol::editor::editor_command(&editor, file.path())
         .status()
         .map_err(|error| format!("run the editor `{editor}`: {error}"))?;
     if !status.success() {
         return Err(format!("the editor `{editor}` exited with {status}"));
     }
     std::fs::read_to_string(file.path()).map_err(|error| format!("read the edited file: {error}"))
-}
-
-/// The editor, which may carry arguments (`code --wait`), on `path`.
-fn editor_command(editor: &str, path: &std::path::Path) -> std::process::Command {
-    #[cfg(unix)]
-    {
-        let mut command = std::process::Command::new("sh");
-        command
-            .arg("-c")
-            .arg(format!("{editor} \"$1\""))
-            .arg("sh")
-            .arg(path);
-        command
-    }
-    #[cfg(not(unix))]
-    {
-        let mut words = editor.split_whitespace();
-        let mut command = std::process::Command::new(words.next().unwrap_or("notepad"));
-        command.args(words).arg(path);
-        command
-    }
 }

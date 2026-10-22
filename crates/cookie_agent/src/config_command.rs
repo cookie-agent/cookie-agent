@@ -38,7 +38,7 @@ pub(crate) trait ConfigIo {
     fn confirm(&mut self, prompt: &str) -> anyhow::Result<bool>;
 }
 
-/// The terminal: `$VISUAL`, else `$EDITOR`, else `vi`.
+/// The terminal and the editor of [`cookie_agent_protocol::editor::editor`].
 pub(crate) struct StdioConfigIo;
 
 impl ConfigIo for StdioConfigIo {
@@ -69,8 +69,8 @@ impl ConfigIo for StdioConfigIo {
     }
 }
 
-/// Lets the user edit `text` in `$VISUAL`, else `$EDITOR`, else `vi`, in a
-/// temporary file named `<prefix>…<suffix>`; the edited text.
+/// Lets the user edit `text` in [`cookie_agent_protocol::editor::editor`], in
+/// a temporary file named `<prefix>…<suffix>`; the edited text.
 pub(crate) fn edit_in_editor(prefix: &str, suffix: &str, text: &str) -> anyhow::Result<String> {
     let mut file = tempfile::Builder::new()
         .prefix(prefix)
@@ -78,12 +78,8 @@ pub(crate) fn edit_in_editor(prefix: &str, suffix: &str, text: &str) -> anyhow::
         .tempfile()
         .context("create a file to edit")?;
     std::io::Write::write_all(&mut file, text.as_bytes()).context("write the file to edit")?;
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .ok()
-        .filter(|editor| !editor.trim().is_empty())
-        .unwrap_or_else(|| "vi".to_owned());
-    let status = editor_command(&editor, file.path())
+    let editor = cookie_agent_protocol::editor::editor();
+    let status = cookie_agent_protocol::editor::editor_command(&editor, file.path())
         .status()
         .with_context(|| format!("run the editor `{editor}`"))?;
     anyhow::ensure!(
@@ -91,27 +87,6 @@ pub(crate) fn edit_in_editor(prefix: &str, suffix: &str, text: &str) -> anyhow::
         "the editor `{editor}` exited with {status}"
     );
     std::fs::read_to_string(file.path()).context("read the edited file")
-}
-
-/// The editor, which may carry arguments (`code --wait`), on `path`.
-fn editor_command(editor: &str, path: &std::path::Path) -> std::process::Command {
-    #[cfg(unix)]
-    {
-        let mut command = std::process::Command::new("sh");
-        command
-            .arg("-c")
-            .arg(format!("{editor} \"$1\""))
-            .arg("sh")
-            .arg(path);
-        command
-    }
-    #[cfg(not(unix))]
-    {
-        let mut words = editor.split_whitespace();
-        let mut command = std::process::Command::new(words.next().unwrap_or("notepad"));
-        command.args(words).arg(path);
-        command
-    }
 }
 
 pub(crate) async fn run_config(

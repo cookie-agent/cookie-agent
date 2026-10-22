@@ -223,7 +223,8 @@ what needs a restart. See
 #### `cookie config edit`
 
 `cookie config edit [PATH]` opens a document in `$VISUAL`, else `$EDITOR`,
-else `vi`: `config.toml` by default, or `agents/<id>.md` or
+else `vi`, or on Windows `code --wait` when VS Code is on `PATH`, else
+Notepad: `config.toml` by default, or `agents/<id>.md` or
 `agents/<preset>/<id>.md`. A path that does not exist yet is created, an agent
 document from a template. It needs an interactive terminal. Saving it
 unchanged does nothing; a change the daemon refuses as invalid offers to edit
@@ -317,7 +318,7 @@ not memories are listed with the reason.
 #### `cookie memory edit`
 
 `cookie memory edit <URL>` opens a memory, frontmatter included, in
-`$VISUAL`, else `$EDITOR`, else `vi`, such as `project://web/build`; a memory
+the editor `cookie config edit` uses, such as `project://web/build`; a memory
 that does not exist yet is created. Text that is not a valid memory, or a
 memory that changed since it was opened, offers to edit again.
 
@@ -360,8 +361,8 @@ while a session of the project runs.
 
 #### `cookie project edit`
 
-`cookie project edit <NAME>` opens the project's `AGENTS.md` in `$VISUAL`,
-else `$EDITOR`, else `vi`; saving it empty removes the file. A project that
+`cookie project edit <NAME>` opens the project's `AGENTS.md` in the editor
+`cookie config edit` uses; saving it empty removes the file. A project that
 changed since it was opened offers to reload it and edit again.
 
 #### `cookie project defaults`
