@@ -906,7 +906,13 @@ where
                 });
             }
             Some(frame) = outbound_rx.recv() => {
-                transport.send(MessageFrame::Text(frame)).await?;
+                // A notification queued as the client went away: the closed
+                // transport ends the connection as reading its end does, not
+                // as a failure.
+                match transport.send(MessageFrame::Text(frame)).await {
+                    Err(TransportError::Closed) => return Ok(()),
+                    result => result?,
+                }
             }
         }
     }

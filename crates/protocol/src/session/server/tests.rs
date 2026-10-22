@@ -897,3 +897,33 @@ async fn a_client_authenticates_with_the_token_in_its_handshake() {
         .expect_err("a wrong token is refused");
     assert_eq!(refused.error_code(), Some("unauthenticated"), "{refused}");
 }
+
+#[tokio::test]
+async fn a_client_gone_before_its_answer_ends_the_connection_cleanly() {
+    let server = Arc::new(StubServer::default());
+    let (requests, incoming) = mpsc::unbounded_channel();
+    let (outgoing, frames) = mpsc::unbounded_channel();
+    let served = tokio::spawn(serve(
+        Arc::clone(&server),
+        ChannelTransport { incoming, outgoing },
+        CancellationToken::new(),
+        Authentication::Authenticated,
+    ));
+    let mut connection = Connection { requests, frames };
+    connection.send(0, "handshake", hello(None));
+    assert_eq!(connection.next().await["id"], 0);
+    // The client asks, then goes away while the answer is still being built:
+    // sending it meets a closed transport, which is the client's end, not a
+    // failure of the connection.
+    let session_id = crate::SessionId::new_v7();
+    connection.send(1, "session.get", json!({ "session_id": session_id }));
+    let Connection { requests, frames } = connection;
+    drop(frames);
+    server.release_get.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(2), served)
+        .await
+        .expect("the connection ends in time")
+        .expect("serve does not panic");
+    assert!(result.is_ok(), "{result:?}");
+    drop(requests);
+}
