@@ -1681,7 +1681,8 @@ This replaces section 8.1's scoring.
   editable: yes
   created: 2026-10-01T09:12:44Z (3 weeks ago)
   modified: 2026-10-20T16:03:10Z (2 days ago)
-  size: 812 / 2048 bytes
+  size: 812 bytes
+  max size: 2048 bytes
 
   <body>
   ```
@@ -1736,8 +1737,15 @@ This replaces section 8.1's scoring.
 - **Writes over a limit.** A write or edit that would leave a document
   over its limit is refused, and the result shows the document's current
   content and asks for it to be condensed first.
-- **Fullness in the snapshot.** The snapshot shows how full each document
-  it injects is, for example `1.6 / 2 KB`.
+- **Fullness in the snapshot.** Each document the snapshot shows in full
+  carries `modified`, `size` and `max_size` attributes, for example:
+
+  ```text
+  <memory url="user://feedback" description="…" modified="3 weeks ago" size="1.4 KB" max_size="2 KB">
+  ```
+
+  Index lines (machine and project memories) end with their age, as in
+  `(3 weeks old)`.
 - **Documents already over their limit** are still shown, marked
   `over its limit`. Only writes that make them smaller are accepted until
   they fit.
