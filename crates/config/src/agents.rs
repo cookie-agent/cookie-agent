@@ -132,25 +132,7 @@ impl std::str::FromStr for PermissionKey {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (action, runtime) = match value.split_once('@') {
-            Some((action, runtime)) => (action, Some(runtime)),
-            None => (value, None),
-        };
-        let action = PermissionAction::new(action).map_err(|error| error.to_string())?;
-        let runtime = runtime
-            .map(|runtime| {
-                RuntimeId::new(runtime).map_err(|_| {
-                    format!("invalid runtime selector `{runtime}`; expected [a-z][a-z0-9_]{{0,31}}")
-                })
-            })
-            .transpose()?;
-        // `delegate@<runtime>` limits where a root delegates
-        // (`docs/site/specs/runtime-delegation.md` section 3).
-        if runtime.is_some() && action.is_base_layer() && action != PermissionAction::DELEGATE {
-            return Err(format!(
-                "`{value}`: `message` and `skill` belong to the base layer and take no runtime selector"
-            ));
-        }
+        let (action, runtime) = cookie_agent_protocol::parse_permission_key(value)?;
         Ok(Self { action, runtime })
     }
 }

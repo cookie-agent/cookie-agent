@@ -235,7 +235,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
 | `session.project.set` | Root session ID, required nullable `project` | The session's metadata; it moved into the project, or out of any with `null` (see [Projects](#projects)) |
 | `session.permission.get` | Session ID | Effective permissions per action and the tree's current mode |
-| `session.permission.set` | Session ID, action, optional `runtime` selector, wildcard pattern, effect | Effective permissions after the overlay change |
+| `session.permission.set` | Session ID, action, optional `runtime` selector (refused on `message` and `skill`, as in agent documents), wildcard pattern, effect | Effective permissions after the overlay change |
 | `session.permission.clear` | Session ID, action, optional `runtime` selector, wildcard pattern | Effective permissions after the overlay change |
 | `session.permission.preview` | Run selection, optional overlay `rules` | Effective permissions a session created with them would have; creates nothing |
 | `session.runtime.attach` | Session ID, `runtime_id`, optional `capability`, `workspace` when the capability takes one | The new `attachment` and the session's `runtimes` |
@@ -1088,7 +1088,8 @@ one with a different `redirect_uri` replaces the pending flow.
 A client can configure permissions before a session exists.
 `session.create` accepts an optional `permission_mode` for the new tree and
 optional `permission_rules`, which are validated like any overlay (no duplicate
-action and pattern, at most 256) before the session is created and committed as
+action, runtime selector, and pattern, at most 256, and no runtime selector on
+`message` or `skill`) before the session is created and committed as
 its first `session_permission_overlay_set` event, so the first run already sees
 them. `session.permission.preview { selection, rules }` returns the effective
 permissions such a session would have, computed from the selection's frozen

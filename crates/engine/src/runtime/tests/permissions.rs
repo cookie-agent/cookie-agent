@@ -232,6 +232,57 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
 }
 
 #[tokio::test]
+async fn an_overlay_rule_takes_a_runtime_selector_only_where_agent_documents_do() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let labpc = cookie_agent_protocol::RuntimeId::new("labpc").expect("runtime");
+    let set = |action: PermissionAction| {
+        let engine = fixture.engine.clone();
+        let labpc = labpc.clone();
+        async move {
+            engine
+                .set_session_permission(
+                    session.session_id,
+                    &action,
+                    Some(labpc),
+                    WildcardPattern::new("*").expect("wildcard"),
+                    PermissionEffect::Ask,
+                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+                )
+                .await
+        }
+    };
+    for action in [PermissionAction::MESSAGE, PermissionAction::SKILL] {
+        let error = set(action.clone()).await.expect_err("base-layer selector");
+        assert!(
+            error.to_string().contains(&format!("`{action}@labpc`")),
+            "{error}"
+        );
+    }
+    for action in [
+        PermissionAction::BASH,
+        PermissionAction::DELEGATE,
+        PermissionAction::new("deploy").expect("action"),
+    ] {
+        set(action).await.expect("selector allowed");
+    }
+    let rule = PermissionRule {
+        action: PermissionAction::SKILL,
+        runtime: Some(labpc.clone()),
+        resource: WildcardPattern::new("*").expect("wildcard"),
+        effect: PermissionEffect::Allow,
+    };
+    fixture
+        .engine
+        .preview_session_permissions(&selection, vec![rule])
+        .expect_err("preview refuses the selector");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn tightening_overlay_invalidates_tree_grants_durably() {
     let (fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");

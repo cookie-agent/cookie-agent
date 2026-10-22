@@ -104,6 +104,7 @@ impl Engine {
         mut runtimes: super::attachments::SessionRuntimes,
         project: Option<cookie_agent_protocol::ProjectId>,
     ) -> Result<SessionMeta, EngineError> {
+        crate::permissions::check_rule_selectors(&rules)?;
         let overlay = SessionPermissionOverlay { rules };
         overlay
             .validate()

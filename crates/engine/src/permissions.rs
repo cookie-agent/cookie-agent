@@ -799,6 +799,17 @@ fn matched(
         .collect()
 }
 
+/// Refuses overlay rules a client sends with a runtime selector their
+/// action takes none of (`message@labpc`), as agent documents do. Only
+/// commands are checked: an overlay already in a session log reads as it is.
+pub(crate) fn check_rule_selectors(rules: &[PermissionRule]) -> Result<(), crate::EngineError> {
+    rules.iter().try_for_each(|rule| {
+        rule.action
+            .check_runtime_selector(rule.runtime.as_ref())
+            .map_err(crate::EngineError::Permission)
+    })
+}
+
 impl crate::Engine {
     /// The effective permissions a session created with `selection` and the
     /// overlay `rules` would have, computed exactly as for a live session.
@@ -807,6 +818,7 @@ impl crate::Engine {
         selection: &RunSelection,
         rules: Vec<PermissionRule>,
     ) -> Result<Vec<EffectivePermissionAction>, crate::EngineError> {
+        check_rule_selectors(&rules)?;
         let overlay = SessionPermissionOverlay { rules };
         overlay
             .validate()
@@ -867,6 +879,9 @@ impl crate::Engine {
         effect: PermissionEffect,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
+        action
+            .check_runtime_selector(runtime.as_ref())
+            .map_err(crate::EngineError::Permission)?;
         let _mutation = self
             .inner
             .approvals

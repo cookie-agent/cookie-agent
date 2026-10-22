@@ -110,6 +110,53 @@ impl PermissionAction {
     pub fn is_base_layer(&self) -> bool {
         *self == Self::DELEGATE || *self == Self::MESSAGE || *self == Self::SKILL
     }
+
+    /// Whether a rule for the action may carry a runtime selector
+    /// (`action@runtime_id`): every action but `message` and `skill`, which
+    /// belong to the base layer. `delegate@<runtime>` limits where a root
+    /// delegates (`docs/site/specs/runtime-delegation.md` section 3).
+    #[must_use]
+    pub fn takes_runtime_selector(&self) -> bool {
+        !self.is_base_layer() || *self == Self::DELEGATE
+    }
+
+    /// Refuses `runtime` as a selector of this action when the action takes
+    /// none, naming the key the way it is written.
+    pub fn check_runtime_selector(&self, runtime: Option<&RuntimeId>) -> Result<(), String> {
+        match runtime {
+            Some(runtime) if !self.takes_runtime_selector() => Err(format!(
+                "`{self}@{runtime}`: `message` and `skill` belong to the base layer and take no runtime selector"
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Parses a permission rule key written `action` or `action@runtime_id`
+/// (`bash@labpc`), as agent documents and clients write them.
+pub fn parse_permission_key(value: &str) -> Result<(PermissionAction, Option<RuntimeId>), String> {
+    match value.split_once('@') {
+        Some((action, runtime)) => parse_permission_key_parts(action, Some(runtime)),
+        None => parse_permission_key_parts(value, None),
+    }
+}
+
+/// Parses a permission rule key from its action and its optional runtime
+/// selector, refusing a selector the action takes none of.
+pub fn parse_permission_key_parts(
+    action: &str,
+    runtime: Option<&str>,
+) -> Result<(PermissionAction, Option<RuntimeId>), String> {
+    let action = PermissionAction::new(action).map_err(|error| error.to_string())?;
+    let runtime = runtime
+        .map(|runtime| {
+            RuntimeId::new(runtime).map_err(|_| {
+                format!("invalid runtime selector `{runtime}`; expected [a-z][a-z0-9_]{{0,31}}")
+            })
+        })
+        .transpose()?;
+    action.check_runtime_selector(runtime.as_ref())?;
+    Ok((action, runtime))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
