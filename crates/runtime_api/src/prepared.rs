@@ -171,6 +171,9 @@ pub struct PreparedTool {
     executor: PreparedExecutorCell,
     declaration: Option<PreparedDeclaration>,
     presentation: Option<PreparedPresentation>,
+    /// Runtime IDs the call's permission is checked under, each as
+    /// `action@runtime`, in place of its origin's; empty for its origin's.
+    permission_runtimes: Vec<String>,
 }
 
 impl PreparedTool {
@@ -203,6 +206,7 @@ impl PreparedTool {
             executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
             declaration: None,
             presentation: None,
+            permission_runtimes: Vec::new(),
         })
     }
 
@@ -228,6 +232,7 @@ impl PreparedTool {
             executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
             declaration: None,
             presentation: None,
+            permission_runtimes: Vec::new(),
         })
     }
 
@@ -279,6 +284,24 @@ impl PreparedTool {
     pub fn with_presentation(mut self, presentation: PreparedPresentation) -> Self {
         self.presentation = Some(presentation);
         self
+    }
+
+    /// Checks the call's permission under each of `runtimes`, as
+    /// `action@runtime`, instead of under the runtime that offers the tool:
+    /// the call is denied when any runtime denies it and asks when any asks.
+    /// A base tool that acts on runtimes, such as `delegate_subagent` with
+    /// `capabilities`, uses it.
+    #[must_use]
+    pub fn with_permission_runtimes(mut self, runtimes: Vec<String>) -> Self {
+        self.permission_runtimes = runtimes;
+        self
+    }
+
+    /// The runtime IDs the call's permission is checked under; empty for
+    /// the runtime that offers the tool.
+    #[must_use]
+    pub fn permission_runtimes(&self) -> &[String] {
+        &self.permission_runtimes
     }
 
     /// How clients show the call, as the provider prepared it. A

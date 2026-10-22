@@ -47,6 +47,7 @@ block under the system prompt in the TUI transcript.
 | [`memory_write`](#memory_write) | `memory_write` |
 | [`memory_edit`](#memory_edit) | `memory_write` |
 | [`memory_delete`](#memory_delete) | `memory_write` |
+| [`list_runtimes`](#list_runtimes) | `list_runtimes` |
 
 <!-- /generated -->
 
@@ -1057,6 +1058,18 @@ metadata key and add `handle`. `resume_session_id` accepts the same two forms,
 and a terminal child woken by `send_message` reports as running until its new
 turn ends.
 
+In a root session with the `global` runtime attached, `delegate_subagent`
+also takes `capabilities`: the runtime capabilities the child works through,
+each written `<runtime_id>/<capability_id>` with a `workspace` when the
+capability takes one (see the [runtime delegation spec](../specs/runtime-delegation.md)).
+It is required when the root has nothing but `global` attached, optional when
+it has other attachments too, and absent everywhere else, where a child
+inherits its parent's attachments. Each runtime it names is checked as
+`delegate@<runtime>`, and every runtime starts before the child is created:
+one that cannot start fails the call and creates nothing. A root with only
+`global` also gets a paragraph in its delegation instructions saying it has no
+workspace.
+
 ### `skill`
 
 <!-- generated: tool skill -->
@@ -1108,7 +1121,7 @@ Only when at least one skill is visible to the session.
 <!-- generated: tool delegate_subagent -->
 
 ```text
-delegate_subagent(agent_type: "<subagent id>", description: string, inherit_context?: boolean, prompt: string, resume_session_id?: string)
+delegate_subagent(agent_type: "<subagent id>", capabilities?: object[], description: string, inherit_context?: boolean, prompt: string, resume_session_id?: string)
 ```
 
 Description sent to the model:
@@ -1117,11 +1130,12 @@ Description sent to the model:
 Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's handle. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its resume_session_id or send it a message.
 ```
 
-Only when the agent can delegate to at least one subagent at this depth. The `agent_type` enum lists those subagents; this page shows a placeholder.
+Only when the agent can delegate to at least one subagent at this depth. The `agent_type` enum lists those subagents; this page shows a placeholder. `capabilities` exists only in a root session with the `global` runtime attached: optional, as shown, when the root has other attachments too, and required when it has only `global`. Each runtime it names is checked as `delegate@<runtime>`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `agent_type` | `"<subagent id>"` | yes |  |
+| `capabilities` | `object[]` | no | Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The same runtime may be listed twice with different workspaces. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id. |
 | `description` | `string` | yes | Short (3-5 words) summary of the task |
 | `inherit_context` | `boolean` | no | Default: `false`. |
 | `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
@@ -1138,6 +1152,28 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
             "<subagent id>"
           ],
           "type": "string"
+        },
+        "capabilities": {
+          "description": "Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The same runtime may be listed twice with different workspaces. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "capability": {
+                "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+                "type": "string"
+              },
+              "workspace": {
+                "description": "Directory on that runtime's machine; required when the capability takes a workspace",
+                "type": "string"
+              }
+            },
+            "required": [
+              "capability"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
         },
         "description": {
           "description": "Short (3-5 words) summary of the task",
@@ -1660,3 +1696,62 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
     ```
 
 <!-- /generated -->
+
+## Runtime tools
+
+### `list_runtimes`
+
+<!-- generated: tool list_runtimes -->
+
+```text
+list_runtimes()
+```
+
+Description sent to the model:
+
+```text
+List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, and this session's own attachments on it. Name a runtime capability from here in delegate_subagent's `capabilities`, as `<runtime id>/<capability name>`. A runtime that connects later shows up on the next call.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `list_runtimes`, which `primary` and `all` agents have by default.
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "`list_runtimes` takes no arguments.",
+      "title": "ListRuntimesArgs",
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+`list_runtimes` reads the daemon's state at each call. Its output is grouped
+by machine, the daemon's own first and the rest by name, and within a machine
+by runtime ID; a runtime the daemon cannot place on a machine goes under
+`<unplaced>`. `global` is never listed as a runtime: a `<global/>` element,
+with a comment, says when the root of the caller's tree has it. Only the
+calling session's own attachments are shown. A runtime that is not connected
+keeps the machine, platform, and home the daemon last saw it with. The output
+is never truncated.
+
+```text
+<runtimes>
+  <!-- global is attached to this session's root, so every subagent in this tree has it, whether or not its capabilities list it. -->
+  <global/>
+  <machine name="laptop" platform="linux">
+    <runtime id="local" connected="true" home="/home/u">
+      <capability name="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
+      <attachment name="local_web" capability="coding" workspace="/home/u/web" status="ready"/>
+    </runtime>
+  </machine>
+  <machine name="labpc" platform="linux">
+    <runtime id="labpc" connected="false" starts_on_use="true" home="/home/u">
+      <capability name="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
+    </runtime>
+  </machine>
+</runtimes>
+```

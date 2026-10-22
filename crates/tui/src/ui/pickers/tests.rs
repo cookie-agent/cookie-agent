@@ -91,6 +91,7 @@ fn session_meta(session_id: SessionId) -> SessionMeta {
         skipped_events: Vec::new(),
         attachments: Vec::new(),
         waiting_on: Vec::new(),
+        delegated_attachments: Vec::new(),
     }
 }
 

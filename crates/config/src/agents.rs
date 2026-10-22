@@ -144,9 +144,11 @@ impl std::str::FromStr for PermissionKey {
                 })
             })
             .transpose()?;
-        if runtime.is_some() && action.is_base_layer() {
+        // `delegate@<runtime>` limits where a root delegates
+        // (`docs/site/specs/runtime-delegation.md` section 3).
+        if runtime.is_some() && action.is_base_layer() && action != PermissionAction::DELEGATE {
             return Err(format!(
-                "`{value}`: `delegate`, `message`, and `skill` belong to the base layer and take no runtime selector"
+                "`{value}`: `message` and `skill` belong to the base layer and take no runtime selector"
             ));
         }
         Ok(Self { action, runtime })

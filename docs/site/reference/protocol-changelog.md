@@ -19,9 +19,19 @@ adds and a major breaks; before it, every minor could break the wire (see the
   answers with the machines afterwards, with the error codes
   `runtime_not_remembered` and `runtime_still_connected`. `machines.forget`
   no longer counts remembered offline runtimes, and drops their records.
-- A 1.9 client ignores the new members, and sees offline runtimes as
-  before; a 1.10 client reading a 1.9 daemon sees no remembered runtimes, and
-  calling `machines.forget_runtime` gets `method_not_found`.
+- Delegating to runtimes ([spec](../specs/runtime-delegation.md)):
+  `SessionMeta` gains `delegated_attachments`, a root session's record of the
+  attachments its subagents brought, folded from the new runless state event
+  `delegated_attachments_added { child_session_id, attachments }` (plugin
+  protocol 1.4.0 too). `sessions.changed` `upserted` announces it. History
+  format 1 is unchanged; older logs read as having none.
+- `list_runtimes` joins the built-in permission actions that
+  `session.permission.get` lists. The `delegate_subagent` and `list_runtimes`
+  tool changes are model-facing and need no wire change.
+- A 1.9 client ignores the new members and event, and sees offline runtimes
+  as before; a 1.10 client reading a 1.9 daemon sees no remembered runtimes
+  and no delegated attachments, and calling `machines.forget_runtime` gets
+  `method_not_found`.
 
 ## 1.9.0
 

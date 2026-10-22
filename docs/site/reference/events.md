@@ -167,6 +167,7 @@ never stored.
 | `skill_invocation_noted` | audit | either | A repeat of an identical skill load |
 | `session_title_committed` | state | either | A title change |
 | `session_project_set` | state | runless | The root session's [project](#projects) |
+| `delegated_attachments_added` | state | runless | The attachments a root's subagent brought that the root did not record yet ([delegated attachments](#delegated-attachments)) |
 | `agent_md_loaded` | state | run | The `AGENTS.md` context of one attachment, or of the session's project |
 | `memory_loaded` | state | run | The [memory snapshot](#memory-snapshots) the model sees from this run on |
 | `diagnostic` | audit | either | A notice about the engine, a plugin, or a runtime |
@@ -430,6 +431,19 @@ is absent, and with its creation when it is created in one (client protocol
 it; a log without one reads as being in no project. Delegated sessions never
 record it: they belong to their root's project. See
 [Projects](protocol.md#projects).
+
+### Delegated attachments
+
+`delegated_attachments_added { child_session_id, attachments }` is a runless
+state event a root session records when a subagent of its tree is created
+with attachments the root records neither as its own nor as delegated
+before, `global` aside (client protocol 1.10.0). `attachments` are the new
+ones, as the child named them, at least one. `SessionMeta.delegated_attachments`
+is its fold, which keeps one entry per runtime, capability, and workspace and
+only grows, so a rebuilt metadata cache keeps it; a log without one reads as
+having none. A child that only inherits records nothing new. A fork leaves
+it behind with its source's subagents, as `record_omitted`. See
+[Where a root's subagents work](protocol.md#where-a-roots-subagents-work).
 
 `diagnostic { source, kind, message, count?, detail? }` is a notice about the
 engine, a plugin, or a runtime: something it turned off, could not do, or

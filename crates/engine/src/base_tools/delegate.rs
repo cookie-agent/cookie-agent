@@ -11,6 +11,7 @@ use cookie_agent_runtime_api::{
 use serde::{Deserialize, Serialize};
 
 use super::{base_presentation, prepared_operation, prepared_resource};
+use crate::runtime::runtime_delegation::{CapabilitiesParam, parse_capability};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
@@ -38,7 +39,22 @@ struct DelegateArgs {
     resume_session_id: Option<String>,
     #[serde(default)]
     inherit_context: bool,
+    /// The runtime capabilities the child works through; a root only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capabilities: Option<Vec<CapabilityArg>>,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityArg {
+    /// `<runtime_id>/<capability_id>`.
+    capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<String>,
+}
+
+/// What each `capabilities` item does and how to write it.
+const CAPABILITY_ITEMS: &str = "Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The same runtime may be listed twice with different workspaces. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +71,7 @@ enum DelegateExecutor {
         engine: Engine,
         call_id: cookie_agent_protocol::ToolCallId,
         args: DelegateArgs,
+        capabilities: Option<Vec<crate::DelegatedCapability>>,
     },
     GetResult {
         engine: Engine,
@@ -68,8 +85,48 @@ impl DelegateToolProvider {
         Self { engine }
     }
 
-    /// Delegation tool specs; `agent_type` enumerates `targets`.
-    pub(crate) fn specs(targets: &[&str]) -> Vec<ToolSpec> {
+    /// Delegation tool specs; `agent_type` enumerates `targets`, and
+    /// `delegate_subagent` has `capabilities` as `capabilities` says.
+    pub(crate) fn specs(targets: &[&str], capabilities: CapabilitiesParam) -> Vec<ToolSpec> {
+        let mut properties = serde_json::json!({
+            "description":{"type":"string","description":"Short (3-5 words) summary of the task"},
+            "prompt":{"type":"string","description":"Full task brief with objective, context, and deliverable"},
+            "agent_type":{"type":"string","enum":targets},
+            "resume_session_id":{
+                "type":"string",
+                "description":"Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid."
+            },
+            "inherit_context":{"type":"boolean","default":false}
+        });
+        let mut required = vec!["description", "prompt", "agent_type"];
+        let when = match capabilities {
+            CapabilitiesParam::Absent => None,
+            CapabilitiesParam::Optional => {
+                Some("Optional. Leave it out and the subagent inherits this session's attachments.")
+            }
+            CapabilitiesParam::Required => {
+                required.push("capabilities");
+                Some(
+                    "Required: this session has only `global` attached and no workspace, so name where the work happens. Call list_runtimes to see the machines and runtimes.",
+                )
+            }
+        };
+        if let Some(when) = when {
+            properties["capabilities"] = serde_json::json!({
+                "type":"array",
+                "minItems":1,
+                "description":format!("{when} {CAPABILITY_ITEMS}"),
+                "items":{
+                    "type":"object",
+                    "additionalProperties":false,
+                    "required":["capability"],
+                    "properties":{
+                        "capability":{"type":"string","description":"`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`"},
+                        "workspace":{"type":"string","description":"Directory on that runtime's machine; required when the capability takes a workspace"}
+                    }
+                }
+            });
+        }
         vec![
         ToolSpec {
             background: true,
@@ -83,17 +140,8 @@ impl DelegateToolProvider {
             description: "Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's handle. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its resume_session_id or send it a message.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
-                "properties":{
-                    "description":{"type":"string","description":"Short (3-5 words) summary of the task"},
-                    "prompt":{"type":"string","description":"Full task brief with objective, context, and deliverable"},
-                    "agent_type":{"type":"string","enum":targets},
-                    "resume_session_id":{
-                        "type":"string",
-                        "description":"Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid."
-                    },
-                    "inherit_context":{"type":"boolean","default":false}
-                },
-                "required":["description","prompt","agent_type"]
+                "properties":properties,
+                "required":required
             }),
         },
         ToolSpec {
@@ -131,6 +179,15 @@ impl DelegateToolProvider {
             .map_err(|error| ToolError::execution(error.to_string()))
     }
 
+    fn capabilities_param(
+        &self,
+        session: cookie_agent_protocol::SessionId,
+    ) -> Result<CapabilitiesParam, ToolError> {
+        self.engine
+            .delegate_capabilities_param(session)
+            .map_err(|error| ToolError::execution(error.to_string()))
+    }
+
     fn operation(
         ctx: &ToolPreparationContext,
         name: &str,
@@ -158,6 +215,58 @@ impl DelegateToolProvider {
             policy_label: agent_type.to_string(),
         })
     }
+}
+
+impl DelegateToolProvider {
+    /// Checks `args.capabilities` against this session's schema (section
+    /// 2.1 of the runtime delegation spec) and the daemon's runtimes now.
+    fn check_capabilities(
+        &self,
+        session: cookie_agent_protocol::SessionId,
+        args: &DelegateArgs,
+    ) -> Result<Option<Vec<crate::DelegatedCapability>>, ToolError> {
+        let param = self.capabilities_param(session)?;
+        let Some(items) = &args.capabilities else {
+            return if param == CapabilitiesParam::Required {
+                Err(ToolError::execution(
+                    "capabilities is required: this session has only `global` attached and no workspace, so name where the subagent works; call list_runtimes to see the runtimes",
+                ))
+            } else {
+                Ok(None)
+            };
+        };
+        if param == CapabilitiesParam::Absent {
+            return Err(ToolError::execution(
+                "unknown field `capabilities`, expected one of `description`, `prompt`, `agent_type`, `resume_session_id`, `inherit_context`",
+            ));
+        }
+        if args.resume_session_id.is_some() {
+            return Err(ToolError::execution(
+                "capabilities cannot be combined with resume_session_id: a resumed subagent keeps its own attachments",
+            ));
+        }
+        let capabilities = items
+            .iter()
+            .map(|item| parse_capability(&item.capability, item.workspace.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ToolError::execution)?;
+        self.engine
+            .check_delegated_capabilities(&capabilities)
+            .map_err(ToolError::execution)?;
+        Ok(Some(capabilities))
+    }
+}
+
+/// How an approval shows the capabilities a call gives its child.
+fn capabilities_display(capabilities: &[CapabilityArg]) -> String {
+    capabilities
+        .iter()
+        .map(|item| match &item.workspace {
+            Some(workspace) => format!("{} at {workspace}", item.capability),
+            None => item.capability.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 struct PreparedToolParts {
@@ -194,6 +303,11 @@ impl ToolProvider for DelegateToolProvider {
              - stop_background with the child's handle stops its current turn.\n\
              - Use get_subagent_result to read a child's full output; it does not wait.",
         );
+        if self.capabilities_param(ctx.session)? == CapabilitiesParam::Required {
+            body.push_str(
+                "\n\nThis session has no workspace: only `global` is attached. Work that needs files or commands goes to a subagent given `capabilities`, and list_runtimes shows the machines and runtimes you can name.",
+            );
+        }
         Ok(vec![PromptSection {
             title: "Available subagents".into(),
             body,
@@ -205,7 +319,10 @@ impl ToolProvider for DelegateToolProvider {
         Ok(if targets.is_empty() {
             Vec::new()
         } else {
-            Self::specs(&targets.iter().map(AgentId::as_str).collect::<Vec<_>>())
+            Self::specs(
+                &targets.iter().map(AgentId::as_str).collect::<Vec<_>>(),
+                self.capabilities_param(ctx.session)?,
+            )
         })
     }
 
@@ -254,6 +371,9 @@ impl ToolProvider for DelegateToolProvider {
                     entries.extend(args.resume_session_id.clone().map(|id| ("resume", id)));
                     if args.inherit_context {
                         entries.push(("inherit context", "yes".into()));
+                    }
+                    if let Some(capabilities) = &args.capabilities {
+                        entries.push(("runtimes", capabilities_display(capabilities)));
                     }
                     entries.push(("prompt", args.prompt));
                     base_presentation(
@@ -306,16 +426,30 @@ impl ToolProvider for DelegateToolProvider {
                 if !self.targets(ctx.session)?.contains(&args.agent_type) {
                     return Err(ToolError::execution("delegate target is not allowed"));
                 }
+                let capabilities = self.check_capabilities(ctx.session, &args)?;
                 let parts =
                     Self::operation(&ctx, "delegate_subagent", &args, "spawn", &args.agent_type)?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
+                let mut runtimes = capabilities
+                    .iter()
+                    .flatten()
+                    .map(|capability| capability.runtime_id.to_string())
+                    .collect::<Vec<_>>();
+                runtimes.dedup();
                 let executor = DelegateExecutor::Invoke {
                     engine: self.engine.clone(),
                     call_id: call.id,
                     args,
+                    capabilities,
                 };
-                (parts, normalized, executor)
+                let prepared =
+                    PreparedTool::new(parts.operation, normalized, None, Box::new(executor))?
+                        .with_policy_labels(vec![parts.policy_label])?;
+                // Each runtime the child gets is checked as
+                // `delegate@<runtime>`; an inheriting call as plain
+                // `delegate`.
+                return Ok(prepared.with_permission_runtimes(runtimes));
             }
             "get_subagent_result" => {
                 let mut args = parse_result(&call.arguments)?;
@@ -387,6 +521,7 @@ impl PreparedExecutor for DelegateExecutor {
                     engine,
                     call_id,
                     args,
+                    capabilities,
                 } => {
                     let background = context.background;
                     let handle = engine
@@ -400,6 +535,7 @@ impl PreparedExecutor for DelegateExecutor {
                             background,
                             resume_session_id: args.resume_session_id,
                             inherit_context: args.inherit_context,
+                            capabilities,
                         })
                         .await
                         .map_err(|error| ToolError::execution(error.to_string()))?;

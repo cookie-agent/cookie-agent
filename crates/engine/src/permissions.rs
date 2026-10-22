@@ -626,11 +626,12 @@ pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> C
 }
 
 /// The rules an agent document gives its runs (`docs/site/specs/memory.md`
-/// section 9.2): the document's own, then, for each memory action the
+/// section 9.2 and `docs/site/specs/runtime-delegation.md` section 4): the
+/// document's own, then, for each memory action and `list_runtimes` the
 /// document names no key for (with or without a runtime selector), the
 /// default of the agent's mode. `primary` and `all` agents may read and
-/// write all memory, `subagent` agents read all memory and write their own
-/// agent file, and internal agents get nothing.
+/// write all memory and list runtimes, `subagent` agents read all memory and
+/// write their own agent file, and internal agents get nothing.
 pub(crate) fn agent_permission_rules(
     document: &cookie_agent_config::AgentDocument,
 ) -> Vec<PermissionRule> {
@@ -643,6 +644,7 @@ pub(crate) fn agent_permission_rules(
         AgentMode::Primary | AgentMode::All => &[
             (PermissionAction::MEMORY, "*"),
             (PermissionAction::MEMORY_WRITE, "*"),
+            (PermissionAction::LIST_RUNTIMES, "*"),
         ],
         AgentMode::Subagent => &[
             (PermissionAction::MEMORY, "*"),

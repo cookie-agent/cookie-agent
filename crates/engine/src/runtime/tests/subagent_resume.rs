@@ -780,6 +780,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
             .resume_session_id
             .map(|session_id| session_id.to_string()),
         inherit_context: false,
+        capabilities: None,
     };
     let duplicate_engine = fixture.engine.clone();
     let duplicate_invocation = matching_redelivery.clone();

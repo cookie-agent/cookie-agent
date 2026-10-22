@@ -1936,6 +1936,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
         }],
         project: Some(crate::ProjectId::new("0199a1b2-c3d4").expect("project ID")),
         waiting_on: vec![WaitingOn::Goal, WaitingOn::BackgroundCall],
+        delegated_attachments: Vec::new(),
     };
 
     let encoded = serde_json::to_value(&meta).expect("serialize session metadata");
@@ -1965,6 +1966,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     // reads as something the session waits on.
     let idle = SessionMeta {
         waiting_on: Vec::new(),
+        delegated_attachments: Vec::new(),
         ..meta.clone()
     };
     let encoded = serde_json::to_value(&idle).expect("serialize idle metadata");
@@ -3324,6 +3326,83 @@ fn a_project_filter_is_a_project_id_or_none() {
 }
 
 #[test]
+fn delegated_attachments_added_round_trips_as_a_runless_state_event() {
+    let child = SessionId::new_v7();
+    let attachment = RuntimeAttachment {
+        name: AttachmentName::new("labpc_api").unwrap(),
+        runtime_id: RuntimeId::new("labpc").unwrap(),
+        capability: CapabilityName::coding(),
+        kind: RuntimeKind::new("coding").unwrap(),
+        workspace: Some("/srv/api".into()),
+    };
+    let event = StoredEvent {
+        engine_version: None,
+        origin: Some(EventOrigin::new("engine:delegation").unwrap()),
+        session_id: SessionId::new_v7(),
+        run_id: None,
+        seq: 4,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::DelegatedAttachmentsAdded {
+            child_session_id: child,
+            attachments: vec![attachment.clone()],
+        },
+    };
+    assert!(!event.payload.is_audit());
+    assert_eq!(event.validate(), Ok(()));
+    let value = serde_json::to_value(&event).unwrap();
+    assert_eq!(
+        value["payload"],
+        json!({
+            "type": "delegated_attachments_added",
+            "child_session_id": child,
+            "attachments": [{
+                "name": "labpc_api",
+                "runtime_id": "labpc",
+                "capability": "coding",
+                "kind": "coding",
+                "workspace": "/srv/api",
+            }],
+        })
+    );
+    assert_eq!(serde_json::from_value::<StoredEvent>(value).unwrap(), event);
+}
+
+#[test]
+fn session_meta_reads_without_delegated_attachments_and_keeps_them() {
+    let meta = SessionMeta {
+        delegated_attachments: vec![RuntimeAttachment {
+            name: AttachmentName::new("labpc_api").unwrap(),
+            runtime_id: RuntimeId::new("labpc").unwrap(),
+            capability: CapabilityName::coding(),
+            kind: RuntimeKind::new("coding").unwrap(),
+            workspace: Some("/srv/api".into()),
+        }],
+        ..meta_fixture()
+    };
+    let value = serde_json::to_value(&meta).unwrap();
+    assert_eq!(value["delegated_attachments"][0]["runtime_id"], "labpc");
+    assert_eq!(
+        serde_json::from_value::<SessionMeta>(value.clone()).unwrap(),
+        meta
+    );
+    // An older daemon sends none.
+    let mut older = value;
+    older
+        .as_object_mut()
+        .unwrap()
+        .remove("delegated_attachments");
+    assert!(
+        serde_json::from_value::<SessionMeta>(older)
+            .unwrap()
+            .delegated_attachments
+            .is_empty()
+    );
+    // None is left out.
+    let empty = serde_json::to_value(meta_fixture()).unwrap();
+    assert!(empty.get("delegated_attachments").is_none());
+}
+
+#[test]
 fn remembered_runtimes_and_forget_runtime_round_trip() {
     let machine = MachineInfo {
         name: MachineName::new("labpc").unwrap(),
@@ -3374,4 +3453,39 @@ fn remembered_runtimes_and_forget_runtime_round_trip() {
         )
         .is_err()
     );
+}
+
+fn meta_fixture() -> SessionMeta {
+    SessionMeta {
+        session_id: SessionId::new_v7(),
+        origin: SessionOrigin::Root,
+        short_id: None,
+        cwd_identity: CwdIdentity::new("test-workspace").unwrap(),
+        creation_selection: RunSelection {
+            agent: AgentId::new("primary").unwrap(),
+            model: ModelSelection {
+                model: "openai/gpt-5.6-sol".parse().unwrap(),
+                variant: None,
+            },
+            preset: None,
+        },
+        runtime_revision: revision("runtime"),
+        catalog_revision: revision("catalog"),
+        provider_state_revision: revision("providers"),
+        model_revision: revision("models"),
+        agent_revision: revision("agents"),
+        recipe_registry_revision: revision("recipes"),
+        manifest_revision: revision("manifest"),
+        title: None,
+        title_updated_seq: 0,
+        last_event_seq: 1,
+        last_activity: "2026-10-21T08:00:00Z".parse().unwrap(),
+        last_agent_activity: None,
+        status: SessionStatus::Idle,
+        skipped_events: Vec::new(),
+        attachments: Vec::new(),
+        project: None,
+        waiting_on: Vec::new(),
+        delegated_attachments: Vec::new(),
+    }
 }

@@ -101,11 +101,15 @@ pub(crate) fn reserved_tool_names() -> &'static std::collections::HashSet<String
 }
 
 /// Every base-layer tool as the engine publishes it, for the tool reference.
-/// `delegate_subagent` lists `delegate_target` as its only subagent.
+/// `delegate_subagent` lists `delegate_target` as its only subagent and
+/// shows `capabilities` as a root with `global` and a workspace sees it.
 #[must_use]
 pub fn base_layer_tool_specs(delegate_target: &str) -> Vec<ToolSpec> {
     let mut specs = vec![SkillTool::spec()];
-    specs.extend(DelegateToolProvider::specs(&[delegate_target]));
+    specs.extend(DelegateToolProvider::specs(
+        &[delegate_target],
+        crate::runtime::runtime_delegation::CapabilitiesParam::Optional,
+    ));
     specs.push(MessageToolProvider::spec());
     specs.push(GoalTools::get_spec());
     specs.push(GoalTools::update_spec());

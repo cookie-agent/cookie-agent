@@ -16,6 +16,7 @@ pub use convert::{TreeConversion, TreeUpgrade, upgrade_sessions};
 pub(crate) use fold::projection;
 use fold::refold;
 pub(crate) use fold::restart_stable_grant;
+pub(crate) use fold::same_place;
 use fold::*;
 pub(crate) use tree_load::TreeLoadObserver;
 pub(crate) use tree_load::TreeLoadProducts;

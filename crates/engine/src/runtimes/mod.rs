@@ -44,6 +44,8 @@ mod registry;
 mod remote;
 
 pub(crate) use builtin::{GlobalTemplate, LocalTemplate};
+#[cfg(test)]
+pub(crate) use builtin::{coding_capability, daemon_home};
 pub(crate) use composition::{ComposedTool, Composition, compose};
 pub(crate) use cookie_agent_runtime_api::reconnect::{ReconnectOutcome, ReconnectPolicy};
 pub use dial_in::DialInRefusal;

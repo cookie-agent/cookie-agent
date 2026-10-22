@@ -125,6 +125,13 @@
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
           "type": "string"
         },
+        "delegated_attachments": {
+          "description": "For a root session, the attachments its subagents brought that its\nown did not record yet, in the order they brought them: the fold of\nits `delegated_attachments_added` events (client protocol 1.10.0).\nIt only grows. Clients build a root's badges from `attachments`\nfollowed by these. Empty for a delegated session, from an older\ndaemon, and for a session whose metadata an older build wrote and\nthat has recorded nothing since.",
+          "items": {
+            "$ref": "#/$defs/RuntimeAttachment"
+          },
+          "type": "array"
+        },
         "last_activity": {
           "format": "date-time",
           "type": "string"

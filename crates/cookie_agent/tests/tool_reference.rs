@@ -1,6 +1,6 @@
 //! Renders the generated regions of `docs/site/reference/tools.md` from the
 //! built-in tool specs: the local coding runtime's tools, the engine's base
-//! layer, and the `global` runtime's memory tools.
+//! layer, and the `global` runtime's memory tools and `list_runtimes`.
 //!
 //! The page is written by hand around the regions. A region starts with a
 //! `<!-- generated: KEY -->` line and ends with `<!-- /generated -->`: the key
@@ -13,7 +13,7 @@
 use std::fmt::Write as _;
 
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
-use cookie_agent_engine::{base_layer_tool_specs, memory_tool_specs};
+use cookie_agent_engine::{base_layer_tool_specs, memory_tool_specs, runtimes_tool_spec};
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
 use serde_json::Value;
@@ -36,6 +36,7 @@ fn documented_specs() -> Vec<ToolSpec> {
         .expect("built-in tool specs");
     specs.extend(base_layer_tool_specs(DELEGATE_TARGET_PLACEHOLDER));
     specs.extend(memory_tool_specs());
+    specs.push(runtimes_tool_spec());
     specs
 }
 
@@ -45,7 +46,10 @@ fn availability(name: &str) -> Option<&'static str> {
         "skill" => "Only when at least one skill is visible to the session.",
         "delegate_subagent" => {
             "Only when the agent can delegate to at least one subagent at this depth. The \
-             `agent_type` enum lists those subagents; this page shows a placeholder."
+             `agent_type` enum lists those subagents; this page shows a placeholder. \
+             `capabilities` exists only in a root session with the `global` runtime attached: \
+             optional, as shown, when the root has other attachments too, and required when it \
+             has only `global`. Each runtime it names is checked as `delegate@<runtime>`."
         }
         "get_subagent_result" => {
             "Only when the agent can delegate to at least one subagent at this depth."
@@ -62,6 +66,11 @@ fn availability(name: &str) -> Option<&'static str> {
         "memory_write" | "memory_edit" | "memory_delete" => {
             "Only when `memory_read` is sent too. A delegated run may write only its own \
              agent's memory, `agent://<agent>`."
+        }
+        "list_runtimes" => {
+            "Only when the session has the `global` runtime attached and the agent or the \
+             session overlay has an `allow` or `ask` rule for `list_runtimes`, which `primary` \
+             and `all` agents have by default."
         }
         "read_artifact" => {
             "Always, whatever the agent's permission rules: it reads only output retained by \

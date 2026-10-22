@@ -2375,7 +2375,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
     let (endpoint, responses, captured) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Goal visibility test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n  write: deny\n  memory: deny\n---\nExercise goal tool visibility.\n",
+        "---\ndescription: Goal visibility test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n  write: deny\n  memory: deny\n  list_runtimes: deny\n---\nExercise goal tool visibility.\n",
     );
     fixture
         .engine

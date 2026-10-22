@@ -350,7 +350,6 @@ impl Engine {
         invocation_id: InvocationId,
         generation: u64,
     ) -> Result<DelegateHandle, EngineError> {
-        let admission_guard = self.inner.delegation.admission.lock().await;
         if invocation
             .prompt
             .starts_with(super::skills::RESERVED_STAGED_SKILL_PREFIX)
@@ -359,6 +358,25 @@ impl Engine {
                 "delegate prompt uses a reserved staged-skill prefix".into(),
             ));
         }
+        // The runtimes a root names start before anything is reserved, and
+        // outside the admission lock: a template may take seconds to start.
+        // A runtime that does not start fails the call with nothing created.
+        let delegated_attachments = match &invocation.capabilities {
+            Some(capabilities) => {
+                if invocation.resume_session_id.is_some() {
+                    return Err(EngineError::ToolFailed(
+                        "capabilities cannot be combined with resume_session_id: a resumed subagent keeps its own attachments".into(),
+                    ));
+                }
+                let parent = self.inner.store.get(invocation.parent_session_id)?;
+                Some(
+                    self.open_delegated_capabilities(&parent, capabilities)
+                        .await?,
+                )
+            }
+            None => None,
+        };
+        let admission_guard = self.inner.delegation.admission.lock().await;
         let staged_skill = self
             .inner
             .skills_runtime
@@ -654,6 +672,7 @@ impl Engine {
                 fingerprint,
                 request,
                 Some((invocation_id, generation)),
+                delegated_attachments,
             )
             .await
         {

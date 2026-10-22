@@ -600,12 +600,27 @@ fn permission_keys_take_a_runtime_selector() {
         Some(PermissionValue::Effect(PermissionEffect::Ask))
     ));
 
+    // `delegate@<runtime>` limits where a root delegates.
+    let document = "description: Root\nmode: primary\nenabled: true\nmodels: []\npermissions:\n  delegate: allow\n  delegate@labpc: deny\n";
+    let frontmatter =
+        serde_yaml::from_str::<AgentFrontmatter>(document).expect("delegate@labpc parses");
+    let (key, value) = frontmatter
+        .permissions
+        .get_index(1)
+        .expect("delegate@labpc");
+    let rules = value.rules(key);
+    assert_eq!(rules[0].action, PermissionAction::DELEGATE);
+    assert_eq!(
+        rules[0].runtime.as_ref().map(|runtime| runtime.as_str()),
+        Some("labpc")
+    );
+    assert_eq!(rules[0].effect, PermissionEffect::Deny);
+
     for rejected in [
         "bash@",
         "bash@LabPC",
         "bash@1lab",
         "Fetch@labpc",
-        "delegate@labpc",
         "message@labpc",
         "skill@labpc",
     ] {

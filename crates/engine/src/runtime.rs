@@ -75,6 +75,7 @@ mod output_capture;
 pub(crate) mod plugin_diagnostics;
 mod producer_claims;
 mod project_api;
+pub(crate) mod runtime_delegation;
 pub(crate) use project_api::EngineMemoryOwners;
 pub(crate) mod producers;
 mod prompt_blocks;
@@ -1038,10 +1039,15 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, memory_tools.as_ref())?;
         mcp.reserve_provider(memory_tools.as_ref())
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let runtimes_tool = Arc::new(crate::runtimes_tool::RuntimesTool::new());
+        reserve_provider_id(&mut provider_ids, runtimes_tool.as_ref())?;
+        mcp.reserve_provider(runtimes_tool.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         let plugins = Arc::new(crate::PluginRegistry::new(options.config.plugins.clone()));
         let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone()];
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
         global_providers.push(memory_tools.clone());
+        global_providers.push(runtimes_tool.clone());
         // Each plugin's tools compose under the plugin's name.
         global_providers.extend(plugins.tool_providers());
         let runtimes = Arc::new(crate::runtimes::RuntimeRegistry::new(
@@ -1115,6 +1121,7 @@ impl Engine {
             }),
         };
         memory_tools.bind(&engine);
+        runtimes_tool.bind(&engine);
         // Engine unit tests compose their own base-layer stand-ins.
         #[cfg(not(test))]
         if let Err(error) = engine.register_base_layer() {

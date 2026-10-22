@@ -164,6 +164,7 @@ fn projection_fold_with(
         attachments: Vec::new(),
         project: None,
         waiting_on: Vec::new(),
+        delegated_attachments: Vec::new(),
     };
     let mut projection = SessionProjection {
         meta,
@@ -277,6 +278,19 @@ impl SessionProjection {
             }
             EventPayload::SessionProjectSet { project } => {
                 self.meta.project = project.clone();
+                durable_meta = true;
+            }
+            EventPayload::DelegatedAttachmentsAdded { attachments, .. } => {
+                for attachment in attachments {
+                    if !self
+                        .meta
+                        .delegated_attachments
+                        .iter()
+                        .any(|known| same_place(known, attachment))
+                    {
+                        self.meta.delegated_attachments.push(attachment.clone());
+                    }
+                }
                 durable_meta = true;
             }
             EventPayload::RuntimeAttached { .. } | EventPayload::RuntimeDetached { .. } => {
@@ -676,4 +690,15 @@ thread_local! {
     /// Test-only: skips the per-append reference fold, so a timing test
     /// measures the append path rather than the differential check.
     pub(super) static SKIP_REFERENCE_FOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether two attachments name the same runtime capability at the same
+/// workspace, whatever their names.
+pub(crate) fn same_place(
+    left: &cookie_agent_protocol::RuntimeAttachment,
+    right: &cookie_agent_protocol::RuntimeAttachment,
+) -> bool {
+    left.runtime_id == right.runtime_id
+        && left.capability == right.capability
+        && left.workspace == right.workspace
 }

@@ -126,7 +126,7 @@ fn refers_to(attachment: &RuntimeAttachment, instance: &RuntimeInstance) -> bool
 
 /// `instance` added to `attachments` under its reported name. Attaching one
 /// instance twice is an error.
-fn push_instance(
+pub(crate) fn push_instance(
     attachments: &mut Vec<RuntimeAttachment>,
     instance: &RuntimeInstance,
 ) -> Result<RuntimeAttachment, EngineError> {
@@ -418,22 +418,6 @@ impl Engine {
             Ok(())
         })
         .await
-    }
-
-    /// Rejects a delegation narrowing that names an attachment the parent
-    /// does not have.
-    /// The attachments a delegated child of `parent` starts with: those of
-    /// the root session of `parent`'s tree, in its order.
-    pub(crate) fn delegated_attachments(
-        &self,
-        parent: &SessionProjection,
-    ) -> Result<Vec<RuntimeAttachment>, EngineError> {
-        match parent.meta.origin {
-            cookie_agent_protocol::SessionOrigin::Root => Ok(self.attachments_of(parent)),
-            cookie_agent_protocol::SessionOrigin::Delegated {
-                root_session_id, ..
-            } => Ok(self.attachments_of(&*self.inner.store.get(root_session_id)?)),
-        }
     }
 
     /// Registers a runtime template so sessions can attach it. The engine

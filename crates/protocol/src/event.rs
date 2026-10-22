@@ -348,6 +348,15 @@ pub struct SessionMeta {
     /// nothing since.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting_on: Vec<WaitingOn>,
+    /// For a root session, the attachments its subagents brought that its
+    /// own did not record yet, in the order they brought them: the fold of
+    /// its `delegated_attachments_added` events (client protocol 1.10.0).
+    /// It only grows. Clients build a root's badges from `attachments`
+    /// followed by these. Empty for a delegated session, from an older
+    /// daemon, and for a session whose metadata an older build wrote and
+    /// that has recorded nothing since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegated_attachments: Vec<crate::RuntimeAttachment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -399,6 +408,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             project: Option<ProjectId>,
             #[serde(default)]
             waiting_on: Vec<WaitingOn>,
+            #[serde(default)]
+            delegated_attachments: Vec<crate::RuntimeAttachment>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -424,6 +435,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             attachments: w.attachments,
             project: w.project,
             waiting_on: w.waiting_on,
+            delegated_attachments: w.delegated_attachments,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -2878,6 +2890,15 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<ProjectId>,
     },
+    /// A subagent of this root session, `child_session_id`, was created with
+    /// `attachments` that the root recorded neither as its own nor as
+    /// delegated before (client protocol 1.10.0). Only root sessions record
+    /// it; `SessionMeta.delegated_attachments` is its fold.
+    DelegatedAttachmentsAdded {
+        child_session_id: SessionId,
+        #[schemars(length(min = 1))]
+        attachments: Vec<crate::RuntimeAttachment>,
+    },
     /// In place of a record of type `omitted_type` that the writer
     /// deliberately did not carry over, at that record's sequence, run, and
     /// time: a fork writes it for each of its source's delegation records,
@@ -2897,6 +2918,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "attempt_abandoned",
     "context_checkpoint_committed",
     "delegate_child_terminated",
+    "delegated_attachments_added",
     "delegated_context_seeded",
     "delegation_finished",
     "delegation_progressed",
@@ -3087,6 +3109,7 @@ impl EventPayload {
             | Self::AgentMdLoaded { .. }
             | Self::MemoryLoaded { .. }
             | Self::SessionProjectSet { .. }
+            | Self::DelegatedAttachmentsAdded { .. }
             | Self::GoalActivated { .. }
             | Self::GoalChecklistRevised { .. }
             | Self::GoalLifecycleChanged { .. }
@@ -3180,6 +3203,7 @@ impl EventPayload {
                 | Self::ProducerMessageDiscarded { .. }
                 | Self::SessionTitleCommitted { .. }
                 | Self::SessionProjectSet { .. }
+                | Self::DelegatedAttachmentsAdded { .. }
                 | Self::UserInputAdmitted { .. }
                 | Self::UserInputRecalled { .. }
                 | Self::UserInputQueued { .. }

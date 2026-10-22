@@ -107,6 +107,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         [
             "bash",
             "edit",
+            "list_runtimes",
             "memory_delete",
             "memory_edit",
             "memory_read",
@@ -243,6 +244,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .collect::<Vec<_>>(),
         // A primary agent that names no memory rule gets them by default.
         [
+            "list_runtimes",
             "memory_delete",
             "memory_edit",
             "memory_read",
@@ -297,6 +299,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "bash",
             "delegate",
             "edit",
+            "list_runtimes",
             "memory_delete",
             "memory_edit",
             "memory_read",
@@ -404,6 +407,7 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             .collect::<Vec<_>>(),
         [
             "alpha",
+            "list_runtimes",
             "memory_delete",
             "memory_edit",
             "memory_read",

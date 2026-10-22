@@ -24,6 +24,7 @@ async fn ordinary_delegate_rejects_forged_staged_skill_prefix() {
             background: false,
             resume_session_id: None,
             inherit_context: false,
+            capabilities: None,
         })
         .await
         .expect_err("reserved prompt must fail admission");

@@ -152,16 +152,30 @@ impl Engine {
             .permission_overlay
             .clone();
         let grants = self.skill_grants_for_session(active.session, prepared_call.attachment());
-        Ok(self.inner.permissions.decide_operation_with_grants(
-            &active.policy.agent,
-            Some(&permission_overlay),
-            grants.as_ref(),
-            prepared.operation(),
-            prepared.policy_labels(),
-            prepared_call
-                .origin()
-                .map_or(PermissionScope::BASE, PermissionScope::of),
-        ))
+        let decide = |scope: PermissionScope<'_>| {
+            self.inner.permissions.decide_operation_with_grants(
+                &active.policy.agent,
+                Some(&permission_overlay),
+                grants.as_ref(),
+                prepared.operation(),
+                prepared.policy_labels(),
+                scope,
+            )
+        };
+        let runtimes = prepared.permission_runtimes();
+        if runtimes.is_empty() {
+            return Ok(decide(
+                prepared_call
+                    .origin()
+                    .map_or(PermissionScope::BASE, PermissionScope::of),
+            ));
+        }
+        // A call that acts on several runtimes is checked as
+        // `action@runtime` under each; the strictest decision wins, per
+        // resource.
+        Ok(strictest_decision(runtimes.iter().map(|runtime| {
+            decide(PermissionScope::runtime(runtime, None))
+        })))
     }
 
     pub(super) async fn resolve_tool_permission(
@@ -1506,6 +1520,40 @@ pub(crate) fn apply_permission_resource(
             Some(resource),
         )),
         None => Ok((prepared, None)),
+    }
+}
+
+/// The strictest of `decisions` over one operation, resource by resource:
+/// deny over ask over allow. Allowed when there are none.
+pub(crate) fn strictest_decision(
+    decisions: impl IntoIterator<Item = PermissionDecision>,
+) -> PermissionDecision {
+    let mut decisions = decisions.into_iter();
+    let Some(mut decision) = decisions.next() else {
+        return PermissionDecision::permission_free();
+    };
+    for other in decisions {
+        for (evaluation, candidate) in decision.evaluations.iter_mut().zip(other.evaluations) {
+            if effect_rank(candidate.effect) > effect_rank(evaluation.effect) {
+                *evaluation = candidate;
+            }
+        }
+    }
+    decision.effect = decision
+        .evaluations
+        .iter()
+        .map(|evaluation| evaluation.effect)
+        .max_by_key(|effect| effect_rank(*effect))
+        .unwrap_or(cookie_agent_protocol::PermissionEffect::Allow);
+    decision
+}
+
+/// How strict a permission effect is: deny over ask over allow.
+const fn effect_rank(effect: cookie_agent_protocol::PermissionEffect) -> u8 {
+    match effect {
+        cookie_agent_protocol::PermissionEffect::Allow => 0,
+        cookie_agent_protocol::PermissionEffect::Ask => 1,
+        cookie_agent_protocol::PermissionEffect::Deny => 2,
     }
 }
 

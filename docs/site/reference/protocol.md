@@ -815,6 +815,20 @@ a goal activated, paused, resumed, completed, or cancelled; a background
 call detached or reported; a child's turn started or ended; a delegation or
 external registration made or dropped. A 1.8 daemon sends no `waiting_on`.
 
+### Where a root's subagents work
+
+Since 1.10.0 a root session's `SessionMeta` carries `delegated_attachments`:
+the attachments its subagents were created with that it records neither as
+its own `attachments` nor as delegated before, in the order they brought
+them, `global` aside, and the same runtime, capability, and workspace once.
+It is the fold of the root's `delegated_attachments_added` events (see
+[Events](events.md)), so the metadata cache keeps it. It only grows: a child
+that finishes or is evicted, and a detach on the root, leave it as it is. A
+client builds a root's badges from `attachments` followed by
+`delegated_attachments` (`cookie_agent_client_state::badges`), and a child's
+from its own `attachments` only. A delegated session's list is empty, and a
+1.9 daemon sends none.
+
 ### User steering
 
 `run.steer` requires an active target run. It immediately appends
@@ -976,7 +990,7 @@ notification methods they do not know.
 
 | `change` | Fields | Sent when |
 |---|---|---|
-| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, project, or what it waits on (`waiting_on`) change |
+| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, delegated attachments, project, or what it waits on (`waiting_on`) change |
 | `removed` | `session_id` | A revert deleted a delegated session, or `session.delete` deleted a session of a tree; the connection's subscription to it has ended |
 | `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
 | `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |

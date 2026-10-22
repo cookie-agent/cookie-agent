@@ -1362,6 +1362,7 @@ pub(super) fn reduce_event_from(
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
         | EventPayload::SessionProjectSet { .. }
+        | EventPayload::DelegatedAttachmentsAdded { .. }
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}

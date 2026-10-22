@@ -2128,7 +2128,11 @@ fn memory_defaults_follow_the_agent_mode() {
         let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
         assert_eq!(
             rule_triples(&rules),
-            [triple("memory", "*"), triple("memory_write", "*")],
+            [
+                triple("memory", "*"),
+                triple("memory_write", "*"),
+                triple("list_runtimes", "*")
+            ],
             "{mode:?}"
         );
     }
@@ -2160,7 +2164,43 @@ fn a_declared_memory_key_replaces_that_actions_default_only() {
                 "*".to_owned(),
                 PermissionEffect::Allow
             ),
+            (
+                "list_runtimes".to_owned(),
+                "*".to_owned(),
+                PermissionEffect::Allow
+            ),
         ]
+    );
+    // `list_runtimes` is a subagent's only when its document grants it, and
+    // a primary agent's document can turn it off.
+    let granted = agent_document(
+        "worker",
+        AgentMode::Subagent,
+        &[("list_runtimes", effect_value(PermissionEffect::Allow))],
+    );
+    assert!(
+        rule_triples(&super::agent_permission_rules(&granted)).contains(&(
+            "list_runtimes".to_owned(),
+            "*".to_owned(),
+            PermissionEffect::Allow
+        ))
+    );
+    let denied = agent_document(
+        "worker",
+        AgentMode::Primary,
+        &[("list_runtimes", effect_value(PermissionEffect::Deny))],
+    );
+    let denied = rule_triples(&super::agent_permission_rules(&denied));
+    assert_eq!(
+        denied
+            .iter()
+            .filter(|(action, _, _)| action == "list_runtimes")
+            .collect::<Vec<_>>(),
+        [&(
+            "list_runtimes".to_owned(),
+            "*".to_owned(),
+            PermissionEffect::Deny
+        )]
     );
     // A key with a runtime selector declares the action too.
     let document = agent_document(

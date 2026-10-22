@@ -331,6 +331,7 @@ fn left_behind_by_fork(payload: &EventPayload) -> bool {
         EventPayload::DelegationReserved { .. }
             | EventPayload::DelegationProgressed { .. }
             | EventPayload::DelegationFinished { .. }
+            | EventPayload::DelegatedAttachmentsAdded { .. }
     )
 }
 
@@ -3125,6 +3126,12 @@ fn validate_record_incremental(
         EventPayload::SessionProjectSet { .. } => {
             if record.run_id.is_some() {
                 return corrupt(path, "SessionProjectSet must be runless");
+            }
+        }
+        // A root records its subagents' attachments as they are created.
+        EventPayload::DelegatedAttachmentsAdded { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "DelegatedAttachmentsAdded must be runless");
             }
         }
         EventPayload::GoalActivated { .. }

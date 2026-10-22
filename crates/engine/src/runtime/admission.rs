@@ -93,6 +93,7 @@ impl Engine {
         request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
         admission: Option<(InvocationId, u64)>,
+        attachments: Option<Vec<cookie_agent_protocol::RuntimeAttachment>>,
     ) -> Result<SessionMeta, EngineError> {
         let child_runtime = Arc::clone(&child_policy.runtime);
         let child_title = request.title.clone();
@@ -222,6 +223,14 @@ impl Engine {
         }
         if let Ok(existing) = self.inner.store.get(entry.reservation.child_session_id) {
             if resume_session_id.is_none() {
+                // A redelivery after a crash may have missed the root's
+                // record of the child's attachments.
+                self.record_delegated_attachments(
+                    delegated_root(&parent.meta),
+                    existing.meta.session_id,
+                    self.attachments_of(&existing),
+                )
+                .await?;
                 self.ensure_delegated_context_seed(
                     existing.meta.session_id,
                     invocation_id,
@@ -283,10 +292,14 @@ impl Engine {
                 child_policy.selected_suffix[0].manifest_revision.clone(),
             ),
         };
-        // The child inherits the root session's attachments and records them
-        // itself so its log is self-describing.
-        let attachments =
-            super::attachments::initial_attachment_events(&self.delegated_attachments(&parent)?);
+        // The child starts with the capabilities its root named, or inherits
+        // its parent's attachments, and records them itself so its log is
+        // self-describing.
+        let child_attachments = match attachments {
+            Some(attachments) => attachments,
+            None => self.inherited_attachments(&parent)?,
+        };
+        let attachments = super::attachments::initial_attachment_events(&child_attachments);
         let store = self.inner.store.clone();
         self.spawn_admission_blocking(move || {
             store.create_with_initial(
@@ -298,6 +311,8 @@ impl Engine {
         })
         .await?;
         self.spawn_actor(child_session_id)?;
+        self.record_delegated_attachments(root, child_session_id, child_attachments)
+            .await?;
         self.ensure_delegated_context_seed(child_session_id, invocation_id, seeded_context)
             .await?;
         self.ensure_delegated_title(child_session_id, invocation_id, child_title)
@@ -1032,5 +1047,15 @@ impl Drop for AdmissionGuard {
                 }
             });
         }
+    }
+}
+
+/// The root session of a child of `parent`.
+fn delegated_root(parent: &SessionMeta) -> SessionId {
+    match parent.origin {
+        SessionOrigin::Delegated {
+            root_session_id, ..
+        } => root_session_id,
+        _ => parent.session_id,
     }
 }

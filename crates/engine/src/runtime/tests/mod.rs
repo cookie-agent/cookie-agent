@@ -35,6 +35,7 @@ mod prompts;
 mod providers;
 mod recovery;
 mod replay;
+mod runtime_delegation;
 mod runtimes;
 mod session_delete;
 mod sessions;

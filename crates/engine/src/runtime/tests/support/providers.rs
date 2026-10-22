@@ -750,6 +750,7 @@ impl PreparedExecutor for TestDelegateExecutor {
                     background,
                     resume_session_id: args.resume_session_id,
                     inherit_context: args.inherit_context,
+                    capabilities: None,
                 })
                 .await
                 .map_err(|error| ToolError::execution(error.to_string()))?;

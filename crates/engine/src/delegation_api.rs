@@ -33,6 +33,22 @@ pub struct DelegateInvocation {
     /// the parent's tree at admission.
     pub resume_session_id: Option<String>,
     pub inherit_context: bool,
+    /// The runtime capabilities a root gives the child in place of its own
+    /// attachments (`docs/site/specs/runtime-delegation.md` section 2);
+    /// `None` inherits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<DelegatedCapability>>,
+}
+
+/// One runtime capability a delegated child works through.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DelegatedCapability {
+    pub runtime_id: cookie_agent_protocol::RuntimeId,
+    pub capability: cookie_agent_protocol::CapabilityName,
+    /// The directory on that runtime's machine, as the model wrote it;
+    /// required exactly when the capability takes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// Stable child identity returned to the delegate tool provider.

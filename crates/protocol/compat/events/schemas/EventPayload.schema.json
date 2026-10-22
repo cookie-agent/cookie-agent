@@ -4300,6 +4300,51 @@
       ],
       "type": "object"
     },
+    "RuntimeAttachment": {
+      "description": "One runtime a session is attached to.",
+      "properties": {
+        "capability": {
+          "description": "The capability of the runtime the session uses.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "kind": {
+          "description": "The capability's self-declared kind.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "Session-unique attachment name; the tool prefix on collisions.",
+          "maxLength": 40,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "type": "string"
+        },
+        "runtime_id": {
+          "description": "The runtime the capability instance belongs to.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Canonical workspace path the runtime reported; absent without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "runtime_id",
+        "capability",
+        "kind"
+      ],
+      "type": "object"
+    },
     "RuntimeRevisions": {
       "description": "The revisions of the runtime a session, run, or delegation was frozen\nagainst.",
       "properties": {
@@ -7270,6 +7315,32 @@
       },
       "required": [
         "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A subagent of this root session, `child_session_id`, was created with\n`attachments` that the root recorded neither as its own nor as\ndelegated before (client protocol 1.10.0). Only root sessions record\nit; `SessionMeta.delegated_attachments` is its fold.",
+      "properties": {
+        "attachments": {
+          "items": {
+            "$ref": "#/$defs/RuntimeAttachment"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "child_session_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "type": {
+          "const": "delegated_attachments_added",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "child_session_id",
+        "attachments"
       ],
       "type": "object"
     },

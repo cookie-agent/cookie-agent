@@ -26,6 +26,7 @@ mod projects;
 pub(crate) mod runtime;
 mod runtime_snapshot;
 mod runtimes;
+mod runtimes_tool;
 pub mod session;
 #[cfg(test)]
 mod test_support;
@@ -36,7 +37,7 @@ mod usage;
 pub use base_tools::base_layer_tool_specs;
 pub use cookie_agent_mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;
-pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
+pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation, DelegatedCapability};
 pub use machines::MachineError;
 pub use memory_tools::memory_tool_specs;
 pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
@@ -67,6 +68,7 @@ pub use runtimes::{
     RuntimeListingState, RuntimeTemplate, RuntimeTemplateSummary, StartError, StartedRuntime,
     ToolLayer,
 };
+pub use runtimes_tool::runtimes_tool_spec;
 pub use session::TailOwner;
 
 // The tool API, imported once for the engine's own modules.

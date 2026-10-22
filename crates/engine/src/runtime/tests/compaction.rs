@@ -970,7 +970,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: Recent-tail compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny }\n---\nTest recent-tail compaction.\n",
+            "---\ndescription: Recent-tail compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, list_runtimes: deny }\n---\nTest recent-tail compaction.\n",
             None,
             None,
             false,

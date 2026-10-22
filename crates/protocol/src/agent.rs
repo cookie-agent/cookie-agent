@@ -50,9 +50,11 @@ impl PermissionAction {
     /// Writing, editing, and deleting memory (`memory_write`,
     /// `memory_edit`, `memory_delete`).
     pub const MEMORY_WRITE: Self = Self(Cow::Borrowed("memory_write"));
+    /// Listing the daemon's machines and runtimes (`list_runtimes`).
+    pub const LIST_RUNTIMES: Self = Self(Cow::Borrowed("list_runtimes"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 10] = [
+    pub const BUILT_IN: [Self; 11] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -63,6 +65,7 @@ impl PermissionAction {
         Self::WEBFETCH,
         Self::MEMORY,
         Self::MEMORY_WRITE,
+        Self::LIST_RUNTIMES,
     ];
 
     pub const MAX_LEN: usize = 32;
@@ -101,7 +104,8 @@ impl PermissionAction {
     }
 
     /// Whether the action belongs to the daemon's base-layer tools, which no
-    /// runtime selector reaches.
+    /// runtime selector reaches, except `delegate@<runtime>`: it checks a
+    /// delegation that gives the child that runtime.
     #[must_use]
     pub fn is_base_layer(&self) -> bool {
         *self == Self::DELEGATE || *self == Self::MESSAGE || *self == Self::SKILL
