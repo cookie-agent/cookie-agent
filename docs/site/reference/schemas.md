@@ -10,11 +10,12 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 1.9.0 | 1.x |
+| Client protocol | 1.10.0 | 1.x |
 | Plugin protocol | 1.3.0 | 1.x |
 | Runtime protocol | 1.3.0 | 1.x |
 | Session history (events JSONL) | history format 1 | format 1; older formats are converted |
 | Session metadata | unversioned | unversioned current shape |
+| Machine registry (`machines.json`) | 2 | 1 (read with no runtime records), 2 |
 | Catalog cache | 2 | 2 |
 | Provider store | 3 | 3 |
 | Family recipe registry | 1 | 1 |
@@ -22,7 +23,7 @@ emit only their current version and reject unsupported versions.
 
 The three protocols have semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes: the
-client protocol `CLIENT_PROTOCOL_VERSION` (`1.9.0`), the plugin protocol
+client protocol `CLIENT_PROTOCOL_VERSION` (`1.10.0`), the plugin protocol
 `PLUGIN_PROTOCOL_VERSION` (`1.3.0`), and the runtime protocol
 `RUNTIME_PROTOCOL_VERSION` (`1.3.0`), all in `cookie_agent_protocol`. All
 three froze at `1.0.0`. Each handshake sends its side's version and accepts a

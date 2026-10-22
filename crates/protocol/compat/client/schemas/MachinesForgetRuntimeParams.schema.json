@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Drop the record of a runtime that is not connected, so the daemon no\nlonger remembers where it ran (client protocol 1.10.0). A pin stays.",
+  "properties": {
+    "runtime": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "runtime"
+  ],
+  "title": "MachinesForgetRuntimeParams",
+  "type": "object"
+}

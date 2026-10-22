@@ -540,6 +540,12 @@ fn machine_error(error: &cookie_agent_engine::MachineError) -> errors::ErrorBuil
         MachineError::NotPinned(runtime) => errors::RUNTIME_NOT_PINNED
             .error()
             .field("runtime", runtime.as_str()),
+        MachineError::NotRemembered(runtime) => errors::RUNTIME_NOT_REMEMBERED
+            .error()
+            .field("runtime", runtime.as_str()),
+        MachineError::StillConnected(runtime) => errors::RUNTIME_STILL_CONNECTED
+            .error()
+            .field("runtime", runtime.as_str()),
         MachineError::Store(_) => errors::MACHINE_STORE_FAILED.error(),
     }
 }

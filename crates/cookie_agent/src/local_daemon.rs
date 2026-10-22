@@ -276,6 +276,7 @@ mod tests {
             ids: ids.iter().map(|id| (*id).to_owned()).collect(),
             pinned: Vec::new(),
             connected: Vec::new(),
+            remembered: Vec::new(),
             platform: None,
             memories: 0,
         }

@@ -9,8 +9,8 @@ use cookie_agent_protocol::{
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum MachineCommand {
-    /// List the machines: their machine IDs, pinned and connected runtimes,
-    /// platform, and memories.
+    /// List the machines: their machine IDs, pinned, connected, and
+    /// remembered offline runtimes, platform, and memories.
     List,
     /// Rename a machine; its memory folder moves with it.
     Rename {
@@ -32,6 +32,9 @@ pub(crate) enum MachineCommand {
     },
     /// Remove a machine that has no connected runtimes and no memories.
     Forget { machine: MachineName },
+    /// Forget where an offline runtime ran, so it is no longer listed on
+    /// its machine.
+    ForgetRuntime { runtime: RuntimeId },
 }
 
 pub(crate) async fn run_machine(
@@ -102,6 +105,13 @@ pub(crate) async fn run_machine_with(
                 .context("machines.forget failed")?;
             Ok(vec![format!("Forgot machine {machine}.")])
         }
+        MachineCommand::ForgetRuntime { runtime } => {
+            client
+                .forget_machine_runtime(runtime.clone())
+                .await
+                .context("machines.forget_runtime failed")?;
+            Ok(vec![format!("Forgot where runtime {runtime} ran.")])
+        }
     }
 }
 
@@ -131,6 +141,7 @@ fn machine_block(machine: &MachineInfo) -> Vec<String> {
             let why = match runtime.assigned_by {
                 MachineAssignment::Pinned => "pinned",
                 MachineAssignment::MachineId => "by machine ID",
+                MachineAssignment::LastSeen => "last seen here",
                 MachineAssignment::Unknown => "for a reason this build does not know",
             };
             format!("{} ({why})", runtime.runtime_id)
@@ -138,6 +149,22 @@ fn machine_block(machine: &MachineInfo) -> Vec<String> {
         .collect::<Vec<_>>();
     if !connected.is_empty() {
         lines.push(format!("  connected: {}", connected.join(", ")));
+    }
+    let offline = machine
+        .remembered
+        .iter()
+        .map(|runtime| {
+            let seen = runtime.last_seen.strftime("%Y-%m-%d %H:%M UTC");
+            match runtime.assigned_by {
+                MachineAssignment::Pinned => {
+                    format!("{} (pinned, last seen {seen})", runtime.runtime_id)
+                }
+                _ => format!("{} (last seen {seen})", runtime.runtime_id),
+            }
+        })
+        .collect::<Vec<_>>();
+    if !offline.is_empty() {
+        lines.push(format!("  offline: {}", offline.join(", ")));
     }
     if !machine.pinned.is_empty() {
         let pinned = machine

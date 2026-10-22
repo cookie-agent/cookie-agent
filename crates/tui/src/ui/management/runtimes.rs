@@ -584,6 +584,7 @@ fn runtime_placement(assigned_by: Option<MachineAssignment>, pinned: bool) -> &'
         (None, _) => "pinned, not connected",
         (Some(MachineAssignment::Pinned), _) | (Some(_), true) => "pinned",
         (Some(MachineAssignment::MachineId), false) => "by machine ID",
+        (Some(MachineAssignment::LastSeen), false) => "last seen here",
         (Some(MachineAssignment::Unknown), false) => "connected",
     }
 }
@@ -861,6 +862,7 @@ pub(in crate::ui) fn sample_machines() -> MachinesListResult {
                 ids: vec!["id-labpc".into()],
                 pinned: vec![RuntimeId::new("labpc").unwrap()],
                 connected: vec![runtime("labpc", MachineAssignment::Pinned)],
+                remembered: Vec::new(),
                 platform: Some("linux".into()),
                 memories: 1,
             },
@@ -872,6 +874,7 @@ pub(in crate::ui) fn sample_machines() -> MachinesListResult {
                     runtime("global", MachineAssignment::MachineId),
                     runtime("local", MachineAssignment::MachineId),
                 ],
+                remembered: Vec::new(),
                 platform: Some("linux".into()),
                 memories: 0,
             },

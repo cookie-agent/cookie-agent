@@ -527,6 +527,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::MachinesForgetParams,
     ) -> Result<crate::MachinesListResult, ServerFault>;
+    /// Drops the record of a runtime that is not connected.
+    async fn forget_machine_runtime(
+        &self,
+        params: crate::MachinesForgetRuntimeParams,
+    ) -> Result<crate::MachinesListResult, ServerFault>;
     /// Lists memory files.
     async fn list_memory(
         &self,
@@ -1078,6 +1083,9 @@ async fn dispatch<S: ServerProtocol>(
         crate::MACHINES_UNASSIGN_METHOD => value(server.unassign_machine(decode(params)?).await?),
         crate::MACHINES_MERGE_METHOD => value(server.merge_machines(decode(params)?).await?),
         crate::MACHINES_FORGET_METHOD => value(server.forget_machine(decode(params)?).await?),
+        crate::MACHINES_FORGET_RUNTIME_METHOD => {
+            value(server.forget_machine_runtime(decode(params)?).await?)
+        }
         crate::MEMORY_LIST_METHOD => value(server.list_memory(decode_default(params)?).await?),
         crate::MEMORY_READ_METHOD => value(server.read_memory(decode(params)?).await?),
         crate::MEMORY_WRITE_METHOD => value(server.write_memory(decode(params)?).await?),

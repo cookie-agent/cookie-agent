@@ -3322,3 +3322,56 @@ fn a_project_filter_is_a_project_id_or_none() {
     let params: SessionListParams = serde_json::from_value(json!({"project": "none"})).unwrap();
     assert_eq!(params.project, Some(ProjectFilter::None));
 }
+
+#[test]
+fn remembered_runtimes_and_forget_runtime_round_trip() {
+    let machine = MachineInfo {
+        name: MachineName::new("labpc").unwrap(),
+        ids: vec!["id-labpc".into()],
+        pinned: Vec::new(),
+        connected: Vec::new(),
+        remembered: vec![RememberedRuntime {
+            runtime_id: RuntimeId::new("labpc").unwrap(),
+            assigned_by: MachineAssignment::LastSeen,
+            platform: Some("linux".into()),
+            home: Some("/home/u".into()),
+            last_seen: "2026-10-21T08:00:00Z".parse().unwrap(),
+        }],
+        platform: None,
+        memories: 0,
+    };
+    let value = serde_json::to_value(&machine).unwrap();
+    assert_eq!(
+        value["remembered"],
+        json!([{
+            "runtime_id": "labpc",
+            "assigned_by": "last_seen",
+            "platform": "linux",
+            "home": "/home/u",
+            "last_seen": "2026-10-21T08:00:00Z",
+        }])
+    );
+    assert_eq!(
+        serde_json::from_value::<MachineInfo>(value.clone()).unwrap(),
+        machine
+    );
+    // An older daemon lists no remembered runtimes.
+    let mut older = value;
+    older.as_object_mut().unwrap().remove("remembered");
+    assert!(
+        serde_json::from_value::<MachineInfo>(older)
+            .unwrap()
+            .remembered
+            .is_empty()
+    );
+    // The command is strict.
+    let params: MachinesForgetRuntimeParams =
+        serde_json::from_value(json!({"runtime": "labpc"})).unwrap();
+    assert_eq!(params.runtime.as_str(), "labpc");
+    assert!(
+        serde_json::from_value::<MachinesForgetRuntimeParams>(
+            json!({"runtime": "labpc", "machine": "x"})
+        )
+        .is_err()
+    );
+}

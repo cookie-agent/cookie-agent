@@ -13,14 +13,26 @@ pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
             .runtime_templates()
             .into_iter()
             .filter_map(|template| {
+                // A runtime this process has not seen connected shows what
+                // the registry remembers of it.
+                let remembered = (!template.listing.connected)
+                    .then(|| engine.remembered_runtime(&template.runtime_id))
+                    .flatten();
+                let (platform, home) = match remembered {
+                    Some(remembered) => (
+                        template.listing.platform.or(remembered.platform),
+                        template.listing.home.or(remembered.home),
+                    ),
+                    None => (template.listing.platform, template.listing.home),
+                };
                 Some(RuntimeListing {
                     runtime_id: RuntimeId::new(template.runtime_id.as_str()).ok()?,
                     lifetime: template.lifetime,
                     connected: template.listing.connected,
                     capabilities: template.listing.capabilities,
-                    platform: template.listing.platform,
+                    platform,
                     machine: engine.runtime_machine(&template.runtime_id),
-                    home: template.listing.home,
+                    home,
                     message: template.listing.message,
                 })
             })

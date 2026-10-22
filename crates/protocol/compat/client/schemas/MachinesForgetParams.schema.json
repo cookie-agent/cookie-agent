@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Remove a machine that has no connected runtimes and no memories.",
+  "description": "Remove a machine that has no connected runtimes and no memories. The\nrecords of runtimes remembered on it go with it.",
   "properties": {
     "machine": {
       "maxLength": 32,

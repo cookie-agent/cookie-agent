@@ -12,6 +12,11 @@
           "const": "machine_id",
           "description": "The machine stands for the machine ID the runtime reports.",
           "type": "string"
+        },
+        {
+          "const": "last_seen",
+          "description": "The runtime is not connected, and the machine stands for the\nmachine ID it reported when the daemon last saw it (client\nprotocol 1.10.0).",
+          "type": "string"
         }
       ],
       "x-open": true
@@ -61,6 +66,13 @@
             "string",
             "null"
           ]
+        },
+        "remembered": {
+          "description": "The runtimes not connected now that the daemon remembers on the\nmachine, by runtime ID (client protocol 1.10.0). Empty from an older\ndaemon.",
+          "items": {
+            "$ref": "#/$defs/RememberedRuntime"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -95,6 +107,46 @@
       "required": [
         "runtime_id",
         "assigned_by"
+      ],
+      "type": "object"
+    },
+    "RememberedRuntime": {
+      "description": "A runtime the daemon remembers on a machine while it is not connected\n(client protocol 1.10.0): one that connected before, whose machine ID,\nplatform, and home the registry recorded.",
+      "properties": {
+        "assigned_by": {
+          "$ref": "#/$defs/MachineAssignment",
+          "description": "`pinned` when the machine pins the runtime ID, else `last_seen`."
+        },
+        "home": {
+          "description": "The home directory the runtime reported when it last connected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_seen": {
+          "description": "When the daemon last saw the runtime connect or disconnect.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "platform": {
+          "description": "The operating system the runtime reported when it last connected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_id",
+        "assigned_by",
+        "last_seen"
       ],
       "type": "object"
     }

@@ -65,7 +65,7 @@ pub(crate) mod handles;
 mod helpers;
 mod internal_agents;
 mod loop_guard;
-mod machine_api;
+pub(crate) mod machine_api;
 mod mailbox;
 pub(crate) mod memory_api;
 mod memory_runs;

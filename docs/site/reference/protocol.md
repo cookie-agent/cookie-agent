@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.9.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.10.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.9.0",
+    "protocol_version": "1.10.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.9.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.10.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -248,6 +248,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `machines.unassign` | `runtime` ID | The `machines` afterwards; the runtime's pin is gone |
 | `machines.merge` | `from`, `into` | The `machines` afterwards; `from`'s IDs, pins, and memories moved to `into` |
 | `machines.forget` | `machine` | The `machines` afterwards, without the machine |
+| `machines.forget_runtime` | `runtime` ID | The `machines` afterwards; the daemon no longer remembers where the offline runtime ran |
 | `memory.list` | Optional `layer`, and at most one of `agent`, `machine`, and `project` | The `memories`, valid or not, and the `ignored` entries of the memory folder (see [Memory](#memory)) |
 | `memory.read` | Memory `url` | The file's whole `text`, its `revision`, and why it is `invalid` when it is |
 | `memory.write` | Memory `url`, whole-file `text`, `revision` of the file it replaces | The new `revision`, and a `notice` when an `agent://` file kept the daemon's description or keywords; without `revision` the memory must not exist |
@@ -491,14 +492,28 @@ machine pinning it, named after its runtime ID. `global` and `local` belong to
 the daemon's own machine. Machine names are a lowercase ASCII letter followed
 by up to 31 lowercase letters, digits, `_`, or `-`. `runtimes.list` gives each
 runtime's `machine`: the one it is assigned to while connected, else the one
-it is pinned to or last reported.
+it is pinned to or the daemon last saw it on.
+
+Since 1.10.0 the registry remembers where each spawned or dial-in runtime
+ran: when it connects, `machines.json` records the machine ID, platform, and
+home it reported, and when the daemon last saw it connect or disconnect. A
+runtime that is not connected is placed by its pin, else by that record, so
+it keeps its machine while it is offline and across restarts; only a runtime
+that never connected has no machine. `runtimes.list` gives such a runtime its
+remembered `machine`, `platform`, and `home`, with `connected: false`. A
+record goes with `machines.forget_runtime`, with `machines.forget` of its
+machine, and, for a configured runtime, when a configuration reload or a
+restart no longer has its `[runtimes.<id>]` table; a dial-in runtime's stays
+until it is forgotten.
 
 `machines.list` returns each machine as a `MachineInfo`: its `name`; the
 machine `ids` it stands for; the runtime IDs `pinned` to it; the `connected`
 runtimes assigned to it, each with its `runtime_id`, `assigned_by`
-(`pinned` or `machine_id`), and `platform`; the `platform` its connected
-runtimes agree on; and its number of `memories`, the memory files in its
-memory folder.
+(`pinned` or `machine_id`), and `platform`; since 1.10.0 the `remembered`
+runtimes that are not connected, each with its `runtime_id`, `assigned_by`
+(`pinned` or `last_seen`), `platform`, `home`, and `last_seen` time; the
+`platform` its connected runtimes agree on; and its number of `memories`, the
+memory files in its memory folder.
 
 Each change answers with the machines afterwards, moves the connected
 runtimes it affects at once, and sends `machines.changed`; a session's
@@ -514,7 +529,11 @@ fails, changing nothing, when it cannot:
   folders hold a file of one name, and with `machine_merge_self` for one
   machine.
 - `machines.forget` fails with `machine_in_use` while a connected runtime
-  belongs to the machine or its memory folder holds anything.
+  belongs to the machine or its memory folder holds anything. Remembered
+  runtimes do not keep it; their records go with it.
+- `machines.forget_runtime` fails with `runtime_still_connected` while the
+  runtime is connected, and with `runtime_not_remembered` when the registry
+  keeps no record of it. A pin stays.
 
 An unknown machine is `machine_not_found`; a registry or folder that cannot
 be read or written is `machine_store_failed`.

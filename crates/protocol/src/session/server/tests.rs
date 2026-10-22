@@ -358,6 +358,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::MachinesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn forget_machine_runtime(
+        &self,
+        _: crate::MachinesForgetRuntimeParams,
+    ) -> Result<crate::MachinesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_memory(
         &self,
         _: crate::MemoryListParams,

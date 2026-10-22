@@ -7,6 +7,12 @@
 //! runtime it affects at once. Only a runtime that no machine claims makes
 //! the registry grow, by one new machine written at once.
 //!
+//! The registry also remembers where each runtime ran (section 16.8): the
+//! machine ID, platform, and home a spawned or dial-in runtime reported
+//! when it last connected, and when the daemon last saw it. A runtime that
+//! is not connected is placed by that record, so it keeps its machine while
+//! it is offline and across restarts.
+//!
 //! Every change holds the memory lock ([`crate::memory::MemoryLock`]) while
 //! it rereads the file, rewrites it, and moves machine memory folders, so
 //! two daemons sharing a data root, or a memory write, never race it.
@@ -30,8 +36,10 @@ mod tests;
 
 /// The registry's file in the data root.
 pub(crate) const REGISTRY_FILE: &str = "machines.json";
-/// The registry format this build reads and writes.
-const REGISTRY_VERSION: u32 = 1;
+/// The registry format this build writes.
+const REGISTRY_VERSION: u32 = 2;
+/// The format before runtime records, which this build reads with none.
+const RECORDLESS_VERSION: u32 = 1;
 /// The name of a machine whose host name leaves nothing usable.
 const UNNAMED_HOST: &str = "machine";
 
@@ -41,6 +49,89 @@ const UNNAMED_HOST: &str = "machine";
 struct RegistryFile {
     version: u32,
     machines: Vec<Machine>,
+    /// What the registry remembers of each runtime it saw connected, in
+    /// runtime ID order. Version 1 has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    remembered: Vec<RuntimeRecord>,
+}
+
+/// The registry's contents: the machines, in name order, and the runtime
+/// records, in runtime ID order.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Registry {
+    pub(crate) machines: Vec<Machine>,
+    pub(crate) records: Vec<RuntimeRecord>,
+}
+
+impl Registry {
+    fn sort(&mut self) {
+        self.machines
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        self.records
+            .sort_by(|left, right| left.runtime.cmp(&right.runtime));
+    }
+
+    pub(crate) fn record(&self, runtime: &RuntimeId) -> Option<&RuntimeRecord> {
+        self.records
+            .iter()
+            .find(|record| record.runtime == *runtime)
+    }
+}
+
+/// How the daemon reached a runtime it remembers. A configured template's
+/// record goes when the template leaves the configuration; a dial-in's
+/// stays until it is forgotten.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RecordKind {
+    Spawned,
+    DialIn,
+}
+
+/// What the registry remembers of a runtime it saw connected.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuntimeRecord {
+    pub(crate) runtime: RuntimeId,
+    pub(crate) kind: RecordKind,
+    /// The machine ID it reported; absent when it reported none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) home: Option<String>,
+    /// When the daemon last saw it connect or disconnect.
+    pub(crate) last_seen: jiff::Timestamp,
+}
+
+impl RuntimeRecord {
+    /// Whether `other` records the same report, whenever it was seen.
+    fn same_report(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.machine_id == other.machine_id
+            && self.platform == other.platform
+            && self.home == other.home
+    }
+
+    /// The machine the record says the runtime reported.
+    pub(crate) fn reported(&self) -> Option<RuntimeMachine> {
+        self.machine_id.clone().map(|id| RuntimeMachine {
+            id,
+            host_name: None,
+        })
+    }
+}
+
+/// A runtime as the daemon sees it now, for [`MachineRegistry::observe`].
+#[derive(Clone, Debug)]
+pub(crate) struct ObservedRuntime {
+    pub(crate) runtime: RuntimeId,
+    pub(crate) kind: RecordKind,
+    pub(crate) connected: bool,
+    pub(crate) reported: Option<RuntimeMachine>,
+    pub(crate) platform: Option<String>,
+    pub(crate) home: Option<String>,
 }
 
 /// One machine of the registry.
@@ -80,6 +171,10 @@ pub enum MachineError {
     MergeSelf(MachineName),
     #[error("runtime `{0}` is not pinned to a machine")]
     NotPinned(RuntimeId),
+    #[error("the daemon remembers no machine for runtime `{0}`")]
+    NotRemembered(RuntimeId),
+    #[error("runtime `{0}` is connected")]
+    StillConnected(RuntimeId),
     /// Reading or writing the registry or a memory folder failed.
     #[error("{0}")]
     Store(String),
@@ -115,6 +210,25 @@ pub(crate) fn assignment(
             machine: machine.name.clone(),
             by: MachineAssignment::MachineId,
         })
+}
+
+/// The machine a runtime that is not connected belongs to: its pin, else
+/// the machine standing for the machine ID it last reported (`last`, this
+/// process's memory of it, else its record), as `last_seen`.
+pub(crate) fn offline_assignment(
+    registry: &Registry,
+    runtime: &RuntimeId,
+    last: Option<&RuntimeMachine>,
+) -> Option<Assignment> {
+    let recorded = registry.record(runtime).and_then(RuntimeRecord::reported);
+    let found = assignment(&registry.machines, runtime, last.or(recorded.as_ref()))?;
+    Some(match found.by {
+        MachineAssignment::Pinned => found,
+        _ => Assignment {
+            by: MachineAssignment::LastSeen,
+            ..found
+        },
+    })
 }
 
 /// Rule 3 and 4: the machine to create for a runtime no machine claims. A
@@ -206,11 +320,32 @@ fn unique_name(machines: &[Machine], base: &str) -> MachineName {
 /// Checks what [`RegistryFile`] cannot say in its types: one format, unique
 /// names, and each machine ID and runtime ID on at most one machine.
 fn validate(file: &RegistryFile) -> Result<(), String> {
-    if file.version != REGISTRY_VERSION {
-        return Err(format!(
-            "version {} is not the registry version {REGISTRY_VERSION} this build reads",
-            file.version
-        ));
+    match file.version {
+        REGISTRY_VERSION => {}
+        RECORDLESS_VERSION if file.remembered.is_empty() => {}
+        RECORDLESS_VERSION => {
+            return Err(format!(
+                "version {RECORDLESS_VERSION} has no `remembered` runtimes"
+            ));
+        }
+        version => {
+            return Err(format!(
+                "version {version} is not a registry version this build reads ({RECORDLESS_VERSION} or {REGISTRY_VERSION})"
+            ));
+        }
+    }
+    let mut remembered = BTreeSet::new();
+    for record in &file.remembered {
+        if !remembered.insert(record.runtime.as_str()) {
+            return Err(format!("runtime `{}` is remembered twice", record.runtime));
+        }
+        let valid = record.reported().is_none_or(|reported| reported.is_valid());
+        if !valid {
+            return Err(format!(
+                "runtime `{}` has a malformed machine ID",
+                record.runtime
+            ));
+        }
     }
     let (mut names, mut ids, mut runtimes) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     for machine in &file.machines {
@@ -246,12 +381,15 @@ fn validate(file: &RegistryFile) -> Result<(), String> {
 pub(crate) struct MachineRegistry {
     path: PathBuf,
     memory: MemoryRoot,
-    /// The machines as last read or written, in name order.
-    machines: Mutex<Vec<Machine>>,
+    /// The registry as last read or written.
+    state: Mutex<Registry>,
+    /// The runtimes [`Self::observe`] last saw connected, so it notices a
+    /// runtime connecting or going offline.
+    online: Mutex<BTreeSet<RuntimeId>>,
     /// Serializes changes within this process; the memory lock serializes
     /// processes.
     mutation: Mutex<()>,
-    /// Bumped whenever the machines change.
+    /// Bumped whenever the machines or the records change.
     changes: tokio::sync::watch::Sender<u64>,
 }
 
@@ -267,11 +405,12 @@ impl MachineRegistry {
     /// rules fails.
     pub(crate) fn open(data_dir: &Path) -> Result<Self, MachineError> {
         let path = data_dir.join(REGISTRY_FILE);
-        let machines = read(&path)?;
+        let state = read(&path)?;
         Ok(Self {
             path,
             memory: MemoryRoot::new(data_dir),
-            machines: Mutex::new(machines),
+            state: Mutex::new(state),
+            online: Mutex::default(),
             mutation: Mutex::new(()),
             changes: tokio::sync::watch::channel(0).0,
         })
@@ -282,8 +421,19 @@ impl MachineRegistry {
     }
 
     /// Every machine, in name order.
+    #[cfg(test)]
     pub(crate) fn machines(&self) -> Vec<Machine> {
-        lock(&self.machines).clone()
+        lock(&self.state).machines.clone()
+    }
+
+    /// The machines and the runtime records.
+    pub(crate) fn registry(&self) -> Registry {
+        lock(&self.state).clone()
+    }
+
+    /// What the registry remembers of `runtime`.
+    pub(crate) fn record(&self, runtime: &RuntimeId) -> Option<RuntimeRecord> {
+        lock(&self.state).record(runtime).cloned()
     }
 
     /// Signals every change to the machines.
@@ -298,7 +448,18 @@ impl MachineRegistry {
         runtime: &RuntimeId,
         reported: Option<&RuntimeMachine>,
     ) -> Option<Assignment> {
-        assignment(&lock(&self.machines), runtime, reported)
+        assignment(&lock(&self.state).machines, runtime, reported)
+    }
+
+    /// The machine a `runtime` that is not connected belongs to: by its pin,
+    /// else by the machine ID it last reported, `last` when this process
+    /// saw it and its record otherwise.
+    pub(crate) fn lookup_offline(
+        &self,
+        runtime: &RuntimeId,
+        last: Option<&RuntimeMachine>,
+    ) -> Option<Assignment> {
+        offline_assignment(&lock(&self.state), runtime, last)
     }
 
     /// The machine a connected `runtime` belongs to, in the order of section
@@ -312,7 +473,8 @@ impl MachineRegistry {
         if let Some(found) = self.lookup(runtime, reported) {
             return Ok(found);
         }
-        self.mutate(|machines, _| {
+        self.mutate(|registry, _| {
+            let machines = &mut registry.machines;
             if let Some(found) = assignment(machines, runtime, reported) {
                 return Ok((found, FolderMoves::default()));
             }
@@ -330,13 +492,94 @@ impl MachineRegistry {
         })
     }
 
+    /// Records what each connected runtime of `runtimes` reports, stamped
+    /// `now` when it has just connected or reports something new, and
+    /// stamps `now` on the record of each one that went offline since the
+    /// last call. Writes the registry only when a record changes.
+    pub(crate) fn observe(
+        &self,
+        runtimes: &[ObservedRuntime],
+        now: jiff::Timestamp,
+    ) -> Result<(), MachineError> {
+        let mut online = lock(&self.online);
+        let changes = {
+            let state = lock(&self.state);
+            observed_changes(&state, &online, runtimes, now)
+        };
+        if !changes.is_empty() {
+            self.mutate(|registry, _| {
+                for change in &changes {
+                    match change {
+                        RecordChange::Write(record) => {
+                            registry
+                                .records
+                                .retain(|known| known.runtime != record.runtime);
+                            registry.records.push(record.clone());
+                        }
+                        RecordChange::Seen(runtime) => {
+                            if let Some(record) = registry
+                                .records
+                                .iter_mut()
+                                .find(|record| record.runtime == *runtime)
+                            {
+                                record.last_seen = now;
+                            }
+                        }
+                    }
+                }
+                Ok(((), FolderMoves::default()))
+            })?;
+        }
+        *online = runtimes
+            .iter()
+            .filter(|runtime| runtime.connected)
+            .map(|runtime| runtime.runtime.clone())
+            .collect();
+        Ok(())
+    }
+
+    /// Drops `runtime`'s record. `connected` refuses: the runtime is
+    /// recorded again whenever it connects.
+    pub(crate) fn forget_runtime(
+        &self,
+        runtime: &RuntimeId,
+        connected: bool,
+    ) -> Result<(), MachineError> {
+        if connected {
+            return Err(MachineError::StillConnected(runtime.clone()));
+        }
+        self.mutate(|registry, _| {
+            let before = registry.records.len();
+            registry.records.retain(|record| record.runtime != *runtime);
+            if registry.records.len() == before {
+                return Err(MachineError::NotRemembered(runtime.clone()));
+            }
+            Ok(((), FolderMoves::default()))
+        })
+    }
+
+    /// Drops every record `drop` selects.
+    pub(crate) fn drop_records(
+        &self,
+        drop: impl Fn(&RuntimeRecord) -> bool,
+    ) -> Result<(), MachineError> {
+        if !lock(&self.state).records.iter().any(&drop) {
+            return Ok(());
+        }
+        self.mutate(|registry, _| {
+            registry.records.retain(|record| !drop(record));
+            Ok(((), FolderMoves::default()))
+        })
+    }
+
     /// Renames `machine` to `name` and moves its memory folder with it.
     pub(crate) fn rename(
         &self,
         machine: &MachineName,
         name: &MachineName,
     ) -> Result<(), MachineError> {
-        self.mutate(|machines, lock| {
+        self.mutate(|registry, lock| {
+            let machines = &mut registry.machines;
             let index = position(machines, machine)?;
             if machine == name {
                 return Ok(((), FolderMoves::default()));
@@ -363,7 +606,8 @@ impl MachineRegistry {
         runtime: &RuntimeId,
         machine: &MachineName,
     ) -> Result<(), MachineError> {
-        self.mutate(|machines, _| {
+        self.mutate(|registry, _| {
+            let machines = &mut registry.machines;
             for other in machines.iter_mut() {
                 other.runtimes.retain(|pinned| pinned != runtime);
             }
@@ -382,8 +626,9 @@ impl MachineRegistry {
     /// Removes `runtime`'s pin, so that it falls back to the machine ID it
     /// reports.
     pub(crate) fn unassign(&self, runtime: &RuntimeId) -> Result<(), MachineError> {
-        self.mutate(|machines, _| {
-            let machine = machines
+        self.mutate(|registry, _| {
+            let machine = registry
+                .machines
                 .iter_mut()
                 .find(|machine| machine.runtimes.contains(runtime))
                 .ok_or_else(|| MachineError::NotPinned(runtime.clone()))?;
@@ -393,9 +638,11 @@ impl MachineRegistry {
     }
 
     /// Moves `from`'s machine IDs, pins, and memories to `into` and removes
-    /// `from`. A memory file name both folders have fails the merge.
+    /// `from`. A memory file name both folders have fails the merge. The
+    /// runtimes remembered on `from` follow its machine IDs.
     pub(crate) fn merge(&self, from: &MachineName, into: &MachineName) -> Result<(), MachineError> {
-        self.mutate(|machines, lock| {
+        self.mutate(|registry, lock| {
+            let machines = &mut registry.machines;
             if from == into {
                 return Err(MachineError::MergeSelf(from.clone()));
             }
@@ -425,23 +672,36 @@ impl MachineRegistry {
 
     /// Removes `machine` when none of the `connected` runtimes (with what
     /// they reported) belongs to it and its memory folder is empty or
-    /// missing; an empty folder goes with it.
+    /// missing; an empty folder goes with it, and so do the records of the
+    /// runtimes remembered on it.
     pub(crate) fn forget(
         &self,
         machine: &MachineName,
         connected: &[(RuntimeId, Option<RuntimeMachine>)],
     ) -> Result<(), MachineError> {
-        self.mutate(|machines, lock| {
-            let index = position(machines, machine)?;
+        self.mutate(|registry, lock| {
+            let index = position(&registry.machines, machine)?;
             let in_use = connected.iter().any(|(runtime, reported)| {
-                assignment(machines, runtime, reported.as_ref())
+                assignment(&registry.machines, runtime, reported.as_ref())
                     .is_some_and(|found| found.machine == *machine)
             });
             if in_use || self.memory.machine_folder_has_entries(machine)? {
                 return Err(MachineError::InUse(machine.clone()));
             }
+            let remembered = registry
+                .records
+                .iter()
+                .filter(|record| {
+                    offline_assignment(registry, &record.runtime, None)
+                        .is_some_and(|found| found.machine == *machine)
+                })
+                .map(|record| record.runtime.clone())
+                .collect::<Vec<_>>();
             let moves = self.memory.remove_empty_machine_folder(lock, machine)?;
-            machines.remove(index);
+            registry
+                .records
+                .retain(|record| !remembered.contains(&record.runtime));
+            registry.machines.remove(index);
             Ok(((), moves))
         })
     }
@@ -451,20 +711,21 @@ impl MachineRegistry {
     /// fails, the folder moves `change` made are undone.
     fn mutate<T>(
         &self,
-        change: impl FnOnce(&mut Vec<Machine>, &MemoryLock) -> Result<(T, FolderMoves), MachineError>,
+        change: impl FnOnce(&mut Registry, &MemoryLock) -> Result<(T, FolderMoves), MachineError>,
     ) -> Result<T, MachineError> {
         let _mutation = lock(&self.mutation);
         let memory_lock = self.memory.lock()?;
         // Another daemon sharing the data root may have changed it.
         let current = read(&self.path)?;
-        let mut machines = current.clone();
-        let (value, moves) = change(&mut machines, &memory_lock)?;
-        machines.sort_by(|left, right| left.name.cmp(&right.name));
-        let file = RegistryFile {
-            version: REGISTRY_VERSION,
-            machines,
-        };
-        if file.machines != current {
+        let mut registry = current.clone();
+        let (value, moves) = change(&mut registry, &memory_lock)?;
+        registry.sort();
+        if registry != current {
+            let file = RegistryFile {
+                version: REGISTRY_VERSION,
+                machines: registry.machines.clone(),
+                remembered: registry.records.clone(),
+            };
             let written = validate(&file)
                 .map_err(MachineError::Store)
                 .and_then(|()| write(&self.path, &file));
@@ -474,14 +735,59 @@ impl MachineRegistry {
             }
         }
         drop(memory_lock);
-        let mut cached = lock(&self.machines);
-        if *cached != file.machines {
-            *cached = file.machines;
+        let mut cached = lock(&self.state);
+        if *cached != registry {
+            *cached = registry;
             drop(cached);
             self.changes.send_modify(|revision| *revision += 1);
         }
         Ok(value)
     }
+}
+
+/// One record change [`MachineRegistry::observe`] makes.
+#[derive(Clone, Debug)]
+enum RecordChange {
+    /// Write this record, replacing the runtime's.
+    Write(RuntimeRecord),
+    /// Stamp the runtime's record as seen now.
+    Seen(RuntimeId),
+}
+
+/// What [`MachineRegistry::observe`] changes: a record for each connected
+/// runtime that was not `online` before or reports something new, and a
+/// stamp for each `online` runtime that is no longer connected.
+fn observed_changes(
+    registry: &Registry,
+    online: &BTreeSet<RuntimeId>,
+    runtimes: &[ObservedRuntime],
+    now: jiff::Timestamp,
+) -> Vec<RecordChange> {
+    let mut changes = Vec::new();
+    for runtime in runtimes {
+        let known = registry.record(&runtime.runtime);
+        if runtime.connected {
+            let record = RuntimeRecord {
+                runtime: runtime.runtime.clone(),
+                kind: runtime.kind,
+                machine_id: runtime
+                    .reported
+                    .as_ref()
+                    .map(|reported| reported.id.clone()),
+                platform: runtime.platform.clone(),
+                home: runtime.home.clone(),
+                last_seen: now,
+            };
+            let unchanged = online.contains(&runtime.runtime)
+                && known.is_some_and(|known| known.same_report(&record));
+            if !unchanged {
+                changes.push(RecordChange::Write(record));
+            }
+        } else if online.contains(&runtime.runtime) && known.is_some() {
+            changes.push(RecordChange::Seen(runtime.runtime.clone()));
+        }
+    }
+    changes
 }
 
 fn position(machines: &[Machine], name: &MachineName) -> Result<usize, MachineError> {
@@ -491,22 +797,25 @@ fn position(machines: &[Machine], name: &MachineName) -> Result<usize, MachineEr
         .ok_or_else(|| MachineError::NotFound(name.clone()))
 }
 
-/// The machines in `path`, in name order; none when it does not exist.
-fn read(path: &Path) -> Result<Vec<Machine>, MachineError> {
+/// The registry in `path`, sorted; empty when it does not exist.
+fn read(path: &Path) -> Result<Registry, MachineError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Registry::default()),
         Err(error) => {
             return Err(MachineError::Store(format!("{}: {error}", path.display())));
         }
     };
-    let mut file: RegistryFile = serde_json::from_slice(&bytes)
+    let file: RegistryFile = serde_json::from_slice(&bytes)
         .map_err(|error| MachineError::Store(format!("{}: {error}", path.display())))?;
     validate(&file)
         .map_err(|reason| MachineError::Store(format!("{}: {reason}", path.display())))?;
-    file.machines
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(file.machines)
+    let mut registry = Registry {
+        machines: file.machines,
+        records: file.remembered,
+    };
+    registry.sort();
+    Ok(registry)
 }
 
 /// Writes `file` to `path` through a flushed temporary file in the same

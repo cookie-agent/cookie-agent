@@ -675,6 +675,17 @@ impl ServerProtocol for Server {
         Ok(self.machines_list())
     }
 
+    async fn forget_machine_runtime(
+        &self,
+        params: cookie_agent_protocol::MachinesForgetRuntimeParams,
+    ) -> Result<cookie_agent_protocol::MachinesListResult> {
+        self.engine
+            .forget_runtime_record(params.runtime)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(self.machines_list())
+    }
+
     async fn list_projects(
         &self,
         _params: cookie_agent_protocol::ProjectsListParams,

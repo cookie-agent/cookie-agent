@@ -978,6 +978,18 @@ impl Client {
         .await
     }
 
+    /// Drops the record of `runtime`, which is not connected.
+    pub async fn forget_machine_runtime(
+        &self,
+        runtime: crate::RuntimeId,
+    ) -> Result<crate::MachinesListResult, ClientError> {
+        self.call(
+            crate::MACHINES_FORGET_RUNTIME_METHOD,
+            &crate::MachinesForgetRuntimeParams { runtime },
+        )
+        .await
+    }
+
     /// The memory files `params` asks for, valid or not.
     pub async fn list_memory(
         &self,

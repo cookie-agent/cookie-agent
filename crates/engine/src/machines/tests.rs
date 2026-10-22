@@ -4,7 +4,10 @@ use cookie_agent_protocol::{
     MachineAssignment, MachineName, RuntimeId, runtime_protocol::RuntimeMachine,
 };
 
-use super::{Assignment, MachineError, MachineRegistry, REGISTRY_FILE, host_machine_name};
+use super::{
+    Assignment, MachineError, MachineRegistry, ObservedRuntime, REGISTRY_FILE, RecordKind,
+    host_machine_name,
+};
 
 fn name(value: &str) -> MachineName {
     MachineName::new(value).unwrap()
@@ -364,8 +367,14 @@ fn the_registry_file_is_strict() {
             .len(),
         1
     );
+    assert_eq!(open(r#"{"version":2,"machines":[]}"#).unwrap().len(), 0);
     for broken in [
-        r#"{"version":2,"machines":[]}"#,
+        r#"{"version":3,"machines":[]}"#,
+        r#"{"version":1,"machines":[],"remembered":[{"runtime":"labpc","kind":"spawned","last_seen":"2026-10-21T00:00:00Z"}]}"#,
+        r#"{"version":2,"machines":[],"remembered":[{"runtime":"labpc","kind":"spawned","last_seen":"2026-10-21T00:00:00Z"},{"runtime":"labpc","kind":"dial_in","last_seen":"2026-10-21T00:00:00Z"}]}"#,
+        r#"{"version":2,"machines":[],"remembered":[{"runtime":"labpc","kind":"spawned","machine_id":"","last_seen":"2026-10-21T00:00:00Z"}]}"#,
+        r#"{"version":2,"machines":[],"remembered":[{"runtime":"labpc","kind":"builtin","last_seen":"2026-10-21T00:00:00Z"}]}"#,
+        r#"{"version":2,"machines":[],"remembered":[{"runtime":"labpc","kind":"spawned","last_seen":"2026-10-21T00:00:00Z","extra":1}]}"#,
         r#"{"version":1,"machines":[],"extra":true}"#,
         r#"{"version":1,"machines":[{"name":"Lab","ids":[],"runtimes":[]}]}"#,
         r#"{"version":1,"machines":[{"name":"a","ids":["x"],"runtimes":[]},{"name":"b","ids":["x"],"runtimes":[]}]}"#,
@@ -378,4 +387,200 @@ fn the_registry_file_is_strict() {
             "{broken}"
         );
     }
+}
+
+fn observed(id: &str, connected: bool, reported: Option<RuntimeMachine>) -> ObservedRuntime {
+    ObservedRuntime {
+        runtime: runtime(id),
+        kind: RecordKind::Spawned,
+        connected,
+        reported,
+        platform: Some("linux".into()),
+        home: Some("/home/u".into()),
+    }
+}
+
+fn at(seconds: i64) -> jiff::Timestamp {
+    jiff::Timestamp::from_second(1_800_000_000 + seconds).unwrap()
+}
+
+#[test]
+fn an_older_registry_reads_with_no_records_and_is_written_at_the_new_version() {
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join(REGISTRY_FILE);
+    fs::write(
+        &path,
+        r#"{"version":1,"machines":[{"name":"labpc","ids":["id-labpc"],"runtimes":[]}]}"#,
+    )
+    .unwrap();
+    let registry = MachineRegistry::open(data.path()).unwrap();
+    assert!(registry.registry().records.is_empty());
+    registry
+        .observe(
+            &[observed("labpc", true, Some(reported("id-labpc", "labpc")))],
+            at(0),
+        )
+        .unwrap();
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["version"], 2);
+    assert_eq!(
+        written["remembered"],
+        serde_json::json!([{
+            "runtime": "labpc",
+            "kind": "spawned",
+            "machine_id": "id-labpc",
+            "platform": "linux",
+            "home": "/home/u",
+            "last_seen": "2027-01-15T08:00:00Z",
+        }])
+    );
+}
+
+#[test]
+fn an_offline_runtime_stays_on_the_machine_it_was_last_seen_on() {
+    let data = tempfile::tempdir().unwrap();
+    let registry = MachineRegistry::open(data.path()).unwrap();
+    let labpc = reported("id-labpc", "labpc");
+    registry.resolve(&runtime("labpc"), Some(&labpc)).unwrap();
+    // Never seen: no machine while it is offline.
+    assert_eq!(registry.lookup_offline(&runtime("labpc"), None), None);
+    registry
+        .observe(&[observed("labpc", true, Some(labpc.clone()))], at(0))
+        .unwrap();
+    // A second look while it stays connected writes nothing new.
+    registry
+        .observe(&[observed("labpc", true, Some(labpc.clone()))], at(5))
+        .unwrap();
+    assert_eq!(registry.record(&runtime("labpc")).unwrap().last_seen, at(0));
+    // Going offline stamps when it was last seen.
+    registry
+        .observe(&[observed("labpc", false, None)], at(10))
+        .unwrap();
+    assert_eq!(
+        registry.record(&runtime("labpc")).unwrap().last_seen,
+        at(10)
+    );
+    // Across a restart the record places it, as `last_seen`.
+    let reopened = MachineRegistry::open(data.path()).unwrap();
+    assert_eq!(
+        reopened.lookup_offline(&runtime("labpc"), None),
+        Some(assigned("labpc", MachineAssignment::LastSeen))
+    );
+    // A pin comes first.
+    reopened.assign(&runtime("labpc"), &name("lab")).unwrap();
+    assert_eq!(
+        reopened.lookup_offline(&runtime("labpc"), None),
+        Some(assigned("lab", MachineAssignment::Pinned))
+    );
+    // Reconnecting with another report rewrites the record.
+    reopened
+        .observe(
+            &[ObservedRuntime {
+                platform: Some("macos".into()),
+                ..observed("labpc", true, Some(labpc))
+            }],
+            at(20),
+        )
+        .unwrap();
+    let record = reopened.record(&runtime("labpc")).unwrap();
+    assert_eq!(
+        (record.platform.as_deref(), record.last_seen),
+        (Some("macos"), at(20))
+    );
+}
+
+#[test]
+fn renaming_and_merging_move_remembered_runtimes() {
+    let data = tempfile::tempdir().unwrap();
+    let registry = MachineRegistry::open(data.path()).unwrap();
+    let boxed = reported("id-box", "container");
+    registry.resolve(&runtime("box"), Some(&boxed)).unwrap();
+    registry
+        .resolve(&runtime("labpc"), Some(&reported("id-labpc", "labpc")))
+        .unwrap();
+    registry
+        .observe(&[observed("box", true, Some(boxed))], at(0))
+        .unwrap();
+    registry
+        .observe(&[observed("box", false, None)], at(1))
+        .unwrap();
+    registry.rename(&name("container"), &name("cage")).unwrap();
+    assert_eq!(
+        registry.lookup_offline(&runtime("box"), None),
+        Some(assigned("cage", MachineAssignment::LastSeen))
+    );
+    registry.merge(&name("cage"), &name("labpc")).unwrap();
+    assert_eq!(
+        registry.lookup_offline(&runtime("box"), None),
+        Some(assigned("labpc", MachineAssignment::LastSeen))
+    );
+}
+
+#[test]
+fn forgetting_a_machine_drops_the_runtimes_it_remembers() {
+    let data = tempfile::tempdir().unwrap();
+    let registry = MachineRegistry::open(data.path()).unwrap();
+    let labpc = reported("id-labpc", "labpc");
+    registry.resolve(&runtime("labpc"), Some(&labpc)).unwrap();
+    registry
+        .observe(&[observed("labpc", true, Some(labpc))], at(0))
+        .unwrap();
+    registry
+        .observe(&[observed("labpc", false, None)], at(1))
+        .unwrap();
+    // An offline runtime does not keep the machine.
+    registry.forget(&name("labpc"), &[]).unwrap();
+    assert!(names(&registry).is_empty());
+    assert_eq!(registry.record(&runtime("labpc")), None);
+}
+
+#[test]
+fn forgetting_a_runtime_drops_only_an_offline_runtime_s_record() {
+    let data = tempfile::tempdir().unwrap();
+    let registry = MachineRegistry::open(data.path()).unwrap();
+    let labpc = reported("id-labpc", "labpc");
+    registry.resolve(&runtime("labpc"), Some(&labpc)).unwrap();
+    registry
+        .observe(&[observed("labpc", true, Some(labpc))], at(0))
+        .unwrap();
+    assert!(matches!(
+        registry.forget_runtime(&runtime("labpc"), true),
+        Err(MachineError::StillConnected(_))
+    ));
+    registry.forget_runtime(&runtime("labpc"), false).unwrap();
+    assert_eq!(registry.lookup_offline(&runtime("labpc"), None), None);
+    assert!(matches!(
+        registry.forget_runtime(&runtime("labpc"), false),
+        Err(MachineError::NotRemembered(_))
+    ));
+    // The machine stays.
+    assert_eq!(names(&registry), ["labpc"]);
+}
+
+#[test]
+fn dropping_records_keeps_the_others() {
+    let data = tempfile::tempdir().unwrap();
+    let registry = MachineRegistry::open(data.path()).unwrap();
+    registry
+        .observe(
+            &[
+                observed("ssh", true, None),
+                ObservedRuntime {
+                    kind: RecordKind::DialIn,
+                    ..observed("roamer", true, None)
+                },
+            ],
+            at(0),
+        )
+        .unwrap();
+    registry
+        .drop_records(|record| record.kind == RecordKind::Spawned)
+        .unwrap();
+    let kept = registry
+        .registry()
+        .records
+        .into_iter()
+        .map(|record| record.runtime.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(kept, ["roamer"]);
 }

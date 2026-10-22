@@ -5,6 +5,24 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.10.0
+
+- The machine registry remembers where runtimes ran
+  ([memory spec section 16.8](../specs/memory.md#168-addendum-2026-10-21-the-registry-remembers-where-runtimes-ran)):
+  a runtime that is not connected keeps the machine it was last seen on, by a
+  new `assigned_by` reason, `last_seen` (an open enum value). `MachineInfo` in
+  `machines.list` gains `remembered`, the offline runtimes it remembers
+  (`RememberedRuntime`: `runtime_id`, `assigned_by`, `platform`, `home`,
+  `last_seen`). `runtimes.list` gives such a runtime its remembered `machine`,
+  `platform`, and `home`.
+- `machines.forget_runtime { runtime }` drops an offline runtime's record and
+  answers with the machines afterwards, with the error codes
+  `runtime_not_remembered` and `runtime_still_connected`. `machines.forget`
+  no longer counts remembered offline runtimes, and drops their records.
+- A 1.9 client ignores the new members, and sees offline runtimes as
+  before; a 1.10 client reading a 1.9 daemon sees no remembered runtimes, and
+  calling `machines.forget_runtime` gets `method_not_found`.
+
 ## 1.9.0
 
 - `SessionMeta` gains `waiting_on`: what will start the session's next run

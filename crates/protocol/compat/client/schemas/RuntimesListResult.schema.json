@@ -151,7 +151,7 @@
           "$ref": "#/$defs/RuntimeLifetime"
         },
         "machine": {
-          "description": "The machine the runtime belongs to: the one it is assigned to while\nit is connected, else the one it is pinned to or last reported.\nAbsent while the daemon cannot tell.",
+          "description": "The machine the runtime belongs to: the one it is assigned to while\nit is connected, else the one it is pinned to or the daemon last saw\nit on (client protocol 1.10.0: remembered across restarts). Absent\nwhile the daemon cannot tell.",
           "maxLength": 32,
           "minLength": 1,
           "pattern": "^[a-z][a-z0-9_-]{0,31}$",

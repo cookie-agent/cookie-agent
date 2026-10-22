@@ -482,6 +482,7 @@ pub const MACHINES_ASSIGN_METHOD: &str = "machines.assign";
 pub const MACHINES_UNASSIGN_METHOD: &str = "machines.unassign";
 pub const MACHINES_MERGE_METHOD: &str = "machines.merge";
 pub const MACHINES_FORGET_METHOD: &str = "machines.forget";
+pub const MACHINES_FORGET_RUNTIME_METHOD: &str = "machines.forget_runtime";
 pub const MACHINES_CHANGED_METHOD: &str = "machines.changed";
 pub const MEMORY_LIST_METHOD: &str = "memory.list";
 pub const MEMORY_READ_METHOD: &str = "memory.read";
@@ -655,8 +656,9 @@ pub struct RuntimeListing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
     /// The machine the runtime belongs to: the one it is assigned to while
-    /// it is connected, else the one it is pinned to or last reported.
-    /// Absent while the daemon cannot tell.
+    /// it is connected, else the one it is pinned to or the daemon last saw
+    /// it on (client protocol 1.10.0: remembered across restarts). Absent
+    /// while the daemon cannot tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<MachineName>,
     /// The home directory the runtime reported when it last connected, as a
@@ -692,6 +694,11 @@ pub struct MachineInfo {
     pub pinned: Vec<RuntimeId>,
     /// The connected runtimes assigned to the machine, by runtime ID.
     pub connected: Vec<MachineRuntime>,
+    /// The runtimes not connected now that the daemon remembers on the
+    /// machine, by runtime ID (client protocol 1.10.0). Empty from an older
+    /// daemon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remembered: Vec<RememberedRuntime>,
     /// The operating system its connected runtimes report, when they agree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
@@ -709,6 +716,24 @@ pub struct MachineRuntime {
     pub platform: Option<String>,
 }
 
+/// A runtime the daemon remembers on a machine while it is not connected
+/// (client protocol 1.10.0): one that connected before, whose machine ID,
+/// platform, and home the registry recorded.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RememberedRuntime {
+    pub runtime_id: RuntimeId,
+    /// `pinned` when the machine pins the runtime ID, else `last_seen`.
+    pub assigned_by: MachineAssignment,
+    /// The operating system the runtime reported when it last connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// The home directory the runtime reported when it last connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+    /// When the daemon last saw the runtime connect or disconnect.
+    pub last_seen: jiff::Timestamp,
+}
+
 crate::open_enum! {
     /// Why a runtime belongs to its machine.
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
@@ -718,6 +743,10 @@ crate::open_enum! {
         Pinned,
         /// The machine stands for the machine ID the runtime reports.
         MachineId,
+        /// The runtime is not connected, and the machine stands for the
+        /// machine ID it reported when the daemon last saw it (client
+        /// protocol 1.10.0).
+        LastSeen,
     }
 }
 
@@ -754,11 +783,20 @@ pub struct MachinesMergeParams {
     pub into: MachineName,
 }
 
-/// Remove a machine that has no connected runtimes and no memories.
+/// Remove a machine that has no connected runtimes and no memories. The
+/// records of runtimes remembered on it go with it.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachinesForgetParams {
     pub machine: MachineName,
+}
+
+/// Drop the record of a runtime that is not connected, so the daemon no
+/// longer remembers where it ran (client protocol 1.10.0). A pin stays.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesForgetRuntimeParams {
+    pub runtime: RuntimeId,
 }
 
 /// The machine registry changed, or a runtime was assigned to a new

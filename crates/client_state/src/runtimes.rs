@@ -563,6 +563,7 @@ mod tests {
                 ids: vec!["id-laptop".into()],
                 pinned: vec![RuntimeId::new("box").unwrap()],
                 connected: vec![runtime("local", MachineAssignment::MachineId)],
+                remembered: Vec::new(),
                 platform: None,
                 memories: 0,
             }],

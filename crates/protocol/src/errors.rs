@@ -534,6 +534,22 @@ error_codes! {
         hint: None,
         description: "`machines.unassign` of a runtime ID no machine pins.",
     }
+    RUNTIME_NOT_REMEMBERED {
+        code: "runtime_not_remembered",
+        rpc: APPLICATION_ERROR,
+        fields: [required("runtime", "The runtime ID.")],
+        message: "The daemon remembers no machine for the runtime {runtime}.",
+        hint: Some("See `remembered` in `machines.list` for the runtimes the daemon remembers."),
+        description: "`machines.forget_runtime` of a runtime the registry keeps no record of.",
+    }
+    RUNTIME_STILL_CONNECTED {
+        code: "runtime_still_connected",
+        rpc: APPLICATION_ERROR,
+        fields: [required("runtime", "The runtime ID.")],
+        message: "The runtime {runtime} is connected; only an offline runtime can be forgotten.",
+        hint: Some("Stop the runtime first."),
+        description: "`machines.forget_runtime` of a runtime the daemon holds a connection to.",
+    }
     MACHINE_STORE_FAILED {
         code: "machine_store_failed",
         rpc: APPLICATION_ERROR,

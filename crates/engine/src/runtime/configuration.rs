@@ -282,6 +282,7 @@ impl Engine {
         // The publication also wakes the background sync; awaiting one here
         // makes the files current when the apply or reload answers.
         self.sync_agent_memory().await;
+        self.drop_unconfigured_runtime_records(&candidate).await;
         *self
             .inner
             .config_error

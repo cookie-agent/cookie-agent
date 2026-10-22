@@ -156,6 +156,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "machines.forget_runtime",
+      "params": "MachinesForgetRuntimeParams",
+      "params_role": "command",
+      "result": "MachinesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "machines.list",
       "params": "MachinesListParams",
       "params_role": "command",

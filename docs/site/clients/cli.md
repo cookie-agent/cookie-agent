@@ -264,8 +264,9 @@ Manages the machines the daemon's runtimes run on. See
 
 #### `cookie machine list`
 
-Lists each machine with its machine IDs, pinned and connected runtimes,
-platform, and memories.
+Lists each machine with its machine IDs, pinned and connected runtimes, the
+offline runtimes it remembers with when each was last seen, platform, and
+memories.
 
 #### `cookie machine rename`
 
@@ -291,6 +292,11 @@ memories into another and removes it.
 
 `cookie machine forget <MACHINE>` removes a machine that has no connected
 runtimes and no memories.
+
+#### `cookie machine forget-runtime`
+
+`cookie machine forget-runtime <RUNTIME>` forgets where an offline runtime
+ran, so it is no longer listed on its machine. A pin stays.
 
 ### `cookie memory`
 
