@@ -75,7 +75,7 @@ use cookie_agent_protocol::{
 use crossterm::{
     event::{
         EnableBracketedPaste, EnableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode,
-        KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, enable_raw_mode},
@@ -2061,6 +2061,9 @@ async fn event_loop(
             () = signals.recv() => return (Ok(()), app.session_errors.clone()),
             () = continued.recv() => reenter = jobs.continued() == JobStep::Reenter,
             Some(event) = events.next() => match event {
+                // Windows' console reports every key's release too; acting
+                // on it would handle each keystroke twice.
+                Ok(CrosstermEvent::Key(key)) if key.kind == KeyEventKind::Release => {}
                 Ok(CrosstermEvent::Key(key)) => {
                     app.handle_key(key).await;
                     render.mark_immediate();
