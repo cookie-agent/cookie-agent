@@ -33,6 +33,7 @@ pub mod session_rename;
 pub mod subscriptions;
 pub mod tool_header;
 pub mod uploads;
+pub mod usage;
 
 pub use reduce::approval_state_from_record;
 use reduce::*;

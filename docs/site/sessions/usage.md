@@ -17,9 +17,15 @@ There are no rollups across sessions: usage is always read for one session or
 one session tree.
 
 Open `/usage` in the TUI to compare the selected session with its session-tree
-totals. Programmatic clients can call `session.usage` and `session.tree_usage`. Cache hit rate is cache-read tokens divided
-by inclusive input tokens. It is unavailable unless every included request
-reports both fields; an explicitly reported zero remains a 0% hit rate.
+totals; the web client's **Usage** sheet shows both too. Programmatic clients
+can call `session.usage` and `session.tree_usage`. Cache hit rate is cache-read
+tokens divided by inclusive input tokens (uncached input plus cache reads and
+cache writes), counted over the requests whose provider reported cache reads: a
+request that says nothing about the cache is left out rather than counted as a
+miss. The rate is unavailable (`n/a` in the TUI, a dash on the web) when no
+request reported cache reads or there was no input; an explicitly reported zero
+remains a 0% hit rate. The web sheet gives the token counts behind the rate
+under it.
 
 Each TUI section shows formatted totals and a per-model table. Models are
 sorted by descending estimated cost, with unpriced models last, then by input

@@ -18,7 +18,12 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-USAGE = {"prompt_tokens": 1840, "completion_tokens": 96, "total_tokens": 1936}
+USAGE = {
+    "prompt_tokens": 1840,
+    "completion_tokens": 96,
+    "total_tokens": 1936,
+    "prompt_tokens_details": {"cached_tokens": 1536, "cache_write_tokens": 256},
+}
 
 
 def chunk(delta, finish=None, usage=None):

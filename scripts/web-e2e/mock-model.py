@@ -22,6 +22,9 @@ otherwise the last user text decides.
   block;
 - anything else: "ok".
 
+Every reply reports 1,000 prompt tokens, 800 of them read from the cache
+and 150 written to it.
+
 A goal control message (a paused or cancelled goal) gets "ok" whatever its
 objective says.
 
@@ -33,7 +36,14 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-USAGE = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+# Every reply's usage: a prompt mostly read from the cache, as the usage
+# panel's hit rate shows it (`prompt_tokens` counts the cached tokens too).
+USAGE = {
+    "prompt_tokens": 1000,
+    "completion_tokens": 5,
+    "total_tokens": 1005,
+    "prompt_tokens_details": {"cached_tokens": 800, "cache_write_tokens": 150},
+}
 
 
 def chunk(delta, finish=None, usage=None):

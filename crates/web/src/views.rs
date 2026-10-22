@@ -10,6 +10,7 @@ use cookie_agent_client_state::{
     EventLevel, ToolStatus,
     badges::{badges_tooltip, session_badges},
     permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
+    usage::{CacheHit, format_count},
 };
 use cookie_agent_protocol::{
     ApprovalUserDecision, InputDelivery, ModelSelection, PermissionAction, PermissionEffect,
@@ -2355,29 +2356,45 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
     move || match workspace.usage.get() {
         None => loading("Reading usage…").into_any(),
         Some(usage) => {
-            let rows = |usage: &cookie_agent_protocol::UsageRollup| {
+            // The figures of a rollup, then its prompt-cache hit rate with
+            // the tokens behind it in a note (a finger has no tooltip).
+            let rows = |usage: &cookie_agent_protocol::UsageRollup, scope: &'static str| {
                 let mut rows = vec![
-                    ("input tokens", usage.input_tokens.to_string()),
-                    ("output tokens", usage.output_tokens.to_string()),
-                    ("reasoning tokens", usage.reasoning_tokens.to_string()),
-                    ("cache reads", usage.cache_read_tokens.to_string()),
-                    ("cache writes", usage.cache_write_tokens.to_string()),
-                    ("requests", usage.request_count.to_string()),
+                    ("input tokens", format_count(usage.input_tokens)),
+                    ("output tokens", format_count(usage.output_tokens)),
+                    ("reasoning tokens", format_count(usage.reasoning_tokens)),
+                    ("cache reads", format_count(usage.cache_read_tokens)),
+                    ("cache writes", format_count(usage.cache_write_tokens)),
+                    ("requests", format_count(usage.request_count)),
                 ];
                 if let Some(cost) = usage.estimated_cost_usd {
                     rows.push(("estimated cost", format!("${cost:.4}")));
                 }
-                rows.into_iter()
-                    .map(|(name, value)| view! {
-                        <dt class="border-b border-toasted py-1 text-ink dark:border-ember dark:text-sand">{name}</dt>
-                        <dd class="border-b border-toasted py-1 text-right font-mono dark:border-ember">{value}</dd>
-                    })
-                    .collect_view()
+                let hit = CacheHit::of(usage);
+                let detail = hit.detail();
+                view! {
+                    <dl class="grid grid-cols-2 text-sm">
+                        {rows.into_iter()
+                            .map(|(name, value)| view! {
+                                <dt class="border-b border-toasted py-1 text-ink dark:border-ember dark:text-sand">{name}</dt>
+                                <dd class="border-b border-toasted py-1 text-right font-mono dark:border-ember">{value}</dd>
+                            })
+                            .collect_view()}
+                        <dt class="pt-1 text-ink dark:text-sand">"cache hit rate"</dt>
+                        <dd
+                            class="pt-1 text-right font-mono"
+                            class:opacity-60=hit.rate.is_none()
+                            data-cache-hit=scope
+                            title=detail.clone()
+                        >
+                            {hit.label()}
+                        </dd>
+                    </dl>
+                    <p class=format!("{NOTE} pb-1") data-cache-detail=scope>{detail}</p>
+                }
             };
             let session = match &usage.session {
-                Ok(rollup) => {
-                    view! { <dl class="grid grid-cols-2 text-sm">{rows(rollup)}</dl> }.into_any()
-                }
+                Ok(rollup) => rows(rollup, "session").into_any(),
                 Err(error) => view! { <p class="text-sm">{error.clone()}</p> }.into_any(),
             };
             let tree = match &usage.tree {
@@ -2385,7 +2402,7 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
                     <h3 class="mt-4 text-sm font-bold">
                         {if *count == 1 { "Session tree (1 session)".to_owned() } else { format!("Session tree ({count} sessions)") }}
                     </h3>
-                    <dl class="grid grid-cols-2 text-sm">{rows(rollup)}</dl>
+                    {rows(rollup, "tree")}
                 }
                     .into_any(),
                 Err(error) => view! { <p class="text-sm">{error.clone()}</p> }.into_any(),

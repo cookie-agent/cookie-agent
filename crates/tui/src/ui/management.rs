@@ -1,3 +1,4 @@
+use cookie_agent_client_state::usage::{CacheHit, format_count};
 use cookie_agent_protocol::{
     McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction,
     SessionTreeUsageResult, SessionUsageResult, UsageRollup,
@@ -722,7 +723,7 @@ fn stats_values(usage: &UsageRollup) -> [String; 8] {
         format_count(usage.reasoning_tokens),
         format_count(usage.cache_read_tokens),
         format_count(usage.cache_write_tokens),
-        format_hit_rate(usage.cache_hit_rate),
+        format_hit_rate(CacheHit::of(usage)),
         format_cost(usage.estimated_cost_usd),
     ]
 }
@@ -775,7 +776,9 @@ impl TableWidths {
                 widths.reasoning = widths
                     .reasoning
                     .max(format_count(model.reasoning_tokens).len());
-                widths.hit = widths.hit.max(format_hit_rate(model.cache_hit_rate).len());
+                widths.hit = widths
+                    .hit
+                    .max(format_hit_rate(CacheHit::of_model(model)).len());
                 widths.cost = widths.cost.max(format_cost(model.estimated_cost_usd).len());
             }
         }
@@ -854,7 +857,7 @@ impl TableWidths {
             format_count(model.input_tokens),
             format_count(model.output_tokens),
             format_count(model.reasoning_tokens),
-            format_hit_rate(model.cache_hit_rate),
+            format_hit_rate(CacheHit::of_model(model)),
         ];
         let mut spans = vec![
             Span::raw("  "),
@@ -912,24 +915,9 @@ struct TableColumns {
     model: usize,
 }
 
-fn format_count(count: u64) -> String {
-    let digits = count.to_string();
-    let first = digits.len() % 3;
-    let mut output = String::with_capacity(digits.len() + digits.len() / 3);
-    if first > 0 {
-        output.push_str(&digits[..first]);
-    }
-    for chunk in digits.as_bytes()[first..].chunks(3) {
-        if !output.is_empty() {
-            output.push(',');
-        }
-        output.push_str(std::str::from_utf8(chunk).expect("decimal digits are UTF-8"));
-    }
-    output
-}
-
-fn format_hit_rate(rate: Option<f64>) -> String {
-    rate.map_or_else(|| "n/a".to_owned(), |rate| format!("{:.1}%", rate * 100.0))
+/// A hit rate, or `n/a` where the column has no room to explain why.
+fn format_hit_rate(hit: CacheHit) -> String {
+    hit.percent().unwrap_or_else(|| "n/a".to_owned())
 }
 
 fn format_cost(cost: Option<f64>) -> String {

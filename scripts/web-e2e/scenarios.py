@@ -897,6 +897,34 @@ def close_sheet(browser):
     browser.wait("the chat view", lambda: count(browser, "#page") == 0)
 
 
+# The usage sheet's figures for the session (its first list), by name.
+USAGE_FIGURES = """
+const figures = {};
+for (const dt of document.querySelector('#sheet dl').querySelectorAll('dt'))
+  figures[dt.innerText] = dt.nextElementSibling.innerText;
+return figures;
+"""
+
+
+def cache_hit_rate(browser):
+    """Checks the usage sheet's hit rate: every scripted reply read 800 of
+    its 1,000 prompt tokens from the cache, so a session with requests
+    shows 80.0 % and one without a dash, never 0 %."""
+    browser.wait("the usage figures", lambda: count(browser, "#sheet [data-cache-hit=session]") == 1)
+    figures = browser.script(USAGE_FIGURES)
+    expected = "80.0%" if figures["requests"] != "0" else "—"
+    assert figures["cache hit rate"] == expected, figures
+    detail = browser.text("#sheet [data-cache-detail=session]")
+    if expected == "80.0%":
+        assert "input tokens read from the prompt cache" in detail, detail
+        assert browser.script(
+            "return document.querySelector('#sheet [data-cache-hit=session]').title"
+        ) == detail, "the rate's tooltip is not its figures"
+    else:
+        assert detail == "No input tokens yet.", detail
+    return figures
+
+
 def view(browser, name):
     """Opens a view from the rail."""
     browser.click("[data-rail=primary] [data-view=%s]" % name)
@@ -1972,6 +2000,10 @@ def desktop_layout(browser):
         menu(browser, name)
         browser.wait("the %s sheet" % name, lambda: count(browser, "#sheet [data-command]") == 0 and count(browser, "#sheet") == 1)
         assert page_view(browser) == "chat"
+        if name == "usage":
+            figures = cache_hit_rate(browser)
+            browser.shot("usage-sheet")
+            print("the usage sheet shows the prompt-cache hit rate:", figures["cache hit rate"])
         close_sheet(browser)
     print("the ⋮ menu lists the session's commands by name, and each opens its sheet")
 
@@ -2223,6 +2255,10 @@ def phone_layout():
             assert abs(rect[1] - rect[2]) <= 2, "the %s sheet is not a bottom sheet: %s" % (name, rect)
             phone.shot("phone-%s-sheet" % name)
             close_sheet(phone)
+        menu(phone, "usage")
+        cache_hit_rate(phone)
+        phone.shot("phone-usage-sheet")
+        close_sheet(phone)
         print("phone: the bottom bar is one row; pickers and the menu's sheets are bottom sheets")
         # The keyboard's room: the bar hides while the composer has focus.
         phone.script("document.querySelector('#composer').focus()")
