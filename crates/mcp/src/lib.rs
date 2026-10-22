@@ -964,10 +964,7 @@ impl ServerRuntime {
     fn service_auth_failure(&self, error: &rmcp::service::ServiceError) -> Option<ToolError> {
         #[cfg(feature = "oauth")]
         if self.oauth_enabled() && oauth::service_error_requires_auth(error) {
-            self.mark_needs_auth(
-                oauth::auth_challenge(error),
-                &cookie_agent_protocol::diagnostics::error_chain(error),
-            );
+            self.mark_needs_auth(oauth::auth_challenge(error), error);
             return Some(self.needs_auth_error());
         }
         let _ = error;
@@ -981,10 +978,7 @@ impl ServerRuntime {
     ) -> Option<ToolError> {
         #[cfg(feature = "oauth")]
         if self.oauth_enabled() && oauth::initialize_error_requires_auth(error) {
-            self.mark_needs_auth(
-                error.auth_challenge().map(str::to_owned),
-                &cookie_agent_protocol::diagnostics::error_chain(error),
-            );
+            self.mark_needs_auth(error.auth_challenge().map(str::to_owned), error);
             return Some(self.needs_auth_error());
         }
         let _ = error;

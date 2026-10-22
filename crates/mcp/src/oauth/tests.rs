@@ -662,6 +662,17 @@ async fn oauth_challenge_callback_persistence_refresh_and_revocation() {
         .await
         .expect_err("unauthorized connection");
     assert_eq!(registry.statuses()[0].state, McpServerState::NeedsAuth);
+    // The status message is readable wording, never the transport's error
+    // chain with its Rust type names.
+    let message = registry.statuses()[0].message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("OAuth authorization required"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("::") && !message.contains('<') && !message.contains("Transport ["),
+        "{message}"
+    );
 
     authorize(&registry, "remote").await;
     let (challenge, method) = fixture.state.pkce.lock().expect("PKCE")[0].clone();

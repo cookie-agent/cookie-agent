@@ -15,6 +15,7 @@ oauth = [
     "dep:libc",
     "dep:reqwest",
     "dep:sha2",
+    "dep:tracing",
     "dep:url",
     "dep:uuid",
     "dep:zeroize",
@@ -40,6 +41,7 @@ serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
 tokio.workspace = true
 tokio-util.workspace = true
+tracing = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }

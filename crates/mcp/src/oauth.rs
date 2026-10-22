@@ -596,7 +596,13 @@ impl OAuthExchangeState {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
-            .unwrap_or_else(|| cookie_agent_protocol::diagnostics::error_chain(error))
+            .unwrap_or_else(|| {
+                tracing::debug!(
+                    error = %cookie_agent_protocol::diagnostics::error_chain(error),
+                    "MCP OAuth code exchange failed"
+                );
+                "the authorization server did not accept the sign-in".to_owned()
+            })
     }
 
     fn install(&self, code: String) {
@@ -1128,7 +1134,14 @@ impl ServerRuntime {
         ))
     }
 
-    pub(crate) fn mark_needs_auth(&self, challenge: Option<String>, reason: &str) {
+    /// Marks the server `needs_auth`. The status message is fixed wording plus
+    /// the authorization server's own error response when it sent one; the
+    /// transport's error chain names Rust types, so it goes to the log instead.
+    pub(crate) fn mark_needs_auth(
+        &self,
+        challenge: Option<String>,
+        error: &(dyn std::error::Error + 'static),
+    ) {
         if self.superseded.is_cancelled() {
             return;
         }
@@ -1148,15 +1161,20 @@ impl ServerRuntime {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        let reason = response_error.as_deref().unwrap_or(reason);
+        tracing::debug!(
+            server = %self.name,
+            error = %cookie_agent_protocol::diagnostics::error_chain(error),
+            "MCP server requires OAuth authorization"
+        );
+        let message = match response_error {
+            Some(response) => {
+                format!("OAuth authorization required; authenticate to connect\n{response}")
+            }
+            None => "OAuth authorization required; authenticate to connect".to_owned(),
+        };
         self.set_status(
             McpServerState::NeedsAuth,
-            Some(
-                cookie_agent_protocol::diagnostics::detail(&format!(
-                    "OAuth authorization required; authenticate to connect\n{reason}"
-                ))
-                .to_string(),
-            ),
+            Some(cookie_agent_protocol::diagnostics::detail(&message).to_string()),
         );
     }
 

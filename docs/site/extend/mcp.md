@@ -136,7 +136,9 @@ and scopes must be nonempty; a secret requires a client ID. Metadata URLs must
 use HTTPS with a non-root path. Unknown fields and mixed transport fields fail,
 including on disabled entries.
 
-An authorization challenge changes the server state to `needs_auth`. Run
+An authorization challenge changes the server state to `needs_auth`, with the
+message "OAuth authorization required; authenticate to connect" (plus the
+authorization server's own error response when it sent one). Run
 `cookie mcp --token <TOKEN> auth <server>` (or set `COOKIE_DAEMON_TOKEN`),
 or select the server in `/mcp` and press `a`, then
 open the displayed URL. The client, not the daemon, listens on an ephemeral
