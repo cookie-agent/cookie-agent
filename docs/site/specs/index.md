@@ -9,6 +9,7 @@ configuration reference.
 | Specification | Status |
 |---|---|
 | [Web client and local daemon use](web-client.md) | Implemented (2026-10-20); Leptos/WebAssembly client styled with Tailwind, sharing the protocol client, reducer, and panel rules with the TUI, served by `cookie daemon` or any static host, full TUI parity except MCP OAuth and offering this machine as a runtime, phone layout and home-screen manifest (installable as an app with a network-only service worker since 2026-10-21, reversing "no service worker"), headless-Firefox suites in CI; plain `cookie` connects to a running local daemon (phase L). Addendum of 2026-10-21 implemented: web layout v2 (rail, drawer, nested subagents, the approved phone layout) and session deletion (`session.delete`, client protocol 1.5.0) from the TUI and the web client; web commands moved from `/` to the ⋮ menu, subagent tree collapsed to running agents, and a permission mode picker (2026-10-21). Addendum of 2026-10-21 on paths: canonical paths shown as `~/…` under the runtime's reported home, `cwd_identity` from the first workspace attachment, `~/` permission rules (runtime protocol 1.3.0, client protocol 1.7.0); protocol, daemon, and TUI implemented, web display next |
+| [Delegating to runtimes](runtime-delegation.md) | Implemented (2026-10-21); a root names the runtime capabilities its subagents work through (`capabilities`, checked as `delegate@<runtime>`), `list_runtimes` in `global`, delegated attachments in the root's badges (client protocol 1.10.0), and a web New session that starts global-only; the machine registry remembers where runtimes ran (memory spec section 16.8) |
 | [Projects](projects.md) | Implemented (2026-10-21); sessions belong to projects with default attachments, an `AGENTS.md`, and project memory in the snapshot; session rename, badges, project sections, the project editor, and the TUI's project picker in the clients |
 | [Memory](memory.md) | Implemented; `user`, `agent`, `machine`, and `project` memory layers as Markdown files in the `global` runtime, machines as a daemon concept, the memory tools and snapshot, `memory.*` (client protocol 1.4.0), TUI `/memory`, and `cookie memory` |
 | [Background tool calls](background-tools.md) | Implemented (2026-10-16); host-owned background calls and per-turn subagent reports |
@@ -32,7 +33,6 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
-| [Delegating to runtimes](runtime-delegation.md) | Approved (2026-10-21), queued after projects; the root delegates to chosen runtimes, `list_runtimes` in `global`, web New session starts global-only |
 | [MCP OAuth from the web client](web-mcp-oauth.md) | Approved (2026-10-21), queued after runtime delegation; the page itself as the OAuth redirect, `https` redirects accepted by the daemon, paste fallback |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |

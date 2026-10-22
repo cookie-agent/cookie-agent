@@ -1,6 +1,8 @@
 # Delegating to runtimes
 
-Status: **approved** (2026-10-21); queued after the projects work. Builds on the [runtimes spec](runtimes.md), the
+Status: **implemented** (2026-10-21); approved the same day. How it
+settled, with its deviations, is in
+[section 11](#11-implementation-notes). Builds on the [runtimes spec](runtimes.md), the
 [runtime capabilities spec](runtime-capabilities.md), and the
 [projects spec](projects.md).
 
@@ -361,3 +363,82 @@ None. The user approved the spec on 2026-10-21, including:
 - the dial-in pattern in section 7.
 
 A delegated child keeps copying its parent's `cwd_identity`.
+
+## 11. Implementation notes
+
+Implemented 2026-10-21 in three phases: the engine, daemon, and protocol
+(client protocol 1.10.0, plugin protocol 1.4.0), the clients, and the docs
+([Delegating to runtimes](../sessions/delegation.md)). The registry
+remembering where runtimes ran ([memory spec section 16.8](memory.md#168-addendum-2026-10-21-the-registry-remembers-where-runtimes-ran))
+landed first.
+
+Where things are:
+
+- **The parameter and its checks:** `crates/engine/src/base_tools/delegate.rs`
+  (the per-session schema, `check_capabilities`, the prompt paragraph) and
+  `crates/engine/src/runtime/runtime_delegation.rs` (`CapabilitiesParam`,
+  `parse_capability`, `check_delegated_capabilities`,
+  `open_delegated_capabilities`, `inherited_attachments`,
+  `record_delegated_attachments`, and `list_runtimes_text`).
+- **`list_runtimes`:** `crates/engine/src/runtimes_tool.rs`, a provider of the
+  `global` runtime bound to the engine like the memory tools.
+- **Per-runtime permission checks:** `PreparedTool::with_permission_runtimes`
+  (`crates/runtime_api`) and `strictest_decision` in
+  `crates/engine/src/runtime/tool_execution.rs`.
+
+Deviations and readings of the spec:
+
+- **The parameter is `capabilities`**, as decided; the schema block in
+  section 2.1 still shows the earlier name.
+- **Absent means refused as unknown.** `delegate_subagent` keeps one
+  argument type, so a call that passes `capabilities` where the schema has
+  none is refused by the provider with serde's unknown-field wording.
+- **Checks against the live listing** cover what the daemon knows: a
+  runtime that has never connected lists no capabilities yet, so its
+  capability and workspace are checked only by starting it. A missing
+  workspace for a capability that takes one, and a workspace for one that
+  takes none, are refused before anything starts.
+- **Runtimes start before the admission lock and the reservation.** A slow
+  template does not hold up other delegations, and a runtime that does not
+  start leaves no reservation. The capabilities are not part of the durable
+  delegation reservation: a redelivered call computes them again from its
+  arguments, and a child that already exists keeps the attachments it
+  recorded.
+- **Deeper children** inherit their parent's attachments other than
+  `global`, plus the root's `global` attachment when the root has one now,
+  so that `global` follows the root at every depth.
+- **Permission evaluation.** Each runtime a call names is evaluated as the
+  agent's `delegate` rules with that runtime as the scope, and each resource
+  takes the strictest of the runtimes' evaluations, so the approval request
+  keeps one evaluation per resource. The request names no runtime; the
+  runtimes and workspaces show in the call's presentation, as a `runtimes`
+  entry. `delegate@<runtime>` became an accepted permission key; `message`
+  and `skill` still take no selector.
+- **`list_runtimes` lists `runtimes.list`'s runtimes:** the built-in and
+  configured ones and the dial-in runtimes that connected since the daemon
+  started. A dial-in runtime remembered from before a restart is in
+  `machines.list` but not in `list_runtimes` until it connects, since it
+  cannot be delegated to before then. Machines are ordered with the
+  daemon's own first and the rest by name, runtimes by ID within a machine;
+  a machine whose runtimes report different platforms puts the platform on
+  each runtime. An attachment whose instance is not open reports
+  `status="stopped"`. The output is also shown to clients as a Markdown
+  code block.
+- **Delegated attachments.** The root event is
+  `delegated_attachments_added { child_session_id, attachments }`, a
+  runless state event; `attachments` are `RuntimeAttachment`s as the child
+  named them, at least one. The fold keeps one entry per runtime,
+  capability, and workspace. A fork leaves the event behind with its
+  source's subagents, as `record_omitted`. A child is checked again on a
+  redelivery, so a crash between creating the child and recording its
+  attachments is repaired by the redelivery.
+- **The TUI** uses the union through `RuntimeHomes::session_place` in its
+  session picker, which shows the delegated workspaces only for a root with
+  no workspace of its own; its machines view lists remembered runtimes, as
+  `machine_entries` now does for both clients.
+- **The web client** names the sheet's button **Use these runtimes**
+  rather than Start. A draft without runtimes of its own in a project whose
+  defaults attach runtimes is created with `runtimes` omitted, so the
+  daemon attaches the project's defaults; the chip and the draft line show
+  them. A draft whose sheet deselected `global` shows **no runtimes**.
+

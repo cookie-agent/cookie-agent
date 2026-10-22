@@ -1413,3 +1413,34 @@ Machines view were all lost while it was offline.
   - `machines.forget_runtime`.
 
   Older clients see what they see today.
+
+Implemented 2026-10-21 (client protocol 1.10.0), as the first step of
+phase 1 of [delegating to runtimes](runtime-delegation.md#11-implementation-notes):
+
+- **The file.** `machines.json` version 2 adds `remembered`, one record per
+  runtime ID: `{ runtime, kind, machine_id?, platform?, home?, last_seen }`,
+  where `kind` is `spawned` or `dial_in`. Version 1 reads with no records
+  and is written as version 2 on the next change; the records are as strict
+  as the rest of the file. Built-in runtimes get no record.
+- **When it is written.** The daemon notices connections and disconnections
+  as it places runtimes after every runtime registry change. A runtime that
+  connects, or reconnects with a different report, gets its record with
+  `last_seen` now; one that goes offline gets `last_seen` stamped now. A
+  runtime still connected when the daemon stops keeps the time it connected,
+  and the whole set of records is written only when one changes.
+- **Placement.** An offline runtime is placed by its pin, else by the
+  machine ID this process last saw it report, else by its record, with the
+  reason `last_seen`. `machines.list` gives each machine its `remembered`
+  runtimes (`RememberedRuntime { runtime_id, assigned_by, platform?, home?,
+  last_seen }`); a remembered runtime that is pinned is listed with
+  `assigned_by: pinned`. `runtimes.list` fills a disconnected runtime's
+  `platform` and `home` from its record when this process has not seen it.
+- **Forgetting.** `machines.forget_runtime { runtime }` refuses a connected
+  runtime (`runtime_still_connected`, a code the addendum did not name) and
+  one without a record (`runtime_not_remembered`). A configured runtime's
+  record goes when the configuration has no `[runtimes.<id>]` for it, at
+  start as well as at every reload and `config.apply`, since the record says
+  how the runtime came. `cookie machine list` shows remembered runtimes as
+  `offline`, and `cookie machine forget-runtime` calls the new method. The
+  TUI's machines view lists them too, as "last seen here".
+
