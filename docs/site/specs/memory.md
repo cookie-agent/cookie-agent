@@ -762,7 +762,8 @@ document with no `memory` key has no memory tools, no `memory_search`, and
 no snapshot. Memory is opt-in, with `memory: allow` (or per-URL rules) and
 `memory_write: …` in the agent document, or a session overlay rule. The
 table above records the defaults as they were from 2026-10-19 to
-2026-10-22. `list_runtimes` keeps its default, and `mcp` gained one
+2026-10-22. Delegated runs regain one default, their own agent file
+([section 16.9.11](#16911-related-memory-and-no-hard-limits-on-what-an-agent-touches)). `list_runtimes` keeps its default, and `mcp` gained one
 ([runtimes spec section 7.1](runtimes.md#71-addendum-2026-10-22-the-mcp-default)).
 
 ### 9.3 Search results
@@ -1507,8 +1508,9 @@ Hermes Agent, OpenClaw, mem0 and Letta.
 **Decided:**
 - No background curator, no content-shape guard, and no extraction of
   memories from transcripts.
-- Memory stays opt-in per agent (section 9.2, as amended 2026-10-22), and
-  no agent is opted in by this change.
+- Memory stays opt-in per agent for root runs (section 9.2, as amended
+  2026-10-22). Delegated runs get one default: their own agent file
+  (section 16.9.11, decided 2026-10-22).
 - The snapshot already follows the read rules, and an empty snapshot
   renders no memory turn. Both were implemented 2026-10-22.
 
@@ -1579,9 +1581,14 @@ Hermes Agent, OpenClaw, mem0 and Letta.
     > is wrong. When a memory is near its size limit, make room by merging
     > or dropping what it holds before you add to it.
 
-- **Delegated runs.** A delegated run gets the same part B. What is
-  related to it is what its snapshot includes: its own agent file
-  (section 16.9.11).
+- **Delegated runs.** What is related to a delegated run is what its
+  snapshot includes: its own agent file (section 16.9.11). Its part A
+  names only that:
+
+  > Your own agent memory is included automatically at the start of each
+  > run. Use memory_search for anything else.
+
+  It gets the same part B.
 - **Visibility test.** Tool prompt composition asks every provider. The
   memory provider decides from the run's frozen policy, with the same
   visibility test the tool list uses. With no memory tool there is no
@@ -1824,7 +1831,34 @@ Decided 2026-10-22.
     clears its body (section 16.6, superseded).
 
   An agent's delete now deletes, and nothing is kept (section 16.9.10).
-- **A possible later default.** Once this is in, the defaults (section 9.2,
+- **Default for delegated runs** (decided 2026-10-22). A delegated run
+  (depth 1 or more) whose agent document has no key for `memory` or for
+  `memory_write` gets this rule for that action:
+
+  ```yaml
+  memory:
+    "agent://${agent_id}": allow
+  memory_write:
+    "agent://${agent_id}": allow
+  ```
+
+  - **What it means.** A subagent sees and maintains its own agent file
+    and nothing else: no `user://` memory, and no machine or project
+    memory. This follows Claude Code, whose subagents never load the
+    main session's auto memory and get only a memory directory of their
+    own. The snapshot of a delegated run already holds only its own agent
+    file (section 6), so the default and the snapshot agree.
+  - **Chosen by depth, not mode.** Permission defaults so far depend on
+    the agent's mode. This one depends on whether the run is delegated,
+    so an `all`-mode agent gets it when delegated and not when it runs as
+    the root. Root runs keep no memory default.
+  - **A document's own rules replace it**, per action, as with every
+    default (section 9.2). An agent document that declares `memory` or
+    `memory_write` gets exactly those rules when delegated too, `user://`
+    included if it grants it. That is the explicit opt-in; there is no
+    hard limit behind it.
+  - **Session overlays** apply on top as for any action.
+- **A possible later default for root runs.** Once this is in, the defaults (section 9.2,
   none since 2026-10-22) could become "read everything, write what is
   related". The relative names already express that, with no new
   variable:
@@ -1839,7 +1873,8 @@ Decided 2026-10-22.
   ```
 
   This is not decided; it is recorded here so the change can be made
-  later without new mechanism.
+  later without new mechanism. Delegated runs would keep their own default
+  above.
 
 #### 16.9.12 The approval reviewer knows the rubric
 
@@ -1867,6 +1902,7 @@ mode it rejects writes that fail the rubric.
    - offering write tools only when some memory is both readable and
      writable;
    - dropping the hard write limits (section 16.9.11);
+   - the delegated runs' default, and their part A;
    - the `Project:` line;
    - search scoring and the result and read formats;
    - stamps and their migration;
