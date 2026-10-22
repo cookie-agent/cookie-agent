@@ -21,7 +21,10 @@ self.addEventListener("fetch", (event) => {
   // The daemon's WebSocket endpoints are never touched. A browser sends no
   // fetch event for a WebSocket; this keeps a plain request off them too.
   if (/\/(ws|runtime)$/.test(url.pathname)) return;
-  event.respondWith(fetch(request));
+  // A failed fetch (the daemon restarting, the network gone) becomes the
+  // network error the browser would show anyway, instead of a rejection
+  // the console reports as uncaught.
+  event.respondWith(fetch(request).catch(() => Response.error()));
 });
 
 // build: source

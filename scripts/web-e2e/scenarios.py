@@ -2748,6 +2748,9 @@ def service_worker(browser):
     assert headers["Service-Worker-Allowed"] is None
     assert "worker-src 'self';" in headers["Content-Security-Policy"]
     assert re.search(r"^// build: [0-9a-f]{16}$", body, re.M), "sw.js carries no build stamp"
+    # A fetch that fails (the daemon restarting) ends as a network error, not
+    # an uncaught rejection in the worker's console.
+    assert "fetch(request).catch(() => Response.error())" in body, "sw.js leaves failed fetches uncaught"
     browser.go(base)
     browser.wait("the connection from the start URL", lambda: browser.text("#connected") != "")
     assert controlled(browser), "the reloaded page is not the service worker's"
