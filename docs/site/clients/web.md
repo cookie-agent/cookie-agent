@@ -512,15 +512,21 @@ address bar.
   the dimmed page: the rail as an icon strip, with the theme button at its
   foot, beside the sessions, with the open session's subagents nested
   under its row. A tap outside, browser Back, or choosing a session or a
-  view closes it; a tap on the open session's row switches its tree and
-  leaves the drawer open. It opens only from the button: a swipe from the edge is
+  view closes it; choosing Chat leaves it open on the sessions, and a tap
+  on the open session's row switches its tree and leaves it open too. It opens only from the button: a swipe from the edge is
   the browser's Back. A long press on a session's row, let go in place,
   reveals its **Move**, which lists the projects, its **Rename**, which
   makes its title a field, and its **Delete**, then the confirmation; held
   and moved, it drags the row onto a project's header. A long press on a
   project's header shows its pencil and trash.
-- **Agents** works like Chat: the agent open fills the screen, and the
-  sidebar button opens the drawer with the rail beside the agents.
+- **List first.** A view with a list shows the list when you choose it
+  on the rail, and opens an item only when you choose it there: Chat's
+  sessions stay in the drawer; the agents, the Settings sections, and the
+  memories fill the screen. Machines & runtimes has no list and opens at
+  once.
+- **Agents:** the agent open fills the screen, with the back arrow to the
+  agents; the sidebar button opens the drawer with the rail beside the
+  agents.
 - **Other views** fill the screen under the same title bar. Lists open
   their details one level at a time, such as a Settings section, then a
   document: the back arrow in the title bar, or browser Back, goes up one

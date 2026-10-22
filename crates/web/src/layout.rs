@@ -47,6 +47,26 @@ impl View {
         matches!(self, Self::Chat | Self::Agents)
     }
 
+    /// Where a phone shows the view's list, its second level, which a tap
+    /// on its rail button shows before any of its items: Chat's sessions
+    /// in the drawer beside the rail; the agents, the Settings sections,
+    /// and the memories as the page itself until one opens. Machines has
+    /// no list.
+    pub const fn phone_list(self) -> Option<PhoneList> {
+        match self {
+            Self::Chat => Some(PhoneList::Drawer),
+            Self::Agents | Self::Settings | Self::Memory => Some(PhoneList::Page),
+            Self::Machines => None,
+        }
+    }
+
+    /// Whether the drawer stays open after a tap on the view's rail
+    /// button, on a `phone` (whose rail is in the drawer): for a list the
+    /// drawer holds. Anywhere else the tap closes the drawer.
+    pub const fn rail_keeps_drawer(self, phone: bool) -> bool {
+        phone && matches!(self.phone_list(), Some(PhoneList::Drawer))
+    }
+
     /// The `data-view` value of its rail button and page.
     pub const fn id(self) -> &'static str {
         match self {
@@ -57,6 +77,15 @@ impl View {
             Self::Memory => "memory",
         }
     }
+}
+
+/// Where a phone shows a view's list; see [`View::phone_list`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PhoneList {
+    /// In the drawer, beside the rail.
+    Drawer,
+    /// As the page, until one of its items opens over it.
+    Page,
 }
 
 /// A part of the Settings view.
@@ -266,6 +295,40 @@ mod tests {
             reconcile(&[Drawer, Section], &[Drawer, Section]),
             HistoryStep::Keep
         );
+    }
+
+    #[test]
+    fn a_phone_rail_tap_shows_the_views_list_and_back_returns_to_it() {
+        use Layer::{Drawer, Editor, Section};
+        // A phone's rail is in the drawer: a tap on Chat keeps it open on
+        // the sessions, a tap on a view whose list is its page closes it.
+        assert!(View::Chat.rail_keeps_drawer(true));
+        assert!(
+            !View::Chat.rail_keeps_drawer(false),
+            "a wider window has its rail outside"
+        );
+        let after_tap = |view: View| -> Vec<Layer> {
+            if view.rail_keeps_drawer(true) {
+                vec![Drawer]
+            } else {
+                Vec::new()
+            }
+        };
+        assert_eq!(
+            reconcile(&[Drawer], &after_tap(View::Chat)),
+            HistoryStep::Keep
+        );
+        for view in [View::Agents, View::Settings, View::Memory, View::Machines] {
+            assert!(!view.rail_keeps_drawer(true), "{view:?}");
+            assert_eq!(reconcile(&[Drawer], &after_tap(view)), HistoryStep::Back(1));
+        }
+        // Choosing an item of a page list opens a detail Back closes, back
+        // to the list.
+        for detail in [Section, Editor] {
+            assert_eq!(reconcile(&[], &[detail]), HistoryStep::Push(vec![detail]));
+            assert_eq!(reconcile(&[detail], &[]), HistoryStep::Back(1));
+        }
+        assert_eq!(View::Machines.phone_list(), None);
     }
 
     #[test]

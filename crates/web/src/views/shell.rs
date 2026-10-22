@@ -65,7 +65,7 @@ pub fn Rail(
                     data-tip=view.label()
                     data-view=view.id()
                     aria-current=move || current().then_some("page")
-                    on:click=move |_| workspace.open_view(view, None)
+                    on:click=move |_| workspace.open_from_rail(view)
                 >
                     // The active view's mark: a bar at the rail's edge.
                     <span

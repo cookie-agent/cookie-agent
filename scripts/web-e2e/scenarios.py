@@ -895,6 +895,9 @@ def close_sheet(browser):
         "  document.querySelector('[data-rail=primary] [data-view=chat]').click()"
     )
     browser.wait("the chat view", lambda: count(browser, "#page") == 0)
+    # A phone's rail opens Chat on its sessions, in the drawer.
+    browser.script("const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click()")
+    browser.wait("the closed drawer", lambda: count(browser, "#drawer") == 0)
 
 
 # The usage sheet's figures for the session (its first list), by name.
@@ -2101,10 +2104,70 @@ def phone_layout():
         phone.shot("phone-drawer")
         phone.script("history.back()")
         phone.wait("Back closing the drawer", lambda: count(phone, "#drawer") == 0)
-        # Choosing a view in the drawer's rail closes the drawer.
+
+        # A rail button whose view has a list, its second level, shows the
+        # list first: the agents and the memories fill the page, Chat's
+        # sessions stay in the drawer. Choosing an item opens its detail,
+        # whose back arrow (and browser Back) returns to the list.
+        agent = '#agents-sidebar [data-config-path="agents/helper.md"]'
+        phone.click("main [data-sidebar-toggle]")
+        phone.click("#drawer [data-view=agents]")
+        phone.wait(
+            "the agents",
+            lambda: page_view(phone) == "agents" and count(phone, "#drawer") == 0 and shown(phone, agent),
+        )
+        assert count(phone, "#config-text") == 0 and not shown(phone, "[data-agents-empty]"), "the rail opened an agent"
+        assert phone.text("#page-title") == "Agents" and not shown(phone, "[data-page-back]")
+        phone.shot("phone-rail-agents")
+        phone.click(agent + " button")
+        phone.wait("the agent", lambda: shown(phone, "#config-text") and not shown(phone, agent))
+        assert shown(phone, "[data-page-back]"), "the agent has no back arrow"
+        phone.shot("phone-rail-agents-open")
+        phone.script("history.back()")
+        phone.wait("Back to the agents", lambda: count(phone, "#config-text") == 0 and shown(phone, agent))
+        phone.click(agent + " button")
+        phone.wait("the agent again", lambda: shown(phone, "#config-text"))
+        phone.click("[data-page-back]")
+        phone.wait("the back arrow to the agents", lambda: count(phone, "#config-text") == 0 and shown(phone, agent))
+
+        phone.click("#page [data-sidebar-toggle]")
+        phone.click("#drawer [data-view=memory]")
+        phone.wait(
+            "the memories",
+            lambda: page_view(phone) == "memory"
+            and count(phone, "#drawer") == 0
+            and "Reading memories" not in phone.text("#page"),
+        )
+        assert count(phone, "#memory-text") == 0, "the rail opened a memory"
+        phone.shot("phone-rail-memory")
+        # Run on its own, the daemon may have no memory to open yet.
+        if count(phone, "#page .memory-row button") > 0:
+            phone.click("#page .memory-row button")
+            phone.wait("the memory", lambda: count(phone, "#memory-text") == 1)
+            phone.click("[data-page-back]")
+            phone.wait("Back to the memories", lambda: count(phone, "#memory-text") == 0 and count(phone, "#page .memory-row") > 0)
+
+        # Machines has no list: its page at once.
+        phone.click("#page [data-sidebar-toggle]")
+        phone.click("#drawer [data-view=machines]")
+        phone.wait("the machines", lambda: page_view(phone) == "machines" and count(phone, "#drawer") == 0)
+
+        phone.click("#page [data-sidebar-toggle]")
+        phone.click("#drawer [data-view=chat]")
+        phone.wait(
+            "the sessions",
+            lambda: page_view(phone) == "chat" and count(phone, "#drawer nav[aria-label=Sessions] [data-session]") > 0,
+        )
+        phone.shot("phone-rail-chat")
+        phone.script("history.back()")
+        phone.wait("Back closing the sessions", lambda: count(phone, "#drawer") == 0 and page_view(phone) == "chat")
+        print("phone: a rail button shows its view's list first; Back from an item returns to it")
+
+        # Settings' list is its page too: no section until one is chosen.
         phone.click("main [data-sidebar-toggle]")
         phone.click("#drawer [data-view=settings]")
         phone.wait("the settings view", lambda: page_view(phone) == "settings" and count(phone, "#drawer") == 0)
+        assert shown(phone, "[data-section=providers]") and count(phone, "[data-section-body]") == 0, "the rail opened a section"
         # List, then detail; Back closes the drawer, then leaves the detail.
         phone.click("#page [data-section=configuration]")
         phone.wait("the section", lambda: shown(phone, "[data-section-body=configuration]"))

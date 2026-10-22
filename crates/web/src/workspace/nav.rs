@@ -27,6 +27,16 @@ impl Workspace {
         self.view.set(view);
     }
 
+    /// A tap on `view`'s rail button: on a phone, a view with a list shows
+    /// the list first (see [`View::phone_list`]); choosing one of its
+    /// items opens it.
+    pub fn open_from_rail(self, view: View) {
+        self.open_view(view, None);
+        if view.rail_keeps_drawer(self.narrow.get_untracked()) {
+            self.sidebar_open.set(true);
+        }
+    }
+
     /// Opens a Settings section (`None`: the list, on a phone), reading
     /// what it lists.
     pub fn open_section(self, section: Option<SettingsSection>) {

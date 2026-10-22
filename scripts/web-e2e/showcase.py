@@ -243,6 +243,9 @@ def close_all():
     )
     time.sleep(0.3)
     view("chat")
+    # A phone's rail opens Chat on its sessions, in the drawer.
+    browser.script("const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click();")
+    time.sleep(0.3)
     browser.script(
         "const c = document.querySelector('#composer');"
         "if (c) { c.value = ''; c.dispatchEvent(new Event('input')); c.blur() }"
@@ -583,6 +586,12 @@ if ALL:
             close_all()
             view(name)
             both_themes("%s-view-%s" % (size, name))
+        if width < 640:
+            # A phone's rail shows Chat's sessions first, from another view.
+            close_all()
+            view("memory")
+            view("chat")
+            both_themes("%s-view-chat" % size)
         for section in SECTIONS:
             close_all()
             view("settings")

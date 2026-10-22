@@ -1,8 +1,9 @@
 //! The Agents view: the agent documents in a sidebar like Chat's sessions
 //! (the shared agents, then each preset's), and the open document's
 //! editor beside it. A desktop pins the sidebar, which the sidebar button
-//! hides and shows; a narrower window slides it over, and a phone's drawer
-//! carries it beside the rail.
+//! hides and shows; a narrower window slides it over. A phone shows the
+//! agents as the page until one opens (its drawer carries them beside the
+//! rail too).
 
 use leptos::prelude::*;
 
@@ -31,18 +32,37 @@ fn is_agent(path: &str) -> bool {
     path.starts_with("agents/")
 }
 
-/// The Agents view: the sidebar, then the open agent or what to do.
+/// The Agents view: the sidebar, then the open agent or what to do. A
+/// phone shows one at a time: the agents fill the page until one opens,
+/// and the title bar's back arrow returns to them.
 pub fn agents_page(workspace: Workspace) -> impl IntoView {
+    let listing = move || {
+        workspace.narrow.get()
+            && !workspace
+                .config_edit
+                .with(|edit| edit.as_ref().is_some_and(|edit| is_agent(&edit.path)))
+    };
     view! {
         <div class="flex min-h-0 flex-1">
             <aside
                 id="agents-sidebar"
-                class="hidden w-72 shrink-0 flex-col border-r border-toasted bg-parchment dark:border-ember dark:bg-char"
+                class="shrink-0 flex-col border-r border-toasted bg-parchment dark:border-ember dark:bg-char"
+                class:hidden=move || !listing()
+                class:flex=listing
+                class:w-full=listing
+                class:w-72=move || !listing()
                 class:lg:flex=move || workspace.sidebar_pinned.get()
             >
+                {move || listing().then(|| {
+                    workspace.config_error.get().map(|error| view! { <p class=format!("{ERROR} mx-3 mt-3") id="config-error">{error}</p> })
+                })}
                 <AgentList workspace=workspace />
             </aside>
-            <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-3" data-page-body>
+            <div
+                class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-3"
+                class:hidden=listing
+                data-page-body
+            >
                 <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-2">
                     {agent_detail(workspace)}
                 </div>
