@@ -1451,7 +1451,7 @@ impl ServerRuntime {
         let server = Arc::clone(self);
         let task = tokio::spawn(async move {
             if let Err(error) = server.connect().await {
-                server.fail(error.to_string());
+                server.fail(error.message());
             }
         });
         registry

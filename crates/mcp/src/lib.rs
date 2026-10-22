@@ -602,7 +602,7 @@ impl McpRegistry {
                 if let Err(error) = server.connect().await
                     && !task_registry.shutdown.is_cancelled()
                 {
-                    server.fail(error.to_string());
+                    server.fail(error.message());
                 }
             });
             registry
@@ -848,7 +848,7 @@ impl McpRegistry {
         match server.connect().await {
             Ok(()) => Ok(()),
             Err(error) => {
-                server.fail(error.to_string());
+                server.fail(error.message());
                 Err(error)
             }
         }
@@ -874,7 +874,7 @@ impl McpRegistry {
             if let Err(error) = server.connect().await
                 && !task_registry.shutdown.is_cancelled()
             {
-                server.fail(error.to_string());
+                server.fail(error.message());
             }
         });
         tasks.push(task);
@@ -1601,7 +1601,7 @@ impl ServerRuntime {
         let converted = match converted {
             Ok(tools) => tools,
             Err(error) => {
-                self.fail(error.to_string());
+                self.fail(error.message());
                 return;
             }
         };
