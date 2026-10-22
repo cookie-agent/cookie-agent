@@ -96,7 +96,13 @@ scripts/test-web-page.sh projects       # one scenario and those it builds on
 
 `scripts/test-web-page.sh` runs its groups of scenarios side by side, each
 with its own daemons and browser; `SCREENSHOT_DIR` keeps a screenshot of
-each step.
+each step. A scenario fails when a page it opened had an uncaught error,
+an unhandled rejection, or a panic, which the page's panic hook logs to the
+console with its message and location (the bundle aborts on panic, so the
+browser alone reports only `RuntimeError: unreachable`). A bundle built
+with `CARGO_PROFILE_WEB_DEV_DEBUG_ASSERTIONS=true scripts/build-web.sh
+--fast` also names, for a panic on a disposed signal, the line that read
+it and the line that made it.
 
 ## Windows targets
 

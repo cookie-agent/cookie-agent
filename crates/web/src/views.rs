@@ -756,7 +756,7 @@ fn rename_row<B: IntoView + 'static>(
         if let Some(input) = field.get() {
             request_animation_frame(move || {
                 let _ = input.focus();
-                if fresh.get_value() {
+                if fresh.try_get_value() == Some(true) {
                     fresh.set_value(false);
                     input.select();
                 }
@@ -1282,8 +1282,13 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             return;
         };
         let element: web_sys::Element = element.into();
+        // The transcript may be gone by the next frame (a new session's
+        // cards took its place), `following` with it: nothing to follow.
         request_animation_frame(move || {
-            if following.get_value() {
+            let Some(following) = following.try_get_value() else {
+                return;
+            };
+            if following {
                 element.set_scroll_top(element.scroll_height());
             }
             crate::highlight::highlight_within(&element);
@@ -1646,9 +1651,10 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
         composer_buttons(workspace.stoppable(), has_input)
     });
     // The box follows its text: typed, pasted, recalled, or sent away; and
-    // its buttons, whose number changes the room the text has.
+    // its buttons, whose number changes the room the text has. On the
+    // next frame the composer may be gone, for a new session's cards.
     let fit = move || {
-        if let Some(textarea) = textarea.get_untracked() {
+        if let Some(textarea) = textarea.try_get_untracked().flatten() {
             fit_composer(&textarea);
         }
     };
@@ -1750,12 +1756,13 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     }
                     on:blur=move |_| {
                         // Later, so a tap on a button lands before the bar
-                        // reappears and moves it.
+                        // reappears and moves it. The tap may take the
+                        // composer away (New session), `blurred` with it.
                         blurred.update_value(|blurred| *blurred += 1);
                         let current = blurred.get_value();
                         set_timeout(
                             move || {
-                                if blurred.get_value() == current {
+                                if blurred.try_get_value() == Some(current) {
                                     composing.set(false);
                                 }
                             },
@@ -2014,9 +2021,10 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
             generation.update_value(|generation| *generation += 1);
             let current = generation.get_value();
             live.set(true);
+            // The line may be gone by then, `generation` with it.
             set_timeout(
                 move || {
-                    if generation.get_value() == current {
+                    if generation.try_get_value() == Some(current) {
                         live.set(false);
                     }
                 },

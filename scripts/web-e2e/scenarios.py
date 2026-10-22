@@ -82,6 +82,15 @@ def call(method, path, body=None):
         raise RuntimeError("%s %s: %s" % (method, path, error.read().decode())) from None
 
 
+# What in a browser's log is an uncaught error or a panic: a Rust panic is
+# a WebAssembly trap Chrome logs as "Uncaught RuntimeError: unreachable",
+# after the page's panic hook logged "panicked at" with its message; an
+# unhandled rejection is "Uncaught (in promise)".
+PAGE_ERROR = re.compile(r"Uncaught|panicked at|RuntimeError")
+# The scenario running, which a browser's errors are reported under.
+SCENARIO = ["connect"]
+
+
 # What a desktop with a mouse reports, which headless Chrome does not:
 # Tailwind's hover: styles apply only under (hover: hover).
 DESKTOP_POINTER = (
@@ -106,7 +115,12 @@ class Browser:
         options = {"args": args}
         if os.environ.get("CHROME"):
             options["binary"] = os.environ["CHROME"]
-        capabilities = {"browserName": "chrome", "goog:chromeOptions": options}
+        capabilities = {
+            "browserName": "chrome",
+            "goog:chromeOptions": options,
+            # The console and uncaught errors, for check().
+            "goog:loggingPrefs": {"browser": "ALL"},
+        }
         self.session = call("POST", "/session", {"capabilities": {"alwaysMatch": capabilities}})[
             "sessionId"
         ]
@@ -122,6 +136,32 @@ class Browser:
             },
         )
 
+    def errors(self):
+        """The uncaught errors and panics the browser logged since the last
+        call, which takes them from its log."""
+        entries = call("POST", self.path("/se/log"), {"type": "browser"})
+        return [
+            entry["message"]
+            for entry in entries
+            if entry.get("level") == "SEVERE" and PAGE_ERROR.search(entry["message"])
+        ]
+
+    def check(self):
+        """Fails when a page of this browser had an uncaught error or a
+        panic since the last check, naming the scenario that ran."""
+        errors = self.errors()
+        if errors:
+            self.shot("errors-" + SCENARIO[0])
+            raise AssertionError(self.failure(errors))
+
+    @staticmethod
+    def failure(errors):
+        return "the page had %d uncaught error(s) or panic(s) during %s:\n%s" % (
+            len(errors),
+            SCENARIO[0],
+            "\n".join(errors),
+        )
+
     def cdp(self, command, params):
         """Runs a Chrome DevTools Protocol command in the page."""
         return call("POST", self.path("/goog/cdp/execute"), {"cmd": command, "params": params})
@@ -134,6 +174,10 @@ class Browser:
 
     def script(self, source, *args):
         return call("POST", self.path("/execute/sync"), {"script": source, "args": list(args)})
+
+    def script_async(self, source, *args):
+        """Runs `source`, which calls its last argument when it is done."""
+        return call("POST", self.path("/execute/async"), {"script": source, "args": list(args)})
 
     def find(self, selector):
         return call("POST", self.path("/element"), {"using": "css selector", "value": selector})[
@@ -205,7 +249,17 @@ class Browser:
         assert abs(size[0] - width) <= 3, "the page is %s px wide, not %s" % (size[0], width)
 
     def close(self):
-        call("DELETE", self.path(""))
+        """Closes the browser, failing if it logged an uncaught error or a
+        panic; when the scenario already fails, it only prints them."""
+        failing = sys.exc_info()[1] is not None
+        try:
+            errors = self.errors()
+        finally:
+            call("DELETE", self.path(""))
+        if errors and failing:
+            print(self.failure(errors), file=sys.stderr)
+        elif errors:
+            raise AssertionError(self.failure(errors))
 
 
 def send(browser, text, keys=ENTER):
@@ -2524,6 +2578,101 @@ def suspended_tab(browser):
     print("a tab shown again after the daemon stopped answering reconnects")
 
 
+# Clicks each of `arguments[0]` (selectors) in turn, the first at the
+# start of an animation frame and each next one a task later, so all land
+# before the next frame: what the earlier clicks drew and scheduled for
+# that frame is torn down by the later ones before it comes.
+CLICKS_IN_ONE_FRAME = """
+const [selectors, done] = arguments;
+requestAnimationFrame(() => {
+  const next = (i) => {
+    if (i === selectors.length) return setTimeout(done, 300);
+    document.querySelector(selectors[i]).click();
+    setTimeout(() => next(i + 1), 0);
+  };
+  next(0);
+});
+"""
+
+
+def torn_down(browser):
+    """What a part of the page left for later after it was taken away:
+    a timer or an animation frame that reads its state. The page must not
+    panic when such a callback finds the state disposed: the composer's
+    blur, the phone's status line, a session row's badges fitted on the
+    next frame, and the transcript following its end."""
+    browser.resize(1280, 900)
+    # A status message keeps the phone's status line up for a few
+    # seconds; leaving for a new session takes the line away meanwhile.
+    # So does the composer's blur, which waits a moment to bring back the
+    # bottom bar.
+    if count(browser, "#composer") == 0:
+        click_row(browser, "aside [data-session-row] [data-session]")
+        browser.wait("a session's composer", lambda: count(browser, "#composer") == 1)
+    assert browser.text("#status") != "nothing is running", "the status would not change"
+    browser.type("#composer", ESCAPE)
+    browser.wait("the status", lambda: browser.text("#status") == "nothing is running")
+    assert browser.script("return document.activeElement.id") == "composer"
+    browser.click("aside [data-new-session]")
+    browser.wait("the new session's cards", lambda: count(browser, "#new-session") == 1)
+    time.sleep(1)
+    browser.check()
+    print("the composer's blur outlives the composer quietly")
+    time.sleep(8)
+    browser.check()
+    print("the status line's timer outlives the status line quietly")
+    # A section opened and folded again within one frame: its rows fit
+    # their badges on the frame after they were drawn, when they are gone.
+    open_section = "aside [data-project-section][data-open=true]:has([data-session-row])"
+    browser.wait("an open section with sessions", lambda: count(browser, open_section) >= 1)
+    key = browser.script("return document.querySelector(arguments[0]).dataset.projectSection", open_section)
+    toggle = 'aside [data-project-section="%s"] [data-section-toggle]' % key
+    for _ in range(3):
+        browser.script_async(CLICKS_IN_ONE_FRAME, [toggle, toggle, toggle, toggle])
+    browser.check()
+    print("rows drawn and folded away within a frame fit nothing")
+    # A session opened and left for a new one within one frame: the
+    # transcript scrolls to its end on the frame after it changed.
+    for _ in range(3):
+        browser.script_async(
+            CLICKS_IN_ONE_FRAME, ["aside [data-session-row] [data-session]", "aside [data-new-session]"]
+        )
+    browser.check()
+    print("a transcript drawn and taken away within a frame scrolls nothing")
+
+
+def long_lived(browser):
+    """A page left open while things change under it: a reply streams
+    while the user goes through every view (the Machines view polls its
+    runtimes each second), opens and closes a sheet, and switches
+    sessions back and forth. Nothing on it may panic meanwhile."""
+    browser.resize(1280, 900)
+    close_sheet(browser)
+    new_session(browser)
+    send(browser, "go slow")
+    browser.wait("the slow run", lambda: "word3" in browser.text("#transcript"))
+    streaming = open_session_id(browser)
+    for name in ("agents", "machines", "memory", "settings"):
+        view(browser, name)
+        time.sleep(3 if name == "machines" else 0.5)
+    close_sheet(browser)
+    browser.click("main button[aria-label=Commands]")
+    browser.wait("the commands", lambda: count(browser, "#sheet") == 1)
+    close_sheet(browser)
+    other = 'aside [data-session-row]:not([data-session-row="%s"]) [data-session]' % streaming
+    mine = 'aside [data-session-row="%s"] [data-session]' % streaming
+    for _ in range(3):
+        click_row(browser, other)
+        time.sleep(0.3)
+        click_row(browser, mine)
+        time.sleep(0.3)
+    browser.wait("the streaming session", lambda: open_session_id(browser) == streaming)
+    browser.check()
+    browser.type("#composer", ESCAPE)
+    browser.wait("the cancelled run", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    print("a reply streamed through every view, a sheet, and switched sessions")
+
+
 def home_screen():
     """The page names a web app manifest that meets Chromium's install
     criteria, whose icons and screenshots the daemon serves."""
@@ -3263,6 +3412,29 @@ def foreign_origin(browser):
     connect(browser)
 
 
+def panic_hook():
+    """A panic reaches the console with its message and where it happened,
+    which the build's `panic = "abort"` alone loses, and the suite's error
+    check sees it. Its own browser: the panic leaves the page's WebAssembly
+    in no state to go on."""
+    browser = Browser()
+    try:
+        connect(browser)
+        thrown = browser.script(
+            "try { window.wasmBindings.cookiePanicProbe(); return 'returned'; }"
+            " catch (error) { return String(error); }"
+        )
+        assert "RuntimeError" in thrown, thrown
+        errors = browser.errors()
+        assert any(
+            "panicked at" in error and "panics.rs" in error and "the panic probe fired" in error
+            for error in errors
+        ), errors
+        print("a panic logs its message and location:", errors[0][:160])
+    finally:
+        browser.close()
+
+
 def audit():
     problems = phone_audit()
     for problem in problems:
@@ -3281,6 +3453,8 @@ def audit():
 # daemon it looks through.
 SCENARIOS = [
     ("basics", basics, "chat", []),
+    ("torn_down", torn_down, "chat", ["basics"]),
+    ("long_lived", long_lived, "chat", ["basics"]),
     ("composer", composer, "chat", []),
     ("tool_rows", tool_rows, "chat", []),
     ("pinned_rows", pinned_rows, "chat", ["tool_rows"]),
@@ -3304,6 +3478,7 @@ SCENARIOS = [
     ("phone_audit", audit, "chat", []),
     ("install_prompt", install_prompt, "install", []),
     ("install_on_phones", install_on_phones, "install", []),
+    ("panic_hook", panic_hook, "install", []),
     # It stops the other daemon.
     ("daemon_change", daemon_change, "install", []),
 ]
@@ -3337,11 +3512,13 @@ def run(names):
         for name in names:
             started = time.time()
             function = functions[name]
+            SCENARIO[0] = name
             if function.__code__.co_argcount:
                 if browser is None:
                     browser = Browser()
                     connect(browser)
                 function(browser)
+                browser.check()
             else:
                 function()
             print("scenario %s passed in %.0f s" % (name, time.time() - started), flush=True)

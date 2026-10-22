@@ -169,10 +169,12 @@ pub fn keep_fitted(line: NodeRef<leptos::html::Span>) {
     });
 }
 
-/// Fits `line` once the badges it is drawing now are on the page.
+/// Fits `line` once the badges it is drawing now are on the page. The row
+/// may be gone by then (a list redrawn twice within a frame), and its
+/// `line` disposed with it: nothing to fit.
 pub fn fit_soon(line: NodeRef<leptos::html::Span>) {
     request_animation_frame(move || {
-        if let Some(element) = line.get_untracked() {
+        if let Some(element) = line.try_get_untracked().flatten() {
             fit(&element.into());
         }
     });
