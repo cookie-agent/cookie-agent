@@ -56,7 +56,17 @@ Four things decide how a service has to be set up:
   servers, those of `[runtimes.local.mcp.servers.*]` in that user's
   `config.toml`, and its tools see that user's files and profile. Run the
   service as the account whose configuration and browser profile it needs,
-  and, for browser MCP servers, inside that user's login session.
+  and, for browser MCP servers, inside that user's login session. A browser
+  belongs to the machine, not to a workspace, so give it
+  `scope = "runtime"`: the runtime starts it once when it connects, in that
+  user's home directory, and every workspace shares it:
+
+  ```toml
+  [runtimes.local.mcp.servers.my_chrome]
+  command = "npx"
+  args = ["-y", "chrome-devtools-mcp@latest"]
+  scope = "runtime"
+  ```
 
 The installers put the binary in Cargo's home: `~/.cargo/bin/cookie` on
 Linux and macOS, `%USERPROFILE%\.cargo\bin\cookie.exe` on Windows. Adjust the

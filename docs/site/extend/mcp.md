@@ -34,22 +34,79 @@ on that runtime's machine:
   `global` (the default) can use them. Only these servers can use OAuth, and
   only these can be added, edited, removed, or toggled from `/mcp`.
 - **`[runtimes.<id>.mcp.servers.<name>]`** servers belong to a coding
-  runtime template. Each instance of the template hosts its own copy on the
-  instance's machine, for example a language server next to a repository on
-  another host over ssh, and sessions attached to that instance can use
-  them. `[runtimes.local.mcp.servers.<name>]` servers run in the daemon's
-  built-in `local` coding runtime.
+  runtime template and run on the runtime's machine, for example a language
+  server next to a repository on another host over ssh. Their `scope` says
+  how many copies run (see [scope](#scope-one-per-workspace-or-one-per-runtime)).
+  `[runtimes.local.mcp.servers.<name>]` servers run in the daemon's built-in
+  `local` coding runtime, and those of a machine's own
+  `[runtimes.local.mcp.servers.<name>]` in a runtime that machine dials in
+  with (`cookie runtime serve --daemon`, or the TUI attached to a daemon on
+  another machine).
 
 ```toml
 [runtimes.labpc]
 command = ["ssh", "labpc", "cookie", "runtime", "serve", "--stdio"]
 
 [runtimes.labpc.mcp.servers.rust_analyzer]
-command = "rust-analyzer-mcp"
+command = "rust-analyzer-mcp"          # scope = "workspace", the default
+
+[runtimes.labpc.mcp.servers.browser]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest"]
+scope = "runtime"
 
 [runtimes.local.mcp.servers.docs]
 command = "docs-mcp"
 ```
+
+### Scope: one per workspace or one per runtime
+
+A runtime template's server takes `scope = "workspace"` (the default) or
+`scope = "runtime"`:
+
+- **`workspace`**: every workspace instance of the runtime starts its own
+  copy when it opens, and its tools belong to that instance. Two workspaces
+  of one runtime in a session run two copies, and their tools are published
+  under each attachment's prefix (`labpc_api_rust_analyzer_hover`). Use it
+  for servers about a project: a language server, a repository index, a
+  test runner.
+- **`runtime`**: the runtime starts one copy when it starts (when it answers
+  the daemon's `runtime/initialize`), before any workspace is open, and
+  every workspace of that runtime shares it until the runtime stops. Its
+  tools are the runtime's own: a session gets them once per runtime however
+  many of the runtime's workspaces it attaches, published bare, or under the
+  runtime's ID (`labpc_browser_navigate`) when another tool takes the name,
+  and they run without a workspace. Use it for servers about the machine: a
+  browser and its profile, a desktop, a device, anything that should not
+  start twice.
+
+A runtime does not hold up its handshake for its runtime-scoped servers: it
+answers `runtime/initialize` while they connect, and the first workspace to
+open waits for their first attempt, which each server's `timeout_ms` bounds.
+They reconnect like any server (see [connection lifecycle](#connection-lifecycle)).
+Top-level `[mcp.servers.<name>]` servers take no `scope`: they already run
+once, in the daemon's global runtime, and a `scope` key on one fails
+validation.
+
+A connected runtime reports every server it is configured with, so `/mcp`
+and the runtime panels list them even when no session has a workspace of it
+open: a runtime-scoped server with its live state, listed without a
+workspace, and a workspace-scoped one as "starts with a workspace" until an
+instance hosts it.
+
+### Working directory
+
+A stdio server starts in a directory chosen by where it runs, never in
+whatever directory the daemon or the runtime process happened to start in
+(a Windows runtime started by Task Scheduler runs in `C:\Windows\System32`):
+
+| Server | Without `cwd` | A relative `cwd` resolves against |
+|---|---|---|
+| Top-level `[mcp.servers.*]` | the daemon user's home directory | that home |
+| Runtime template, `scope = "workspace"` | the instance's workspace | the workspace |
+| Runtime template, `scope = "runtime"` | the runtime user's home directory | that home |
+
+An absolute `cwd` is used as written, on the machine that runs the server.
 
 A runtime's servers use the same table schema and are parsed as strictly,
 except that a template server that enables OAuth (`oauth = true` or an
@@ -72,9 +129,11 @@ Every enabled server connects eagerly, in every runtime: there is no deferred
 connection, and an authored `lazy` key is an unknown field.
 
 - **At startup** every enabled server connects, in parallel: the global
-  runtime's when the daemon starts, and a coding runtime's when its instance
-  starts, before the instance answers the daemon (so the template's
-  `startup_timeout_ms` must cover them). The first run waits for every
+  runtime's when the daemon starts, a coding runtime's runtime-scoped ones
+  when the runtime starts, and its workspace-scoped ones when an instance
+  opens, before the instance answers the daemon (so the template's
+  `startup_timeout_ms` must cover them, and the runtime-scoped ones' first
+  attempt, which every open waits for). The first run waits for every
   server's initial connection and `tools/list` attempt to finish, so its tool
   context is not built from a partial startup snapshot. Each wait is bounded
   by that server's `timeout_ms`; one server's failure does not block the
@@ -94,7 +153,8 @@ connection, and an authored `lazy` key is an unknown field.
 
 A failure at connect time and a drop that exhausts its reconnects reach every
 client viewing a session that uses the server, that is, a session attached to
-the instance that hosts it: the TUI shows an error row in each such session
+the instance that hosts it, or to any instance of the runtime for a
+runtime-scoped server: the TUI shows an error row in each such session
 naming the server, its runtime (and the instance's workspace), and the reason
 (see [connection failures](../reference/protocol.md#connection-failures)).
 
@@ -317,7 +377,8 @@ described in [config.toml](../engine/configuration.md).
 | `command` | string | *(none)* | Stdio server executable. Exactly one of `command` or `url` is required. |
 | `args` | array of strings | empty | Command arguments; valid only with `command`. |
 | `env` | map of strings | empty | Command environment additions; valid only with `command`. |
-| `cwd` | string | *(none)* | Child working directory; valid only with `command`. |
+| `cwd` | string | *(none)* | Child working directory; valid only with `command`. Without one, and for a relative one, see [working directory](#working-directory). |
+| `scope` | `"workspace"` or `"runtime"` | `"workspace"` | Only in `[runtimes.<id>.mcp.servers.<name>]`: one copy per workspace instance, or one per runtime that its workspaces share (see [scope](#scope-one-per-workspace-or-one-per-runtime)). A top-level server with `scope` fails validation. |
 | `url` | string | *(none)* | Absolute HTTP or HTTPS Streamable HTTP endpoint. Exactly one of `url` or `command` is required. |
 | `headers` | map of strings | empty | Static request headers; valid only with `url`. |
 | `oauth` | boolean or table | auto | Streamable HTTP OAuth. Omit, set `true`, or use `{}` for reactive OAuth; set `false` to disable it. A table accepts optional `client_id`, `client_secret`, `client_metadata_url`, and `scopes`. A static `Authorization` header takes precedence. |

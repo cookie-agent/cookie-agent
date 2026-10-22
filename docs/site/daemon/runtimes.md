@@ -68,7 +68,7 @@ name and tools.
 | `env` | table of strings | `{}` | Variables added to the daemon's environment for the process. |
 | `startup_timeout_ms` | positive integer | `10000` | Bound on starting the process and its answer to `runtime/initialize`, and on each capability opening, which follows its MCP servers' first connection attempts. |
 | `shutdown_grace_ms` | positive integer | `3000` | How long a stopping runtime gets before its process group is killed. |
-| `mcp.servers.<name>` | MCP server table | none | MCP servers each `coding` instance hosts on the runtime's machine; see below. |
+| `mcp.servers.<name>` | MCP server table | none | MCP servers the runtime hosts on its machine, one per workspace instance or, with `scope = "runtime"`, one for the runtime; see below. |
 
 - **Runtime IDs** match `[a-z][a-z0-9_]{0,31}` because they become tool name
   prefixes. `global` is reserved. `[runtimes.local]` configures the built-in
@@ -105,11 +105,19 @@ Unknown keys and invalid values fail the configuration load, as everywhere in
 
 ## Template MCP servers
 
-Every `coding` instance hosts the template's `mcp.servers` itself: the
-runtime process (`cookie runtime serve` on the remote machine, or the
-daemon's process for `[runtimes.local]`) starts each server for each
-workspace it opens, so commands, working directories, and URLs are resolved
-where the repository is.
+The runtime process (`cookie runtime serve` on the remote machine, or the
+daemon's process for `[runtimes.local]`) hosts the template's `mcp.servers`
+itself, so commands, working directories, and URLs are resolved on the
+runtime's machine. A server's [`scope`](../extend/mcp.md#scope-one-per-workspace-or-one-per-runtime)
+says how many copies run:
+
+- **`scope = "workspace"`** (the default): each `coding` instance starts its
+  own copy for its workspace, in that workspace unless the server sets a
+  `cwd`. Right for servers about a repository, such as a language server.
+- **`scope = "runtime"`**: the runtime starts one copy when it starts, in
+  its user's home directory unless the server sets a `cwd`, and every
+  workspace of the runtime shares it until the runtime stops. Right for
+  servers about the machine, such as a browser.
 
 ```toml
 [runtimes.labpc]
@@ -119,31 +127,48 @@ startup_timeout_ms = 30000
 [runtimes.labpc.mcp.servers.rust_analyzer]
 command = "rust-analyzer-mcp"
 
+[runtimes.labpc.mcp.servers.browser]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest"]
+scope = "runtime"
+
 [runtimes.local.mcp.servers.docs]
 command = "docs-mcp"
 ```
 
-- **Connecting.** An instance connects every enabled server before it
-  answers the daemon, so its tools are listed when a session first uses the
-  instance. `startup_timeout_ms` covers these first attempts; raise it for
-  servers that start slowly. A server that fails publishes no tools, and
-  clients viewing a session attached to the instance get an error naming it.
-- **Tools.** The servers' tools are the instance's tools, named
-  `<server>_<tool>` like any [MCP tool](../extend/mcp.md#tool-names-and-permissions)
+- **Connecting.** An instance connects every enabled workspace-scoped
+  server before it answers the daemon, and waits for the runtime-scoped
+  ones' first attempt, which the runtime started when it initialized
+  without holding up its answer; so a session's first use of the instance
+  lists their tools. `startup_timeout_ms` covers these first attempts; raise
+  it for servers that start slowly. A server that fails publishes no tools,
+  and clients viewing a session attached to the instance (any instance of
+  the runtime, for a runtime-scoped server) get an error naming it.
+- **Tools.** A workspace-scoped server's tools are the instance's tools,
+  named `<server>_<tool>` like any [MCP tool](../extend/mcp.md#tool-names-and-permissions)
   and gated by the `mcp` permission. When another attachment offers the same
   name, they are prefixed with the attachment name like the built-in tools.
+  A runtime-scoped server's tools are the runtime's own: a session gets them
+  once however many of the runtime's workspaces it attaches, prefixed with
+  the runtime ID when another tool takes the name, and they run without a
+  workspace.
 - **Drops and retries.** The runtime restarts a dropped server (1 s, 2 s,
   4 s) with its tools still published, and drops them when every attempt
   fails. A failed server is retried when a session that uses the instance is
   created or opened, when the instance is attached or retried (`r` in
   `/runtime`), and with `r` on the server in `/mcp`.
 - **Status.** `/mcp` lists the servers of every instance as
-  `<runtime> at <workspace>`, and the `/runtime` panels list each
-  attachment's servers with their state, tool count, and failure. They
-  cannot be edited there; change the template and restart the daemon. A
-  dial-in runtime's own servers (`[runtimes.local.mcp]` on its machine) are
-  listed too, with the source `runtime machine config`, since client
-  protocol 1.12.0.
+  `<runtime> at <workspace>`, a runtime-scoped server once as
+  `<runtime>, runtime-wide`, and, while no instance of a connected runtime
+  hosts it, a workspace-scoped one as `<runtime>, in each workspace`, which
+  "starts with a workspace" (client protocol 1.13.0). The `/runtime` panels
+  list each attachment's servers, the runtime's shared ones included, with
+  their state, tool count, and failure, and the machines view lists every
+  server of each connected runtime, so a runtime's servers show before any
+  session opens a workspace of it. They cannot be edited there; change the
+  template and restart the daemon. A dial-in runtime's own servers
+  (`[runtimes.local.mcp]` on its machine) are listed too, with the source
+  `runtime machine config`, since client protocol 1.12.0.
 
 ## Instances and workspaces
 
@@ -336,7 +361,8 @@ cookie runtime serve --daemon ws://laptop:7419/ws --token <token>
   was killed or lost its network, shows the transport's error instead, for
   example ``Connection reset without closing handshake``.
 - **MCP servers.** It hosts its own machine's MCP servers: those of
-  `[runtimes.local.mcp]` in that machine's `config.toml`.
+  `[runtimes.local.mcp]` in that machine's `config.toml`, a
+  `scope = "runtime"` one from the moment it connects.
 - **Roots.** `--root` limits its workspaces, as for `--stdio`.
 - **Clients on its machine.** Plain `cookie` and `cookie attach` on the
   runtime's machine use it for their directory when the daemon runs

@@ -286,6 +286,39 @@ runtimes) and to runtime instances.
   never changes the tool list. If every attempt fails, its tools are dropped
   and clients get an error message.
 
+### 6.4.1 Addendum 2026-10-22: MCP server scope and working directory
+
+A runtime template's MCP server takes `scope = "workspace"` (the default,
+the hosting described above) or `scope = "runtime"`; a top-level `[mcp]`
+server takes none and fails validation with one.
+
+- **Start.** A runtime-scoped server starts once per runtime process, when
+  the runtime accepts `runtime/initialize`. The reply does not wait for it;
+  every `capability/open` waits for its first attempt, bounded by its
+  `timeout_ms`, and reports it before replying. It reconnects with the
+  policy above and stops with the runtime.
+- **Tools.** Its tools are the runtime's own, outside any instance
+  (`runtime/tools_changed`, prepared without an `instance`). A session
+  composes them once per runtime, after the first attachment of that
+  runtime, under the runtime's ID as their composition source, so a
+  collision publishes `<runtime>_<server>_<tool>`; they run with an origin of
+  the runtime without a workspace.
+- **Listing.** The runtime reports every configured server at initialize and
+  with `runtime/mcp_changed`: the runtime-scoped ones live, the
+  workspace-scoped ones as configured. `mcp.server.list` shows a
+  runtime-scoped server once without a workspace and a workspace-scoped one
+  no instance hosts as "starts when a workspace opens", so a connected
+  runtime's servers are visible before any workspace opens.
+- **Working directory.** A stdio server without `cwd` starts in the
+  instance's workspace (workspace-scoped), in the runtime user's home
+  (runtime-scoped), or in the daemon user's home (top-level); a relative
+  `cwd` resolves against the same directory. Before, it inherited the
+  process's directory, which for a Windows runtime started by Task
+  Scheduler is `C:\Windows\System32`.
+- **Compatibility.** Runtime protocol 1.5.0 and client protocol 1.13.0,
+  additive. A runtime hosts every server per workspace for a daemon older
+  than 1.5.0.
+
 ### 6.5 Routing
 
 The name map resolves a published name to (attachment, runtime tool name).
