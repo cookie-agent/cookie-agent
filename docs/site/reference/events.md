@@ -410,12 +410,17 @@ lists when. Its members, each left out when empty or false:
 | `writable` | The run could see the memory write tools |
 | `user` | `[{ category, description, keywords?, body }]`: user categories, whole, in name order |
 | `user_omitted` | Names of the categories that did not fit |
-| `agent` | `{ agent, memory?: { description, keywords?, body }, omitted? }`: the run's agent and its file; `omitted` when the file did not fit |
+| `user_listed` | `[{ url, description, keywords? }]`: categories the run's `memory` rules ask before reading, listed only (since client protocol 1.12.0) |
+| `agent` | `{ agent, memory?: { description, keywords?, body }, omitted?, listed?: { url, description, keywords? } }`: the run's agent and its file; `omitted` when the file did not fit; `listed` (since 1.12.0) when the rules ask before reading it |
 | `machines` | `[{ machine, attachments?, memories?: [{ url, description, keywords? }], omitted? }]`: the session's machines, each with an index of its memories, newest first, and how many more it has |
 | `project` | `{ project, overview?: { description, keywords?, body }, memories?: [{ url, description, keywords? }], omitted? }`: the session's project (since client protocol 1.8.0), root runs only: its name, its overview whole when it has a body and fits, and an index of its other memories, newest first, and how many more it has |
+| `rules` | A fingerprint of the run's `memory` rules reaching `global` (since 1.12.0); a run whose rules differ takes a new snapshot |
 
-An event without `agent` is empty: memory is no longer available, and the
-model sees no memory turn from then on. History renders only the latest
+Each memory is in the event only as far as the run's `memory` rules allow
+for its URL: whole when they allow it, listed when they ask, and left out,
+uncounted, when they deny or do not match. An event without `agent` is
+empty: memory is no longer available, and the model sees no memory turn from
+then on. One with `agent` but no memory to show renders no turn either. History renders only the latest
 `memory_loaded` of the log, as one user turn right after the `AGENTS.md`
 turn, and compaction pins it like that turn; the text depends on the event
 alone, so a replay shows exactly what the model saw. The stored event is at

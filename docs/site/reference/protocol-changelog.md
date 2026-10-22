@@ -14,9 +14,20 @@ adds and a major breaks; before it, every minor could break the wire (see the
   `definition` (no `command` or `url`); its `state`, `tool_count`, and
   `message` are live as for any server. A failure of one is now also among
   the failures a client hears when it subscribes to a session.
+- A `memory_loaded` snapshot holds only what the run's `memory` rules let
+  it read ([memory spec section 7.5](../specs/memory.md#75-addendum-2026-10-22-the-snapshot-follows-the-read-rules)):
+  a memory they allow is shown as before, one they ask for is listed by URL
+  and description only, in the new `MemorySnapshot.user_listed` (user
+  categories) and `MemorySnapshotAgent.listed` (the agent's file; a project
+  overview they ask for joins the project's `memories`), and one they deny
+  or do not match is left out and not counted. `MemorySnapshot.rules`, a
+  fingerprint of the rules it was taken under, makes a run whose rules
+  changed take a new snapshot. All three are optional; plugin protocol
+  1.5.0 too, since plugins receive events. History format 1 is unchanged;
+  older logs read as having none.
 - A 1.11 client reads `machine` as `runtime` (a server `mcp.server.*`
   cannot edit); a 1.12 client reading a 1.11 daemon sees no dial-in
-  servers, as before.
+  servers, as before; a 1.11 client ignores the snapshot's new members.
 
 ## 1.11.0
 

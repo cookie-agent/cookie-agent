@@ -6,7 +6,7 @@ use std::{
 
 use cookie_agent_protocol::{AgentId, AttachmentName, MachineName};
 
-use super::{SnapshotLimits, SnapshotRequest};
+use super::{ReadRules, SnapshotLimits, SnapshotRequest};
 use crate::memory::{MemoryRoot, render};
 
 const MAX_FILE: usize = 4096;
@@ -56,6 +56,8 @@ fn request(
             })
             .collect(),
         limits,
+        read: ReadRules::all(),
+        rules: None,
     }
 }
 
@@ -184,6 +186,7 @@ fn user_categories_that_do_not_fit_are_named_from_the_first_that_does_not() {
                 .iter()
                 .map(|name| (*name).to_owned())
                 .collect::<Vec<_>>(),
+            &[],
         )
         .len()
     };
@@ -197,7 +200,7 @@ fn user_categories_that_do_not_fit_are_named_from_the_first_that_does_not() {
     assert_eq!(snapshot.user[0].category, "a");
     assert_eq!(snapshot.user_omitted, ["b", "c"]);
     assert_eq!(
-        render::user_section(&snapshot.user, &snapshot.user_omitted).len(),
+        render::user_section(&snapshot.user, &snapshot.user_omitted, &[]).len(),
         only_a
     );
     // One byte less and nothing fits.
@@ -357,7 +360,7 @@ fn the_overview_shares_the_user_limit_and_the_index_the_machines_limit() {
     let project = full.project.clone().unwrap();
     let overview_bytes =
         render::project_overview(&project.project, project.overview.as_ref().unwrap()).len();
-    let user_bytes = render::user_section(&full.user, &[]).len();
+    let user_bytes = render::user_section(&full.user, &[], &[]).len();
 
     // The overview comes first: with room for it but not for the feedback
     // category as well, the category is named, not shown.
@@ -385,4 +388,156 @@ fn the_overview_shares_the_user_limit_and_the_index_the_machines_limit() {
     assert_eq!(snapshot.project.unwrap().memories.len(), 2);
     assert!(snapshot.machines[0].memories.is_empty());
     assert_eq!(snapshot.machines[0].omitted, 1);
+}
+
+/// The run's `memory` rules filter the snapshot (section 7.5): a memory
+/// they allow is shown, one they ask for is listed by URL and description
+/// only, and one they deny is left out and not counted.
+#[test]
+fn the_read_rules_show_list_or_leave_out_each_memory() {
+    use crate::memory::{search::Visibility, url::MemoryUrl};
+
+    let (data, memory) = root();
+    put(
+        data.path(),
+        "user/feedback.md",
+        &file("Feedback", "- a\n"),
+        0,
+    );
+    put(
+        data.path(),
+        "user/preferences.md",
+        &file("Preferences", "- secret preference\n"),
+        0,
+    );
+    put(
+        data.path(),
+        "agents/reviewer.md",
+        &file("How reviews go", "- secret lesson\n"),
+        0,
+    );
+    put(data.path(), "machines/laptop/a.md", &file("A", ""), 10);
+    put(
+        data.path(),
+        "machines/laptop/b.md",
+        &file("Hidden B", ""),
+        0,
+    );
+    put(
+        data.path(),
+        "projects/web/overview.md",
+        &file("Overview of web", "A secret shop.\n"),
+        0,
+    );
+    put(data.path(), "projects/web/x.md", &file("X", ""), 5);
+    put(data.path(), "projects/web/y.md", &file("Hidden Y", ""), 5);
+    let read = ReadRules::new(|url: &MemoryUrl| match url.to_string().as_str() {
+        "user://preferences" | "machine://laptop/b" | "project://web/y" => Visibility::Hidden,
+        "agent://reviewer" | "project://web/overview" => Visibility::Summary,
+        _ => Visibility::Full,
+    });
+    let snapshot = memory
+        .snapshot(&SnapshotRequest {
+            read: read.clone(),
+            ..in_project("web", limits(12_288, 4096))
+        })
+        .unwrap();
+
+    // A denied category is neither shown, named, nor listed.
+    assert_eq!(
+        snapshot
+            .user
+            .iter()
+            .map(|category| category.category.as_str())
+            .collect::<Vec<_>>(),
+        ["feedback"]
+    );
+    assert!(snapshot.user_omitted.is_empty() && snapshot.user_listed.is_empty());
+    // An agent file the rules ask for is listed only.
+    let agent = snapshot.agent.clone().unwrap();
+    assert_eq!(agent.memory, None);
+    assert!(!agent.omitted);
+    assert_eq!(
+        agent
+            .listed
+            .as_ref()
+            .map(|listed| (listed.url.as_str(), listed.description.as_str())),
+        Some(("agent://reviewer", "How reviews go"))
+    );
+    // A denied machine memory is not counted.
+    let laptop = &snapshot.machines[0];
+    assert_eq!(
+        laptop
+            .memories
+            .iter()
+            .map(|memory| memory.url.as_str())
+            .collect::<Vec<_>>(),
+        ["machine://laptop/a"]
+    );
+    assert_eq!(laptop.omitted, 0);
+    // The overview the rules ask for joins the index; a denied memory is
+    // left out uncounted.
+    let project = snapshot.project.clone().unwrap();
+    assert_eq!(project.overview, None);
+    assert_eq!(
+        project
+            .memories
+            .iter()
+            .map(|memory| memory.url.as_str())
+            .collect::<Vec<_>>(),
+        ["project://web/overview", "project://web/x"]
+    );
+    assert_eq!(project.omitted, 0);
+
+    let text = render::snapshot_turn(&snapshot).expect("memories to show");
+    for secret in [
+        "user://preferences",
+        "secret preference",
+        "secret lesson",
+        "A secret shop",
+        "Hidden B",
+        "Hidden Y",
+        "more; search",
+    ] {
+        assert!(!text.contains(secret), "{secret} leaked: {text}");
+    }
+    assert!(
+        text.contains("- agent://reviewer: How reviews go"),
+        "{text}"
+    );
+
+    // A user category the rules ask for is listed, not shown.
+    let asked = ReadRules::new(|url: &MemoryUrl| {
+        if url.to_string() == "user://preferences" {
+            Visibility::Summary
+        } else {
+            Visibility::Full
+        }
+    });
+    let snapshot = memory
+        .snapshot(&SnapshotRequest {
+            read: asked,
+            ..request(false, &[], limits(12_288, 4096))
+        })
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .user_listed
+            .iter()
+            .map(|listed| listed.url.as_str())
+            .collect::<Vec<_>>(),
+        ["user://preferences"]
+    );
+    let text = render::snapshot_turn(&snapshot).unwrap();
+    assert!(!text.contains("secret preference"), "{text}");
+    assert!(text.contains("- user://preferences: Preferences"), "{text}");
+
+    // A delegated run's agent file follows the same rules.
+    let delegated = memory
+        .snapshot(&SnapshotRequest {
+            read,
+            ..request(true, &[], limits(12_288, 4096))
+        })
+        .unwrap();
+    assert!(delegated.agent.unwrap().listed.is_some());
 }

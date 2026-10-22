@@ -55,7 +55,8 @@ changes a session's attachments, runtimes, or workspaces.
 - Agents that declare no memory rules get defaults by mode: `primary` and
   `all` agents may read and write all memory, `subagent` agents may read all
   memory and write only their own agent file
-  ([section 9.2](#92-default-rules)).
+  ([section 9.2](#92-default-rules)). (Removed 2026-10-22: memory is now
+  opt-in; see the note in section 9.2.)
 - A snapshot changes only at the points in [section 7.2](#72-when-a-snapshot-is-taken);
   the user's own edits from a client do not refresh open sessions.
 - Machine memory folders and URLs use machine names; renaming a machine
@@ -619,6 +620,43 @@ Rules the examples follow:
    The agent section is bounded by `max_file_bytes`. The fixed text is not
    counted against any of them.
 
+### 7.5 Addendum 2026-10-22: the snapshot follows the read rules
+
+**Decided 2026-10-22.** The snapshot showed every memory the session
+reaches whenever memory was available, whatever the `memory` rules said of
+each URL. It now holds only what those rules let the run read, evaluated
+per URL as for `memory_search` results ([section 9.3](#93-search-results)):
+the agent's rules and the session overlay, for the `global` runtime, with
+`agent://self` read as the run's agent.
+
+| Rule for the URL | In the snapshot |
+|---|---|
+| `allow` | As before: a user category, the agent's file, or the project overview whole; a machine or project memory as an index line |
+| `ask` | Never whole: listed by URL and description, so the model knows it exists and can `memory_read` it, which then asks |
+| `deny`, or no rule matches | Left out entirely, and not counted in any `omitted` count, since a count tells that it exists |
+
+- This covers the user categories, the agent's file (in delegated runs
+  too), the machines' index, and the project's overview and index. An
+  `ask` user category goes to the new `user_listed`, an `ask` agent file to
+  the agent's new `listed`, and an `ask` project overview joins the
+  project's index; machine and project memories are index lines either way.
+  The event records what was shown, so a replay renders what the model saw.
+- **When nothing is left to show** (no user category, no agent file body,
+  no listed or counted memory), the memory turn is not rendered at all: no
+  background paragraph and no search or save instructions. The event is
+  still appended, holding its agent and nothing else, so later runs compare
+  against it and a replay matches. The memory tools stay offered whenever
+  the rules make them visible; their descriptions carry the usage guidance.
+  As soon as one entry shows, the whole turn returns.
+- **A new trigger** for [section 7.2](#72-when-a-snapshot-is-taken): the
+  snapshot records a fingerprint of the `memory` rules that reach `global`
+  (the agent's, then the overlay's, with the agent's ID), and a run whose
+  rules differ takes a new snapshot. This covers a session overlay change
+  and a changed agent document alike; a snapshot an earlier daemon took has
+  no fingerprint, so its session takes a new one at its next run.
+- Client protocol 1.12.0 and plugin protocol 1.5.0 add the optional
+  `user_listed`, `agent.listed`, and `rules` members to `memory_loaded`.
+
 ## 8. Tools
 
 The `global` runtime provides five tools. All arguments are strict (unknown
@@ -715,6 +753,16 @@ snapshot, whenever its session has `global` attached
 ([section 6](#6-which-memories-a-session-reaches)). An `all`-mode agent
 running delegated is still limited to writing its own `agent://` file by the
 delegated-write rule above.
+
+**Note 2026-10-22: the memory defaults are removed.** `memory` and
+`memory_write` are now denied by default like any other action: no mode,
+and not the built-in `default` agent, gets rules for them, so an agent
+document with no `memory` key has no memory tools, no `memory_search`, and
+no snapshot. Memory is opt-in, with `memory: allow` (or per-URL rules) and
+`memory_write: …` in the agent document, or a session overlay rule. The
+table above records the defaults as they were from 2026-10-19 to
+2026-10-22. `list_runtimes` keeps its default, and `mcp` gained one
+([runtimes spec section 7.1](runtimes.md#71-addendum-2026-10-22-the-mcp-default)).
 
 ### 9.3 Search results
 

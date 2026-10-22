@@ -2822,6 +2822,7 @@ fn memory_event(seq: u64, run: RunId, body: Option<&str>) -> StoredEvent {
                     body: body.into(),
                 }),
                 omitted: false,
+                listed: None,
             }),
             ..cookie_agent_protocol::MemorySnapshot::default()
         },

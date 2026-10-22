@@ -5,7 +5,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AttachmentName, EventSchemaError, MachineName, ProjectName};
+use crate::{AgentId, AttachmentName, EventSchemaError, MachineName, ProjectName, Sha256Digest};
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(value: &bool) -> bool {
@@ -21,6 +21,12 @@ const fn is_zero(value: &u64) -> bool {
 /// categories, the run's agent's file, and an index of the session's
 /// machines' memories. A snapshot without `agent` is empty: memory is not
 /// available from that point on, and the model sees no memory turn.
+///
+/// Since client protocol 1.12.0 a snapshot holds only what the run's
+/// `memory` rules let it read: a memory they allow is shown as before, one
+/// they ask for is listed by URL and description only, and one they deny
+/// or do not match is left out and not counted. A snapshot that holds no
+/// memory at all after that renders no memory turn either.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct MemorySnapshot {
     /// The snapshot was taken for a delegated run: it holds only the run's
@@ -38,6 +44,10 @@ pub struct MemorySnapshot {
     /// Categories that did not fit, by name, in name order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_omitted: Vec<String>,
+    /// Categories the run's rules ask before reading, listed by URL and
+    /// description only, in name order (client protocol 1.12.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_listed: Vec<MemorySnapshotIndexEntry>,
     /// The run's agent and its memory; absent in an empty snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<MemorySnapshotAgent>,
@@ -50,6 +60,12 @@ pub struct MemorySnapshot {
     /// project have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<MemorySnapshotProject>,
+    /// A fingerprint of the `memory` rules reaching `global` (the agent's,
+    /// then the session overlay's) the snapshot was taken under; a run whose
+    /// rules differ takes a new snapshot (client protocol 1.12.0). Absent in
+    /// an empty snapshot and in one an earlier daemon took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Sha256Digest>,
 }
 
 /// The session's project and what the snapshot holds of its memories.
@@ -91,6 +107,10 @@ pub struct MemorySnapshotAgent {
     /// The file exists but its rendered text did not fit the snapshot.
     #[serde(default, skip_serializing_if = "is_false")]
     pub omitted: bool,
+    /// The file, listed by URL and description only, because the run's
+    /// rules ask before reading it (client protocol 1.12.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed: Option<MemorySnapshotIndexEntry>,
 }
 
 /// A memory file's content.
@@ -118,10 +138,11 @@ pub struct MemorySnapshotMachine {
     pub omitted: u64,
 }
 
-/// One line of a machine's or a project's memory index.
+/// One line of a memory index: a machine's, a project's, or a memory the
+/// run's rules ask before reading.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct MemorySnapshotIndexEntry {
-    /// The memory URL, `machine://<machine>/<name>` or
+    /// The memory URL, such as `machine://<machine>/<name>` or
     /// `project://<project>/<name>`.
     pub url: String,
     pub description: String,
@@ -153,13 +174,19 @@ impl MemorySnapshot {
         let invalid = Err(EventSchemaError::InvalidMemorySnapshot);
         let holds_more = !self.user.is_empty()
             || !self.user_omitted.is_empty()
+            || !self.user_listed.is_empty()
             || !self.machines.is_empty()
             || self.project.is_some();
         match &self.agent {
-            None if holds_more || self.delegated || self.writable => return invalid,
+            None if holds_more || self.delegated || self.writable || self.rules.is_some() => {
+                return invalid;
+            }
             None => {}
             Some(_) if self.delegated && holds_more => return invalid,
             Some(agent) if agent.omitted && agent.memory.is_some() => return invalid,
+            Some(agent) if agent.listed.is_some() && (agent.omitted || agent.memory.is_some()) => {
+                return invalid;
+            }
             Some(_) => {}
         }
         let blank = |value: &str| value.trim().is_empty();
@@ -168,6 +195,11 @@ impl MemorySnapshot {
             .iter()
             .any(|category| blank(&category.category) || blank(&category.description))
             || self.user_omitted.iter().any(|category| blank(category))
+            || self
+                .user_listed
+                .iter()
+                .chain(self.agent.as_ref().and_then(|agent| agent.listed.as_ref()))
+                .any(|memory| blank(&memory.url) || blank(&memory.description))
             || self
                 .agent
                 .as_ref()

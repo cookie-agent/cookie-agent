@@ -26,6 +26,7 @@ fn agent(id: &str, memory: Option<(&str, &str)>) -> MemorySnapshotAgent {
             body: body.into(),
         }),
         omitted: false,
+        listed: None,
     }
 }
 
@@ -63,6 +64,8 @@ const BACKGROUND: &str = "These are notes saved in earlier sessions, by you or b
 fn a_root_snapshot_renders_the_spec_example() {
     let snapshot = MemorySnapshot {
         project: None,
+        rules: None,
+        user_listed: Vec::new(),
         delegated: false,
         writable: true,
         user: vec![
@@ -194,7 +197,7 @@ fn without_write_access_the_save_paragraph_is_left_out() {
     let delegated = MemorySnapshot {
         delegated: true,
         writable: false,
-        agent: Some(agent("reviewer", None)),
+        agent: Some(agent("reviewer", Some(("Reviews", "- bugs first\n")))),
         ..MemorySnapshot::default()
     };
     assert_eq!(
@@ -206,6 +209,12 @@ fn without_write_access_the_save_paragraph_is_left_out() {
 {BACKGROUND}
 
 Only your own agent's notes are shown here. Search memory (memory_search) for the user's preferences, the project, and the machines your task touches. Read a listed memory with memory_read.
+
+## About this agent (reviewer)
+
+<memory url=\"agent://reviewer\" description=\"Reviews\">
+- bugs first
+</memory>
 </system-reminder>"
             )
             .as_str()
@@ -213,6 +222,7 @@ Only your own agent's notes are shown here. Search memory (memory_search) for th
     );
     let root = MemorySnapshot {
         writable: false,
+        user: vec![category("profile", "Who the user is", "")],
         agent: Some(agent("default", None)),
         ..MemorySnapshot::default()
     };
@@ -224,6 +234,12 @@ Only your own agent's notes are shown here. Search memory (memory_search) for th
 /// memory that is empty, or missing, adds no section at all.
 #[test]
 fn empty_sections_keep_their_heading_but_an_empty_agent_memory_is_left_out() {
+    let laptop = machine(
+        "laptop",
+        &[],
+        vec![index("machine://laptop/scratch", "Use /scratch", &[])],
+        0,
+    );
     for memory in [
         None,
         Some(("Memory of the `default` agent", "")),
@@ -232,9 +248,10 @@ fn empty_sections_keep_their_heading_but_an_empty_agent_memory_is_left_out() {
         let snapshot = MemorySnapshot {
             writable: false,
             agent: Some(agent("default", memory)),
+            machines: vec![laptop.clone()],
             ..MemorySnapshot::default()
         };
-        let text = snapshot_turn(&snapshot).expect("a snapshot with an agent renders");
+        let text = snapshot_turn(&snapshot).expect("a snapshot with a memory renders");
         assert!(
             text.ends_with(
                 "## About the user
@@ -243,7 +260,9 @@ None.
 
 ## Machines in this session
 
-None.
+<machine name=\"laptop\">
+- machine://laptop/scratch: Use /scratch
+</machine>
 </system-reminder>"
             ),
             "{text}"
@@ -270,12 +289,70 @@ fn an_empty_snapshot_renders_nothing() {
     assert_eq!(snapshot_turn(&MemorySnapshot::unavailable()), None);
 }
 
+/// A snapshot whose rules left no memory to show (section 7.5) renders no
+/// turn at all, not even the instructions; one listed memory brings it
+/// back.
+#[test]
+fn a_snapshot_with_no_memory_to_show_renders_nothing() {
+    let nothing = MemorySnapshot {
+        writable: true,
+        agent: Some(agent(
+            "default",
+            Some(("Memory of the `default` agent", "")),
+        )),
+        machines: vec![machine("laptop", &[], Vec::new(), 0)],
+        project: Some(cookie_agent_protocol::MemorySnapshotProject {
+            project: cookie_agent_protocol::ProjectName::new("web").unwrap(),
+            overview: None,
+            memories: Vec::new(),
+            omitted: 0,
+        }),
+        ..MemorySnapshot::default()
+    };
+    assert_eq!(snapshot_turn(&nothing), None);
+    let delegated = MemorySnapshot {
+        delegated: true,
+        writable: true,
+        agent: Some(agent("reviewer", None)),
+        ..MemorySnapshot::default()
+    };
+    assert_eq!(snapshot_turn(&delegated), None);
+
+    let listed = MemorySnapshot {
+        user_listed: vec![index("user://preferences", "How the user works", &[])],
+        ..nothing.clone()
+    };
+    let text = snapshot_turn(&listed).expect("a listed memory renders");
+    assert!(text.contains("Save what a later session"), "{text}");
+    assert!(
+        text.contains(
+            "## About the user\n\nListed only, as reading asks first (memory_read):\n- user://preferences: How the user works"
+        ),
+        "{text}"
+    );
+    let mut agent_listed = agent("reviewer", None);
+    agent_listed.listed = Some(index("agent://reviewer", "How reviews go", &[]));
+    let text = snapshot_turn(&MemorySnapshot {
+        agent: Some(agent_listed),
+        ..delegated
+    })
+    .expect("a listed agent file renders");
+    assert!(
+        text.ends_with(
+            "## About this agent (reviewer)\n\nListed only, as reading asks first (memory_read):\n- agent://reviewer: How reviews go\n</system-reminder>"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("<memory url=\"agent://reviewer\""), "{text}");
+}
+
 #[test]
 fn omissions_are_named_or_counted() {
     assert_eq!(
         user_section(
             &[category("profile", "Who", "")],
-            &["preferences".into(), "references".into()]
+            &["preferences".into(), "references".into()],
+            &[]
         ),
         "## About the user
 
@@ -379,6 +456,7 @@ fn a_project_section_follows_the_machines_and_changes_the_search_paragraph() {
     );
     let snapshot = MemorySnapshot {
         writable: false,
+        user: vec![category("profile", "Who the user is", "")],
         agent: Some(agent("default", None)),
         machines: vec![machine("laptop", &[], Vec::new(), 0)],
         project: Some(project.clone()),

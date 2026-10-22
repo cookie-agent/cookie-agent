@@ -375,6 +375,8 @@ fn clearing_a_body_keeps_the_file_and_its_frontmatter_byte_for_byte() {
                 user_bytes: 16 * 1024,
                 index_bytes: 16 * 1024,
             },
+            read: crate::memory::snapshot::ReadRules::all(),
+            rules: None,
         })
         .unwrap();
     let feedback = snapshot

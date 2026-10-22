@@ -765,6 +765,7 @@ fn a_memory_snapshot_is_a_debug_event() {
             agent: cookie_agent_protocol::AgentId::new("reviewer").unwrap(),
             memory: None,
             omitted: false,
+            listed: None,
         }),
         ..cookie_agent_protocol::MemorySnapshot::default()
     };

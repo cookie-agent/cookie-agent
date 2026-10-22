@@ -142,7 +142,11 @@ into another; `machines.list` and `cookie machine list` count them.
 At the start of a run that has memory, the model gets a **snapshot** as one
 user turn after the `AGENTS.md` turn: every `user` category, the run's
 agent's own file, and an index of the memories of the machines the session's
-attachments run on. A root run of a session in a project also gets the
+attachments run on, each as far as the agent's `memory` rules (and the
+session overlay's) allow for its URL: a memory they allow is shown, one
+they ask for is listed by URL and description only, and one they deny or do
+not match is left out and not counted. When nothing is left to show, there
+is no memory turn at all; the tools stay offered. A root run of a session in a project also gets the
 project's overview in full and an index of its other memories, newest first;
 the overview counts toward `[memory] snapshot_user_bytes` and the index
 shares `snapshot_index_bytes` with the machines', the project's own taking
@@ -154,8 +158,9 @@ shows the exact text.
 The snapshot is taken once and kept, so the provider's prompt cache survives
 writes. It is taken again only at a run's start when the session has none
 yet, after a compaction, when the session's machines, its project, its
-project's name, or the run's agent changed, or when the run gained or lost
-memory or write access. Edits you make
+project's name, the run's agent, or its `memory` rules changed (a session
+overlay change included), or when the run gained or lost memory or write
+access. Edits you make
 to the files reach open sessions at those points, and new sessions at once.
 
 ## Tools
@@ -174,11 +179,11 @@ The `global` runtime offers five tools ([Tools](../reference/tools.md#memory_sea
 
 The tools use two permission actions with the memory URL as resource:
 `memory` for searching and reading, `memory_write` for writing, editing, and
-deleting. An agent document that names neither gets defaults by mode:
-`primary` and `all` agents may read and write all memory, `subagent` agents
-may read all memory and write their own `agent://` file, and internal agents
-get none. A declared key replaces the default, so `memory: deny` turns memory
-off for an agent. See [Memory defaults](../extend/agents.md#memory-defaults).
+deleting. Memory is opt-in: an agent document that names neither, the
+built-in `default` agent included, has no memory tools and no snapshot.
+`memory: allow` lets an agent read every memory, and `memory_write` rules let
+it write; a session overlay rule grants them for one session tree. See
+[Memory permissions](../extend/agents.md#memory-permissions).
 
 ```yaml
 permissions:

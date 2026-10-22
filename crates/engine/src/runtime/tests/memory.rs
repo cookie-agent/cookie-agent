@@ -307,7 +307,9 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
     assert_eq!(taken.len(), 1);
     assert!(taken[0].writable);
 
-    // Only reading: a new snapshot without the save paragraph.
+    // Asking before reading: the same access, but the rules changed, so a
+    // new snapshot lists the categories instead of showing them
+    // (section 7.5).
     set_overlay(
         &fixture,
         session,
@@ -316,14 +318,17 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
     .await;
     run(&fixture, session, &selection, "three", "three").await;
     let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 1, "unchanged access keeps the snapshot");
+    assert_eq!(taken.len(), 2, "an overlay change takes a new snapshot");
+    assert!(taken[1].writable);
+    assert!(taken[1].user.is_empty());
+    assert!(!taken[1].user_listed.is_empty());
 
     // Losing the rule appends an empty snapshot.
     set_overlay(&fixture, session, Vec::new()).await;
     run(&fixture, session, &selection, "four", "four").await;
     let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 2);
-    assert!(taken[1].is_empty());
+    assert_eq!(taken.len(), 3);
+    assert!(taken[2].is_empty());
 
     let requests = captured.await.unwrap();
     let has_memory_turn = |request: &String| {
@@ -1036,7 +1041,10 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
     assert!(snapshot.user.is_empty() && snapshot.machines.is_empty());
     assert_eq!(snapshot.agent.as_ref().unwrap().agent.as_str(), "primary");
     assert!(!requests[0].contains("root only"));
-    assert!(requests[0].contains("Only your own agent's notes are shown here."));
+    // Its agent's file is still empty: nothing to show, so no memory turn
+    // (section 7.5), while the memory tools stay offered.
+    assert!(!requests[0].contains("# Memory"));
+    assert!(memory_tool_names(&requests[0]).contains(&"memory_write".to_owned()));
     // An agent that may write everywhere still writes only its own file
     // when delegated, refused before any rule is consulted.
     let ended = terminations(&fixture, child);
@@ -1168,5 +1176,95 @@ async fn an_agent_without_a_memory_key_gets_no_memory_tools_or_snapshot() {
     assert!(memory_tool_names(&requests[0]).is_empty());
     assert!(!requests[0].contains("# Memory"));
     assert!(!requests[0].contains("never shown"));
+    fixture.engine.shutdown().await;
+}
+
+/// The snapshot follows the `memory` rules per URL (section 7.5): a denied
+/// category is not in it or its text. Rules that leave nothing to show
+/// leave out the whole memory turn while the tools stay offered, and an
+/// overlay change takes a new snapshot that brings it back.
+#[tokio::test]
+async fn the_snapshot_shows_only_what_the_memory_rules_let_the_run_read() {
+    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        &agent("{ memory: { \"project://*\": allow } }"),
+    );
+    user_write(&fixture, "user://feedback", "Feedback", "- keep it short\n");
+    user_write(
+        &fixture,
+        "user://preferences",
+        "Preferences",
+        "- secret preference\n",
+    );
+    for input in ["one", "two", "three"] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                input,
+                scripted_text_body("done"),
+            ))
+            .unwrap();
+    }
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+
+    // Only project memories are readable and the session has none: the
+    // snapshot is taken but holds nothing to show.
+    run(&fixture, session, &selection, "one", "one").await;
+    let taken = snapshots(&fixture, session);
+    assert_eq!(taken.len(), 1);
+    assert!(!taken[0].is_empty());
+    assert!(taken[0].user.is_empty() && taken[0].user_listed.is_empty());
+
+    // The overlay lets it read the user's memories but not their
+    // preferences: a new snapshot without them.
+    set_overlay(
+        &fixture,
+        session,
+        vec![
+            PermissionRule::new(
+                PermissionAction::MEMORY,
+                WildcardPattern::new("user://*").unwrap(),
+                PermissionEffect::Allow,
+            ),
+            PermissionRule::new(
+                PermissionAction::MEMORY,
+                WildcardPattern::new("user://preferences").unwrap(),
+                PermissionEffect::Deny,
+            ),
+        ],
+    )
+    .await;
+    run(&fixture, session, &selection, "two", "two").await;
+    let taken = snapshots(&fixture, session);
+    assert_eq!(taken.len(), 2, "an overlay change takes a new snapshot");
+    assert!(
+        taken[1]
+            .user
+            .iter()
+            .any(|category| category.category == "feedback")
+    );
+    assert!(
+        taken[1]
+            .user
+            .iter()
+            .all(|category| category.category != "preferences")
+            && !taken[1].user_omitted.contains(&"preferences".to_owned())
+    );
+
+    // Nothing changed: the snapshot is kept.
+    run(&fixture, session, &selection, "three", "three").await;
+    assert_eq!(snapshots(&fixture, session).len(), 2);
+
+    let requests = captured.await.unwrap();
+    assert!(!requests[0].contains("# Memory"), "nothing to show");
+    assert!(memory_tool_names(&requests[0]).contains(&"memory_read".to_owned()));
+    assert!(requests[1].contains("# Memory"));
+    assert!(requests[1].contains("keep it short"));
+    assert!(!requests[1].contains("user://preferences"));
+    assert!(!requests[1].contains("secret preference"));
     fixture.engine.shutdown().await;
 }

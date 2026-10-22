@@ -1177,6 +1177,7 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
             body: "- bugs first\n".into(),
         }),
         omitted: false,
+        listed: None,
     };
     let root = MemorySnapshot {
         delegated: false,
@@ -1188,6 +1189,11 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
             body: String::new(),
         }],
         user_omitted: vec!["references".into()],
+        user_listed: vec![MemorySnapshotIndexEntry {
+            url: "user://feedback".into(),
+            description: "Corrections".into(),
+            keywords: Vec::new(),
+        }],
         agent: Some(agent.clone()),
         machines: vec![MemorySnapshotMachine {
             machine: crate::MachineName::new("labpc").unwrap(),
@@ -1213,6 +1219,7 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
             }],
             omitted: 1,
         }),
+        rules: Some(crate::Sha256Digest::of_bytes(b"memory rules")),
     };
     let event = |snapshot: MemorySnapshot| StoredEvent {
         engine_version: None,
@@ -1231,6 +1238,7 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
     assert_eq!(value["payload"]["machines"][0]["omitted"], 2);
     assert_eq!(value["payload"]["project"]["project"], "web");
     assert_eq!(value["payload"]["project"]["omitted"], 1);
+    assert_eq!(value["payload"]["user_listed"][0]["url"], "user://feedback");
     assert_eq!(
         serde_json::from_value::<StoredEvent>(value).unwrap(),
         stored
@@ -1283,6 +1291,35 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
         .validate(),
         Ok(())
     );
+    invalid(MemorySnapshot {
+        rules: root.rules.clone(),
+        ..MemorySnapshot::unavailable()
+    });
+    // A listed agent file is neither shown nor omitted.
+    let listed = Some(MemorySnapshotIndexEntry {
+        url: "agent://reviewer".into(),
+        description: "Reviews".into(),
+        keywords: Vec::new(),
+    });
+    invalid(MemorySnapshot {
+        agent: Some(MemorySnapshotAgent {
+            listed: listed.clone(),
+            ..agent.clone()
+        }),
+        ..root.clone()
+    });
+    assert_eq!(
+        event(MemorySnapshot {
+            agent: Some(MemorySnapshotAgent {
+                memory: None,
+                listed,
+                ..agent.clone()
+            }),
+            ..root.clone()
+        })
+        .validate(),
+        Ok(())
+    );
     // An omitted agent file carries no memory.
     invalid(MemorySnapshot {
         agent: Some(MemorySnapshotAgent {
@@ -1294,6 +1331,9 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
     // Blank names and descriptions are refused.
     let mut blank = root.clone();
     blank.user[0].description = " ".into();
+    invalid(blank);
+    let mut blank = root.clone();
+    blank.user_listed[0].description = String::new();
     invalid(blank);
     // The writer caps the stored size.
     let mut oversized = root;

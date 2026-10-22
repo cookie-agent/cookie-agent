@@ -187,13 +187,13 @@ changes, which is the intended invalidation.
 ## Memory turn
 
 A run that has memory (the session has the `global` runtime attached and the
-agent or the session overlay has an `allow` or `ask` rule for `memory`) sees
-a snapshot of it as one user turn right after the AGENTS.md turn. The
-snapshot is taken at run admission and recorded as a `memory_loaded` event
-only when something it depends on changed: the session has none yet, a
-compaction finished since the latest one, the session's machines, the
-session's project or its name, the run's agent, whether memory is available,
-or whether the run may write it. History
+agent or the session overlay has an `allow` or `ask` rule for `memory`;
+memory has no default) sees a snapshot of it as one user turn right after
+the AGENTS.md turn. The snapshot is taken at run admission and recorded as a
+`memory_loaded` event only when something it depends on changed: the session
+has none yet, a compaction finished since the latest one, the session's
+machines, the session's project or its name, the run's agent, its `memory`
+rules, whether memory is available, or whether the run may write it. History
 renders the latest event only, and compaction pins the turn like the AGENTS.md
 turn. Writes during the session, and edits the user makes from a client,
 change the files but not the turn until the next of those points, so the
@@ -243,7 +243,14 @@ Empty: user://feedback, user://profile, user://references
   `global`), naming the attachments on it, with one line per memory, newest
   file first, until `[memory] snapshot_index_bytes` of rendered section is
   used; the rest are counted.
-- A section with nothing to show keeps its heading and says `None.`
+- Each memory shows only as far as the run's `memory` rules allow for its
+  URL: one they ask for appears on a
+  `Listed only, as reading asks first (memory_read):` list with its URL and
+  description, under its section; one they deny or do not match is left
+  out, and no `more` count includes it.
+- A section with nothing to show keeps its heading and says `None.` When no
+  section has a memory to show (no category, agent file body, or listed or
+  counted memory), the whole turn is left out, instructions included.
 - A root run of a session in a project gets a last section, and its search
   paragraph reads `This session's project notes are listed below. Search
   memory (memory_search) for other projects only when the task reaches into

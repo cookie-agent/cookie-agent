@@ -7,7 +7,8 @@ use cookie_agent_protocol::{
 };
 
 use super::{
-    MemoryAccess, MemoryCaller, SnapshotChange, SnapshotFacts, memory_access, snapshot_change,
+    MemoryAccess, MemoryCaller, SnapshotChange, SnapshotFacts, memory_access,
+    memory_rules_fingerprint, snapshot_change,
 };
 use crate::memory::{search::Visibility, url::MemoryUrl};
 
@@ -97,9 +98,15 @@ fn memory_needs_global_a_memory_rule_and_a_non_internal_agent() {
     );
 }
 
+/// The fingerprint of the test runs' `memory` rules.
+fn rules() -> cookie_agent_protocol::Sha256Digest {
+    cookie_agent_protocol::Sha256Digest::of_bytes(b"memory rules")
+}
+
 fn facts(access: MemoryAccess, agent: &str, delegated: bool, machines: &[&str]) -> SnapshotFacts {
     SnapshotFacts {
         project: None,
+        rules: rules(),
         access,
         agent: AgentId::new(agent).unwrap(),
         delegated,
@@ -118,6 +125,7 @@ fn taken(agent: &str, writable: bool, delegated: bool, machines: &[&str]) -> Mem
             agent: AgentId::new(agent).unwrap(),
             memory: None,
             omitted: false,
+            listed: None,
         }),
         machines: machines
             .iter()
@@ -128,6 +136,7 @@ fn taken(agent: &str, writable: bool, delegated: bool, machines: &[&str]) -> Mem
                 omitted: 0,
             })
             .collect(),
+        rules: Some(rules()),
         ..MemorySnapshot::default()
     }
 }
@@ -198,6 +207,23 @@ fn each_refresh_trigger_takes_a_new_snapshot() {
         ),
         SnapshotChange::Take
     );
+    // The `memory` rules changed (section 7.5), as when the session
+    // overlay or the agent's document does; and a snapshot an earlier
+    // daemon took records none.
+    let mut changed_rules = same.clone();
+    changed_rules.rules = cookie_agent_protocol::Sha256Digest::of_bytes(b"other rules");
+    assert_eq!(
+        snapshot_change(Some((&latest, false)), &changed_rules),
+        SnapshotChange::Take
+    );
+    let earlier = MemorySnapshot {
+        rules: None,
+        ..latest.clone()
+    };
+    assert_eq!(
+        snapshot_change(Some((&earlier, false)), &same),
+        SnapshotChange::Take
+    );
     // Memory became unavailable: an empty snapshot.
     assert_eq!(
         snapshot_change(
@@ -206,6 +232,27 @@ fn each_refresh_trigger_takes_a_new_snapshot() {
         ),
         SnapshotChange::Clear
     );
+}
+
+#[test]
+fn the_rules_fingerprint_follows_only_the_memory_rules_reaching_global() {
+    let allow = |action| rule(action, "*", PermissionEffect::Allow);
+    let base = agent(AgentMode::Primary, vec![allow(PermissionAction::MEMORY)]);
+    let overlay = SessionPermissionOverlay::empty();
+    let fingerprint = memory_rules_fingerprint(&base, &overlay);
+    // Another action's rule, or a memory rule for another runtime, does
+    // not change it.
+    let mut other = base.clone();
+    other.permissions.push(allow(PermissionAction::BASH));
+    let mut elsewhere = allow(PermissionAction::MEMORY);
+    elsewhere.runtime = Some(RuntimeId::new("labpc").unwrap());
+    other.permissions.push(elsewhere);
+    assert_eq!(memory_rules_fingerprint(&other, &overlay), fingerprint);
+    // An overlay memory rule does.
+    let overlay = SessionPermissionOverlay {
+        rules: vec![allow(PermissionAction::MEMORY)],
+    };
+    assert_ne!(memory_rules_fingerprint(&base, &overlay), fingerprint);
 }
 
 /// An agent memory with an empty body is left out of the prompt but stays

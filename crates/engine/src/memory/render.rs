@@ -8,8 +8,8 @@
 //! section from their heading to their last line.
 
 use cookie_agent_protocol::{
-    MemorySnapshot, MemorySnapshotAgent, MemorySnapshotCategory, MemorySnapshotMachine,
-    MemorySnapshotMemory, MemorySnapshotProject, ProjectName,
+    MemorySnapshot, MemorySnapshotAgent, MemorySnapshotCategory, MemorySnapshotIndexEntry,
+    MemorySnapshotMachine, MemorySnapshotMemory, MemorySnapshotProject, ProjectName,
 };
 
 const BACKGROUND: &str = concat!(
@@ -57,9 +57,42 @@ fn delegated_save(agent: &str) -> String {
 
 const NONE: &str = "None.";
 
-/// The whole memory turn, or `None` for an empty snapshot.
+/// The heading of the memories the run's rules ask before reading.
+const LISTED: &str = "Listed only, as reading asks first (memory_read):";
+
+/// Whether `snapshot` holds any memory to show: a user category, the
+/// agent's file, or a machine or project memory, whole, listed, or counted
+/// (section 7.5). One that holds none, as when the run's rules leave
+/// nothing out of what exists, renders no memory turn at all.
+fn shows_memory(snapshot: &MemorySnapshot) -> bool {
+    let agent = snapshot.agent.as_ref().is_some_and(|agent| {
+        agent.omitted
+            || agent.listed.is_some()
+            || agent
+                .memory
+                .as_ref()
+                .is_some_and(|memory| !is_blank(&memory.body))
+    });
+    agent
+        || !snapshot.user.is_empty()
+        || !snapshot.user_omitted.is_empty()
+        || !snapshot.user_listed.is_empty()
+        || snapshot
+            .machines
+            .iter()
+            .any(|machine| !machine.memories.is_empty() || machine.omitted > 0)
+        || snapshot.project.as_ref().is_some_and(|project| {
+            project.overview.is_some() || !project.memories.is_empty() || project.omitted > 0
+        })
+}
+
+/// The whole memory turn, or `None` for an empty snapshot or one that holds
+/// no memory to show.
 pub(crate) fn snapshot_turn(snapshot: &MemorySnapshot) -> Option<String> {
     let agent = snapshot.agent.as_ref()?;
+    if !shows_memory(snapshot) {
+        return None;
+    }
     let id = agent.agent.as_str();
     let mut parts = vec![BACKGROUND.to_owned()];
     if snapshot.delegated {
@@ -80,7 +113,11 @@ pub(crate) fn snapshot_turn(snapshot: &MemorySnapshot) -> Option<String> {
         if snapshot.writable {
             parts.push(root_save(id));
         }
-        parts.push(user_section(&snapshot.user, &snapshot.user_omitted));
+        parts.push(user_section(
+            &snapshot.user,
+            &snapshot.user_omitted,
+            &snapshot.user_listed,
+        ));
         parts.extend(agent_section(agent));
         parts.push(machines_section(&snapshot.machines));
         parts.extend(snapshot.project.as_ref().map(project_section));
@@ -92,8 +129,13 @@ pub(crate) fn snapshot_turn(snapshot: &MemorySnapshot) -> Option<String> {
 }
 
 /// `## About the user`: one element per category with a body, then the
-/// empty and the omitted categories by URL.
-pub(crate) fn user_section(user: &[MemorySnapshotCategory], omitted: &[String]) -> String {
+/// empty and the omitted categories by URL, then the categories the run's
+/// rules ask before reading, listed.
+pub(crate) fn user_section(
+    user: &[MemorySnapshotCategory],
+    omitted: &[String],
+    listed: &[MemorySnapshotIndexEntry],
+) -> String {
     let mut blocks = user
         .iter()
         .filter(|category| !is_blank(&category.body))
@@ -127,7 +169,26 @@ pub(crate) fn user_section(user: &[MemorySnapshotCategory], omitted: &[String]) 
     if !lines.is_empty() {
         blocks.push(lines.join("\n"));
     }
+    if !listed.is_empty() {
+        blocks.push(listed_block(listed));
+    }
     section("## About the user", blocks)
+}
+
+/// The memories the run's rules ask before reading, one index line each.
+fn listed_block(listed: &[MemorySnapshotIndexEntry]) -> String {
+    let mut lines = vec![LISTED.to_owned()];
+    lines.extend(listed.iter().map(index_line));
+    lines.join("\n")
+}
+
+/// `- <url>: <description> [keywords: …]`, escaped.
+fn index_line(memory: &MemorySnapshotIndexEntry) -> String {
+    let mut line = format!("- {}: {}", memory.url, memory.description);
+    if !memory.keywords.is_empty() {
+        line.push_str(&format!(" [keywords: {}]", memory.keywords.join(", ")));
+    }
+    escape_text(&line)
 }
 
 /// `## About this agent (<agent>)`: the agent's file, or why it is not
@@ -141,7 +202,8 @@ pub(crate) fn agent_section(agent: &MemorySnapshotAgent) -> Option<String> {
             memory_element(&url, &memory.description, &memory.body)
         }
         None if agent.omitted => format!("Not shown (too long): {url}"),
-        Some(_) | None => return None,
+        None => listed_block(std::slice::from_ref(agent.listed.as_ref()?)),
+        Some(_) => return None,
     };
     Some(section(
         &format!("## About this agent ({})", agent.agent),
@@ -192,13 +254,7 @@ pub(crate) fn project_overview(project: &ProjectName, overview: &MemorySnapshotM
 /// machines index's limit.
 pub(crate) fn project_index(project: &MemorySnapshotProject) -> String {
     let mut lines = vec!["Other memories of this project (read with memory_read):".to_owned()];
-    lines.extend(project.memories.iter().map(|memory| {
-        let mut line = format!("- {}: {}", memory.url, memory.description);
-        if !memory.keywords.is_empty() {
-            line.push_str(&format!(" [keywords: {}]", memory.keywords.join(", ")));
-        }
-        escape_text(&line)
-    }));
+    lines.extend(project.memories.iter().map(index_line));
     if project.omitted > 0 {
         lines.push(format!(
             "- {} more; search with layer \"project\".",
@@ -229,17 +285,7 @@ fn machine_element(machine: &MemorySnapshotMachine) -> String {
         ));
     }
     open.push('>');
-    let mut lines = machine
-        .memories
-        .iter()
-        .map(|memory| {
-            let mut line = format!("- {}: {}", memory.url, memory.description);
-            if !memory.keywords.is_empty() {
-                line.push_str(&format!(" [keywords: {}]", memory.keywords.join(", ")));
-            }
-            escape_text(&line)
-        })
-        .collect::<Vec<_>>();
+    let mut lines = machine.memories.iter().map(index_line).collect::<Vec<_>>();
     if machine.omitted > 0 {
         lines.push(format!(
             "- {} more; search with layer \"machine\".",

@@ -293,12 +293,13 @@ additional asks and secret-file denies, while write, bash, and delegate ask by
 default. `webfetch`, every runtime's own actions, and every other
 undeclared action stay hidden. User
 agents do not inherit this list and must declare their own tool permissions.
-A few actions are the exception: an agent document, the built-in `default`
-included, that names no key for `memory`, `memory_write`, `list_runtimes`, or
-`mcp` gets that action's rules from its mode (see
-[Memory defaults](#memory-defaults), [Listing runtimes](#listing-runtimes),
-and [MCP default](#mcp-default)), so every agent that is not internal is
-offered MCP tools and asks before each call.
+Two actions are the exception: an agent document, the built-in `default`
+included, that names no key for `list_runtimes` or `mcp` gets that action's
+rules from its mode (see [Listing runtimes](#listing-runtimes) and
+[MCP default](#mcp-default)), so every agent that is not internal is offered
+MCP tools and asks before each call. Memory has no default, so the built-in
+`default` agent has no memory tools (see
+[Memory permissions](#memory-permissions)).
 
 ## Agent presets
 
@@ -550,8 +551,8 @@ later declaration on an exact tie. Unmatched resources are denied by default.
 `ask` remains an explicitly writable effect and routes matching calls through
 the existing approval flow; it is never an implicit fallback for an
 unmatched resource. The only rules the daemon writes for an agent are the
-mode defaults of `memory`, `memory_write`, `list_runtimes`, and `mcp`, each
-only while the document names no key for its action.
+mode defaults of `list_runtimes` and `mcp`, each only while the document
+names no key for its action.
 
 ### Runtime selectors
 
@@ -600,7 +601,7 @@ Tool providers publish a static permission name and an optional resource label:
 | `goal_get`, `goal_update` | none | None: published only while the session has an active or paused goal, and always allowed |
 | `read_artifact` | none | None: always sent and always allowed, because it reads only the session tree's own retained output |
 | `webfetch` | `webfetch` | Initial URL as given, including its query string |
-| `memory_search` | none | None: published with `memory_read`; each result is checked against the `memory` rules instead (see [Memory defaults](#memory-defaults)) |
+| `memory_search` | none | None: published with `memory_read`; each result is checked against the `memory` rules instead (see [Memory permissions](#memory-permissions)) |
 | `memory_read` | `memory` | Memory URL, such as `project://cookie-agent/build` |
 | `memory_write`, `memory_edit`, `memory_delete` | `memory_write` | Memory URL |
 
@@ -772,7 +773,7 @@ alias, and prepared-operation grants issued under the old argument identity
 fail closed. See the
 [messaging migration notes](../specs/agent-messaging.md#migration-notes).
 
-### Memory defaults
+### Memory permissions
 
 Every agent that is not internal has a memory file, `agent://<agent>`, which
 the daemon makes and whose description and keywords it keeps in line with the
@@ -784,20 +785,14 @@ The memory tools of the `global` runtime use two actions, `memory` for
 searching and reading and `memory_write` for writing, editing, and deleting,
 both with the memory URL as resource (`user://<category>`,
 `agent://<agent>`, `machine://<machine>/<name>`,
-`project://<project>/<name>`). Like `list_runtimes` and `mcp`, they have
-defaults: when an agent document, the built-in `default` included, has no key
-for one of them (with or without a runtime selector), the daemon supplies
-that action's rules by the agent's mode.
-
-| Mode | `memory` | `memory_write` |
-|---|---|---|
-| `primary`, `all` | `allow` | `allow` |
-| `subagent` | `allow` | `"agent://self": allow` |
-| `internal` | none | none |
-
-A declared key replaces the default for its action entirely, so `memory:
-deny` turns memory off for an agent and `memory_write: ask` makes every
-write ask. Session overlays apply on top as for any action. In a rule
+`project://<project>/<name>`). Unlike `list_runtimes` and `mcp`, they have
+no default: an agent document, the built-in `default` included, that names
+no `memory` key gets no memory tools, no `memory_search`, and no memory
+snapshot. Memory is opt-in: `memory: allow` lets an agent read every memory,
+per-URL rules narrow it, and `memory_write` rules let it write. A session
+overlay can grant either for one session tree, as for any action. (Until
+2026-10-22 `primary` and `all` agents got both by default and `subagent`
+agents `memory: allow` and `memory_write: {"agent://self": allow}`.) In a rule
 pattern, `agent://self` stands for the run's own agent: it is read as
 `agent://<agent ID>` before matching, in agent documents and session
 overlays alike, and ranks like that literal URL.
@@ -817,14 +812,22 @@ permissions:
 Memory needs both the `global` runtime and a visible `memory` action: an
 agent without one gets no memory tools at all, even with `memory_write`
 rules. A delegated run may write only its own `agent://<agent>` file,
-whatever its rules say. See the [memory spec](../specs/memory.md#9-permissions).
+whatever its rules say.
+
+The `memory` rules also decide what the memory snapshot shows of each
+memory: one they allow is shown, one they ask for is listed by URL and
+description only (reading it with `memory_read` then asks), and one they
+deny or do not match is left out, not even counted. When nothing is left to
+show, the run gets no memory turn at all, while the tools stay offered. See
+[What the model sees](../sessions/memory.md#what-the-model-sees) and the
+[memory spec](../specs/memory.md#9-permissions).
 
 ### Listing runtimes
 
 `list_runtimes`, a tool of the `global` runtime, lists the daemon's machines
 and runtimes for a root that delegates to them (see
 [Delegating to runtimes](../sessions/delegation.md#list_runtimes)). Its
-action, `list_runtimes`, has a default by mode like the memory actions:
+action, `list_runtimes`, has a default by mode:
 `allow` for `primary` and `all` agents, and none for `subagent` and
 `internal` ones. A declared `list_runtimes` key, with or without a runtime
 selector, replaces the default: `list_runtimes: allow` lets a subagent see

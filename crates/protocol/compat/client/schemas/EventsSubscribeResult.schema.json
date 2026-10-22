@@ -1988,6 +1988,16 @@
               ],
               "description": "The session's project: its overview whole and an index of its other\nmemories (client protocol 1.8.0). Only root runs of a session in a\nproject have it."
             },
+            "rules": {
+              "description": "A fingerprint of the `memory` rules reaching `global` (the agent's,\nthen the session overlay's) the snapshot was taken under; a run whose\nrules differ takes a new snapshot (client protocol 1.12.0). Absent in\nan empty snapshot and in one an earlier daemon took.",
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "memory_loaded",
               "type": "string"
@@ -1996,6 +2006,13 @@
               "description": "Every valid user category that fits, in name order, including empty\nones.",
               "items": {
                 "$ref": "#/$defs/MemorySnapshotCategory"
+              },
+              "type": "array"
+            },
+            "user_listed": {
+              "description": "Categories the run's rules ask before reading, listed by URL and\ndescription only, in name order (client protocol 1.12.0).",
+              "items": {
+                "$ref": "#/$defs/MemorySnapshotIndexEntry"
               },
               "type": "array"
             },
@@ -4377,6 +4394,17 @@
           "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
           "type": "string"
         },
+        "listed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemorySnapshotIndexEntry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The file, listed by URL and description only, because the run's\nrules ask before reading it (client protocol 1.12.0)."
+        },
         "memory": {
           "anyOf": [
             {
@@ -4425,7 +4453,7 @@
       "type": "object"
     },
     "MemorySnapshotIndexEntry": {
-      "description": "One line of a machine's or a project's memory index.",
+      "description": "One line of a memory index: a machine's, a project's, or a memory the\nrun's rules ask before reading.",
       "properties": {
         "description": {
           "type": "string"
@@ -4437,7 +4465,7 @@
           "type": "array"
         },
         "url": {
-          "description": "The memory URL, `machine://<machine>/<name>` or\n`project://<project>/<name>`.",
+          "description": "The memory URL, such as `machine://<machine>/<name>` or\n`project://<project>/<name>`.",
           "type": "string"
         }
       },

@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentSnapshot, AttachmentName, EventPayload as Event, MachineName,
-    MemorySnapshot, PermissionAction, PermissionEffect, ProjectName, RunId, SessionId,
-    SessionOrigin, SessionPermissionOverlay, StoredEvent,
+    MemorySnapshot, PermissionAction, PermissionEffect, PermissionRule, ProjectName, RunId,
+    SessionId, SessionOrigin, SessionPermissionOverlay, Sha256Digest, StoredEvent,
 };
 use cookie_agent_runtime_api::GLOBAL_RUNTIME_ID;
 
@@ -17,7 +17,7 @@ use crate::{
     memory::{
         MemoryRoot,
         search::Visibility,
-        snapshot::{SnapshotLimits, SnapshotRequest},
+        snapshot::{ReadRules, SnapshotLimits, SnapshotRequest},
         url::MemoryUrl,
     },
     permissions::{PermissionScope, effective_permission_with_overlay, tool_visible},
@@ -65,6 +65,34 @@ pub(crate) struct SnapshotFacts {
     /// The name of the session's project; compared only for root runs,
     /// whose snapshot shows it (`docs/site/specs/projects.md` section 7).
     pub(crate) project: Option<ProjectName>,
+    /// The fingerprint of the run's `memory` rules, which filter what the
+    /// snapshot shows (section 7.5).
+    pub(crate) rules: Sha256Digest,
+}
+
+/// The fingerprint of the `memory` rules that reach `global` for a run of
+/// `agent` with `overlay`: the agent's, then the overlay's, in order, with
+/// the agent's ID, which `agent://self` stands for.
+pub(crate) fn memory_rules_fingerprint(
+    agent: &AgentSnapshot,
+    overlay: &SessionPermissionOverlay,
+) -> Sha256Digest {
+    let memory = |rules: &[PermissionRule]| {
+        rules
+            .iter()
+            .filter(|rule| {
+                rule.action == PermissionAction::MEMORY && rule.applies_to(Some(GLOBAL_RUNTIME_ID))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let bytes = serde_json::to_vec(&(
+        agent.agent.as_str(),
+        memory(&agent.permissions),
+        memory(&overlay.rules),
+    ))
+    .expect("permission rules serialize");
+    Sha256Digest::of_bytes(&bytes)
 }
 
 /// What a run admission appends (section 7.2).
@@ -104,6 +132,7 @@ pub(crate) fn snapshot_change(
                 .collect::<BTreeSet<_>>();
             let project = latest.project.as_ref().map(|project| &project.project);
             let changed = compacted
+                || latest.rules.as_ref() != Some(&facts.rules)
                 || agent.agent != facts.agent
                 || latest.writable != facts.access.writable
                 || latest.delegated != facts.delegated
@@ -248,12 +277,17 @@ impl Engine {
                 .map(|(machine, _)| machine.clone())
                 .collect(),
             project,
+            rules: memory_rules_fingerprint(&policy.agent, &projection.permission_overlay),
         };
         let events = projection.log.event_snapshot();
         let snapshot = match snapshot_change(latest_snapshot(&events), &facts) {
             SnapshotChange::Keep => return Ok(()),
             SnapshotChange::Clear => MemorySnapshot::unavailable(),
             SnapshotChange::Take => {
+                let caller = MemoryCaller {
+                    agent: policy.agent.clone(),
+                    overlay: projection.permission_overlay.clone(),
+                };
                 let request = SnapshotRequest {
                     agent: facts.agent,
                     delegated,
@@ -261,6 +295,8 @@ impl Engine {
                     machines,
                     project: facts.project,
                     limits: self.memory_limits(),
+                    read: ReadRules::new(move |url| caller.visibility(url)),
+                    rules: Some(facts.rules),
                 };
                 let root = self.memory_root().clone();
                 match tokio::task::spawn_blocking(move || root.snapshot(&request)).await {

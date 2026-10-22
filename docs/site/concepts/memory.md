@@ -44,10 +44,10 @@ they read, so a memory that changed meanwhile is never overwritten. See
 [Tools](../reference/tools.md#memory-tools).
 
 The `memory` and `memory_write` permission actions govern the tools, with the
-memory URL as the resource. Without rules of its own, a primary agent may read
-and write every memory, while a subagent may read every memory but write only
-its own `agent://` memory. See
-[Memory defaults](../extend/agents.md#memory-defaults).
+memory URL as the resource. Memory is opt-in: an agent without `memory` rules
+of its own (or from the session overlay) gets no memory tools and no
+snapshot, and the snapshot shows each memory only as far as those rules
+allow. See [Memory permissions](../extend/agents.md#memory-permissions).
 
 ## Where it lives
 
