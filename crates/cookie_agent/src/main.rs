@@ -446,11 +446,33 @@ impl ConnectIo for StdioConnectIo {
     }
 }
 
-#[tokio::main]
-async fn main() {
+/// The environment variable a daemon token may come from, which clap reads
+/// into the `--token` arguments.
+const DAEMON_TOKEN_ENV: &str = "COOKIE_DAEMON_TOKEN";
+
+fn main() {
     let cli = Cli::parse();
+    // Clap has read the token into `cli`. Drop the variable so no process
+    // cookie starts (the `bash` tool, MCP servers, plugins, runtime
+    // templates, editors) inherits the daemon's credential.
+    //
+    // SAFETY: `remove_var` races only with other threads using the
+    // environment. This runs on the main thread before the Tokio runtime or
+    // anything else that starts a thread exists; argument parsing starts
+    // none.
+    unsafe { env::remove_var(DAEMON_TOKEN_ENV) };
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("cookie: cannot start the async runtime: {error}");
+            std::process::exit(1);
+        }
+    };
     let error_details = cli.error_details;
-    if let Err(error) = main_result(cli).await {
+    if let Err(error) = runtime.block_on(main_result(cli)) {
         eprintln!(
             "cookie: {}",
             cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))

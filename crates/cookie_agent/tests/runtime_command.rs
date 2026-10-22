@@ -182,3 +182,125 @@ async fn a_missing_root_fails_on_stderr_with_nothing_on_stdout() {
     assert!(stderr.contains("missing"), "{stderr}");
     assert!(stderr.contains("unavailable"), "{stderr}");
 }
+
+/// The daemon token reaches cookie through `COOKIE_DAEMON_TOKEN` but goes no
+/// further: a process the runtime starts, here the `bash` tool's shell, does
+/// not inherit it, while the rest of the environment does.
+#[cfg(unix)]
+#[tokio::test]
+async fn processes_the_runtime_starts_do_not_inherit_the_daemon_token() {
+    use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
+    use cookie_agent_runtime_api::{
+        TurnAgentContext,
+        protocol::{
+            ExecuteOutcome, ExecuteParams, ExecuteResult, Outcome, PrepareOutcome, PrepareParams,
+            PrepareResult, ToolResult, ToolTurn, WireToolCall,
+        },
+        rpc::Incoming,
+    };
+
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cookie"))
+        .args(["runtime", "serve", "--stdio"])
+        .env("HOME", home.path())
+        .env("COOKIE_DAEMON_TOKEN", "secret-daemon-token")
+        .env("COOKIE_TEST_INHERITED", "inherited")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn cookie runtime");
+    let transport = LineTransport::new(
+        child.stdout.take().expect("stdout"),
+        child.stdin.take().expect("stdin"),
+    );
+    let (peer, mut incoming) = Peer::start(Box::new(transport));
+    // Acknowledge the bash call's progress, as a daemon does.
+    tokio::spawn(async move {
+        while let Some(message) = incoming.recv().await {
+            if let Incoming::Request(request) = message {
+                let _ = request.respond(&Outcome::default()).await;
+            }
+        }
+    });
+    initialize(&peer).await;
+    let opened: CapabilityOpenResult = tokio::time::timeout(
+        WAIT,
+        peer.request(
+            method::CAPABILITY_OPEN,
+            &open(&workspace.path().to_string_lossy()),
+        ),
+    )
+    .await
+    .expect("open answers")
+    .expect("open succeeds");
+
+    let turn = ToolTurn::from(&TurnAgentContext {
+        agent: cookie_agent_protocol::AgentId::new("test").unwrap(),
+        model: "test/model".parse().unwrap(),
+        adapter: cookie_agent_protocol::AdaptorId::OPENAI_CHAT,
+        input_media: Vec::new(),
+    });
+    let (session, run) = (SessionId::new_v7(), RunId::new_v7());
+    let prepared: PrepareResult = tokio::time::timeout(
+        WAIT,
+        peer.request(
+            method::TOOL_PREPARE,
+            &PrepareParams {
+                instance: Some(opened.instance),
+                session,
+                run,
+                turn: turn.clone(),
+                calls: vec![WireToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({
+                        "command": "printf '%s' \"${COOKIE_DAEMON_TOKEN-unset}\" > token.txt; \
+                                    printf '%s' \"${COOKIE_TEST_INHERITED-unset}\" > inherited.txt"
+                    }),
+                }],
+            },
+        ),
+    )
+    .await
+    .expect("prepare answers")
+    .expect("prepare succeeds");
+    let [PrepareOutcome::Prepared(bash)] = &prepared.results[..] else {
+        panic!("unexpected outcomes {:?}", prepared.results);
+    };
+    let result: ExecuteResult = tokio::time::timeout(
+        WAIT,
+        peer.request(
+            method::TOOL_EXECUTE,
+            &ExecuteParams {
+                background: false,
+                prepared_id: bash.prepared_id,
+                session,
+                run,
+                turn,
+            },
+        ),
+    )
+    .await
+    .expect("execute answers")
+    .expect("execute succeeds");
+    assert!(
+        matches!(
+            result.outcome,
+            ExecuteOutcome::Completed(ToolResult { failed: false, .. })
+        ),
+        "the bash call completes"
+    );
+
+    let read = |name: &str| std::fs::read_to_string(workspace.path().join(name)).unwrap();
+    assert_eq!(read("inherited.txt"), "inherited");
+    assert_eq!(read("token.txt"), "unset");
+
+    let _: Empty = tokio::time::timeout(WAIT, peer.request(method::SHUTDOWN, &Empty {}))
+        .await
+        .expect("shutdown answers")
+        .expect("shutdown succeeds");
+    exits_successfully(&mut child).await;
+}
