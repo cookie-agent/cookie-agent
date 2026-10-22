@@ -1537,6 +1537,11 @@ Hermes Agent, OpenClaw, mem0 and Letta.
     > it repeats, or delete it, then carry on with your task. A memory
     > earns its place only while a later session would miss it.
     >
+    > Memory attached to this session, the memory shown to you above, is
+    > yours to maintain. Do not write, edit or delete memory that is not
+    > attached unless what it says is stale or wrong, or the user
+    > explicitly asks you to.
+    >
     > Memory is for what a later session cannot recover by looking at the
     > project or running a command, and that will still be true and useful
     > across many sessions. Before saving, ask:
@@ -1574,8 +1579,9 @@ Hermes Agent, OpenClaw, mem0 and Letta.
     > is wrong. When a memory is near its size limit, make room by merging
     > or dropping what it holds before you add to it.
 
-- **Delegated runs.** For a delegated run, part B names only
-  `agent://<agent>`, the one memory such a run may write.
+- **Delegated runs.** A delegated run gets the same part B. What is
+  attached to it is what its snapshot attaches: its own agent file
+  (section 16.9.11).
 - **Visibility test.** Tool prompt composition asks every provider. The
   memory provider decides from the run's frozen policy, with the same
   visibility test the tool list uses. With no memory tool there is no
@@ -1586,15 +1592,12 @@ Hermes Agent, OpenClaw, mem0 and Letta.
   readable (an `allow` or `ask` `memory` rule matches it) and writable (an
   `allow` or `ask` `memory_write` rule matches it) for the run.
   - **The check** intersects the patterns of the two sets of rules, with
-    their variables expanded (section 16.9.9). For a delegated run, the
-    writable side is limited to `agent://<agent>`. Patterns use only `*`
+    their variables expanded (section 16.9.9). Patterns use only `*`
     and `?`, so whether two of them overlap can be decided exactly, and
     no file has to exist for a URL to count.
   - **Examples:**
     - `memory: {"user://*": allow}` with
       `memory_write: {"project://*": allow}` offers no write tools.
-    - A delegated run whose rules cannot read `agent://<agent>` offers no
-      write tools either.
   - **Without memory**, when the run is offered no memory tool at all, the
     write tools never appear (unchanged).
 - **What the snapshot keeps.** It loses its search and save paragraphs
@@ -1647,19 +1650,19 @@ This replaces section 8.1's scoring.
 
   ```text
   project://cookie-agent/release — How releases are cut: gh release create starts it; publish oven-sdk first
-    owner: project cookie-agent (this session) · editable · 3 weeks old
+    owner: project cookie-agent · attached · editable · 3 weeks old
     keywords: release, cargo-dist, oven-sdk
 
   agent://builder — Memory of the `builder` agent: Primary agent for building features
-    owner: you · editable · 5 days old
+    owner: you · attached · editable · 5 days old
     keywords: builder, primary
 
   agent://reviewer — Memory of the `reviewer` agent: Reviews a diff for bugs and missing tests
-    owner: agent reviewer · read-only · 2 days old
+    owner: agent reviewer · not attached · editable · 2 days old
     keywords: reviewer, subagent
 
   user://preferences — How the user likes to work
-    owner: user · read-only · 1 month old
+    owner: user · attached · read-only · 1 month old
     (reading it needs approval)
   ```
 
@@ -1667,12 +1670,12 @@ This replaces section 8.1's scoring.
   - `you`, for the run's own `agent://` file;
   - `agent <id>`, for another agent's file;
   - `user`;
-  - `machine <name>`, followed by `(this session)` when the machine is one
-    of the session's;
-  - `project <name>`, followed by `(this session)` when it is the
-    session's project.
-- **`editable` or `read-only`** comes from the run's `memory_write` rules,
-  together with the rule that a delegated run may write only its own file.
+  - `machine <name>`;
+  - `project <name>`.
+- **`attached` or `not attached`** says whether the memory is attached to
+  this session (section 16.9.11).
+- **`editable` or `read-only`** comes from the run's `memory_write` rules
+  alone.
 - **The age** is from `modified` (section 16.9.6).
 - **What rules hide.** An `ask` hit shows only its first two lines and
   "(reading it needs approval)". A `deny` hit never appears.
@@ -1680,7 +1683,8 @@ This replaces section 8.1's scoring.
   and no revision (section 16.9.8):
 
   ```text
-  owner: project cookie-agent (this session)
+  owner: project cookie-agent
+  attached: yes
   editable: yes
   created: 2026-10-01T09:12:44Z (3 weeks ago)
   modified: 2026-10-20T16:03:10Z (2 days ago)
@@ -1689,9 +1693,8 @@ This replaces section 8.1's scoring.
   <body>
   ```
 
-- **The snapshot** uses the same owner words, so it marks the agent's own
-  file as `you`, and machines and the project of the session as
-  `(this session)`.
+- **The snapshot** marks the agent's own file as `you`. Everything it
+  shows is attached by definition.
 
 #### 16.9.5 Similar memories before a new one
 
@@ -1785,27 +1788,65 @@ This replaces section 8.1's scoring.
     at once.
 - **`agent://self` is removed** in favour of `agent://${agent_id}`.
 
-#### 16.9.10 Every change is visible and can be undone
+#### 16.9.10 Every change is visible
 
 - **Events.** Each write, edit or delete a model makes is a one-line
-  transcript event, such as `Saved project://cookie-agent/release`. In the
-  web client and the TUI it has **Undo** and links to the Memory view.
-- **Trash.** Replaced bodies and deleted documents go to `memory/.trash/`
-  with their previous revision, kept for 30 days. Undo restores from
-  there.
-- **Agent deletes.** An agent's delete of a `user://` category or an
-  `agent://` file still only clears its body (section 16.6).
+  transcript event, such as `Saved project://cookie-agent/release`, which
+  links to the Memory view in the web client and the TUI.
+- **No undo, no trash** (decided 2026-10-22). A delete deletes and a
+  replaced body is gone, as with any file.
 
-#### 16.9.11 The approval reviewer knows the rubric
+#### 16.9.11 Attached memory, and no hard limits on what an agent touches
+
+Decided 2026-10-22.
+
+- **Attached memory.** The memory a session's snapshot attaches
+  automatically is *attached*:
+  - **for a root run:** every `user://` memory, the run's own
+    `agent://<agent>` file, the memories of the session's machines, and
+    those of its project;
+  - **for a delegated run:** its own agent file, the only memory its
+    snapshot attaches.
+
+  This is the word the prompt, the results (`attached` or
+  `not attached`) and the rules below use.
+- **No hard limits.** Permission rules alone decide what an agent may
+  write, edit or delete; the rubric (section 16.9.1, part B) says what it
+  should. Three rules the daemon enforces today, whatever the rules say,
+  are dropped:
+  - a delegated run may write only its own `agent://` file;
+  - an agent may change `user://` categories but not add or remove one;
+  - an agent's delete of a `user://` category or an `agent://` file only
+    clears its body (section 16.6, superseded).
+
+  An agent's delete now deletes, and nothing is kept (section 16.9.10).
+- **A possible later default.** Once this is in, the defaults (section 9.2,
+  none since 2026-10-22) could become "read everything, write what is
+  attached". The relative names already express that, with no new
+  variable:
+
+  ```yaml
+  memory: allow
+  memory_write:
+    "user://*": allow
+    "agent://${agent_id}": allow
+    "machine://${session_machine}/*": allow
+    "project://${session_project}/*": allow
+  ```
+
+  This is not decided; it is recorded here so the change can be made
+  later without new mechanism.
+
+#### 16.9.12 The approval reviewer knows the rubric
 
 When an agent's `memory_write` rule is `ask`, the approval reviewer
 receives part B of section 16.9.1 and the write's content. In auto-approve
 mode it rejects writes that fail the rubric.
 
-#### 16.9.12 Compatibility
+#### 16.9.13 Compatibility
 
 - **Client protocol minor**, additive:
-  - the transcript event for memory changes, and the Undo request;
+  - the transcript event for memory changes;
   - the snapshot's owner words, fullness and over-limit marks;
   - stamps in `memory.*` results.
 - **Plugin protocol minor**, because plugins see events.
@@ -1815,12 +1856,13 @@ mode it rejects writes that fail the rubric.
   as they were written.
 - **Configuration.** The five size settings replace `max_file_bytes`.
 
-#### 16.9.13 Phases
+#### 16.9.14 Phases
 
 1. **Engine:**
    - the two-part section and the snapshot's trimmed text;
    - offering write tools only when some memory is both readable and
      writable;
+   - dropping the hard write limits (section 16.9.11);
    - the `Project:` line;
    - search scoring and the result and read formats;
    - stamps and their migration;
@@ -1829,8 +1871,7 @@ mode it rejects writes that fail the rubric.
    - the similar-memory check;
    - rule variables;
    - the reviewer's rubric.
-2. **Clients:** change events with Undo, the trash, and stamps and limits
-   in the Memory view.
+2. **Clients:** change events, and stamps and limits in the Memory view.
 3. **Docs:**
    - the memory guide, the permissions page and the configuration
      reference;
