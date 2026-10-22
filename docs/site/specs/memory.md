@@ -1522,6 +1522,12 @@ budgets. Memory stays opt-in per agent (section 9.2, as amended 2026-10-22).
    descriptions of `memory_write` and `memory_edit` stay short and point to
    the section. Draft:
 
+   > You manage your own memory. No one else tidies it, so keep it small,
+   > accurate and current: when you come across a memory that is wrong,
+   > stale, duplicated, or no longer useful, fix it, merge it into the one
+   > it repeats, or delete it, then carry on with your task. A memory
+   > earns its place only while a later session would miss it.
+   >
    > Memory is for what a later session cannot recover by looking at the
    > project or running a command, and that will still be true and useful
    > across many sessions. Before saving, ask:
@@ -1553,7 +1559,8 @@ budgets. Memory stays opt-in per agent (section 9.2, as amended 2026-10-22).
    > One fact per memory, with a description that states the fact. Prefer
    > updating a memory to adding one. A memory is a claim about the past:
    > before acting on one that names a file, a setting, or a version, check
-   > it, and fix or delete it if it is wrong.
+   > it, and fix or delete it if it is wrong. When a layer is near its
+   > budget, make room by merging or dropping entries before you add one.
 
    For a delegated run, the section carries the same rubric scoped to
    `agent://<agent>`, the only memory such a run may write.
