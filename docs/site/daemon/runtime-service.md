@@ -104,6 +104,20 @@ A user service starts with a minimal environment: MCP servers that need
 `PATH` entries or variables of your shell need `Environment=` lines in the
 unit.
 
+To remove the service, stop it, delete the unit and the token file, and
+tell systemd:
+
+```sh
+systemctl --user disable --now cookie-runtime
+rm ~/.config/systemd/user/cookie-runtime.service
+rm -f ~/.config/cookie-agent/runtime.env
+systemctl --user daemon-reload
+```
+
+Lingering is per user, not per service: run `loginctl disable-linger "$USER"`
+only when no other user service of yours, such as the
+[daemon's](persistent.md#remove-the-linux-service), needs it.
+
 ## macOS
 
 A LaunchAgent runs in your login session, which a runtime that reaches your
@@ -163,6 +177,15 @@ launchctl bootout gui/$(id -u)/dev.cookie-agent.runtime
 and `tail -f ~/Library/Logs/cookie-runtime.log` shows what it prints. A
 LaunchAgent starts when you log in, not at boot.
 
+To remove the agent, unload it and delete the plist, which holds the token
+unless you left it out, and the log:
+
+```sh
+launchctl bootout gui/$(id -u)/dev.cookie-agent.runtime
+rm ~/Library/LaunchAgents/dev.cookie-agent.runtime.plist
+rm -f ~/Library/Logs/cookie-runtime.log
+```
+
 ## Windows
 
 A Task Scheduler task at your logon is the recommended path: it runs in your
@@ -193,9 +216,7 @@ Start-ScheduledTask -TaskName "Cookie Agent runtime"
 
 The empty `New-TimeSpan` removes the task's default three-day execution
 limit. The task's output goes to `%LOCALAPPDATA%\cookie-agent\runtime.log`.
-`Stop-ScheduledTask -TaskName "Cookie Agent runtime"` stops it and
-`Unregister-ScheduledTask -TaskName "Cookie Agent runtime" -Confirm:$false`
-removes it.
+`Stop-ScheduledTask -TaskName "Cookie Agent runtime"` stops it.
 
 - **No console window.** `conhost.exe --headless` runs the command without a
   window on Windows 10 and 11. It is a switch of the console host that
@@ -207,3 +228,21 @@ removes it.
   `LocalSystem`. It then reads that account's `config.toml`, and cannot reach
   your Chrome, so browser MCP servers do not work through it. Use it only
   for a runtime that needs files and shell commands, not your session.
+
+To remove the task, unregister it, delete its log, and delete the token
+`setx` stored in your user environment:
+
+```powershell
+Stop-ScheduledTask -TaskName "Cookie Agent runtime" -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName "Cookie Agent runtime" -Confirm:$false
+Remove-Item "$env:LOCALAPPDATA\cookie-agent\runtime.log" -ErrorAction SilentlyContinue
+[Environment]::SetEnvironmentVariable('COOKIE_DAEMON_TOKEN', $null, 'User')
+```
+
+Skip the last line if you did not run `setx`. It removes the variable from
+the registry (`HKCU\Environment`) for processes started afterwards; a shell
+that is already open keeps its copy until you close it. Do not use
+`setx COOKIE_DAEMON_TOKEN ""`: that stores an empty value instead of
+deleting the variable. `%LOCALAPPDATA%\cookie-agent` also holds the
+[daemon task's](persistent.md#windows) log; delete the folder when neither
+task remains.

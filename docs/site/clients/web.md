@@ -592,7 +592,8 @@ Open the page on the phone with
 `cookie web --url wss://<host>.<tailnet>.ts.net/ws`'s link.
 
 Tailscale Serve needs HTTPS certificates turned on for the tailnet (MagicDNS
-and HTTPS in its admin console).
+and HTTPS in its admin console). `tailscale serve reset` turns it off again
+(see [Remote access](../daemon/remote-access.md#forwarding-and-tunnels)).
 
 Where the browser can install the page, the page offers it:
 
@@ -616,6 +617,23 @@ Where the browser can install the page, the page offers it:
 The app opens at the page's own address without a token and connects with
 the token the browser stored when a `cookie web` link was opened. Its title
 bar follows the page's theme, the user's choice included.
+
+To uninstall the app, use the platform's own way; cookie keeps nothing
+outside the browser's storage for it:
+
+- **Android.** Long-press the app icon, then **Uninstall** (or **App info**
+  › **Uninstall**).
+- **iPhone and iPad.** Long-press the icon, then **Remove App** › **Delete
+  App**.
+- **Desktop Chrome or Edge.** Open the app, open its window menu (the three
+  dots), and choose **Uninstall**; or open `chrome://apps` (`edge://apps`
+  in Edge), right-click the app, and choose **Remove**.
+
+The browser keeps the daemon's token and the page's settings in site
+storage even after the app is gone. **Forget this daemon** (Settings ›
+This browser, or the connect screen) deletes the token; to clear everything
+else, clear the site data for the daemon's address in the browser's
+settings.
 
 The page has a service worker, `sw.js`, which installing needs on some
 browsers. It caches nothing and passes every request to the daemon, so a

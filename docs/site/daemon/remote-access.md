@@ -46,6 +46,9 @@ port forwards both. The page then finds the daemon at its own address.
   serves `https://<host>.<tailnet>.ts.net/`. An HTTPS
   page can be [installed as an app](../clients/web.md#installing-as-an-app)
   on a phone.
+  Turn it off with `tailscale serve reset`, which clears every Serve
+  mapping on that machine; `tailscale serve status` lists what is set up
+  first. To drop only this one, use `tailscale serve --https=443 off`.
 - **Tailscale or a LAN.** Run `cookie daemon --listen 0.0.0.0:7419` and
   open its address, such as `http://100.101.102.103:7419/`.
   Without TLS the token crosses the network in the clear, so keep this to a
@@ -57,3 +60,8 @@ port forwards both. The page then finds the daemon at its own address.
   - A proxy may serve the daemon under a subpath, such as
     `https://example.com/cookie/`. The page then connects to
     `wss://example.com/cookie/ws`.
+  - Stop the tunnel with the tool that started it: end the `cloudflared`
+    process, and, if you installed it as a service
+    (`cloudflared service install`), run `cloudflared service uninstall`.
+    Delete the tunnel and its DNS record in Cloudflare, or the name keeps
+    pointing at nothing.

@@ -60,3 +60,149 @@ command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
 
 Run `cookie` in a project and connect a provider with `/connect`; the
 [quickstart](quickstart.md) walks through it and a first session.
+To remove cookie again, see [Uninstall](#uninstall).
+
+## Uninstall
+
+Remove cookie in the order below: services first, so nothing restarts the
+binary you are about to delete; then the binary and what the installer set up
+around it; then, only if you want it, your data. The steps for the installers
+are written for the default install under Cargo's home; if you extracted a
+release archive yourself, delete the `cookie` or `cookie.exe` you placed and
+skip the PATH and receipt steps.
+
+### 1. Stop and remove services
+
+Quit any running `cookie`. Then undo whatever you set up to keep cookie
+running or reachable, each in its own page:
+
+- **The daemon as a service:** remove the
+  [Linux systemd unit](daemon/persistent.md#remove-the-linux-service), the
+  [macOS LaunchAgent](daemon/persistent.md#remove-the-macos-launchagent), or
+  the [Windows scheduled task](daemon/persistent.md#windows).
+- **A runtime service** on this or another machine: the removal steps at
+  the end of each platform's section of
+  [Running a runtime as a service](daemon/runtime-service.md). On Windows
+  they also delete the `COOKIE_DAEMON_TOKEN` user variable.
+- **Tailscale Serve or a tunnel** pointing at the daemon: run
+  `tailscale serve reset`; see
+  [Remote access](daemon/remote-access.md#forwarding-and-tunnels).
+- **The web client as an installed app:**
+  [uninstall it in the browser](clients/web.md#installing-as-an-app).
+
+A daemon you started by hand stops with Ctrl-C in its terminal.
+
+### 2. Remove the binary
+
+The installers put `cookie` in Cargo's home and nothing else on disk besides
+an install receipt (below). Delete it:
+
+=== "Linux and macOS"
+
+    ```sh
+    rm ~/.cargo/bin/cookie
+    ```
+
+=== "Windows (PowerShell)"
+
+    ```powershell
+    Remove-Item "$env:USERPROFILE\.cargo\bin\cookie.exe"
+    ```
+
+If `CARGO_HOME` was set when you installed, the binary is in
+`$CARGO_HOME/bin` (`%CARGO_HOME%\bin`) instead. `command -v cookie`
+(`Get-Command cookie`) shows which `cookie` your shell runs.
+
+The installers write an install receipt, `cookie_agent-receipt.json`, which
+the cargo-dist updater reads. Cookie's release archives contain no updater,
+so nothing reads it, but delete it:
+
+=== "Linux and macOS"
+
+    ```sh
+    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/cookie_agent/cookie_agent-receipt.json"
+    rmdir "${XDG_CONFIG_HOME:-$HOME/.config}/cookie_agent" 2>/dev/null
+    ```
+
+=== "Windows (PowerShell)"
+
+    ```powershell
+    $receipts = if ($env:XDG_CONFIG_HOME) { "$env:XDG_CONFIG_HOME\cookie_agent" } else { "$env:LOCALAPPDATA\cookie_agent" }
+    Remove-Item "$receipts\cookie_agent-receipt.json" -ErrorAction SilentlyContinue
+    Remove-Item $receipts -ErrorAction SilentlyContinue
+    ```
+
+The last line of each fails harmlessly if the folder still holds something
+else.
+
+If you installed cookie with `cargo install` instead, `cargo uninstall
+cookie_agent` removes the binary.
+
+### 3. Undo the PATH changes
+
+The installer put Cargo's `bin` folder on your `PATH` only if it was not on
+it already. That folder is shared with Rust, so leave this step out if you
+use Cargo or rustup.
+
+On **Linux and macOS** the shell installer appended a line that sources
+`~/.cargo/env` to the shell startup files that existed (it creates
+`~/.profile` if none did): `. "$HOME/.cargo/env"` in `~/.profile`,
+`~/.bashrc`, `~/.bash_profile`, `~/.bash_login`, `~/.zshrc`, and
+`~/.zshenv`, and `source "$HOME/.cargo/env.fish"` in
+`~/.config/fish/conf.d/cookie_agent.env.fish`. Remove those lines (or that
+file), and `~/.cargo/env` and `~/.cargo/env.fish` if nothing else uses
+them. Open a new shell afterwards. `grep -n 'cargo/env' ~/.profile ~/.bashrc
+~/.bash_profile ~/.bash_login ~/.zshrc ~/.zshenv` finds the lines. The
+installer adds them only if `cargo`'s `bin` was not already on `PATH`, and not
+at all when `COOKIE_AGENT_NO_MODIFY_PATH=1` was set at install time.
+
+On **Windows** the PowerShell installer added the `bin` folder to your user
+`Path` (the `Path` value in `HKEY_CURRENT_USER\Environment`). Remove it:
+
+```powershell
+$bin = "$env:USERPROFILE\.cargo\bin"
+$path = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -and $_ -ne $bin }
+[Environment]::SetEnvironmentVariable('Path', ($path -join ';'), 'User')
+```
+
+Use your `CARGO_HOME` instead of `$env:USERPROFILE\.cargo` if you set one.
+The change applies to shells you open afterwards. (This rewrites the value
+as plain text; a `Path` that held `%VARIABLE%` entries has them expanded.)
+
+### 4. Remove your data (optional, destructive)
+
+Everything cookie keeps for you lives in one folder, `~/.cookie-agent`
+(`%USERPROFILE%\.cookie-agent` on Windows), apart from the logs of the
+services above. Deleting it is **permanent and cannot be undone**:
+
+- `config.toml` and `tui.toml`, with the daemon's token (`[server] token`);
+- `providers/`, your connected providers' credentials;
+- `mcp-oauth.json`, the OAuth credentials of remote MCP servers;
+- `sessions/`, every session's history;
+- `memory/`, `projects/`, and `machines.json`;
+- `agents/` and `skills/` you wrote there;
+- `catalog/`, a cache of the model catalog that cookie downloads again;
+- `machine-id`, when the machine has none of its own.
+
+Cookie keeps no data, cache, or credential outside this folder, and uses no
+system keychain. Copy out what you
+want to keep first, such as `config.toml`, `agents/`, `skills/`, and
+`memory/`. To forget a provider's credentials but keep the rest, use
+[`cookie disconnect`](clients/cli.md#cookie-disconnect) before you delete the
+binary.
+
+=== "Linux and macOS"
+
+    ```sh
+    rm -rf ~/.cookie-agent
+    ```
+
+=== "Windows (PowerShell)"
+
+    ```powershell
+    Remove-Item "$env:USERPROFILE\.cookie-agent" -Recurse -Force
+    ```
+
+Projects have their own `.cookie-agent/` folder only if you made one there
+(project configuration, agents, and skills); delete it in each project that
+has one. A daemon on another machine keeps its own `~/.cookie-agent` there.

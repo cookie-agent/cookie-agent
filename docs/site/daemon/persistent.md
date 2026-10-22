@@ -158,8 +158,8 @@ loginctl enable-linger "$USER"
 Read its output with `journalctl --user -u cookie-daemon`; follow it with
 `-f`. The journal keeps the daemon's ready line, token included, readable by
 whoever can read your user journal. `systemctl --user restart cookie-daemon`
-restarts it, for example to upgrade it after installing a new version, and
-`systemctl --user disable --now cookie-daemon` removes it.
+restarts it, for example to upgrade it after installing a new version.
+[Remove it](#remove-the-linux-service) when you no longer want it.
 
 A user service starts with a minimal environment, not your shell's. A daemon
 running as a service has no `SSH_AUTH_SOCK` from your shell, so an ssh
@@ -167,6 +167,29 @@ running as a service has no `SSH_AUTH_SOCK` from your shell, so an ssh
 agent socket set with the unit's `Environment=`. The same goes for anything
 a `local` MCP server finds through `PATH`: set `Environment=PATH=...` in the
 unit if its command is not in systemd's default.
+
+#### Remove the Linux service
+
+Stop the service and keep it from starting again, then delete its unit file
+and tell systemd:
+
+```sh
+systemctl --user disable --now cookie-daemon
+rm ~/.config/systemd/user/cookie-daemon.service
+systemctl --user daemon-reload
+```
+
+`loginctl enable-linger` applies to your user as a whole, not to this
+service. If no other user service of yours needs to run without a login
+session (the [runtime service](runtime-service.md#linux) is one), turn it
+off too:
+
+```sh
+loginctl disable-linger "$USER"
+```
+
+The daemon's output lives in the user journal, which has no file to delete;
+its entries age out with the journal's own limits.
 
 ### macOS
 
@@ -218,6 +241,19 @@ launchctl bootout gui/$(id -u)/dev.cookie-agent.daemon
 The log file holds the daemon's output, and so its ready line with the
 token: `chmod 600` it. A LaunchAgent starts when you log in, not at boot.
 
+#### Remove the macOS LaunchAgent
+
+Unload the agent, then delete its plist and its log:
+
+```sh
+launchctl bootout gui/$(id -u)/dev.cookie-agent.daemon
+rm ~/Library/LaunchAgents/dev.cookie-agent.daemon.plist
+rm -f ~/Library/Logs/cookie-daemon.log
+```
+
+`bootout` fails with an input/output error when the agent is not loaded,
+which is fine: carry on with the `rm` lines.
+
 ### Windows
 
 A Task Scheduler task that starts at your logon, in your session and with
@@ -239,8 +275,7 @@ Register-ScheduledTask -TaskName "Cookie Agent daemon" -Action $action `
 Start-ScheduledTask -TaskName "Cookie Agent daemon"
 ```
 
-`Unregister-ScheduledTask -TaskName "Cookie Agent daemon" -Confirm:$false`
-removes it, and `Stop-ScheduledTask` stops it. The output goes to
+`Stop-ScheduledTask` stops it. The output goes to
 `%LOCALAPPDATA%\cookie-agent\daemon.log`, ready line and token included:
 keep that folder to your user, which it is by default.
 
@@ -253,6 +288,22 @@ keep that folder to your user, which it is by default.
   and can start before anyone logs in. It runs as another account or as
   `LocalSystem`, so it reads that account's `config.toml` and keeps that account's
   sessions, not yours. Run it as your own account.
+
+#### Remove the Windows task
+
+Stop the task, unregister it, and delete its log:
+
+```powershell
+Stop-ScheduledTask -TaskName "Cookie Agent daemon" -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName "Cookie Agent daemon" -Confirm:$false
+Remove-Item "$env:LOCALAPPDATA\cookie-agent\daemon.log" -ErrorAction SilentlyContinue
+```
+
+`%LOCALAPPDATA%\cookie-agent` also holds the
+[runtime service's](runtime-service.md#windows) log; delete the folder
+when neither task remains. A Windows service you created yourself goes with
+the tool that made it, such as `nssm remove <name> confirm` or
+`sc.exe delete <name>`.
 
 ## Choosing the runtime for a directory
 
