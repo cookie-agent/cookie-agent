@@ -1852,6 +1852,14 @@ Decided 2026-10-22.
     the agent's mode. This one depends on whether the run is delegated,
     so an `all`-mode agent gets it when delegated and not when it runs as
     the root. Root runs keep no memory default.
+  - **How a run is known to be delegated.** Its session's origin is
+    `SessionOrigin::Delegated`, set when `delegate_subagent` creates the
+    session and never changed. The two policy freezes already differ
+    (`freeze_delegated_agent_policy` for delegated runs), so the freeze
+    passes `delegated` to `agent_permission_rules`, which appends these
+    rules for a memory action the document has no key for. The default is
+    part of the frozen policy, like the mode defaults; nothing checks it at
+    write time.
   - **A document's own rules replace it**, per action, as with every
     default (section 9.2). An agent document that declares `memory` or
     `memory_write` gets exactly those rules when delegated too, `user://`
