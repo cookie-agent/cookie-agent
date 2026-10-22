@@ -78,6 +78,9 @@ pub enum Panel {
     Message,
     /// The session's attached runtimes.
     Runtimes,
+    /// The new session's runtime cards, from the bottom bar's "Runtimes…"
+    /// chip.
+    DraftRuntimes,
     /// "Move to project…" of the session in [`Workspace::moving`].
     MoveSession,
     /// The project editor ([`Workspace::project_editor`]).
@@ -109,10 +112,8 @@ pub struct Workspace {
     /// The daemon lists sessions' attachments (client protocol 1.7), so a
     /// session listing none has none.
     pub lists_attachments: RwSignal<bool>,
-    /// The new session is being set up on its runtime cards; Start opens
-    /// them and leaves the draft to compose.
-    pub new_setup: RwSignal<bool>,
-    /// The runtime cards the new session starts with.
+    /// The runtime cards the new session starts with: `global` alone, or
+    /// its project's defaults, until the "Runtimes…" sheet changes them.
     pub selection: RwSignal<crate::cards::Selection>,
     /// Why opening a card's workspace failed, by card key and field.
     pub card_errors: RwSignal<HashMap<(String, usize), String>>,
@@ -262,8 +263,7 @@ impl Workspace {
             selected: RwSignal::new(None),
             new_session: RwSignal::new(true),
             lists_attachments: RwSignal::new(false),
-            new_setup: RwSignal::new(true),
-            selection: RwSignal::new(crate::cards::Selection::default()),
+            selection: RwSignal::new(crate::cards::Selection::global_only()),
             card_errors: RwSignal::new(HashMap::new()),
             starting: RwSignal::new(false),
             group_open: RwSignal::new(HashMap::new()),
@@ -942,20 +942,15 @@ impl Workspace {
         );
     }
 
-    /// Starts composing a new session.
+    /// Starts composing a new session, on the composer with only `global`
+    /// (`docs/site/specs/runtime-delegation.md` section 5.1): the
+    /// "Runtimes…" chip opens the runtime cards, and a project's defaults
+    /// prefill them. Nothing is remembered from an earlier draft.
     pub fn start_new_session(self) {
-        // The open session's runtimes and workspaces, else the browser's
-        // last ones, else `global` and `local` to fill in.
-        let open = self
-            .selected
-            .get_untracked()
-            .filter(|_| !self.new_session.get_untracked())
-            .and_then(|session_id| self.root_attachments(session_id));
-        self.selection.set(self.default_selection(open.as_deref()));
+        self.selection.set(crate::cards::Selection::global_only());
         self.new_project.set(None);
         self.card_errors.set(HashMap::new());
         self.starting.set(false);
-        self.new_setup.set(true);
         self.poll_runtimes();
         self.new_session.set(true);
         self.selected.set(None);
@@ -1341,25 +1336,34 @@ impl Workspace {
             .ok_or("no agent and model to start a session with")?;
         // The runtimes the cards opened (and `/runtime` may have edited), in
         // card order, at the canonical workspaces they reported; the first
-        // workspace is the session's directory. A session with none works
-        // nowhere in particular.
-        let entries = self
-            .draft_runtimes
+        // workspace is the session's directory. Without any, the draft's
+        // project's defaults when it has some (the daemon attaches them),
+        // else `global` alone: the session works nowhere in particular.
+        let project = self
+            .new_project
             .get_untracked()
-            .ok_or("start the new session on its runtime cards first")?;
-        let global = entries.iter().any(|entry| entry.is_global());
-        let runtimes = entries
-            .iter()
-            .filter(|entry| !entry.is_global())
-            .map(|entry| RuntimeAttachRequest {
-                workspace: entry.workspace().map(str::to_owned),
-                ..entry.request.clone()
-            })
-            .collect::<Vec<_>>();
+            .filter(|_| self.has_projects.get_untracked());
+        let (global, runtimes) = match self.draft_runtimes.get_untracked() {
+            Some(entries) => (
+                entries.iter().any(|entry| entry.is_global()),
+                Some(
+                    entries
+                        .iter()
+                        .filter(|entry| !entry.is_global())
+                        .map(|entry| RuntimeAttachRequest {
+                            workspace: entry.workspace().map(str::to_owned),
+                            ..entry.request.clone()
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            None if untrack(|| self.draft_project_defaults()).is_some() => (true, None),
+            None => (true, Some(Vec::new())),
+        };
         let directory = runtimes
             .iter()
+            .flatten()
             .find_map(|request| request.workspace.clone());
-        let runtimes = Some(runtimes);
         let created = client
             .create_session(SessionCreateParams {
                 permission_mode: self.new_session_mode.get_untracked(),
@@ -1367,10 +1371,7 @@ impl Workspace {
                 cwd: directory,
                 runtimes,
                 global,
-                project: self
-                    .new_project
-                    .get_untracked()
-                    .filter(|_| self.has_projects.get_untracked()),
+                project,
                 ..SessionCreateParams::new(selection)
             })
             .await

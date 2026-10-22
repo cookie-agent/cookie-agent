@@ -3,8 +3,10 @@
 //! A runtime moves to another machine by dragging it onto that machine's
 //! card (a mouse drags at once; a finger presses for half a second
 //! first, and a press let go in place opens "Move to…"), or with its
-//! "Move to…" button, which the keyboard reaches. [`crate::machines`]
-//! holds the rules.
+//! "Move to…" button, which the keyboard reaches. A machine lists the
+//! offline runtimes it remembers under its connected ones, dimmed, with
+//! when they were last seen and a Forget. [`crate::machines`] holds the
+//! rules.
 
 use std::time::Duration;
 
@@ -13,7 +15,8 @@ use cookie_agent_client_state::runtimes::{
     machine_name_request,
 };
 use cookie_agent_protocol::{
-    MachineName, MachinesListResult, RuntimeId, RuntimeListing, RuntimesListResult,
+    MachineName, MachinesListResult, RememberedRuntime, RuntimeId, RuntimeListing,
+    RuntimesListResult,
 };
 use leptos::{ev, prelude::*, task::spawn_local};
 use wasm_bindgen::JsCast as _;
@@ -47,13 +50,15 @@ struct RuntimeCard {
     pinned: bool,
     connected: bool,
     listing: Option<RuntimeListing>,
+    /// What the machine remembers of it while it is offline.
+    remembered: Option<RememberedRuntime>,
 }
 
 /// The open form: a machine's rename or merge, or a runtime's "Move to…".
 #[derive(Clone, Debug, PartialEq)]
 enum Form {
     Machine(MachineAction, MachineEntry),
-    Move(RuntimeCard),
+    Move(Box<RuntimeCard>),
 }
 
 /// A drag under way, shared by the rows and the window's listeners.
@@ -146,7 +151,7 @@ impl Dragging {
             };
             match end {
                 DragEnd::Nothing => {}
-                DragEnd::Held => form.set(Some(Form::Move(card))),
+                DragEnd::Held => form.set(Some(Form::Move(Box::new(card)))),
                 DragEnd::Dropped => {
                     if let Some(request) =
                         drop_request(&card.id, card.machine.as_ref(), over.as_deref())
@@ -258,7 +263,18 @@ fn machine_cards(
                 pinned,
             } => {
                 let listed = listing(&runtime);
+                let remembered = machines
+                    .machines
+                    .iter()
+                    .find(|info| info.name == machine)
+                    .and_then(|info| {
+                        info.remembered
+                            .iter()
+                            .find(|remembered| remembered.runtime_id == runtime)
+                            .cloned()
+                    });
                 let card = RuntimeCard {
+                    remembered,
                     connected: listed
                         .as_ref()
                         .map_or(assigned_by.is_some(), |listed| listed.connected),
@@ -290,6 +306,7 @@ fn machine_cards(
                     pinned: false,
                     connected: runtime.connected,
                     listing: Some(runtime.clone()),
+                    remembered: None,
                 })
                 .collect::<Vec<_>>()
         })
@@ -332,7 +349,7 @@ fn machine_cards(
                         </span>
                         <div class="min-w-0 flex-1">
                             <p class="text-sm font-bold">"On no machine yet"</p>
-                            <p class=NOTE>"Runtimes that have not connected: drag one onto a machine to pin it there."</p>
+                            <p class=NOTE>"Runtimes the daemon cannot place: drag one onto a machine to pin it there."</p>
                         </div>
                     </div>
                     <ul class="flex flex-col">{rows}</ul>
@@ -552,12 +569,25 @@ fn runtime_row(
     } else {
         (icondata::FaCircleRegular, "opacity-60", "not connected")
     };
+    // An offline runtime the machine remembers: when it was last seen.
+    let remembered = card.remembered.clone().filter(|_| !card.connected);
     let detail = [
         Some(status.to_owned()),
+        remembered.as_ref().map(|remembered| {
+            format!(
+                "last seen {}",
+                crate::format::relative_time(jiff::Timestamp::now(), remembered.last_seen)
+            )
+        }),
         lifetime.map(|lifetime| lifetime_label(lifetime).to_owned()),
         card.listing
             .as_ref()
-            .and_then(|listing| listing.platform.clone()),
+            .and_then(|listing| listing.platform.clone())
+            .or_else(|| {
+                remembered
+                    .as_ref()
+                    .and_then(|remembered| remembered.platform.clone())
+            }),
     ]
     .into_iter()
     .flatten()
@@ -613,6 +643,8 @@ fn runtime_row(
     };
     let moving = card.clone();
     let unpinned = card.id.clone();
+    let forgotten = card.id.clone();
+    let offline = remembered.is_some();
     let picker_card = card.clone();
     view! {
         <li
@@ -626,6 +658,11 @@ fn runtime_row(
             class:ring-2=lifted.clone()
             class:ring-caramel=lifted.clone()
             class:dark:ring-maple=lifted.clone()
+            class:opacity-60={
+                let lifted = lifted.clone();
+                move || offline && !lifted()
+            }
+            data-offline=offline.then_some("true")
             style:transform={
                 let lifted = lifted.clone();
                 move || {
@@ -681,7 +718,7 @@ fn runtime_row(
                 aria-label="Move to…"
                 title="Move to another machine"
                 data-machine-action=MachineAction::Move.label()
-                on:click=move |_| form.set(Some(Form::Move(moving.clone())))
+                on:click=move |_| form.set(Some(Form::Move(Box::new(moving.clone()))))
             >
                 <Glyph icon=icondata::FaArrowRightArrowLeftSolid />
                 <span class="hidden sm:inline">"Move to…"</span>
@@ -700,9 +737,24 @@ fn runtime_row(
                     <Glyph icon=icondata::FaThumbtackSlashSolid />
                 </button>
             })}
+            {offline.then(|| view! {
+                <button
+                    type="button"
+                    class=format!("{BUTTON} px-2")
+                    aria-label="Forget"
+                    title="Forget where this offline runtime ran: it leaves this machine until it connects again"
+                    data-machine-action="forget-runtime"
+                    on:click=move |_| workspace.change_machines(
+                        cookie_agent_client_state::runtimes::MachineRequest::ForgetRuntime { runtime: forgotten.clone() },
+                    )
+                >
+                    <Glyph icon=icondata::FaTrashCanRegular />
+                    <span class="hidden sm:inline">"Forget"</span>
+                </button>
+            })}
         </li>
         {move || match form.get() {
-            Some(Form::Move(open)) if open.id == picker_card.id => move_picker(workspace, open, names.clone(), form).into_any(),
+            Some(Form::Move(open)) if open.id == picker_card.id => move_picker(workspace, *open, names.clone(), form).into_any(),
             _ => ().into_any(),
         }}
     }

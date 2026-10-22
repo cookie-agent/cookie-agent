@@ -1,7 +1,8 @@
-//! The new session's runtime cards: grouped by machine, each group
-//! folding to a one-line summary; a click anywhere on a card selects it;
-//! a selected card that takes a workspace has its fields; Start, pinned at
-//! the foot, opens them all. Then the draft shows where it will work.
+//! The new session's runtime cards, in the sheet of the bottom bar's
+//! "Runtimes…" chip: grouped by machine, each group folding to a one-line
+//! summary; a click anywhere on a card selects it; a selected card that
+//! takes a workspace has its fields; the button pinned at the foot opens
+//! them all and gives them to the draft, which shows where it will work.
 
 use leptos::{ev, prelude::*};
 use wasm_bindgen::JsCast as _;
@@ -84,7 +85,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                     // The title bar names the view: no heading here.
                     <super::projects::NewSessionProject workspace=workspace />
                     <p class=NOTE>
-                        "Pick what the new session works with: click a card to select it, and give a coding runtime its workspace. With no coding runtime, the session has no workspace."
+                        "Pick where the new session works: click a card to select it, and give a coding runtime its workspace. With only global, the session has no workspace: it hands work that needs files or commands to subagents on the runtimes it names."
                     </p>
                     {move || {
                         if workspace.runtimes.with(Option::is_none) {
@@ -122,7 +123,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                         {move || if workspace.starting.get() {
                             view! { <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" /> "Opening…" }.into_any()
                         } else {
-                            view! { <Glyph icon=icondata::FaPlaySolid /> "Start" }.into_any()
+                            view! { <Glyph icon=icondata::FaCheckSolid /> "Use these runtimes" }.into_any()
                         }}
                     </button>
                 </div>
@@ -364,7 +365,13 @@ pub fn DraftPlaces(workspace: Workspace) -> impl IntoView {
                 </span>
             </p>
             <p class=NOTE>
-                "The first message creates the session with these runtimes and the agent and model below."
+                {move || if !workspace.draft_badges().is_empty() {
+                    "The first message creates the session with these runtimes and the agent and model below."
+                } else if workspace.draft_has_global() {
+                    "The first message creates the session with only global and the agent and model below. It has no workspace: work that needs files or commands goes to subagents on the runtimes it names, and list_runtimes shows them."
+                } else {
+                    "The first message creates the session with no runtimes and the agent and model below."
+                }}
             </p>
             <button type="button" class=format!("{BUTTON} self-start") id="edit-cards" on:click=move |_| workspace.edit_cards()>
                 <Glyph icon=icondata::FaPenToSquareSolid />

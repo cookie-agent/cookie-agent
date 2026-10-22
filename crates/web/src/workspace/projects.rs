@@ -223,18 +223,30 @@ impl Workspace {
     /// the agent cannot start a session here, which the status line says.
     pub fn choose_new_project(self, project: Option<ProjectId>) {
         self.new_project.set(project.clone());
-        let Some(info) = untrack(|| self.project(project.as_ref())) else {
-            return;
-        };
-        if let Some(defaults) = info
-            .defaults
+        let info = untrack(|| self.project(project.as_ref()));
+        match info
             .as_ref()
+            .and_then(|info| info.defaults.as_ref())
             .filter(|defaults| defaults_attach(defaults))
         {
-            self.selection
-                .set(Selection::of_project(defaults, &untrack(|| self.homes())));
-            self.card_errors.set(Default::default());
+            // The draft takes the project's defaults until the sheet's
+            // Start gives it runtimes of its own.
+            Some(defaults) => {
+                self.selection
+                    .set(Selection::of_project(defaults, &untrack(|| self.homes())));
+                self.card_errors.set(Default::default());
+                self.draft_runtimes.set(None);
+            }
+            // A draft that had a project's defaults goes back to `global`.
+            None if self.draft_runtimes.with_untracked(Option::is_none) => {
+                self.selection.set(Selection::global_only());
+                self.card_errors.set(Default::default());
+            }
+            None => {}
         }
+        let Some(info) = info else {
+            return;
+        };
         let agents = untrack(|| self.root_agents());
         let models = untrack(|| self.models());
         let live = |selection: &ModelSelection| {
@@ -260,6 +272,18 @@ impl Workspace {
             }
             ProjectAgent::Unavailable(message) => self.status.set(message),
         }
+    }
+
+    /// The default attachments of the draft's project, when they attach
+    /// anything: what a draft without runtimes of its own is created with.
+    pub fn draft_project_defaults(self) -> Option<cookie_agent_protocol::ProjectDefaults> {
+        if !self.has_projects.get() {
+            return None;
+        }
+        let project = self.new_project.get()?;
+        self.project(Some(&project))?
+            .defaults
+            .filter(defaults_attach)
     }
 
     /// Every agent that can start a session, of every preset: what a

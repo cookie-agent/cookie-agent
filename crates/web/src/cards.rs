@@ -15,10 +15,6 @@ use cookie_agent_protocol::{
     CapabilityName, MachineName, ProjectDefaults, RuntimeAttachRequest, RuntimeAttachment,
     RuntimeId, RuntimeLifetime, RuntimesListResult, SessionMeta,
 };
-use serde_json::{Value, json};
-
-/// The `localStorage` key of the last selection a session started with.
-pub const SELECTION_KEY: &str = "cookie.new_session";
 
 /// The `localStorage` key of the workspaces recently opened on
 /// `runtime_id`, newest first.
@@ -306,6 +302,16 @@ pub struct Selection {
     pub picks: Vec<Pick>,
 }
 
+impl Selection {
+    /// `global` alone: what a new session starts with.
+    pub const fn global_only() -> Self {
+        Self {
+            global: true,
+            picks: Vec::new(),
+        }
+    }
+}
+
 impl Default for Selection {
     /// The first selection ever: `global`, and `local`'s `coding` with an
     /// empty workspace field to fill in.
@@ -410,48 +416,6 @@ impl Selection {
             }
         }
         (self.global, requests)
-    }
-
-    /// The selection the browser kept as `stored` ([`Self::to_storage`]);
-    /// `None` for anything else.
-    pub fn from_storage(stored: &str) -> Option<Self> {
-        let value: Value = serde_json::from_str(stored).ok()?;
-        let picks = value
-            .get("picks")?
-            .as_array()?
-            .iter()
-            .map(|pick| {
-                Some(Pick {
-                    runtime_id: pick.get("runtime")?.as_str()?.to_owned(),
-                    capability: pick
-                        .get("capability")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    workspaces: pick
-                        .get("workspaces")?
-                        .as_array()?
-                        .iter()
-                        .map(|workspace| workspace.as_str().map(str::to_owned))
-                        .collect::<Option<_>>()?,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some(Self {
-            global: value.get("global")?.as_bool()?,
-            picks,
-        })
-    }
-
-    pub fn to_storage(&self) -> String {
-        json!({
-            "global": self.global,
-            "picks": self.picks.iter().map(|pick| json!({
-                "runtime": pick.runtime_id,
-                "capability": pick.capability,
-                "workspaces": pick.workspaces,
-            })).collect::<Vec<_>>(),
-        })
-        .to_string()
     }
 
     fn pick(&self, card: &Card) -> Option<&Pick> {
@@ -1083,21 +1047,14 @@ mod tests {
     }
 
     #[test]
-    fn the_last_selection_round_trips_through_storage() {
-        let mut selection = Selection::default();
-        selection.picks[0].workspaces = vec!["~/web".into(), "~/docs".into()];
-        selection.global = false;
-        assert_eq!(
-            Selection::from_storage(&selection.to_storage()),
-            Some(selection)
-        );
-        assert_eq!(Selection::from_storage("not json"), None);
-        assert_eq!(Selection::from_storage(r#"{"global": true}"#), None);
-        // The first time ever: global and local, with an empty field.
-        let first = Selection::default();
+    fn a_new_session_starts_with_global_alone() {
+        let first = Selection::global_only();
         assert!(first.global);
-        assert_eq!(first.picks[0].runtime_id, "local");
-        assert_eq!(first.picks[0].workspaces, [""]);
+        assert!(first.picks.is_empty());
+        // A card selected later starts with an empty field.
+        let filled = Selection::default();
+        assert_eq!(filled.picks[0].runtime_id, "local");
+        assert_eq!(filled.picks[0].workspaces, [""]);
     }
 
     #[test]

@@ -168,7 +168,9 @@ impl Workspace {
     /// Gives the new-session draft its runtimes from the cards' selection,
     /// once it left the cards without them; their instances open at once.
     fn materialize_draft_runtimes(self) {
-        if self.draft_runtimes.with_untracked(Option::is_some) || self.new_setup.get_untracked() {
+        if self.draft_runtimes.with_untracked(Option::is_some)
+            || self.panel.get_untracked() == Some(Panel::DraftRuntimes)
+        {
             return;
         }
         let cards = untrack(|| self.cards());
@@ -435,6 +437,9 @@ impl Workspace {
                 MachineRequest::Unassign { runtime } => client.unassign_machine(runtime).await,
                 MachineRequest::Merge { from, into } => client.merge_machines(from, into).await,
                 MachineRequest::Forget { machine } => client.forget_machine(machine).await,
+                MachineRequest::ForgetRuntime { runtime } => {
+                    client.forget_machine_runtime(runtime).await
+                }
             };
             match result {
                 Ok(machines) => {

@@ -1,7 +1,9 @@
-//! The new session's runtime cards: what they offer from `runtimes.list`,
-//! the selection's defaults, the machine groups the user opened, and Start,
-//! which opens every selected workspace (`runtimes.reconnect`) at once and
-//! leaves the draft to compose only once all of them opened.
+//! The new session's runtime cards, in the sheet the bottom bar's
+//! "Runtimes…" chip opens: what they offer from `runtimes.list`, the machine
+//! groups the user opened, and Start, which opens every selected workspace
+//! (`runtimes.reconnect`) at once and gives the draft those runtimes only
+//! once all of them opened. A draft starts with `global` alone, or its
+//! project's defaults; the browser remembers no selection.
 
 use std::collections::HashMap;
 
@@ -15,9 +17,10 @@ use super::Workspace;
 use crate::{
     browser,
     cards::{
-        Card, Group, SELECTION_KEY, Selection, cards, daemon_machine, group_key, groups,
-        recent_from_storage, recent_key, remember, suggestions,
+        Card, Group, Selection, cards, daemon_machine, group_key, groups, recent_from_storage,
+        recent_key, remember, suggestions,
     },
+    workspace::Panel,
 };
 
 /// A set of runtime cards and what the user picked on them: the new
@@ -57,18 +60,6 @@ impl Workspace {
                 .map(|session| session.attachments.clone())
                 .filter(|attachments| !attachments.is_empty())
         })
-    }
-
-    /// What a new session starts with: `open`'s attachments, else the
-    /// browser's last selection, else `global` and `local` to fill in.
-    pub(super) fn default_selection(self, open: Option<&[RuntimeAttachment]>) -> Selection {
-        if let Some(attachments) = open {
-            return Selection::of_session(attachments, &untrack(|| self.homes()));
-        }
-        browser::load(SELECTION_KEY)
-            .as_deref()
-            .and_then(Selection::from_storage)
-            .unwrap_or_default()
     }
 
     /// The cards `runtimes.list` offers, in the groups' order.
@@ -158,7 +149,11 @@ impl Workspace {
                 })
             }))
             .await;
-            if !self.new_setup.get_untracked() {
+            // The sheet was closed, or the draft left, meanwhile.
+            if !self.new_session.get_untracked()
+                || self.panel.get_untracked() != Some(Panel::DraftRuntimes)
+            {
+                self.starting.set(false);
                 return;
             }
             let mut errors = HashMap::new();
@@ -213,11 +208,13 @@ impl Workspace {
                     entries.push(self.draft_entry(request, Some(instance)));
                 }
             }
-            browser::store(SELECTION_KEY, &selection.to_storage());
             self.draft_runtimes.set(Some(entries));
-            self.new_setup.set(false);
-            self.status
-                .set("the workspaces opened; the first message starts the session".into());
+            self.panel.set(None);
+            self.status.set(if selection.picks.is_empty() {
+                "the first message starts the session".into()
+            } else {
+                "the workspaces opened; the first message starts the session".into()
+            });
         });
     }
 
@@ -234,11 +231,57 @@ impl Workspace {
         }
     }
 
-    /// Back from the draft to the cards, keeping the selection.
+    /// Opens the draft's runtime cards as a sheet, keeping the selection.
     pub fn edit_cards(self) {
-        self.draft_runtimes.set(None);
         self.card_errors.set(HashMap::new());
-        self.new_setup.set(true);
+        self.starting.set(false);
+        self.poll_runtimes();
+        self.panel.set(Some(Panel::DraftRuntimes));
+    }
+
+    /// Whether the draft attaches `global`: unless the sheet deselected it,
+    /// or its project's defaults leave it out.
+    pub fn draft_has_global(self) -> bool {
+        match self.draft_runtimes.get() {
+            Some(entries) => entries.iter().any(DraftRuntime::is_global),
+            None => self
+                .draft_project_defaults()
+                .is_none_or(|defaults| defaults.global),
+        }
+    }
+
+    /// What the draft's "Runtimes…" chip shows: the badges of the runtimes
+    /// it attaches besides `global`, by the session rows' rules; none when
+    /// it has only `global`.
+    pub fn draft_badges(self) -> Vec<cookie_agent_client_state::badges::SessionBadge> {
+        let homes = self.homes();
+        let defaults = match self.draft_runtimes.get() {
+            Some(entries) => cookie_agent_protocol::ProjectDefaults {
+                preset: None,
+                agent: None,
+                global: entries.iter().any(DraftRuntime::is_global),
+                runtimes: entries
+                    .iter()
+                    .filter(|entry| !entry.is_global())
+                    .map(|entry| cookie_agent_protocol::ProjectRuntime {
+                        runtime_id: entry.request.runtime_id.clone(),
+                        capability: entry.request.capability.clone(),
+                        workspace: entry.workspace().map(str::to_owned),
+                    })
+                    .collect(),
+            },
+            None => match self.draft_project_defaults() {
+                Some(defaults) => defaults,
+                None => return Vec::new(),
+            },
+        };
+        self.runtimes.with(|listing| {
+            cookie_agent_client_state::badges::project_badges(
+                Some(&defaults),
+                listing.as_ref(),
+                &homes,
+            )
+        })
     }
 
     /// The runtimes the bottom bar's workspaces are on, each once, in
@@ -284,6 +327,34 @@ impl Workspace {
     pub fn places_label(self) -> Option<String> {
         let homes = self.homes();
         if self.new_session.get() {
+            if self.draft_runtimes.with(Option::is_none) {
+                // The project's defaults, as the daemon will attach them.
+                let shown = self
+                    .draft_project_defaults()
+                    .map(|defaults| {
+                        defaults
+                            .runtimes
+                            .iter()
+                            .filter_map(|runtime| {
+                                let path = homes
+                                    .display(&runtime.runtime_id, runtime.workspace.as_deref()?);
+                                Some(if runtime.runtime_id.as_str() == RuntimeId::LOCAL {
+                                    path
+                                } else {
+                                    format!("{}:{path}", runtime.runtime_id)
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                return Some(if !shown.is_empty() {
+                    shown.join(", ")
+                } else if self.draft_has_global() {
+                    "global only: no workspace".to_owned()
+                } else {
+                    "no workspace".to_owned()
+                });
+            }
             return self.draft_runtimes.with(|entries| {
                 let entries = entries.as_ref()?;
                 let shown = entries
@@ -298,10 +369,12 @@ impl Workspace {
                         })
                     })
                     .collect::<Vec<_>>();
-                Some(if shown.is_empty() {
-                    "no workspace".to_owned()
-                } else {
+                Some(if !shown.is_empty() {
                     shown.join(", ")
+                } else if entries.iter().any(DraftRuntime::is_global) {
+                    "global only: no workspace".to_owned()
+                } else {
+                    "no workspace".to_owned()
                 })
             });
         }
