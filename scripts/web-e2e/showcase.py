@@ -459,7 +459,7 @@ def projects_showcase(size, width):
         click("main [data-sidebar-toggle]")
         long_press(row_of("Brainstorm release names", scope) + " [data-session]")
         both_themes("%s-project-row-actions" % size)
-        click(row_of("Brainstorm release names", scope) + " ~ [data-delete-actions] [data-move-reveal]")
+        click(row_of("Brainstorm release names", scope) + " ~ [data-delete-actions-frame] [data-move-reveal]")
     else:
         row = row_of("Brainstorm release names")
         hover(row + " [data-session]", dx=-80)
@@ -513,7 +513,7 @@ def badges_and_titles(size, width):
     if drawer:
         long_press(row + " [data-session]")
         both_themes("%s-row-actions" % size)
-        click(row + " ~ [data-delete-actions] [data-rename-reveal]")
+        click(row + " ~ [data-delete-actions-frame] [data-rename-reveal]")
     else:
         mouse = {"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}}
         call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
