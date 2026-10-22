@@ -27,6 +27,7 @@ import atexit
 import base64
 import fcntl
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -1299,7 +1300,6 @@ def management(browser):
     browser.wait("its folder", lambda: count(browser, '#page [data-project="e2e"]') == 1)
     browser.click('#page [data-project="e2e"] [data-project-toggle]')
     browser.wait("its row", lambda: count(browser, '#page [data-memory="project://e2e/notes"]') == 1)
-    first = browser.script("return document.querySelector('#page [data-memory=\"project://e2e/notes\"]')?.dataset.revision")
     browser.click('#page [data-memory="project://e2e/notes"] button')
     browser.wait("the editor", lambda: "first" in browser.script("const e = document.querySelector('#memory-text'); return e ? e.value : ''"))
     path = os.path.join(HOME, ".cookie-agent", "memory", "projects", "e2e", "notes.md")
@@ -1314,12 +1314,18 @@ def management(browser):
     # The editor closes when the page has the answer; the file may land a
     # moment later, so wait for it rather than read it once.
     def overwritten():
-        with open(path) as file:
-            return "second" in file.read()
+        with open(path, "rb") as file:
+            return b"second" in file.read()
     browser.wait("the overwritten file", overwritten)
-    # The trash deletes the revision listed: wait for the overwrite's.
+    # The trash deletes the revision listed, so wait for the overwrite's: the
+    # first 16 hex digits of the SHA-256 of the file. Any revision but the
+    # first is not enough, because the list the conflict refreshed shows the
+    # revision written on disk above until the overwrite's refresh lands, and
+    # a delete at that revision is refused as changed.
+    with open(path, "rb") as file:
+        overwrite = hashlib.sha256(file.read()).hexdigest()[:16]
     browser.wait("the overwrite listed", lambda: browser.script(
-        "return document.querySelector('#page [data-memory=\"project://e2e/notes\"]')?.dataset.revision") not in (None, first))
+        "return document.querySelector('#page [data-memory=\"project://e2e/notes\"]')?.dataset.revision") == overwrite)
     browser.click('#page [data-memory="project://e2e/notes"] [data-memory-delete]')
     browser.click("#memory-delete-confirm")
     browser.wait("the deleted memory", lambda: count(browser, '#page [data-memory="project://e2e/notes"]') == 0)
