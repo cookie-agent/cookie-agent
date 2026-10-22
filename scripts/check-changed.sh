@@ -150,7 +150,9 @@ if $docs; then
     fi
 fi
 if $workflows && command -v actionlint >/dev/null; then
-    step actionlint
+    # docs.yml's `concurrency.queue` is newer GitHub syntax than actionlint
+    # 1.7 knows; the ignore drops only that report.
+    step "actionlint -ignore 'unexpected key \"queue\" for \"concurrency\" section'"
 fi
 
 echo "changed since $base ($(git rev-parse --short "$merge_base")): ${#changed[@]} files"
