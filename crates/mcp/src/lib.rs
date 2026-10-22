@@ -249,6 +249,8 @@ struct RegistryInner {
     reconnect: Mutex<ReconnectPolicy>,
     /// Source of [`LiveConnection::id`].
     connection_ids: AtomicU64,
+    /// [`McpRegistryOptions::working_dir`].
+    working_dir: Option<std::path::PathBuf>,
 }
 
 impl RegistryInner {
@@ -285,6 +287,11 @@ pub struct McpRegistryOptions {
     #[cfg(feature = "oauth")]
     pub oauth_store: Option<std::path::PathBuf>,
     pub observer: Option<Arc<dyn McpObserver>>,
+    /// Where a stdio server runs when its configuration names no `cwd`,
+    /// and what a relative `cwd` resolves against: the hosting instance's
+    /// workspace, or a home directory. Without one, a server with no `cwd`
+    /// inherits this process's working directory.
+    pub working_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone)]
@@ -497,6 +504,19 @@ fn unsupported_server_request(method: &str) -> ErrorData {
     )
 }
 
+/// A stdio server's working directory: `cwd` when absolute, `cwd` under
+/// `base` when relative, else `base`.
+fn resolve_working_dir(
+    cwd: Option<&str>,
+    base: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    match (cwd.map(std::path::Path::new), base) {
+        (Some(cwd), Some(base)) if cwd.is_relative() => Some(base.join(cwd)),
+        (Some(cwd), _) => Some(cwd.to_owned()),
+        (None, base) => base.map(std::path::Path::to_owned),
+    }
+}
+
 impl McpRegistry {
     /// A registry for `servers`; [`Self::start_eager`] connects them.
     /// Server names must stay distinct after sanitization.
@@ -528,6 +548,7 @@ impl McpRegistry {
             failures: tokio::sync::broadcast::channel(64).0,
             reconnect: Mutex::new(ReconnectPolicy::default()),
             connection_ids: AtomicU64::new(1),
+            working_dir: options.working_dir,
         });
         let mut sanitized_servers = HashMap::new();
         let mut runtimes = BTreeMap::new();
@@ -996,6 +1017,17 @@ impl ServerRuntime {
         ))
     }
 
+    /// Where the server's process starts: its configured `cwd`, resolved
+    /// against the registry's working directory when relative, else that
+    /// working directory; `None` inherits this process's.
+    fn working_dir(&self) -> Option<std::path::PathBuf> {
+        let base = self
+            .registry
+            .upgrade()
+            .and_then(|registry| registry.working_dir.clone());
+        resolve_working_dir(self.loaded.config.cwd.as_deref(), base.as_deref())
+    }
+
     fn timeout(&self) -> Duration {
         Duration::from_millis(self.loaded.config.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS))
     }
@@ -1260,7 +1292,7 @@ impl ServerRuntime {
             process
                 .args(&self.loaded.config.args)
                 .envs(&self.loaded.config.env);
-            if let Some(cwd) = &self.loaded.config.cwd {
+            if let Some(cwd) = self.working_dir() {
                 process.current_dir(cwd);
             }
             let mut wrapped = CommandWrap::from(process);

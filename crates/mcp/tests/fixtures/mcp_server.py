@@ -17,6 +17,11 @@ if os.environ.get("MCP_FIXTURE_PID_FILE"):
         pid_file.write(str(os.getpid()))
     os.replace(pid_path + ".tmp", pid_path)
 
+if os.environ.get("MCP_FIXTURE_CWD_FILE"):
+    # Where the server was started, for tests of its working directory.
+    with open(os.environ["MCP_FIXTURE_CWD_FILE"], "w", encoding="utf-8") as cwd_file:
+        cwd_file.write(os.getcwd())
+
 
 def send(message):
     sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")

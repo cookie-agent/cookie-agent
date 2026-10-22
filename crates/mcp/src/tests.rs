@@ -1480,3 +1480,81 @@ async fn a_failed_server_is_retried_when_asked_and_reports_the_failure() {
     assert_eq!(tool_names(&registry).len(), 2);
     registry.shutdown().await;
 }
+
+#[test]
+fn a_working_directory_is_the_configured_cwd_resolved_against_the_base() {
+    use std::path::{Path, PathBuf};
+    let base = std::env::temp_dir().join("workspace");
+    let absolute = std::env::temp_dir().join("elsewhere");
+    assert_eq!(
+        super::resolve_working_dir(None, Some(&base)),
+        Some(base.clone())
+    );
+    assert_eq!(
+        super::resolve_working_dir(Some("tools/bin"), Some(&base)),
+        Some(base.join("tools").join("bin"))
+    );
+    assert_eq!(
+        super::resolve_working_dir(Some(absolute.to_str().unwrap()), Some(&base)),
+        Some(absolute.clone())
+    );
+    // Without a base, a relative `cwd` is the process's business, and no
+    // `cwd` inherits its directory.
+    assert_eq!(
+        super::resolve_working_dir(Some("tools"), None),
+        Some(PathBuf::from("tools"))
+    );
+    assert_eq!(super::resolve_working_dir(None, None::<&Path>), None);
+}
+
+/// Starts the fixture with `cwd` in a registry whose working directory is
+/// `base` and returns the directory it reports it started in.
+async fn started_in(base: &std::path::Path, cwd: Option<&str>) -> std::path::PathBuf {
+    let report = tempfile::tempdir().expect("report directory");
+    let cwd_file = report.path().join("cwd");
+    let mut config = fixture_config();
+    config.cwd = cwd.map(str::to_owned);
+    config.env.insert(
+        "MCP_FIXTURE_CWD_FILE".into(),
+        cwd_file.to_string_lossy().into_owned(),
+    );
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "fixture".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        McpRegistryOptions {
+            working_dir: Some(base.to_owned()),
+            ..McpRegistryOptions::default()
+        },
+    )
+    .expect("registry");
+    registry.start_eager(&tokio::runtime::Handle::current());
+    registry.await_eager_ready().await;
+    registry.shutdown().await;
+    let reported = std::fs::read_to_string(&cwd_file).expect("the fixture reports its cwd");
+    std::path::PathBuf::from(reported)
+        .canonicalize()
+        .expect("canonical cwd")
+}
+
+#[tokio::test]
+async fn a_stdio_server_starts_in_the_working_directory_or_its_cwd_under_it() {
+    let base = tempfile::tempdir().expect("base");
+    let base_path = base.path().canonicalize().unwrap();
+    std::fs::create_dir(base_path.join("sub")).unwrap();
+    assert_eq!(started_in(&base_path, None).await, base_path);
+    assert_eq!(
+        started_in(&base_path, Some("sub")).await,
+        base_path.join("sub")
+    );
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let elsewhere_path = elsewhere.path().canonicalize().unwrap();
+    assert_eq!(
+        started_in(&base_path, Some(elsewhere_path.to_str().unwrap())).await,
+        elsewhere_path
+    );
+}

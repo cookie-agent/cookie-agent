@@ -1021,6 +1021,10 @@ impl Engine {
                 cookie_agent_mcp::McpRegistryOptions {
                     oauth_store: Some(options.data_dir.join("mcp-oauth.json")),
                     observer: Some(mcp_hub.global_observer()),
+                    // The global runtime has no workspace: its servers run
+                    // in the daemon user's home, not wherever the daemon
+                    // was started.
+                    working_dir: crate::runtimes::daemon_home().map(std::path::PathBuf::from),
                 },
             )
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?,

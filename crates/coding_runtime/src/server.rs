@@ -7,7 +7,9 @@
 //! prepares and executes calls of every instance concurrently. It keeps each prepared call under its prepared ID until
 //! the daemon executes or releases it, runs executions concurrently, sends
 //! their progress back with `tool/progress`, and tells the daemon with
-//! `tool/detachable` when a call reaches its detach point. Each instance hosts the template's MCP servers in its workspace (`docs/site/specs/runtimes.md`
+//! `tool/detachable` when a call reaches its detach point. Each instance hosts the template's MCP servers in its workspace, the
+//! directory a stdio server starts in unless it configures a `cwd` (a
+//! relative one resolves against the workspace; `docs/site/specs/runtimes.md`
 //! section 3): it connects them before it answers `capability/open`,
 //! declares their tools next to its built-in ones, reconnects dropped ones
 //! with the shared reconnect policy, and reports their status with
@@ -619,9 +621,16 @@ impl Server {
         let (mcp, watch) = if state.mcp_servers.is_empty() {
             (None, None)
         } else {
-            let registry =
-                McpRegistry::new(state.mcp_servers.clone(), McpRegistryOptions::default())
-                    .map_err(|error| error.to_string())?;
+            // A server runs in the instance's workspace, or its configured
+            // `cwd` (a relative one under the workspace).
+            let registry = McpRegistry::new(
+                state.mcp_servers.clone(),
+                McpRegistryOptions {
+                    working_dir: Some(workspace.root().to_owned()),
+                    ..McpRegistryOptions::default()
+                },
+            )
+            .map_err(|error| error.to_string())?;
             for provider in &providers {
                 registry
                     .reserve_provider(provider.as_ref())
