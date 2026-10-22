@@ -1508,9 +1508,19 @@ them was done for this addendum.
 **Decided:** no background curator, no content-shape guard, and small
 budgets. Memory stays opt-in per agent (section 9.2, as amended 2026-10-22).
 
-1. **A rubric, in the snapshot's save paragraph and in the descriptions of
-   `memory_write` and `memory_edit`.** It replaces "Save what a later
-   session should know". Draft:
+1. **A rubric, as the memory tool provider's own system-prompt section.**
+   The memory tools' provider contributes a
+   `<tool_instructions provider="builtin.memory">` section, composed at run
+   admission and frozen with the rest of the system prompt. It is present
+   exactly when the run is offered `memory_write` (and with it
+   `memory_edit`), and absent otherwise, so a run without write access never
+   carries it. Tool prompt composition today asks every provider regardless
+   of what is visible, so the memory provider decides from the run's frozen
+   policy, using the same visibility test the tool list uses. The rubric
+   replaces the snapshot's save paragraph ("Save what a later session should
+   know"); the snapshot keeps only the background and search guidance. The
+   descriptions of `memory_write` and `memory_edit` stay short and point to
+   the section. Draft:
 
    > Memory is for what a later session cannot recover by looking at the
    > project or running a command, and that will still be true and useful
@@ -1545,8 +1555,8 @@ budgets. Memory stays opt-in per agent (section 9.2, as amended 2026-10-22).
    > before acting on one that names a file, a setting, or a version, check
    > it, and fix or delete it if it is wrong.
 
-   The delegated variant keeps its narrower scope (only
-   `agent://<agent>`), with the same rubric.
+   For a delegated run, the section carries the same rubric scoped to
+   `agent://<agent>`, the only memory such a run may write.
 
 2. **Similar memories before a new one.** A `memory_write` that creates a
    new memory, rather than replacing one by URL, first searches its layer
