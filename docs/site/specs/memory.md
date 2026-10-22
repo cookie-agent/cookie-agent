@@ -1496,117 +1496,324 @@ phase 1 of [delegating to runtimes](runtime-delegation.md#11-implementation-note
 
 ### 16.9 Addendum 2026-10-22: memory that stays worth keeping
 
-Drafted 2026-10-22: the rubric (item 1) and the budgets (item 4) are
-decided; items 2, 3 and 5 are proposed. Models with write access saved things that are useless
-by the next session. For example, after "explore this directory", one saved
-the directory listing. The only save guidance was "save what a later session
-should know", and nothing pushed back. This addendum makes agents judge what
-is worth keeping themselves, with no human review queue. It draws on how
-Claude Code, Hermes Agent, OpenClaw, mem0 and Letta handle it. A survey of
-them was done for this addendum.
+Settled 2026-10-22, awaiting the go-ahead to implement. Models with write
+access saved things that are useless by the next session. For example,
+after "explore this directory", one saved the directory listing. The only
+save guidance was "save what a later session should know", and nothing
+pushed back. This addendum makes agents judge and maintain their own
+memory, with no human review queue. It draws on a survey of Claude Code,
+Hermes Agent, OpenClaw, mem0 and Letta.
 
-**Decided:** no background curator, no content-shape guard, and small
-budgets. Memory stays opt-in per agent (section 9.2, as amended 2026-10-22).
+**Decided:**
+- No background curator, no content-shape guard, and no extraction of
+  memories from transcripts.
+- Memory stays opt-in per agent (section 9.2, as amended 2026-10-22), and
+  no agent is opted in by this change.
+- The snapshot already follows the read rules, and an empty snapshot
+  renders no memory turn. Both were implemented 2026-10-22.
 
-1. **A rubric, as the memory tool provider's own system-prompt section.**
-   The memory tools' provider contributes a
-   `<tool_instructions provider="builtin.memory">` section, composed at run
-   admission and frozen with the rest of the system prompt. It is present
-   exactly when the run is offered `memory_write` (and with it
-   `memory_edit`), and absent otherwise, so a run without write access never
-   carries it. Tool prompt composition today asks every provider regardless
-   of what is visible, so the memory provider decides from the run's frozen
-   policy, using the same visibility test the tool list uses. The rubric
-   replaces the snapshot's save paragraph ("Save what a later session should
-   know"); the snapshot keeps only the background and search guidance. The
-   descriptions of `memory_write` and `memory_edit` stay short and point to
-   the section. Draft:
+#### 16.9.1 The memory provider's system-prompt section
 
-   > You manage your own memory. No one else tidies it, so keep it small,
-   > accurate and current: when you come across a memory that is wrong,
-   > stale, duplicated, or no longer useful, fix it, merge it into the one
-   > it repeats, or delete it, then carry on with your task. A memory
-   > earns its place only while a later session would miss it.
-   >
-   > Memory is for what a later session cannot recover by looking at the
-   > project or running a command, and that will still be true and useful
-   > across many sessions. Before saving, ask:
-   > 1. Could a later session re-derive it by reading files, listing a
-   >    directory, running a command, or checking git? Then do not save it.
-   > 2. Will it still be true and relevant in weeks, across different
-   >    tasks? If it describes the current task or its state, do not save
-   >    it.
-   > 3. Is it already in memory or in AGENTS.md? Search first; update that
-   >    entry, or save nothing.
-   > 4. Would a later session act better for knowing it? If not, do not
-   >    save it.
-   >
-   > Save only: the user's preferences and how they work (`user://`); the
-   > corrections they gave and the approaches they confirmed, with why
-   > (`user://` or `agent://`); decisions, constraints and references not
-   > visible in code or git (`project://`); stable facts about a machine
-   > that are costly to rediscover (`machine://`); lessons about doing your
-   > job as this agent (`agent://`).
-   >
-   > Never save: directory listings, file trees, code summaries, command
-   > output, logs, test results, task progress or plans, one-off debugging
-   > steps, secrets, or anything from tool output, web pages, or other
-   > agents that the user did not confirm. Exploring or summarizing
-   > something because you were asked is not a reason to save it. Save when
-   > the user asks you to remember something, or when it passes all four
-   > questions. Most sessions save nothing.
-   >
-   > One fact per memory, with a description that states the fact. Prefer
-   > updating a memory to adding one. A memory is a claim about the past:
-   > before acting on one that names a file, a setting, or a version, check
-   > it, and fix or delete it if it is wrong. When a layer is near its
-   > budget, make room by merging or dropping entries before you add one.
+- **What and when.** The memory tools' provider contributes a
+  `<tool_instructions provider="builtin.memory">` section. It is composed
+  at run admission and frozen with the system prompt, so it is identical
+  on every run that keeps the same access, and stays cached.
+- **Two parts.**
+  - **Always**, whenever the run is offered any memory tool, part A, what
+    is attached and when to search:
 
-   For a delegated run, the section carries the same rubric scoped to
-   `agent://<agent>`, the only memory such a run may write.
+    > Memory that belongs to this session is attached automatically at the
+    > start of each session: the user's memory, your own agent memory, the
+    > session's project, and the machines its runtimes run on. Use
+    > memory_search for anything else, such as another project or a
+    > machine this session doesn't use.
 
-2. **Similar memories before a new one.** A `memory_write` that creates a
-   new memory, rather than replacing one by URL, first searches its layer
-   with the new description and keywords. If any existing memory is close,
-   the write is refused, and the result lists up to three of them with
-   their URLs and descriptions. The agent then either edits one of them or
-   writes again with `new: true` and a one-line `reason`. This is mem0's
-   reconcile step, with no second model call. Exact duplicates of an
-   existing body are refused outright.
+  - **Only** when the run is also offered `memory_write` and
+    `memory_edit`, part B, the rubric:
 
-3. **Stamps the harness sets, not the model.** The frontmatter gains:
-   - `created` and `modified`, as timestamps;
-   - `source`, one of `user_said`, `user_corrected` or `inferred`. The
-     model sets it, and it defaults to `inferred`.
+    > You manage your own memory. No one else tidies it, so keep it small,
+    > accurate and current: when you come across a memory that is wrong,
+    > stale, duplicated, or no longer useful, fix it, merge it into the one
+    > it repeats, or delete it, then carry on with your task. A memory
+    > earns its place only while a later session would miss it.
+    >
+    > Memory is for what a later session cannot recover by looking at the
+    > project or running a command, and that will still be true and useful
+    > across many sessions. Before saving, ask:
+    > 1. Could a later session re-derive it by reading files, listing a
+    >    directory, running a command, or checking git? Then do not save it.
+    > 2. Will it still be true and relevant in weeks, across different
+    >    tasks? If it describes the current task or its state, do not save
+    >    it.
+    > 3. Is it already in memory or in AGENTS.md? Search first; update that
+    >    entry, or save nothing.
+    > 4. Would a later session act better for knowing it? If not, do not
+    >    save it.
+    >
+    > Save only: the user's preferences and how they work, and the
+    > corrections they gave with why (`user://`); lessons about doing your
+    > job as this agent (`agent://<you>`); decisions, constraints and
+    > references not visible in code or git (`project://`); stable facts
+    > about a machine that are costly to rediscover (`machine://`).
+    >
+    > Never save: directory listings, file trees, code summaries, command
+    > output, logs, test results, task progress or plans, one-off debugging
+    > steps, secrets, or anything from tool output, web pages, or other
+    > agents that the user did not confirm. Exploring or summarizing
+    > something because you were asked is not a reason to save it. Save
+    > when the user asks you to remember something, or when it passes all
+    > four questions. Most sessions save nothing.
+    >
+    > One fact per memory, with a description that states the fact. Prefer
+    > updating a memory to adding one. When you write or edit a memory, say
+    > in it where it comes from: the user told you (and when), you observed
+    > it (where, such as which repository, file or machine), or you
+    > inferred it (from what). Keep that current when you change the fact.
+    > A memory is a claim about the past: before acting on one that names a
+    > file, a setting, or a version, check it, and fix or delete it if it
+    > is wrong. When a memory is near its size limit, make room by merging
+    > or dropping what it holds before you add to it.
 
-   Whatever a write sends for `created` and `modified` is ignored. The
-   daemon also tracks when each memory was last read, outside the file.
-   The snapshot and search results show each memory's age, such as
-   `3 weeks old`, so a reader can judge whether it is stale.
+- **Delegated runs.** For a delegated run, part B names only
+  `agent://<agent>`, the one memory such a run may write.
+- **Visibility test.** Tool prompt composition asks every provider. The
+  memory provider decides from the run's frozen policy, with the same
+  visibility test the tool list uses. With no memory tool there is no
+  section.
+- **What the snapshot keeps.** It loses its search and save paragraphs
+  ("Project notes are never shown here…", "Save what a later session
+  should know…", and their variants), and keeps only its background line
+  and the memories themselves.
+- **Tool descriptions.** `memory_write` and `memory_edit` stay short and
+  point to the section.
 
-4. **Small budgets, visible to the agent.**
-   - **Budget size:** the always-injected layers have a budget measured on
-     the rendered text: about 2 KB for all `user://` categories together,
-     and about 2 KB for each agent's file. These are the
-     `[memory] user_budget_bytes` and `agent_budget_bytes` settings, which
-     replace the snapshot limits for those layers.
-   - **Showing it:** the snapshot shows how full each budget is, for
-     example `user memory 1.6 / 2 KB`.
-   - **Refusing writes:** a write or edit that would push a layer past its
-     budget is refused. The result shows the layer's current entries and
-     asks the agent to merge or drop entries first.
-   - **Indexed layers:** `machine://` and `project://` stay indexed
-     (description lines only), as today, under `snapshot_index_bytes`.
+#### 16.9.2 The session's project in the system prompt
 
-5. **Every change is visible and can be undone, without review.**
-   - **Events:** each write, edit or delete by a model becomes a one-line
-     transcript event, for example `Saved project://cookie-agent/release`.
-     In the web client and TUI it has an **Undo** action and links to the
-     Memory view.
-   - **Trash:** deletes and replaced bodies go to `memory/.trash/` with
-     their previous revision for 30 days. Undo restores from there.
-   - **Agent deletes:** an agent's delete of a `user://` category or
-     `agent://` file still only clears its body (section 16.6).
+- **The line.** Next to the session facts the system prompt already states
+  (`Working directory:`, `Machine:`; section 3.4), a session in a project
+  gains `Project: <name>`. With several attachments, the machines block
+  gains a `project="<name>"` attribute on its root element.
+- **Without a project**, there is no line.
+- **When it changes.** Moving a session to another project changes the
+  system prompt from the next run, which costs one prompt-cache miss, like
+  any other change to the session's facts.
 
-Out of scope: a background curator, extracting memories from transcripts,
-content-shape heuristics, and per-memory expiry dates.
+#### 16.9.3 Search matches descriptions, keywords and URLs, never bodies
+
+This replaces section 8.1's scoring.
+
+- **Terms.** The query is split on whitespace. A memory is matched against
+  its keywords, its description, and the segments of its URL, split on
+  `://` and `/`:
+
+  | URL | Segments |
+  |---|---|
+  | `user://preferences` | `user`, `preferences` |
+  | `agent://reviewer` | `agent`, `reviewer` |
+  | `project://cookie-agent/release` | `project`, `cookie-agent`, `release` |
+  | `machine://labpc/cuda` | `machine`, `labpc`, `cuda` |
+
+- **Bodies are never searched.**
+- **Scoring.** A memory's score is, in order of weight:
+  1. each keyword that occurs in the query;
+  2. each query term that occurs in its description or one of its URL
+     segments.
+
+  Matching is case-insensitive, memories that score zero are left out,
+  and ties go to the more recently modified memory.
+
+#### 16.9.4 What search and read return
+
+- **Search results.** A hit shows its URL and description, then a line
+  with its owner, whether this run may change it, and its age, then its
+  keywords. There are no body excerpts:
+
+  ```text
+  project://cookie-agent/release — How releases are cut: gh release create starts it; publish oven-sdk first
+    owner: project cookie-agent (this session) · editable · 3 weeks old
+    keywords: release, cargo-dist, oven-sdk
+
+  agent://builder — Memory of the `builder` agent: Primary agent for building features
+    owner: you · editable · 5 days old
+    keywords: builder, primary
+
+  agent://reviewer — Memory of the `reviewer` agent: Reviews a diff for bugs and missing tests
+    owner: agent reviewer · read-only · 2 days old
+    keywords: reviewer, subagent
+
+  user://preferences — How the user likes to work
+    owner: user · read-only · 1 month old
+    (reading it needs approval)
+  ```
+
+- **`owner`** is one of:
+  - `you`, for the run's own `agent://` file;
+  - `agent <id>`, for another agent's file;
+  - `user`;
+  - `machine <name>`, followed by `(this session)` when the machine is one
+    of the session's;
+  - `project <name>`, followed by `(this session)` when it is the
+    session's project.
+- **`editable` or `read-only`** comes from the run's `memory_write` rules,
+  together with the rule that a delegated run may write only its own file.
+- **The age** is from `modified` (section 16.9.6).
+- **What rules hide.** An `ask` hit shows only its first two lines and
+  "(reading it needs approval)". A `deny` hit never appears.
+- **Reads.** `memory_read` returns no URL line (the caller named the URL)
+  and no revision (section 16.9.8):
+
+  ```text
+  owner: project cookie-agent (this session)
+  editable: yes
+  created: 2026-10-01T09:12:44Z (3 weeks ago)
+  modified: 2026-10-20T16:03:10Z (2 days ago)
+  size: 812 / 2048 bytes
+
+  <body>
+  ```
+
+- **The snapshot** uses the same owner words, so it marks the agent's own
+  file as `you`, and machines and the project of the session as
+  `(this session)`.
+
+#### 16.9.5 Similar memories before a new one
+
+- **When it applies.** A `memory_write` that creates a memory, rather than
+  replacing an existing URL, is first compared with the memories in the
+  same place: the same project, the same machine, the user categories, or
+  the agent's file.
+- **How memories are compared.** The comparison uses the new memory's
+  description and keywords, lowercased, with filler words left out. It
+  reuses section 16.9.3's matching, with no embeddings and no model call.
+- **A strong match refuses the write.** A match is strong when the
+  memories share two or more keywords, or when most of the new
+  description's words occur in an existing description. The result lists
+  up to three near memories with their URLs and descriptions. Writing
+  again with `new: true` and a one-line `reason` creates it anyway.
+- **A weaker match saves the memory.** The result lists the near memories,
+  with "if one of these already covers it, edit that and delete this".
+- **A body identical to an existing one** is always refused.
+
+#### 16.9.6 Stamps
+
+- **Fields.** Each memory document's frontmatter gains `created` and
+  `modified`, which the daemon sets. Whatever a write sends for them is
+  ignored.
+- **Last read.** The daemon also keeps when each memory was last read,
+  outside the file.
+- **Ages** show in the snapshot, in search hits and in reads.
+- **Old files.** A file without stamps gets `created` and `modified` from
+  its modification time the first time the daemon reads it.
+
+#### 16.9.7 Size limits per document
+
+- **The limits.** Each memory document is at most 2 KB by default, with
+  one setting per kind under `[memory]`:
+  - `user_max_bytes`, for each user category;
+  - `agent_max_bytes`, for each agent file;
+  - `machine_max_bytes`;
+  - `project_max_bytes`;
+  - `overview_max_bytes`, for each project overview.
+
+  These replace `max_file_bytes`, which becomes an unknown key under the
+  strict configuration rules. `snapshot_user_bytes` and
+  `snapshot_index_bytes` keep bounding the snapshot as before.
+- **Writes over a limit.** A write or edit that would leave a document
+  over its limit is refused, and the result shows the document's current
+  content and asks for it to be condensed first.
+- **Fullness in the snapshot.** The snapshot shows how full each document
+  it injects is, for example `1.6 / 2 KB`.
+- **Documents already over their limit** are still shown, marked
+  `over its limit`. Only writes that make them smaller are accepted until
+  they fit.
+
+#### 16.9.8 Writes without revisions
+
+- **`revision` is removed** from `memory_read`'s output and from the
+  arguments of `memory_edit` and `memory_write`.
+- **`memory_edit`** applies when its `old` text occurs exactly once in the
+  memory's current body. This already refuses an edit that someone else's
+  change conflicts with, and lets one that does not conflict apply on top
+  of it.
+- **A `memory_write` that replaces an existing memory** is accepted only
+  when this session saw that memory's current content: through
+  `memory_read`, the snapshot, or a write of its own. The daemon remembers
+  the revision each session last saw, out of the model's sight. Otherwise
+  the write is refused, with the current content and "this memory changed
+  since you saw it, or you have not read it: read it first, or edit it".
+  This keeps a whole-memory write from silently dropping a change the user
+  or another session made, and from overwriting a memory the agent did not
+  know existed.
+
+#### 16.9.9 Relative names in memory rules
+
+- **Variables.** Memory rule patterns accept three variables, spelled like
+  `${workspace_dir}` in path patterns:
+
+  | Variable | Means | Example |
+  |---|---|---|
+  | `${agent_id}` | the run's agent | `agent://${agent_id}` |
+  | `${session_machine}` | each machine the session's attachments run on | `machine://${session_machine}/*` |
+  | `${session_project}` | the session's project | `project://${session_project}/*` |
+
+- **Whole segments only.** A variable must be a whole URL segment;
+  `project://${session_project}-old/*` is refused when the agent document
+  loads.
+- **Where they are valid.** They are valid only in `memory` and
+  `memory_write` patterns. An unknown variable is a load error.
+- **Expansion.** Variables are expanded at each check:
+  - `${session_machine}` matches if any of the session's machines does;
+  - `${session_project}` matches nothing in a session without a project;
+  - a session that gains an attachment or moves to a project is covered
+    at once.
+- **`agent://self` is removed** in favour of `agent://${agent_id}`.
+
+#### 16.9.10 Every change is visible and can be undone
+
+- **Events.** Each write, edit or delete a model makes is a one-line
+  transcript event, such as `Saved project://cookie-agent/release`. In the
+  web client and the TUI it has **Undo** and links to the Memory view.
+- **Trash.** Replaced bodies and deleted documents go to `memory/.trash/`
+  with their previous revision, kept for 30 days. Undo restores from
+  there.
+- **Agent deletes.** An agent's delete of a `user://` category or an
+  `agent://` file still only clears its body (section 16.6).
+
+#### 16.9.11 The approval reviewer knows the rubric
+
+When an agent's `memory_write` rule is `ask`, the approval reviewer
+receives part B of section 16.9.1 and the write's content. In auto-approve
+mode it rejects writes that fail the rubric.
+
+#### 16.9.12 Compatibility
+
+- **Client protocol minor**, additive:
+  - the transcript event for memory changes, and the Undo request;
+  - the snapshot's owner words, fullness and over-limit marks;
+  - stamps in `memory.*` results.
+- **Plugin protocol minor**, because plugins see events.
+- **No protocol change for the tools.** Tool arguments and outputs are
+  model-facing, so removing `revision` and adding `new` and `reason`
+  change no protocol. The history format is unchanged; older logs replay
+  as they were written.
+- **Configuration.** The five size settings replace `max_file_bytes`.
+
+#### 16.9.13 Phases
+
+1. **Engine:**
+   - the two-part section and the snapshot's trimmed text;
+   - the `Project:` line;
+   - search scoring and the result and read formats;
+   - stamps and their migration;
+   - size limits;
+   - writes without revisions;
+   - the similar-memory check;
+   - rule variables;
+   - the reviewer's rubric.
+2. **Clients:** change events with Undo, the trash, and stamps and limits
+   in the Memory view.
+3. **Docs:**
+   - the memory guide, the permissions page and the configuration
+     reference;
+   - the tools reference, regenerated;
+   - this addendum marked implemented.
