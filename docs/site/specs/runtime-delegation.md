@@ -442,3 +442,36 @@ Deviations and readings of the spec:
   daemon attaches the project's defaults; the chip and the draft line show
   them. A draft whose sheet deselected `global` shows **no runtimes**.
 
+
+### Addendum 2026-10-22: offline runtimes are refused, connections are checked
+
+An incident showed two gaps in "a dial-in runtime must be connected"
+(section 2.2). A root delegated to a dial-in runtime on a PC that had gone
+away without closing its WebSocket. The daemon still counted the runtime
+as connected, so the first call waited 30 s for `capability/open`, and the
+second reused an instance opened earlier over the same dead connection:
+its child started, prepared a call with `tool/prepare`, and waited for the
+answer until the daemon restarted 17 minutes later. Decided and
+implemented:
+
+- **Never create, attach, or delegate with an offline runtime** (user
+  decision). A dial-in runtime that is not connected is refused at once,
+  for `capabilities` as for `session.create`, `session.runtime.attach`, and
+  a project's default runtimes, with
+  ``runtime `<id>` is not connected (last seen <time>)``; a runtime the
+  daemon remembers from before a restart is refused the same way rather
+  than as unknown. A template runtime is started and must be online,
+  initialized and its capability opened, before the child exists; a start
+  that fails or times out fails the call and creates nothing.
+- **An instance is handed out only over a live connection.** Reusing an
+  open instance checks its connection first: one heard from in the last
+  15 s passes, another must answer `runtime/ping` within 10 s or it is
+  ended. A dial-in runtime is then refused as not connected; the daemon
+  waits up to 2 minutes for a template runtime it restarts.
+- **Liveness and deadlines** (runtime protocol 1.4.0, see
+  [Liveness](../reference/runtime-protocol.md#liveness)): the daemon pings
+  a connection quiet for 15 s and ends one silent for 45 s; `tool/prepare`,
+  `tool/revalidate`, and `runtime/context` fail as `runtime_unavailable`
+  after 30 s and mark the connection suspect (checked within 10 s);
+  `tool/execute` is bounded by liveness. A dial-in runtime pings its end
+  over WebSocket and dials in again after 45 s of silence.

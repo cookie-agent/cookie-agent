@@ -423,7 +423,13 @@ daemon's working directory without `cwd`). Delegated sessions copy their
 parent's, and sessions created before 1.7.0 keep the identity they stored.
 An empty `runtimes` list creates a
 session with no coding runtime. Instances that are not running are started
-first, and a failure creates no session and records no instance.
+first, and a failure creates no session and records no instance. No session
+is created over a runtime that is not online: a dial-in runtime that is not
+connected, the one a project's defaults name included, is refused at once
+with ``runtime `<id>` is not connected (last seen <time>)``, and an instance
+that is already open is used only over a connection that answers (see
+[Liveness](runtime-protocol.md#liveness)). `session.runtime.attach` follows
+the same rules.
 
 `session.runtime.attach` and `session.runtime.detach` are rejected while the
 session has an active run (`session running`). Attach connects the runtime

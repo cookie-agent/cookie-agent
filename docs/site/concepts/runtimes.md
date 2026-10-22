@@ -59,7 +59,10 @@ Attaching a capability at a workspace opens an *instance* of it. One runtime
 process serves every instance of every session that uses it, and an instance
 reports its status: `starting`, `ready`, `reconnecting`, `failed`, or
 `stopped`. A dropped runtime is reconnected; a session whose instance stays
-down shows an error row. See
+down shows an error row. The daemon notices a connection that died without
+closing within 45 s, and never creates a session, attaches a runtime, or
+delegates to one that is offline: a dial-in runtime that is not connected is
+refused at once, and one the daemon starts must come up first. See
 [Lifecycle and failures](../daemon/runtimes.md#lifecycle-and-failures).
 
 ## A client's machine
