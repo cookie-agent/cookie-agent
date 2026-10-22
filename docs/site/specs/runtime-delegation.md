@@ -58,7 +58,7 @@ machines (section 7 shows how a subagent can do it with existing tools).
 At depth 0 the schema gains:
 
 ```json
-"attachments": {
+"capabilities": {
   "type": "array",
   "minItems": 1,
   "items": {

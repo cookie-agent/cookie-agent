@@ -295,7 +295,8 @@ mod tests {
         assert!(worker.contains("self.skipWaiting()"));
         assert!(worker.contains("self.clients.claim()"));
         assert!(worker.contains(r#"addEventListener("fetch""#));
-        assert!(worker.contains("event.respondWith(fetch(request))"));
+        // A failed fetch becomes the network error, not an uncaught rejection.
+        assert!(worker.contains("event.respondWith(fetch(request).catch(() => Response.error()))"));
         assert!(worker.contains(r"/\/(ws|runtime)$/"));
         // No Cache Storage: it caches nothing.
         assert!(!worker.contains("caches."));
