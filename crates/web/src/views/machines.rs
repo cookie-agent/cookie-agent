@@ -259,8 +259,8 @@ fn machine_cards(
             MachineEntry::Runtime {
                 machine,
                 runtime,
-                assigned_by,
                 pinned,
+                ..
             } => {
                 let listed = listing(&runtime);
                 let remembered = machines
@@ -273,11 +273,22 @@ fn machine_cards(
                             .find(|remembered| remembered.runtime_id == runtime)
                             .cloned()
                     });
+                // Remembered offline runtimes carry an assignment too, so
+                // only the machine's connected list stands in for a missing
+                // registry row: a dial-in runtime has none until it
+                // connects to this daemon.
+                let on_machine = machines.machines.iter().any(|info| {
+                    info.name == machine
+                        && info
+                            .connected
+                            .iter()
+                            .any(|connected| connected.runtime_id == runtime)
+                });
                 let card = RuntimeCard {
                     remembered,
                     connected: listed
                         .as_ref()
-                        .map_or(assigned_by.is_some(), |listed| listed.connected),
+                        .map_or(on_machine, |listed| listed.connected),
                     listing: listed,
                     id: runtime,
                     machine: Some(machine),
