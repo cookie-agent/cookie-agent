@@ -4,19 +4,23 @@
 
 use std::time::Duration;
 
-use cookie_agent_client_state::{attachment_chip, rows::goal_bar_shows};
+use cookie_agent_client_state::{
+    attachment_chip,
+    permissions::{PermissionRow, parse_rule_key, rule_runtimes, takes_runtime},
+    rows::goal_bar_shows,
+};
 use leptos::{ev, prelude::*};
 
 use super::{
-    BUTTON, Command, EFFECTS, GoalCommand, ICON_BUTTON, NOTE, PRIMARY, PermissionAction,
-    PermissionEffect, PermissionRuleSource, ROW, action_label, effect_label, empty_state,
-    goal_actions, loading, permission_actions, permission_rows, source_label, status_name,
+    BUTTON, Command, EFFECTS, GoalCommand, ICON_BUTTON, NOTE, PRIMARY, PermissionEffect,
+    PermissionRuleSource, ROW, action_label, effect_label, empty_state, goal_actions, loading,
+    permission_actions, permission_rows, source_label, status_name,
 };
 use crate::{
     attach::{accept_attribute, accepts_images},
     files::{CAMERA_INPUT, FILE_INPUT, files_of, pick_files},
     icons::Glyph,
-    workspace::Workspace,
+    workspace::{RuleRef, Workspace},
 };
 
 /// The attach and camera buttons, round inside the composer's box: 36 px
@@ -555,10 +559,97 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// Why the runtime field is off for an action that takes no runtime.
+const NO_RUNTIME: &str =
+    "message and skill run in the daemon itself, on no runtime, so their rules name none";
+
+/// The new-rule form's fields, which an edited rule fills.
+#[derive(Clone, Copy)]
+struct RuleForm {
+    action: RwSignal<String>,
+    runtime: RwSignal<String>,
+    pattern: RwSignal<String>,
+    effect: RwSignal<PermissionEffect>,
+    /// The session rule being edited, which the form's rule replaces.
+    editing: RwSignal<Option<RuleRef>>,
+}
+
+impl RuleForm {
+    fn new() -> Self {
+        Self {
+            action: RwSignal::new(String::new()),
+            runtime: RwSignal::new(String::new()),
+            pattern: RwSignal::new(String::new()),
+            effect: RwSignal::new(PermissionEffect::Ask),
+            editing: RwSignal::new(None),
+        }
+    }
+
+    fn edit(self, row: &PermissionRow) {
+        self.action.set(row.action.to_string());
+        self.runtime.set(
+            row.runtime
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+        );
+        self.pattern.set(row.resource.clone());
+        self.effect.set(row.effect);
+        self.editing.set(RuleRef::of(row));
+    }
+
+    fn reset(self) {
+        self.action.set(String::new());
+        self.runtime.set(String::new());
+        self.pattern.set(String::new());
+        self.effect.set(PermissionEffect::Ask);
+        self.editing.set(None);
+    }
+
+    /// Why the typed key is refused; none while the action is empty.
+    fn key_error(self) -> Option<String> {
+        let action = self.action.get();
+        if action.trim().is_empty() {
+            return None;
+        }
+        parse_rule_key(&action, &self.runtime.get()).err()
+    }
+
+    fn submit(self, workspace: Workspace) {
+        let (action, runtime) =
+            match parse_rule_key(&self.action.get_untracked(), &self.runtime.get_untracked()) {
+                Ok(key) => key,
+                Err(error) => {
+                    workspace.status.set(error);
+                    return;
+                }
+            };
+        let pattern = self.pattern.get_untracked();
+        if pattern.trim().is_empty() {
+            workspace.status.set("a rule needs a pattern".into());
+            return;
+        }
+        let replacing = self.editing.get_untracked();
+        let effect = self.effect.get_untracked();
+        self.reset();
+        workspace.set_permission(action, runtime, &pattern, effect, replacing);
+    }
+}
+
+/// A rule's key as the table shows it: the action, then `@runtime` when the
+/// rule names one.
+fn rule_key_view(row: &PermissionRow) -> impl IntoView + use<> {
+    let runtime = row.runtime.as_ref().map(|runtime| {
+        view! { <span class="text-ink dark:text-sand" data-rule-runtime>{format!("@{runtime}")}</span> }
+    });
+    view! {
+        <span class="font-bold">{row.action.to_string()}</span>
+        {runtime}
+    }
+}
+
 pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
-    let new_action = RwSignal::new(None::<PermissionAction>);
-    let new_pattern = RwSignal::new(String::new());
-    let new_effect = RwSignal::new(PermissionEffect::Ask);
+    let form = RuleForm::new();
     let table = move || match workspace.permissions.get() {
         None => loading("Reading permissions…").into_any(),
         Some(Err(error)) => view! { <p class=super::ERROR>{error}</p> }.into_any(),
@@ -567,11 +658,13 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
             let rows = permission_rows(&permissions)
                 .into_iter()
                 .map(|row| {
+                    let name = format!("{} {}", row.key(), row.resource);
                     let segments = EFFECTS
                         .iter()
                         .map(|effect| {
                             let effect = *effect;
                             let action = row.action.clone();
+                            let runtime = row.runtime.clone();
                             let resource = row.resource.clone();
                             let active = effect == row.effect;
                             view! {
@@ -586,7 +679,13 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                                     disabled=!editable
                                     on:click=move |_| {
                                         if !active {
-                                            workspace.set_permission(action.clone(), &resource, effect);
+                                            workspace.set_permission(
+                                                action.clone(),
+                                                runtime.clone(),
+                                                &resource,
+                                                effect,
+                                                None,
+                                            );
                                         }
                                     }
                                 >
@@ -595,17 +694,29 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                             }
                         })
                         .collect_view();
-                    let remove = (row.source == PermissionRuleSource::SessionOverlay && editable).then(|| {
-                        let action = row.action.clone();
-                        let resource = row.resource.clone();
+                    let session_rule = (row.source == PermissionRuleSource::SessionOverlay && editable)
+                        .then(|| RuleRef::of(&row))
+                        .flatten();
+                    let controls = session_rule.map(|rule| {
+                        let edited = row.clone();
                         view! {
+                            <button
+                                type="button"
+                                class=ICON_BUTTON
+                                aria-label="Edit the override"
+                                title="Edit the override"
+                                data-edit=name.clone()
+                                on:click=move |_| form.edit(&edited)
+                            >
+                                <Glyph icon=icondata::FaPenSolid />
+                            </button>
                             <button
                                 type="button"
                                 class=ICON_BUTTON
                                 aria-label="Remove the override"
                                 title="Remove the override"
-                                data-remove=format!("{} {}", row.action, row.resource)
-                                on:click=move |_| workspace.clear_permission(action.clone(), &resource)
+                                data-remove=name.clone()
+                                on:click=move |_| workspace.clear_permission(rule.clone())
                             >
                                 <Glyph icon=icondata::FaXmarkSolid />
                             </button>
@@ -617,10 +728,10 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                     view! {
                         <div
                             class="permission-row flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-toasted py-2 dark:border-ember"
-                            data-rule=format!("{} {}", row.action, row.resource)
+                            data-rule=name.clone()
                         >
                             <span class="min-w-0 flex-1 basis-32 font-mono text-xs wrap-anywhere">
-                                <span class="font-bold">{row.action.to_string()}</span>
+                                {rule_key_view(&row)}
                                 " "
                                 <span>{row.resource.clone()}</span>
                             </span>
@@ -629,7 +740,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                                     {segments}
                                 </span>
                                 <span class=format!("min-w-14 wrap-anywhere {NOTE}")>{source_label(row.source)}</span>
-                                {remove}
+                                {controls}
                             </span>
                         </div>
                     }
@@ -648,6 +759,12 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
             )
         })
     };
+    let runtimes = move || {
+        workspace
+            .runtimes
+            .with(|listing| listing.as_ref().map(rule_runtimes).unwrap_or_default())
+    };
+    let takes = move || takes_runtime(&form.action.get());
     view! {
         <Show when=move || workspace.permissions_draft()>
             <p class=NOTE>"Rules for the new session, previewed against its agent; the first message creates the session with them."</p>
@@ -655,39 +772,68 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
         {table}
         <Show when=move || workspace.writable()>
             <div id="permission-form" class="mt-3 flex flex-col gap-2 border-t border-toasted pt-3 dark:border-ember">
-                <p class="text-sm font-bold">"New rule"</p>
-                <select
-                    id="permission-action"
-                    class=FIELD
-                    on:change=move |event| {
-                        new_action.set(PermissionAction::new(event_target_value(&event)).ok());
-                    }
-                >
-                    {move || {
-                        let actions = actions();
-                        if new_action.get_untracked().is_none() {
-                            new_action.set(actions.first().cloned());
+                <p class="text-sm font-bold">
+                    {move || if form.editing.get().is_some() { "Edit the rule" } else { "New rule" }}
+                </p>
+                <div class="flex min-w-0 items-center gap-2">
+                    <input
+                        type="text"
+                        id="permission-action"
+                        class=format!("{FIELD} w-full min-w-0 flex-1")
+                        list="permission-action-options"
+                        placeholder="action, such as bash"
+                        aria-label="Action"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck="false"
+                        aria-invalid=move || form.key_error().is_some().to_string()
+                        prop:value=move || form.action.get()
+                        on:input=move |event| {
+                            let action = event_target_value(&event);
+                            if !takes_runtime(&action) {
+                                form.runtime.set(String::new());
+                            }
+                            form.action.set(action);
                         }
-                        actions
-                            .into_iter()
-                            .map(|action| {
-                                let selected = new_action.get().as_ref() == Some(&action);
-                                view! {
-                                    <option value=action.to_string() selected=selected>
-                                        {action.to_string()}
-                                    </option>
-                                }
-                            })
-                            .collect_view()
-                    }}
-                </select>
+                    />
+                    <span class="shrink-0 font-mono text-sm" aria-hidden="true">"@"</span>
+                    <input
+                        type="text"
+                        id="permission-runtime"
+                        class=format!("{FIELD} w-full min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-50")
+                        list="permission-runtime-options"
+                        placeholder=move || if takes() { "any runtime" } else { "no runtime" }
+                        aria-label="Runtime (empty for every runtime)"
+                        title=move || if takes() { "The runtime the rule is limited to; empty for every runtime" } else { NO_RUNTIME }
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck="false"
+                        disabled=move || !takes()
+                        prop:value=move || form.runtime.get()
+                        on:input=move |event| form.runtime.set(event_target_value(&event))
+                    />
+                </div>
+                <datalist id="permission-action-options">
+                    {move || actions().into_iter().map(|action| view! { <option value=action.to_string()></option> }).collect_view()}
+                </datalist>
+                <datalist id="permission-runtime-options">
+                    {move || runtimes().into_iter().map(|runtime| view! { <option value=runtime.to_string()></option> }).collect_view()}
+                </datalist>
+                {move || form.key_error().map(|error| view! { <p class=NOTE data-key-error>{error}</p> })}
                 <input
                     type="text"
                     id="permission-pattern"
                     class=FIELD
                     placeholder="pattern, such as git *"
-                    prop:value=move || new_pattern.get()
-                    on:input=move |event| new_pattern.set(event_target_value(&event))
+                    aria-label="Pattern"
+                    prop:value=move || form.pattern.get()
+                    on:input=move |event| form.pattern.set(event_target_value(&event))
+                    on:keydown=move |event: ev::KeyboardEvent| {
+                        if event.key() == "Enter" {
+                            event.prevent_default();
+                            form.submit(workspace);
+                        }
+                    }
                 />
                 <div class="inline-flex self-start overflow-hidden rounded-md border border-crust dark:border-smoke" role="group" aria-label="Effect">
                     {EFFECTS
@@ -698,12 +844,12 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                                 <button
                                     type="button"
                                     class="min-h-11 min-w-11 px-3 text-sm hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke"
-                                    class:font-bold=move || new_effect.get() == effect
-                                    class:bg-toasted=move || new_effect.get() == effect
-                                    class:dark:bg-ember=move || new_effect.get() == effect
-                                    aria-pressed=move || (new_effect.get() == effect).to_string()
+                                    class:font-bold=move || form.effect.get() == effect
+                                    class:bg-toasted=move || form.effect.get() == effect
+                                    class:dark:bg-ember=move || form.effect.get() == effect
+                                    aria-pressed=move || (form.effect.get() == effect).to_string()
                                     data-new-effect=effect_label(effect)
-                                    on:click=move |_| new_effect.set(effect)
+                                    on:click=move |_| form.effect.set(effect)
                                 >
                                     {effect_label(effect)}
                                 </button>
@@ -711,26 +857,26 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
                         })
                         .collect_view()}
                 </div>
-                <button
-                    type="button"
-                    id="permission-add"
-                    class=PRIMARY
-                    on:click=move |_| {
-                        let Some(action) = new_action.get_untracked() else {
-                            return;
-                        };
-                        let pattern = new_pattern.get_untracked();
-                        if pattern.trim().is_empty() {
-                            workspace.status.set("a rule needs a pattern".into());
-                            return;
-                        }
-                        new_pattern.set(String::new());
-                        workspace.set_permission(action, &pattern, new_effect.get_untracked());
-                    }
-                >
-                    <Glyph icon=icondata::FaPlusSolid />
-                    "Add the rule"
-                </button>
+                <div class="flex flex-wrap gap-2">
+                    <button
+                        type="button"
+                        id="permission-add"
+                        class=PRIMARY
+                        disabled=move || form.key_error().is_some()
+                        on:click=move |_| form.submit(workspace)
+                    >
+                        {move || if form.editing.get().is_some() {
+                            view! { <Glyph icon=icondata::FaCheckSolid />"Save the rule" }.into_any()
+                        } else {
+                            view! { <Glyph icon=icondata::FaPlusSolid />"Add the rule" }.into_any()
+                        }}
+                    </button>
+                    <Show when=move || form.editing.get().is_some()>
+                        <button type="button" id="permission-cancel" class=BUTTON on:click=move |_| form.reset()>
+                            "Cancel"
+                        </button>
+                    </Show>
+                </div>
             </div>
         </Show>
     }

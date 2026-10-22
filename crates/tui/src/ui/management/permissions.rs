@@ -2,7 +2,7 @@
 //! table grouped by action, edited in place through session overrides.
 
 use cookie_agent_protocol::{
-    PermissionAction, PermissionEffect, PermissionMode, PermissionRuleSource,
+    PermissionAction, PermissionEffect, PermissionMode, PermissionRuleSource, RuntimeId,
     SessionPermissionGetResult,
 };
 use ratatui::{
@@ -50,11 +50,15 @@ pub(in crate::ui) enum PermissionFormFocus {
 /// The new-rule form, or the edit form of one session rule.
 pub(in crate::ui) struct PermissionForm {
     pub(in crate::ui) action: PermissionAction,
+    /// The runtime the rule is limited to: the edited rule's, kept as it
+    /// is; a new rule applies on every runtime.
+    pub(in crate::ui) runtime: Option<RuntimeId>,
     pub(in crate::ui) pattern: InputState,
     pub(in crate::ui) effect: PermissionEffect,
     pub(in crate::ui) focus: PermissionFormFocus,
-    /// The session rule being edited, which a changed pattern replaces.
-    pub(in crate::ui) editing: Option<(PermissionAction, String)>,
+    /// The session rule being edited (action, runtime, pattern), which a
+    /// changed action or pattern replaces.
+    pub(in crate::ui) editing: Option<(PermissionAction, Option<RuntimeId>, String)>,
     /// Why the last submit was refused.
     pub(in crate::ui) error: Option<String>,
 }
@@ -63,6 +67,7 @@ impl PermissionForm {
     pub(in crate::ui) fn new(action: PermissionAction) -> Self {
         Self {
             action,
+            runtime: None,
             pattern: InputState::default(),
             effect: PermissionEffect::Ask,
             focus: PermissionFormFocus::Pattern,
@@ -76,10 +81,15 @@ impl PermissionForm {
         pattern.set_buffer(row.resource.clone());
         Self {
             action: row.action.clone(),
+            runtime: row.runtime.clone(),
             pattern,
             effect: row.effect,
             focus: PermissionFormFocus::Pattern,
-            editing: Some((row.action.clone(), row.resource.clone())),
+            editing: Some((
+                row.action.clone(),
+                row.runtime.clone(),
+                row.resource.clone(),
+            )),
             error: None,
         }
     }
@@ -109,6 +119,9 @@ impl PermissionForm {
             (index + 1) % len
         }]
         .clone();
+        if !self.action.takes_runtime_selector() {
+            self.runtime = None;
+        }
     }
 }
 
@@ -172,7 +185,9 @@ impl PermissionPanel {
         let index = previous
             .and_then(|previous| {
                 rows.iter().position(|row| {
-                    row.action == previous.action && row.resource == previous.resource
+                    row.action == previous.action
+                        && row.runtime == previous.runtime
+                        && row.resource == previous.resource
                 })
             })
             .or_else(|| self.selection.selected())
@@ -399,7 +414,13 @@ pub(in crate::ui) fn render_permissions(
     // a readable minimum and nine tenths of the screen.
     let longest_pattern = rows
         .iter()
-        .map(|row| UnicodeWidthStr::width(row.resource.as_str()))
+        .map(|row| {
+            UnicodeWidthStr::width(row.resource.as_str())
+                + row
+                    .runtime
+                    .as_ref()
+                    .map_or(0, |runtime| runtime.as_str().len() + 2)
+        })
         .max()
         .unwrap_or(0);
     let natural =
@@ -589,12 +610,17 @@ pub(in crate::ui) fn render_permissions(
             "├ "
         };
         spans.push(Span::styled(branch, theme.panel_border()));
+        // A rule limited to one runtime names it before its pattern.
+        let shown = match &row.runtime {
+            Some(runtime) => format!("@{runtime} {}", row.resource),
+            None => row.resource.clone(),
+        };
         let pattern = truncate_with_ellipsis(
-            &row.resource,
+            &shown,
             pattern_columns.saturating_sub(2 + branch.chars().count()),
         );
         let pattern_width = UnicodeWidthStr::width(pattern.as_str()) + branch.chars().count();
-        let pattern_style = if row.resource == "*" {
+        let pattern_style = if row.resource == "*" && row.runtime.is_none() {
             theme.muted_text()
         } else {
             theme.body()
@@ -746,6 +772,9 @@ fn render_form(
                     Span::styled(action_label(&form.action), theme.heading()),
                     Span::styled(" ›", arrows),
                 ]);
+                if let Some(runtime) = &form.runtime {
+                    spans.push(Span::styled(format!("  @{runtime}"), theme.muted_text()));
+                }
             }
             PermissionFormFocus::Pattern => {
                 let text = form.pattern.as_str();

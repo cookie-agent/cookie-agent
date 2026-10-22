@@ -781,7 +781,12 @@ impl App {
         if row.effect == effect {
             return;
         }
-        self.dispatch_permission_set(row.action.clone(), row.resource.clone(), effect);
+        self.dispatch_permission_set(
+            row.action.clone(),
+            row.runtime.clone(),
+            row.resource.clone(),
+            effect,
+        );
     }
 
     fn remove_selected_permission(&mut self) {
@@ -789,7 +794,7 @@ impl App {
             return;
         };
         if row.source == PermissionRuleSource::SessionOverlay {
-            self.dispatch_permission_clear(row.action, row.resource);
+            self.dispatch_permission_clear(row.action, row.runtime, row.resource);
         } else {
             self.permission_panel.notice = Some(format!(
                 "Only session rules can be removed; this one comes from the {}. \
@@ -826,15 +831,16 @@ impl App {
             .take()
             .expect("permission form is open");
         match form.editing {
-            Some((action, previous)) if action != form.action || previous != resource => {
+            Some((action, runtime, previous)) if action != form.action || previous != resource => {
                 self.dispatch_permission_replace(
-                    (action, previous),
+                    (action, runtime, previous),
                     form.action,
+                    form.runtime,
                     resource,
                     form.effect,
                 );
             }
-            _ => self.dispatch_permission_set(form.action, resource, form.effect),
+            _ => self.dispatch_permission_set(form.action, form.runtime, resource, form.effect),
         }
     }
 
@@ -842,8 +848,13 @@ impl App {
     /// one, in order on one task so the panel ends on the final overlay.
     fn dispatch_permission_replace(
         &mut self,
-        (previous_action, previous_resource): (PermissionAction, String),
+        (previous_action, previous_runtime, previous_resource): (
+            PermissionAction,
+            Option<cookie_agent_protocol::RuntimeId>,
+            String,
+        ),
         action: PermissionAction,
+        runtime: Option<cookie_agent_protocol::RuntimeId>,
         resource: String,
         effect: PermissionEffect,
     ) {
@@ -854,10 +865,13 @@ impl App {
             return;
         };
         if self.permission_panel.draft {
-            self.draft_permissions
-                .remove(&previous_action, &previous_resource);
+            self.draft_permissions.remove(
+                &previous_action,
+                previous_runtime.as_ref(),
+                &previous_resource,
+            );
             self.draft_permissions.set(PermissionRule {
-                runtime: None,
+                runtime,
                 action,
                 resource,
                 effect,
@@ -874,7 +888,7 @@ impl App {
             let result = async {
                 client
                     .set_session_permission(SessionPermissionSetParams {
-                        runtime: None,
+                        runtime,
                         session_id,
                         action,
                         resource,
@@ -883,7 +897,7 @@ impl App {
                     .await?;
                 client
                     .clear_session_permission(SessionPermissionClearParams {
-                        runtime: None,
+                        runtime: previous_runtime,
                         session_id,
                         action: previous_action,
                         resource: previous_resource,
@@ -903,13 +917,14 @@ impl App {
     pub(super) fn dispatch_permission_set(
         &mut self,
         action: PermissionAction,
+        runtime: Option<cookie_agent_protocol::RuntimeId>,
         resource: String,
         effect: PermissionEffect,
     ) {
         if self.permission_panel.draft {
             if let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) {
                 self.draft_permissions.set(PermissionRule {
-                    runtime: None,
+                    runtime,
                     action,
                     resource,
                     effect,
@@ -929,7 +944,7 @@ impl App {
         self.spawn_rpc(async move {
             let result = client
                 .set_session_permission(SessionPermissionSetParams {
-                    runtime: None,
+                    runtime,
                     session_id,
                     action,
                     resource,
@@ -945,10 +960,16 @@ impl App {
         });
     }
 
-    pub(super) fn dispatch_permission_clear(&mut self, action: PermissionAction, resource: String) {
+    pub(super) fn dispatch_permission_clear(
+        &mut self,
+        action: PermissionAction,
+        runtime: Option<cookie_agent_protocol::RuntimeId>,
+        resource: String,
+    ) {
         if self.permission_panel.draft {
             if let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) {
-                self.draft_permissions.remove(&action, &resource);
+                self.draft_permissions
+                    .remove(&action, runtime.as_ref(), &resource);
                 self.load_permission_preview();
             }
             return;
@@ -964,7 +985,7 @@ impl App {
         self.spawn_rpc(async move {
             let result = client
                 .clear_session_permission(SessionPermissionClearParams {
-                    runtime: None,
+                    runtime,
                     session_id,
                     action,
                     resource,

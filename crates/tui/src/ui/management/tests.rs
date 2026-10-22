@@ -23,6 +23,7 @@ fn permission_rows_keep_action_defaults_and_sources() {
         super::permission_rows(&result),
         vec![super::PermissionRow {
             action: PermissionAction::BASH,
+            runtime: None,
             resource: "*".into(),
             effect: PermissionEffect::Deny,
             source: PermissionRuleSource::SessionOverlay,
@@ -247,6 +248,43 @@ fn permission_form_offers_every_action_and_effects_stop_at_the_ends() {
         super::step_effect(PermissionEffect::Deny, false),
         PermissionEffect::Deny
     );
+}
+
+#[test]
+fn a_rule_limited_to_one_runtime_shows_and_keeps_its_runtime() {
+    let labpc = cookie_agent_protocol::RuntimeId::new("labpc").unwrap();
+    let mut result = super::permissions::sample_permissions();
+    result.permissions[2]
+        .patterns
+        .push(cookie_agent_protocol::EffectivePermissionRule {
+            runtime: Some(labpc.clone()),
+            resource: cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
+            effect: PermissionEffect::Ask,
+            source: PermissionRuleSource::SessionOverlay,
+        });
+    let mut panel = super::PermissionPanel::default();
+    panel.install(result);
+    let text = render_panel(&mut panel, 110, 34);
+    assert!(text.contains("@labpc *"), "{text}");
+    let row = panel
+        .rows()
+        .into_iter()
+        .find(|row| row.runtime.is_some())
+        .expect("the labpc row");
+    // Editing it keeps the runtime, until an action that takes none.
+    let mut form = super::PermissionForm::edit(&row);
+    assert_eq!(form.runtime.as_ref(), Some(&labpc));
+    assert_eq!(
+        form.editing,
+        Some((PermissionAction::BASH, Some(labpc.clone()), "*".into()))
+    );
+    form.cycle_action(&[PermissionAction::BASH, PermissionAction::DELEGATE], false);
+    assert_eq!(form.runtime.as_ref(), Some(&labpc));
+    form.cycle_action(
+        &[PermissionAction::DELEGATE, PermissionAction::MESSAGE],
+        false,
+    );
+    assert_eq!(form.runtime, None);
 }
 
 #[test]

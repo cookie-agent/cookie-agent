@@ -913,10 +913,7 @@ def session_depth(browser):
     # A permission override, then its removal.
     menu(browser, "permissions")
     browser.wait("the permissions", lambda: count(browser, "#sheet .permission-row") > 0)
-    browser.script(
-        "const s = document.querySelector('#permission-action'); s.value = 'bash';"
-        "s.dispatchEvent(new Event('change'))"
-    )
+    set_text(browser, "#permission-action", "bash")
     browser.type("#permission-pattern", "git *")
     browser.click("#sheet [data-new-effect=allow]")
     browser.click("#permission-add")
@@ -936,10 +933,7 @@ def session_depth(browser):
     menu(browser, "permissions")
     browser.wait("the draft preview", lambda: "Rules for the new session" in browser.text("#sheet"))
     browser.wait("the previewed rules", lambda: count(browser, "#sheet .permission-row") > 0)
-    browser.script(
-        "const s = document.querySelector('#permission-action'); s.value = 'read';"
-        "s.dispatchEvent(new Event('change'))"
-    )
+    set_text(browser, "#permission-action", "read")
     browser.type("#permission-pattern", "secrets/*")
     browser.click("#sheet [data-new-effect=deny]")
     browser.click("#permission-add")
@@ -948,6 +942,143 @@ def session_depth(browser):
     browser.shot("permissions-draft")
     browser.click("#sheet h2 ~ button")
 
+
+
+def rule_effect(browser, rule):
+    """The effect the row of `rule` (its `data-rule`) has pressed, if any."""
+    return browser.script(
+        "const b = document.querySelector('#sheet [data-rule=\"' + arguments[0] + '\"] [aria-pressed=true]');"
+        "return b ? b.dataset.effect : null",
+        rule,
+    )
+
+
+def add_rule(browser, action, runtime, pattern, effect):
+    """Fills the permission form and adds its rule."""
+    set_text(browser, "#permission-action", action)
+    set_text(browser, "#permission-runtime", runtime)
+    set_text(browser, "#permission-pattern", pattern)
+    browser.click("#sheet [data-new-effect=%s]" % effect)
+    browser.click("#permission-add")
+
+
+def permission_rules(browser):
+    """The permission form takes any action a tool declares, suggests the
+    session's actions and the daemon's runtimes, and limits a rule to one
+    runtime as `action@runtime`, which `message` and `skill` take none of.
+    A rule on `local` alone outranks the same rule everywhere."""
+    new_session(browser)
+    send(browser, "hello")
+    browser.wait("the answer", lambda: answers(browser) >= 1 and "working" not in browser.text("#status-bar"))
+    menu(browser, "permissions")
+    browser.wait("the permissions", lambda: count(browser, "#sheet .permission-row") > 0)
+    options = browser.script(
+        "return [...document.querySelectorAll(arguments[0])].map(o => o.value)",
+        "#permission-action-options option",
+    )
+    for action in ("read", "bash", "mcp", "list_runtimes"):
+        assert action in options, options
+    runtimes = browser.script(
+        "return [...document.querySelectorAll(arguments[0])].map(o => o.value)",
+        "#permission-runtime-options option",
+    )
+    assert "local" in runtimes and "alt" in runtimes, runtimes
+
+    # `message` and `skill` take no runtime: the field turns off and says why.
+    set_text(browser, "#permission-runtime", "local")
+    set_text(browser, "#permission-action", "message")
+    browser.wait("the disabled runtime", lambda: browser.script("return document.querySelector('#permission-runtime').disabled"))
+    assert browser.script("return document.querySelector('#permission-runtime').value") == ""
+    assert "no runtime" in browser.script("return document.querySelector('#permission-runtime').title")
+    set_text(browser, "#permission-action", "delegate")
+    browser.wait("the enabled runtime", lambda: not browser.script("return document.querySelector('#permission-runtime').disabled"))
+    # An action that is no valid name is refused before it is sent.
+    set_text(browser, "#permission-action", "Deploy")
+    browser.wait("the refused action", lambda: "invalid permission action" in browser.text("#sheet [data-key-error]"))
+    assert browser.script("return document.querySelector('#permission-add').disabled")
+    set_text(browser, "#permission-action", "bash")
+    set_text(browser, "#permission-runtime", "Lab-PC")
+    browser.wait("the refused runtime", lambda: "invalid runtime selector" in browser.text("#sheet [data-key-error]"))
+    print("the form refuses what the daemon would and turns the runtime off for message")
+
+    # `bash` allowed everywhere: a call runs unasked.
+    browser.click('#sheet [data-rule="bash *"] [data-effect=allow]')
+    browser.wait("bash allowed", lambda: rule_effect(browser, "bash *") == "allow")
+    browser.click("#sheet h2 ~ button")
+    send(browser, "use a tool")
+    browser.wait("the unasked tool", lambda: browser.text("#transcript").count("The tool ran.") == 1, timeout=40)
+    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    assert browser.text("#approvals-badge") == "", "an allowed call asked"
+
+    # Then asked on `local` alone.
+    menu(browser, "permissions")
+    browser.wait("the permissions", lambda: rule_effect(browser, "bash *") == "allow")
+    add_rule(browser, "bash", "local", "*", "ask")
+    browser.wait(
+        "the rule on local",
+        lambda: rule_effect(browser, "bash@local *") == "ask"
+        and "session" in browser.text('#sheet [data-rule="bash@local *"]'),
+    )
+    assert "bash@local" in browser.text('#sheet [data-rule="bash@local *"]')
+    # A runtime's own action, typed: it gets its own `*` row and the rule.
+    add_rule(browser, "deploy", "", "prod *", "deny")
+    browser.wait("the custom action's rule", lambda: rule_effect(browser, "deploy prod *") == "deny")
+    assert count(browser, '#sheet [data-rule="deploy *"]') == 1
+    print("added bash@local and a custom action's rule through the form")
+    if SCREENSHOTS:
+        set_text(browser, "#permission-action", "bash")
+        set_text(browser, "#permission-runtime", "alt")
+        set_text(browser, "#permission-pattern", "git *")
+        for scheme in ("light", "dark"):
+            browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": scheme}]})
+            for device in ("desktop", "phone"):
+                if device == "desktop":
+                    browser.resize(1280, 900)
+                else:
+                    browser.phone(390, 844)
+                browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", '#sheet [data-rule="bash@local *"]')
+                settle(browser)
+                browser.shot("permission-rules-%s-%s" % (device, scheme))
+                browser.script("document.querySelector('#permission-form').scrollIntoView({block: 'end'})")
+                settle(browser)
+                browser.shot("permission-form-%s-%s" % (device, scheme))
+        browser.cdp("Emulation.setEmulatedMedia", {"features": []})
+        browser.resize(1280, 900)
+        set_text(browser, "#permission-runtime", "")
+        set_text(browser, "#permission-pattern", "")
+    browser.click("#sheet h2 ~ button")
+
+    # The rule on `local` outranks `bash` everywhere: the call asks.
+    send(browser, "use a tool")
+    browser.wait("the approval", lambda: browser.text("#approvals-badge") != "", timeout=40)
+    browser.click("#approvals-badge")
+    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    browser.click("#sheet [data-decision=approve_once]")
+    close_sheet(browser)
+    browser.wait("the tool's answer", lambda: browser.text("#transcript").count("The tool ran.") == 2, timeout=40)
+    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    print("bash@local: ask outranks bash: allow")
+
+    # An edited rule keeps its runtime; the custom one goes.
+    menu(browser, "permissions")
+    browser.wait("the rule on local", lambda: rule_effect(browser, "bash@local *") == "ask")
+    browser.click('#sheet [data-edit="bash@local *"]')
+    browser.wait("the filled form", lambda: browser.script("return document.querySelector('#permission-runtime').value") == "local")
+    assert "Edit the rule" in browser.text("#permission-form")
+    set_text(browser, "#permission-pattern", "git *")
+    browser.click("#sheet [data-new-effect=allow]")
+    browser.click("#permission-add")
+    browser.wait(
+        "the edited rule",
+        lambda: rule_effect(browser, "bash@local git *") == "allow"
+        and count(browser, '#sheet [data-rule="bash@local *"]') == 0,
+    )
+    browser.click('#sheet [data-remove="deploy prod *"]')
+    browser.wait("the removed rule", lambda: count(browser, '#sheet [data-rule="deploy prod *"]') == 0)
+    browser.click('#sheet [data-remove="bash@local git *"]')
+    browser.wait("the removed rule on local", lambda: count(browser, '#sheet [data-rule="bash@local git *"]') == 0)
+    print("edited the rule on local, keeping its runtime, and removed the rules")
+    browser.click("#sheet h2 ~ button")
 
 def set_text(browser, selector, text):
     browser.script(
@@ -3829,6 +3960,7 @@ SCENARIOS = [
     ("pinned_rows", pinned_rows, "chat", ["tool_rows"]),
     ("message_menu", message_menu, "chat", ["basics"]),
     ("session_depth", session_depth, "depth", []),
+    ("permission_rules", permission_rules, "depth", []),
     ("management", management, "chat", []),
     ("views", views_2026, "chat", []),
     ("suspended_tab", suspended_tab, "chat", ["basics"]),

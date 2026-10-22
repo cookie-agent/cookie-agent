@@ -3,9 +3,9 @@
 //! session is composed, its draft rules previewed against its agent
 //! (`session.permission.preview`) until `session.create` commits them.
 
-use cookie_agent_client_state::permissions::{remove_draft_rule, set_draft_rule};
+use cookie_agent_client_state::permissions::{PermissionRow, remove_draft_rule, set_draft_rule};
 use cookie_agent_protocol::{
-    EffectivePermissionAction, PermissionAction, PermissionEffect, PermissionRule,
+    EffectivePermissionAction, PermissionAction, PermissionEffect, PermissionRule, RuntimeId,
     SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionPreviewParams,
     SessionPermissionSetParams, WildcardPattern,
 };
@@ -86,25 +86,35 @@ impl Workspace {
         }
     }
 
-    /// Sets `effect` for `action` on `resource`: a session override, or a
-    /// draft rule.
+    /// Sets `effect` for `action` (on `runtime` alone when given) on
+    /// `resource`: a session override, or a draft rule. Editing a rule
+    /// that changed its key or pattern, `replacing` names the old one,
+    /// which the new rule replaces.
     pub fn set_permission(
         self,
         action: PermissionAction,
+        runtime: Option<RuntimeId>,
         resource: &str,
         effect: PermissionEffect,
+        replacing: Option<RuleRef>,
     ) {
         let Ok(resource) = WildcardPattern::new(resource.trim()) else {
             self.status
                 .set("a pattern must be a non-empty wildcard pattern".into());
             return;
         };
+        let replacing = replacing.filter(|old| {
+            old.action != action || old.runtime != runtime || old.resource != resource
+        });
         if self.new_session.get_untracked() {
             self.draft_rules.update(|rules| {
+                if let Some(old) = &replacing {
+                    remove_draft_rule(rules, &old.action, old.runtime.as_ref(), &old.resource);
+                }
                 set_draft_rule(
                     rules,
                     PermissionRule {
-                        runtime: None,
+                        runtime,
                         action,
                         resource,
                         effect,
@@ -125,30 +135,38 @@ impl Workspace {
         }
         let request = self.next_permission_request();
         spawn_local(async move {
-            let result = client
+            let mut result = client
                 .set_session_permission(SessionPermissionSetParams {
                     session_id,
                     action,
-                    runtime: None,
+                    runtime,
                     resource,
                     effect,
                 })
-                .await
+                .await;
+            if let (Ok(_), Some(old)) = (&result, replacing) {
+                result = client
+                    .clear_session_permission(SessionPermissionClearParams {
+                        session_id,
+                        action: old.action,
+                        runtime: old.runtime,
+                        resource: old.resource,
+                    })
+                    .await;
+            }
+            let result = result
                 .map(|result| result.permissions)
                 .map_err(|error| crate::errors::describe_full(&error));
             self.install_permissions(request, result);
         });
     }
 
-    /// Removes the session override (or draft rule) for `action` on
-    /// `resource`.
-    pub fn clear_permission(self, action: PermissionAction, resource: &str) {
-        let Ok(resource) = WildcardPattern::new(resource) else {
-            return;
-        };
+    /// Removes the session override (or draft rule) `rule`.
+    pub fn clear_permission(self, rule: RuleRef) {
         if self.new_session.get_untracked() {
-            self.draft_rules
-                .update(|rules| remove_draft_rule(rules, &action, &resource));
+            self.draft_rules.update(|rules| {
+                remove_draft_rule(rules, &rule.action, rule.runtime.as_ref(), &rule.resource);
+            });
             self.load_permissions();
             return;
         }
@@ -161,14 +179,33 @@ impl Workspace {
             let result = client
                 .clear_session_permission(SessionPermissionClearParams {
                     session_id,
-                    action,
-                    runtime: None,
-                    resource,
+                    action: rule.action,
+                    runtime: rule.runtime,
+                    resource: rule.resource,
                 })
                 .await
                 .map(|result| result.permissions)
                 .map_err(|error| crate::errors::describe_full(&error));
             self.install_permissions(request, result);
         });
+    }
+}
+
+/// One rule of the table, by key and pattern: `bash@labpc` on `git *`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuleRef {
+    pub action: PermissionAction,
+    pub runtime: Option<RuntimeId>,
+    pub resource: WildcardPattern,
+}
+
+impl RuleRef {
+    /// The rule a table row shows; none for a pattern that is not one.
+    pub fn of(row: &PermissionRow) -> Option<Self> {
+        Some(Self {
+            action: row.action.clone(),
+            runtime: row.runtime.clone(),
+            resource: WildcardPattern::new(row.resource.as_str()).ok()?,
+        })
     }
 }

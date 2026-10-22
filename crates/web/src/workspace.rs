@@ -50,6 +50,7 @@ pub use attachments::DownscaleOffer;
 pub use cards::CardSet;
 pub use history::UserMenu;
 pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL};
+pub use permissions::RuleRef;
 pub use projects::{EditorFields, ProjectEditor};
 
 /// How long usage events settle before the status bar's cost is read again.

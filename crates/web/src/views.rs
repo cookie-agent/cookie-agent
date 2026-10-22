@@ -13,8 +13,8 @@ use cookie_agent_client_state::{
     usage::{CacheHit, format_count},
 };
 use cookie_agent_protocol::{
-    ApprovalUserDecision, InputDelivery, ModelSelection, PermissionAction, PermissionEffect,
-    PermissionRuleSource, SessionId, SessionMeta, SessionRenameChange,
+    ApprovalUserDecision, InputDelivery, ModelSelection, PermissionEffect, PermissionRuleSource,
+    SessionId, SessionMeta, SessionRenameChange,
 };
 use leptos::{ev, html, prelude::*};
 use wasm_bindgen::JsCast as _;

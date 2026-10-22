@@ -893,8 +893,11 @@ an agent or default rule adds a session rule with the same pattern. `n` (or the
 moves between fields, left/right changes the action or effect, and Enter adds
 the rule once the pattern validates as a wildcard pattern. Enter on a session
 rule edits it in the same form, and `d` or Delete removes it. Agent and default
-rules cannot be removed, only overridden. The editor does not accept freeform
-YAML.
+rules cannot be removed, only overridden. A rule limited to one runtime
+(`bash@labpc`) shows `@labpc` before its pattern, and editing it keeps the
+runtime; the TUI form does not set a runtime on a new rule, which the web
+client's form and the agent document can. The editor does not accept
+freeform YAML.
 
 Before the first prompt of a new session (the draft `cookie` starts on, or one
 opened with `/new`), `/permissions` edits the draft instead: the table previews

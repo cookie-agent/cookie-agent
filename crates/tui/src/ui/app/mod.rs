@@ -371,7 +371,8 @@ impl PendingQueueEntry {
 pub(super) struct DraftPermissions {
     /// The new tree's mode; `None` keeps the server default.
     pub(super) mode: Option<PermissionMode>,
-    /// Overlay rules, at most one per (action, pattern), in edit order.
+    /// Overlay rules, at most one per (action, runtime, pattern), in edit
+    /// order.
     pub(super) rules: Vec<PermissionRule>,
     /// Bumped per preview request so a stale preview is dropped.
     pub(super) preview_generation: u64,
@@ -386,11 +387,13 @@ impl DraftPermissions {
     pub(super) fn remove(
         &mut self,
         action: &PermissionAction,
+        runtime: Option<&cookie_agent_protocol::RuntimeId>,
         resource: &cookie_agent_protocol::WildcardPattern,
     ) {
         cookie_agent_client_state::permissions::remove_draft_rule(
             &mut self.rules,
             action,
+            runtime,
             resource,
         );
     }

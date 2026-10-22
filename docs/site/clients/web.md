@@ -377,9 +377,17 @@ address bar.
 - **Skills.** **Skills** lists the skills you can run, searched as you
   type. Pick one, give its arguments, and run it.
 - **Permissions.** **Permission rules** shows the session's rules by action, and
-  where each comes from: the agent, the default, or a session override.
-  Click an effect to override it, add a rule for a pattern, or the × on an
-  override to remove it. While a new session is composed, the same table edits the
+  where each comes from: the agent, the default, or a session override. A
+  rule limited to one runtime shows its key as agent documents write it,
+  such as `bash@labpc`. Click an effect to override it, the pencil on an
+  override to edit it in the form, or the × to remove it. The form takes a
+  rule as `action @ runtime`, a pattern, and an effect. The action is any
+  name a tool declares (`[a-z][a-z0-9_]{0,31}`), suggested from the
+  actions the session's tools and rules use. The runtime is optional: empty
+  applies the rule on every runtime, and suggestions come from the
+  daemon's runtimes. `message` and `skill` take no runtime, so the field
+  turns off for them. A name the daemon would refuse is flagged before it
+  is sent. While a new session is composed, the same table edits the
   rules it will be created with, previewed against its agent.
 - **Bottom bar.** Below the composer; each part has an icon and says more
   on hover:
