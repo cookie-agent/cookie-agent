@@ -307,10 +307,11 @@ pub fn has_template(config_text: &str, id: &RuntimeId) -> bool {
 }
 
 /// What a runtime with `id` (the host's name when empty) runs on its own
-/// machine to dial in to the daemon at `daemon_url`. A loopback URL is the
-/// page's own view of the daemon, which another machine cannot reach, so
-/// its host becomes a placeholder; the token always is one.
-pub fn dial_in_command(daemon_url: Option<&str>, id: &str) -> String {
+/// machine to dial in to the daemon at `daemon_url`, with `token`, the one
+/// this page connected with, or a placeholder when the page keeps none. A
+/// loopback URL is the page's own view of the daemon, which another machine
+/// cannot reach, so its host becomes a placeholder.
+pub fn dial_in_command(daemon_url: Option<&str>, id: &str, token: Option<&str>) -> String {
     let url = daemon_url
         .and_then(|url| url::Url::parse(url).ok())
         .map_or_else(
@@ -338,7 +339,20 @@ pub fn dial_in_command(daemon_url: Option<&str>, id: &str) -> String {
     } else {
         format!(" --id {id}")
     };
-    format!("cookie runtime serve --daemon {url}{id} --token \"<the daemon's token>\"")
+    let token = token.map_or_else(|| TOKEN_PLACEHOLDER.to_owned(), str::to_owned);
+    format!("cookie runtime serve --daemon {url}{id} --token \"{token}\"")
+}
+
+/// What stands for the token when the page keeps none.
+const TOKEN_PLACEHOLDER: &str = "<the daemon's token>";
+
+/// `command` with `token` hidden, for showing it on screen: copying takes the
+/// command itself.
+pub fn masked_token(command: &str, token: Option<&str>) -> String {
+    match token {
+        Some(token) if !token.is_empty() => command.replace(token, &"•".repeat(12)),
+        _ => command.to_owned(),
+    }
 }
 
 /// Where the guides live: the documentation of the released version.
@@ -577,16 +591,27 @@ mod tests {
     }
 
     #[test]
-    fn the_dial_in_command_names_the_daemon_and_leaves_the_token_out() {
+    fn the_dial_in_command_names_the_daemon_and_carries_the_page_s_token() {
         assert_eq!(
-            dial_in_command(Some("ws://127.0.0.1:7420/ws"), ""),
+            dial_in_command(Some("ws://127.0.0.1:7420/ws"), "", None),
             "cookie runtime serve --daemon ws://<daemon host>:7420/ws --token \"<the daemon's token>\""
         );
         assert_eq!(
-            dial_in_command(Some("wss://box.tail.ts.net/ws"), "labpc"),
-            "cookie runtime serve --daemon wss://box.tail.ts.net/ws --id labpc --token \"<the daemon's token>\""
+            dial_in_command(Some("wss://box.tail.ts.net/ws"), "labpc", Some("s3cr3t")),
+            "cookie runtime serve --daemon wss://box.tail.ts.net/ws --id labpc --token \"s3cr3t\""
         );
-        assert!(dial_in_command(None, "").contains("ws://<daemon host>:7419/ws"));
+        assert!(dial_in_command(None, "", None).contains("ws://<daemon host>:7419/ws"));
+    }
+
+    #[test]
+    fn the_shown_command_hides_the_token_that_copying_keeps() {
+        let command = dial_in_command(Some("wss://box.tail.ts.net/ws"), "", Some("s3cr3t"));
+        let shown = masked_token(&command, Some("s3cr3t"));
+        assert!(!shown.contains("s3cr3t"), "{shown}");
+        assert!(shown.contains("--token \"••••••••••••\""), "{shown}");
+        // Without a token there is nothing to hide: the placeholder shows.
+        let placeholder = dial_in_command(Some("wss://box.tail.ts.net/ws"), "", None);
+        assert_eq!(masked_token(&placeholder, None), placeholder);
     }
 
     #[test]

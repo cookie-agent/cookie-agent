@@ -30,7 +30,7 @@ use crate::{
     icons::Glyph,
     machines::{
         Drag, DragEnd, DragStep, GUIDES, SshTemplate, dial_in_command, drop_request, lifetime_icon,
-        lifetime_label, move_request, platform_icon,
+        lifetime_label, masked_token, move_request, platform_icon,
     },
     workspace::Workspace,
 };
@@ -211,7 +211,7 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
                     adding.update(|adding| *adding = !*adding);
                 }
             >
-                <Glyph icon=icondata::FaPlusSolid />
+                <Glyph icon=Signal::derive(move || if adding.get() { icondata::FaMinusSolid } else { icondata::FaPlusSolid }) />
                 "Add a runtime"
             </button>
         </div>
@@ -854,8 +854,26 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
     let dial_id = RwSignal::new(String::new());
     let template = move || SshTemplate::new(&id.get(), &host.get(), &root.get());
     let daemon_url = StoredValue::new(browser::load(crate::connect::DAEMON_URL_KEY));
+    // The token this page connected with, so the command runs as it is.
+    let token = StoredValue::new(daemon_url.with_value(|url| {
+        url.as_deref()
+            .and_then(|url| browser::load(&crate::connect::token_key(url)))
+    }));
+    let show_token = RwSignal::new(false);
     let command = move || {
-        daemon_url.with_value(|daemon_url| dial_in_command(daemon_url.as_deref(), &dial_id.get()))
+        daemon_url.with_value(|daemon_url| {
+            token.with_value(|token| {
+                dial_in_command(daemon_url.as_deref(), &dial_id.get(), token.as_deref())
+            })
+        })
+    };
+    let shown_command = move || {
+        let command = command();
+        if show_token.get() {
+            command
+        } else {
+            token.with_value(|token| masked_token(&command, token.as_deref()))
+        }
     };
     let field = |label: &'static str,
                  field_id: &'static str,
@@ -971,7 +989,11 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     "Let one dial in"
                 </h4>
                 <p class=NOTE>
-                    "Run this on the other machine: it connects to this daemon and stays connected. Replace the placeholders with the daemon's address as that machine reaches it (the daemon listens there with cookie daemon --listen 0.0.0.0:7419) and its token ([server] token in the daemon's config.toml)."
+                    {move || if token.with_value(Option::is_some) {
+                        "Run this on the other machine: it connects to this daemon and stays connected. It carries the token this page connected with; keep it private. If the address is a placeholder, use the daemon's address as that machine reaches it (the daemon listens there with cookie daemon --listen 0.0.0.0:7419)."
+                    } else {
+                        "Run this on the other machine: it connects to this daemon and stays connected. Replace the placeholders with the daemon's address as that machine reaches it (the daemon listens there with cookie daemon --listen 0.0.0.0:7419) and its token ([server] token in the daemon's config.toml)."
+                    }}
                 </p>
                 {field("Runtime ID (optional; the host's name otherwise)", "dial-id", "labpc", dial_id)}
                 <textarea
@@ -979,12 +1001,13 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     readonly
                     rows="2"
                     class="w-full resize-none rounded-md border border-crust bg-cream p-2 font-mono text-xs dark:border-smoke dark:bg-night"
-                    prop:value=command
+                    prop:value=shown_command
                 ></textarea>
+                <div class="flex flex-wrap gap-2">
                 <button
                     type="button"
                     id="dial-in-copy"
-                    class=format!("{BUTTON} self-start")
+                    class=BUTTON
                     on:click=move |_| {
                         let text = command();
                         spawn_local(async move {
@@ -992,6 +1015,8 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                             workspace.status.set(if copied {
                                 "copied the dial-in command".into()
                             } else {
+                                // The selection must hold the token, not its mask.
+                                show_token.set(true);
                                 browser::select_text("dial-in-command");
                                 "copying needs a secure page; the command is selected, copy it with the keyboard".into()
                             });
@@ -1001,6 +1026,19 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     <Glyph icon=icondata::FaCopyRegular />
                     "Copy"
                 </button>
+                <Show when=move || token.with_value(Option::is_some)>
+                    <button
+                        type="button"
+                        id="dial-in-reveal"
+                        class=BUTTON
+                        aria-pressed=move || show_token.get().to_string()
+                        on:click=move |_| show_token.update(|shown| *shown = !*shown)
+                    >
+                        <Glyph icon=Signal::derive(move || if show_token.get() { icondata::FaEyeSlashRegular } else { icondata::FaEyeRegular }) />
+                        {move || if show_token.get() { "Hide token" } else { "Show token" }}
+                    </button>
+                </Show>
+                </div>
             </div>
             <div class="flex flex-col gap-1 border-t border-toasted pt-3 dark:border-ember" data-add="guides">
                 <h4 class=heading>

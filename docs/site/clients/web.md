@@ -459,7 +459,9 @@ address bar.
       [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in)),
       with an optional runtime ID and **Copy**. The daemon's address is
       the page's own unless the page reached it on a loopback address,
-      when it is a placeholder; the token is always a placeholder.
+      when it is a placeholder. The command carries the token this page
+      connected with: it shows as dots until **Show token**, and **Copy**
+      takes the real one. A page that keeps no token shows a placeholder.
     - **Guides:** links to the runtimes, ssh, dial-in, remote access, and
       service guides of the released documentation.
 - **MCP servers.** Settings › MCP servers lists every runtime's servers with their state,
