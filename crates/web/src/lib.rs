@@ -29,6 +29,7 @@ pub mod machines;
 mod media;
 pub mod memory;
 pub mod modes;
+pub mod panics;
 pub mod places;
 pub mod render;
 pub mod skills;
@@ -39,7 +40,9 @@ pub mod workspace;
 
 pub use app::App;
 
-/// Renders the page into `<body>`.
+/// Renders the page into `<body>`, with panics logged to the console.
+#[cfg(target_arch = "wasm32")]
 pub fn start() {
+    panics::install();
     leptos::mount::mount_to_body(App);
 }
