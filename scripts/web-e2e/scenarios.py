@@ -996,6 +996,11 @@ def cache_hit_rate(browser):
         assert browser.script(
             "return document.querySelector('#sheet [data-cache-hit=session]').title"
         ) == detail, "the rate's tooltip is not its figures"
+        # The context line groups thousands like the figures below it; the
+        # scripted prompts are 1,000 tokens, so a bare 1000 is the bug.
+        context = browser.text("#sheet #usage-context")
+        assert re.fullmatch(r"Context: \d{1,3}(,\d{3})* tokens in the last request", context), context
+        assert "1000" not in context, context
     else:
         assert detail == "No input tokens yet.", detail
     return figures

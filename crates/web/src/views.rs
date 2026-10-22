@@ -2021,7 +2021,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             {move || context().map(|tokens| view! {
                 <span
                     class="inline-flex min-h-11 items-center gap-1.5 px-2 text-ink compact:hidden dark:text-sand"
-                    title=format!("Context: {tokens} tokens in the last request")
+                    title=format!("Context: {} tokens in the last request", format_count(tokens))
                 >
                     <Glyph icon=icondata::FaGaugeSimpleHighSolid />
                     <span class="font-mono">{format!("{} tokens", compact_count(tokens))}</span>
@@ -2491,7 +2491,7 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
                 {context.map(|tokens| view! {
                     <p class="flex items-center gap-2 text-sm" id="usage-context">
                         <Glyph icon=icondata::FaGaugeSimpleHighSolid class="text-caramel dark:text-maple" />
-                        {format!("Context: {tokens} tokens in the last request")}
+                        {format!("Context: {} tokens in the last request", format_count(tokens))}
                     </p>
                 })}
                 <h3 class="text-sm font-bold">"This session"</h3>
