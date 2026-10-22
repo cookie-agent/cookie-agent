@@ -1520,9 +1520,9 @@ Hermes Agent, OpenClaw, mem0 and Letta.
   on every run that keeps the same access, and stays cached.
 - **Two parts.**
   - **Always**, whenever the run is offered any memory tool, part A, what
-    is attached and when to search:
+    is included and when to search:
 
-    > Memory that belongs to this session is attached automatically at the
+    > Memory related to this session is included automatically at the
     > start of each session: the user's memory, your own agent memory, the
     > session's project, and the machines its runtimes run on. Use
     > memory_search for anything else, such as another project or a
@@ -1537,10 +1537,10 @@ Hermes Agent, OpenClaw, mem0 and Letta.
     > it repeats, or delete it, then carry on with your task. A memory
     > earns its place only while a later session would miss it.
     >
-    > Memory attached to this session, the memory shown to you above, is
-    > yours to maintain. Do not write, edit or delete memory that is not
-    > attached unless what it says is stale or wrong, or the user
-    > explicitly asks you to.
+    > Memory related to this session, the memory shown to you above, is
+    > yours to maintain. Do not write, edit or delete memory unrelated to
+    > it unless what it says is stale or wrong, or the user explicitly asks
+    > you to.
     >
     > Memory is for what a later session cannot recover by looking at the
     > project or running a command, and that will still be true and useful
@@ -1580,7 +1580,7 @@ Hermes Agent, OpenClaw, mem0 and Letta.
     > or dropping what it holds before you add to it.
 
 - **Delegated runs.** A delegated run gets the same part B. What is
-  attached to it is what its snapshot attaches: its own agent file
+  related to it is what its snapshot includes: its own agent file
   (section 16.9.11).
 - **Visibility test.** Tool prompt composition asks every provider. The
   memory provider decides from the run's frozen policy, with the same
@@ -1650,19 +1650,19 @@ This replaces section 8.1's scoring.
 
   ```text
   project://cookie-agent/release — How releases are cut: gh release create starts it; publish oven-sdk first
-    owner: project cookie-agent · attached · editable · 3 weeks old
+    owner: project cookie-agent · related · editable · 3 weeks old
     keywords: release, cargo-dist, oven-sdk
 
   agent://builder — Memory of the `builder` agent: Primary agent for building features
-    owner: you · attached · editable · 5 days old
+    owner: you · related · editable · 5 days old
     keywords: builder, primary
 
   agent://reviewer — Memory of the `reviewer` agent: Reviews a diff for bugs and missing tests
-    owner: agent reviewer · not attached · editable · 2 days old
+    owner: agent reviewer · unrelated · editable · 2 days old
     keywords: reviewer, subagent
 
   user://preferences — How the user likes to work
-    owner: user · attached · read-only · 1 month old
+    owner: user · related · read-only · 1 month old
     (reading it needs approval)
   ```
 
@@ -1672,7 +1672,7 @@ This replaces section 8.1's scoring.
   - `user`;
   - `machine <name>`;
   - `project <name>`.
-- **`attached` or `not attached`** says whether the memory is attached to
+- **`related` or `unrelated`** says whether the memory is related to
   this session (section 16.9.11).
 - **`editable` or `read-only`** comes from the run's `memory_write` rules
   alone.
@@ -1684,7 +1684,7 @@ This replaces section 8.1's scoring.
 
   ```text
   owner: project cookie-agent
-  attached: yes
+  related: yes
   editable: yes
   created: 2026-10-01T09:12:44Z (3 weeks ago)
   modified: 2026-10-20T16:03:10Z (2 days ago)
@@ -1694,7 +1694,7 @@ This replaces section 8.1's scoring.
   ```
 
 - **The snapshot** marks the agent's own file as `you`. Everything it
-  shows is attached by definition.
+  shows is related by definition.
 
 #### 16.9.5 Similar memories before a new one
 
@@ -1796,20 +1796,21 @@ This replaces section 8.1's scoring.
 - **No undo, no trash** (decided 2026-10-22). A delete deletes and a
   replaced body is gone, as with any file.
 
-#### 16.9.11 Attached memory, and no hard limits on what an agent touches
+#### 16.9.11 Related memory, and no hard limits on what an agent touches
 
 Decided 2026-10-22.
 
-- **Attached memory.** The memory a session's snapshot attaches
-  automatically is *attached*:
+- **Related memory.** The memory a session's snapshot includes
+  automatically is *related* to the session:
   - **for a root run:** every `user://` memory, the run's own
     `agent://<agent>` file, the memories of the session's machines, and
     those of its project;
   - **for a delegated run:** its own agent file, the only memory its
-    snapshot attaches.
+    snapshot includes.
 
-  This is the word the prompt, the results (`attached` or
-  `not attached`) and the rules below use.
+  This is the word the prompt, the results (`related` or `unrelated`) and
+  the rules below use. It is deliberately not "attached", which names a
+  session's runtime attachments and delegation's `capabilities`.
 - **No hard limits.** Permission rules alone decide what an agent may
   write, edit or delete; the rubric (section 16.9.1, part B) says what it
   should. Three rules the daemon enforces today, whatever the rules say,
@@ -1822,7 +1823,7 @@ Decided 2026-10-22.
   An agent's delete now deletes, and nothing is kept (section 16.9.10).
 - **A possible later default.** Once this is in, the defaults (section 9.2,
   none since 2026-10-22) could become "read everything, write what is
-  attached". The relative names already express that, with no new
+  related". The relative names already express that, with no new
   variable:
 
   ```yaml
