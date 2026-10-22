@@ -333,7 +333,15 @@ cookie machine assign box labpc      # pin runtime `box` to machine `labpc`
 cookie machine unassign box          # follow the machine ID it reports again
 cookie machine merge box labpc       # move `box`'s IDs, pins, and memories
 cookie machine forget old-laptop     # only with no connected runtimes or memories
+cookie machine forget-runtime roamer # forget where an offline runtime ran
 ```
+
+A runtime that has connected once stays on its machine while it is offline,
+across restarts too: the registry records where it ran, and `cookie machine
+list` shows it under `offline` with when it was last seen. Removing a
+template from `config.toml` drops its record at the next reload; a dial-in
+runtime's record stays until `forget-runtime`. See
+[Offline runtimes](../concepts/machines.md#offline-runtimes).
 
 A change applies to connected runtimes at once; sessions see the new
 machine names from their next run.

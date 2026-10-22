@@ -97,6 +97,7 @@ nav:
       - Security: daemon/security.md
   - Working with sessions:
       - Sessions: sessions/index.md
+      - Delegating to runtimes: sessions/delegation.md
       - Attaching media: sessions/media.md
       - Compaction: sessions/compaction.md
       - Goal mode: sessions/goals.md

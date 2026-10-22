@@ -20,8 +20,26 @@ The daemon then places the runtime, first match first:
 4. without a reported ID, on a new machine named after the runtime ID, which
    pins it there.
 
-A runtime's machine is worked out each time; only the machines themselves are
-stored, in `~/.cookie-agent/machines.json`, which only the daemon writes.
+A runtime's machine is worked out each time from the machines, which are
+stored in `~/.cookie-agent/machines.json`; only the daemon writes it.
+
+## Offline runtimes
+
+The registry also remembers where each runtime ran: when a template or
+dial-in runtime connects, the daemon records the machine ID, platform, and
+home directory it reported, and when it last saw the runtime connect or
+disconnect. A runtime that is not connected stays on its pin's machine, else
+on the machine its record names, shown as offline with when it was last
+seen, across daemon restarts too. Only a runtime that has never connected is
+on no machine. So an ssh template's sessions keep their machine badges and
+`~/…` paths while it is down, and `list_runtimes` still places it.
+
+A record goes away with **forget** on the offline runtime
+(`cookie machine forget-runtime <runtime>`, or **Forget** in the web
+client's Machines view), with its machine when the machine is forgotten,
+and, for a template, when `config.toml` no longer has its
+`[runtimes.<id>]` table at the next reload or restart. A dial-in runtime's
+record stays until it is forgotten.
 
 ## Regrouping
 
@@ -34,7 +52,9 @@ a runtime moves by dragging it onto another machine) change the registry:
 - **assign** a runtime ID to a machine, pinning it, or **unassign** it so it
   follows the ID it reports;
 - **merge** one machine into another, moving its IDs, pins, and memories;
-- **forget** a machine that has no connected runtime and no memories.
+- **forget** a machine that has no connected runtime and no memories (its
+  offline runtimes' records go with it);
+- **forget** an offline runtime, so the machine no longer lists it.
 
 See [`cookie machine`](../clients/cli.md#cookie-machine) and
 [Machines](../daemon/runtimes.md#machines).

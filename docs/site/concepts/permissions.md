@@ -15,7 +15,8 @@ Each tool declares a permission *action* and names the *resource* of each call:
 - `delegate`: the subagent's agent ID; `message`: the recipient's relation,
   `parent`, `child`, or `sibling`;
 - `mcp`: the MCP tool's name; `skill`: the skill name;
-- `memory` and `memory_write`: the memory URL.
+- `memory` and `memory_write`: the memory URL;
+- `list_runtimes`: nothing to name; any rule pattern matches.
 
 Actions are free-form labels, a lowercase letter then up to 31 lowercase
 letters, digits, or underscores, so a runtime's or a plugin's tools can
@@ -52,8 +53,10 @@ checked before the agent's. See
 
 A rule keyed `action@runtime_id` applies only to that runtime's tools,
 whatever workspace they work in, so `bash: ask` with `bash@labpc: {"git *":
-allow}` lets git run freely on `labpc` and asks for everything else. Actions of
-the daemon's own tools, `delegate`, `message`, and `skill`, take no selector.
+allow}` lets git run freely on `labpc` and asks for everything else. Of the
+daemon's own tools' actions, `message` and `skill` take no selector;
+`delegate@labpc` checks a root's delegation that gives its subagent the
+`labpc` runtime (see [Delegating to runtimes](../sessions/delegation.md#limiting-where-the-root-delegates)).
 See [Runtime selectors](../extend/agents.md#runtime-selectors).
 
 A path pattern starting with `~/` means the home directory of the runtime the

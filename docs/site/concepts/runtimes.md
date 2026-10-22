@@ -14,10 +14,11 @@ the capabilities it uses; each attachment brings its tools into the session.
 | `[runtimes.<id>]` | a process the daemon starts from a template, typically `ssh host cookie runtime serve --stdio` | whatever it declares; `cookie runtime serve` offers `coding` | the same as `local`, on that machine |
 | dial-in | a process that connects to the daemon's `/runtime` route, such as `cookie runtime serve --daemon` | the same | the same |
 
-A new session attaches `global` and `local`'s `coding` at the client's
-directory. The runtimes panel (`/runtime`) attaches and detaches others, before
-the first prompt or between runs. See [Runtimes](../daemon/runtimes.md) for
-templates, dial-in, and lifecycles.
+A new TUI session attaches `global` and `local`'s `coding` at the client's
+directory; a new web session starts with `global` alone, and its
+**Runtimes…** chip picks others. The runtimes panel (`/runtime`) attaches and
+detaches others, before the first prompt or between runs. See
+[Runtimes](../daemon/runtimes.md) for templates, dial-in, and lifecycles.
 
 Every runtime other than the built-in ones speaks the
 [runtime protocol](../reference/runtime-protocol.md), so a runtime of your own
@@ -71,7 +72,21 @@ else the TUI dials in as `client_<host name>`, serving only its directory, for
 as long as it runs. See
 [Persistent daemon](../daemon/persistent.md#running-as-a-service).
 
+## Delegating to runtimes
+
+A root session decides where its subagents work. With `global` attached it
+has `list_runtimes`, which lists every machine and runtime, and its
+`delegate_subagent` takes `capabilities`: the runtime capabilities the
+child works through, such as `labpc/coding` at `~/src/api`. The daemon starts
+those runtimes before it creates the child. Without `capabilities` a child
+inherits its parent's attachments, and only the root can choose. A root with
+only `global` has no workspace at all and must name one for each subagent,
+which lets it orchestrate work across machines. `delegate@<runtime>` rules
+limit where it may delegate. See
+[Delegating to runtimes](../sessions/delegation.md).
+
 ## Machines
 
 Each runtime reports the machine it runs on, and the daemon groups runtimes by
-machine; see [Machines](machines.md).
+machine, remembering where a runtime ran while it is offline; see
+[Machines](machines.md).

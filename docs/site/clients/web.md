@@ -135,6 +135,12 @@ address bar.
     - more than one machine: a badge for each machine, in the order the
       session attached them.
 
+    A root session's badges also count where its subagents work: the
+    runtimes and workspaces they were given, after the root's own (see
+    [Delegating to runtimes](../sessions/delegation.md#badges)). A root
+    with only `global` whose subagents work on `labpc` shows `labpc` and
+    their workspace. A subagent's row shows its own attachments.
+
     A machine's badge has its operating system's icon, as on the Machines
     view. A runtime whose machine the daemon does not know counts as a
     machine of its own, under its runtime ID. Each machine keeps one of
@@ -148,9 +154,10 @@ address bar.
     workspace with its machine, runtime, and path. A daemon older than
     client protocol 1.7 lists no attachments: the row shows the session's
     directory instead.
-  - **New session** opens the new session's runtime cards (below); the
-    first message after **Start** creates the session with them and the
-    agent, model, and permission mode the bottom bar shows.
+  - **New session** opens on the composer with only `global` attached
+    (below); the first message creates the session with the runtimes the
+    bottom bar's **Runtimes…** chip shows and the agent, model, and
+    permission mode beside it.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
   - **Renaming.** Click the title in the title bar, or choose ⋮ ›
@@ -203,14 +210,28 @@ address bar.
     your system's emoji keyboard too, and says at once when what you typed
     is not one. **No emoji** clears it. On a phone the picker rises from
     the bottom.
-- **New session.** A **Project** picker comes first: the section whose
-  **+** you used, else **No project**, and **New project…**, which opens
-  the editor and picks the project it makes. Picking a project selects the
-  cards its defaults name and gives the bottom bar its default agent and
-  preset, with the agent's own model; an agent that is gone, or cannot
-  start a session, leaves the usual one, and the status line says so.
-  Everything stays editable. The runtimes a session can use show as cards,
-  grouped by the machine each runs on, this daemon's machine first.
+- **New session.** The composer opens at once, with only `global`
+  attached: such a session has no workspace, and hands work that needs
+  files or commands to subagents on the runtimes it names (see
+  [Delegating to runtimes](../sessions/delegation.md)). The bottom bar's
+  **Runtimes…** chip shows the draft's runtimes as badges, or **global
+  only**, and opens the runtime cards as a sheet (filling a phone's screen);
+  **Change runtimes** above the transcript does the same. The browser
+  remembers no selection: each new session starts with `global` alone, or
+  with its project's defaults.
+  - **Project.** The sheet's **Project** picker comes first: the section
+    whose **+** you used, else **No project**, and **New project…**, which
+    opens the editor and picks the project it makes. A project whose
+    defaults attach runtimes prefills the cards with them, and the chip
+    shows them; the session is created with them unless the sheet gives the
+    draft others. Picking a project also gives the bottom bar its default
+    agent and preset, with the agent's own model; an agent that is gone, or
+    cannot start a session, leaves the usual one, and the status line says
+    so. Everything stays editable, and choosing a project never changes a
+    running session.
+
+  The runtimes a session can use show as cards, grouped by the machine each
+  runs on, this daemon's machine first.
   - **Groups.** A group's header says its machine, how many runtimes it
     has, how many are ready, and how many cards are selected; click it to
     fold or unfold the group. This daemon's machine, and a machine with a
@@ -221,23 +242,21 @@ address bar.
     runtime is **ready**, **starts on use** (the daemon starts it), or
     **offline** (a runtime that dials in and is not connected), which
     cannot be selected. Click anywhere on a card to select or deselect it.
+    Only `global` is selected to start with.
   - **Workspaces.** A selected card asks for its workspace, suggesting
     the directories this browser opened on that runtime and the ones
     sessions use there, as `~/…`; any path works. **another workspace**
-    adds a field for the same runtime at a second directory. **Start**
-    waits until every field is filled in. With no coding card selected,
-    the session works in no workspace. With two workspaces or more, a note
-    says their tools get prefixes, with an example name.
+    adds a field for the same runtime at a second directory. **Use these
+    runtimes** waits until every field is filled in. With no coding card
+    selected, the session works in no workspace. With two workspaces or
+    more, a note says their tools get prefixes, with an example name.
   - **Colours.** Each card has a dot in its machine's colour, the colour
     of that machine's badge in the session rows.
-  - **Start** opens every workspace at once. A runtime that refuses says
-    why on its card, and nothing is created; once all of them open, the
-    page shows where the new session will work, with **Change runtimes**
-    to go back, and the bottom bar shows its workspaces too.
-  - **What is preselected:** the open session's runtimes and workspaces;
-    else what this browser started its last session with; the first time,
-    `global` and `local` with an empty field to fill in. The page never
-    falls back to the daemon's own directory.
+  - **Use these runtimes** opens every workspace at once. A runtime that
+    refuses says why on its card, and the sheet stays; once all of them
+    open, the sheet closes, the page shows where the new session will work,
+    and the chip shows them. The page never falls back to the daemon's own
+    directory.
 - **Subagents.** Only the open session's row has its subagents nested
   under it, each with its status (a turning circle while it runs, a check,
   failed, or cancelled), its agent, its short handle, and its task. Click
@@ -411,8 +430,12 @@ address bar.
   Under it are its runtimes, each with an icon for how it came to the
   daemon (built in, started from a template, or dialled in), whether it is
   connected (a green dot), pinned (a pin), its platform, its capabilities,
-  and why it last failed to connect. Runtimes that have never connected,
-  such as a template no session has used, sit under **On no machine yet**.
+  and why it last failed to connect. A runtime that connected before and is
+  offline now stays on its machine, under the connected ones, dimmed, with
+  when it was last seen and **Forget**, which drops the daemon's record of
+  where it ran (see [Offline runtimes](../concepts/machines.md#offline-runtimes)).
+  Runtimes that have never connected, such as a template no session has
+  used, sit under **On no machine yet**.
   - **Moving a runtime.** Drag it onto another machine's card: with a
     mouse, press anywhere on its row and drag; on a touch screen, hold the
     row for about half a second until it lifts, then drag (moving sooner

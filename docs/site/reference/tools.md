@@ -1061,7 +1061,7 @@ turn ends.
 In a root session with the `global` runtime attached, `delegate_subagent`
 also takes `capabilities`: the runtime capabilities the child works through,
 each written `<runtime_id>/<capability_id>` with a `workspace` when the
-capability takes one (see the [runtime delegation spec](../specs/runtime-delegation.md)).
+capability takes one (see [Delegating to runtimes](../sessions/delegation.md)).
 It is required when the root has nothing but `global` attached, optional when
 it has other attachments too, and absent everywhere else, where a child
 inherits its parent's attachments. Each runtime it names is checked as

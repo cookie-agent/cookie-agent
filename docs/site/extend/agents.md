@@ -569,8 +569,11 @@ asks, and reads inside the local runtime's workspace are allowed. A qualified
 rule only outranks an unqualified one at the same resource specificity: with
 `bash: {"git push *": deny}` and `bash@labpc: {"*": allow}`, `git push` on
 `labpc` is still denied. The runtime ID follows `[a-z][a-z0-9_]{0,31}`.
-`delegate`, `message`, and `skill` belong to the base layer and take no
-selector. A selector also limits visibility: with only `bash@labpc` rules,
+`message` and `skill` belong to the base layer and take no selector.
+`delegate@<runtime>` checks a root's `delegate_subagent` call that names that
+runtime in `capabilities`, under each runtime it names; a call without
+`capabilities` sees only plain `delegate` rules (see
+[Delegating to runtimes](../sessions/delegation.md#limiting-where-the-root-delegates)). A selector also limits visibility: with only `bash@labpc` rules,
 `bash` tools of other runtimes are not published.
 
 ### Resource labels
@@ -805,6 +808,17 @@ Memory needs both the `global` runtime and a visible `memory` action: an
 agent without one gets no memory tools at all, even with `memory_write`
 rules. A delegated run may write only its own `agent://<agent>` file,
 whatever its rules say. See the [memory spec](../specs/memory.md#9-permissions).
+
+### Listing runtimes
+
+`list_runtimes`, a tool of the `global` runtime, lists the daemon's machines
+and runtimes for a root that delegates to them (see
+[Delegating to runtimes](../sessions/delegation.md#list_runtimes)). Its
+action, `list_runtimes`, has a default by mode like the memory actions:
+`allow` for `primary` and `all` agents, and none for `subagent` and
+`internal` ones. A declared `list_runtimes` key, with or without a runtime
+selector, replaces the default: `list_runtimes: allow` lets a subagent see
+the list, and `list_runtimes: deny` hides it from a primary agent.
 
 ### Web fetching
 
