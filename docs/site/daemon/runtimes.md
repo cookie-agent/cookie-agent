@@ -285,7 +285,7 @@ cookie runtime serve --daemon
   connection. `runtimes.list` shows it with lifetime `dial_in`, and, while
   it is away, why it disconnected. It stops
   on a stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), so it runs as a
-  service; see [Running as a service](persistent.md#running-as-a-service).
+  service; see [Running a runtime as a service](runtime-service.md).
 - **Stopping.** A stopping runtime closes its WebSocket with a close
   handshake (normal closure). The daemon records that as
   ``runtime `labpc` disconnected: the other end closed the connection``,

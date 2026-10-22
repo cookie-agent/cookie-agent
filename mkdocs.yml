@@ -92,6 +92,7 @@ nav:
       - Command line: clients/cli.md
   - Run a daemon:
       - Persistent daemon: daemon/persistent.md
+      - Runtime service: daemon/runtime-service.md
       - Remote access: daemon/remote-access.md
       - Runtimes: daemon/runtimes.md
       - Security: daemon/security.md

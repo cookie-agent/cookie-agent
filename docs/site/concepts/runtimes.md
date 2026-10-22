@@ -70,7 +70,7 @@ pick, in order: the daemon's own `local` runtime when the daemon is on this
 machine; else a connected runtime on this machine that takes a workspace;
 else the TUI dials in as `client_<host name>`, serving only its directory, for
 as long as it runs. See
-[Persistent daemon](../daemon/persistent.md#running-as-a-service).
+[Persistent daemon](../daemon/persistent.md#choosing-the-runtime-for-a-directory).
 
 ## Delegating to runtimes
 

@@ -4,7 +4,8 @@ This page covers reaching a daemon from other machines: listening on another
 address with TLS, web clients, and forwarding the daemon's port
 through SSH, a private network, or a tunnel. [Persistent daemon](persistent.md)
 covers starting the daemon and attaching clients to it,
-[Runtimes](runtimes.md) the runtimes that dial in from elsewhere, and
+[Runtimes](runtimes.md) the runtimes that dial in from elsewhere,
+[Running a runtime as a service](runtime-service.md) keeping them connected, and
 [Security](security.md) what the token and the listener protect. The
 `[server]` keys are in [Server](../engine/server.md).
 
