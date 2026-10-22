@@ -115,7 +115,8 @@ fallbacks are chosen so that an older reader stays safe:
 | `concurrency` | tool declarations | `exclusive`, the most conservative |
 | `result_truncation` | tool declarations | `bounded`: the daemon still bounds the result |
 | tool error `kind` | prepare, revalidate, and execute results; `mcp/reconnect` | `failed`, a generic tool failure |
-| MCP server `state` | `capability/open` results, `mcp/changed` | `disconnected`: no tools, and no retry as a failure |
+| MCP server `state` | `capability/open` and `runtime/initialize` results, `mcp/changed`, `runtime/mcp_changed` | `disconnected`: no tools, and no retry as a failure |
+| MCP server `scope` | the same | `workspace`: hosted by an instance |
 | media `delivery` | `tool/prepare` and `tool/execute` turns | `unknown`: the tool does not attach that kind |
 | display block `type` | prepare presentations, execute results, `tool/progress` replacements | dropped, with a diagnostic (see [Display blocks](#display-blocks)) |
 | media `kind` | `tool/prepare` and `tool/execute` turns | a label: a tool does not attach a kind it does not know |
@@ -129,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.4.0**
+The protocol version is a semver string, currently **1.5.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -179,6 +180,14 @@ permission rules expand a leading `~` against (see [Home](#home)).
 1.4.0 added `runtime/ping`, which the daemon sends a quiet connection to
 tell it from a dead one (see [Liveness](#liveness)); any answer counts, so
 an older runtime's `-32601` does too.
+1.5.0 added runtime-scoped MCP servers (see
+[Runtime-scoped MCP servers](#runtime-scoped-mcp-servers)): an MCP server
+report's optional `scope`; the optional `mcp_servers` of
+`runtime/initialize`'s result, every server the runtime is configured with;
+`runtime/mcp_changed` and `runtime/mcp_reconnect`; and a runtime's own tools,
+outside any instance, which it declares with `runtime/tools_changed` and the
+daemon prepares without an `instance`. A runtime keeps a daemon older than
+1.5.0 working by hosting every server per workspace for it.
 
 ## Capabilities and instances
 
@@ -239,7 +248,9 @@ canonical home, so the path a tool reads and the rule that governs it agree.
 3. Sessions use the instances: the daemon prepares, executes, and releases
    calls, and asks for `AGENTS.md` context at each root run's admission. A
    coding runtime reports each instance's MCP servers' status as it changes
-   (`mcp/changed`) and a changed tool list (`capability/tools_changed`).
+   (`mcp/changed`) and a changed tool list (`capability/tools_changed`), and
+   its runtime-scoped servers' status (`runtime/mcp_changed`) and tools
+   (`runtime/tools_changed`).
 4. The daemon sends `runtime/shutdown` when it shuts down, waits up to the
    template's `shutdown_grace_ms` for the answer, and closes the transport
    (a child's stdin); a child that has not exited after another grace is
@@ -323,6 +334,9 @@ that dials in after its instances failed reopens them. Calls are never retried t
 | `tool/detachable` | runtime → daemon | notification | An executing call reached its detach point |
 | `mcp/changed` | runtime → daemon | notification | The status of an instance's MCP servers, and the ones that failed |
 | `mcp/reconnect` | daemon → runtime | request | Reconnect one of an instance's MCP servers, or retry every failed one |
+| `runtime/tools_changed` | runtime → daemon | notification | The runtime's own tools, those of its runtime-scoped MCP servers; since 1.5.0 |
+| `runtime/mcp_changed` | runtime → daemon | notification | The status of every MCP server the runtime is configured with, and the runtime-scoped ones that failed; since 1.5.0 |
+| `runtime/mcp_reconnect` | daemon → runtime | request | Reconnect one runtime-scoped MCP server, or retry every failed one; since 1.5.0 |
 | `producer/recovery/start` | daemon → runtime | notification | Producer messaging is open; restore tracked work, then report |
 | `producer/recovery/complete` | runtime → daemon | request | The runtime's recovery outcome |
 | `producer/register` | runtime → daemon | request | Register a named producer for an attached session |
@@ -343,7 +357,7 @@ ignored.
 | `runtime_id` | The runtime's ID, `[a-z][a-z0-9_]{0,31}`. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
-| `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../extend/mcp.md#accepted-fields) reads it. Each instance of a capability that hosts MCP servers runs them in its workspace. |
+| `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../extend/mcp.md#accepted-fields) reads it, with its `scope`. Each instance of a capability that hosts MCP servers runs the workspace-scoped ones in its workspace; the runtime runs the runtime-scoped ones once, in its home directory (see [Runtime-scoped MCP servers](#runtime-scoped-mcp-servers)). A server's `cwd`, when relative, resolves against that directory. |
 
 A runtime rejects settings it does not support with `initialize_rejected`; a runtime that
 hosts no MCP servers rejects a nonempty `mcp_servers`. A coding runtime
@@ -359,6 +373,7 @@ or enables OAuth, which stays with the daemon's global runtime.
 | `home` | Optional, since 1.3.0: the home directory of the user the runtime runs as, a canonical absolute path on its machine (`/home/ada`, `C:\Users\ada`), at most 4096 bytes without control characters. The coding runtime reports its user's home, canonicalized. The daemon reads one that is not an absolute path as left out. See [Home](#home). |
 | `capabilities` | What the runtime offers: `name` (`[a-z][a-z0-9_]{0,31}`, unique within the runtime); `kind`, a self-declared label such as `coding` (a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens) that the daemon shows to clients and in approval reviews and never branches on; `takes_workspace`; and an optional `description`. The coding runtime offers `coding`, which takes a workspace. |
 | `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |
+| `mcp_servers` | Optional, since 1.5.0: every MCP server the runtime is configured with, in name order, as server reports (see [`capability/open`](#capabilityopen)) with a `scope`: the runtime-scoped ones with their status now (usually `connecting`), the workspace-scoped ones as configured, `disconnected` (or `disabled`) with no tools. Absent when it has none. |
 
 ### `capability/open`
 
@@ -373,7 +388,9 @@ capability and canonical workspace) returns it. A coding instance connects
 every enabled MCP server before it answers: the reply comes once each
 server's first connection attempt and tool listing have finished,
 successfully or not, so the template's `startup_timeout_ms` must cover them.
-A server that fails publishes no tools; its status says why. The servers'
+A server that fails publishes no tools; its status says why. It also waits
+for the runtime-scoped servers' first attempt, and sends their report and
+tools before its reply. The servers'
 tools join the declared tools as `<server>_<tool>`, with permission `mcp`,
 after the runtime's built-in tools, which keep their names: a server whose
 tool would take another tool's name fails, as in the global runtime. OAuth is
@@ -388,7 +405,7 @@ never used: a remote server connects with its static headers only.
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
-| `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; and `tools`, its tool names. Absent when the instance hosts none. |
+| `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; `tools`, its tool names; and, since 1.5.0, `scope`, `workspace` here (absent reads as `workspace`). Absent when the instance hosts none. Runtime-scoped servers are not among them. |
 
 ### `capability/tools_changed`
 
@@ -424,6 +441,44 @@ session that uses the instance is created or opened, or when the instance is
 attached or retried, and the session's next run waits for the answer; it
 names a server for `mcp.server.reconnect`.
 
+### Runtime-scoped MCP servers
+
+Since 1.5.0 a template server may set `scope = "runtime"`. The runtime
+starts such servers once, when it accepts `runtime/initialize`, in its
+user's home directory unless they set a `cwd`, and does not hold up its
+reply for them: they are usually `connecting` in `mcp_servers`. Every
+instance of the runtime shares them until it stops, and every
+`capability/open` waits for their first attempt, which each server's
+`timeout_ms` bounds.
+
+Their tools are the runtime's own, in no instance: the runtime declares
+them, `<server>_<tool>` with permission `mcp`, with `runtime/tools_changed`
+(params: the `tools` object, as a plugin sends it) whenever they change, and
+the daemon prepares them with a `tool/prepare` that carries no `instance`.
+The daemon offers them to a session once per runtime, however many of the
+runtime's instances it attaches, composed under the runtime's ID, and their
+calls run without a workspace.
+
+`runtime/mcp_changed` carries `servers`, every configured server as in the
+initialize result's `mcp_servers`, and `failures`, the runtime-scoped ones
+that failed since the last report (`server`, `reason`). The runtime sends it
+whenever a runtime-scoped server's status changes. The daemon lists the
+runtime-scoped servers in `mcp.server.list` without a workspace, and a
+workspace-scoped one no instance hosts as configured, so clients show a
+connected runtime's servers before any workspace opens; it passes each
+failure to the clients viewing a session attached to any instance of the
+runtime. They reconnect as instance servers do, reported with
+`runtime/mcp_changed` and `runtime/tools_changed`.
+
+`runtime/mcp_reconnect` params: `server`, optional. With a name, the runtime
+reconnects that runtime-scoped server; without one, it retries every failed
+one. It answers like `mcp/reconnect`. While one is `failed`, the daemon
+sends it without a name when a session that uses any instance of the runtime
+is created or opened, and the session's next run waits for the answer.
+
+A daemon older than 1.5.0 knows no tools outside an instance, so a runtime
+that sees one in `runtime/initialize` hosts every server per workspace.
+
 ### `runtime/context`
 
 Params: `instance`, and `preset`, the run's agent preset (optional; must be a
@@ -448,7 +503,8 @@ model's capability and its adapter's delivery limit; and `delivery` is
 `tool_result` (an attachment of the result) or `user_message` (a user message
 after the result, for an adapter whose tool results cannot carry the kind). A
 kind not listed is not accepted: a tool reports that it cannot attach the
-file. A plugin's prepare carries no `instance`. The runtime prepares a turn's calls together, so calls on one
+file. A plugin's prepare carries no `instance`, nor does one of a runtime's
+own tools (see [Runtime-scoped MCP servers](#runtime-scoped-mcp-servers)). The runtime prepares a turn's calls together, so calls on one
 target chain. The result has one entry per call, tagged by `status`:
 
 - `prepared`: `prepared_id`; `normalized_arguments`, the arguments as the

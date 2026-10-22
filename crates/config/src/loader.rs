@@ -240,7 +240,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         .collect();
     validate_runtime(&runtime)?;
     for (name, server) in &mcp_servers {
-        server.config.validate(name)?;
+        server.config.validate_top_level(name)?;
     }
     for (name, (plugin, path, text)) in &plugins {
         if let Some(field) = plugin.invalid_field(name) {

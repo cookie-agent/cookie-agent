@@ -442,8 +442,10 @@ fn affected_sessions(
 }
 
 /// `failure` as a client sees it, when one of `sessions` uses the server:
-/// it is attached to the instance that hosts it. Top-level MCP servers
-/// belong to the global runtime.
+/// it is attached to the instance that hosts it, or, for a server its
+/// runtime hosts without a workspace (a runtime-scoped one), to any
+/// instance of that runtime. Top-level MCP servers belong to the global
+/// runtime.
 fn mcp_failure(
     engine: &Engine,
     sessions: &[SessionId],
@@ -451,7 +453,8 @@ fn mcp_failure(
 ) -> Option<cookie_agent_protocol::McpServerFailure> {
     let runtime_id = RuntimeId::new(failure.runtime_id.as_str()).ok()?;
     let session_ids = affected_sessions(engine, sessions, |attachment| {
-        attachment.runtime_id == runtime_id && attachment.workspace == failure.workspace
+        attachment.runtime_id == runtime_id
+            && (failure.workspace.is_none() || attachment.workspace == failure.workspace)
     });
     (!session_ids.is_empty()).then(|| cookie_agent_protocol::McpServerFailure {
         runtime_id: runtime_id.clone(),

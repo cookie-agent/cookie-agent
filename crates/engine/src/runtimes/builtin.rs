@@ -103,6 +103,7 @@ impl GlobalTemplate {
             providers,
             skills,
             connection: None,
+            shared: None,
         }
     }
 }
@@ -130,6 +131,7 @@ impl LocalTemplate {
             providers: (self.tools)(workspace),
             skills,
             connection: None,
+            shared: None,
         })
     }
 

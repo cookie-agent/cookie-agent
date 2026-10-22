@@ -457,6 +457,7 @@ mod tests {
             runtime_id: RuntimeId::new(runtime).unwrap(),
             workspace: workspace.map(str::to_owned),
             name: name.into(),
+            scope: None,
             source: McpConfigSource::UserFile,
             definition: McpServerDefinition {
                 command: Some("server".into()),

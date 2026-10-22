@@ -37,7 +37,7 @@ pub use prompt_template::{
 pub use runtime::{
     AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
     DelegationConfig, EngineConfig, LoopWarningConfig, McpConfig, McpOAuthConfig, McpOAuthSettings,
-    McpServerConfig, MemoryConfig, MessagingConfig, ModelPricing, ModelRetryConfig,
+    McpServerConfig, McpServerScope, MemoryConfig, MessagingConfig, ModelPricing, ModelRetryConfig,
     PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion, PluginConfig, PluginsConfig, PricingConfig,
     ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig, SessionTitleConfig,
     SubagentOutputConfig, ToolOutputConfig, valid_daemon_token, valid_daemon_url,

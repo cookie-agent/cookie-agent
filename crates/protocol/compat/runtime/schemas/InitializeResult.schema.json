@@ -31,6 +31,86 @@
       ],
       "type": "object"
     },
+    "McpServerReport": {
+      "description": "The status of one MCP server a runtime hosts.",
+      "properties": {
+        "message": {
+          "default": null,
+          "description": "Why the server failed, or what it is doing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpServerScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the runtime hosts the server (runtime protocol 1.5.0); absent\nreads as `workspace`, which is all a runtime hosted before."
+        },
+        "state": {
+          "$ref": "#/$defs/McpServerState"
+        },
+        "tools": {
+          "default": [],
+          "description": "The names of its tools as the runtime declares them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "state"
+      ],
+      "type": "object"
+    },
+    "McpServerScope": {
+      "description": "Where a runtime hosts an MCP server (runtime protocol 1.5.0; client\nprotocol 1.13.0). Open: a value this build does not know reads as\n`workspace`.",
+      "oneOf": [
+        {
+          "const": "runtime",
+          "description": "One process per runtime, started when the runtime initializes and\nshared by every workspace instance; its tools are the runtime's own,\noutside any instance.",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "description": "One process per workspace instance, started when the instance\nopens.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "McpServerState": {
+      "description": "Open: a state this build does not know reads as `disconnected`, which\noffers no tools and is not retried as a failure.",
+      "oneOf": [
+        {
+          "enum": [
+            "disabled",
+            "connecting",
+            "connected",
+            "failed",
+            "disconnected"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "reconnecting",
+          "description": "The connection dropped and is being re-established: its tools stay\ndeclared and calls fail with `runtime_unavailable`.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "RuntimeMachine": {
       "description": "The machine a runtime runs on, as `runtime/initialize` reports it.",
       "properties": {
@@ -86,6 +166,13 @@
         }
       ],
       "description": "The machine the runtime runs on, which the daemon groups runtimes\nby (runtime protocol 1.1.0). Absent when the runtime cannot tell."
+    },
+    "mcp_servers": {
+      "description": "Every MCP server the runtime is configured with (runtime protocol\n1.5.0), in name order, as `runtime/mcp_changed` reports them later:\nthe runtime-scoped ones, which start as the runtime initializes, with\ntheir status now, and the workspace-scoped ones as configured.",
+      "items": {
+        "$ref": "#/$defs/McpServerReport"
+      },
+      "type": "array"
     },
     "platform": {
       "default": null,

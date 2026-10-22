@@ -1,6 +1,6 @@
 use std::fs;
 
-use cookie_agent_config::{ConfigError, load_from_user_root};
+use cookie_agent_config::{ConfigError, McpServerScope, load_from_user_root};
 use cookie_agent_identity::RuntimeId;
 
 fn root(config: &str) -> tempfile::TempDir {
@@ -65,6 +65,8 @@ fn template_fields_are_strict() {
         "plugins = {}",
         "args = []",
         "cwd = \"/tmp\"",
+        // A server's, not a template's.
+        "scope = \"runtime\"",
     ] {
         let error = rejected(&format!(
             "[runtimes.labpc]\ncommand = [\"runtime\"]\n{field}\n"
@@ -207,4 +209,79 @@ fn runtimes_must_be_a_table_of_tables() {
     assert!(error.contains("malformed configuration content"), "{error}");
     let error = rejected("[runtimes]\nlabpc = 1\n");
     assert!(error.contains("malformed configuration content"), "{error}");
+}
+
+#[test]
+fn a_template_server_is_hosted_per_runtime_or_per_workspace() {
+    let loaded = load(
+        r#"
+[runtimes.labpc]
+command = ["runtime"]
+
+[runtimes.labpc.mcp.servers.browser]
+command = "chrome-devtools-mcp"
+scope = "runtime"
+
+[runtimes.labpc.mcp.servers.lsp]
+command = "rust-analyzer-mcp"
+scope = "workspace"
+
+[runtimes.labpc.mcp.servers.docs]
+command = "docs-mcp"
+
+[runtimes.local.mcp.servers.my_chrome]
+command = "chrome-devtools-mcp"
+scope = "runtime"
+"#,
+    )
+    .expect("scoped servers");
+    let servers = &loaded.runtimes[&RuntimeId::new("labpc").unwrap()].mcp_servers;
+    assert_eq!(servers["browser"].hosted_scope(), McpServerScope::Runtime);
+    assert_eq!(servers["lsp"].hosted_scope(), McpServerScope::Workspace);
+    // Without a scope, a server is hosted per workspace, as before scopes.
+    assert_eq!(servers["docs"].scope, None);
+    assert_eq!(servers["docs"].hosted_scope(), McpServerScope::Workspace);
+    assert_eq!(
+        loaded.runtimes[&RuntimeId::local()].mcp_servers["my_chrome"].hosted_scope(),
+        McpServerScope::Runtime
+    );
+    // The scope travels to the runtime with the rest of the server's table,
+    // and an absent one stays absent.
+    assert_eq!(
+        serde_json::to_value(&servers["browser"]).unwrap()["scope"],
+        "runtime"
+    );
+    assert!(
+        serde_json::to_value(&servers["docs"])
+            .unwrap()
+            .get("scope")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_scope_is_one_of_runtime_or_workspace() {
+    for value in ["\"daemon\"", "\"Runtime\"", "\"\"", "true", "1"] {
+        let error = rejected(&format!(
+            "[runtimes.labpc]\ncommand = [\"runtime\"]\n[runtimes.labpc.mcp.servers.x]\ncommand = \"x\"\nscope = {value}\n"
+        ));
+        assert!(
+            error.contains("malformed configuration content") || error.contains("unknown variant"),
+            "{value}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_top_level_server_takes_no_scope() {
+    for scope in ["runtime", "workspace"] {
+        let error = rejected(&format!(
+            "[mcp.servers.browser]\ncommand = \"chrome-devtools-mcp\"\nscope = \"{scope}\"\n"
+        ));
+        assert!(
+            error.contains("MCP server `browser`") && error.contains("`scope` applies only"),
+            "{scope}: {error}"
+        );
+    }
+    load("[mcp.servers.browser]\ncommand = \"chrome-devtools-mcp\"\n").expect("unscoped");
 }

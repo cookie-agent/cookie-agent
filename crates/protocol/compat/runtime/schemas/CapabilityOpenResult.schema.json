@@ -14,6 +14,17 @@
         "name": {
           "type": "string"
         },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpServerScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the runtime hosts the server (runtime protocol 1.5.0); absent\nreads as `workspace`, which is all a runtime hosted before."
+        },
         "state": {
           "$ref": "#/$defs/McpServerState"
         },
@@ -31,6 +42,22 @@
         "state"
       ],
       "type": "object"
+    },
+    "McpServerScope": {
+      "description": "Where a runtime hosts an MCP server (runtime protocol 1.5.0; client\nprotocol 1.13.0). Open: a value this build does not know reads as\n`workspace`.",
+      "oneOf": [
+        {
+          "const": "runtime",
+          "description": "One process per runtime, started when the runtime initializes and\nshared by every workspace instance; its tools are the runtime's own,\noutside any instance.",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "description": "One process per workspace instance, started when the instance\nopens.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     },
     "McpServerState": {
       "description": "Open: a state this build does not know reads as `disconnected`, which\noffers no tools and is not retried as a failure.",

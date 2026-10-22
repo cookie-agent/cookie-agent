@@ -5,6 +5,25 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.13.0
+
+- Runtime-scoped MCP servers (`scope = "runtime"` on a runtime template's
+  server; runtime protocol 1.5.0): `McpServerInfo` has the optional `scope`,
+  `runtime` or `workspace` (an open enum; an unknown value reads as
+  `workspace`), for a server a runtime other than `global` hosts.
+  `mcp.server.list` lists a runtime-scoped server once, without a
+  `workspace`, with its live state, and, while no instance of a connected
+  runtime hosts it, a workspace-scoped server without a `workspace`,
+  `disconnected` with the message "starts when a workspace opens", so a
+  client shows a runtime's servers before any session opens a workspace of
+  it. `mcp.server.reconnect` without a `workspace` reconnects a
+  runtime-scoped server; for a waiting workspace-scoped one it fails. A
+  runtime-scoped server's failure names no `workspace` and reaches the
+  sessions attached to any instance of its runtime.
+- A 1.12 client ignores `scope` and shows a runtime-scoped server as one its
+  runtime hosts without a workspace, and a waiting one as `disconnected`
+  with its message; a 1.13 client reading a 1.12 daemon sees no scope.
+
 ## 1.12.0
 
 - `mcp.server.list` lists the MCP servers a dial-in runtime hosts from

@@ -1,0 +1,171 @@
+{
+  "$defs": {
+    "PromptSectionDeclaration": {
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "ToolCollision": {
+      "description": "How a tool behaves when another source offers the same name.\n\nOpen: a mode this build does not know reads as `prefix`.",
+      "oneOf": [
+        {
+          "const": "fallback",
+          "description": "Hidden whenever a non-fallback tool with the same name is published.",
+          "type": "string"
+        },
+        {
+          "const": "override",
+          "description": "Takes the bare name, and the tool it collides with is published under\nits own source's prefix (or hidden, if it is `fallback`). Two\n`override` tools with one name are both prefixed.",
+          "type": "string"
+        },
+        {
+          "const": "prefix",
+          "description": "Takes the bare name while no other tool claims it. It is published as\n`<source>_<name>` when a `prefix` tool of another source has the same\nname, when one `override` tool takes the name, or when the name is a\nbase-layer tool's.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "ToolConcurrency": {
+      "description": "Declares whether calls to a tool may overlap with sibling calls from one model turn.\n\nOpen: a value this build does not know reads as `exclusive`, the most\nconservative.",
+      "enum": [
+        "parallel",
+        "exclusive"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "ToolDeclaration": {
+      "description": "A tool as a runtime declares it.",
+      "properties": {
+        "background": {
+          "description": "The tool supports the background (`docs/site/specs/background-tools.md`).",
+          "type": "boolean"
+        },
+        "background_default": {
+          "description": "Whether a call runs in the background when the model omits the\nargument; only valid with `background`.",
+          "type": "boolean"
+        },
+        "collision": {
+          "$ref": "#/$defs/ToolCollision",
+          "default": "prefix"
+        },
+        "concurrency": {
+          "$ref": "#/$defs/ToolConcurrency",
+          "default": "exclusive"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {
+          "$ref": "#/$defs/ToolOutputDeclaration",
+          "default": {
+            "kind": "single"
+          }
+        },
+        "parameters": {
+          "description": "JSON Schema of the arguments."
+        },
+        "permission": {
+          "description": "The fixed permission action the tool is checked under; absent for a\ntool that needs no permission.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result_truncation": {
+          "$ref": "#/$defs/ToolResultTruncationPolicy",
+          "default": "bounded"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "parameters"
+      ],
+      "type": "object"
+    },
+    "ToolOutputDeclaration": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "single",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "named",
+              "type": "string"
+            },
+            "streams": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "streams"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolResultTruncationPolicy": {
+      "description": "Open: a policy this build does not know reads as `bounded`, so the\ndaemon still bounds the result.",
+      "enum": [
+        "opt_out",
+        "bounded"
+      ],
+      "type": "string",
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A runtime's tools and their prompt sections.",
+  "properties": {
+    "prompt_sections": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PromptSectionDeclaration"
+      },
+      "type": "array"
+    },
+    "tools": {
+      "items": {
+        "$ref": "#/$defs/ToolDeclaration"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "tools"
+  ],
+  "title": "RuntimeTools",
+  "type": "object"
+}

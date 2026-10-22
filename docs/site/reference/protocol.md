@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.12.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.13.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.12.0",
+    "protocol_version": "1.13.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.12.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.13.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -1048,7 +1048,16 @@ from `[runtimes.local.mcp]` on its own machine. Each entry has the hosting
 1.12.0, `machine`: defined on the hosting runtime's machine, which the
 daemon does not read, so its `definition` is empty (no `command` or `url`).
 `source` is an open enum; a 1.11 client reads `machine` as `runtime`. Before
-1.12.0 a dial-in runtime's own servers were left out of the list. `state` is `connected`, `connecting`, `reconnecting`,
+1.12.0 a dial-in runtime's own servers were left out of the list. Since
+1.13.0 an entry of a runtime other than `global` may carry `scope`,
+`runtime` or `workspace` (an open enum; an unknown value reads as
+`workspace`; see [scope](../extend/mcp.md#scope-one-per-workspace-or-one-per-runtime)):
+a `runtime` server is one process its runtime shares across its
+workspaces, listed once without a `workspace`; a `workspace` server is
+listed for each instance that hosts it, with the instance's `workspace`,
+and, while no instance of a connected runtime hosts it, once without one,
+`disconnected` with the message "starts when a workspace opens".
+`state` is `connected`, `connecting`, `reconnecting`,
 `failed`, `needs_auth`, `disabled`, or `disconnected`. A `reconnecting` server
 dropped and is being restarted: its tools stay published and calls fail with
 the `runtime_unavailable` failure code until it reconnects or, after every
@@ -1058,7 +1067,9 @@ and `mcp.auth.*` act on servers of the global runtime. `mcp.server.reconnect
 { name, runtime_id?, workspace? }` reconnects a server of any runtime and
 waits for the attempt: without `runtime_id` (or with `global`) a top-level
 server, otherwise the one the instance of `runtime_id` at `workspace` hosts,
-as `mcp.server.list` names them.
+as `mcp.server.list` names them; without `workspace`, a runtime-scoped
+server of `runtime_id` (a waiting workspace-scoped one fails: it starts with
+a workspace).
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI

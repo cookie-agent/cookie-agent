@@ -133,7 +133,7 @@
       "type": "array"
     },
     "instance": {
-      "description": "The capability instance the calls go to; absent for a plugin, whose\nconnection has one implicit instance.",
+      "description": "The capability instance the calls go to; absent for a plugin, whose\nconnection has one implicit instance, and for the tools a runtime\ndeclares outside any instance (`runtime/tools_changed`).",
       "type": [
         "string",
         "null"

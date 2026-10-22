@@ -295,6 +295,7 @@ fn hanging_mcp_server(cancel_file: &Path) -> LoadedMcpServer {
             oauth: Default::default(),
             enabled: true,
             timeout_ms: Some(60_000),
+            scope: None,
         },
     }
 }

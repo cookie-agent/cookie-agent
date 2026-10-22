@@ -189,6 +189,7 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
             skills: cookie_agent_config::load_project_skills(workspace.root())
                 .map_err(|error| refused(error.to_string()))?,
             connection: None,
+            shared: None,
         })
     }
 }
@@ -2302,6 +2303,7 @@ pub(crate) fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
             oauth: Default::default(),
             enabled: true,
             timeout_ms: Some(5_000),
+            scope: None,
         },
     }
 }

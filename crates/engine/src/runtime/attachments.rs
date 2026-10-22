@@ -186,8 +186,12 @@ impl Engine {
     }
 
     /// The tool sources of a session with `attachments`: the base layer, then
-    /// each attachment's running instance. An attachment whose instance is
-    /// not running contributes nothing.
+    /// each attachment's running instance, and after the first attachment of
+    /// a runtime that has tools of its own (its runtime-scoped MCP servers')
+    /// those, once per runtime however many of its workspaces the session
+    /// attaches. They compose under the runtime's ID and run without a
+    /// workspace. An attachment whose instance is not running contributes
+    /// nothing.
     pub(crate) fn tool_sources_for(
         &self,
         attachments: &[RuntimeAttachment],
@@ -204,6 +208,7 @@ impl Engine {
                 provider,
             })
             .collect::<Vec<_>>();
+        let mut shared_runtimes = std::collections::HashSet::new();
         for attachment in attachments {
             let Some(instance) = self.inner.runtimes.instance(attachment) else {
                 continue;
@@ -216,6 +221,16 @@ impl Engine {
                 origin: origin.clone(),
                 provider,
             }));
+            if let Some((generation, shared)) = instance.shared_source()
+                && shared_runtimes.insert(attachment.runtime_id.clone())
+            {
+                sources.push(SourcedProvider {
+                    attachment: Some(attachment.name.clone()),
+                    generation,
+                    origin: crate::ToolOrigin::Runtime(shared.info),
+                    provider: shared.provider,
+                });
+            }
         }
         sources
     }

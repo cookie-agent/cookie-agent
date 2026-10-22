@@ -7,13 +7,21 @@
 //! prepares and executes calls of every instance concurrently. It keeps each prepared call under its prepared ID until
 //! the daemon executes or releases it, runs executions concurrently, sends
 //! their progress back with `tool/progress`, and tells the daemon with
-//! `tool/detachable` when a call reaches its detach point. Each instance hosts the template's MCP servers in its workspace, the
+//! `tool/detachable` when a call reaches its detach point. Each instance hosts the template's workspace-scoped MCP servers in its workspace, the
 //! directory a stdio server starts in unless it configures a `cwd` (a
 //! relative one resolves against the workspace; `docs/site/specs/runtimes.md`
 //! section 3): it connects them before it answers `capability/open`,
 //! declares their tools next to its built-in ones, reconnects dropped ones
 //! with the shared reconnect policy, and reports their status with
-//! `mcp/changed` and a changed tool list with `capability/tools_changed`. It
+//! `mcp/changed` and a changed tool list with `capability/tools_changed`.
+//! The runtime-scoped ones (`scope = "runtime"`) run once for the runtime,
+//! in its home directory unless they configure a `cwd`:
+//! they start connecting when `runtime/initialize` is accepted, without
+//! holding up its reply, and every `capability/open` waits for their first
+//! attempt (which each server's `timeout_ms` bounds). Their tools are the
+//! runtime's own, outside any instance: declared with
+//! `runtime/tools_changed` and prepared without an `instance`; every
+//! configured server's status goes out with `runtime/mcp_changed`. It
 //! returns on `runtime/shutdown` or when the transport ends, cancelling what
 //! still runs and stopping its MCP servers.
 //!
@@ -33,7 +41,9 @@ use std::{
 
 use async_trait::async_trait;
 use base64::Engine as _;
-use cookie_agent_config::{LoadedMcpServer, McpOAuthConfig, McpServerConfig, McpServerSource};
+use cookie_agent_config::{
+    LoadedMcpServer, McpOAuthConfig, McpServerConfig, McpServerScope, McpServerSource,
+};
 use cookie_agent_mcp::{McpRegistry, McpRegistryOptions, McpServerFailure, McpServerStatus};
 use cookie_agent_protocol::{RUNTIME_PROTOCOL_VERSION, SessionId, Transport, errors};
 use cookie_agent_runtime_api::{
@@ -48,10 +58,10 @@ use cookie_agent_runtime_api::{
         ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         InlineMedia, McpChangedParams, McpFailureReport, McpReconnectParams, McpServerReport,
         McpServerSettings, Outcome, OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult,
-        PreparedCall, PreparedRef, PromptSectionDeclaration, RuntimeSettings, RuntimeSkills,
-        RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration, ToolDeclaration,
-        ToolDeclarationExt as _, ToolProgressParams, ToolResult, ToolResultExt as _, WireToolError,
-        method,
+        PreparedCall, PreparedRef, PromptSectionDeclaration, RuntimeMcpChangedParams,
+        RuntimeMcpReconnectParams, RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration,
+        SkillDiscoveryDeclaration, ToolDeclaration, ToolDeclarationExt as _, ToolProgressParams,
+        ToolResult, ToolResultExt as _, WireToolError, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -220,6 +230,9 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> Stri
             mcp.shutdown().await;
         }
     }
+    if let Some(mcp) = server.runtime_mcp() {
+        mcp.registry.shutdown().await;
+    }
     peer.close();
     // The reply to `runtime/shutdown` is still queued: wait until it is
     // written, since a process serving stdio exits as soon as this returns.
@@ -264,8 +277,96 @@ struct Server {
 struct Initialized {
     runtime_id: String,
     settings: RuntimeSettings,
-    /// The template's MCP servers, which every instance hosts.
+    /// The workspace-scoped MCP servers, which every instance hosts.
     mcp_servers: BTreeMap<String, LoadedMcpServer>,
+    /// The runtime-scoped MCP servers, hosted once for the runtime, when it
+    /// has any.
+    runtime_mcp: Option<Arc<RuntimeMcp>>,
+}
+
+/// The runtime-scoped MCP servers: one registry for the runtime, whose
+/// tools are the runtime's own (`runtime/tools_changed`, prepared without
+/// an `instance`).
+struct RuntimeMcp {
+    registry: McpRegistry,
+    /// The registry as the provider of the runtime's own tools.
+    providers: Vec<Arc<dyn ToolProvider>>,
+    /// The origin calls to them prepare with: the runtime, no workspace.
+    info: Arc<RuntimeInfo>,
+    /// The workspace-scoped servers as configured, listed with them.
+    configured: Vec<McpServerReport>,
+    /// Subscribed before the initialize reply, taken by the reporter.
+    watch: Mutex<
+        Option<(
+            tokio::sync::watch::Receiver<u64>,
+            tokio::sync::broadcast::Receiver<McpServerFailure>,
+        )>,
+    >,
+    /// What the daemon last got. Held while a report is sent, so a report
+    /// sent before a reply reaches the daemon before it.
+    reported: tokio::sync::Mutex<RuntimeReported>,
+}
+
+#[derive(Default)]
+struct RuntimeReported {
+    tools: RuntimeTools,
+    servers: Vec<McpServerReport>,
+}
+
+impl RuntimeMcp {
+    /// Every configured server as the runtime reports them, in name order.
+    fn reports(&self) -> Vec<McpServerReport> {
+        runtime_reports(Some(&self.registry), &self.configured)
+    }
+
+    /// Sends the daemon the runtime's own tools and its servers' status
+    /// when either changed since it last got them, or `failure` happened.
+    async fn sync(&self, peer: &Peer, failure: Option<McpServerFailure>) -> Result<(), RpcError> {
+        let mut reported = self.reported.lock().await;
+        if let Ok(tools) = declared_tools(&self.providers)
+            && tools != reported.tools
+        {
+            reported.tools = tools;
+            peer.notify(method::TOOLS_CHANGED, &reported.tools).await?;
+        }
+        let servers = self.reports();
+        if servers == reported.servers && failure.is_none() {
+            return Ok(());
+        }
+        reported.servers = servers;
+        peer.notify(
+            method::RUNTIME_MCP_CHANGED,
+            &RuntimeMcpChangedParams {
+                servers: reported.servers.clone(),
+                failures: failure
+                    .into_iter()
+                    .map(|McpServerFailure { server, reason }| McpFailureReport { server, reason })
+                    .collect(),
+            },
+        )
+        .await
+    }
+}
+
+/// Every configured server as the runtime reports them, in name order: the
+/// ones `registry` hosts, runtime-scoped, with their status, and the
+/// `configured` workspace-scoped ones.
+fn runtime_reports(
+    registry: Option<&McpRegistry>,
+    configured: &[McpServerReport],
+) -> Vec<McpServerReport> {
+    let mut servers = registry
+        .map(mcp_reports)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|report| McpServerReport {
+            scope: Some(protocol::McpServerScope::Runtime),
+            ..report
+        })
+        .chain(configured.iter().cloned())
+        .collect::<Vec<_>>();
+    servers.sort_by(|left, right| left.name.cmp(&right.name));
+    servers
 }
 
 /// One open `coding` instance.
@@ -273,8 +374,9 @@ struct Instance {
     id: String,
     info: Arc<RuntimeInfo>,
     /// The built-in providers, then the MCP registry when the instance hosts
-    /// MCP servers. Names are unique across them: the registry fails a
-    /// server whose tool would take a built-in name.
+    /// MCP servers, then, for a daemon that predates runtime-scoped servers,
+    /// the runtime's registry. Names are unique across them: the registry
+    /// fails a server whose tool would take a built-in name.
     providers: Vec<Arc<dyn ToolProvider>>,
     /// The template's MCP servers, when it has any.
     mcp: Option<McpRegistry>,
@@ -282,16 +384,14 @@ struct Instance {
     opened: CapabilityOpenResult,
 }
 
-impl Instance {
-    /// The provider that declares `name` now.
-    fn route(&self, name: &str) -> Option<usize> {
-        let context = SessionToolContext::new(SessionId::new_v7());
-        self.providers.iter().position(|provider| {
-            provider
-                .tools_for_session(&context)
-                .is_ok_and(|tools| tools.iter().any(|tool| tool.name == name))
-        })
-    }
+/// The provider among `providers` that declares `name` now.
+fn route(providers: &[Arc<dyn ToolProvider>], name: &str) -> Option<usize> {
+    let context = SessionToolContext::new(SessionId::new_v7());
+    providers.iter().position(|provider| {
+        provider
+            .tools_for_session(&context)
+            .is_ok_and(|tools| tools.iter().any(|tool| tool.name == name))
+    })
 }
 
 struct Execution {
@@ -315,7 +415,17 @@ fn unknown_handle(what: &str, id: u64) -> RpcError {
         .into()
 }
 
+/// The first runtime protocol version whose daemons take a runtime's own
+/// tools, which runtime-scoped MCP servers need.
+const RUNTIME_SCOPED_MCP: cookie_agent_protocol::SemVer =
+    cookie_agent_protocol::SemVer::new(1, 5, 0);
+
 impl Server {
+    /// The runtime-scoped MCP servers, once initialized with any.
+    fn runtime_mcp(&self) -> Option<Arc<RuntimeMcp>> {
+        self.state.get().and_then(|state| state.runtime_mcp.clone())
+    }
+
     /// Registers the execution an execute request starts.
     fn admit_execution(&self, request: &IncomingRequest) -> Option<AdmittedExecution> {
         if request.method != method::TOOL_EXECUTE {
@@ -340,7 +450,15 @@ impl Server {
         let method = request.method.clone();
         if method == method::INITIALIZE {
             let result = self.initialize(&request);
-            return reply(request, result).await;
+            let initialized = result.is_ok();
+            reply(request, result).await;
+            // Reported from now on: the reply had their status until now.
+            if initialized
+                && let Some(mcp) = self.state.get().and_then(|state| state.runtime_mcp.clone())
+            {
+                tokio::spawn(Arc::clone(&self).report_runtime_mcp(mcp));
+            }
+            return;
         }
         // Liveness needs no handshake: the daemon may ask at any time.
         if method == method::PING {
@@ -412,6 +530,10 @@ impl Server {
             }
             method::MCP_RECONNECT => {
                 let result = self.reconnect_mcp(&request).await;
+                reply(request, result).await;
+            }
+            method::RUNTIME_MCP_RECONNECT => {
+                let result = self.reconnect_runtime_mcp(&state, &request).await;
                 reply(request, result).await;
             }
             other => {
@@ -504,7 +626,7 @@ impl Server {
     fn initialize_once(&self, params: InitializeParams) -> Result<InitializeResult, String> {
         cookie_agent_protocol::RuntimeId::new(params.runtime_id.as_str())
             .map_err(|_| format!("invalid runtime ID `{}`", params.runtime_id))?;
-        let mcp_servers = if params.settings.mcp_servers.is_empty() {
+        let configured = if params.settings.mcp_servers.is_empty() {
             mcp_servers(&self.options.mcp_servers)?
         } else {
             mcp_servers(&params.settings.mcp_servers)?
@@ -512,12 +634,57 @@ impl Server {
         if params.settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
             return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
         }
+        // A daemon older than runtime protocol 1.5.0 knows no tools outside
+        // an instance: every server is hosted per workspace for it.
+        let shared = params.protocol_version >= RUNTIME_SCOPED_MCP;
+        let (runtime_servers, mcp_servers): (BTreeMap<_, _>, BTreeMap<_, _>) =
+            configured.into_iter().partition(|(_, server)| {
+                shared && server.config.hosted_scope() == McpServerScope::Runtime
+            });
+        let reported = mcp_servers
+            .iter()
+            .map(|(name, server)| McpServerReport {
+                name: name.clone(),
+                state: if server.config.enabled {
+                    protocol::McpServerState::Disconnected
+                } else {
+                    protocol::McpServerState::Disabled
+                },
+                message: None,
+                tools: Vec::new(),
+                scope: Some(protocol::McpServerScope::Workspace),
+            })
+            .collect::<Vec<_>>();
+        let runtime_mcp = if runtime_servers.is_empty() {
+            None
+        } else {
+            Some(Arc::new(self.start_runtime_mcp(
+                &params.runtime_id,
+                runtime_servers,
+                reported.clone(),
+            )?))
+        };
+        let mcp_reports = match &runtime_mcp {
+            Some(mcp) => mcp.reports(),
+            None => runtime_reports(None, &reported),
+        };
+        if let Some(mcp) = &runtime_mcp {
+            mcp.reported
+                .try_lock()
+                .expect("nothing reports before the runtime initializes")
+                .servers
+                .clone_from(&mcp_reports);
+        }
         let initialized = Arc::new(Initialized {
             runtime_id: params.runtime_id,
             settings: params.settings,
             mcp_servers,
+            runtime_mcp,
         });
-        if self.state.set(initialized).is_err() {
+        if let Err(initialized) = self.state.set(initialized) {
+            if let Some(mcp) = initialized.runtime_mcp.clone() {
+                tokio::spawn(async move { mcp.registry.shutdown().await });
+            }
             return Err("the runtime is already initialized".into());
         }
         Ok(InitializeResult {
@@ -536,7 +703,104 @@ impl Server {
                 description: "Read, write, edit, and run commands in a workspace".into(),
             }],
             producer_messaging: self.options.producer_messaging,
+            mcp_servers: mcp_reports,
         })
+    }
+
+    /// Starts connecting the runtime-scoped `servers` of runtime
+    /// `runtime_id`, each in the runtime's home directory, or its configured
+    /// `cwd` (a relative one under home). Their first attempt runs while the runtime answers
+    /// `runtime/initialize`; `capability/open` waits for it.
+    fn start_runtime_mcp(
+        &self,
+        runtime_id: &str,
+        servers: BTreeMap<String, LoadedMcpServer>,
+        configured: Vec<McpServerReport>,
+    ) -> Result<RuntimeMcp, String> {
+        let registry = McpRegistry::new(
+            servers,
+            McpRegistryOptions {
+                working_dir: crate::runtime_home().map(Path::to_owned),
+                ..McpRegistryOptions::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        if let Some(policy) = &self.options.mcp_reconnect {
+            registry.set_reconnect_policy(policy.clone());
+        }
+        let watch = (registry.subscribe_changes(), registry.subscribe_failures());
+        registry.start_eager(&tokio::runtime::Handle::current());
+        let info = RuntimeInfo::new(
+            runtime_id,
+            cookie_agent_protocol::CapabilityName::coding(),
+            RuntimeKind::new(cookie_agent_runtime_api::CODING_RUNTIME_KIND)
+                .expect("`coding` is a valid kind"),
+            runtime_id,
+            None,
+        )
+        .with_home(crate::runtime_home().map(|home| home.to_string_lossy().into_owned()));
+        Ok(RuntimeMcp {
+            providers: vec![Arc::new(registry.clone())],
+            registry,
+            info: Arc::new(info),
+            configured,
+            watch: Mutex::new(Some(watch)),
+            reported: tokio::sync::Mutex::default(),
+        })
+    }
+
+    /// Reports the runtime-scoped servers' status and the runtime's own
+    /// tools to the daemon as they change, until the runtime stops.
+    async fn report_runtime_mcp(self: Arc<Self>, mcp: Arc<RuntimeMcp>) {
+        let Some((mut changes, mut failures)) = lock(&mcp.watch).take() else {
+            return;
+        };
+        loop {
+            let failure = tokio::select! {
+                () = self.stop.cancelled() => return,
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    None
+                }
+                failure = failures.recv() => match failure {
+                    Ok(failure) => Some(failure),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+            };
+            if mcp.sync(&self.peer, failure).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// `runtime/mcp_reconnect`: reconnects one runtime-scoped server now, or
+    /// retries every failed one, and answers once the attempts finished.
+    async fn reconnect_runtime_mcp(
+        &self,
+        state: &Initialized,
+        request: &IncomingRequest,
+    ) -> Result<Outcome, RpcError> {
+        let params: RuntimeMcpReconnectParams = request.params()?;
+        let Some(mcp) = &state.runtime_mcp else {
+            return Ok(Outcome::of(match params.server {
+                Some(server) => Err(ToolError::execution(format!(
+                    "unknown runtime-scoped MCP server `{server}`"
+                ))),
+                None => Ok(()),
+            }));
+        };
+        Ok(Outcome::of(match params.server {
+            Some(server) => mcp.registry.reconnect_server(&server).await,
+            None => {
+                mcp.registry
+                    .retry_failed(&tokio::runtime::Handle::current());
+                mcp.registry.await_eager_ready().await;
+                Ok(())
+            }
+        }))
     }
 
     /// `capability/open`: the `coding` instance for a workspace, opened when
@@ -599,6 +863,21 @@ impl Server {
         if let Some(instance) = existing {
             return Ok((instance.opened.clone(), None));
         }
+        // The runtime's own servers have finished their first attempt, and
+        // the daemon has their tools, when an instance opens.
+        if let Some(mcp) = &state.runtime_mcp {
+            tokio::select! {
+                () = mcp.registry.await_eager_ready() => {}
+                () = self.stop.cancelled() => {
+                    return Err(rejected(
+                        "the runtime stopped while its MCP servers connected".into(),
+                    ));
+                }
+            }
+            mcp.sync(&self.peer, None).await.map_err(|error| {
+                rejected(format!("reporting the runtime's MCP servers: {error}"))
+            })?;
+        }
         let (instance, watch) = self
             .open_instance(state, workspace)
             .await
@@ -660,7 +939,16 @@ impl Server {
             (Some(registry), Some(watch))
         };
         let tools = declared_tools(&providers)?;
-        let mcp_servers = mcp.as_ref().map(mcp_reports).unwrap_or_default();
+        let mcp_servers: Vec<McpServerReport> = mcp
+            .as_ref()
+            .map(mcp_reports)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|report| McpServerReport {
+                scope: Some(protocol::McpServerScope::Workspace),
+                ..report
+            })
+            .collect();
         let watch = watch.map(|watch| McpWatch {
             declared: tools.clone(),
             reported: mcp_servers.clone(),
@@ -730,7 +1018,13 @@ impl Server {
                     return;
                 }
             }
-            let servers = mcp_reports(&watch.registry);
+            let servers = mcp_reports(&watch.registry)
+                .into_iter()
+                .map(|report| McpServerReport {
+                    scope: Some(protocol::McpServerScope::Workspace),
+                    ..report
+                })
+                .collect::<Vec<_>>();
             if servers == watch.reported && failure.is_none() {
                 continue;
             }
@@ -805,7 +1099,14 @@ impl Server {
 
     async fn prepare(&self, request: &IncomingRequest) -> Result<PrepareResult, RpcError> {
         let params: PrepareParams = request.params()?;
-        let state = self.instance(params.instance.as_deref())?;
+        let (info, providers) = match (params.instance.as_deref(), self.runtime_mcp()) {
+            // The runtime's own tools.
+            (None, Some(mcp)) => (Arc::clone(&mcp.info), mcp.providers.clone()),
+            (instance, _) => {
+                let state = self.instance(instance)?;
+                (Arc::clone(&state.info), state.providers.clone())
+            }
+        };
         if params.calls.len() > protocol::MAX_PREPARE_BATCH {
             return Err(errors::BAD_PARAMS
                 .error()
@@ -819,7 +1120,7 @@ impl Server {
         let context = ToolPreparationContext {
             session: params.session,
             run: params.run,
-            origin: ToolOrigin::Runtime(Arc::clone(&state.info)),
+            origin: ToolOrigin::Runtime(info),
             turn_context: Arc::new(params.turn.into()),
         };
         let calls: Vec<ToolCall> = params
@@ -836,7 +1137,7 @@ impl Server {
         let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
         let mut outcomes: Vec<Option<PrepareOutcome>> = (0..calls.len()).map(|_| None).collect();
         for (index, call) in calls.iter().enumerate() {
-            match state.route(&call.name) {
+            match route(&providers, &call.name) {
                 Some(provider) => match groups.iter_mut().find(|(group, _)| *group == provider) {
                     Some((_, indexes)) => indexes.push(index),
                     None => groups.push((provider, vec![index])),
@@ -853,7 +1154,7 @@ impl Server {
             }
         }
         for (provider_index, indexes) in groups {
-            let provider = &state.providers[provider_index];
+            let provider = &providers[provider_index];
             let group = indexes.iter().map(|index| calls[*index].clone()).collect();
             let results = provider.prepare_parallel(context.clone(), group).await;
             for (index, result) in indexes.into_iter().zip(results) {
@@ -1089,6 +1390,7 @@ fn mcp_report(status: McpServerStatus) -> McpServerReport {
         },
         message: status.message,
         tools: status.tools,
+        scope: None,
     }
 }
 

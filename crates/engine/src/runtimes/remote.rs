@@ -11,8 +11,13 @@
 //! detach point. When the connection is lost, calls in flight, backgrounded
 //! ones included, fail with `runtime_unavailable`.
 //! The client also keeps what the runtime reports about the MCP servers it
-//! hosts (`mcp/changed`), forwards their changes and failures to the
-//! [`McpHub`], and asks the runtime to reconnect them (`mcp/reconnect`).
+//! hosts (`mcp/changed` per instance, `runtime/mcp_changed` for the runtime's
+//! configured servers), forwards their changes and failures to the
+//! [`McpHub`], and asks the runtime to reconnect them (`mcp/reconnect`,
+//! `runtime/mcp_reconnect`). The tools of its runtime-scoped servers are the
+//! runtime's own (`runtime/tools_changed`): every instance of the runtime
+//! carries one [`RemoteToolProvider`] for them, which a session composes
+//! once per runtime.
 //!
 //! A runtime in a child process plugs in as another [`RuntimeConnector`]
 //! (`super::process`).
@@ -45,8 +50,9 @@ use cookie_agent_runtime_api::{
         self, CapabilityOpenParams, CapabilityOpenResult, CapabilityToolsChangedParams,
         ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
         ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
-        McpReconnectParams, McpServerReport, Outcome, OutcomeExt as _, PrepareOutcome,
-        PrepareParams, PrepareResult, PreparedCall, PreparedRef, RuntimeSettings, RuntimeSkills,
+        McpReconnectParams, McpServerReport, McpServerScope, Outcome, OutcomeExt as _,
+        PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
+        RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeSettings, RuntimeSkills,
         RuntimeTools, ToolDeclarationExt as _, ToolProgressParams, ToolResultExt as _,
         WireToolCall, method,
     },
@@ -289,6 +295,27 @@ impl RuntimeTemplate for ProtocolTemplate {
     fn disconnect(&self) {
         lock(&self.connection).take();
     }
+
+    fn runtime_mcp_servers(&self) -> Vec<cookie_agent_protocol::McpServerInfo> {
+        live(&self.connection)
+            .map(|client| client.runtime_mcp_servers())
+            .unwrap_or_default()
+    }
+
+    async fn reconnect_runtime_mcp(&self, server: &str) -> Result<(), EngineError> {
+        match live(&self.connection) {
+            Some(client) => client.reconnect_runtime_mcp(server).await,
+            None => Err(EngineError::Mcp(format!(
+                "runtime `{}` is not running",
+                self.runtime_id
+            ))),
+        }
+    }
+}
+
+/// The connection in `slot`, while it is open.
+pub(crate) fn live(slot: &Mutex<Option<RuntimeClient>>) -> Option<RuntimeClient> {
+    lock(slot).clone().filter(|client| !client.is_closed())
 }
 
 /// The settings instances of `runtime_id` get from the daemon's
@@ -540,10 +567,12 @@ impl InstanceConnection {
         self.client.reconnect_mcp(instance, server).await
     }
 
-    /// Asks the runtime to retry the instance's failed MCP servers.
+    /// Asks the runtime to retry the instance's failed MCP servers, and
+    /// the failed runtime-scoped ones it shares.
     pub(crate) fn retry_failed_mcp(&self) {
         if let Some(instance) = &self.instance {
             self.client.retry_failed_mcp(instance);
+            self.client.retry_failed_runtime_mcp();
         }
     }
 
@@ -617,13 +646,20 @@ struct ClientInner {
     probe: super::liveness::Probe,
 }
 
-/// What the daemon knows about the MCP servers a runtime's instances host.
+/// What the daemon knows about the MCP servers a runtime hosts.
 #[derive(Default)]
 struct HostedMcp {
     /// The template's definitions, by server name.
     definitions: BTreeMap<String, McpServerConfig>,
     /// Each instance's servers, by instance handle.
     instances: BTreeMap<String, InstanceMcp>,
+    /// Every server the runtime is configured with, from its initialize
+    /// reply or its latest `runtime/mcp_changed`: the runtime-scoped ones
+    /// live, the workspace-scoped ones as configured. Empty from a runtime
+    /// older than runtime protocol 1.5.0.
+    runtime: Vec<McpServerReport>,
+    /// A retry of the failed runtime-scoped servers is in flight.
+    runtime_retrying: bool,
 }
 
 /// The MCP servers of one instance.
@@ -646,6 +682,16 @@ pub(crate) struct HostedMcpServer {
     /// `[runtimes.local.mcp]`), which the daemon never sees.
     pub(crate) definition: Option<McpServerConfig>,
     pub(crate) report: McpServerReport,
+}
+
+/// The runtime's own tools, outside any instance, as each instance of the
+/// runtime carries them: a session composes them once per runtime, under
+/// the runtime's ID.
+#[derive(Clone)]
+pub(crate) struct SharedTools {
+    /// The runtime without a workspace, as calls to them see it.
+    pub(crate) info: Arc<RuntimeInfo>,
+    pub(crate) provider: Arc<dyn ToolProvider>,
 }
 
 impl Drop for ClientInner {
@@ -797,6 +843,19 @@ impl RuntimeClient {
             .home
             .clone()
             .filter(|home| cookie_agent_protocol::runtime_protocol::is_valid_home(home));
+        if !result.mcp_servers.is_empty() {
+            {
+                let mut mcp = lock(&inner.mcp);
+                // A report sent after the reply may already be here; it is
+                // newer.
+                if mcp.runtime.is_empty() {
+                    mcp.runtime.clone_from(&result.mcp_servers);
+                }
+            }
+            if let Some(hub) = &inner.mcp_hub {
+                hub.changed();
+            }
+        }
         Ok((Self { inner }, result))
     }
 
@@ -923,7 +982,17 @@ impl RuntimeClient {
         Arc::new(RemoteToolProvider {
             client: self.clone(),
             instance: None,
+            composition_source: None,
         })
+    }
+
+    /// Whether the runtime hosts runtime-scoped MCP servers, whose tools
+    /// are its own.
+    fn shares_tools(&self) -> bool {
+        lock(&self.inner.mcp)
+            .runtime
+            .iter()
+            .any(|server| server.scope == Some(McpServerScope::Runtime))
     }
 
     /// What the runtime offers.
@@ -1012,6 +1081,23 @@ impl RuntimeClient {
                 hub.changed();
             }
         }
+        let shared = self.shares_tools().then(|| SharedTools {
+            info: Arc::new(
+                RuntimeInfo::new(
+                    &self.inner.runtime_id,
+                    capability.clone(),
+                    offered.kind.clone(),
+                    &self.inner.runtime_id,
+                    None,
+                )
+                .with_home(self.home()),
+            ),
+            provider: Arc::new(RemoteToolProvider {
+                client: self.clone(),
+                instance: None,
+                composition_source: Some(self.inner.runtime_id.clone()),
+            }),
+        });
         let info = RuntimeInfo::new(
             &self.inner.runtime_id,
             capability.clone(),
@@ -1025,7 +1111,9 @@ impl RuntimeClient {
             providers: vec![Arc::new(RemoteToolProvider {
                 client: self.clone(),
                 instance: Some(result.instance.clone()),
+                composition_source: None,
             })],
+            shared,
             skills,
             connection: Some(InstanceConnection {
                 client: self.clone(),
@@ -1126,6 +1214,100 @@ impl RuntimeClient {
                 report: report.clone(),
             })
             .collect()
+    }
+
+    /// Every MCP server the runtime is configured with, as `mcp.server.list`
+    /// shows them without a workspace: the runtime-scoped ones live, the
+    /// workspace-scoped ones as configured.
+    pub(crate) fn runtime_mcp_servers(&self) -> Vec<cookie_agent_protocol::McpServerInfo> {
+        let mcp = lock(&self.inner.mcp);
+        mcp.runtime
+            .iter()
+            .filter_map(|report| {
+                crate::config_store::hosted_to_wire(HostedMcpServer {
+                    runtime_id: self.inner.runtime_id.clone(),
+                    workspace: None,
+                    definition: mcp.definitions.get(&report.name).cloned(),
+                    report: report.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Asks the runtime to reconnect its runtime-scoped MCP server `server`
+    /// now and waits for the attempt. A workspace-scoped one runs in each
+    /// instance, so it is reconnected there.
+    pub(crate) async fn reconnect_runtime_mcp(&self, server: &str) -> Result<(), EngineError> {
+        let scope = lock(&self.inner.mcp)
+            .runtime
+            .iter()
+            .find(|report| report.name == server)
+            .map(|report| report.scope.unwrap_or_default());
+        match scope {
+            Some(McpServerScope::Runtime) => {}
+            Some(McpServerScope::Workspace) => {
+                return Err(EngineError::Mcp(format!(
+                    "MCP server `{server}` of runtime `{}` starts when a workspace opens; \
+                     reconnect it in a workspace",
+                    self.inner.runtime_id
+                )));
+            }
+            None => {
+                return Err(EngineError::Mcp(format!(
+                    "runtime `{}` has no MCP server `{server}`",
+                    self.inner.runtime_id
+                )));
+            }
+        }
+        let outcome: Outcome = self
+            .inner
+            .request_within(
+                method::RUNTIME_MCP_RECONNECT,
+                &RuntimeMcpReconnectParams {
+                    server: Some(server.to_owned()),
+                },
+                MCP_RECONNECT_DEADLINE,
+            )
+            .await
+            .map_err(|error| EngineError::Mcp(format!("{}: {error}", self.inner.peer_name())))?;
+        outcome
+            .into_result()
+            .map_err(|error| EngineError::Mcp(error.to_string()))
+    }
+
+    /// Asks the runtime to retry its failed runtime-scoped MCP servers, as
+    /// when a session that uses it is created or opened, once at a time;
+    /// [`Self::mcp_settled`] waits for the attempts.
+    fn retry_failed_runtime_mcp(&self) {
+        {
+            let mut mcp = lock(&self.inner.mcp);
+            let any_failed = mcp.runtime.iter().any(|server| {
+                server.scope == Some(McpServerScope::Runtime)
+                    && server.state == protocol::McpServerState::Failed
+            });
+            if !any_failed || mcp.runtime_retrying {
+                return;
+            }
+            mcp.runtime_retrying = true;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            lock(&self.inner.mcp).runtime_retrying = false;
+            return;
+        };
+        self.inner.mcp_retries.fetch_add(1, Ordering::AcqRel);
+        let retry = McpRetry(Arc::clone(&self.inner));
+        handle.spawn(async move {
+            let _ = retry
+                .0
+                .request_within::<_, Outcome>(
+                    method::RUNTIME_MCP_RECONNECT,
+                    &RuntimeMcpReconnectParams { server: None },
+                    MCP_RECONNECT_DEADLINE,
+                )
+                .await;
+            lock(&retry.0.mcp).runtime_retrying = false;
+            drop(retry);
+        });
     }
 
     /// Asks the runtime to reconnect MCP server `server` of instance
@@ -1497,13 +1679,38 @@ impl ClientInner {
                 }
                 Err(error) => ignored(&error),
             },
-            method::TOOLS_CHANGED => ignored(
-                &"only a plugin sends it; a runtime reports an instance's tools with \
-                  `capability/tools_changed`",
-            ),
-            method::CAPABILITY_TOOLS_CHANGED | method::MCP_CHANGED if plugin => {
+            // The runtime's own tools: those of its runtime-scoped MCP
+            // servers.
+            method::TOOLS_CHANGED => match notification.params::<RuntimeTools>() {
+                Ok(tools) => {
+                    lock(&self.tools).insert(None, Arc::new(tools.into()));
+                }
+                Err(error) => ignored(&error),
+            },
+            method::CAPABILITY_TOOLS_CHANGED
+            | method::MCP_CHANGED
+            | method::RUNTIME_MCP_CHANGED
+                if plugin =>
+            {
                 ignored(&"only a runtime sends it");
             }
+            method::RUNTIME_MCP_CHANGED => match notification.params() {
+                Ok(RuntimeMcpChangedParams { servers, failures }) => {
+                    lock(&self.mcp).runtime = servers;
+                    if let Some(hub) = &self.mcp_hub {
+                        hub.changed();
+                        for failure in failures {
+                            hub.failed(McpServerFailure {
+                                runtime_id: self.runtime_id.clone(),
+                                workspace: None,
+                                server: failure.server,
+                                reason: failure.reason,
+                            });
+                        }
+                    }
+                }
+                Err(error) => ignored(&error),
+            },
             method::CAPABILITY_TOOLS_CHANGED => match notification.params() {
                 Ok(CapabilityToolsChangedParams { instance, tools }) => {
                     lock(&self.tools).insert(Some(instance), Arc::new(tools.into()));
@@ -1800,8 +2007,11 @@ fn retain_media(
 /// runtime reports when it prepares a call.
 pub(crate) struct RemoteToolProvider {
     client: RuntimeClient,
-    /// The instance whose tools these are; `None` for a plugin.
+    /// The instance whose tools these are; `None` for a plugin, and for a
+    /// runtime's own tools.
     instance: Option<String>,
+    /// The source a runtime's own tools compose under: its ID.
+    composition_source: Option<String>,
 }
 
 impl RemoteToolProvider {
@@ -1862,15 +2072,21 @@ impl ToolProvider for RemoteToolProvider {
             .unwrap_or_default())
     }
 
-    /// An MCP server's tool, by the instance's last MCP report.
+    fn composition_source(&self) -> Option<String> {
+        self.composition_source.clone()
+    }
+
+    /// An MCP server's tool, by the instance's last MCP report, or the
+    /// runtime's for its own tools.
     fn tool_source(&self, tool_name: &str) -> Option<cookie_agent_runtime_api::ProvidedToolSource> {
-        let instance = self.instance.as_deref()?;
         let mcp = lock(&self.client.inner.mcp);
-        mcp.instances
-            .get(instance)?
-            .servers
+        let servers = match self.instance.as_deref() {
+            Some(instance) => mcp.instances.get(instance)?.servers.as_deref()?,
+            None if self.composition_source.is_some() => mcp.runtime.as_slice(),
+            None => return None,
+        };
+        servers
             .iter()
-            .flatten()
             .find(|server| server.tools.iter().any(|tool| tool == tool_name))
             .map(|server| cookie_agent_runtime_api::ProvidedToolSource::Mcp {
                 server: server.name.clone(),

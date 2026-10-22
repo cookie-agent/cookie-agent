@@ -99,6 +99,23 @@ pub struct McpServerConfig {
     #[serde(default = "yes")]
     pub enabled: bool,
     pub timeout_ms: Option<u64>,
+    /// Where a runtime hosts the server; only runtime templates' servers
+    /// (`[runtimes.<id>.mcp.servers.<name>]`) take it. `None` is
+    /// [`McpServerScope::Workspace`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<McpServerScope>,
+}
+
+/// `scope` of a runtime template's MCP server.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerScope {
+    /// One process per runtime, started when the runtime initializes and
+    /// shared by every workspace it opens.
+    Runtime,
+    /// One process per workspace instance, started when it opens.
+    #[default]
+    Workspace,
 }
 
 #[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -209,6 +226,28 @@ impl<'de> Deserialize<'de> for McpOAuthConfig {
 }
 
 impl McpServerConfig {
+    /// Where a runtime hosts the server.
+    #[must_use]
+    pub fn hosted_scope(&self) -> McpServerScope {
+        self.scope.unwrap_or_default()
+    }
+
+    /// [`Self::validate`] for a top-level `[mcp.servers.<name>]` server,
+    /// which the global runtime hosts once per daemon: it takes no `scope`.
+    pub fn validate_top_level(&self, name: &str) -> Result<(), ConfigError> {
+        self.validate(name)?;
+        if self.scope.is_some() {
+            return Err(ConfigError::McpServer {
+                server: name.to_owned(),
+                reason: "`scope` applies only to a runtime template's servers \
+                         ([runtimes.<id>.mcp.servers.<name>]); a top-level [mcp] server \
+                         already runs once, in the daemon's global runtime"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn validate(&self, name: &str) -> Result<(), ConfigError> {
         let invalid_name =
             name.is_empty() || name.len() > 128 || name.chars().any(char::is_control);

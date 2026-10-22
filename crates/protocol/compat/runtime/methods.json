@@ -98,6 +98,22 @@
       "result": "InitializeResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "runtime/mcp_changed",
+      "params": "RuntimeMcpChangedParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "runtime/mcp_reconnect",
+      "params": "RuntimeMcpReconnectParams",
+      "params_role": "information",
+      "result": "Outcome"
+    },
+    {
       "direction": "from_daemon",
       "kind": "request",
       "method": "runtime/ping",
@@ -112,6 +128,14 @@
       "params": "Empty",
       "params_role": "information",
       "result": "Empty"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "runtime/tools_changed",
+      "params": "RuntimeTools",
+      "params_role": "information",
+      "result": null
     },
     {
       "direction": "from_daemon",

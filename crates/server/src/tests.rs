@@ -1265,6 +1265,7 @@ async fn mcp_connection_failures_reach_clients_viewing_affected_sessions() {
                     oauth: Default::default(),
                     enabled: true,
                     timeout_ms: Some(5_000),
+                    scope: None,
                 },
             },
         )]),

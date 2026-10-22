@@ -86,6 +86,23 @@ pub trait RuntimeTemplate: Send + Sync {
     /// Lets go of the template's connection as the daemon stops; the
     /// daemon shuts it down through the instances that use it.
     fn disconnect(&self) {}
+
+    /// Every MCP server the connected runtime is configured with, as
+    /// `mcp.server.list` shows them without a workspace: its runtime-scoped
+    /// servers, live, and its workspace-scoped ones as configured. Empty
+    /// while it is not connected.
+    fn runtime_mcp_servers(&self) -> Vec<cookie_agent_protocol::McpServerInfo> {
+        Vec::new()
+    }
+
+    /// Reconnects the connected runtime's runtime-scoped MCP server
+    /// `server` now and waits for the attempt.
+    async fn reconnect_runtime_mcp(&self, server: &str) -> Result<(), EngineError> {
+        Err(EngineError::Mcp(format!(
+            "runtime `{}` hosts no MCP server `{server}` of its own",
+            self.runtime_id()
+        )))
+    }
 }
 
 /// Why [`RuntimeTemplate::start`] failed, with a human-readable reason.
@@ -144,6 +161,9 @@ pub struct StartedRuntime {
     /// The runtime protocol connection of an instance that runs behind it;
     /// `None` for an in-process runtime.
     pub(crate) connection: Option<super::remote::InstanceConnection>,
+    /// The runtime's own tools, outside any instance (its runtime-scoped
+    /// MCP servers'), which sessions compose once per runtime.
+    pub(crate) shared: Option<super::remote::SharedTools>,
 }
 
 /// Lifecycle state of a runtime instance as clients see it.
@@ -175,6 +195,7 @@ struct CurrentStart {
     providers: Vec<Arc<dyn ToolProvider>>,
     skills: Arc<SkillRegistry>,
     connection: Option<super::remote::InstanceConnection>,
+    shared: Option<super::remote::SharedTools>,
 }
 
 impl CurrentStart {
@@ -184,6 +205,7 @@ impl CurrentStart {
             providers: started.providers,
             skills: Arc::new(started.skills),
             connection: started.connection,
+            shared: started.shared,
         }
     }
 }
@@ -195,6 +217,7 @@ impl RuntimeInstance {
             providers,
             skills,
             connection,
+            shared,
         } = started;
         Self {
             info: Arc::new(info),
@@ -203,6 +226,7 @@ impl RuntimeInstance {
                 providers,
                 skills: Arc::new(skills),
                 connection,
+                shared,
             }),
             added: Mutex::default(),
         }
@@ -251,6 +275,16 @@ impl RuntimeInstance {
                 .cloned(),
         );
         (generation, providers)
+    }
+
+    /// The current generation together with the runtime's own tools, when
+    /// it has any; every instance of the runtime carries the same ones.
+    pub(crate) fn shared_source(&self) -> Option<(u64, super::remote::SharedTools)> {
+        let current = self.current();
+        current
+            .shared
+            .clone()
+            .map(|shared| (current.generation, shared))
     }
 
     pub(crate) fn push_provider(&self, provider: Arc<dyn ToolProvider>) {
@@ -331,6 +365,7 @@ impl RuntimeInstance {
     fn drop_runtime(&self) -> Option<super::remote::RuntimeClient> {
         let mut current = self.current();
         current.providers.clear();
+        current.shared = None;
         current
             .connection
             .take()
@@ -775,6 +810,46 @@ impl RuntimeRegistry {
             .filter_map(|instance| instance.connection())
             .flat_map(|connection| connection.mcp_servers())
             .collect()
+    }
+
+    /// The servers every connected runtime is configured with, as
+    /// [`RuntimeTemplate::runtime_mcp_servers`] lists them, except a
+    /// workspace-scoped one that a running instance of its runtime hosts,
+    /// which that instance lists.
+    pub(crate) fn runtime_mcp_servers(
+        &self,
+        hosted: &[super::HostedMcpServer],
+    ) -> Vec<cookie_agent_protocol::McpServerInfo> {
+        let templates = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        templates
+            .iter()
+            .flat_map(|template| template.runtime_mcp_servers())
+            .filter(|server| {
+                server.scope == Some(cookie_agent_protocol::McpServerScope::Runtime)
+                    || !hosted.iter().any(|instance| {
+                        instance.runtime_id == server.runtime_id.as_str()
+                            && instance.report.name == server.name
+                    })
+            })
+            .collect()
+    }
+
+    /// Reconnects runtime `runtime_id`'s own MCP server `server`.
+    pub(crate) async fn reconnect_runtime_mcp(
+        &self,
+        runtime_id: &str,
+        server: &str,
+    ) -> Result<(), EngineError> {
+        let template = self
+            .template(runtime_id)
+            .ok_or_else(|| EngineError::Mcp(format!("runtime `{runtime_id}` is not running")))?;
+        template.reconnect_runtime_mcp(server).await
     }
 
     /// The running instance a request for `runtime_id` at `requested`

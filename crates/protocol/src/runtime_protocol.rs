@@ -85,8 +85,10 @@ pub mod method {
     pub const CAPABILITY_OPEN: &str = "capability/open";
     /// runtime → daemon (notification): an instance's tool list changed.
     pub const CAPABILITY_TOOLS_CHANGED: &str = "capability/tools_changed";
-    /// plugin → daemon (notification): a plugin's tool list changed. A
-    /// plugin connection has one implicit instance.
+    /// plugin or runtime → daemon (notification): the tools outside any
+    /// instance changed. A plugin connection has one implicit instance; a
+    /// runtime declares here the tools of its runtime-scoped MCP servers
+    /// (since 1.5.0), which `tool/prepare` without an `instance` reaches.
     pub const TOOLS_CHANGED: &str = "runtime/tools_changed";
     /// daemon → runtime: per-admission context (`AGENTS.md`).
     pub const CONTEXT: &str = "runtime/context";
@@ -118,6 +120,12 @@ pub mod method {
     /// daemon → runtime: reconnect one MCP server, or retry every failed
     /// one.
     pub const MCP_RECONNECT: &str = "mcp/reconnect";
+    /// runtime → daemon (notification): the runtime's configured MCP
+    /// servers changed status, or a runtime-scoped one failed (since 1.5.0).
+    pub const RUNTIME_MCP_CHANGED: &str = "runtime/mcp_changed";
+    /// daemon → runtime: reconnect one runtime-scoped MCP server, or retry
+    /// every failed one (since 1.5.0).
+    pub const RUNTIME_MCP_RECONNECT: &str = "runtime/mcp_reconnect";
     /// runtime → daemon: register a named producer for a session attached
     /// to the runtime.
     pub const PRODUCER_REGISTER: &str = "producer/register";
@@ -206,6 +214,40 @@ pub struct McpServerReport {
     /// The names of its tools as the runtime declares them.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Where the runtime hosts the server (runtime protocol 1.5.0); absent
+    /// reads as `workspace`, which is all a runtime hosted before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<McpServerScope>,
+}
+
+/// Where a runtime hosts an MCP server (runtime protocol 1.5.0; client
+/// protocol 1.13.0). Open: a value this build does not know reads as
+/// `workspace`.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum McpServerScope {
+    /// One process per runtime, started when the runtime initializes and
+    /// shared by every workspace instance; its tools are the runtime's own,
+    /// outside any instance.
+    Runtime,
+    /// One process per workspace instance, started when the instance
+    /// opens.
+    #[default]
+    #[serde(other)]
+    Workspace,
+}
+
+impl McpServerScope {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Runtime => "runtime",
+            Self::Workspace => "workspace",
+        }
+    }
 }
 
 /// Open: a state this build does not know reads as `disconnected`, which
@@ -242,6 +284,29 @@ pub struct McpChangedParams {
     /// Servers that failed since the last report, in order.
     #[serde(default)]
     pub failures: Vec<McpFailureReport>,
+}
+
+/// `runtime/mcp_changed` (runtime protocol 1.5.0): every MCP server the
+/// runtime is configured with, as `runtime/initialize` reported them.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct RuntimeMcpChangedParams {
+    /// Every configured server, in name order: the runtime-scoped ones with
+    /// their live status and tools, the workspace-scoped ones as configured
+    /// (`disconnected`, or `disabled`, with no tools; each instance reports
+    /// its own with `mcp/changed`).
+    pub servers: Vec<McpServerReport>,
+    /// Runtime-scoped servers that failed since the last report, in order.
+    #[serde(default)]
+    pub failures: Vec<McpFailureReport>,
+}
+
+/// `runtime/mcp_reconnect` (runtime protocol 1.5.0).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct RuntimeMcpReconnectParams {
+    /// The runtime-scoped server to reconnect now; absent to retry every
+    /// failed one.
+    #[serde(default)]
+    pub server: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
@@ -282,6 +347,12 @@ pub struct InitializeResult {
     /// `producer/recovery/start`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub producer_messaging: bool,
+    /// Every MCP server the runtime is configured with (runtime protocol
+    /// 1.5.0), in name order, as `runtime/mcp_changed` reports them later:
+    /// the runtime-scoped ones, which start as the runtime initializes, with
+    /// their status now, and the workspace-scoped ones as configured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServerReport>,
 }
 
 /// The machine a runtime runs on, as `runtime/initialize` reports it.
@@ -568,7 +639,8 @@ pub struct WireToolCall {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PrepareParams {
     /// The capability instance the calls go to; absent for a plugin, whose
-    /// connection has one implicit instance.
+    /// connection has one implicit instance, and for the tools a runtime
+    /// declares outside any instance (`runtime/tools_changed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
     pub session: SessionId,
@@ -973,5 +1045,84 @@ mod tests {
         assert_eq!(result.machine, None);
         let encoded = serde_json::to_value(&result).unwrap();
         assert!(encoded.get("machine").is_none(), "{encoded}");
+    }
+
+    #[test]
+    fn a_runtime_reports_its_configured_servers_with_their_scope() {
+        use super::{McpServerReport, McpServerScope, McpServerState, RuntimeMcpChangedParams};
+        let result: super::InitializeResult = serde_json::from_value(serde_json::json!({
+            "protocol_version": "1.5.0",
+            "capabilities": [],
+            "mcp_servers": [
+                {"name": "browser", "state": "connecting", "scope": "runtime"},
+                {"name": "lsp", "state": "disconnected", "scope": "workspace"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            result
+                .mcp_servers
+                .iter()
+                .map(|server| (server.name.as_str(), server.scope, server.state))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "browser",
+                    Some(McpServerScope::Runtime),
+                    McpServerState::Connecting
+                ),
+                (
+                    "lsp",
+                    Some(McpServerScope::Workspace),
+                    McpServerState::Disconnected
+                ),
+            ]
+        );
+        let round_trip: super::InitializeResult =
+            serde_json::from_value(serde_json::to_value(&result).unwrap()).unwrap();
+        assert_eq!(round_trip, result);
+
+        // A runtime of 1.4 says nothing: no servers, and an instance's report
+        // without a scope is workspace-scoped.
+        let older: super::InitializeResult = serde_json::from_value(serde_json::json!({
+            "protocol_version": "1.4.0",
+            "capabilities": []
+        }))
+        .unwrap();
+        assert!(older.mcp_servers.is_empty());
+        assert!(
+            serde_json::to_value(&older)
+                .unwrap()
+                .get("mcp_servers")
+                .is_none()
+        );
+        let report: McpServerReport =
+            serde_json::from_value(serde_json::json!({"name": "lsp", "state": "connected"}))
+                .unwrap();
+        assert_eq!(report.scope.unwrap_or_default(), McpServerScope::Workspace);
+        assert!(
+            serde_json::to_value(&report)
+                .unwrap()
+                .get("scope")
+                .is_none()
+        );
+        // Open: a scope this build does not know reads as `workspace`.
+        let future: McpServerScope = serde_json::from_value(serde_json::json!("machine")).unwrap();
+        assert_eq!(future, McpServerScope::Workspace);
+
+        let changed: RuntimeMcpChangedParams = serde_json::from_value(serde_json::json!({
+            "servers": [{"name": "browser", "state": "failed", "scope": "runtime",
+                         "message": "exited"}],
+            "failures": [{"server": "browser", "reason": "exited"}]
+        }))
+        .unwrap();
+        assert_eq!(changed.failures[0].server, "browser");
+        assert_eq!(
+            serde_json::from_value::<RuntimeMcpChangedParams>(
+                serde_json::to_value(&changed).unwrap()
+            )
+            .unwrap(),
+            changed
+        );
     }
 }

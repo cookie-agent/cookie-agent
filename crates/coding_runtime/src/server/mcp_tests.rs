@@ -11,9 +11,10 @@ use cookie_agent_runtime_api::{
     protocol::{
         AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, CapabilityToolsChangedParams,
         ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
-        McpChangedParams, McpReconnectParams, McpServerSettings, McpServerState, Outcome,
-        PrepareOutcome, PrepareParams, PrepareResult, RuntimeSettings, RuntimeTools,
-        ToolOutputLimits, ToolResult, ToolTurn, WireToolCall, method,
+        McpChangedParams, McpReconnectParams, McpServerScope, McpServerSettings, McpServerState,
+        Outcome, PrepareOutcome, PrepareParams, PrepareResult, RuntimeMcpChangedParams,
+        RuntimeMcpReconnectParams, RuntimeSettings, RuntimeTools, ToolOutputLimits, ToolResult,
+        ToolTurn, WireToolCall, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, Peer},
@@ -89,6 +90,10 @@ fn initialize_params(
 enum Notice {
     Tools(RuntimeTools),
     Mcp(McpChangedParams),
+    /// `runtime/tools_changed`: the runtime's own tools.
+    RuntimeTools(RuntimeTools),
+    /// `runtime/mcp_changed`.
+    RuntimeMcp(RuntimeMcpChangedParams),
 }
 
 /// A served runtime with a quick reconnect policy, and the daemon's peer.
@@ -122,6 +127,12 @@ fn start(reconnect: ReconnectPolicy) -> Harness {
                                 .tools,
                         ),
                         method::MCP_CHANGED => Notice::Mcp(notification.params().unwrap()),
+                        method::TOOLS_CHANGED => {
+                            Notice::RuntimeTools(notification.params().unwrap())
+                        }
+                        method::RUNTIME_MCP_CHANGED => {
+                            Notice::RuntimeMcp(notification.params().unwrap())
+                        }
                         _ => continue,
                     };
                     let _ = sender.send(notice);
@@ -199,13 +210,26 @@ impl Harness {
 
     /// Prepares and executes one call.
     async fn call(&self, name: &str, arguments: Value, with_image: bool) -> ExecuteResult {
+        self.call_on(Some(self.instance()), name, arguments, with_image)
+            .await
+    }
+
+    /// Prepares and executes one call on `instance`, or on the runtime's own
+    /// tools.
+    async fn call_on(
+        &self,
+        instance: Option<String>,
+        name: &str,
+        arguments: Value,
+        with_image: bool,
+    ) -> ExecuteResult {
         let (session, run) = (SessionId::new_v7(), RunId::new_v7());
         let prepared: PrepareResult = self
             .daemon
             .request(
                 method::TOOL_PREPARE,
                 &PrepareParams {
-                    instance: Some(self.instance()),
+                    instance,
                     session,
                     run,
                     turn: turn(with_image),
@@ -277,6 +301,7 @@ impl Harness {
                         return (changed, tools);
                     }
                 }
+                Notice::RuntimeTools(_) | Notice::RuntimeMcp(_) => {}
             }
         }
     }
@@ -591,4 +616,380 @@ async fn template_servers_that_enable_oauth_or_do_not_parse_are_refused() {
         );
         assert!(message.contains("`docs`"), "{config}: {message}");
     }
+}
+
+/// `config` with `scope`.
+fn scoped(mut config: Value, scope: &str) -> Value {
+    config["scope"] = json!(scope);
+    config
+}
+
+/// The fixture writing its working directory to `cwd_file`, started in
+/// `cwd` when one is given.
+fn reporting(cwd_file: &Path, cwd: Option<&str>) -> Value {
+    let mut config = fixture(&[("MCP_FIXTURE_CWD_FILE", cwd_file)]);
+    if let Some(cwd) = cwd {
+        config["cwd"] = json!(cwd);
+    }
+    config
+}
+
+/// The canonical directory the fixture wrote to `cwd_file`.
+fn reported_cwd(cwd_file: &Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(std::fs::read_to_string(cwd_file).expect("the fixture's cwd"))
+        .canonicalize()
+        .expect("canonical cwd")
+}
+
+fn open_params(workspace: &Path) -> CapabilityOpenParams {
+    CapabilityOpenParams {
+        capability: cookie_agent_protocol::CapabilityName::coding(),
+        workspace: Some(workspace.to_string_lossy().into_owned()),
+    }
+}
+
+impl Harness {
+    async fn initialize_only(&self, initialize: &InitializeParams) -> InitializeResult {
+        tokio::time::timeout(WAIT, self.daemon.request(method::INITIALIZE, initialize))
+            .await
+            .expect("initialize answers")
+            .expect("initialize succeeds")
+    }
+
+    async fn open(&self, workspace: &Path) -> CapabilityOpenResult {
+        tokio::time::timeout(
+            WAIT,
+            self.daemon
+                .request(method::CAPABILITY_OPEN, &open_params(workspace)),
+        )
+        .await
+        .expect("open answers")
+        .expect("open succeeds")
+    }
+
+    /// The next `runtime/mcp_changed` whose server `name` is in `state`
+    /// (and, with `failure`, after a failure report); the runtime's tool
+    /// lists sent meanwhile are collected.
+    async fn wait_runtime(
+        &mut self,
+        name: &str,
+        state: McpServerState,
+        failure: bool,
+    ) -> (RuntimeMcpChangedParams, Vec<RuntimeTools>) {
+        let mut tools = Vec::new();
+        let mut failures = Vec::new();
+        loop {
+            let notice = tokio::time::timeout(WAIT, self.notices.recv())
+                .await
+                .unwrap_or_else(|_| panic!("`{name}` never became {state:?}"))
+                .expect("runtime running");
+            match notice {
+                Notice::RuntimeTools(list) => tools.push(list),
+                Notice::RuntimeMcp(mut changed) => {
+                    failures.append(&mut changed.failures);
+                    let reached = changed
+                        .servers
+                        .iter()
+                        .any(|server| server.name == name && server.state == state);
+                    if reached && (!failure || !failures.is_empty()) {
+                        changed.failures = failures;
+                        return (changed, tools);
+                    }
+                }
+                Notice::Tools(_) | Notice::Mcp(_) => {}
+            }
+        }
+    }
+}
+
+fn report_summary(
+    servers: &[cookie_agent_runtime_api::protocol::McpServerReport],
+) -> Vec<(&str, Option<McpServerScope>, McpServerState, usize)> {
+    servers
+        .iter()
+        .map(|server| {
+            (
+                server.name.as_str(),
+                server.scope,
+                server.state,
+                server.tools.len(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_runtime_scoped_server_starts_with_the_runtime_and_every_workspace_shares_it() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    for workspace in [&first, &second] {
+        std::fs::create_dir(workspace.path().join("sub")).unwrap();
+    }
+    let pid_file = scratch.path().join("browser.pid");
+    let browser_cwd = scratch.path().join("browser.cwd");
+    let docs_cwd = scratch.path().join("docs.cwd");
+    let nested_cwd = scratch.path().join("nested.cwd");
+    let mut browser = reporting(&browser_cwd, None);
+    browser["env"]["MCP_FIXTURE_PID_FILE"] = json!(pid_file.to_string_lossy());
+    let (initialize, _) = initialize_params(
+        first.path(),
+        vec![
+            ("browser", scoped(browser, "runtime")),
+            ("docs", reporting(&docs_cwd, None)),
+            (
+                "nested",
+                scoped(reporting(&nested_cwd, Some("sub")), "workspace"),
+            ),
+        ],
+    );
+    let mut harness = start(quick(1));
+
+    // The reply lists every configured server: the runtime-scoped one on
+    // its way, the workspace-scoped ones as configured.
+    let initialized = harness.initialize_only(&initialize).await;
+    assert_eq!(
+        report_summary(&initialized.mcp_servers),
+        [
+            (
+                "browser",
+                Some(McpServerScope::Runtime),
+                McpServerState::Connecting,
+                0
+            ),
+            (
+                "docs",
+                Some(McpServerScope::Workspace),
+                McpServerState::Disconnected,
+                0
+            ),
+            (
+                "nested",
+                Some(McpServerScope::Workspace),
+                McpServerState::Disconnected,
+                0
+            ),
+        ]
+    );
+
+    // It connects with no workspace open, in the runtime's home, and its
+    // tools are the runtime's own.
+    let (connected, tools) = harness
+        .wait_runtime("browser", McpServerState::Connected, false)
+        .await;
+    assert_eq!(
+        report_summary(&connected.servers)[0],
+        (
+            "browser",
+            Some(McpServerScope::Runtime),
+            McpServerState::Connected,
+            2
+        )
+    );
+    assert_eq!(
+        tool_names(tools.last().expect("the runtime's tools")),
+        ["browser_echo_text", "browser_fail"]
+    );
+    assert_eq!(
+        reported_cwd(&browser_cwd),
+        crate::runtime_home().expect("a home directory")
+    );
+    let pid = std::fs::read_to_string(&pid_file).expect("the browser started");
+
+    // Each workspace hosts its own workspace-scoped servers, in the
+    // workspace (a relative `cwd` under it), and declares none of the
+    // runtime's.
+    for workspace in [&first, &second] {
+        let opened = harness.open(workspace.path()).await;
+        assert_eq!(
+            tool_names(&opened.tools),
+            [
+                "read",
+                "write",
+                "edit",
+                "bash",
+                "webfetch",
+                "docs_echo_text",
+                "docs_fail",
+                "nested_echo_text",
+                "nested_fail",
+            ]
+        );
+        assert_eq!(
+            report_summary(&opened.mcp_servers),
+            [
+                (
+                    "docs",
+                    Some(McpServerScope::Workspace),
+                    McpServerState::Connected,
+                    2
+                ),
+                (
+                    "nested",
+                    Some(McpServerScope::Workspace),
+                    McpServerState::Connected,
+                    2
+                ),
+            ]
+        );
+        let root = workspace.path().canonicalize().unwrap();
+        assert_eq!(reported_cwd(&docs_cwd), root);
+        assert_eq!(reported_cwd(&nested_cwd), root.join("sub"));
+    }
+    // Still the one browser process.
+    assert_eq!(std::fs::read_to_string(&pid_file).unwrap(), pid);
+
+    // Its tools are called without an instance; an instance's are not
+    // reached that way.
+    let echoed = harness
+        .call_on(None, "browser_echo_text", json!({"text": "shared"}), false)
+        .await;
+    let ExecuteOutcome::Completed(ToolResult { output, failed, .. }) = echoed.outcome else {
+        panic!("the call completes");
+    };
+    assert!(!failed);
+    assert_eq!(
+        output,
+        cookie_agent_protocol::ToolCompletionOutput::Single {
+            text: "shared".into()
+        }
+    );
+    let missing: PrepareResult = harness
+        .daemon
+        .request(
+            method::TOOL_PREPARE,
+            &PrepareParams {
+                instance: None,
+                session: SessionId::new_v7(),
+                run: RunId::new_v7(),
+                turn: turn(false),
+                calls: vec![WireToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "docs_echo_text".into(),
+                    arguments: json!({"text": "hello"}),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(missing.results[0], PrepareOutcome::Failed { .. }));
+}
+
+#[tokio::test]
+async fn a_runtime_scoped_server_reconnects_and_reports_when_it_cannot() {
+    let scratch = tempfile::tempdir().unwrap();
+    let refuse = scratch.path().join("refuse");
+    let workspace = tempfile::tempdir().unwrap();
+    let (initialize, _) = initialize_params(
+        workspace.path(),
+        vec![(
+            "browser",
+            scoped(fixture(&[("MCP_FIXTURE_REFUSE_FILE", &refuse)]), "runtime"),
+        )],
+    );
+    let mut harness = start(ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(300),
+        Duration::from_millis(20),
+    ]));
+    harness.initialize_only(&initialize).await;
+    // An open waits for its first attempt, whose report reaches the daemon
+    // first.
+    harness.open(workspace.path()).await;
+    let (_, tools) = harness
+        .wait_runtime("browser", McpServerState::Connected, false)
+        .await;
+    assert_eq!(
+        tool_names(tools.last().expect("the runtime's tools")),
+        ["browser_echo_text", "browser_fail"]
+    );
+
+    // The server exits mid-call: it reconnects, its tools staying declared.
+    let crashed = harness
+        .call_on(None, "browser_echo_text", json!({"text": "exit"}), false)
+        .await;
+    assert!(matches!(crashed.outcome, ExecuteOutcome::Failed { .. }));
+    let (_, tools) = harness
+        .wait_runtime("browser", McpServerState::Reconnecting, false)
+        .await;
+    assert!(tools.is_empty(), "the tool list stays while reconnecting");
+    let (connected, _) = harness
+        .wait_runtime("browser", McpServerState::Connected, false)
+        .await;
+    assert!(connected.failures.is_empty());
+
+    // When every restart fails, its tools leave the runtime's list and the
+    // daemon hears why.
+    std::fs::write(&refuse, "").unwrap();
+    let crashed = harness
+        .call_on(None, "browser_echo_text", json!({"text": "exit"}), false)
+        .await;
+    assert!(matches!(crashed.outcome, ExecuteOutcome::Failed { .. }));
+    let (failed, tools) = harness
+        .wait_runtime("browser", McpServerState::Failed, true)
+        .await;
+    assert_eq!(failed.failures.len(), 1, "{:?}", failed.failures);
+    assert_eq!(failed.failures[0].server, "browser");
+    assert!(tool_names(tools.last().expect("a new tool list")).is_empty());
+
+    // A retry of the failed ones brings it back.
+    std::fs::remove_file(&refuse).unwrap();
+    let retried: Outcome = tokio::time::timeout(
+        WAIT,
+        harness.daemon.request(
+            method::RUNTIME_MCP_RECONNECT,
+            &RuntimeMcpReconnectParams { server: None },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(retried, Outcome::default());
+    let (_, tools) = harness
+        .wait_runtime("browser", McpServerState::Connected, false)
+        .await;
+    assert_eq!(
+        tool_names(tools.last().expect("the tools are back")),
+        ["browser_echo_text", "browser_fail"]
+    );
+    let unknown: Outcome = harness
+        .daemon
+        .request(
+            method::RUNTIME_MCP_RECONNECT,
+            &RuntimeMcpReconnectParams {
+                server: Some("docs".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(unknown.error.is_some());
+}
+
+#[tokio::test]
+async fn a_daemon_before_runtime_scoped_servers_gets_them_in_every_workspace() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (mut initialize, open) = initialize_params(
+        workspace.path(),
+        vec![("browser", scoped(fixture(&[]), "runtime"))],
+    );
+    initialize.protocol_version = cookie_agent_protocol::SemVer::new(1, 4, 0);
+    let harness = start(quick(1));
+    let initialized = harness.initialize_only(&initialize).await;
+    assert_eq!(
+        report_summary(&initialized.mcp_servers),
+        [(
+            "browser",
+            Some(McpServerScope::Workspace),
+            McpServerState::Disconnected,
+            0
+        )]
+    );
+    let opened: CapabilityOpenResult = harness
+        .daemon
+        .request(method::CAPABILITY_OPEN, &open)
+        .await
+        .unwrap();
+    assert!(
+        tool_names(&opened.tools).contains(&"browser_echo_text"),
+        "{:?}",
+        tool_names(&opened.tools)
+    );
 }

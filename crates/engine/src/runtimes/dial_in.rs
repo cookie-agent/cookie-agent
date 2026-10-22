@@ -274,4 +274,17 @@ impl RuntimeTemplate for DialInTemplate {
     fn disconnect(&self) {
         lock(&self.connection).take();
     }
+
+    fn runtime_mcp_servers(&self) -> Vec<cookie_agent_protocol::McpServerInfo> {
+        self.current()
+            .map(|client| client.runtime_mcp_servers())
+            .unwrap_or_default()
+    }
+
+    async fn reconnect_runtime_mcp(&self, server: &str) -> Result<(), crate::EngineError> {
+        match self.current() {
+            Some(client) => client.reconnect_runtime_mcp(server).await,
+            None => Err(crate::EngineError::Mcp(self.not_connected())),
+        }
+    }
 }

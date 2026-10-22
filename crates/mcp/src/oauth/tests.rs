@@ -522,6 +522,7 @@ fn remote_config(url: String) -> McpServerConfig {
         oauth: Default::default(),
         enabled: true,
         timeout_ms: Some(5_000),
+        scope: None,
     }
 }
 

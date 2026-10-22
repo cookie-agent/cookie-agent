@@ -618,6 +618,9 @@ impl McpRegistry {
             .eager_pending
             .fetch_add(servers.len(), Ordering::AcqRel);
         for server in servers {
+            // Visible at once, so a status read before the task runs shows
+            // the attempt.
+            server.set_status(McpServerState::Connecting, None);
             let registry = Arc::clone(&self.inner);
             let task_registry = Arc::clone(&registry);
             let eager = EagerConnect(Arc::clone(&task_registry));

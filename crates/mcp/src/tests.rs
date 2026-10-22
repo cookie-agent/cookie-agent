@@ -96,6 +96,7 @@ fn fixture_config() -> McpServerConfig {
         // starting Python and completing the handshake can take seconds. No
         // test relies on this timeout firing; slow-list tests cancel instead.
         timeout_ms: Some(30_000),
+        scope: None,
     }
 }
 

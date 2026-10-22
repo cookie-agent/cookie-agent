@@ -1952,6 +1952,15 @@ pub struct McpServerInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     pub name: String,
+    /// Where a runtime other than `global` hosts the server (client protocol
+    /// 1.13.0): `runtime`, one process the runtime shares across its
+    /// workspaces, listed without a workspace; or `workspace`, one per
+    /// instance, listed with the instance's workspace, and once without one
+    /// (`disconnected`, "starts when a workspace opens") while no instance of
+    /// a connected runtime hosts it. Absent for `global`'s servers and from
+    /// runtimes that do not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::runtime_protocol::McpServerScope>,
     pub source: McpConfigSource,
     pub definition: McpServerDefinition,
     pub state: McpServerState,

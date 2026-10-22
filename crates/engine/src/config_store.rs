@@ -137,7 +137,9 @@ impl ConfigStore {
 impl Engine {
     /// The MCP servers of every runtime: the global runtime's (top-level
     /// `[mcp]` and runtime-layer entries), then those each running instance
-    /// of another runtime hosts, with the instance's workspace.
+    /// of another runtime hosts, with the instance's workspace, then each
+    /// connected runtime's own: its runtime-scoped servers, and its
+    /// workspace-scoped ones that no running instance hosts, as configured.
     #[must_use]
     pub fn list_mcp_servers(&self) -> Vec<McpServerInfo> {
         let store = self
@@ -145,6 +147,8 @@ impl Engine {
             .config_store
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let hosted = self.inner.runtimes.hosted_mcp_servers();
+        let runtime_servers = self.inner.runtimes.runtime_mcp_servers(&hosted);
         let statuses = self
             .inner
             .mcp
@@ -175,6 +179,7 @@ impl Engine {
                     .expect("`global` is a valid runtime ID"),
                     workspace: None,
                     name,
+                    scope: None,
                     source: source_to_wire(loaded.source),
                     definition: definition_to_wire(&loaded.config),
                     state,
@@ -183,13 +188,8 @@ impl Engine {
                     auth_in_progress: status.map(|status| status.auth_in_progress),
                 }
             })
-            .chain(
-                self.inner
-                    .runtimes
-                    .hosted_mcp_servers()
-                    .into_iter()
-                    .filter_map(hosted_to_wire),
-            )
+            .chain(hosted.into_iter().filter_map(hosted_to_wire))
+            .chain(runtime_servers)
             .collect()
     }
 
@@ -220,6 +220,18 @@ impl Engine {
     ) -> Result<Option<McpServerInfo>, EngineError> {
         if runtime_id == cookie_agent_protocol::RuntimeId::GLOBAL {
             return self.reconnect_mcp_server(name).await;
+        }
+        // Listed without a workspace: one of the runtime's own servers.
+        if workspace.is_none() && self.inner.runtimes.instance_at(runtime_id, None).is_none() {
+            self.inner
+                .runtimes
+                .reconnect_runtime_mcp(runtime_id, &name)
+                .await?;
+            return Ok(self.list_mcp_servers().into_iter().find(|server| {
+                server.name == name
+                    && server.runtime_id.as_str() == runtime_id
+                    && server.workspace.is_none()
+            }));
         }
         let connection = self
             .inner
@@ -414,7 +426,7 @@ impl Engine {
 /// definition comes from the runtime's template in the user file; a server
 /// the runtime's own machine defines has the source `machine` and an empty
 /// definition.
-fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option<McpServerInfo> {
+pub(crate) fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option<McpServerInfo> {
     use cookie_agent_runtime_api::protocol::McpServerState as Hosted;
     let (source, definition) = match &server.definition {
         Some(definition) => (McpConfigSource::UserFile, definition_to_wire(definition)),
@@ -433,10 +445,16 @@ fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option<McpServerI
             },
         ),
     };
+    // A workspace-scoped server listed without a workspace is one no
+    // instance hosts yet.
+    let waiting = server.workspace.is_none()
+        && server.report.scope == Some(cookie_agent_protocol::McpServerScope::Workspace)
+        && server.report.state != Hosted::Disabled;
     Some(McpServerInfo {
         runtime_id: cookie_agent_protocol::RuntimeId::new(server.runtime_id.as_str()).ok()?,
         workspace: server.workspace,
         name: server.report.name,
+        scope: server.report.scope,
         source,
         definition,
         state: match server.report.state {
@@ -448,7 +466,11 @@ fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option<McpServerI
             Hosted::Failed => WireMcpServerState::Failed,
         },
         tool_count: u32::try_from(server.report.tools.len()).unwrap_or(u32::MAX),
-        message: server.report.message,
+        message: if waiting {
+            Some("starts when a workspace opens".to_owned())
+        } else {
+            server.report.message
+        },
         auth_in_progress: None,
     })
 }
@@ -510,6 +532,7 @@ fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
         },
         enabled: definition.enabled,
         timeout_ms: definition.timeout_ms,
+        scope: None,
     }
 }
 

@@ -1067,6 +1067,7 @@ fn local_mcp_config(
         oauth: cookie_agent_config::McpOAuthConfig::default(),
         enabled: true,
         timeout_ms: Some(30_000),
+        scope: None,
     };
     config.runtimes.insert(
         cookie_agent_identity::RuntimeId::new("local").unwrap(),
@@ -2740,4 +2741,396 @@ async fn the_runtime_drops_a_cancelled_call_that_does_not_stop() {
         error.to_string().contains("did not stop within 2 s"),
         "{error}"
     );
+}
+
+/// The stdio fixture server as `[runtimes.local.mcp]` or `[mcp]` lists it,
+/// with `env`.
+fn fixture_server(
+    env: &[(&str, &std::path::Path)],
+    scope: Option<cookie_agent_config::McpServerScope>,
+) -> cookie_agent_config::McpServerConfig {
+    cookie_agent_config::McpServerConfig {
+        command: Some(crate::runtime::tests::support::python_command().into()),
+        args: vec![
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../mcp/tests/fixtures/mcp_server.py"
+            )
+            .into(),
+        ],
+        env: env
+            .iter()
+            .map(|(name, path)| ((*name).to_owned(), path.to_string_lossy().into_owned()))
+            .collect(),
+        cwd: None,
+        url: None,
+        headers: std::collections::BTreeMap::new(),
+        oauth: cookie_agent_config::McpOAuthConfig::default(),
+        enabled: true,
+        timeout_ms: Some(30_000),
+        scope,
+    }
+}
+
+/// An engine whose `local` runtime hosts `servers` and whose global
+/// runtime hosts `global`.
+async fn open_with_servers(
+    fixture: &crate::runtime::tests::support::Fixture,
+    servers: Vec<(&str, cookie_agent_config::McpServerConfig)>,
+    global: Vec<(&str, cookie_agent_config::McpServerConfig)>,
+) -> crate::Engine {
+    let directory = fixture._directory.path();
+    let mut config = fixture.config.clone();
+    config.runtimes.insert(
+        cookie_agent_identity::RuntimeId::new("local").unwrap(),
+        cookie_agent_config::RuntimeTemplateConfig {
+            command: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            startup_timeout_ms: 10_000,
+            shutdown_grace_ms: 3_000,
+            mcp_servers: servers
+                .into_iter()
+                .map(|(name, server)| (name.to_owned(), server))
+                .collect(),
+        },
+    );
+    for (name, server) in global {
+        config.mcp_servers.insert(
+            name.to_owned(),
+            cookie_agent_config::LoadedMcpServer {
+                source: cookie_agent_config::McpServerSource::UserFile,
+                config: server,
+            },
+        );
+    }
+    crate::Engine::open_async(crate::EngineOptions {
+        data_dir: directory.join("data"),
+        cwd: directory.to_owned(),
+        config,
+        model_manager: Arc::clone(&fixture.manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions {
+            local: cookie_agent_runtime_api::LocalRuntime::Protocol(
+                cookie_agent_coding_runtime::server::in_process_connector_with_options(
+                    ServeOptions {
+                        mcp_reconnect: Some(
+                            cookie_agent_runtime_api::reconnect::ReconnectPolicy::with_delays(
+                                vec![Duration::from_millis(20)],
+                            ),
+                        ),
+                        ..ServeOptions::default()
+                    },
+                ),
+            ),
+            ..cookie_agent_runtime_api::RuntimeOptions::new(directory)
+        },
+    })
+    .await
+    .expect("engine with MCP servers")
+}
+
+fn listed(
+    engine: &crate::Engine,
+    runtime: &str,
+) -> Vec<(
+    String,
+    Option<String>,
+    Option<cookie_agent_protocol::McpServerScope>,
+)> {
+    let mut servers = engine
+        .list_mcp_servers()
+        .into_iter()
+        .filter(|server| server.runtime_id.as_str() == runtime)
+        .map(|server| (server.name, server.workspace, server.scope))
+        .collect::<Vec<_>>();
+    servers.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+    servers
+}
+
+/// A runtime-scoped server of the `local` runtime: listed once, without a
+/// workspace, its tools composed once per session under the runtime's ID
+/// however many of the runtime's workspaces the session attaches, called
+/// without a workspace, and reconnected through the runtime.
+#[tokio::test]
+async fn a_runtime_scoped_server_is_listed_and_composed_once_per_runtime() {
+    use cookie_agent_protocol::McpServerScope as Scope;
+    let (fixture, selection) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let pid_file = fixture._directory.path().join("browser.pid");
+    let engine = open_with_servers(
+        &fixture,
+        vec![
+            (
+                "browser",
+                fixture_server(
+                    &[("MCP_FIXTURE_PID_FILE", &pid_file)],
+                    Some(cookie_agent_config::McpServerScope::Runtime),
+                ),
+            ),
+            ("docs", fixture_server(&[], None)),
+        ],
+        Vec::new(),
+    )
+    .await;
+    let local = engine
+        .inner
+        .runtimes
+        .local_workspace_root()
+        .to_string_lossy()
+        .into_owned();
+    // The runtime-scoped server once, the workspace-scoped one where the
+    // local instance hosts it.
+    assert_eq!(
+        listed(&engine, "local"),
+        [
+            ("browser".to_owned(), None, Some(Scope::Runtime)),
+            (
+                "docs".to_owned(),
+                Some(local.clone()),
+                Some(Scope::Workspace)
+            ),
+        ]
+    );
+    let browser = engine
+        .list_mcp_servers()
+        .into_iter()
+        .find(|server| server.name == "browser")
+        .unwrap();
+    assert_eq!(
+        browser.state,
+        cookie_agent_protocol::McpServerState::Connected
+    );
+    assert_eq!(browser.tool_count, 2);
+
+    // A session with two workspaces of `local` gets its tools once.
+    let session = engine.create_session(selection).unwrap().session_id;
+    let second = private_tempdir();
+    engine
+        .attach_runtime(
+            session,
+            "local",
+            None,
+            Some(second.path().to_owned()),
+            cookie_agent_protocol::EventOrigin::new("user").unwrap(),
+        )
+        .await
+        .unwrap();
+    let composition = engine.compose_session_tools(session, |_, _| true).unwrap();
+    let names = composition
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.ends_with("browser_echo_text"))
+            .collect::<Vec<_>>(),
+        [&"browser_echo_text"]
+    );
+    // The workspace-scoped one is offered by each workspace, so prefixed.
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.ends_with("docs_echo_text"))
+            .count(),
+        2,
+        "{names:?}"
+    );
+    let echo = composition.get("browser_echo_text").unwrap();
+    let runtime = echo.source.origin.runtime().expect("a runtime tool");
+    assert_eq!(runtime.id(), "local");
+    assert!(runtime.workspace().is_none(), "it runs without a workspace");
+    assert_eq!(
+        echo.source.provider.tool_source(&echo.spec.name),
+        Some(cookie_agent_runtime_api::ProvidedToolSource::Mcp {
+            server: "browser".into()
+        })
+    );
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+
+    // Called through the session's composition.
+    let prepared = echo
+        .source
+        .provider
+        .prepare(
+            ToolPreparationContext {
+                session,
+                run: RunId::new_v7(),
+                origin: echo.source.origin.clone(),
+                turn_context: turn_context(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: echo.spec.name.clone(),
+                arguments: serde_json::json!({"text": "shared"}),
+            },
+        )
+        .await
+        .expect("prepared");
+    let call = call_context(CancellationToken::new());
+    let completion = execute(prepared, call.context).await.expect("executed");
+    assert!(!completion.failed);
+    assert_eq!(
+        completion.output,
+        cookie_agent_protocol::ToolCompletionOutput::Single {
+            text: "shared".into()
+        }
+    );
+
+    // Reconnecting it goes to the runtime, not a workspace.
+    let reconnected = engine
+        .reconnect_runtime_mcp_server("local", None, "browser".into())
+        .await
+        .expect("reconnected")
+        .expect("listed");
+    assert_eq!(reconnected.scope, Some(Scope::Runtime));
+    assert_ne!(
+        std::fs::read_to_string(&pid_file).unwrap(),
+        pid,
+        "restarted"
+    );
+    let error = engine
+        .reconnect_runtime_mcp_server("local", None, "docs".into())
+        .await
+        .expect_err("a workspace-scoped server reconnects in its workspace");
+    assert!(
+        error.to_string().contains("starts when a workspace opens"),
+        "{error}"
+    );
+    engine.shutdown().await;
+}
+
+/// A dial-in runtime with no workspace open lists its configured servers:
+/// the runtime-scoped one live, the workspace-scoped one as starting with
+/// a workspace.
+#[tokio::test]
+async fn a_connected_runtime_lists_its_servers_before_any_workspace_opens() {
+    use cookie_agent_protocol::McpServerScope as Scope;
+    let (fixture, _) = custom_fixture();
+    let template = fixture
+        .engine
+        .inner
+        .runtimes
+        .dial_in_template("labpc")
+        .unwrap();
+    let (daemon, runtime) = in_process_pair(64);
+    let config =
+        |server: cookie_agent_config::McpServerConfig| serde_json::to_value(server).unwrap();
+    tokio::spawn(serve(
+        Box::new(runtime),
+        ServeOptions {
+            mcp_servers: vec![
+                cookie_agent_runtime_api::protocol::McpServerSettings {
+                    name: "browser".into(),
+                    config: config(fixture_server(
+                        &[],
+                        Some(cookie_agent_config::McpServerScope::Runtime),
+                    )),
+                },
+                cookie_agent_runtime_api::protocol::McpServerSettings {
+                    name: "lsp".into(),
+                    config: config(fixture_server(&[], None)),
+                },
+            ],
+            ..ServeOptions::default()
+        },
+    ));
+    let settings = runtime_settings(&fixture.config, "labpc");
+    template
+        .connect(
+            cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
+            &settings,
+            Some(Arc::clone(&fixture.engine.inner.mcp_hub)),
+        )
+        .await
+        .expect("dialed in");
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let servers = loop {
+        let servers = fixture
+            .engine
+            .list_mcp_servers()
+            .into_iter()
+            .filter(|server| server.runtime_id.as_str() == "labpc")
+            .collect::<Vec<_>>();
+        if servers.iter().any(|server| {
+            server.name == "browser"
+                && server.state == cookie_agent_protocol::McpServerState::Connected
+        }) {
+            break servers;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{servers:?}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let summary = servers
+        .iter()
+        .map(|server| {
+            (
+                server.name.as_str(),
+                server.workspace.as_deref(),
+                server.scope,
+                server.source,
+                server.state,
+                server.tool_count,
+                server.message.as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            (
+                "browser",
+                None,
+                Some(Scope::Runtime),
+                cookie_agent_protocol::McpConfigSource::Machine,
+                cookie_agent_protocol::McpServerState::Connected,
+                2,
+                None
+            ),
+            (
+                "lsp",
+                None,
+                Some(Scope::Workspace),
+                cookie_agent_protocol::McpConfigSource::Machine,
+                cookie_agent_protocol::McpServerState::Disconnected,
+                0,
+                Some("starts when a workspace opens")
+            ),
+        ]
+    );
+    fixture.engine.shutdown().await;
+}
+
+/// A top-level server without a `cwd` runs in the daemon user's home, not
+/// wherever the daemon started.
+#[tokio::test]
+async fn a_global_server_runs_in_the_daemon_users_home() {
+    let (fixture, _) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let cwd_file = fixture._directory.path().join("global.cwd");
+    let engine = open_with_servers(
+        &fixture,
+        Vec::new(),
+        vec![(
+            "docs",
+            fixture_server(&[("MCP_FIXTURE_CWD_FILE", &cwd_file)], None),
+        )],
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !cwd_file.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the server never started"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::path::PathBuf::from(std::fs::read_to_string(&cwd_file).unwrap())
+        .canonicalize()
+        .unwrap();
+    assert_eq!(
+        Some(started.to_string_lossy().into_owned()),
+        crate::runtimes::daemon_home()
+    );
+    engine.shutdown().await;
 }

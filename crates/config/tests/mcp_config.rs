@@ -114,6 +114,7 @@ fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
         oauth: Default::default(),
         enabled: false,
         timeout_ms: Some(5000),
+        scope: None,
     };
     let original = ConfigTree::read(Some(directory.path())).expect("read the tree");
     let mut candidate = original.clone();
@@ -144,6 +145,7 @@ fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
         oauth: Default::default(),
         enabled: true,
         timeout_ms: None,
+        scope: None,
     };
     let mut candidate = ConfigTree::read(Some(directory.path())).expect("read the tree");
     candidate

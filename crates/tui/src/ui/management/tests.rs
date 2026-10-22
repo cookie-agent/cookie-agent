@@ -55,6 +55,7 @@ fn mcp_panel_renders_live_state_and_connection() {
         runtime_id: cookie_agent_protocol::RuntimeId::new("global").unwrap(),
         workspace: None,
         name: "remote".into(),
+        scope: None,
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
             command: None,
@@ -101,6 +102,7 @@ fn mcp_panel_renders_copyable_oauth_wait() {
         runtime_id: cookie_agent_protocol::RuntimeId::new("global").unwrap(),
         workspace: None,
         name: "remote".into(),
+        scope: None,
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
             command: None,
@@ -1040,6 +1042,7 @@ fn hosted_server(
         runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
         workspace: workspace.map(str::to_owned),
         name: name.into(),
+        scope: None,
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
             command: Some("server".into()),
@@ -1209,6 +1212,7 @@ fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
         runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
         workspace: workspace.map(str::to_owned),
         name: name.into(),
+        scope: None,
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
             command: Some("lsp-mcp".into()),

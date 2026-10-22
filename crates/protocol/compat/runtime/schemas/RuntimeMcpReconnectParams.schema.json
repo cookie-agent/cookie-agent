@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`runtime/mcp_reconnect` (runtime protocol 1.5.0).",
+  "properties": {
+    "server": {
+      "default": null,
+      "description": "The runtime-scoped server to reconnect now; absent to retry every\nfailed one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "RuntimeMcpReconnectParams",
+  "type": "object"
+}

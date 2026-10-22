@@ -1092,6 +1092,7 @@ impl crate::RuntimeTemplate for TwoCapabilityTemplate {
             providers: Vec::new(),
             skills: cookie_agent_config::SkillRegistry::default(),
             connection: None,
+            shared: None,
         })
     }
 }
