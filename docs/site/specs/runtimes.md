@@ -321,6 +321,37 @@ the existing `OperationChanged` path.
 - The approval classifier's prompt names the runtime and its workspace instead
   of "the workspace".
 
+### 7.1 Addendum 2026-10-22: the `mcp` default
+
+An action no rule names stays denied and hidden, with the mode defaults of
+`memory` and `memory_write` ([memory spec section 9.2](memory.md#92-default-rules))
+and `list_runtimes` ([runtime delegation spec section 4](runtime-delegation.md#4-list_runtimes))
+as the exceptions. `mcp` joins them: when an agent document, the
+synthesized built-in `default` included, has no `mcp` key in any form
+(`mcp@<runtime>` included), the daemon supplies `mcp: {"*": ask}` for the
+`primary`, `all`, and `subagent` modes; `internal` agents get none.
+
+| Mode | `mcp` |
+|---|---|
+| `primary`, `all`, `subagent` | `"*": ask` |
+| `internal` | none |
+
+- A declared `mcp` key replaces the default entirely, as for the memory
+  actions: an agent with only `"my_chrome_*": ask` is offered only those
+  tools, and `mcp: deny` hides them all. A key with only a runtime selector
+  counts as declared, so `mcp@labpc: allow` leaves the other runtimes' MCP
+  tools hidden.
+- The default rule is part of the frozen agent snapshot like the others, so
+  tool visibility, call evaluation, and approvals treat it as any rule. A
+  snapshot frozen before this change has no default and keeps its rules.
+- `session.permission.get` and the session preview report an action whose
+  agent rules are exactly its mode default with the source `default` (the
+  memory and `list_runtimes` defaults too, which were reported as
+  `agent_document` before); the TUI's and the web client's `/permissions`
+  panels show it so. No wire change: `default` is an existing
+  `PermissionRuleSource` value. A document that spells out the default
+  rule itself reads the same.
+
 ## 8. Workspace context
 
 At admission, for each attached coding runtime, the daemon asks the runtime

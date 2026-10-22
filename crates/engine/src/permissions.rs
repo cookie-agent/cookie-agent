@@ -625,13 +625,52 @@ pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> C
     })
 }
 
-/// The rules an agent document gives its runs (`docs/site/specs/memory.md`
-/// section 9.2 and `docs/site/specs/runtime-delegation.md` section 4): the
-/// document's own, then, for each memory action and `list_runtimes` the
-/// document names no key for (with or without a runtime selector), the
-/// default of the agent's mode. `primary` and `all` agents may read and
-/// write all memory and list runtimes, `subagent` agents read all memory and
-/// write their own agent file, and internal agents get nothing.
+/// The rules the daemon supplies for an agent of `mode` (`docs/site/specs/memory.md`
+/// section 9.2, `docs/site/specs/runtime-delegation.md` section 4, and
+/// `docs/site/specs/runtimes.md` section 7.1), each applying only to an
+/// action its document names no key for. `primary` and `all` agents may
+/// read and write all memory, list runtimes, and call MCP tools after
+/// asking; `subagent` agents read all memory, write their own agent file,
+/// and call MCP tools after asking; internal agents get nothing.
+pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
+    let defaults: &[(PermissionAction, &str, PermissionEffect)] = match mode {
+        AgentMode::Primary | AgentMode::All => &[
+            (PermissionAction::MEMORY, "*", PermissionEffect::Allow),
+            (PermissionAction::MEMORY_WRITE, "*", PermissionEffect::Allow),
+            (
+                PermissionAction::LIST_RUNTIMES,
+                "*",
+                PermissionEffect::Allow,
+            ),
+            (PermissionAction::MCP, "*", PermissionEffect::Ask),
+        ],
+        AgentMode::Subagent => &[
+            (PermissionAction::MEMORY, "*", PermissionEffect::Allow),
+            (
+                PermissionAction::MEMORY_WRITE,
+                SELF_AGENT_PATTERN,
+                PermissionEffect::Allow,
+            ),
+            (PermissionAction::MCP, "*", PermissionEffect::Ask),
+        ],
+        AgentMode::Internal => &[],
+    };
+    defaults
+        .iter()
+        .map(|(action, resource, effect)| {
+            PermissionRule::new(
+                action.clone(),
+                WildcardPattern::new(*resource).expect("static default pattern"),
+                *effect,
+            )
+        })
+        .collect()
+}
+
+/// The rules an agent document gives its runs: the document's own, then
+/// the [mode defaults](mode_default_rules) of each action the document
+/// names no key for, with or without a runtime selector. A declared key
+/// replaces its action's default entirely.
 pub(crate) fn agent_permission_rules(
     document: &cookie_agent_config::AgentDocument,
 ) -> Vec<PermissionRule> {
@@ -640,27 +679,11 @@ pub(crate) fn agent_permission_rules(
         .iter()
         .flat_map(|(key, value)| value.rules(key))
         .collect::<Vec<_>>();
-    let defaults: &[(PermissionAction, &str)] = match document.frontmatter.mode {
-        AgentMode::Primary | AgentMode::All => &[
-            (PermissionAction::MEMORY, "*"),
-            (PermissionAction::MEMORY_WRITE, "*"),
-            (PermissionAction::LIST_RUNTIMES, "*"),
-        ],
-        AgentMode::Subagent => &[
-            (PermissionAction::MEMORY, "*"),
-            (PermissionAction::MEMORY_WRITE, SELF_AGENT_PATTERN),
-        ],
-        AgentMode::Internal => &[],
-    };
-    for (action, resource) in defaults {
-        if !permissions.keys().any(|key| key.action == *action) {
-            rules.push(PermissionRule::new(
-                action.clone(),
-                WildcardPattern::new(*resource).expect("static default pattern"),
-                PermissionEffect::Allow,
-            ));
-        }
-    }
+    rules.extend(
+        mode_default_rules(document.frontmatter.mode)
+            .into_iter()
+            .filter(|rule| !permissions.keys().any(|key| key.action == rule.action)),
+    );
     rules
 }
 
@@ -1167,12 +1190,24 @@ fn rule_effects(
 
 /// The effective permission of every action: the built-in actions, then the
 /// other actions the session's tools `declared`, then any other action a rule
-/// names, each group in first-seen order.
+/// names, each group in first-seen order. An action whose agent rules are
+/// exactly its [mode default](mode_default_rules) reports them with the
+/// source `default`.
 fn effective_permission_view(
     policy: &AgentSnapshot,
     overlay: &SessionPermissionOverlay,
     declared: &[PermissionAction],
 ) -> Vec<EffectivePermissionAction> {
+    let defaults = mode_default_rules(policy.mode);
+    let agent_source = |action: &PermissionAction| {
+        let of_action = |rule: &&PermissionRule| rule.action == *action;
+        let default = defaults.iter().filter(of_action).collect::<Vec<_>>();
+        if !default.is_empty() && policy.permissions.iter().filter(of_action).eq(default) {
+            PermissionRuleSource::Default
+        } else {
+            PermissionRuleSource::AgentDocument
+        }
+    };
     let mut actions = PermissionAction::BUILT_IN.to_vec();
     let named = policy
         .permissions
@@ -1192,11 +1227,12 @@ fn effective_permission_view(
             };
             let overlay_wildcard = overlay.rules.iter().rev().find(unqualified_wildcard);
             let agent_wildcard = policy.permissions.iter().rev().find(unqualified_wildcard);
+            let agent_source = agent_source(&action);
             let (effect, source) = overlay_wildcard.map_or_else(
                 || {
                     agent_wildcard.map_or(
                         (PermissionEffect::Deny, PermissionRuleSource::Default),
-                        |rule| (rule.effect, PermissionRuleSource::AgentDocument),
+                        |rule| (rule.effect, agent_source),
                     )
                 },
                 |rule| (rule.effect, PermissionRuleSource::SessionOverlay),
@@ -1222,7 +1258,7 @@ fn effective_permission_view(
                         .permissions
                         .iter()
                         .filter(listed)
-                        .map(|rule| entry(rule, PermissionRuleSource::AgentDocument)),
+                        .map(|rule| entry(rule, agent_source)),
                 );
             }
             patterns.extend(

@@ -853,6 +853,82 @@ async fn immediate_first_run_waits_for_mcp_listing_without_separate_approval() {
     fixture.engine.shutdown().await;
 }
 
+/// An agent document with no `mcp` key gets the mode default `"*": ask`
+/// (runtimes spec section 7.1): the MCP tools are offered, and calling one
+/// asks first.
+#[tokio::test]
+async fn an_agent_without_an_mcp_key_is_offered_mcp_tools_that_ask() {
+    let (endpoint, server, _reached, _release) = scripted_server_with_delayed_response(
+        vec![
+            scripted_tool_body(
+                "mcp-call",
+                "fixture_echo_text",
+                serde_json::json!({"text": "hello"}),
+            ),
+            scripted_text_body("echoed"),
+        ],
+        usize::MAX,
+    )
+    .await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
+        &endpoint,
+        "---\ndescription: MCP default agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nUse MCP.\n",
+        None,
+        None,
+        false,
+        None,
+        Some(delayed_mcp_server(McpServerSource::UserFile)),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    // Ask mode escalates the ask to the user without the approval agent.
+    fixture
+        .engine
+        .set_permission_mode(
+            session.session_id,
+            cookie_agent_protocol::PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .expect("ask mode");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("mcp-default-run").expect("run ID"),
+                selection,
+                content: "echo hello".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let evaluation = &approval.request.evaluations()[0];
+    assert_eq!(evaluation.trace.action, PermissionAction::MCP);
+    assert_eq!(evaluation.trace.normalized_resource, "fixture_echo_text");
+    assert_eq!(evaluation.effect, PermissionEffect::Ask);
+    approve_once(&fixture.engine, &approval, "mcp-default-approval").await;
+    let requests = tokio::time::timeout(std::time::Duration::from_secs(30), server)
+        .await
+        .expect("both model requests")
+        .expect("scripted server");
+    assert!(
+        requests[0].contains("\"fixture_echo_text\""),
+        "the MCP tool is offered: {}",
+        requests[0]
+    );
+    assert!(
+        requests[1].contains("hello"),
+        "the approved call ran and its result reached the model: {}",
+        requests[1]
+    );
+    fixture.engine.shutdown().await;
+}
+
 /// The reference plugin of `examples/plugins/python` against the daemon: its
 /// tool's presentation, progress, and result, its blocking hook, its event
 /// subscription by pattern, and its producer.

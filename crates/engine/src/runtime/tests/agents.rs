@@ -101,12 +101,14 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    // The memory actions have defaults by mode (memory spec 9.2).
+    // The memory and MCP actions have defaults by mode (memory spec 9.2,
+    // runtimes spec 7.1).
     assert_eq!(
         tool_names,
         [
             "bash",
             "edit",
+            "fixture_mcp",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -242,8 +244,10 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        // A primary agent that names no memory rule gets them by default.
+        // A primary agent that names no memory or MCP rule gets them by
+        // default.
         [
+            "fixture_mcp",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -299,6 +303,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "bash",
             "delegate",
             "edit",
+            "fixture_mcp",
             "list_runtimes",
             "memory_delete",
             "memory_edit",

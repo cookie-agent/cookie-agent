@@ -2121,17 +2121,20 @@ fn rule_triples(rules: &[PermissionRule]) -> Vec<(String, String, PermissionEffe
 }
 
 #[test]
-fn memory_defaults_follow_the_agent_mode() {
+fn mode_defaults_follow_the_agent_mode() {
+    let triple =
+        |action: &str, resource: &str, effect| (action.to_owned(), resource.to_owned(), effect);
     let allow = PermissionEffect::Allow;
-    let triple = |action: &str, resource: &str| (action.to_owned(), resource.to_owned(), allow);
+    let ask = PermissionEffect::Ask;
     for mode in [AgentMode::Primary, AgentMode::All] {
         let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
         assert_eq!(
             rule_triples(&rules),
             [
-                triple("memory", "*"),
-                triple("memory_write", "*"),
-                triple("list_runtimes", "*")
+                triple("memory", "*", allow),
+                triple("memory_write", "*", allow),
+                triple("list_runtimes", "*", allow),
+                triple("mcp", "*", ask),
             ],
             "{mode:?}"
         );
@@ -2140,8 +2143,9 @@ fn memory_defaults_follow_the_agent_mode() {
     assert_eq!(
         rule_triples(&rules),
         [
-            triple("memory", "*"),
-            triple("memory_write", "agent://self")
+            triple("memory", "*", allow),
+            triple("memory_write", "agent://self", allow),
+            triple("mcp", "*", ask),
         ]
     );
     let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Internal, &[]));
@@ -2169,6 +2173,7 @@ fn a_declared_memory_key_replaces_that_actions_default_only() {
                 "*".to_owned(),
                 PermissionEffect::Allow
             ),
+            ("mcp".to_owned(), "*".to_owned(), PermissionEffect::Ask),
         ]
     );
     // `list_runtimes` is a subagent's only when its document grants it, and
@@ -2218,11 +2223,187 @@ fn a_declared_memory_key_replaces_that_actions_default_only() {
                 PermissionEffect::Ask
             ),
             ("memory".to_owned(), "*".to_owned(), PermissionEffect::Allow),
+            ("mcp".to_owned(), "*".to_owned(), PermissionEffect::Ask),
         ]
     );
     assert_eq!(
         rules[0].runtime.as_ref().map(|runtime| runtime.as_str()),
         Some("global")
+    );
+}
+
+/// The effect of `action` on `resource` for a tool of the `global` runtime.
+fn effect_in_scope(
+    agent: &AgentSnapshot,
+    action: &PermissionAction,
+    resource: &str,
+) -> PermissionEffect {
+    super::effective_permission(
+        agent,
+        action,
+        resource,
+        super::PermissionScope::runtime("global", None),
+    )
+    .0
+}
+
+/// The rules of `action` among `rules`, as `(runtime, resource, effect)`.
+fn action_rules(
+    rules: &[PermissionRule],
+    action: &PermissionAction,
+) -> Vec<(Option<String>, String, PermissionEffect)> {
+    rules
+        .iter()
+        .filter(|rule| rule.action == *action)
+        .map(|rule| {
+            (
+                rule.runtime.as_ref().map(ToString::to_string),
+                rule.resource.as_str().to_owned(),
+                rule.effect,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool_unless_internal() {
+    for mode in [AgentMode::Primary, AgentMode::All, AgentMode::Subagent] {
+        let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
+        assert_eq!(
+            action_rules(&rules, &PermissionAction::MCP),
+            [(None, "*".to_owned(), PermissionEffect::Ask)],
+            "{mode:?}"
+        );
+        assert!(super::tool_visible(
+            &rules,
+            None,
+            &PermissionAction::MCP,
+            Some("global")
+        ));
+        let mut snapshot = policy(rules);
+        snapshot.mode = mode;
+        assert_eq!(
+            effect_in_scope(&snapshot, &PermissionAction::MCP, "github_search"),
+            PermissionEffect::Ask
+        );
+    }
+    let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Internal, &[]));
+    assert!(action_rules(&rules, &PermissionAction::MCP).is_empty());
+    assert!(!super::tool_visible(
+        &rules,
+        None,
+        &PermissionAction::MCP,
+        Some("global")
+    ));
+}
+
+#[test]
+fn a_declared_mcp_key_replaces_the_mcp_default_entirely() {
+    let chrome = cookie_agent_config::PermissionValue::Resources(
+        [(
+            WildcardPattern::new("my_chrome_*").unwrap(),
+            PermissionEffect::Ask,
+        )]
+        .into_iter()
+        .collect(),
+    );
+    let document = agent_document("worker", AgentMode::Primary, &[("mcp", chrome)]);
+    let rules = super::agent_permission_rules(&document);
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MCP),
+        [(None, "my_chrome_*".to_owned(), PermissionEffect::Ask)]
+    );
+    let snapshot = policy(rules);
+    assert_eq!(
+        effect_in_scope(&snapshot, &PermissionAction::MCP, "my_chrome_click"),
+        PermissionEffect::Ask
+    );
+    assert_eq!(
+        effect_in_scope(&snapshot, &PermissionAction::MCP, "github_search"),
+        PermissionEffect::Deny,
+        "only the declared servers' tools are reachable"
+    );
+
+    // A key with only a runtime selector declares the action too: the
+    // unqualified default goes, so other runtimes' MCP tools stay hidden.
+    let document = agent_document(
+        "worker",
+        AgentMode::Subagent,
+        &[("mcp@labpc", effect_value(PermissionEffect::Allow))],
+    );
+    let rules = super::agent_permission_rules(&document);
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MCP),
+        [(
+            Some("labpc".to_owned()),
+            "*".to_owned(),
+            PermissionEffect::Allow
+        )]
+    );
+    assert!(super::tool_visible(
+        &rules,
+        None,
+        &PermissionAction::MCP,
+        Some("labpc")
+    ));
+    assert!(!super::tool_visible(
+        &rules,
+        None,
+        &PermissionAction::MCP,
+        Some("global")
+    ));
+}
+
+#[test]
+fn the_permission_view_reports_mode_defaults_as_defaults() {
+    let entry = |rules, action: &PermissionAction| {
+        super::effective_permission_view(&policy(rules), &SessionPermissionOverlay::empty(), &[])
+            .into_iter()
+            .find(|entry| entry.action == *action)
+            .expect("listed action")
+    };
+    let defaulted =
+        super::agent_permission_rules(&agent_document("worker", AgentMode::Primary, &[]));
+    let mcp = entry(defaulted.clone(), &PermissionAction::MCP);
+    assert_eq!(
+        (mcp.effect, mcp.source),
+        (PermissionEffect::Ask, PermissionRuleSource::Default)
+    );
+    let memory = entry(defaulted, &PermissionAction::MEMORY);
+    assert_eq!(
+        (memory.effect, memory.source),
+        (PermissionEffect::Allow, PermissionRuleSource::Default)
+    );
+    // A document's own rule is the agent's, even beside a default.
+    let declared = super::agent_permission_rules(&agent_document(
+        "worker",
+        AgentMode::Primary,
+        &[("mcp", effect_value(PermissionEffect::Allow))],
+    ));
+    let mcp = entry(declared, &PermissionAction::MCP);
+    assert_eq!(
+        (mcp.effect, mcp.source),
+        (PermissionEffect::Allow, PermissionRuleSource::AgentDocument)
+    );
+    // A subagent's `agent://self` write default is a default pattern.
+    let mut subagent = policy(super::agent_permission_rules(&agent_document(
+        "worker",
+        AgentMode::Subagent,
+        &[],
+    )));
+    subagent.mode = AgentMode::Subagent;
+    let write =
+        super::effective_permission_view(&subagent, &SessionPermissionOverlay::empty(), &[])
+            .into_iter()
+            .find(|entry| entry.action == PermissionAction::MEMORY_WRITE)
+            .expect("memory_write");
+    assert_eq!(
+        write
+            .patterns
+            .iter()
+            .map(|pattern| (pattern.resource.as_str(), pattern.source))
+            .collect::<Vec<_>>(),
+        [("agent://self", PermissionRuleSource::Default)]
     );
 }
 

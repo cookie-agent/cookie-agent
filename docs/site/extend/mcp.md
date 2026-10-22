@@ -283,10 +283,15 @@ permissions:
     github_delete_repo: deny
 ```
 
-MCP availability is permission-driven. With no `mcp` entry, an agent receives
-no MCP tools; deny-only `mcp` rules also hide them. Any `mcp` `allow` or `ask`
-rule in the agent or overlay exposes the connected MCP tools at the action
-level. Calls then use the complete generated tool name as their scoped
+MCP availability is permission-driven. An agent document with no `mcp` key
+(in any form, `mcp@<runtime>` included) gets the daemon's default
+`mcp: {"*": ask}` when its mode is `primary`, `all`, or `subagent`, so every
+connected MCP tool is offered and each call asks; an `internal` agent gets
+none. A declared `mcp` key replaces the default entirely: with only
+`"my_chrome_*": ask`, the agent sees only that server's tools, and deny-only
+`mcp` rules hide them all (see [MCP default](agents.md#mcp-default)). Any
+`mcp` `allow` or `ask` rule in the agent or overlay exposes the connected MCP
+tools at the action level. Calls then use the complete generated tool name as their scoped
 resource: more-specific patterns override broader patterns, and unmatched calls
 are denied. Each delegated agent is evaluated against its own permission map.
 

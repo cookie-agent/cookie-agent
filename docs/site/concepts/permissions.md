@@ -44,6 +44,22 @@ The most specific pattern wins, and a resource no rule matches is denied. A
 tool whose action has no `allow` or `ask` rule is not even offered to the
 model. See [Permissions](../extend/agents.md#permissions).
 
+A few actions have a default by the agent's mode, which applies only while
+the document names no key for that action (a key with a runtime selector
+counts):
+
+| Mode | `memory` | `memory_write` | `list_runtimes` | `mcp` |
+|---|---|---|---|---|
+| `primary`, `all` | `allow` | `allow` | `allow` | `"*": ask` |
+| `subagent` | `allow` | `"agent://self": allow` | none | `"*": ask` |
+| `internal` | none | none | none | none |
+
+So every agent that is not internal is offered the connected MCP servers'
+tools and asks before each call. A declared key replaces its action's
+default entirely: `mcp: {"my_chrome_*": ask}` offers only that server's
+tools, and `mcp: deny` hides them all. `/permissions` shows a default with
+the source `default`. See [MCP default](../extend/agents.md#mcp-default).
+
 Rules can also be added to one session tree without touching the agent, in
 `/permissions` or with `cookie run --allowed-tools`; these *overlay* rules are
 checked before the agent's. See

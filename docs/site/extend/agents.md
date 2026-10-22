@@ -290,12 +290,15 @@ If no authored agent is runnable as a root, the engine synthesizes the built-in
 `default` coding agent bound to the first available model selection. Its prompt
 and explicit permission map are fixed by the engine: read is allowed with
 additional asks and secret-file denies, while write, bash, and delegate ask by
-default. MCP, `webfetch`, every runtime's own actions, and every other
+default. `webfetch`, every runtime's own actions, and every other
 undeclared action stay hidden. User
 agents do not inherit this list and must declare their own tool permissions.
-The memory actions are the one exception: an agent document that names no
-`memory` or `memory_write` key gets that action's rules from its mode (see
-[Memory defaults](#memory-defaults)).
+A few actions are the exception: an agent document, the built-in `default`
+included, that names no key for `memory`, `memory_write`, `list_runtimes`, or
+`mcp` gets that action's rules from its mode (see
+[Memory defaults](#memory-defaults), [Listing runtimes](#listing-runtimes),
+and [MCP default](#mcp-default)), so every agent that is not internal is
+offered MCP tools and asks before each call.
 
 ## Agent presets
 
@@ -545,7 +548,10 @@ Effects are `allow`, `ask`, and `deny`. A bare effect is equivalent to mapping
 fewer wildcards, then a rule with a runtime selector over one without, then the
 later declaration on an exact tie. Unmatched resources are denied by default.
 `ask` remains an explicitly writable effect and routes matching calls through
-the existing approval flow; it is never an implicit fallback.
+the existing approval flow; it is never an implicit fallback for an
+unmatched resource. The only rules the daemon writes for an agent are the
+mode defaults of `memory`, `memory_write`, `list_runtimes`, and `mcp`, each
+only while the document names no key for its action.
 
 ### Runtime selectors
 
@@ -625,7 +631,8 @@ part of the local storage threat model, not an `allow`/`ask`/`deny` decision.
 
 MCP checks are always scoped. A rule such as `"github_*": allow` covers every
 tool from that generated server prefix, while a more-specific deny can override
-one tool. An unmatched MCP tool is denied.
+one tool. An unmatched MCP tool is denied; with no `mcp` key at all, the
+[MCP default](#mcp-default) `"*": ask` matches every MCP tool.
 
 When a tool has no resource label, only the permission's bare effect or `"*"`
 rule applies. Specific patterns are inapplicable rather than matching or
@@ -701,7 +708,9 @@ Resource patterns and overlay precedence still decide individual calls once
 tools are visible.
 
 For example, this agent exposes read, write/edit, and bash with granular write
-and command policies while leaving delegation and MCP tools hidden:
+and command policies while leaving delegation hidden; it names no `mcp` key,
+so it also gets the [MCP default](#mcp-default) and asks before every MCP
+call:
 
 ```markdown
 ---
@@ -721,8 +730,9 @@ permissions:
 Implement and verify requested workspace changes.
 ```
 
-MCP tools follow the same rule: the `mcp` action must contain a non-deny rule.
-Delegation tools additionally require the `delegate` map to name at least one
+MCP tools follow the same rule: the `mcp` action must contain a non-deny rule,
+which the [MCP default](#mcp-default) supplies when the document names no
+`mcp` key; `mcp: deny` hides them. Delegation tools additionally require the `delegate` map to name at least one
 eligible target with `allow` or `ask`. There is no separate tool allowlist.
 
 There is also no separate MCP server approval prompt or trust store. Configured,
@@ -774,7 +784,7 @@ The memory tools of the `global` runtime use two actions, `memory` for
 searching and reading and `memory_write` for writing, editing, and deleting,
 both with the memory URL as resource (`user://<category>`,
 `agent://<agent>`, `machine://<machine>/<name>`,
-`project://<project>/<name>`). Unlike every other action, they have
+`project://<project>/<name>`). Like `list_runtimes` and `mcp`, they have
 defaults: when an agent document, the built-in `default` included, has no key
 for one of them (with or without a runtime selector), the daemon supplies
 that action's rules by the agent's mode.
@@ -819,6 +829,28 @@ action, `list_runtimes`, has a default by mode like the memory actions:
 `internal` ones. A declared `list_runtimes` key, with or without a runtime
 selector, replaces the default: `list_runtimes: allow` lets a subagent see
 the list, and `list_runtimes: deny` hides it from a primary agent.
+
+### MCP default
+
+MCP tools use the `mcp` action, with the complete generated tool name as
+resource (see [MCP tool names](mcp.md#tool-names-and-permissions)). When an
+agent document, the built-in `default` included, has no `mcp` key (in any
+form, `mcp@<runtime>` included), the daemon supplies `mcp: {"*": ask}` for
+`primary`, `all`, and `subagent` agents, so the connected servers' tools are
+offered and every call asks; `internal` agents get none. A declared `mcp`
+key replaces the default entirely:
+
+```yaml
+permissions:
+  mcp:
+    "my_chrome_*": ask
+```
+
+offers only the `my_chrome` server's tools, `mcp: allow` runs every MCP tool
+without asking, and `mcp: deny` hides them all. A key with only a runtime
+selector, such as `mcp@labpc: allow`, declares the action too, so the
+other runtimes' MCP tools stay hidden. `/permissions` shows the default with
+the source `default`. Session overlays apply on top as for any action.
 
 ### Web fetching
 

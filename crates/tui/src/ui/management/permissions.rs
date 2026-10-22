@@ -329,9 +329,14 @@ fn row_explanation(row: &PermissionRow, has_patterns: bool, draft: bool) -> Stri
         PermissionRuleSource::AgentDocument => {
             format!("From the agent; changing it adds {override_noun}.")
         }
-        PermissionRuleSource::Default => format!(
+        PermissionRuleSource::Default if row.effect == PermissionEffect::Deny => format!(
             "No rule covers this, so it is denied and its tools are hidden; changing it adds \
              {override_noun}."
+        ),
+        PermissionRuleSource::Default => format!(
+            "The default for the agent's mode while its document has no `{}` key; changing it \
+             adds {override_noun}.",
+            row.action
         ),
     };
     format!("{matched} {effect}. {origin}")
