@@ -120,6 +120,9 @@ impl Engine {
                 .iter()
                 .find(|template| template.runtime_id == requested.runtime_id.as_str())
             else {
+                if let Some(offline) = self.remembered_offline(requested.runtime_id.as_str()) {
+                    return Err(offline);
+                }
                 return Err(format!(
                     "there is no runtime `{}`; call list_runtimes for the runtimes this daemon has",
                     requested.runtime_id
@@ -189,9 +192,7 @@ impl Engine {
         for requested in capabilities {
             let written = format!("{}/{}", requested.runtime_id, requested.capability);
             let instance = self
-                .inner
-                .runtimes
-                .ensure(
+                .ensure_runtime(
                     requested.runtime_id.as_str(),
                     Some(requested.capability.as_str()),
                     requested.workspace.as_deref().map(PathBuf::from).as_deref(),

@@ -228,6 +228,43 @@ impl Engine {
         Ok(self.tool_sources_for(&self.session_runtimes(session)?))
     }
 
+    /// The instance of `capability` of `runtime_id` at `workspace` that a
+    /// session is about to attach, as creating a session, attaching a
+    /// runtime, and delegating with capabilities do: opened when it is not
+    /// running, and never over a runtime that is not online (see
+    /// `RuntimeRegistry::ensure`). A dial-in runtime this daemon has not
+    /// seen since it started, but remembers, is refused as not connected,
+    /// with when it was last seen.
+    pub(crate) async fn ensure_runtime(
+        &self,
+        runtime_id: &str,
+        capability: Option<&str>,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<Arc<RuntimeInstance>, EngineError> {
+        if let Some(offline) = self.remembered_offline(runtime_id) {
+            return Err(EngineError::Runtime(offline));
+        }
+        self.inner
+            .runtimes
+            .ensure(runtime_id, capability, workspace)
+            .await
+    }
+
+    /// Why dial-in runtime `runtime_id` cannot be used, when this daemon
+    /// has not seen it connect since it started but remembers it: it is
+    /// not connected, last seen when its record says.
+    pub(crate) fn remembered_offline(&self, runtime_id: &str) -> Option<String> {
+        if self.inner.runtimes.knows(runtime_id) {
+            return None;
+        }
+        let record = self
+            .inner
+            .machines
+            .record(&RuntimeId::new(runtime_id).ok()?)?;
+        (record.kind == crate::machines::RecordKind::DialIn)
+            .then(|| crate::runtimes::not_connected(runtime_id, Some(record.last_seen)))
+    }
+
     /// The attachments a new session gets for `runtimes`, starting the
     /// instances that are not running.
     pub(crate) async fn resolve_session_runtimes(
@@ -242,9 +279,7 @@ impl Engine {
             None => match &runtimes.cwd {
                 Some(cwd) => {
                     let instance = self
-                        .inner
-                        .runtimes
-                        .ensure(
+                        .ensure_runtime(
                             RuntimeId::LOCAL,
                             Some(cookie_agent_protocol::CapabilityName::CODING),
                             Some(cwd),
@@ -259,9 +294,7 @@ impl Engine {
             Some(requests) => {
                 for request in requests {
                     let instance = self
-                        .inner
-                        .runtimes
-                        .ensure(
+                        .ensure_runtime(
                             &request.runtime_id,
                             request.capability.as_deref(),
                             request.workspace.as_deref(),
@@ -369,9 +402,7 @@ impl Engine {
             return Err(EngineError::SessionRunning(session));
         }
         let instance = self
-            .inner
-            .runtimes
-            .ensure(runtime_id, capability, workspace.as_deref())
+            .ensure_runtime(runtime_id, capability, workspace.as_deref())
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();
@@ -483,9 +514,7 @@ impl Engine {
         workspace: Option<PathBuf>,
     ) -> Result<RuntimeInstanceSummary, EngineError> {
         let instance = self
-            .inner
-            .runtimes
-            .ensure(runtime_id, capability, workspace.as_deref())
+            .ensure_runtime(runtime_id, capability, workspace.as_deref())
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();

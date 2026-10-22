@@ -64,6 +64,15 @@ use crate::EngineError;
 /// Failed preparations whose presentation the engine has not asked for yet.
 const MAX_PENDING_PRESENTATIONS: usize = 256;
 
+/// How long the daemon waits for a runtime to answer `tool/prepare`,
+/// `tool/revalidate`, or `runtime/context`. A runtime that does not is
+/// taken for unavailable, and its connection is checked at once.
+pub(crate) const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long the daemon waits for a runtime to answer `mcp/reconnect`,
+/// which may wait for a server to start or for a user to sign in to it.
+pub(crate) const MCP_RECONNECT_DEADLINE: Duration = Duration::from_secs(6 * 60);
+
 /// A runtime that speaks the runtime protocol: one connection, which every
 /// capability instance of the runtime shares.
 pub(crate) struct ProtocolTemplate {
@@ -78,6 +87,9 @@ pub(crate) struct ProtocolTemplate {
     startup_timeout: Option<Duration>,
     /// How long a stopping runtime gets to answer `runtime/shutdown`.
     shutdown_grace: Duration,
+    /// How the connection's liveness is checked; `None` for an in-process
+    /// runtime, whose connection cannot die on its own.
+    liveness: Option<super::Liveness>,
     /// Where the MCP servers instances host report to.
     mcp_hub: Option<Arc<McpHub>>,
     lifetime: cookie_agent_protocol::RuntimeLifetime,
@@ -111,6 +123,7 @@ impl ProtocolTemplate {
             settings,
             startup_timeout: Some(startup_timeout),
             shutdown_grace,
+            liveness: Some(super::Liveness::DEFAULT),
             mcp_hub: None,
             lifetime: cookie_agent_protocol::RuntimeLifetime::Spawned,
             connecting: tokio::sync::Mutex::new(()),
@@ -136,6 +149,7 @@ impl ProtocolTemplate {
             default_workspace: Some(workspace.to_owned()),
             startup_timeout: None,
             shutdown_grace: LOCAL_SHUTDOWN_GRACE,
+            liveness: None,
             lifetime: cookie_agent_protocol::RuntimeLifetime::Builtin,
             ..Self::new(
                 cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
@@ -148,14 +162,17 @@ impl ProtocolTemplate {
     }
 
     /// The runtime's live connection, connecting and initializing it when
-    /// there is none or it ended.
+    /// there is none, it ended, or it no longer answers (a hung `ssh`, say:
+    /// checking it ends it).
     async fn connected(&self) -> Result<RuntimeClient, String> {
         let current = || {
             lock(&self.connection)
                 .clone()
                 .filter(|client| !client.is_closed())
         };
-        if let Some(client) = current() {
+        if let Some(client) = current()
+            && client.verify_live().await.is_ok()
+        {
             return Ok(client);
         }
         let _connecting = self.connecting.lock().await;
@@ -192,6 +209,9 @@ impl ProtocolTemplate {
                 None => reason,
             })
             .inspect_err(|reason| lock(&self.offered).message = Some(reason.clone()))?;
+        if let Some(liveness) = self.liveness {
+            client.keep_alive(liveness);
+        }
         *lock(&self.offered) = RuntimeListingState {
             connected: true,
             capabilities: client.capabilities(),
@@ -251,6 +271,7 @@ impl RuntimeTemplate for ProtocolTemplate {
             Some(timeout) => match tokio::time::timeout(timeout, open).await {
                 Ok(result) => result,
                 Err(_) => {
+                    client.suspect();
                     return Err(StartError::Open(client.inner.annotate(&format!(
                         "the runtime did not open `{capability}` within {} ms",
                         timeout.as_millis()
@@ -589,6 +610,11 @@ struct ClientInner {
     /// `mcp/reconnect` retries in flight; a run waits for them.
     mcp_retries: AtomicUsize,
     mcp_settled: Notify,
+    /// How the connection's liveness is checked, once
+    /// [`RuntimeClient::keep_alive`] started watching it.
+    liveness: OnceLock<super::Liveness>,
+    /// Wakes the liveness watch to check a suspect connection at once.
+    probe: super::liveness::Probe,
 }
 
 /// What the daemon knows about the MCP servers a runtime's instances host.
@@ -712,6 +738,8 @@ impl RuntimeClient {
             mcp_hub,
             mcp_retries: AtomicUsize::new(0),
             mcp_settled: Notify::new(),
+            liveness: OnceLock::new(),
+            probe: super::liveness::Probe::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let reply: serde_json::Value = inner
@@ -805,6 +833,8 @@ impl RuntimeClient {
             mcp_hub: None,
             mcp_retries: AtomicUsize::new(0),
             mcp_settled: Notify::new(),
+            liveness: OnceLock::new(),
+            probe: super::liveness::Probe::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let client = Self { inner };
@@ -1102,13 +1132,13 @@ impl RuntimeClient {
     async fn reconnect_mcp(&self, instance: &str, server: &str) -> Result<(), EngineError> {
         let outcome: Outcome = self
             .inner
-            .peer
-            .request(
+            .request_within(
                 method::MCP_RECONNECT,
                 &McpReconnectParams {
                     instance: instance.to_owned(),
                     server: Some(server.to_owned()),
                 },
+                MCP_RECONNECT_DEADLINE,
             )
             .await
             .map_err(|error| EngineError::Mcp(format!("{}: {error}", self.inner.peer_name())))?;
@@ -1143,8 +1173,11 @@ impl RuntimeClient {
         handle.spawn(async move {
             let _ = retry
                 .0
-                .peer
-                .request::<_, Outcome>(method::MCP_RECONNECT, &params)
+                .request_within::<_, Outcome>(
+                    method::MCP_RECONNECT,
+                    &params,
+                    MCP_RECONNECT_DEADLINE,
+                )
                 .await;
             drop(retry);
         });
@@ -1165,6 +1198,47 @@ impl RuntimeClient {
     /// Whether the connection has ended.
     pub(crate) fn is_closed(&self) -> bool {
         self.inner.peer.is_closed()
+    }
+
+    /// Watches the connection's liveness with `liveness` until it ends; see
+    /// `super::liveness`. A connection is watched once.
+    pub(crate) fn keep_alive(&self, liveness: super::Liveness) {
+        if self.inner.liveness.set(liveness).is_err() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(super::liveness::watch(
+                self.inner.peer.clone(),
+                liveness,
+                self.inner.probe.clone(),
+            ));
+        }
+    }
+
+    /// Marks the connection suspect: a watched one is checked at once.
+    pub(crate) fn suspect(&self) {
+        self.inner.suspect();
+    }
+
+    /// Checks that the connection is live before something new depends on
+    /// it (see `super::liveness::verify`); one that is not watched counts
+    /// as live while it is open. The error is why it is not live.
+    pub(crate) async fn verify_live(&self) -> Result<(), String> {
+        match self.inner.liveness.get() {
+            Some(liveness) => super::liveness::verify(&self.inner.peer, *liveness).await,
+            None if self.is_closed() => Err("its connection ended".to_owned()),
+            None => Ok(()),
+        }
+    }
+
+    /// When a frame last arrived from the runtime, on the wall clock.
+    pub(crate) fn last_heard_at(&self) -> jiff::Timestamp {
+        let silent = self.inner.peer.last_heard().elapsed();
+        let now = jiff::Timestamp::now();
+        jiff::SignedDuration::try_from(silent)
+            .ok()
+            .and_then(|silent| now.checked_sub(silent).ok())
+            .unwrap_or(now)
     }
 
     /// Waits for the connection to end and returns why it did, followed by
@@ -1203,13 +1277,13 @@ impl RuntimeClient {
     ) -> Result<Option<AgentMdContext>, EngineError> {
         let reply: Result<ContextResult, RpcError> = self
             .inner
-            .peer
-            .request(
+            .request_within(
                 method::CONTEXT,
                 &ContextParams {
                     instance: instance.to_owned(),
                     preset: preset.map(str::to_owned),
                 },
+                REQUEST_DEADLINE,
             )
             .await;
         match reply {
@@ -1217,7 +1291,8 @@ impl RuntimeClient {
                 entries: context.agent_md,
                 skipped: context.skipped,
             })),
-            // A runtime that is gone publishes nothing, its context included.
+            // A runtime that is gone, or does not answer, publishes nothing,
+            // its context included.
             Err(RpcError::Closed(_)) => Ok(None),
             Err(error) if error.data_code() == Some(errors::CONTEXT_FAILED.code) => {
                 let reason = format!("{}: {error}", self.inner.peer_name());
@@ -1326,6 +1401,38 @@ impl ClientInner {
         match &self.diagnostics {
             Some(tail) => tail.annotate(reason),
             None => reason.to_owned(),
+        }
+    }
+
+    /// Marks the connection suspect: a watched one is checked at once.
+    fn suspect(&self) {
+        if self.liveness.get().is_some() {
+            self.probe.suspect();
+        }
+    }
+
+    /// Sends request `method` and waits up to `deadline` for its reply. A
+    /// runtime that does not answer in time fails it as gone, with a reason
+    /// that says so, and its connection is checked at once.
+    async fn request_within<P, R>(
+        &self,
+        method: &str,
+        params: &P,
+        deadline: Duration,
+    ) -> Result<R, RpcError>
+    where
+        P: serde::Serialize + ?Sized + Sync,
+        R: serde::de::DeserializeOwned,
+    {
+        match tokio::time::timeout(deadline, self.peer.request(method, params)).await {
+            Ok(reply) => reply,
+            Err(_) => {
+                self.suspect();
+                Err(RpcError::Closed(format!(
+                    "it did not answer `{method}` within {}",
+                    cookie_agent_protocol::diagnostics::duration(deadline)
+                )))
+            }
         }
     }
 
@@ -1589,7 +1696,9 @@ impl ClientInner {
                 reply = &mut request => break reply,
                 () = cancellation.cancelled(), if !cancel_sent => {
                     cancel_sent = true;
-                    let _ = self.peer.notify(method::TOOL_CANCEL, &PreparedRef { prepared_id }).await;
+                    // Never waits: a dead connection's queue may be full,
+                    // and the call ends when its liveness check ends it.
+                    self.peer.notify_detached(method::TOOL_CANCEL, &PreparedRef { prepared_id });
                 }
             }
         };
@@ -1824,8 +1933,7 @@ impl ToolProvider for RemoteToolProvider {
         let turn: protocol::ToolTurn = ctx.turn_context.as_ref().into();
         for batch in calls.chunks(protocol::MAX_PREPARE_BATCH) {
             let reply: Result<PrepareResult, RpcError> = client
-                .peer
-                .request(
+                .request_within(
                     method::TOOL_PREPARE,
                     &PrepareParams {
                         instance: self.instance.clone(),
@@ -1841,6 +1949,7 @@ impl ToolProvider for RemoteToolProvider {
                             })
                             .collect(),
                     },
+                    REQUEST_DEADLINE,
                 )
                 .await;
             let outcomes = match reply {
@@ -1913,12 +2022,12 @@ impl PreparedExecutor for RemoteExecutor {
     async fn revalidate(&self) -> Result<(), ToolError> {
         let outcome: Outcome = self
             .client
-            .peer
-            .request(
+            .request_within(
                 method::TOOL_REVALIDATE,
                 &PreparedRef {
                     prepared_id: self.prepared_id,
                 },
+                REQUEST_DEADLINE,
             )
             .await
             .map_err(|error| self.client.unavailable(&error))?;

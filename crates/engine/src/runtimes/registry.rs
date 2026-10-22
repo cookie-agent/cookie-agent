@@ -58,6 +58,13 @@ pub trait RuntimeTemplate: Send + Sync {
     /// what the runtime offered when it last connected.
     fn listing(&self) -> RuntimeListingState;
 
+    /// Why no session can use the runtime now, without trying: a runtime
+    /// the daemon cannot start, such as one that dials in, that is not
+    /// connected. `None` when it is connected or the daemon starts it.
+    fn offline(&self) -> Option<String> {
+        None
+    }
+
     /// The workspace an instance of `capability` opens in when a session
     /// names none, such as the daemon's working directory for `local`.
     fn default_workspace(&self, _capability: &CapabilityName) -> Option<PathBuf> {
@@ -341,6 +348,24 @@ impl RuntimeInstance {
     }
 }
 
+/// How long a session that needs an instance whose connection was lost
+/// waits for the daemon to bring it back, beyond which it is refused.
+const RECONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Why `template`'s runtime could not be reached, from `reason`: a runtime
+/// that dials in says it is not connected itself; the daemon failed to
+/// start another.
+fn start_failure(template: &dyn RuntimeTemplate, reason: &str) -> String {
+    if template.lifetime() == RuntimeLifetime::DialIn {
+        reason.to_owned()
+    } else {
+        format!(
+            "runtime `{}` failed to start: {reason}",
+            template.runtime_id()
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct InstanceKey {
     runtime_id: String,
@@ -380,6 +405,7 @@ enum Record {
     Always,
 }
 
+#[derive(Clone)]
 enum InstanceSlot {
     Starting,
     Ready(Arc<RuntimeInstance>),
@@ -623,11 +649,12 @@ impl RuntimeRegistry {
         let registry = Arc::downgrade(self);
         let template = Arc::downgrade(template);
         let epoch = client.epoch();
+        let client = client.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let reason = closed.await;
                 if let Some(template) = template.upgrade() {
-                    template.disconnected(epoch, &reason);
+                    template.disconnected(epoch, &reason, client.last_heard_at());
                 }
                 if let Some(registry) = registry.upgrade() {
                     registry.notify();
@@ -666,6 +693,11 @@ impl RuntimeRegistry {
             .workspace()
             .expect("the local coding runtime has a workspace")
             .root()
+    }
+
+    /// Whether a template of `runtime_id` is registered.
+    pub(crate) fn knows(&self, runtime_id: &str) -> bool {
+        self.template(runtime_id).is_some()
     }
 
     fn template(&self, runtime_id: &str) -> Option<Arc<dyn RuntimeTemplate>> {
@@ -797,9 +829,7 @@ impl RuntimeRegistry {
         let capabilities = if known.is_empty() {
             template.capabilities().await.map_err(|reason| {
                 (
-                    EngineError::Runtime(format!(
-                        "runtime `{runtime_id}` failed to start: {reason}"
-                    )),
+                    EngineError::Runtime(start_failure(template, &reason)),
                     Some(reason),
                 )
             })?
@@ -924,11 +954,12 @@ impl RuntimeRegistry {
             workspace: workspace.map(Path::to_owned),
         };
         if let Some(instance) = self.live(&requested) {
-            return Ok(instance);
+            return self.reuse(template.as_ref(), instance).await;
         }
         let _start = self.start.lock().await;
         if let Some(instance) = self.live(&requested) {
-            return Ok(instance);
+            drop(_start);
+            return self.reuse(template.as_ref(), instance).await;
         }
         let pending = self.resolve(&requested);
         let previous = self.begin_start(&pending);
@@ -951,9 +982,7 @@ impl RuntimeRegistry {
             }
             Err(error) => {
                 let message = match &error {
-                    StartError::Connect(reason) => {
-                        format!("runtime `{runtime_id}` failed to start: {reason}")
-                    }
+                    StartError::Connect(reason) => start_failure(template.as_ref(), reason),
                     StartError::Open(reason) => match workspace {
                         Some(workspace) => format!(
                             "runtime `{runtime_id}` could not open `{}` for workspace `{}`: \
@@ -971,6 +1000,95 @@ impl RuntimeRegistry {
                 Err(EngineError::Runtime(message))
             }
         }
+    }
+
+    /// `instance`, which a session is about to use, when its connection is
+    /// live; an instance is never handed out over a dead connection. One
+    /// whose connection ended, or does not answer a liveness check, is
+    /// being reconnected: a runtime that cannot be reached without trying
+    /// (a dial-in runtime that is not connected) is refused at once, and
+    /// the daemon waits for one it starts to come back, up to
+    /// [`RECONNECT_WAIT`].
+    async fn reuse(
+        &self,
+        template: &dyn RuntimeTemplate,
+        instance: Arc<RuntimeInstance>,
+    ) -> Result<Arc<RuntimeInstance>, EngineError> {
+        let key = InstanceKey::of(&instance.info);
+        let ready = matches!(
+            self.slot(&key),
+            Some(InstanceSlot::Ready(current)) if Arc::ptr_eq(&current, &instance)
+        );
+        if ready {
+            let live = match instance.connection() {
+                Some(connection) => connection.client.verify_live().await.is_ok(),
+                None => true,
+            };
+            if live {
+                return Ok(instance);
+            }
+        }
+        if let Some(offline) = template.offline() {
+            return Err(EngineError::Runtime(offline));
+        }
+        self.settle(&key).await
+    }
+
+    /// Waits for the instance at `key`, whose connection was lost, to come
+    /// back: ready over a live connection, or failed.
+    async fn settle(&self, key: &InstanceKey) -> Result<Arc<RuntimeInstance>, EngineError> {
+        let mut changes = self.changes.subscribe();
+        let wait = async {
+            loop {
+                match self.slot(key) {
+                    Some(InstanceSlot::Ready(instance))
+                        if instance
+                            .connection()
+                            .is_none_or(|connection| !connection.is_closed()) =>
+                    {
+                        return Ok(instance);
+                    }
+                    Some(InstanceSlot::Failed { reason, .. }) => {
+                        return Err(EngineError::Runtime(reason));
+                    }
+                    None | Some(InstanceSlot::Stopped(_)) => {
+                        return Err(EngineError::Runtime(format!(
+                            "runtime `{}` stopped",
+                            key.runtime_id
+                        )));
+                    }
+                    Some(
+                        InstanceSlot::Starting
+                        | InstanceSlot::Ready(_)
+                        | InstanceSlot::Reconnecting(_),
+                    ) => {}
+                }
+                if changes.changed().await.is_err() {
+                    return Err(EngineError::Runtime(format!(
+                        "runtime `{}` stopped",
+                        key.runtime_id
+                    )));
+                }
+            }
+        };
+        tokio::time::timeout(RECONNECT_WAIT, wait)
+            .await
+            .unwrap_or_else(|_| {
+                Err(EngineError::Runtime(format!(
+                    "runtime `{}` lost its connection and did not come back within {}",
+                    key.runtime_id,
+                    cookie_agent_protocol::diagnostics::duration(RECONNECT_WAIT)
+                )))
+            })
+    }
+
+    /// What is recorded at `key` now.
+    fn slot(&self, key: &InstanceKey) -> Option<InstanceSlot> {
+        self.slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key)
+            .cloned()
     }
 
     /// Marks `key` starting and returns what was recorded there before.

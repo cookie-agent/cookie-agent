@@ -35,10 +35,13 @@ fn turn_context() -> Arc<TurnAgentContext> {
     })
 }
 
-/// A transport that can be cut, as when a runtime process dies.
+/// A transport that can be cut, as when a runtime process dies, or
+/// silenced, as a connection that died without a close looks: frames sent
+/// on it vanish and none arrive, yet it never ends.
 struct Breakable {
     inner: cookie_agent_protocol::InProcessStream,
     broken: CancellationToken,
+    silenced: CancellationToken,
 }
 
 #[async_trait]
@@ -47,13 +50,23 @@ impl Transport for Breakable {
         if self.broken.is_cancelled() {
             return Err(TransportError::Closed);
         }
+        if self.silenced.is_cancelled() {
+            return Ok(());
+        }
         self.inner.send(frame).await
     }
 
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
-        tokio::select! {
-            () = self.broken.cancelled() => Ok(None),
-            frame = self.inner.recv() => frame,
+        loop {
+            if self.silenced.is_cancelled() {
+                self.broken.cancelled().await;
+                return Ok(None);
+            }
+            tokio::select! {
+                () = self.broken.cancelled() => return Ok(None),
+                () = self.silenced.cancelled() => {}
+                frame = self.inner.recv() => return frame,
+            }
         }
     }
 }
@@ -65,6 +78,7 @@ struct TestConnector {
     /// The runtimes it serves declare producer messaging.
     producer_messaging: bool,
     broken: Mutex<CancellationToken>,
+    silenced: Mutex<CancellationToken>,
     /// Connections made so far.
     connects: std::sync::atomic::AtomicUsize,
     /// While set, connecting fails, as when a host is unreachable.
@@ -81,6 +95,7 @@ impl TestConnector {
             tools,
             producer_messaging,
             broken: Mutex::new(CancellationToken::new()),
+            silenced: Mutex::new(CancellationToken::new()),
             connects: std::sync::atomic::AtomicUsize::new(0),
             refuse: std::sync::atomic::AtomicBool::new(false),
         })
@@ -105,6 +120,20 @@ impl TestConnector {
         broken.cancel();
         *broken = CancellationToken::new();
     }
+
+    /// Silences the current connections without closing them; later
+    /// connections work.
+    fn silence(&self) {
+        let mut silenced = self.silenced.lock().unwrap();
+        silenced.cancel();
+        *silenced = CancellationToken::new();
+    }
+
+    /// Silences every connection from now on, the ones made later too, as
+    /// a host that accepts connections and never answers.
+    fn silence_for_good(&self) {
+        self.silenced.lock().unwrap().cancel();
+    }
 }
 
 #[async_trait]
@@ -128,6 +157,7 @@ impl RuntimeConnector for TestConnector {
             Breakable {
                 inner: daemon,
                 broken: self.broken.lock().unwrap().clone(),
+                silenced: self.silenced.lock().unwrap().clone(),
             },
         )))
     }
@@ -1939,5 +1969,414 @@ async fn a_runtime_joins_the_machine_of_the_id_it_reports() {
         std::fs::read_to_string(fixture._directory.path().join("data").join("machines.json"))
             .unwrap();
     assert!(written.contains(&format!("\"{daemon}\"")), "{written}");
+    fixture.engine.shutdown().await;
+}
+
+/// Prepares a call of `name` on `instance`'s runtime tools.
+async fn prepare_on(
+    instance: &crate::runtimes::RuntimeInstance,
+    name: &str,
+    arguments: serde_json::Value,
+) -> Result<PreparedTool, ToolError> {
+    instance.providers()[0]
+        .prepare(
+            ToolPreparationContext {
+                session: SessionId::new_v7(),
+                run: RunId::new_v7(),
+                origin: instance.origin(),
+                turn_context: turn_context(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: name.into(),
+                arguments,
+            },
+        )
+        .await
+}
+
+fn labpc_listing(engine: &crate::Engine) -> crate::RuntimeListingState {
+    engine
+        .runtime_templates()
+        .into_iter()
+        .find(|template| template.runtime_id == "labpc")
+        .expect("labpc listed")
+        .listing
+}
+
+/// A dial-in runtime whose connection goes silent without closing, as a
+/// machine that sleeps or drops off the network leaves it, is found dead
+/// within the liveness window: a call being prepared fails at its deadline,
+/// one executing fails once the connection is ended, both as
+/// `runtime_unavailable`, the runtime shows as disconnected, and creating,
+/// attaching, and delegating with it are refused at once.
+#[tokio::test(start_paused = true)]
+async fn a_silent_dial_in_runtime_is_dropped_and_then_refused_at_once() {
+    let (fixture, selection) = custom_fixture();
+    let workspace = private_tempdir();
+    let engine = &fixture.engine;
+    let registry = &engine.inner.runtimes;
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(20),
+    ]));
+    let connector = TestConnector::builtin();
+    let connection = connector.connect().await.unwrap();
+    engine
+        .accept_dial_in_runtime("labpc", connection.transport)
+        .await
+        .expect("labpc dials in");
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let origin = cookie_agent_protocol::EventOrigin::new("user").unwrap();
+    let attachment = engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(workspace.path().to_owned()),
+            origin.clone(),
+        )
+        .await
+        .expect("attach labpc");
+    let instance = registry.instance(&attachment).expect("ready");
+    let prepared = prepare_on(
+        &instance,
+        "bash",
+        serde_json::json!({"command": "sleep 600"}),
+    )
+    .await
+    .expect("prepared while connected");
+
+    connector.silence();
+    let silenced = tokio::time::Instant::now();
+    let call = call_context(CancellationToken::new());
+    let executor = prepared.executor().lock().await.take().expect("executor");
+    let execution = tokio::spawn(executor.execute(call.context));
+    // The incident's subagent hung here, on `tool/prepare`, for good.
+    let error = prepare_on(&instance, "bash", serde_json::json!({"command": "true"}))
+        .await
+        .err()
+        .expect("a silent runtime prepares nothing");
+    assert!(
+        matches!(&error, ToolError::RuntimeUnavailable(message)
+            if message == "runtime `labpc` is unavailable: it did not answer `tool/prepare` within 30 s"),
+        "{error:?}"
+    );
+    assert_eq!(silenced.elapsed(), Duration::from_secs(30));
+    // The missed deadline checks the connection at once, which ends it.
+    let error = execution
+        .await
+        .unwrap()
+        .expect_err("the execution fails once the connection is ended");
+    assert!(
+        matches!(&error, ToolError::RuntimeUnavailable(message)
+            if message == "runtime `labpc` is unavailable: it did not answer a liveness check within 10 s"),
+        "{error:?}"
+    );
+    assert_eq!(silenced.elapsed(), Duration::from_secs(40));
+    wait_for_status(registry, "labpc", crate::RuntimeInstanceStatus::Failed).await;
+    let listing = labpc_listing(engine);
+    assert!(!listing.connected);
+    assert_eq!(
+        listing.message.as_deref(),
+        Some("runtime `labpc` disconnected: it did not answer a liveness check within 10 s")
+    );
+
+    // Now every way of using it is refused at once, naming it and when it
+    // was last seen.
+    let refused = tokio::time::Instant::now();
+    let not_connected = |error: String| {
+        assert!(
+            error.contains("runtime `labpc` is not connected (last seen 20"),
+            "{error}"
+        );
+    };
+    let other = private_tempdir();
+    let error = engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(other.path().to_owned()),
+            origin.clone(),
+        )
+        .await
+        .expect_err("attach refused");
+    not_connected(error.to_string());
+    let error = engine
+        .create_session_with_permissions(
+            selection.clone(),
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                runtimes: Some(vec![crate::SessionRuntimeRequest {
+                    runtime_id: "labpc".into(),
+                    capability: None,
+                    workspace: Some(workspace.path().to_owned()),
+                }]),
+                global: true,
+                cwd: None,
+            },
+        )
+        .await
+        .expect_err("creation refused");
+    not_connected(error.to_string());
+    let root = engine.inner.store.get(session).unwrap();
+    let error = engine
+        .open_delegated_capabilities(
+            &root,
+            &[crate::DelegatedCapability {
+                runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
+                capability: cookie_agent_protocol::CapabilityName::coding(),
+                workspace: Some(workspace.path().to_string_lossy().into_owned()),
+            }],
+        )
+        .await
+        .expect_err("delegation refused");
+    not_connected(error.to_string());
+    assert_eq!(refused.elapsed(), Duration::ZERO, "refused without waiting");
+    fixture.engine.shutdown().await;
+}
+
+/// An instance whose connection has gone quiet is checked before a session
+/// gets it: one that does not answer is not handed out, and its dial-in
+/// runtime is refused as not connected.
+#[tokio::test(start_paused = true)]
+async fn an_instance_of_a_dead_connection_is_not_handed_out() {
+    let (fixture, selection) = custom_fixture();
+    let workspace = private_tempdir();
+    let engine = &fixture.engine;
+    let connector = TestConnector::builtin();
+    let connection = connector.connect().await.unwrap();
+    engine
+        .accept_dial_in_runtime("labpc", connection.transport)
+        .await
+        .expect("labpc dials in");
+    let session = engine.create_session(selection).unwrap().session_id;
+    let origin = cookie_agent_protocol::EventOrigin::new("user").unwrap();
+    let attach = || {
+        engine.attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(workspace.path().to_owned()),
+            origin.clone(),
+        )
+    };
+    attach().await.expect("attach labpc");
+    connector.silence();
+    // Quiet for longer than a live connection ever is, yet not long enough
+    // for the liveness watch to have ended it.
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    assert!(labpc_listing(engine).connected);
+    let checked = tokio::time::Instant::now();
+    let error = attach()
+        .await
+        .expect_err("the instance of a silent connection is not reused");
+    assert!(
+        error
+            .to_string()
+            .starts_with("runtime error: runtime `labpc` is not connected (last seen "),
+        "{error}"
+    );
+    assert_eq!(checked.elapsed(), Duration::from_secs(10));
+    assert!(!labpc_listing(engine).connected);
+    fixture.engine.shutdown().await;
+}
+
+/// A dial-in runtime dialing in again while its old connection still looks
+/// open gets in as soon as the old one is found dead, which its attempt
+/// checks at once.
+#[tokio::test(start_paused = true)]
+async fn dialing_in_again_checks_the_old_connection_at_once() {
+    let (fixture, _) = custom_fixture();
+    let engine = &fixture.engine;
+    let connector = TestConnector::builtin();
+    let dial_in = || async {
+        let connection = connector.connect().await.unwrap();
+        engine
+            .accept_dial_in_runtime("labpc", connection.transport)
+            .await
+    };
+    dial_in().await.expect("labpc dials in");
+    connector.silence();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let attempt = tokio::time::Instant::now();
+    assert_eq!(
+        dial_in().await.expect_err("the old connection looks open"),
+        crate::DialInRefusal::Connected("labpc".into())
+    );
+    tokio::time::timeout(Duration::from_secs(11), async {
+        while labpc_listing(engine).connected {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the old connection is ended within the probe's 10 s");
+    assert!(attempt.elapsed() <= Duration::from_secs(11));
+    dial_in().await.expect("labpc dials in again");
+    assert!(labpc_listing(engine).connected);
+    fixture.engine.shutdown().await;
+}
+
+/// A runtime the daemon starts must come up before a session gets it: one
+/// that cannot be reached, or that never answers its handshake, refuses
+/// creating the session, which then does not exist.
+#[tokio::test(start_paused = true)]
+async fn a_runtime_that_does_not_start_refuses_creating_the_session() {
+    let (fixture, selection) = custom_fixture();
+    let workspace = private_tempdir();
+    let engine = &fixture.engine;
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let sessions = || engine.inner.store.list_roots().len();
+    let before = sessions();
+    let create = || {
+        engine.create_session_with_permissions(
+            selection.clone(),
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                runtimes: Some(vec![crate::SessionRuntimeRequest {
+                    runtime_id: "remote".into(),
+                    capability: None,
+                    workspace: Some(workspace.path().to_owned()),
+                }]),
+                global: true,
+                cwd: None,
+            },
+        )
+    };
+    connector.set_refuse(true);
+    let error = create().await.expect_err("an unreachable runtime");
+    assert_eq!(
+        error.to_string(),
+        "runtime error: runtime `remote` failed to start: connection refused"
+    );
+    connector.set_refuse(false);
+    connector.silence_for_good();
+    let started = tokio::time::Instant::now();
+    let error = create().await.expect_err("a runtime that never answers");
+    assert_eq!(
+        error.to_string(),
+        "runtime error: runtime `remote` failed to start: the runtime did not start within \
+         20000 ms"
+    );
+    assert_eq!(started.elapsed(), WAIT);
+    assert_eq!(sessions(), before, "a refused creation creates nothing");
+    assert!(
+        engine
+            .runtime_instances()
+            .iter()
+            .all(|instance| instance.runtime_id != "remote"),
+        "nor records an instance"
+    );
+    fixture.engine.shutdown().await;
+}
+
+/// An instance of a runtime the daemon starts whose connection went dead
+/// without closing, as a hung `ssh` leaves it, is not handed out: the
+/// session waits for the daemon to start the runtime again and gets the
+/// instance over the new connection.
+#[tokio::test(start_paused = true)]
+async fn a_session_waits_for_a_dead_spawned_runtime_to_come_back() {
+    let (fixture, selection) = custom_fixture();
+    let workspace = private_tempdir();
+    let engine = &fixture.engine;
+    let registry = &engine.inner.runtimes;
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(20),
+    ]));
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let origin = cookie_agent_protocol::EventOrigin::new("user").unwrap();
+    let attach = || async {
+        let session = engine.create_session(selection.clone()).unwrap().session_id;
+        engine
+            .attach_runtime(
+                session,
+                "remote",
+                None,
+                Some(workspace.path().to_owned()),
+                origin.clone(),
+            )
+            .await
+    };
+    let first = attach().await.expect("attach remote");
+    let instance = registry.instance(&first).unwrap();
+    let old = instance.connection().unwrap();
+    connector.silence();
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    attach().await.expect("attached once it came back");
+    assert_eq!(connector.connects(), 2);
+    assert!(old.is_closed(), "the dead connection was ended");
+    let connection = registry.instance(&first).unwrap().connection().unwrap();
+    assert!(!connection.is_closed());
+    assert_ne!(connection.epoch(), old.epoch());
+    fixture.engine.shutdown().await;
+}
+
+/// A quiet connection is pinged and stays up as long as its runtime
+/// answers; one that goes silent without closing is ended once nothing has
+/// arrived for 45 s, with no call needed to notice, and its instance is
+/// reconnected, then failed.
+#[tokio::test(start_paused = true)]
+async fn a_quiet_runtime_stays_up_and_a_silent_one_is_ended_within_the_window() {
+    let (fixture, selection) = custom_fixture();
+    let workspace = private_tempdir();
+    let engine = &fixture.engine;
+    let registry = &engine.inner.runtimes;
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(20),
+    ]));
+    let connector = TestConnector::builtin();
+    let connection = connector.connect().await.unwrap();
+    engine
+        .accept_dial_in_runtime("labpc", connection.transport)
+        .await
+        .expect("labpc dials in");
+    let session = engine.create_session(selection).unwrap().session_id;
+    engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(workspace.path().to_owned()),
+            cookie_agent_protocol::EventOrigin::new("user").unwrap(),
+        )
+        .await
+        .expect("attach labpc");
+    // Idle for ten minutes: the pings keep it up.
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert!(labpc_listing(engine).connected);
+    assert_eq!(
+        instance_status(registry, "labpc"),
+        crate::RuntimeInstanceStatus::Ready
+    );
+
+    connector.silence();
+    let silenced = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while labpc_listing(engine).connected {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the silent connection is ended");
+    // Last heard up to a ping interval before the silence began.
+    assert!(
+        silenced.elapsed() <= Duration::from_secs(45),
+        "{:?}",
+        silenced.elapsed()
+    );
+    assert!(
+        silenced.elapsed() >= Duration::from_secs(30),
+        "{:?}",
+        silenced.elapsed()
+    );
+    wait_for_status(registry, "labpc", crate::RuntimeInstanceStatus::Failed).await;
+    assert_eq!(
+        labpc_listing(engine).message.as_deref(),
+        Some("runtime `labpc` disconnected: nothing arrived from it for 45 s")
+    );
     fixture.engine.shutdown().await;
 }
