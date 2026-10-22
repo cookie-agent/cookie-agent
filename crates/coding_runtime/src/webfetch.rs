@@ -286,10 +286,15 @@ const MAX_EXCERPT_BYTES: usize = 24 * 1024;
 impl PreparedExecutor for WebfetchArgs {
     async fn execute(
         self: Box<Self>,
-        _context: ToolExecutionContext,
+        context: ToolExecutionContext,
     ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
-        let result: Result<PersistedToolResult, ToolError> =
-            async move { self.fetch().await }.await;
+        // Cancelling the call drops the request, closing its connection.
+        let result = tokio::select! {
+            result = self.fetch() => result,
+            () = context.cancellation.cancelled() => {
+                Err(ToolError::execution("webfetch cancelled"))
+            }
+        };
         result.map(cookie_agent_runtime_api::ToolCompletion::single)
     }
 }

@@ -297,6 +297,10 @@ struct Execution {
 }
 
 /// An execute request registered before its handler runs.
+/// How long a cancelled call may take to stop on its own before the
+/// runtime drops it, as long as the daemon waits for it.
+const CANCELLED_CALL_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 struct AdmittedExecution {
     params: ExecuteParams,
     cancel: CancellationToken,
@@ -926,6 +930,7 @@ impl Server {
         admitted: AdmittedExecution,
     ) -> Result<ExecuteResult, RpcError> {
         let AdmittedExecution { params, cancel } = admitted;
+        let cancelled = cancel.clone();
         let prepared_id = params.prepared_id;
         let prepared = lock(&self.prepared)
             .remove(&prepared_id)
@@ -973,10 +978,23 @@ impl Server {
                 }) as Arc<dyn cookie_agent_runtime_api::ProducerChannel>
             }),
         };
-        let result = AssertUnwindSafe(executor.execute(context))
-            .catch_unwind()
-            .await
-            .unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")));
+        let execution = AssertUnwindSafe(executor.execute(context)).catch_unwind();
+        tokio::pin!(execution);
+        // A cancelled call gets a short grace to stop on its own; then it is
+        // dropped, which kills what it still runs.
+        let result = tokio::select! {
+            biased;
+            result = &mut execution => {
+                result.unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")))
+            }
+            () = async {
+                cancelled.cancelled().await;
+                tokio::time::sleep(CANCELLED_CALL_GRACE).await;
+            } => Err(ToolError::execution(format!(
+                "tool call cancelled; it did not stop within {} s",
+                CANCELLED_CALL_GRACE.as_secs()
+            ))),
+        };
         announce.abort();
         let outcome = match result {
             Ok(completion) => ExecuteOutcome::Completed(ToolResult::of(completion)),

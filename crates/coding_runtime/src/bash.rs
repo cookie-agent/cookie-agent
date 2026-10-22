@@ -71,6 +71,10 @@ struct BashExecutor {
 pub const OUTPUT_CHUNK_FLUSH_BYTES: usize = 4 * 1024;
 pub const OUTPUT_CHUNK_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 const OUTPUT_READ_BYTES: usize = 64 * 1024;
+/// How long a killed command's output pipes may take to drain. A process
+/// that left the command's process group can hold them open long after the
+/// group is gone; the call ends without the rest of its output then.
+const KILLED_OUTPUT_DRAIN: Duration = Duration::from_millis(250);
 
 /// The call's display: its output as terminal segments in the order it was
 /// read, SGR colour kept and every other control sequence removed, up to
@@ -707,14 +711,14 @@ impl BashExecutor {
         // Once the command runs, the call may move to the background.
         detach.reached(tree.pid().map(|pid| format!("Process {pid}")));
         let merged = Arc::new(Mutex::new(MergedOutput::default()));
-        let stdout_task = tokio::spawn(read_output(
+        let mut stdout_task = tokio::spawn(read_output(
             stdout,
             OutputStream::Stdout,
             progress.clone(),
             self.tool_call_id,
             Some(merged.clone()),
         ));
-        let stderr_task = tokio::spawn(read_output(
+        let mut stderr_task = tokio::spawn(read_output(
             stderr,
             OutputStream::Stderr,
             progress,
@@ -744,8 +748,7 @@ impl BashExecutor {
             }
             WaitOutcome::TimedOut | WaitOutcome::Cancelled => {
                 tree.kill_and_reap().await;
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
+                drain_killed_output(stdout_task, stderr_task).await;
                 return Err(ToolError::execution(
                     if matches!(outcome, WaitOutcome::TimedOut) {
                         "bash timed out"
@@ -755,12 +758,24 @@ impl BashExecutor {
                 ));
             }
         };
-        stdout_task
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))??;
-        stderr_task
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))??;
+        // A process the command left behind outside its group may keep the
+        // pipes open; cancelling the call stops waiting for it.
+        let readers = async {
+            let stdout = (&mut stdout_task).await;
+            let stderr = (&mut stderr_task).await;
+            (stdout, stderr)
+        };
+        let outputs = tokio::select! {
+            biased;
+            outputs = readers => Some(outputs),
+            () = cancellation.cancelled() => None,
+        };
+        let Some((stdout, stderr)) = outputs else {
+            drain_killed_output(stdout_task, stderr_task).await;
+            return Err(ToolError::execution("prepared bash cancelled"));
+        };
+        stdout.map_err(|error| ToolError::execution(error.to_string()))??;
+        stderr.map_err(|error| ToolError::execution(error.to_string()))??;
         if status.code().is_none() {
             return Err(ToolError::execution(format!(
                 "bash {}",
@@ -778,6 +793,23 @@ impl BashExecutor {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         })
+    }
+}
+
+/// Waits up to [`KILLED_OUTPUT_DRAIN`] for the output readers of a killed
+/// command, then stops them.
+async fn drain_killed_output(
+    mut stdout: tokio::task::JoinHandle<Result<(), ToolError>>,
+    mut stderr: tokio::task::JoinHandle<Result<(), ToolError>>,
+) {
+    let drained = tokio::time::timeout(KILLED_OUTPUT_DRAIN, async {
+        let _ = (&mut stdout).await;
+        let _ = (&mut stderr).await;
+    })
+    .await;
+    if drained.is_err() {
+        stdout.abort();
+        stderr.abort();
     }
 }
 
