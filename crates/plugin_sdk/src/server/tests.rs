@@ -435,6 +435,72 @@ async fn a_tool_reports_progress_and_stops_when_cancelled() {
     engine.shutdown().await;
 }
 
+/// A handler that ignores its cancellation is aborted once the grace runs
+/// out, so the call still ends.
+#[tokio::test]
+async fn a_tool_that_ignores_its_cancellation_is_aborted_after_the_grace() {
+    let dropped = std::sync::Arc::new(tokio::sync::Notify::new());
+    let on_drop = std::sync::Arc::clone(&dropped);
+    let server = PluginServer::builder("wedged", "0.1.0")
+        .tool(declaration("wedge"), move |_context, _arguments| {
+            let on_drop = std::sync::Arc::clone(&on_drop);
+            async move {
+                struct Signal(std::sync::Arc<tokio::sync::Notify>);
+                impl Drop for Signal {
+                    fn drop(&mut self) {
+                        self.0.notify_one();
+                    }
+                }
+                let _signal = Signal(on_drop);
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                Ok(ToolOutput::success("woke up"))
+            }
+        })
+        .build()
+        .expect("server");
+    let engine = Engine::connect(server, false).await;
+    let session = SessionId::new_v7();
+    let outcomes = engine
+        .prepare(session, vec![call("wedge", json!({}))])
+        .await;
+    let prepared_id = prepared(&outcomes[0]).prepared_id;
+    let peer = engine.peer.clone();
+    let execution = tokio::spawn(async move {
+        peer.request::<_, ExecuteResult>(
+            method::TOOL_EXECUTE,
+            &ExecuteParams {
+                prepared_id,
+                session,
+                run: RunId::new_v7(),
+                turn: turn(),
+                background: false,
+            },
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let cancelled = std::time::Instant::now();
+    engine
+        .peer
+        .notify(method::TOOL_CANCEL, &PreparedRef { prepared_id })
+        .await
+        .expect("cancel");
+    let result = tokio::time::timeout(WAIT, execution)
+        .await
+        .expect("the execution ends")
+        .expect("execution task")
+        .expect("execute");
+    assert!(cancelled.elapsed() < std::time::Duration::from_secs(4));
+    assert!(matches!(
+        result.outcome,
+        ExecuteOutcome::Failed { error } if error.message.contains("did not stop within 2 s")
+    ));
+    tokio::time::timeout(WAIT, dropped.notified())
+        .await
+        .expect("the handler is dropped");
+    engine.shutdown().await;
+}
+
 /// A tool's presentation, display, progress display, metadata, and
 /// attachments cross the protocol as the builders made them.
 #[tokio::test]

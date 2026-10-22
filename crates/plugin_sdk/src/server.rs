@@ -50,6 +50,9 @@ use crate::{
 };
 
 const NOTIFICATION_CONTEXT_LIFETIME: Duration = Duration::from_secs(4);
+/// How long a cancelled tool handler may take to stop on its own before it
+/// is aborted, as long as the daemon waits for it.
+const CANCELLED_CALL_GRACE: Duration = Duration::from_secs(2);
 
 type HandlerFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 type ToolHandler =
@@ -1320,7 +1323,27 @@ impl Server {
             plugin: self.context(),
         };
         let handler = Arc::clone(&prepared.tool.handler);
-        match tokio::spawn(handler(context, prepared.arguments)).await {
+        let cancelled = context.cancellation.clone();
+        let mut task = tokio::spawn(handler(context, prepared.arguments));
+        // A cancelled handler gets a short grace to stop on its own; then it
+        // is aborted.
+        let joined = tokio::select! {
+            biased;
+            joined = &mut task => Some(joined),
+            () = async {
+                cancelled.cancelled().await;
+                tokio::time::sleep(CANCELLED_CALL_GRACE).await;
+            } => None,
+        };
+        let Some(joined) = joined else {
+            task.abort();
+            return failed(format!(
+                "plugin tool `{}` was cancelled and did not stop within {} s",
+                prepared.tool.declaration.name,
+                CANCELLED_CALL_GRACE.as_secs()
+            ));
+        };
+        match joined {
             Ok(Ok(output)) => match output.into_result(&prepared.tool.declaration.name) {
                 Ok((result, media)) => ExecuteResult {
                     outcome: ExecuteOutcome::Completed(result),
