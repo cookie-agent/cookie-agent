@@ -1580,6 +1580,23 @@ Hermes Agent, OpenClaw, mem0 and Letta.
   memory provider decides from the run's frozen policy, with the same
   visibility test the tool list uses. With no memory tool there is no
   section.
+- **Write tools need memory the run can both read and write** (added
+  2026-10-22). `memory_write`, `memory_edit` and `memory_delete`, and with
+  them part B, are offered only when at least one memory URL is both
+  readable (an `allow` or `ask` `memory` rule matches it) and writable (an
+  `allow` or `ask` `memory_write` rule matches it) for the run.
+  - **The check** intersects the patterns of the two sets of rules, with
+    their variables expanded (section 16.9.9). For a delegated run, the
+    writable side is limited to `agent://<agent>`. Patterns use only `*`
+    and `?`, so whether two of them overlap can be decided exactly, and
+    no file has to exist for a URL to count.
+  - **Examples:**
+    - `memory: {"user://*": allow}` with
+      `memory_write: {"project://*": allow}` offers no write tools.
+    - A delegated run whose rules cannot read `agent://<agent>` offers no
+      write tools either.
+  - **Without memory**, when the run is offered no memory tool at all, the
+    write tools never appear (unchanged).
 - **What the snapshot keeps.** It loses its search and save paragraphs
   ("Project notes are never shown here…", "Save what a later session
   should know…", and their variants), and keeps only its background line
@@ -1802,6 +1819,8 @@ mode it rejects writes that fail the rubric.
 
 1. **Engine:**
    - the two-part section and the snapshot's trimmed text;
+   - offering write tools only when some memory is both readable and
+     writable;
    - the `Project:` line;
    - search scoring and the result and read formats;
    - stamps and their migration;
