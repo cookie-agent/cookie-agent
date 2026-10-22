@@ -1240,6 +1240,65 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
     engine.shutdown().await;
 }
 
+/// A runtime that hosts servers its own machine defines, as a dial-in
+/// runtime hosts its `[runtimes.local.mcp]`, lists them with the source
+/// `machine` and an empty definition: the daemon never sees them.
+#[tokio::test]
+async fn servers_the_runtimes_machine_defines_are_listed_as_machine_servers() {
+    let (fixture, _) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let directory = fixture._directory.path();
+    let machine_config = local_mcp_config(&fixture.config, &directory.join("refuse"));
+    let machine_servers = machine_config
+        .runtimes
+        .iter()
+        .find(|(id, _)| id.as_str() == "local")
+        .expect("local template")
+        .1
+        .mcp_servers
+        .iter()
+        .map(
+            |(name, server)| cookie_agent_runtime_api::protocol::McpServerSettings {
+                name: name.clone(),
+                config: serde_json::to_value(server).unwrap(),
+            },
+        )
+        .collect();
+    let engine = crate::Engine::open_async(crate::EngineOptions {
+        data_dir: directory.join("data"),
+        cwd: directory.to_owned(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&fixture.manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions {
+            local: cookie_agent_runtime_api::LocalRuntime::Protocol(
+                cookie_agent_coding_runtime::server::in_process_connector_with_options(
+                    ServeOptions {
+                        mcp_servers: machine_servers,
+                        ..ServeOptions::default()
+                    },
+                ),
+            ),
+            ..cookie_agent_runtime_api::RuntimeOptions::new(directory)
+        },
+    })
+    .await
+    .expect("engine whose local runtime hosts its machine's servers");
+    let listed = hosted_fixture(&engine);
+    assert_eq!(
+        listed.source,
+        cookie_agent_protocol::McpConfigSource::Machine
+    );
+    assert_eq!(listed.definition.command, None);
+    assert_eq!(listed.definition.url, None);
+    assert!(listed.definition.enabled);
+    assert_eq!(
+        listed.state,
+        cookie_agent_protocol::McpServerState::Connected
+    );
+    assert_eq!(listed.tool_count, 2);
+    engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn local_mcp_servers_need_the_protocol_local_runtime() {
     let (fixture, _) = custom_fixture();

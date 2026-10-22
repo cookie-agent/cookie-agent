@@ -219,8 +219,16 @@ pub fn is_global(server: &McpServerInfo) -> bool {
 
 /// Why `server` cannot be edited, removed, or toggled here: only the
 /// global runtime's servers are configured with `mcp.server.*`; a coding
-/// runtime's come from its template.
+/// runtime's come from its template, or from its own machine's
+/// configuration.
 pub fn edit_refusal(server: &McpServerInfo) -> Option<String> {
+    if server.source == McpConfigSource::Machine {
+        return Some(format!(
+            "MCP server `{}` is defined on the machine of runtime `{}`; edit [runtimes.local.mcp] \
+             in that machine's config.toml",
+            server.name, server.runtime_id
+        ));
+    }
     (!is_global(server)).then(|| {
         format!(
             "MCP server `{}` belongs to runtime `{}`; edit its [runtimes.{}.mcp] template",
@@ -241,7 +249,18 @@ pub fn runtime_label(server: &McpServerInfo) -> String {
 pub const fn source_label(source: McpConfigSource) -> &'static str {
     match source {
         McpConfigSource::UserFile => "user config",
+        McpConfigSource::Machine => "runtime machine config",
         McpConfigSource::Runtime => "runtime only",
+    }
+}
+
+/// How `server` is reached: its [definition](definition_display), or, for a
+/// server its runtime's machine defines, where that definition lives.
+pub fn server_definition_display(server: &McpServerInfo) -> String {
+    if server.source == McpConfigSource::Machine {
+        "defined in [runtimes.local.mcp] on the runtime's machine".to_owned()
+    } else {
+        definition_display(&server.definition)
     }
 }
 
@@ -282,8 +301,48 @@ pub const fn state_label(state: McpServerState) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpFields, McpTransport, daemon_accepts_page_redirects, new_definition};
-    use cookie_agent_protocol::SemVer;
+    use std::collections::BTreeMap;
+
+    use super::{
+        McpFields, McpTransport, daemon_accepts_page_redirects, edit_refusal, new_definition,
+        server_definition_display,
+    };
+    use cookie_agent_protocol::{
+        McpConfigSource, McpServerDefinition, McpServerInfo, McpServerState, RuntimeId, SemVer,
+    };
+
+    #[test]
+    fn a_machine_server_says_where_it_is_defined() {
+        let machine = McpServerInfo {
+            runtime_id: RuntimeId::new("client_box").unwrap(),
+            workspace: Some("/home/me/app".into()),
+            name: "chrome".into(),
+            source: McpConfigSource::Machine,
+            definition: McpServerDefinition {
+                command: None,
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+                url: None,
+                headers: BTreeMap::new(),
+                oauth: None,
+                enabled: true,
+                timeout_ms: None,
+            },
+            state: McpServerState::Connected,
+            tool_count: 3,
+            message: None,
+            auth_in_progress: None,
+        };
+        assert_eq!(
+            server_definition_display(&machine),
+            "defined in [runtimes.local.mcp] on the runtime's machine"
+        );
+        assert!(
+            edit_refusal(&machine)
+                .is_some_and(|refusal| refusal.contains("on the machine of runtime `client_box`"))
+        );
+    }
 
     #[test]
     fn only_a_1_11_daemon_takes_a_page_redirect() {

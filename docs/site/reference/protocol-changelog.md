@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.12.0
+
+- `mcp.server.list` lists the MCP servers a dial-in runtime hosts from
+  `[runtimes.local.mcp]` on its own machine, which earlier daemons left
+  out because they do not see those definitions. Such a server has the new
+  `McpConfigSource` value `machine` (an open enum value) and an empty
+  `definition` (no `command` or `url`); its `state`, `tool_count`, and
+  `message` are live as for any server. A failure of one is now also among
+  the failures a client hears when it subscribes to a session.
+- A 1.11 client reads `machine` as `runtime` (a server `mcp.server.*`
+  cannot edit); a 1.12 client reading a 1.11 daemon sees no dial-in
+  servers, as before.
+
 ## 1.11.0
 
 - MCP OAuth from the web client ([spec](../specs/web-mcp-oauth.md)):

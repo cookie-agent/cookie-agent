@@ -1,9 +1,10 @@
 {
   "$defs": {
     "McpConfigSource": {
-      "description": "A value this build does not know reads as `runtime`: a server the user file\ndoes not define, which `mcp.server.*` cannot edit.",
+      "description": "A value this build does not know reads as `runtime`: a server the user file\ndoes not define, which `mcp.server.*` cannot edit. `machine` (client\nprotocol 1.12.0) is a server the hosting runtime's own machine defines (a\ndial-in runtime's `[runtimes.local.mcp]`), which the daemon does not read:\nits `definition` is empty.",
       "enum": [
         "user_file",
+        "machine",
         "runtime"
       ],
       "type": "string",

@@ -411,15 +411,34 @@ impl Engine {
 }
 
 /// A server a runtime instance hosts, as `mcp.server.list` shows it. Its
-/// definition comes from the runtime's template in the user file.
+/// definition comes from the runtime's template in the user file; a server
+/// the runtime's own machine defines has the source `machine` and an empty
+/// definition.
 fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option<McpServerInfo> {
     use cookie_agent_runtime_api::protocol::McpServerState as Hosted;
+    let (source, definition) = match &server.definition {
+        Some(definition) => (McpConfigSource::UserFile, definition_to_wire(definition)),
+        None => (
+            McpConfigSource::Machine,
+            McpServerDefinition {
+                command: None,
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                cwd: None,
+                url: None,
+                headers: BTreeMap::new(),
+                oauth: None,
+                enabled: server.report.state != Hosted::Disabled,
+                timeout_ms: None,
+            },
+        ),
+    };
     Some(McpServerInfo {
         runtime_id: cookie_agent_protocol::RuntimeId::new(server.runtime_id.as_str()).ok()?,
         workspace: server.workspace,
         name: server.report.name,
-        source: McpConfigSource::UserFile,
-        definition: definition_to_wire(&server.definition),
+        source,
+        definition,
         state: match server.report.state {
             Hosted::Disabled => WireMcpServerState::Disabled,
             Hosted::Disconnected => WireMcpServerState::Disconnected,

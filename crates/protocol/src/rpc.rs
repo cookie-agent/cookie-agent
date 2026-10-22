@@ -1850,12 +1850,16 @@ pub struct ApprovalListResult {
 }
 
 /// A value this build does not know reads as `runtime`: a server the user file
-/// does not define, which `mcp.server.*` cannot edit.
+/// does not define, which `mcp.server.*` cannot edit. `machine` (client
+/// protocol 1.12.0) is a server the hosting runtime's own machine defines (a
+/// dial-in runtime's `[runtimes.local.mcp]`), which the daemon does not read:
+/// its `definition` is empty.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(extend("x-open" = true))]
 pub enum McpConfigSource {
     UserFile,
+    Machine,
     #[serde(other)]
     Runtime,
 }

@@ -641,7 +641,10 @@ struct InstanceMcp {
 pub(crate) struct HostedMcpServer {
     pub(crate) runtime_id: String,
     pub(crate) workspace: Option<String>,
-    pub(crate) definition: McpServerConfig,
+    /// Its definition in the runtime's template; `None` for a server the
+    /// runtime's own machine defines (a dial-in runtime's
+    /// `[runtimes.local.mcp]`), which the daemon never sees.
+    pub(crate) definition: Option<McpServerConfig>,
     pub(crate) report: McpServerReport,
 }
 
@@ -1116,13 +1119,11 @@ impl RuntimeClient {
             .servers
             .iter()
             .flatten()
-            .filter_map(|report| {
-                Some(HostedMcpServer {
-                    runtime_id: self.inner.runtime_id.clone(),
-                    workspace: hosted.workspace.clone(),
-                    definition: mcp.definitions.get(&report.name)?.clone(),
-                    report: report.clone(),
-                })
+            .map(|report| HostedMcpServer {
+                runtime_id: self.inner.runtime_id.clone(),
+                workspace: hosted.workspace.clone(),
+                definition: mcp.definitions.get(&report.name).cloned(),
+                report: report.clone(),
             })
             .collect()
     }
