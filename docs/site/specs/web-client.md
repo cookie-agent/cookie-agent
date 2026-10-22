@@ -79,7 +79,8 @@ daemon holds the machine's sessions, every client should see the same ones.
   third-party clients.
 - **Milestone.** The milestone is full TUI parity, phases W0 to W5. Two
   exclusions stay with the TUI and CLI:
-  - MCP OAuth, whose redirect must reach a loopback listener;
+  - MCP OAuth, whose redirect must reach a loopback listener (since
+    closed: [MCP OAuth from the web client](web-mcp-oauth.md), 2026-10-21);
   - offering this machine as a runtime, as `cookie attach` does when the
     daemon is remote.
 - **Plain `cookie` and a running daemon** (section 13):
@@ -435,7 +436,7 @@ where each feature lands.
 | Skills | `/skills` search and run | W3 |
 | Runtimes | `/runtime` attachments, draft runtimes, reconnect | W4 |
 | Machines | rename, assign, unassign, merge, forget | W4 |
-| MCP | list, add, edit, remove, enable, reconnect, persist (no OAuth) | W4 |
+| MCP | list, add, edit, remove, enable, reconnect, persist; OAuth sign-in since [web MCP OAuth](web-mcp-oauth.md) | W4 |
 | Providers | `/connect` forms, disconnect | W4 |
 | Configuration | `/config` documents, apply, reload | W4 |
 | Memory | `/memory` by layer, edit at revision, delete | W4 |
@@ -447,7 +448,9 @@ where each feature lands.
 - **MCP OAuth.** `mcp.auth.begin` requires a loopback `redirect_uri`
   (`crates/mcp/src/oauth.rs`).
   The web client shows the server as needing authorization and tells the
-  user to run `cookie mcp auth` or use the TUI.
+  user to run `cookie mcp auth` or use the TUI. (Closed on 2026-10-21 by
+  [MCP OAuth from the web client](web-mcp-oauth.md): the page is its own
+  redirect, client protocol 1.11.0.)
 - **This machine as a runtime.** A browser has no workspace to offer.
 
 ## 9. Phones
@@ -1723,7 +1726,8 @@ Management landed as specified, with no wire change.
   - **`/mcp`:** the servers in the TUI's order with state, tools, source,
     and error, and add, edit, enable or disable, remove, reconnect, and
     persist. A server that needs authorization says to run
-    `cookie mcp auth <server>` or use the TUI. Polled every second while
+    `cookie mcp auth <server>` or use the TUI (since 2026-10-21 it offers
+    **Sign in**; see [web MCP OAuth](web-mcp-oauth.md)). Polled every second while
     open, and on `mcp.changed`.
   - **`/connect`:** the catalog's providers with their state, a connect
     form per auth method with password fields for credentials, and

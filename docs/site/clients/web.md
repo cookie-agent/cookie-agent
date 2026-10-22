@@ -466,9 +466,8 @@ address bar.
   tools, and last error. The global runtime's servers can be added, edited,
   enabled or disabled, removed, and kept in your `config.toml`; a coding
   runtime's come from its template. **Reconnect** works for any server.
-  - A server that needs authorization says so. The page cannot sign in to
-    it: run `cookie mcp auth <server>` on a machine with a browser, or
-    authorize it from the TUI.
+  - A server that needs authorization offers **Sign in** (see
+    [Signing in to MCP servers](#signing-in-to-mcp-servers)).
 - **Providers.** Settings › Providers lists the catalog's providers. Pick one to
   connect it, or to update or disconnect its stored connection. Credentials
   are typed into password fields, read once when you connect, and never
@@ -624,13 +623,50 @@ daemon that is not running shows the browser's own error, and a restarted
 daemon of a new build serves its own page at once. It never touches the
 `/ws` and `/runtime` WebSockets.
 
+## Signing in to MCP servers
+
+A remote MCP server that wants OAuth shows `needs_auth` in Settings › MCP
+servers, with **Sign in**. The page is its own redirect: the authorization
+server sends the browser back to the page's address with `?oauth=callback`,
+for example `https://<host>.<tailnet>.ts.net/?oauth=callback`. The daemon
+keeps the PKCE verifier and exchanges the code; the tokens never reach the
+page. Only the daemon's own (global) servers can sign in, and only with a
+daemon of client protocol 1.11 or later; an older daemon's servers say to
+run `cookie mcp auth <server>` instead.
+
+- **Sign in** opens the authorization page in a new tab. If the browser
+  blocks the tab, the page goes there itself.
+- **Coming back.** The tab the authorization server sends back takes the
+  code and state out of its address bar at once, then hands the address to
+  the tab that started the sign-in and closes. That tab finishes the
+  sign-in and says "Signed in to `<server>`" or what went wrong. With no
+  such tab open, the tab that came back finishes the sign-in itself and
+  opens Settings › MCP servers.
+- **Paste the address you landed on.** While a sign-in waits, the MCP
+  servers show it with a field for the address the browser ended on. Use
+  it when the sign-in ends somewhere the page cannot continue from: on an
+  iPhone, the app added to the home screen keeps its storage apart from
+  Safari, so the page Safari opens cannot finish a sign-in the app started.
+  It says so and shows the address with **Copy the address**; paste it
+  into the app. **Cancel** gives the sign-in up.
+- **Refused callbacks.** A sign-in waits 10 minutes in the page (the daemon
+  gives up after 5). A callback for one that waited longer, or whose state
+  this browser does not know, is not finished.
+- **HTTPS.** Most authorization servers send the browser back only to an
+  `https` address or to this machine's loopback. On a page served over
+  plain `http` at another address, the MCP servers warn and point to
+  [remote access](../daemon/remote-access.md); Tailscale Serve (see
+  [Installing as an app](#installing-as-an-app)) is the easy way to HTTPS.
+  **Sign in** stays, for servers that allow it.
+- **A configured `client_id`.** The daemon registers a client for the
+  page's address by itself when the server offers dynamic client
+  registration. A server configured with `oauth = { client_id = "…" }`
+  needs the page's address with `?oauth=callback` among the redirect URIs
+  allowed for that client, on the server's side (see
+  [MCP](../extend/mcp.md#oauth-for-remote-servers)).
+
 ## What the page does not do
 
-- **Sign in to an MCP server.** Authorizing a remote MCP server needs a
-  callback on the machine's loopback address, which a page in a browser
-  cannot offer. Settings › MCP servers marks such a server as needing authorization: run
-  `cookie mcp auth <server>` on a machine with a browser, or authorize it
-  from the TUI.
 - **Offer this machine as a runtime.** A browser has no workspace to share.
   The TUI's machine can attach as a runtime that dials in; the page uses the
   runtimes the daemon already has.

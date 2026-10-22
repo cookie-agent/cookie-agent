@@ -1,9 +1,9 @@
 # MCP OAuth from the web client
 
-Status: **approved** (2026-10-21); queued after
-[delegating to runtimes](runtime-delegation.md). It closes the one parity
-gap the [web client spec](web-client.md) left open ("MCP OAuth, whose
-redirect must reach a loopback listener").
+Status: **implemented** (2026-10-21), in client protocol 1.11.0; section 7
+records how it landed. It closes the one parity gap the
+[web client spec](web-client.md) left open ("MCP OAuth, whose redirect must
+reach a loopback listener").
 
 ## 1. Goal and scope
 
@@ -119,3 +119,57 @@ their own.
 ## 6. Open questions
 
 None.
+
+## 7. Implementation notes (2026-10-21)
+
+Implemented as specified, in client protocol 1.11.0. The daemon side is
+`client_redirect_uri` and `is_callback_for` in `crates/mcp/src/oauth.rs`;
+the page's rules are `crates/web/src/oauth.rs`, its calls
+`crates/web/src/workspace/oauth.rs`, and its version gate
+`cookie_agent_client_state::mcp::daemon_accepts_page_redirects`. Details
+the spec left open, and the few additions:
+
+- **Registration per flow.** The daemon never reuses a dynamic
+  registration across sign-ins: every `mcp.auth.begin` clears the server's
+  stored credential and registers a client for its own redirect. A stored
+  registration for another redirect therefore cannot be reused, which
+  section 2 asks for; a test pins it.
+- **`application_type`.** A dynamic registration declares `native` for a
+  loopback redirect and `web` for an `https` one (OIDC Dynamic Client
+  Registration allows only loopback or custom-scheme redirects for native
+  clients). It used to be `native` always.
+- **The callback's query.** `mcp.auth.complete` also checks that the
+  callback carries every query parameter of the redirect itself, so
+  `oauth=callback` must be there. A loopback redirect no longer needs a
+  port (section 2 allows any loopback address with any path and query).
+- **The tab that started.** It is the tab whose `sessionStorage` holds the
+  state. The browser copies `sessionStorage` into a tab a script opens, so
+  the page empties the new tab's copy; the tab that comes back is then a
+  client of its own. The new tab is opened blank during the click and sent
+  to the authorization URL once `mcp.auth.begin` answers, so popup blockers
+  let it through. Its opener is cleared before it leaves.
+- **Handoff.** The callback tab posts `{kind: "callback", state, url}` on
+  `cookie-oauth` and waits 1.5 s for `{kind: "taken", state}`. One channel
+  object per page, so a tab never hears itself.
+- **One sign-in per server.** The daemon runs one flow per server, so a new
+  pending entry for a server replaces an older one. A completion that fails
+  forgets the entry only when the daemon's flow ended (a mistaken address
+  leaves it waiting); **Cancel** forgets it at once.
+- **Refused callbacks.** A callback whose state this browser does not know
+  (or that already finished) is not completed, and the page shows its
+  address with **Copy the address**, since the address bar no longer has
+  it: that is how the paste fallback reaches the installed app on iOS. An
+  expired entry is forgotten and the page says to start again.
+- **While waiting.** The server's row says it waits and offers **Open the
+  sign-in again** (`mcp.auth.begin` with the same redirect returns the same
+  URL). A server's `needs_auth` message shows muted, not as an error; the
+  outcome of a sign-in shows above the servers.
+- **Tests.** The browser suite's mock is `scripts/web-e2e/mock-oauth.py`
+  (registration, an authorization endpoint that approves at once and
+  refuses unregistered redirects, PKCE-checked token exchange, a minimal
+  Streamable HTTP MCP endpoint), behind three servers (`oauth-tab`,
+  `oauth-same`, `oauth-paste`) in the scenario daemon's config; the
+  scenario is `mcp_sign_in`. The blocked new tab is simulated with
+  `window.open` returning `null`, and the paste flow with a stand-in tab
+  whose URL the scenario follows itself. The HTTPS warning is checked at a
+  non-loopback name that Chrome maps to the daemon's loopback.

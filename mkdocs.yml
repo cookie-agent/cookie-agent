@@ -150,6 +150,7 @@ nav:
       - Status and scope: specs/index.md
       - Implemented:
           - Web client and local daemon use: specs/web-client.md
+          - MCP OAuth from the web client: specs/web-mcp-oauth.md
           - Memory: specs/memory.md
           - Runtimes: specs/runtimes.md
           - Background tool calls: specs/background-tools.md
@@ -168,7 +169,6 @@ nav:
       - Drafts and records:
           - Projects: specs/projects.md
           - Delegating to runtimes: specs/runtime-delegation.md
-          - MCP OAuth from the web client: specs/web-mcp-oauth.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md
           - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md

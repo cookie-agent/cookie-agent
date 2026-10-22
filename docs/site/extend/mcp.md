@@ -152,6 +152,30 @@ returns the server to `needs_auth` instead of repeatedly opening a browser flow.
 A transient refresh failure also returns to `needs_auth` immediately; Cookie
 Agent does not silently retry token requests or open a browser flow.
 
+### Signing in from the web client
+
+The [web client](../clients/web.md#signing-in-to-mcp-servers) signs in with
+**Sign in** in Settings › MCP servers. A page cannot listen on a loopback
+port, so its redirect is the page's own address with `?oauth=callback`,
+such as `https://<host>.<tailnet>.ts.net/?oauth=callback`. The page catches
+the browser there and hands the address to the daemon as the TUI does with
+its loopback callback. The daemon accepts as a redirect the client's
+loopback callback (plain `http` to `127.0.0.1`, `[::1]`, or `localhost`) or
+any `https` address without user info or a fragment (client protocol
+1.11).
+
+- **Which redirect a server takes.** With Dynamic Client Registration the
+  daemon registers a client for the redirect of each sign-in: as a
+  `native` client for a loopback redirect, a `web` client for an `https`
+  one. A configured `client_id` is used as is, so its authorization server
+  must already allow the redirect: add the page's address with
+  `?oauth=callback` to that client's redirect URIs on the server's side.
+  If the server refuses it, its error reaches the page unchanged.
+- **HTTPS.** Most authorization servers refuse a redirect to plain `http`
+  anywhere but loopback. Serve the page over `https` (see
+  [remote access](../daemon/remote-access.md)); a page on plain `http` at
+  another address warns, and still lets you try.
+
 OAuth failures show the available response body or authorization error description
 in the MCP diagnostic, capped at 4,096 UTF-8 bytes. Content is preserved, including
 credential-like text returned by the server; terminal and Unicode format controls
