@@ -245,14 +245,24 @@ async fn a_global_only_root_delegates_to_the_runtimes_it_names() {
     // once per place.
     assert_eq!(attachment_names(&fixture, root), ["global"]);
     let projection = fixture.engine.inner.store.get(root).unwrap();
-    let delegated = projection
+    let mut delegated = projection
         .meta
         .delegated_attachments
         .iter()
         .map(|attachment| attachment.workspace.clone().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(delegated.len(), 2, "{delegated:?}");
-    assert!(delegated[0].ends_with("/api") || delegated[0].ends_with("/web"));
+    delegated.sort();
+    // The runtime records each workspace in its canonical spelling, which on
+    // Windows is a drive path with backslashes.
+    let mut expected = [&api, &web].map(|workspace| {
+        cookie_agent_protocol::paths::canonicalize(workspace)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    });
+    expected.sort();
+    assert_eq!(delegated, expected);
     let recorded = projection
         .log
         .event_snapshot()
