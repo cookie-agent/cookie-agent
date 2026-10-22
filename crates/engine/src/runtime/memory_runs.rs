@@ -20,7 +20,10 @@ use crate::{
         snapshot::{ReadRules, SnapshotLimits, SnapshotRequest},
         url::MemoryUrl,
     },
-    permissions::{PermissionScope, effective_permission_with_overlay, tool_visible},
+    permissions::{
+        MemoryVariables, PermissionScope, effective_permission_with_overlay, patterns_intersect,
+        tool_visible,
+    },
     policy::FrozenRunPolicy,
 };
 
@@ -36,7 +39,10 @@ pub(crate) struct MemoryAccess {
 /// Whether a run of `agent` has memory (section 6): its agent is not
 /// internal, `global_attached`, and the agent or the session overlay holds
 /// an `allow` or `ask` rule for `memory` that reaches the `global`
-/// runtime. A writable run also holds one for `memory_write`.
+/// runtime. A writable run can also both read and write some memory URL
+/// (section 16.9.1): the pattern of one of those `memory` rules and the
+/// pattern of an `allow` or `ask` `memory_write` rule overlap. The frozen
+/// rules already have their variables expanded.
 pub(crate) fn memory_access(
     global_attached: bool,
     agent: &AgentSnapshot,
@@ -45,11 +51,29 @@ pub(crate) fn memory_access(
     let visible = |action: &PermissionAction| {
         tool_visible(&agent.permissions, overlay, action, Some(GLOBAL_RUNTIME_ID))
     };
+    let patterns = |action: PermissionAction| {
+        agent
+            .permissions
+            .iter()
+            .chain(overlay.into_iter().flat_map(|overlay| &overlay.rules))
+            .filter(move |rule| {
+                rule.action == action
+                    && rule.applies_to(Some(GLOBAL_RUNTIME_ID))
+                    && matches!(rule.effect, PermissionEffect::Allow | PermissionEffect::Ask)
+            })
+            .map(|rule| rule.resource.as_str())
+    };
     let available =
         global_attached && agent.mode != AgentMode::Internal && visible(&PermissionAction::MEMORY);
+    let overlap = || {
+        patterns(PermissionAction::MEMORY).any(|readable| {
+            patterns(PermissionAction::MEMORY_WRITE)
+                .any(|writable| patterns_intersect(readable, writable))
+        })
+    };
     MemoryAccess {
         available,
-        writable: available && visible(&PermissionAction::MEMORY_WRITE),
+        writable: available && overlap(),
     }
 }
 
@@ -72,7 +96,7 @@ pub(crate) struct SnapshotFacts {
 
 /// The fingerprint of the `memory` rules that reach `global` for a run of
 /// `agent` with `overlay`: the agent's, then the overlay's, in order, with
-/// the agent's ID, which `agent://self` stands for.
+/// the agent's ID.
 pub(crate) fn memory_rules_fingerprint(
     agent: &AgentSnapshot,
     overlay: &SessionPermissionOverlay,
@@ -237,6 +261,22 @@ impl Engine {
         machines
     }
 
+    /// What the memory rule variables stand for in `session`'s runs
+    /// (`docs/site/specs/memory.md` section 16.9.9): its machines and its
+    /// project's name; a delegated session's project is its root's.
+    pub(crate) fn memory_variables(&self, session: SessionId) -> MemoryVariables {
+        MemoryVariables {
+            machines: self
+                .session_machines(session)
+                .into_iter()
+                .map(|(machine, _)| machine.as_str().to_owned())
+                .collect(),
+            project: self
+                .session_project(session)
+                .map(|project| project.name.as_str().to_owned()),
+        }
+    }
+
     /// Appends the run's `memory_loaded` at its admission when section 7.2
     /// asks for one. A snapshot that cannot be read is reported and left
     /// out, keeping the latest one.
@@ -341,15 +381,6 @@ impl Engine {
             agent: active.policy.agent.clone(),
             overlay: projection.permission_overlay.clone(),
         })
-    }
-
-    /// Whether `session` is delegated.
-    pub(crate) fn session_is_delegated(&self, session: SessionId) -> Result<bool, String> {
-        self.inner
-            .store
-            .get(session)
-            .map(|projection| matches!(projection.meta.origin, SessionOrigin::Delegated { .. }))
-            .map_err(|error| error.to_string())
     }
 
     /// Whether `agent` names an agent of the registry, so its memory file

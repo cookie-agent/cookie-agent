@@ -174,13 +174,22 @@ pub struct WildcardPattern(String);
 impl WildcardPattern {
     pub const MAX_BYTES: usize = 4096;
     pub const WORKSPACE_DIR_EXPRESSION: &'static str = "${workspace_dir}";
+    /// The variables memory rule patterns accept (`docs/site/specs/memory.md`
+    /// section 16.9.9). The daemon expands them when it freezes a run's
+    /// policy, so a pattern on the wire never holds one, and the JSON Schema
+    /// pattern leaves them out.
+    pub const MEMORY_VARIABLES: [&'static str; 3] =
+        ["${agent_id}", "${session_machine}", "${session_project}"];
     pub const JSON_SCHEMA_MAX_UTF8_BYTES_EXTENSION: &'static str = "x-cookie-agent-maxUtf8Bytes";
     pub const JSON_SCHEMA_PATTERN: &'static str =
         "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$";
 
     pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {
         let value = value.into();
-        let without_workspace_expression = value.replace(Self::WORKSPACE_DIR_EXPRESSION, "");
+        let without_workspace_expression = Self::MEMORY_VARIABLES.iter().fold(
+            value.replace(Self::WORKSPACE_DIR_EXPRESSION, ""),
+            |rest, variable| rest.replace(variable, ""),
+        );
         if (1..=Self::MAX_BYTES).contains(&value.len())
             && !value.chars().any(char::is_control)
             && !without_workspace_expression
@@ -999,6 +1008,9 @@ mod tests {
             "literal(value)",
             "資料/?",
             "${workspace_dir}/src/*",
+            "agent://${agent_id}",
+            "machine://${session_machine}/*",
+            "project://${session_project}/*",
             "**",
             "a**b",
             "src/**",

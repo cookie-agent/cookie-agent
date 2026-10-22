@@ -10,6 +10,7 @@ use cookie_agent_protocol as protocol;
 use crate::{
     EngineError,
     model_snapshots::binding_for_selection,
+    permissions::MemoryVariables,
     runtime_snapshot::{
         AgentRegistry, PublishedRuntime, ResolvedAgent, ResolvedAgentFallback, delegation_targets,
     },
@@ -275,6 +276,7 @@ pub(crate) fn freeze_root_agent_policy(
     max_depth: u32,
     result_limits: ResultLimits,
     model_retry: cookie_agent_config::ModelRetryConfig,
+    memory: &MemoryVariables,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if let Some(error) = missing_model_error(agent, runtime.as_ref(), selection) {
         return Err(error);
@@ -328,9 +330,11 @@ pub(crate) fn freeze_root_agent_policy(
             model_retry,
             inherited_cache_strategies: None,
         },
+        memory,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn freeze_delegated_agent_policy(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
@@ -339,6 +343,7 @@ pub(crate) fn freeze_delegated_agent_policy(
     inherited_suffix: &[protocol::FrozenModelBinding],
     inherited_depth_ceiling: u32,
     options: FreezeOptions,
+    memory: &MemoryVariables,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if let Some(error) = missing_model_error(agent, runtime.as_ref(), selection) {
         return Err(error);
@@ -392,9 +397,12 @@ pub(crate) fn freeze_delegated_agent_policy(
         selection,
         Some(inherited_depth_ceiling),
         options,
+        Delegated(true),
+        memory,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn freeze_planned_policy(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
@@ -403,6 +411,7 @@ fn freeze_planned_policy(
     selection: &protocol::ModelSelection,
     inherited_depth_ceiling: Option<u32>,
     options: FreezeOptions,
+    memory: &MemoryVariables,
 ) -> Result<FrozenRunPolicy, EngineError> {
     let bindings = selections
         .iter()
@@ -418,9 +427,18 @@ fn freeze_planned_policy(
         selection,
         inherited_depth_ceiling,
         options,
+        Delegated(false),
+        memory,
     )
 }
 
+/// Whether a policy is frozen for a delegated run, whose session's origin
+/// is `SessionOrigin::Delegated`: such a run gets the delegated memory
+/// default (`docs/site/specs/memory.md` section 16.9.11).
+#[derive(Clone, Copy)]
+struct Delegated(bool);
+
+#[allow(clippy::too_many_arguments)]
 fn freeze_with_bindings(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
@@ -429,6 +447,8 @@ fn freeze_with_bindings(
     selection: &protocol::ModelSelection,
     inherited_depth_ceiling: Option<u32>,
     options: FreezeOptions,
+    Delegated(delegated): Delegated,
+    memory: &MemoryVariables,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if bindings.is_empty() {
         return Err(EngineError::NoRunnableModel);
@@ -448,7 +468,7 @@ fn freeze_with_bindings(
         composed_prompt: document.body.clone(),
         prompt_fingerprint: wire_digest(&document.prompt_fingerprint)?,
         max_output_tokens: document.frontmatter.limits.max_output_tokens,
-        permissions: crate::permissions::agent_permission_rules(document),
+        permissions: crate::permissions::agent_permission_rules(document, delegated, memory),
         delegation,
         fallback_chain: bindings
             .iter()

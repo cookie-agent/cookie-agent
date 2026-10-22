@@ -78,7 +78,6 @@ fn urls_and_revisions_are_checked_before_the_store() {
         "project://web",
         "Project://web/build",
         "project://web/build.md",
-        "agent://self",
         "file:///etc/passwd",
     ] {
         assert!(

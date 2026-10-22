@@ -9,16 +9,16 @@
 //!
 //! The provider is built with the `global` runtime, before the engine
 //! exists, and holds the engine through a handle bound once the engine is
-//! made. Composition publishes its tools only to runs that have memory
-//! ([`crate::runtime::memory_runs`]); a delegated run's writes to anything
-//! but its own agent's file are refused while preparing, before rules are
-//! consulted.
+//! made. Composition publishes its tools only to runs that have memory,
+//! and its write tools only to runs that can both read and write some
+//! memory ([`crate::runtime::memory_runs`]); the permission rules alone
+//! decide what a run may change (section 16.9.11).
 
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    AgentId, ApprovalResourceSource, DisplayBlock, Open, PermissionAction,
+    ApprovalResourceSource, DisplayBlock, Open, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime,
 };
 use cookie_agent_runtime_api::{
@@ -276,13 +276,6 @@ impl MemoryCall {
             | Self::Delete { url, .. } => Some(url),
         }
     }
-
-    const fn writes(&self) -> bool {
-        matches!(
-            self,
-            Self::Write { .. } | Self::Edit { .. } | Self::Delete { .. }
-        )
-    }
 }
 
 fn parse_url(value: &str) -> Result<MemoryUrl, ToolError> {
@@ -379,17 +372,6 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
         }
         other => Err(ToolError::execution(format!(
             "the memory provider received another tool, `{other}`"
-        ))),
-    }
-}
-
-/// A delegated run writes only its own agent's file, whatever its rules
-/// say (sections 6 and 9).
-fn check_delegated_write(url: &MemoryUrl, agent: &AgentId) -> Result<(), ToolError> {
-    match url {
-        MemoryUrl::Agent { agent: target } if target == agent => Ok(()),
-        _ => Err(ToolError::execution(format!(
-            "a delegated run may write only its own agent's memory, agent://{agent}; {url} is read-only here"
         ))),
     }
 }
@@ -529,14 +511,6 @@ impl ToolProvider for MemoryTools {
     ) -> Result<PreparedTool, ToolError> {
         let engine = self.engine()?;
         let memory_call = check(&call.name, call.arguments.clone())?;
-        if memory_call.writes()
-            && engine
-                .session_is_delegated(ctx.session)
-                .map_err(ToolError::execution)?
-            && let Some(url) = memory_call.url()
-        {
-            check_delegated_write(url, &ctx.turn_context.agent)?;
-        }
         let (action, operation_name) = match &memory_call {
             MemoryCall::Search { .. } => (PermissionAction::MEMORY, "search"),
             MemoryCall::Read { .. } => (PermissionAction::MEMORY, "read"),

@@ -96,15 +96,8 @@ fn valid_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-/// The agent segment that only permission patterns know: a memory URL
-/// always names the real agent ID.
-const SELF_AGENT: &str = "self";
-
-/// The agent of an `agent://` URL: an agent ID other than `self`.
+/// The agent of an `agent://` URL: an agent ID.
 fn agent_segment(value: &str) -> Option<AgentId> {
-    if value == SELF_AGENT {
-        return None;
-    }
     AgentId::new(value).ok()
 }
 
@@ -308,7 +301,6 @@ mod tests {
             "user://../agents/default",
             "user://.",
             "user://pre ferences",
-            "agent://self",
             "agent://Default",
             "agent://default/x",
             "agent://a--b",

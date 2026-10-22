@@ -677,7 +677,6 @@ fn listing_reports_invalid_files_and_ignores_what_breaks_the_layout() {
     };
     let valid = text("d", "");
     put("agents/reviewer.md", &valid);
-    put("agents/self.md", &valid);
     put("agents/a--b.md", &valid);
     put("user/Upper.md", &valid);
     put("user/notes.txt", &valid);
@@ -765,7 +764,6 @@ fn listing_reports_invalid_files_and_ignores_what_breaks_the_layout() {
             ("user/nested", NESTED),
             ("user/notes.txt", NOT_MARKDOWN),
             ("agents/a--b.md", BAD_AGENT),
-            ("agents/self.md", BAD_AGENT),
             ("machines/Bad", BAD_MACHINE),
             ("machines/labpc/sub", NESTED),
             ("machines/stray.md", NOT_FOLDER),

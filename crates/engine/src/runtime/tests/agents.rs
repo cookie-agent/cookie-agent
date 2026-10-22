@@ -705,6 +705,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
             crate::policy::ResultLimits {
                 tool_output: crate::preview::PreviewLimits::halves(100, 10_000),
             },
+            &crate::permissions::MemoryVariables::default(),
         )
         .expect("delegated child stays pinned to its preset");
     assert_eq!(child_selection.preset.as_deref(), Some("python"));

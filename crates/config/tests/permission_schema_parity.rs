@@ -549,6 +549,51 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
     }
 }
 
+fn load_worker_rule(action: &str, resource: &str) -> Result<(), ConfigError> {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join(".cookie-agent");
+    fs::create_dir_all(root.join("agents")).unwrap();
+    fs::write(root.join("config.toml"), "").unwrap();
+    fs::write(
+        root.join("agents/worker.md"),
+        format!(
+            "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  {action}:\n    \"{resource}\": allow\n---\nWorker.\n"
+        ),
+    )
+    .unwrap();
+    load_from_user_root(Some(&root)).map(|_| ())
+}
+
+#[test]
+fn memory_variables_are_whole_segments_of_memory_patterns_only() {
+    for (action, resource) in [
+        ("memory", "agent://${agent_id}"),
+        ("memory_write", "machine://${session_machine}/*"),
+        ("memory@global", "project://${session_project}/*"),
+        ("memory_write", "project://${session_project}/notes"),
+    ] {
+        load_worker_rule(action, resource).unwrap_or_else(|error| panic!("{resource}: {error}"));
+    }
+    for (action, resource) in [
+        ("memory", "project://${session_project}-old/*"),
+        ("memory", "project://x${session_project}/*"),
+        ("memory", "${agent_id}://x"),
+        ("memory", "agent://${agent}"),
+        ("memory_write", "machine://${session_machine"),
+        ("bash", "agent://${agent_id}"),
+        ("read", "/${session_project}/*"),
+        ("memory", "${workspace_dir}/x"),
+    ] {
+        assert!(
+            matches!(
+                load_worker_rule(action, resource),
+                Err(ConfigError::AgentPermissionExpression(_))
+            ),
+            "{action}: {resource}"
+        );
+    }
+}
+
 #[test]
 fn workspace_dir_expression_is_portable_for_filesystem_permissions() {
     let temp = TempDir::new().unwrap();

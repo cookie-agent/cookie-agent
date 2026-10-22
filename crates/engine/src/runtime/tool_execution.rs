@@ -1174,7 +1174,8 @@ impl Engine {
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
         // The memory tools follow the snapshot: none at all without a
-        // `memory` rule, whatever `memory_write` rules say.
+        // `memory` rule, whatever `memory_write` rules say, and the write
+        // tools only when some memory is both readable and writable.
         let memory = super::memory_runs::memory_access(
             true,
             &policy.agent,
@@ -1185,9 +1186,12 @@ impl Engine {
             let goal_tool = source.attachment.is_none()
                 && matches!(tool.name.as_str(), "goal_get" | "goal_update");
             let memory_tool = source.provider.provider_id() == crate::memory_tools::PROVIDER_ID;
+            let memory_write_tool =
+                memory_tool && tool.permission_name.as_deref() == Some("memory_write");
             (!delegation_tool || delegate_enabled)
                 && (!goal_tool || policy.goal_tools_enabled)
                 && (!memory_tool || memory.available)
+                && (!memory_write_tool || memory.writable)
                 && tool
                     .permission_name
                     .as_deref()

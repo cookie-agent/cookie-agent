@@ -1,9 +1,7 @@
-use cookie_agent_protocol::AgentId;
 use serde_json::json;
 
 use super::{
-    MAX_HIT_LINE_CHARS, MemoryCall, MemoryTools, check, check_delegated_write, hit_line,
-    permission_name, search_output,
+    MAX_HIT_LINE_CHARS, MemoryCall, MemoryTools, check, hit_line, permission_name, search_output,
 };
 use crate::memory::{
     search::{HitDetail, SearchHit},
@@ -111,7 +109,6 @@ fn arguments_are_strict() {
 #[test]
 fn urls_revisions_and_memories_are_checked_before_the_call_runs() {
     assert!(error("memory_read", json!({"url": "user://Profile"})).contains("user://Profile"));
-    assert!(error("memory_read", json!({"url": "agent://self"})).contains("agent://self"));
     assert!(error("memory_read", json!({"url": "file:///etc"})).contains("not a memory URL"));
     assert!(
         error(
@@ -144,27 +141,6 @@ fn urls_revisions_and_memories_are_checked_before_the_call_runs() {
                 Ok(MemoryCall::Delete { .. })
             ),
             "{url}"
-        );
-    }
-}
-
-#[test]
-fn a_delegated_run_writes_only_its_own_agent_file() {
-    let agent = AgentId::new("reviewer").unwrap();
-    let url = |value: &str| MemoryUrl::parse(value).unwrap();
-    assert!(check_delegated_write(&url("agent://reviewer"), &agent).is_ok());
-    for other in [
-        "agent://default",
-        "user://profile",
-        "machine://labpc/x",
-        "project://web/build",
-    ] {
-        let refusal = check_delegated_write(&url(other), &agent)
-            .expect_err("a delegated write elsewhere")
-            .to_string();
-        assert!(
-            refusal.contains("only its own agent's memory, agent://reviewer"),
-            "{refusal}"
         );
     }
 }

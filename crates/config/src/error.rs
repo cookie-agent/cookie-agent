@@ -74,7 +74,7 @@ pub enum ConfigError {
     #[error("agent `{0}`: timeout_ms is only supported for internal agents")]
     AgentTimeoutInternalOnly(AgentId),
     #[error(
-        "agent `{0}` permission resources support only `${{workspace_dir}}`, and only for read or write"
+        "agent `{0}` permission resources support only `${{workspace_dir}}`, for read or write, and `${{agent_id}}`, `${{session_machine}}`, and `${{session_project}}` as whole URL segments, for memory or memory_write"
     )]
     AgentPermissionExpression(AgentId),
     #[error("agent YAML resource limit exceeded")]

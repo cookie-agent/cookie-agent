@@ -554,6 +554,9 @@ impl Engine {
                 }
             })
             .ok_or_else(|| EngineError::ToolFailed("delegate child has no model suffix".into()))?;
+        // The child session does not exist yet: its creation snapshot takes
+        // the parent's machines and project, and each of its runs freezes
+        // its own.
         let child_policy = freeze_delegated_child_policy(
             child_agent,
             &parent_policy,
@@ -561,6 +564,7 @@ impl Engine {
             inherited,
             parent_delegation.effective_depth_ceiling,
             policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+            &self.memory_variables(invocation.parent_session_id),
         )?;
         let seeded_context = if invocation.inherit_context {
             self.delegated_context_seed(invocation.parent_session_id)
@@ -3591,6 +3595,7 @@ pub(crate) fn freeze_delegated_child_policy(
     inherited_suffix: &[cookie_agent_protocol::FrozenModelBinding],
     inherited_depth_ceiling: u32,
     result_limits: policy::ResultLimits,
+    memory: &crate::permissions::MemoryVariables,
 ) -> Result<FrozenRunPolicy, EngineError> {
     freeze_delegated_agent_policy(
         child_agent,
@@ -3609,6 +3614,7 @@ pub(crate) fn freeze_delegated_child_policy(
                     .collect(),
             ),
         },
+        memory,
     )
 }
 

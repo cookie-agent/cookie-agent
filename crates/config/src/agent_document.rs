@@ -194,16 +194,43 @@ fn validate_permission_expressions(
             continue;
         };
         for resource in resources.keys().filter_map(serde_yaml::Value::as_str) {
-            let remainder = resource.replace("${workspace_dir}", "");
-            let malformed_expression = remainder.contains("${");
-            let unsupported_action =
-                resource.contains("${workspace_dir}") && !matches!(action, "read" | "write");
-            if malformed_expression || unsupported_action {
+            if !permission_expressions_valid(action, resource) {
                 return Err(ConfigError::AgentPermissionExpression(agent.clone()));
             }
         }
     }
     Ok(())
+}
+
+/// Whether the `${…}` expressions of a rule's `resource` suit its `action`:
+/// `${workspace_dir}` for `read` and `write`, and the memory variables
+/// (`docs/site/specs/memory.md` section 16.9.9) for `memory` and
+/// `memory_write`, each a whole URL segment, after a `/` and before a `/`
+/// or the end. Any other `${` is malformed.
+pub(crate) fn permission_expressions_valid(action: &str, resource: &str) -> bool {
+    let mut rest = resource;
+    while let Some(start) = rest.find("${") {
+        let expression = &rest[start..];
+        let Some(end) = expression.find('}') else {
+            return false;
+        };
+        let (variable, after) = expression.split_at(end + 1);
+        let valid = if variable == cookie_agent_identity::WildcardPattern::WORKSPACE_DIR_EXPRESSION
+        {
+            matches!(action, "read" | "write")
+        } else if cookie_agent_identity::WildcardPattern::MEMORY_VARIABLES.contains(&variable) {
+            matches!(action, "memory" | "memory_write")
+                && rest[..start].ends_with('/')
+                && (after.is_empty() || after.starts_with('/'))
+        } else {
+            false
+        };
+        if !valid {
+            return false;
+        }
+        rest = after;
+    }
+    true
 }
 
 fn forbidden_yaml(yaml: &str) -> bool {

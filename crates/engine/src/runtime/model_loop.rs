@@ -95,6 +95,7 @@ impl Engine {
         &self,
         selection: &cookie_agent_protocol::RunSelection,
         best_effort: bool,
+        memory: &crate::permissions::MemoryVariables,
     ) -> Result<(FrozenRunPolicy, cookie_agent_protocol::RunSelection), EngineError> {
         self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
@@ -113,6 +114,7 @@ impl Engine {
             self.inner.config.load().runtime.delegation.max_depth,
             policy::ResultLimits::from_config(&self.inner.config.load().runtime),
             self.inner.config.load().runtime.model_retry,
+            memory,
         )?;
         Ok((policy, selection))
     }
@@ -129,6 +131,7 @@ impl Engine {
         creation_preset: Option<&str>,
         requested: &cookie_agent_protocol::RunSelection,
         result_limits: policy::ResultLimits,
+        memory: &crate::permissions::MemoryVariables,
     ) -> Result<(FrozenRunPolicy, cookie_agent_protocol::RunSelection), EngineError> {
         self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
@@ -190,6 +193,7 @@ impl Engine {
                 model_retry: self.inner.config.load().runtime.model_retry,
                 inherited_cache_strategies: None,
             },
+            memory,
         )?;
         let selection = cookie_agent_protocol::RunSelection {
             agent: agent.document.id.clone(),
@@ -292,6 +296,7 @@ impl Engine {
         self.resolve_interrupted_direct(params.session_id).await?;
         let result_limits = policy::ResultLimits::from_config(&self.inner.config.load().runtime);
         let is_root = matches!(session.meta.origin, SessionOrigin::Root);
+        let memory_variables = self.memory_variables(params.session_id);
         let mut run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
                 // A selection equal to the session's own history (an engine
@@ -302,8 +307,11 @@ impl Engine {
                 )
                 .selection
                 .unwrap_or_else(|| session.meta.creation_selection.clone());
-                let (policy, selection) =
-                    self.freeze_root_selection(&params.selection, params.selection == history)?;
+                let (policy, selection) = self.freeze_root_selection(
+                    &params.selection,
+                    params.selection == history,
+                    &memory_variables,
+                )?;
                 params.selection = selection;
                 policy
             }
@@ -313,6 +321,7 @@ impl Engine {
                     session.meta.creation_selection.preset.as_deref(),
                     &params.selection,
                     result_limits,
+                    &memory_variables,
                 )?;
                 params.selection = selection;
                 policy

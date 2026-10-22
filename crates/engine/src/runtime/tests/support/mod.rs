@@ -1346,6 +1346,7 @@ pub(crate) fn try_frozen_root_policy(
             tool_output: crate::preview::PreviewLimits::halves(2_000, 50 * 1024),
         },
         fixture.config.runtime.model_retry,
+        &crate::permissions::MemoryVariables::default(),
     )
 }
 

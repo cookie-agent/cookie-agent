@@ -999,7 +999,11 @@ impl Engine {
             ));
         }
         if let Some(selection) = &selection {
-            self.freeze_root_selection(selection, false)?;
+            self.freeze_root_selection(
+                selection,
+                false,
+                &crate::permissions::MemoryVariables::default(),
+            )?;
         }
         let goal_id = GoalId::new_v7();
         self.append_direct(
@@ -1060,7 +1064,11 @@ impl Engine {
             ));
         }
         if let Some(selection) = &params.selection {
-            self.freeze_root_selection(selection, false)?;
+            self.freeze_root_selection(
+                selection,
+                false,
+                &crate::permissions::MemoryVariables::default(),
+            )?;
         }
         let status = match (goal.status, params.action) {
             (GoalStatus::Active, GoalLifecycleAction::Pause) => GoalStatus::Paused,

@@ -1045,8 +1045,9 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
     // (section 7.5), while the memory tools stay offered.
     assert!(!requests[0].contains("# Memory"));
     assert!(memory_tool_names(&requests[0]).contains(&"memory_write".to_owned()));
-    // An agent that may write everywhere still writes only its own file
-    // when delegated, refused before any rule is consulted.
+    // The permission rules alone decide what a delegated run writes
+    // (section 16.9.11): this write reaches the store, which refuses it
+    // only because the project does not exist.
     let ended = terminations(&fixture, child);
     let refused = &ended["elsewhere"];
     assert_eq!(refused.outcome, ToolTerminationOutcome::Failed);
@@ -1057,7 +1058,7 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
             .unwrap()
             .message
             .to_string()
-            .contains("may write only its own agent's memory")
+            .contains("which is no project")
     );
     let own = &ended["own"];
     assert_eq!(own.outcome, ToolTerminationOutcome::Completed, "{own:?}");

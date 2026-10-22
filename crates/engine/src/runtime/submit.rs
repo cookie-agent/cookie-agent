@@ -106,7 +106,11 @@ impl Engine {
         let projection = self.inner.store.get(session)?;
         match &projection.meta.origin {
             cookie_agent_protocol::SessionOrigin::Root => {
-                self.freeze_root_selection(&selection, false)?;
+                self.freeze_root_selection(
+                    &selection,
+                    false,
+                    &crate::permissions::MemoryVariables::default(),
+                )?;
             }
             cookie_agent_protocol::SessionOrigin::Delegated { .. } => {
                 let (_, frozen) = self.freeze_delegated_selection(
@@ -114,6 +118,7 @@ impl Engine {
                     projection.meta.creation_selection.preset.as_deref(),
                     &selection,
                     crate::policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+                    &crate::permissions::MemoryVariables::default(),
                 )?;
                 if frozen != selection {
                     return Err(EngineError::UnavailableAgentModel {

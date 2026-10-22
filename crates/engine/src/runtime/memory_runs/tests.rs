@@ -98,6 +98,54 @@ fn memory_needs_global_a_memory_rule_and_a_non_internal_agent() {
     );
 }
 
+/// The write tools need some memory URL both readable and writable
+/// (section 16.9.1), decided over the rules' patterns.
+#[test]
+fn the_write_tools_need_memory_both_readable_and_writable() {
+    let access = |read: &[(&str, PermissionEffect)], write: &[(&str, PermissionEffect)]| {
+        let rules =
+            read.iter()
+                .map(|(pattern, effect)| rule(PermissionAction::MEMORY, pattern, *effect))
+                .chain(write.iter().map(|(pattern, effect)| {
+                    rule(PermissionAction::MEMORY_WRITE, pattern, *effect)
+                }))
+                .collect();
+        memory_access(true, &agent(AgentMode::Primary, rules), None)
+    };
+    let (allow, ask, deny) = (
+        PermissionEffect::Allow,
+        PermissionEffect::Ask,
+        PermissionEffect::Deny,
+    );
+    assert_eq!(
+        access(&[("user://*", allow)], &[("project://*", allow)]),
+        READ_ONLY
+    );
+    assert_eq!(
+        access(&[("user://*", allow)], &[("user://feedback", ask)]),
+        BOTH
+    );
+    assert_eq!(
+        access(&[("agent://reviewer", ask)], &[("agent://*", allow)]),
+        BOTH
+    );
+    assert_eq!(
+        access(
+            &[("project://web/*", allow), ("user://*", allow)],
+            &[("project://api/*", allow), ("user://*", deny)]
+        ),
+        READ_ONLY
+    );
+    // No file has to exist for a URL to count.
+    assert_eq!(
+        access(
+            &[("machine://*/gpu", allow)],
+            &[("machine://labpc/*", allow)]
+        ),
+        BOTH
+    );
+}
+
 /// The fingerprint of the test runs' `memory` rules.
 fn rules() -> cookie_agent_protocol::Sha256Digest {
     cookie_agent_protocol::Sha256Digest::of_bytes(b"memory rules")
@@ -308,7 +356,7 @@ fn search_results_follow_the_memory_rule_for_their_url() {
                 rule(PermissionAction::MEMORY, "user://*", PermissionEffect::Ask),
                 rule(
                     PermissionAction::MEMORY,
-                    "agent://self",
+                    "agent://reviewer",
                     PermissionEffect::Allow,
                 ),
                 rule(

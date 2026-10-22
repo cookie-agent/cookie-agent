@@ -104,6 +104,59 @@ pub fn tool_visible(
         })
 }
 
+/// Whether some resource matches both `left` and `right`, wildcard
+/// patterns of `*` (any characters) and `?` (one character). Decided
+/// exactly, without any resource having to exist; a trailing ` *`, which
+/// also matches the bare prefix, counts both ways.
+pub(crate) fn patterns_intersect(left: &str, right: &str) -> bool {
+    let spellings = |pattern: &str| {
+        let mut spellings = vec![pattern.chars().collect::<Vec<_>>()];
+        if let Some(prefix) = pattern.strip_suffix(" *") {
+            spellings.push(prefix.chars().collect());
+        }
+        spellings
+    };
+    spellings(left).iter().any(|left| {
+        spellings(right)
+            .iter()
+            .any(|right| globs_intersect(left, right))
+    })
+}
+
+/// Whether one string matches both glob patterns: a search over pairs of
+/// positions, where a `*` may match nothing or swallow what the other
+/// pattern produces next.
+fn globs_intersect(left: &[char], right: &[char]) -> bool {
+    let mut seen = HashSet::new();
+    let mut pending = vec![(0usize, 0usize)];
+    while let Some((i, j)) = pending.pop() {
+        if !seen.insert((i, j)) {
+            continue;
+        }
+        let (a, b) = (left.get(i), right.get(j));
+        match (a, b) {
+            (None, None) => return true,
+            (Some('*'), _) | (_, Some('*')) => {
+                if a == Some(&'*') {
+                    pending.push((i + 1, j));
+                    if b.is_some() {
+                        pending.push((i, j + 1));
+                    }
+                }
+                if b == Some(&'*') {
+                    pending.push((i, j + 1));
+                    if a.is_some() {
+                        pending.push((i + 1, j));
+                    }
+                }
+            }
+            (Some(a), Some(b)) if *a == '?' || *b == '?' || a == b => pending.push((i + 1, j + 1)),
+            _ => {}
+        }
+    }
+    false
+}
+
 #[derive(Debug, Error)]
 pub enum PermissionError {
     #[error("invalid permission name `{0}`")]
@@ -513,8 +566,8 @@ pub(crate) fn effective_permission<'a>(
         .permissions
         .iter()
         .enumerate()
-        .filter(|(_, rule)| rule_matches(rule, action, resource, scope, &policy.agent))
-        .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent, scope.home));
+        .filter(|(_, rule)| rule_matches(rule, action, resource, scope))
+        .max_by_key(|(index, rule)| specificity(rule, *index, scope.home));
     winner
         .map_or_else(
             || {
@@ -545,8 +598,8 @@ pub(crate) fn effective_permission_with_overlay<'a>(
             .rules
             .iter()
             .enumerate()
-            .filter(|(_, rule)| rule_matches(rule, action, resource, scope, &policy.agent))
-            .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent, scope.home))
+            .filter(|(_, rule)| rule_matches(rule, action, resource, scope))
+            .max_by_key(|(index, rule)| specificity(rule, *index, scope.home))
     });
     winner.map_or_else(
         || effective_permission(policy, action, resource, scope),
@@ -559,42 +612,27 @@ pub(crate) fn effective_permission_with_overlay<'a>(
     )
 }
 
-/// Whether `rule` governs `resource` of `action` in `scope` for a run of
-/// `agent`.
+/// Whether `rule` governs `resource` of `action` in `scope`.
 fn rule_matches(
     rule: &PermissionRule,
     action: &PermissionAction,
     resource: &str,
     scope: PermissionScope<'_>,
-    agent: &AgentId,
 ) -> bool {
     rule.action == *action
         && rule.applies_to(scope.runtime)
         && permission_pattern_matches(
-            &rule_pattern(rule, agent, scope.home),
+            &rule_pattern(rule, scope.home),
             action,
             resource,
             scope.workspace,
         )
 }
 
-/// In a rule pattern, `agent://self` stands for the run's own agent
-/// (`docs/site/specs/memory.md` section 9.1).
-pub(crate) const SELF_AGENT_PATTERN: &str = "agent://self";
-
-/// The pattern `rule` matches with for a run of `agent` on a runtime with
-/// `home`: its resource, with `agent://self` read as `agent://<agent>` and a
-/// leading `~` expanded against `home` ([`expand_home_pattern`]).
-fn rule_pattern<'rule>(
-    rule: &'rule PermissionRule,
-    agent: &AgentId,
-    home: Option<&str>,
-) -> Cow<'rule, str> {
-    if rule.resource.as_str() == SELF_AGENT_PATTERN {
-        Cow::Owned(format!("agent://{agent}"))
-    } else {
-        expand_home_pattern(rule.resource.as_str(), home)
-    }
+/// The pattern `rule` matches with on a runtime with `home`: its resource,
+/// with a leading `~` expanded against `home` ([`expand_home_pattern`]).
+fn rule_pattern<'rule>(rule: &'rule PermissionRule, home: Option<&str>) -> Cow<'rule, str> {
+    expand_home_pattern(rule.resource.as_str(), home)
 }
 
 /// `pattern` with a leading `~` (the whole pattern, or `~/` before the
@@ -654,24 +692,107 @@ pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
         .collect()
 }
 
+/// The rules a delegated run gets for each memory action its agent document
+/// names no key for (`docs/site/specs/memory.md` section 16.9.11): its own
+/// agent file, to read and to maintain. Root runs get no memory default.
+fn delegated_default_rules() -> Vec<PermissionRule> {
+    [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE]
+        .into_iter()
+        .map(|action| {
+            PermissionRule::new(
+                action,
+                WildcardPattern::new("agent://${agent_id}").expect("static default pattern"),
+                PermissionEffect::Allow,
+            )
+        })
+        .collect()
+}
+
+/// What the memory rule variables stand for in one run
+/// (`docs/site/specs/memory.md` section 16.9.9), besides `${agent_id}`,
+/// which is the run's agent: the session's machines in order, and the name
+/// of its project.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MemoryVariables {
+    pub(crate) machines: Vec<String>,
+    pub(crate) project: Option<String>,
+}
+
+/// `rule` with the memory variables of its pattern expanded for a run of
+/// `agent`: one rule per session machine for `${session_machine}`, and none
+/// when a variable stands for nothing (no project, or no machine), since
+/// such a pattern matches no memory. Rules of other actions, and patterns
+/// without a variable, are kept as they are.
+fn expand_memory_variables(
+    rule: PermissionRule,
+    agent: &AgentId,
+    variables: &MemoryVariables,
+) -> Vec<PermissionRule> {
+    let [agent_id, session_machine, session_project] = WildcardPattern::MEMORY_VARIABLES;
+    let pattern = rule.resource.as_str();
+    let memory_action =
+        rule.action == PermissionAction::MEMORY || rule.action == PermissionAction::MEMORY_WRITE;
+    if !memory_action || !pattern.contains("${") {
+        return vec![rule];
+    }
+    let mut pattern = pattern.replace(agent_id, agent.as_str());
+    if pattern.contains(session_project) {
+        let Some(project) = &variables.project else {
+            return Vec::new();
+        };
+        pattern = pattern.replace(session_project, project);
+    }
+    let patterns = if pattern.contains(session_machine) {
+        variables
+            .machines
+            .iter()
+            .map(|machine| pattern.replace(session_machine, machine))
+            .collect()
+    } else {
+        vec![pattern]
+    };
+    patterns
+        .into_iter()
+        .filter_map(|pattern| WildcardPattern::new(pattern).ok())
+        .map(|resource| PermissionRule {
+            resource,
+            ..rule.clone()
+        })
+        .collect()
+}
+
 /// The rules an agent document gives its runs: the document's own, then
 /// the [mode defaults](mode_default_rules) of each action the document
-/// names no key for, with or without a runtime selector. A declared key
-/// replaces its action's default entirely.
+/// names no key for, with or without a runtime selector, and, for a
+/// `delegated` run, the [delegated memory default](delegated_default_rules)
+/// likewise. A declared key replaces its action's default entirely. The
+/// memory rule variables are expanded with `variables` as the run's policy
+/// is frozen, so frozen rules, which the wire carries, never hold one.
 pub(crate) fn agent_permission_rules(
     document: &cookie_agent_config::AgentDocument,
+    delegated: bool,
+    variables: &MemoryVariables,
 ) -> Vec<PermissionRule> {
     let permissions = &document.frontmatter.permissions;
     let mut rules = permissions
         .iter()
         .flat_map(|(key, value)| value.rules(key))
         .collect::<Vec<_>>();
+    let delegated_defaults = if delegated {
+        delegated_default_rules()
+    } else {
+        Vec::new()
+    };
     rules.extend(
         mode_default_rules(document.frontmatter.mode)
             .into_iter()
+            .chain(delegated_defaults)
             .filter(|rule| !permissions.keys().any(|key| key.action == rule.action)),
     );
     rules
+        .into_iter()
+        .flat_map(|rule| expand_memory_variables(rule, &document.id, variables))
+        .collect()
 }
 
 /// Whether `pattern` matches `resource` for a tool whose runtime has
@@ -739,10 +860,9 @@ fn normalized_path(path: &Path) -> String {
 fn specificity(
     rule: &PermissionRule,
     declaration_index: usize,
-    agent: &AgentId,
     home: Option<&str>,
 ) -> (usize, std::cmp::Reverse<usize>, bool, usize) {
-    let pattern = rule_pattern(rule, agent, home);
+    let pattern = rule_pattern(rule, home);
     let wildcards = pattern
         .chars()
         .filter(|character| matches!(character, '*' | '?'))
@@ -764,7 +884,7 @@ fn matching_rules(
     scope: PermissionScope<'_>,
 ) -> Vec<MatchedPermissionRule> {
     matched(policy, overlay, |rule| {
-        rule_matches(rule, action, resource, scope, &policy.agent)
+        rule_matches(rule, action, resource, scope)
     })
 }
 
@@ -814,6 +934,14 @@ fn matched(
 /// commands are checked: an overlay already in a session log reads as it is.
 pub(crate) fn check_rule_selectors(rules: &[PermissionRule]) -> Result<(), crate::EngineError> {
     rules.iter().try_for_each(|rule| {
+        if let Some(variable) = WildcardPattern::MEMORY_VARIABLES
+            .iter()
+            .find(|variable| rule.resource.as_str().contains(**variable))
+        {
+            return Err(crate::EngineError::Permission(format!(
+                "`{variable}` is only for agent documents' memory rules, not session rules"
+            )));
+        }
         rule.action
             .check_runtime_selector(rule.runtime.as_ref())
             .map_err(crate::EngineError::Permission)
@@ -889,9 +1017,12 @@ impl crate::Engine {
         effect: PermissionEffect,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
-        action
-            .check_runtime_selector(runtime.as_ref())
-            .map_err(crate::EngineError::Permission)?;
+        check_rule_selectors(&[PermissionRule {
+            action: action.clone(),
+            runtime: runtime.clone(),
+            resource: resource.clone(),
+            effect,
+        }])?;
         let _mutation = self
             .inner
             .approvals

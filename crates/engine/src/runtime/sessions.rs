@@ -69,6 +69,8 @@ impl Engine {
             self.inner.config.load().runtime.delegation.max_depth,
             policy::ResultLimits::from_config(&self.inner.config.load().runtime),
             self.inner.config.load().runtime.model_retry,
+            // A session that does not exist yet has no machine or project.
+            &crate::permissions::MemoryVariables::default(),
         )?;
         Ok((runtime, policy))
     }

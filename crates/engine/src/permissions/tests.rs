@@ -2106,6 +2106,12 @@ fn effect_value(effect: PermissionEffect) -> cookie_agent_config::PermissionValu
     cookie_agent_config::PermissionValue::Effect(effect)
 }
 
+/// The rules `document` gives a root run of a session with no machine or
+/// project.
+fn root_rules(document: &cookie_agent_config::AgentDocument) -> Vec<PermissionRule> {
+    super::agent_permission_rules(document, false, &super::MemoryVariables::default())
+}
+
 /// `(action, resource, effect)` of each rule, in order.
 fn rule_triples(rules: &[PermissionRule]) -> Vec<(String, String, PermissionEffect)> {
     rules
@@ -2127,16 +2133,16 @@ fn mode_defaults_follow_the_agent_mode() {
     let allow = PermissionEffect::Allow;
     let ask = PermissionEffect::Ask;
     for mode in [AgentMode::Primary, AgentMode::All] {
-        let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
+        let rules = root_rules(&agent_document("worker", mode, &[]));
         assert_eq!(
             rule_triples(&rules),
             [triple("list_runtimes", "*", allow), triple("mcp", "*", ask)],
             "{mode:?}"
         );
     }
-    let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Subagent, &[]));
+    let rules = root_rules(&agent_document("worker", AgentMode::Subagent, &[]));
     assert_eq!(rule_triples(&rules), [triple("mcp", "*", ask)]);
-    let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Internal, &[]));
+    let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(rules.is_empty());
 }
 
@@ -2151,7 +2157,7 @@ fn memory_has_no_default_in_any_mode() {
         AgentMode::Subagent,
         AgentMode::Internal,
     ] {
-        let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
+        let rules = root_rules(&agent_document("worker", mode, &[]));
         for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
             assert!(
                 action_rules(&rules, &action).is_empty(),
@@ -2172,7 +2178,7 @@ fn memory_has_no_default_in_any_mode() {
             ("memory_write@global", effect_value(PermissionEffect::Ask)),
         ],
     );
-    let rules = super::agent_permission_rules(&document);
+    let rules = root_rules(&document);
     assert_eq!(
         action_rules(&rules, &PermissionAction::MEMORY),
         [(None, "*".to_owned(), PermissionEffect::Allow)]
@@ -2197,10 +2203,7 @@ fn a_declared_list_runtimes_key_replaces_its_default() {
         &[("list_runtimes", effect_value(PermissionEffect::Allow))],
     );
     assert_eq!(
-        action_rules(
-            &super::agent_permission_rules(&granted),
-            &PermissionAction::LIST_RUNTIMES
-        ),
+        action_rules(&root_rules(&granted), &PermissionAction::LIST_RUNTIMES),
         [(None, "*".to_owned(), PermissionEffect::Allow)]
     );
     let denied = agent_document(
@@ -2209,10 +2212,7 @@ fn a_declared_list_runtimes_key_replaces_its_default() {
         &[("list_runtimes", effect_value(PermissionEffect::Deny))],
     );
     assert_eq!(
-        action_rules(
-            &super::agent_permission_rules(&denied),
-            &PermissionAction::LIST_RUNTIMES
-        ),
+        action_rules(&root_rules(&denied), &PermissionAction::LIST_RUNTIMES),
         [(None, "*".to_owned(), PermissionEffect::Deny)]
     );
 }
@@ -2253,7 +2253,7 @@ fn action_rules(
 #[test]
 fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool_unless_internal() {
     for mode in [AgentMode::Primary, AgentMode::All, AgentMode::Subagent] {
-        let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
+        let rules = root_rules(&agent_document("worker", mode, &[]));
         assert_eq!(
             action_rules(&rules, &PermissionAction::MCP),
             [(None, "*".to_owned(), PermissionEffect::Ask)],
@@ -2272,7 +2272,7 @@ fn an_agent_without_an_mcp_key_asks_for_every_mcp_tool_unless_internal() {
             PermissionEffect::Ask
         );
     }
-    let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Internal, &[]));
+    let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(action_rules(&rules, &PermissionAction::MCP).is_empty());
     assert!(!super::tool_visible(
         &rules,
@@ -2293,7 +2293,7 @@ fn a_declared_mcp_key_replaces_the_mcp_default_entirely() {
         .collect(),
     );
     let document = agent_document("worker", AgentMode::Primary, &[("mcp", chrome)]);
-    let rules = super::agent_permission_rules(&document);
+    let rules = root_rules(&document);
     assert_eq!(
         action_rules(&rules, &PermissionAction::MCP),
         [(None, "my_chrome_*".to_owned(), PermissionEffect::Ask)]
@@ -2316,7 +2316,7 @@ fn a_declared_mcp_key_replaces_the_mcp_default_entirely() {
         AgentMode::Subagent,
         &[("mcp@labpc", effect_value(PermissionEffect::Allow))],
     );
-    let rules = super::agent_permission_rules(&document);
+    let rules = root_rules(&document);
     assert_eq!(
         action_rules(&rules, &PermissionAction::MCP),
         [(
@@ -2347,8 +2347,7 @@ fn the_permission_view_reports_mode_defaults_as_defaults() {
             .find(|entry| entry.action == *action)
             .expect("listed action")
     };
-    let defaulted =
-        super::agent_permission_rules(&agent_document("worker", AgentMode::Primary, &[]));
+    let defaulted = root_rules(&agent_document("worker", AgentMode::Primary, &[]));
     let mcp = entry(defaulted.clone(), &PermissionAction::MCP);
     assert_eq!(
         (mcp.effect, mcp.source),
@@ -2366,7 +2365,7 @@ fn the_permission_view_reports_mode_defaults_as_defaults() {
         (PermissionEffect::Deny, PermissionRuleSource::Default)
     );
     // A document's own rule is the agent's, even beside a default.
-    let declared = super::agent_permission_rules(&agent_document(
+    let declared = root_rules(&agent_document(
         "worker",
         AgentMode::Primary,
         &[("mcp", effect_value(PermissionEffect::Allow))],
@@ -2378,88 +2377,134 @@ fn the_permission_view_reports_mode_defaults_as_defaults() {
     );
 }
 
+/// A delegated run gets its own agent file for each memory action its
+/// document names no key for (memory spec section 16.9.11); a root run gets
+/// nothing, whatever its mode.
 #[test]
-fn agent_self_in_a_rule_pattern_names_the_runs_agent() {
-    let mut policy = policy(vec![
-        rule(
-            "deny",
-            PermissionAction::MEMORY_WRITE,
-            "*",
-            PermissionEffect::Deny,
-        ),
-        rule(
-            "self",
-            PermissionAction::MEMORY_WRITE,
-            "agent://self",
-            PermissionEffect::Allow,
-        ),
-    ]);
-    policy.agent = AgentId::new("reviewer").expect("agent ID");
-    let effect = |policy: &AgentSnapshot, url: &str| {
-        super::effective_permission(
-            policy,
-            &PermissionAction::MEMORY_WRITE,
-            url,
-            super::PermissionScope::runtime("global", None),
-        )
-        .0
-    };
-    assert_eq!(effect(&policy, "agent://reviewer"), PermissionEffect::Allow);
-    assert_eq!(effect(&policy, "agent://default"), PermissionEffect::Deny);
-    // A memory URL never contains `self`; the pattern matches only through
-    // substitution.
-    assert_eq!(effect(&policy, "agent://self"), PermissionEffect::Deny);
+fn delegated_runs_default_to_their_own_agent_memory() {
+    let none = super::MemoryVariables::default();
+    for mode in [AgentMode::Primary, AgentMode::All, AgentMode::Subagent] {
+        let document = agent_document("reviewer", mode, &[]);
+        let rules = super::agent_permission_rules(&document, true, &none);
+        for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
+            assert_eq!(
+                action_rules(&rules, &action),
+                [(None, "agent://reviewer".to_owned(), PermissionEffect::Allow)],
+                "{mode:?} {action:?}"
+            );
+        }
+        let rules = super::agent_permission_rules(&document, false, &none);
+        assert!(action_rules(&rules, &PermissionAction::MEMORY).is_empty());
+    }
+    // A declared key replaces the default for its action only.
+    let document = agent_document(
+        "reviewer",
+        AgentMode::Subagent,
+        &[("memory", effect_value(PermissionEffect::Allow))],
+    );
+    let rules = super::agent_permission_rules(&document, true, &none);
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MEMORY),
+        [(None, "*".to_owned(), PermissionEffect::Allow)]
+    );
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MEMORY_WRITE),
+        [(None, "agent://reviewer".to_owned(), PermissionEffect::Allow)]
+    );
+}
 
-    // The session overlay substitutes too.
-    let overlay = SessionPermissionOverlay {
-        rules: vec![rule(
-            "overlay",
-            PermissionAction::MEMORY_WRITE,
-            "agent://self",
-            PermissionEffect::Ask,
-        )],
-    };
-    let overlaid = |url: &str| {
-        super::effective_permission_with_overlay(
-            &policy,
-            Some(&overlay),
-            &PermissionAction::MEMORY_WRITE,
-            url,
-            super::PermissionScope::runtime("global", None),
-        )
-        .0
-    };
-    assert_eq!(overlaid("agent://reviewer"), PermissionEffect::Ask);
-    assert_eq!(overlaid("agent://default"), PermissionEffect::Deny);
+fn resources(entries: &[(&str, PermissionEffect)]) -> cookie_agent_config::PermissionValue {
+    cookie_agent_config::PermissionValue::Resources(
+        entries
+            .iter()
+            .map(|(resource, effect)| (WildcardPattern::new(*resource).unwrap(), *effect))
+            .collect(),
+    )
 }
 
 #[test]
-fn agent_self_substitution_ranks_as_the_literal_url() {
-    // `agent://self` read as `agent://reviewer` has more literal characters
-    // than `agent://re*`, so it wins.
-    let mut policy = policy(vec![
-        rule(
-            "self",
-            PermissionAction::MEMORY,
-            "agent://self",
-            PermissionEffect::Allow,
-        ),
-        rule(
-            "prefix",
-            PermissionAction::MEMORY,
-            "agent://re*",
-            PermissionEffect::Deny,
-        ),
-    ]);
-    policy.agent = AgentId::new("reviewer").expect("agent ID");
-    assert_eq!(
-        super::effective_permission(
-            &policy,
-            &PermissionAction::MEMORY,
-            "agent://reviewer",
-            super::PermissionScope::runtime("global", None),
-        )
-        .0,
-        PermissionEffect::Allow
+fn memory_variables_expand_when_the_policy_is_frozen() {
+    let allow = PermissionEffect::Allow;
+    let document = agent_document(
+        "builder",
+        AgentMode::Primary,
+        &[
+            (
+                "memory_write",
+                resources(&[
+                    ("agent://${agent_id}", allow),
+                    ("machine://${session_machine}/*", allow),
+                    ("project://${session_project}/*", allow),
+                ]),
+            ),
+            ("memory", resources(&[("*", allow)])),
+        ],
     );
+    let variables = super::MemoryVariables {
+        machines: vec!["laptop".to_owned(), "labpc".to_owned()],
+        project: Some("web".to_owned()),
+    };
+    let rules = super::agent_permission_rules(&document, false, &variables);
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MEMORY_WRITE)
+            .into_iter()
+            .map(|(_, resource, _)| resource)
+            .collect::<Vec<_>>(),
+        [
+            "agent://builder",
+            "machine://laptop/*",
+            "machine://labpc/*",
+            "project://web/*"
+        ]
+    );
+    // Without a project or a machine those rules match nothing, so they go.
+    let rules = super::agent_permission_rules(&document, false, &super::MemoryVariables::default());
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MEMORY_WRITE),
+        [(None, "agent://builder".to_owned(), allow)]
+    );
+    // Rules of other actions are never expanded.
+    assert_eq!(
+        action_rules(&rules, &PermissionAction::MEMORY),
+        [(None, "*".to_owned(), allow)]
+    );
+}
+
+#[test]
+fn session_rules_refuse_memory_variables() {
+    for resource in ["agent://${agent_id}", "project://${session_project}/*"] {
+        let rules = vec![rule(
+            "overlay",
+            PermissionAction::MEMORY_WRITE,
+            resource,
+            PermissionEffect::Allow,
+        )];
+        assert!(super::check_rule_selectors(&rules).is_err(), "{resource}");
+    }
+}
+
+#[test]
+fn wildcard_patterns_intersect_exactly() {
+    for (left, right) in [
+        ("*", "project://*"),
+        ("user://*", "user://feedback"),
+        ("agent://re*", "agent://*er"),
+        ("machine://?????/gpu", "machine://labpc/*"),
+        ("project://web/*", "project://*/notes"),
+        ("a*b*c", "*x*"),
+        ("ab", "a*b"),
+    ] {
+        assert!(super::patterns_intersect(left, right), "{left} {right}");
+        assert!(super::patterns_intersect(right, left), "{right} {left}");
+    }
+    for (left, right) in [
+        ("user://*", "project://*"),
+        ("agent://default", "agent://reviewer"),
+        ("machine://????/gpu", "machine://labpc/*"),
+        ("project://web/*", "project://api/*"),
+        ("a*b", "*c"),
+    ] {
+        assert!(!super::patterns_intersect(left, right), "{left} {right}");
+        assert!(!super::patterns_intersect(right, left), "{right} {left}");
+    }
 }
