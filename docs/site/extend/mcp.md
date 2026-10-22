@@ -63,7 +63,8 @@ when the daemon restarts.
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers
 are enabled by default. `timeout_ms` bounds connection, listing, and calls and
-defaults to 30000.
+defaults to 30000. A call that reaches it, or whose run is cancelled, ends at
+once and sends the server `notifications/cancelled` for its request.
 
 ## Connection lifecycle
 

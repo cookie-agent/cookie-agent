@@ -75,7 +75,9 @@ tool's name and parameter schema when the server is built.
   handler gets a `ToolContext` (the session, run, and call IDs, whether the
   model asked for the background, cancellation, `progress`,
   `progress_display`, and `detachable`) and the call's arguments, and
-  returns a `ToolOutput` or a `ToolFailure`.
+  returns a `ToolOutput` or a `ToolFailure`. A handler that is still running
+  2 s after its call is cancelled is aborted, so watch `cancelled()` to clean
+  up first.
 - **Results.** `ToolOutput` is a builder: `ToolOutput::success(text)` or
   `ToolOutput::error(text)` (a result the model should see as a failure),
   then `title`, `display` (one display block; `displays` for several),

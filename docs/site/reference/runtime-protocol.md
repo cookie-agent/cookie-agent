@@ -540,7 +540,11 @@ The daemon owns capture, previews, and artifact retention.
 
 `tool/cancel` cancels the call; it still answers its execute request. The
 runtime registers an execution as the request arrives, so a cancellation sent
-right after execute reaches it.
+right after execute reaches it. A cancelled call should stop within 2 s: the
+daemon waits that long for the execute reply of a call its run cancelled,
+then ends the call as cancelled and drops the reply when it comes. The coding
+runtime and the plugin SDK drop a call that has not stopped by then and
+answer its execute request with a failure.
 
 ### Display blocks
 

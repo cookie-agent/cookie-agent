@@ -118,7 +118,8 @@ A call takes two steps, so that it can be approved between them:
    the model reads, an optional title, display blocks clients show, metadata,
    and media. While it runs, `tool/progress` streams output and display
    updates; `tool/cancel` asks you to stop, and the execute request still
-   gets its answer. See [`tool/execute`](../reference/runtime-protocol.md#toolexecute)
+   gets its answer. Stop within 2 s: the daemon stops waiting for a
+   cancelled call after that. See [`tool/execute`](../reference/runtime-protocol.md#toolexecute)
    and [Display blocks](../reference/runtime-protocol.md#display-blocks).
 
 `tool/release` discards a prepared call that will not run, and

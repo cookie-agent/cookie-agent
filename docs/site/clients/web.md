@@ -334,7 +334,9 @@ address bar.
   - **Enter** sends, steering a running run.
   - **Alt+Enter** queues the message behind the run.
   - **Shift+Enter or Ctrl+J** inserts a newline.
-  - **Escape** cancels the run, or a compaction in progress.
+  - **Escape** cancels the run, or a compaction in progress. Cancelling
+    stops the run's tool calls at once (see [Cancelling a
+    run](../reference/tools.md#cancelling-a-run)).
   - **Up** in an empty composer takes back your newest pending or queued
     message.
 

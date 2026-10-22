@@ -87,6 +87,31 @@ A failed tool call terminates with a failure code and a message for the model:
 | `unsupported_platform` | The tool cannot run on this platform. |
 | `invalid_url`, `redirect_error`, `timeout`, `transport_error`, `unsupported_content_type` | `webfetch` failures (see [Webfetch](#webfetch)). |
 
+## Cancelling a run
+
+Interrupting a run (`run.cancel`: the TUI's Ctrl-C or double Esc, the web
+client's Stop or Escape, a stop signal to `cookie run`) cancels every call it
+has in the foreground at once, and each call ends as `cancelled`:
+
+- **`bash`** kills the command's whole process group (a job object on
+  Windows) with no grace period. Output still in flight drains for at most
+  250 ms, so a process that left the group and holds the pipes open does not
+  hold the call.
+- **A runtime's or plugin's tool** gets `tool/cancel`. The coding runtime
+  and the plugin SDK drop a call that has not stopped 2 s later.
+- **An MCP tool** stops waiting and sends the server
+  `notifications/cancelled` for the request, as a call that reaches
+  `timeout_ms` does.
+- **`webfetch`** drops its request.
+- **A foreground `delegate_subagent`** stops waiting; its subagent keeps
+  running and reports its turn (see [Background calls](#background-calls)).
+
+The engine waits at most 2 s for a call to stop on its own. A call still
+running then ends as cancelled with `cleanup deadline elapsed`, its late
+result is dropped, and the run records `RunCancelled` without waiting
+further. Calls in the background belong to the session, not the run, and
+keep running; `stop_background` stops them.
+
 ## Tool display
 
 Every built-in tool describes its calls to clients as typed display blocks
