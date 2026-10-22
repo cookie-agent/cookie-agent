@@ -6,7 +6,8 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
-    McpConfigSource, McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState, RuntimeId,
+    McpConfigSource, McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerScope,
+    McpServerState, RuntimeId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -241,10 +242,50 @@ pub fn edit_refusal(server: &McpServerInfo) -> Option<String> {
 /// The runtime hosting `server`, with the instance's workspace when it has
 /// one, so two instances of one runtime read apart.
 pub fn runtime_label(server: &McpServerInfo) -> String {
-    match &server.workspace {
-        Some(workspace) => format!("{} at {workspace}", server.runtime_id),
-        None => server.runtime_id.to_string(),
+    match (&server.workspace, server.scope) {
+        (Some(workspace), _) => format!("{} at {workspace}", server.runtime_id),
+        (None, Some(McpServerScope::Runtime)) => format!("{}, runtime-wide", server.runtime_id),
+        (None, Some(McpServerScope::Workspace)) => {
+            format!("{}, in each workspace", server.runtime_id)
+        }
+        (None, None) => server.runtime_id.to_string(),
     }
+}
+
+/// Whether `server` is a runtime's workspace-scoped server that no
+/// instance hosts yet: listed without a workspace, it starts when a
+/// workspace of its runtime opens.
+pub fn waits_for_workspace(server: &McpServerInfo) -> bool {
+    server.scope == Some(McpServerScope::Workspace)
+        && server.workspace.is_none()
+        && server.state != McpServerState::Disabled
+}
+
+/// The state a runtime panel shows for `server`: its state, or for one
+/// that [waits for a workspace](waits_for_workspace), that it starts with
+/// one.
+pub fn server_state_label(server: &McpServerInfo) -> &'static str {
+    if waits_for_workspace(server) {
+        "starts with a workspace"
+    } else {
+        state_label(server.state)
+    }
+}
+
+/// How `server`'s state reads at a glance; one that waits for a workspace
+/// is off, not failed.
+pub fn server_tone(server: &McpServerInfo) -> StateTone {
+    if waits_for_workspace(server) {
+        StateTone::Off
+    } else {
+        state_tone(server.state)
+    }
+}
+
+/// What a runtime panel says about where `server` runs, when it is one
+/// process its runtime shares across its workspaces.
+pub fn scope_note(server: &McpServerInfo) -> Option<&'static str> {
+    (server.scope == Some(McpServerScope::Runtime)).then_some("runtime-wide")
 }
 
 pub const fn source_label(source: McpConfigSource) -> &'static str {
@@ -301,9 +342,11 @@ pub const fn state_label(state: McpServerState) -> &'static str {
 }
 
 /// The servers among `servers` that the instance of `runtime_id` at
-/// `workspace` hosts, in name order. Instances of one runtime are told
+/// `workspace` uses, in name order. Instances of one runtime are told
 /// apart by their workspace; a runtime's instance without one (as `global`
-/// has) hosts the servers listed without one.
+/// has) hosts the servers listed without one. An instance with a workspace
+/// also uses its runtime's runtime-scoped servers, which every workspace of
+/// the runtime shares.
 pub fn instance_servers(
     servers: &[McpServerInfo],
     runtime_id: &RuntimeId,
@@ -312,7 +355,9 @@ pub fn instance_servers(
     let mut hosted = servers
         .iter()
         .filter(|server| {
-            server.runtime_id == *runtime_id && server.workspace.as_deref() == workspace
+            server.runtime_id == *runtime_id
+                && (server.workspace.as_deref() == workspace
+                    || workspace.is_some() && server.scope == Some(McpServerScope::Runtime))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -320,8 +365,9 @@ pub fn instance_servers(
     hosted
 }
 
-/// The servers among `servers` that any instance of `runtime_id` hosts,
-/// grouped by workspace, then in name order.
+/// The servers among `servers` that `runtime_id` hosts or is configured
+/// with, grouped by workspace (those without one, runtime-scoped or waiting
+/// for a workspace, first), then in name order.
 pub fn runtime_servers(servers: &[McpServerInfo], runtime_id: &RuntimeId) -> Vec<McpServerInfo> {
     let mut hosted = servers
         .iter()
@@ -368,20 +414,34 @@ pub const fn state_tone(state: McpServerState) -> StateTone {
 }
 
 /// A server's line in a runtime panel: its name, state, and tool count, as
-/// `docs  connected  3 tools`.
+/// `docs  connected  3 tools`, followed by `runtime-wide` for one its
+/// runtime shares across workspaces; for one that waits for a workspace,
+/// `lsp  starts with a workspace`.
 pub fn server_summary(server: &McpServerInfo) -> String {
-    format!(
+    if waits_for_workspace(server) {
+        return format!("{}  {}", server.name, server_state_label(server));
+    }
+    let mut summary = format!(
         "{}  {}  {}",
         server.name,
         state_label(server.state),
         tools_label(server.tool_count)
-    )
+    );
+    if let Some(note) = scope_note(server) {
+        summary.push_str("  ");
+        summary.push_str(note);
+    }
+    summary
 }
 
 /// What a runtime panel says under a server: why it failed, or what it
 /// waits for, with whitespace runs folded so a long reason wraps as prose;
 /// nothing for a server whose state needs no words.
 pub fn server_message(server: &McpServerInfo) -> Option<String> {
+    if waits_for_workspace(server) {
+        // Its state says it.
+        return None;
+    }
     let message = server.message.as_deref()?;
     let readable = message
         .lines()
@@ -396,7 +456,11 @@ pub fn server_message(server: &McpServerInfo) -> Option<String> {
 fn state_counts(servers: &[McpServerInfo]) -> String {
     let mut counts = Vec::<(&'static str, usize)>::new();
     for server in servers {
-        let label = state_label(server.state);
+        let label = if waits_for_workspace(server) {
+            "waiting for a workspace"
+        } else {
+            state_label(server.state)
+        };
         match counts.iter_mut().find(|(known, _)| *known == label) {
             Some((_, count)) => *count += 1,
             None => counts.push((label, 1)),
@@ -439,11 +503,13 @@ mod tests {
 
     use super::{
         McpFields, McpTransport, StateTone, daemon_accepts_page_redirects, edit_refusal,
-        instance_servers, new_definition, runtime_servers, server_definition_display,
-        server_message, server_summary, servers_badge, servers_overview, state_tone,
+        instance_servers, new_definition, runtime_label, runtime_servers,
+        server_definition_display, server_message, server_summary, server_tone, servers_badge,
+        servers_overview, state_tone, waits_for_workspace,
     };
     use cookie_agent_protocol::{
-        McpConfigSource, McpServerDefinition, McpServerInfo, McpServerState, RuntimeId, SemVer,
+        McpConfigSource, McpServerDefinition, McpServerInfo, McpServerScope, McpServerState,
+        RuntimeId, SemVer,
     };
 
     fn server(
@@ -580,6 +646,66 @@ mod tests {
             Some("MCP 2 connected, 1 failed")
         );
         assert_eq!(servers_badge(&[]), None);
+    }
+
+    #[test]
+    fn a_runtime_wide_server_is_shared_and_a_waiting_one_starts_with_a_workspace() {
+        let mut browser = server("labpc", None, "browser", McpServerState::Connected, None);
+        browser.scope = Some(McpServerScope::Runtime);
+        browser.tool_count = 12;
+        let mut lsp = server(
+            "labpc",
+            None,
+            "lsp",
+            McpServerState::Disconnected,
+            Some("starts when a workspace opens"),
+        );
+        lsp.scope = Some(McpServerScope::Workspace);
+        let mut hosted = server(
+            "labpc",
+            Some("/srv/api"),
+            "lsp",
+            McpServerState::Connected,
+            None,
+        );
+        hosted.scope = Some(McpServerScope::Workspace);
+        let mut disabled = lsp.clone();
+        disabled.state = McpServerState::Disabled;
+
+        assert_eq!(
+            server_summary(&browser),
+            "browser  connected  12 tools  runtime-wide"
+        );
+        assert_eq!(server_summary(&lsp), "lsp  starts with a workspace");
+        assert_eq!(server_message(&lsp), None);
+        assert_eq!(server_tone(&lsp), StateTone::Off);
+        assert!(waits_for_workspace(&lsp));
+        assert!(!waits_for_workspace(&hosted));
+        assert!(
+            !waits_for_workspace(&disabled),
+            "a disabled one never starts"
+        );
+        assert_eq!(server_summary(&disabled), "lsp  disabled  0 tools");
+        assert_eq!(runtime_label(&browser), "labpc, runtime-wide");
+        assert_eq!(runtime_label(&lsp), "labpc, in each workspace");
+        assert_eq!(runtime_label(&hosted), "labpc at /srv/api");
+
+        let servers = [browser.clone(), lsp.clone(), hosted.clone()];
+        assert_eq!(
+            servers_overview(&servers).as_deref(),
+            Some("3 MCP servers: 2 connected, 1 waiting for a workspace")
+        );
+        // A workspace's instance uses the runtime-wide server too; one
+        // waiting for a workspace is the runtime's, not an instance's.
+        let labpc = RuntimeId::new("labpc").unwrap();
+        assert_eq!(
+            names(&instance_servers(&servers, &labpc, Some("/srv/api"))),
+            [(None, "browser"), (Some("/srv/api"), "lsp")]
+        );
+        assert_eq!(
+            names(&runtime_servers(&servers, &labpc)),
+            [(None, "browser"), (None, "lsp"), (Some("/srv/api"), "lsp")]
+        );
     }
 
     #[test]

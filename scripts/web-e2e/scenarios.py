@@ -3953,9 +3953,10 @@ def audit():
 # daemon it looks through.
 def runtime_mcp(browser):
     """The runtime panels list each runtime's MCP servers: the daemon's
-    `local` runtime hosts the stdio fixture server, which connects, and one
-    that cannot start, which fails with its reason (test-web-page.sh adds
-    them to this group's daemon)."""
+    `local` runtime hosts the stdio fixture server, which connects, one
+    that cannot start, which fails with its reason, and the fixture once for
+    the runtime, shared by its workspaces (test-web-page.sh adds them to
+    this group's daemon)."""
     new_session(browser)
     menu(browser, "runtime")
     local = '#sheet .runtime-row[data-attachment^="local"]'
@@ -3972,6 +3973,17 @@ def runtime_mcp(browser):
     )
     fixture = browser.text(local + ' [data-mcp-server="fixture"]')
     assert "2 tools" in fixture, fixture
+    # The runtime-scoped server is the runtime's: listed under its workspace
+    # row too, marked runtime-wide.
+    shared = local + ' [data-mcp-server="shared"][data-mcp-scope="runtime"]'
+    browser.wait(
+        "the runtime-wide server",
+        lambda: count(browser, shared + '[data-mcp-state="connected"]') == 1,
+        timeout=40,
+    )
+    shared_text = browser.text(shared)
+    assert "runtime-wide" in shared_text and "2 tools" in shared_text, shared_text
+    assert count(browser, local + ' [data-mcp-server="fixture"][data-mcp-scope="workspace"]') == 1
     reason = browser.text(local + ' [data-mcp-server="broken"] [data-mcp-message]')
     assert "broken" in reason and not reason.startswith("tool failed"), reason
     # `global` hosts the daemon's top-level servers, which wait for a
@@ -3993,10 +4005,15 @@ def runtime_mcp(browser):
 
     # The Machines view counts them by state on the runtime's row.
     browser.click("#runtime-open-machines")
-    machine_mcp = '#page [data-runtime="local"] [data-runtime-mcp]'
+    machine_mcp = '#page [data-runtime="local"] [data-runtime-mcp-count]'
     browser.wait("the local runtime's MCP servers", lambda: count(browser, machine_mcp) == 1, timeout=40)
     counted = browser.text(machine_mcp)
-    assert "1 connected" in counted and "1 failed" in counted, counted
+    assert "2 connected" in counted and "1 failed" in counted, counted
+    # And lists them: the runtime-wide one once, the workspace's at its path.
+    machine_runtime = '#page [data-runtime="local"]'
+    assert count(browser, machine_runtime + ' [data-mcp-server="shared"][data-mcp-scope="runtime"]') == 1
+    fixture_row = browser.text(machine_runtime + ' [data-mcp-server="fixture"]')
+    assert "at " in fixture_row, fixture_row
     settle(browser)
     browser.shot("runtime-mcp-machines-desktop")
     browser.phone(390, 844)

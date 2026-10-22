@@ -428,10 +428,11 @@ address bar.
   for a workspace when one is needed, **Detach** removes one (the daemon
   refuses while the session runs), and **Retry** restarts a failed
   instance.
-  - Under each runtime are the MCP servers its instance hosts (from
+  - Under each runtime are the MCP servers its instance uses (from
     `mcp.server.list`, by runtime and workspace): each one's name, state
     (`connected`, `connecting`, `needs_auth`, `failed`, …), tool count, and
-    why it failed or what it waits for.
+    why it failed or what it waits for; a server its runtime shares across
+    workspaces (`scope = "runtime"`) is marked `runtime-wide`.
   - While a new session is composed, the list is the runtimes its cards
   opened. One added here starts at once, so a runtime that cannot start
   says why before the session exists.
@@ -444,8 +445,11 @@ address bar.
   Under it are its runtimes, each with an icon for how it came to the
   daemon (built in, started from a template, or dialled in), whether it is
   connected (a green dot), pinned (a pin), its platform, its capabilities,
-  its instances' MCP servers counted by state (`MCP 1 connected, 1
-  failed`), and why it last failed to connect. A runtime that connected before and is
+  its MCP servers counted by state (`MCP 1 connected, 1
+  failed`) and listed with their state, tool count, and workspace, its
+  runtime-scoped ones (`runtime-wide`) and its workspace-scoped ones that no
+  workspace has started yet (`starts with a workspace`) included, and why it
+  last failed to connect. A runtime that connected before and is
   offline now stays on its machine, under the connected ones, dimmed, with
   when it was last seen and **Forget**, which drops the daemon's record of
   where it ran (see [Offline runtimes](../concepts/machines.md#offline-runtimes)).

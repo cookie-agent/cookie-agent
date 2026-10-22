@@ -508,8 +508,11 @@ instance status (`starting`, `ready`, `reconnecting`, `failed`, `stopped`, or
 attachment's kind, what its capability offers (the runtime's description of
 it), platform, for a failed instance the reason, and each MCP server the
 instance hosts with its state, tool count, and why it failed or what it
-waits for (from `mcp.server.list`). The machines view counts each runtime's
-MCP servers the same way and lists them in the selected runtime's details.
+waits for (from `mcp.server.list`), its runtime's runtime-scoped servers
+among them marked `runtime-wide`. The machines view counts each runtime's
+MCP servers the same way and lists them in the selected runtime's details,
+including, before any workspace of it is open, its runtime-scoped servers
+and its workspace-scoped ones as `starts with a workspace`.
 The panel refreshes on every runtime change and while it is open.
 
 Press `a` to attach: the panel lists every capability of every runtime

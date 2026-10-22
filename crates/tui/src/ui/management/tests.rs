@@ -1276,3 +1276,82 @@ fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
     assert!(text.contains("labpc at /srv/api"), "{text}");
     assert!(text.contains("labpc at /srv/web"), "{text}");
 }
+
+#[test]
+fn runtime_panels_show_a_runtimes_own_servers_and_those_waiting_for_a_workspace() {
+    use cookie_agent_protocol::McpServerScope;
+    let scoped = |mut server: McpServerInfo, scope| {
+        server.scope = Some(scope);
+        server
+    };
+    let servers = vec![
+        scoped(
+            hosted_server(
+                "labpc",
+                None,
+                "browser",
+                McpServerState::Connected,
+                12,
+                None,
+            ),
+            McpServerScope::Runtime,
+        ),
+        scoped(
+            hosted_server(
+                "labpc",
+                None,
+                "lsp",
+                McpServerState::Disconnected,
+                0,
+                Some("starts when a workspace opens"),
+            ),
+            McpServerScope::Workspace,
+        ),
+        scoped(
+            hosted_server(
+                "labpc",
+                Some("/srv/api"),
+                "docs",
+                McpServerState::Connected,
+                2,
+                None,
+            ),
+            McpServerScope::Workspace,
+        ),
+    ];
+
+    // With no workspace open, the machines view lists what the runtime
+    // runs on its own and what starts with a workspace.
+    let mut panel = super::RuntimePanel::default();
+    panel.install(runtime_listing());
+    panel.install_machines(Ok(super::sample_machines()));
+    panel.install_mcp_servers(servers[..2].to_vec());
+    panel.view = super::RuntimeView::Machines;
+    panel.machine_selection.select(Some(1));
+    let text = render_runtime_panel(&mut panel, &[], 110, 30);
+    assert!(
+        text.contains("MCP 1 connected, 1 waiting for a workspace"),
+        "{text}"
+    );
+    assert!(
+        text.contains("browser  connected  12 tools  runtime-wide"),
+        "{text}"
+    );
+    assert!(text.contains("lsp  starts with a workspace"), "{text}");
+
+    // A workspace's row lists its own servers and the runtime's shared one,
+    // not the ones waiting for another workspace.
+    let attached = [attachment("labpc_api", "labpc", "coding", Some("/srv/api"))];
+    let rows = super::runtime_rows(&attached, Some(&runtime_listing()));
+    let mut panel = super::RuntimePanel::default();
+    panel.install(runtime_listing());
+    panel.install_mcp_servers(servers);
+    panel.selection.select(Some(0));
+    let text = render_runtime_panel(&mut panel, &rows, 110, 30);
+    assert!(
+        text.contains("browser  connected  12 tools  runtime-wide"),
+        "{text}"
+    );
+    assert!(text.contains("docs  connected  2 tools"), "{text}");
+    assert!(!text.contains("starts with a workspace"), "{text}");
+}

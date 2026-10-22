@@ -55,8 +55,11 @@ struct RuntimeCard {
     listing: Option<RuntimeListing>,
     /// What the machine remembers of it while it is offline.
     remembered: Option<RememberedRuntime>,
-    /// Its instances' MCP servers counted by state, when it hosts any.
+    /// Its MCP servers counted by state, when it has any.
     mcp: Option<String>,
+    /// Its MCP servers: its own (runtime-wide, or waiting for a workspace)
+    /// and those its instances host.
+    servers: Vec<McpServerInfo>,
 }
 
 /// The open form: a machine's rename or merge, or a runtime's "Move to…".
@@ -252,6 +255,7 @@ fn machine_cards(
     dragging: Dragging,
 ) -> impl IntoView {
     let mcp_badge = |id: &RuntimeId| servers_badge(&runtime_servers(mcp, id));
+    let mcp_servers = |id: &RuntimeId| runtime_servers(mcp, id);
     let listing = |id: &RuntimeId| {
         registry.and_then(|registry| {
             registry
@@ -295,6 +299,7 @@ fn machine_cards(
                 });
                 let card = RuntimeCard {
                     mcp: mcp_badge(&runtime),
+                    servers: mcp_servers(&runtime),
                     remembered,
                     connected: listed
                         .as_ref()
@@ -323,6 +328,7 @@ fn machine_cards(
                 .filter(|runtime| !placed(&runtime.runtime_id))
                 .map(|runtime| RuntimeCard {
                     mcp: mcp_badge(&runtime.runtime_id),
+                    servers: mcp_servers(&runtime.runtime_id),
                     id: runtime.runtime_id.clone(),
                     machine: None,
                     pinned: false,
@@ -733,10 +739,14 @@ fn runtime_row(
                     </span>
                 })}
                 {card.mcp.clone().map(|mcp| view! {
-                    <span class=format!("flex min-w-0 items-center gap-1.5 {NOTE}") data-runtime-mcp>
+                    <span class=format!("flex min-w-0 items-center gap-1.5 {NOTE}") data-runtime-mcp-count>
                         <Glyph icon=icondata::FaServerSolid class="text-[0.6rem] opacity-70" />
                         <span class="min-w-0 truncate">{mcp}</span>
                     </span>
+                })}
+                {(!card.servers.is_empty()).then(|| {
+                    let home = card.listing.as_ref().and_then(|listing| listing.home.clone());
+                    crate::views::manage::runtime_mcp_servers(card.servers.clone(), Some(home))
                 })}
                 {message.map(|message| view! { <span class="text-xs break-words text-red-800 dark:text-red-300">{message}</span> })}
             </div>

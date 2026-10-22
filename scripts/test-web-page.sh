@@ -186,7 +186,8 @@ png += chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)
 PY
     # The runtime_mcp group's `local` runtime hosts the stdio fixture MCP
-    # server and one that cannot start, which the runtime panels list.
+    # server, one that cannot start, and the fixture once for the runtime
+    # (`scope = "runtime"`), which the runtime panels list.
     runtime_mcp=""
     if [[ " $* " == *" runtime_mcp "* ]]; then
         runtime_mcp="
@@ -195,7 +196,12 @@ command = \"python3\"
 args = [\"$root/crates/mcp/tests/fixtures/mcp_server.py\"]
 
 [runtimes.local.mcp.servers.broken]
-command = \"false\""
+command = \"false\"
+
+[runtimes.local.mcp.servers.shared]
+command = \"python3\"
+args = [\"$root/crates/mcp/tests/fixtures/mcp_server.py\"]
+scope = \"runtime\""
     fi
     write_config "$allowing" "$port" <<TOML
 [session_title]
