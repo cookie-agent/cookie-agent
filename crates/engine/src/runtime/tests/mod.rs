@@ -18,6 +18,7 @@ mod golden_history;
 mod guards;
 mod hook_failures;
 mod interception;
+mod interrupt;
 mod mailbox;
 mod media;
 mod memory;

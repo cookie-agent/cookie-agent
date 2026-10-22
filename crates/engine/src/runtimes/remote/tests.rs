@@ -2439,3 +2439,305 @@ async fn a_quiet_runtime_stays_up_and_a_silent_one_is_ended_within_the_window() 
     );
     fixture.engine.shutdown().await;
 }
+
+/// A runtime tool that never ends and ignores `tool/cancel`, as a wedged
+/// call does.
+struct WedgedTool {
+    started: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl ToolProvider for WedgedTool {
+    fn provider_id(&self) -> &'static str {
+        "test.wedged"
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
+            name: "wedge".into(),
+            collision: Default::default(),
+            permission_name: None,
+            description: "Never finish.".into(),
+            parameters: authoring::schema::<NoArgs>(),
+            concurrency: Default::default(),
+            result_truncation: Default::default(),
+            output: Default::default(),
+        }])
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(None)
+    }
+
+    fn get_permission_resource(
+        &self,
+        _tool_name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Ok((None, None))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Ok("wedge".into())
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let action = cookie_agent_protocol::PermissionAction::new("wedge")
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let resource = authoring::prepared_resource(
+            action.clone(),
+            "wedge",
+            b"wedge",
+            b"wedge",
+            cookie_agent_protocol::PreparedBindingLifetime::ProcessLocal,
+            cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
+        )?;
+        let operation = authoring::prepared_operation(
+            "wedge",
+            &call.arguments,
+            vec![(action, "wedge")],
+            vec![resource],
+            &ctx.context_bytes(),
+        )?;
+        PreparedTool::new(
+            operation,
+            call.arguments,
+            None,
+            Box::new(WedgedExecutor(Arc::clone(&self.started))),
+        )
+    }
+}
+
+struct WedgedExecutor(Arc<tokio::sync::Notify>);
+
+#[async_trait]
+impl PreparedExecutor for WedgedExecutor {
+    async fn execute(
+        self: Box<Self>,
+        _context: ToolExecutionContext,
+    ) -> Result<ToolCompletion, ToolError> {
+        self.0.notify_one();
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        Err(ToolError::execution("woke up"))
+    }
+}
+
+/// A session working only on `remote` whose run's first model turn calls
+/// `tool` with `arguments`, and the run.
+async fn remote_tool_run(
+    connector: &Arc<TestConnector>,
+    permissions: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> (
+    crate::runtime::tests::support::Fixture,
+    crate::runtime::tests::support::PanicResistantTempDir,
+    SessionId,
+    RunId,
+) {
+    use crate::runtime::tests::support::{
+        MatchedScriptedResponse, custom_fixture_with_endpoint_and_primary_agent,
+        scripted_channel_server, scripted_tool_body,
+    };
+    let (endpoint, responses, _server) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_body("remote-call", tool, arguments),
+        ))
+        .unwrap();
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        &format!(
+            "---\ndescription: Remote interrupt agent\nmode: primary\nenabled: true\nmodels: [{{ model: \"custom.test/group/model\", variant: base }}]\npermissions:\n{permissions}\n---\nInterrupt test.\n"
+        ),
+    );
+    register_remote(&fixture, connector);
+    let workspace = private_tempdir();
+    let session = fixture
+        .engine
+        .create_session_with_permissions(
+            selection.clone(),
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                runtimes: Some(vec![crate::SessionRuntimeRequest {
+                    runtime_id: "remote".into(),
+                    capability: None,
+                    workspace: Some(workspace.path().to_owned()),
+                }]),
+                global: true,
+                cwd: None,
+            },
+        )
+        .await
+        .unwrap()
+        .session_id;
+    let run = fixture
+        .engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("remote-interrupt").unwrap(),
+                selection,
+                content: "start the call".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap()
+        .run_id;
+    (fixture, workspace, session, run)
+}
+
+/// Cancels `run` and returns how long its terminal event took, with the
+/// termination of its one call.
+async fn interrupt_remote_run(
+    engine: &crate::Engine,
+    session: SessionId,
+    run: RunId,
+) -> (Duration, cookie_agent_protocol::ToolCallTermination) {
+    let started = std::time::Instant::now();
+    engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    crate::runtime::tests::support::await_event(engine, session, "the run's end", |event| {
+        event.run_id == Some(run)
+            && matches!(
+                event.payload,
+                cookie_agent_protocol::EventPayload::RunFinished { .. }
+            )
+    })
+    .await;
+    let elapsed = started.elapsed();
+    let termination = engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            cookie_agent_protocol::EventPayload::ToolCallTerminated { termination } => {
+                Some(termination.clone())
+            }
+            _ => None,
+        })
+        .expect("the call terminated");
+    (elapsed, termination)
+}
+
+/// Interrupting a run stops a remote runtime's bash call at once: the
+/// daemon sends `tool/cancel` and the runtime kills the command.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupting_a_run_stops_a_remote_bash_at_once() {
+    let markers = private_tempdir();
+    let ready = markers.path().join("ready");
+    let connector = TestConnector::builtin();
+    let (fixture, _workspace, session, run) = remote_tool_run(
+        &connector,
+        "  bash: allow",
+        "bash",
+        serde_json::json!({"command": format!("touch '{}'; sleep 60", ready.display())}),
+    )
+    .await;
+    tokio::time::timeout(WAIT, async {
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the command started");
+    let (elapsed, termination) = interrupt_remote_run(&fixture.engine, session, run).await;
+    eprintln!("interrupt timing: remote bash `sleep 60`: {elapsed:?}");
+    assert_eq!(
+        termination.outcome,
+        cookie_agent_protocol::ToolTerminationOutcome::Cancelled
+    );
+    assert!(elapsed < Duration::from_millis(1_500), "{elapsed:?}");
+    fixture.engine.shutdown().await;
+}
+
+/// A remote call that ignores `tool/cancel` ends as cancelled once the
+/// cleanup grace runs out; the run's terminal event does not wait for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wedged_remote_call_does_not_hold_the_run_s_cancellation() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let tool_started = Arc::clone(&started);
+    let connector = TestConnector::new(Arc::new(move |_| {
+        vec![Arc::new(WedgedTool {
+            started: Arc::clone(&tool_started),
+        })]
+    }));
+    let (fixture, _workspace, session, run) =
+        remote_tool_run(&connector, "  {}", "wedge", serde_json::json!({})).await;
+    tokio::time::timeout(WAIT, started.notified())
+        .await
+        .expect("the call runs");
+    let (elapsed, termination) = interrupt_remote_run(&fixture.engine, session, run).await;
+    eprintln!("interrupt timing: wedged remote call: {elapsed:?}");
+    assert_eq!(
+        termination.outcome,
+        cookie_agent_protocol::ToolTerminationOutcome::Cancelled
+    );
+    assert!(
+        termination
+            .error
+            .as_ref()
+            .is_some_and(|error| error.message.as_str().contains("cleanup deadline elapsed")),
+        "{termination:?}"
+    );
+    assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    fixture.engine.shutdown().await;
+}
+
+/// The runtime drops a call that ignores `tool/cancel` once the grace runs
+/// out, so its execute reply still comes.
+#[tokio::test]
+async fn the_runtime_drops_a_cancelled_call_that_does_not_stop() {
+    let workspace = private_tempdir();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let tool_started = Arc::clone(&started);
+    let connector = TestConnector::new(Arc::new(move |_| {
+        vec![Arc::new(WedgedTool {
+            started: Arc::clone(&tool_started),
+        })]
+    }));
+    let (runtime, provider) = connect(&connector, workspace.path()).await;
+    let prepared = prepare(&provider, &runtime, "wedge", serde_json::json!({})).await;
+    let cancellation = CancellationToken::new();
+    let call = call_context(cancellation.clone());
+    let execution = tokio::spawn(execute(prepared, call.context));
+    tokio::time::timeout(WAIT, started.notified())
+        .await
+        .expect("the call runs");
+    let cancelled = std::time::Instant::now();
+    cancellation.cancel();
+    let result = tokio::time::timeout(WAIT, execution)
+        .await
+        .expect("the call ends")
+        .unwrap();
+    assert!(cancelled.elapsed() < Duration::from_secs(4));
+    let error = result.expect_err("a dropped call fails");
+    assert!(
+        error.to_string().contains("did not stop within 2 s"),
+        "{error}"
+    );
+}
