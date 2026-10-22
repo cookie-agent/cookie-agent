@@ -72,7 +72,8 @@ pub(crate) struct ServerAuth {
 struct OAuthFlowState {
     generation: u64,
     authorization_url: String,
-    /// The client's loopback callback the authorization URL redirects to.
+    /// The client's callback the authorization URL redirects to: its
+    /// loopback listener, or a web page's own address.
     redirect_uri: url::Url,
     cancellation: CancellationToken,
     /// Taken by the one completion allowed to exchange its code.
@@ -711,39 +712,83 @@ impl OAuthHttpClient for McpOAuthHttpClient {
     }
 }
 
-/// Accepts only a client loopback callback (RFC 8252 §7.3): plain HTTP to a
-/// loopback IP literal with an explicit port, no credentials, query, or
-/// fragment.
-fn loopback_redirect_uri(value: &str) -> Result<url::Url, ToolError> {
+/// The redirects a client can catch: its own loopback callback (RFC 8252
+/// §7.3), plain HTTP to a loopback IP literal or `localhost`, or an `https`
+/// address such as the web client's own page. Neither may carry user info or
+/// a fragment; any path and query are kept. The verifier stays in the daemon,
+/// so a code sent anywhere else cannot be exchanged.
+fn client_redirect_uri(value: &str) -> Result<ClientRedirect, ToolError> {
     url::Url::parse(value)
         .ok()
         .filter(|url| {
-            url.scheme() == "http"
-                && match url.host() {
-                    Some(url::Host::Ipv4(address)) => address.is_loopback(),
-                    Some(url::Host::Ipv6(address)) => address.is_loopback(),
-                    _ => false,
+            url.username().is_empty() && url.password().is_none() && url.fragment().is_none()
+        })
+        .and_then(|url| {
+            let kind = match url.scheme() {
+                "https" if url.host_str().is_some_and(|host| !host.is_empty()) => {
+                    RedirectKind::Https
                 }
-                && url.port().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none()
+                "http" if is_loopback_host(url.host()) => RedirectKind::Loopback,
+                _ => return None,
+            };
+            Some(ClientRedirect { url, kind })
         })
         .ok_or_else(|| {
             ToolError::execution(
-                "OAuth redirect URI must be the client's loopback callback, such as http://127.0.0.1:<port>/callback",
+                "OAuth redirect URI must be an https URL, or http to a loopback address \
+                 (127.0.0.1, [::1], or localhost) such as http://127.0.0.1:<port>/callback, \
+                 without user info or a fragment",
             )
         })
 }
 
+fn is_loopback_host(host: Option<url::Host<&str>>) -> bool {
+    match host {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
+}
+
+/// A redirect `mcp.auth.begin` accepted.
+struct ClientRedirect {
+    url: url::Url,
+    kind: RedirectKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RedirectKind {
+    /// Plain HTTP to the client's machine.
+    Loopback,
+    /// An `https` address, such as a web page's own.
+    Https,
+}
+
+impl RedirectKind {
+    /// The OIDC Dynamic Client Registration `application_type` its client
+    /// registers as: a native client may only use loopback redirects, a web
+    /// client only `https` ones.
+    const fn application_type(self) -> &'static str {
+        match self {
+            Self::Loopback => "native",
+            Self::Https => "web",
+        }
+    }
+}
+
 /// Whether `callback` is a redirect to `redirect_uri` carrying an
-/// authorization response (a code or an error).
+/// authorization response (a code or an error). The redirect's own query
+/// parameters, such as the web client's `oauth=callback`, must all be there.
 fn is_callback_for(callback: &url::Url, redirect_uri: &url::Url) -> bool {
+    let parameters = callback.query_pairs().collect::<Vec<_>>();
     callback.scheme() == redirect_uri.scheme()
         && callback.host() == redirect_uri.host()
         && callback.port() == redirect_uri.port()
         && callback.path() == redirect_uri.path()
+        && redirect_uri
+            .query_pairs()
+            .all(|pair| parameters.contains(&pair))
         && callback
             .query_pairs()
             .any(|(key, _)| matches!(key.as_ref(), "code" | "error"))
@@ -1160,7 +1205,10 @@ impl ServerRuntime {
     }
 
     async fn begin_auth(self: &Arc<Self>, redirect_uri: &str) -> Result<String, ToolError> {
-        let redirect_uri = loopback_redirect_uri(redirect_uri)?;
+        let ClientRedirect {
+            url: redirect_uri,
+            kind,
+        } = client_redirect_uri(redirect_uri)?;
         if !self.oauth_enabled() {
             return Err(ToolError::execution(format!(
                 "MCP server `{}` does not use OAuth (stdio, oauth=false, or a static Authorization header takes precedence)",
@@ -1186,7 +1234,7 @@ impl ServerRuntime {
         let settings = self.loaded.config.oauth.settings();
         let mut request = AuthorizationRequest::new(redirect_uri.as_str())
             .with_client_name("Cookie Agent")
-            .with_application_type("native");
+            .with_application_type(kind.application_type());
         let challenge = self
             .auth
             .challenge
@@ -1295,7 +1343,7 @@ impl ServerRuntime {
     }
 
     /// Exchanges the code in the browser's redirect, which the client caught
-    /// on its own loopback. A URL that is not this flow's callback is
+    /// on its own loopback or its own page. A URL that is not this flow's callback is
     /// rejected without ending the flow, so a mistaken paste can be retried;
     /// anything that reaches the exchange, including a denial or a state
     /// mismatch, ends it.

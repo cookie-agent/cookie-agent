@@ -56,6 +56,8 @@ struct OAuthFixtureState {
     pkce: Mutex<Vec<(String, String)>>,
     code_verifiers: Mutex<Vec<String>>,
     exchanged_codes: Mutex<Vec<String>>,
+    /// Every dynamic registration's request body, in order.
+    registrations: Mutex<Vec<Value>>,
 }
 
 struct OAuthFixture {
@@ -90,6 +92,7 @@ impl OAuthFixture {
             pkce: Mutex::new(Vec::new()),
             code_verifiers: Mutex::new(Vec::new()),
             exchanged_codes: Mutex::new(Vec::new()),
+            registrations: Mutex::new(Vec::new()),
         });
         let shutdown = CancellationToken::new();
         let task_state = Arc::clone(&state);
@@ -259,11 +262,16 @@ async fn handle_request(
         }
         ("POST", "/register") => {
             let registration: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+            let client_id = {
+                let mut registrations = state.registrations.lock().expect("registrations");
+                registrations.push(registration.clone());
+                format!("cookie-test-client-{}", registrations.len())
+            };
             json_response(
                 &mut stream,
                 "201 Created",
                 json!({
-                    "client_id": "cookie-test-client",
+                    "client_id": client_id,
                     "client_name": "Cookie Agent",
                     "redirect_uris": registration["redirect_uris"]
                 }),
@@ -280,6 +288,31 @@ async fn handle_request(
                     .cloned()
                     .unwrap_or_default(),
             ));
+            // A dynamically registered client may only use the redirect it
+            // registered, as a real authorization server checks.
+            let registered = params
+                .get("client_id")
+                .and_then(|client| client.strip_prefix("cookie-test-client-"))
+                .and_then(|index| index.parse::<usize>().ok())
+                .and_then(|index| {
+                    state.registrations.lock().expect("registrations")[index - 1]["redirect_uris"]
+                        .as_array()
+                        .cloned()
+                });
+            if registered.is_some_and(|uris| {
+                !uris
+                    .iter()
+                    .any(|uri| uri.as_str() == params.get("redirect_uri").map(String::as_str))
+            }) {
+                return respond(
+                    &mut stream,
+                    "400 Bad Request",
+                    "text/plain",
+                    &[],
+                    "redirect_uri is not registered for this client",
+                )
+                .await;
+            }
             let mut redirect =
                 url::Url::parse(&params["redirect_uri"]).expect("fixture redirect URI");
             redirect
@@ -1052,7 +1085,7 @@ async fn a_url_that_is_not_the_callback_leaves_the_flow_waiting() {
 }
 
 #[tokio::test]
-async fn redirect_uris_must_be_client_loopback_and_a_new_one_replaces_the_flow() {
+async fn redirect_uris_are_https_or_loopback_and_a_new_one_replaces_the_flow() {
     let fixture = OAuthFixture::start().await;
     let directory = tempfile::tempdir().expect("project data");
     let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
@@ -1063,22 +1096,46 @@ async fn redirect_uris_must_be_client_loopback_and_a_new_one_replaces_the_flow()
         .await
         .expect_err("authorization challenge");
     for rejected in [
-        "https://127.0.0.1:9/callback",
-        "http://localhost:9/callback",
+        "https://user@cookie.example/?oauth=callback",
+        "https://user:secret@cookie.example/",
+        "https://cookie.example/?oauth=callback#fragment",
         "http://192.168.1.2:9/callback",
-        "http://127.0.0.1/callback",
-        "http://127.0.0.1:9/callback?next=1",
+        "http://cookie.example/?oauth=callback",
+        "http://127.0.0.1:9/callback#fragment",
         "http://user@127.0.0.1:9/callback",
+        "ftp://127.0.0.1:9/callback",
+        "cookie-agent://callback",
+        "file:///callback",
+        "not a url",
     ] {
-        registry
+        let error = registry
             .begin_auth("remote", rejected)
             .await
-            .expect_err(rejected);
+            .expect_err(rejected)
+            .to_string();
+        assert!(error.contains("https URL"), "{rejected}: {error}");
     }
-    let first = registry
-        .begin_auth("remote", CLIENT_REDIRECT)
-        .await
-        .expect("begin OAuth");
+    let mut accepted = Vec::new();
+    for redirect in [
+        "https://cookie.example/app/?oauth=callback&tab=1",
+        "https://cookie.example:8443/",
+        "http://127.0.0.1/callback",
+        "http://127.0.0.1:9/callback?next=1",
+        "http://localhost:7419/?oauth=callback",
+        "http://LOCALHOST/",
+        CLIENT_REDIRECT,
+    ] {
+        let url = registry
+            .begin_auth("remote", redirect)
+            .await
+            .unwrap_or_else(|error| panic!("{redirect}: {error}"));
+        assert_eq!(
+            url::Url::parse(&authorization_parameters(&url)["redirect_uri"]).expect("redirect"),
+            url::Url::parse(redirect).expect("redirect"),
+        );
+        accepted.push(url);
+    }
+    let first = accepted.pop().expect("loopback flow");
     let resumed = registry
         .begin_auth("remote", CLIENT_REDIRECT)
         .await
@@ -1101,6 +1158,120 @@ async fn redirect_uris_must_be_client_loopback_and_a_new_one_replaces_the_flow()
         .complete_auth("remote", &browser_redirect(&replaced).await)
         .await
         .expect("current flow completes");
+    wait_for_state(&registry, McpServerState::Connected).await;
+    registry.shutdown().await;
+    fixture.stop().await;
+}
+
+/// The web client's redirect: its own page with `?oauth=callback`. Nothing
+/// listens there; the page hands the address it lands on to the daemon.
+const PAGE_REDIRECT: &str = "https://cookie.example/app/?oauth=callback";
+
+#[tokio::test]
+async fn a_web_page_redirect_signs_in_end_to_end() {
+    let fixture = OAuthFixture::start().await;
+    let directory = tempfile::tempdir().expect("project data");
+    let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
+    registry
+        .server("remote")
+        .expect("remote")
+        .connect()
+        .await
+        .expect_err("authorization challenge");
+    let authorization_url = registry
+        .begin_auth("remote", PAGE_REDIRECT)
+        .await
+        .expect("begin OAuth");
+    let registration = fixture.state.registrations.lock().expect("registrations")[0].clone();
+    assert_eq!(registration["redirect_uris"], json!([PAGE_REDIRECT]));
+    assert_eq!(registration["application_type"], "web");
+    let callback = browser_redirect(&authorization_url).await;
+    let parsed = url::Url::parse(&callback).expect("callback");
+    assert_eq!(parsed.path(), "/app/");
+    // The redirect's own parameter is required, so the page's address
+    // without it, or another page, is not the callback.
+    let mut without = parsed.clone();
+    without.set_query(Some(
+        &parsed
+            .query_pairs()
+            .filter(|(key, _)| key != "oauth")
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("&"),
+    ));
+    for mistake in [
+        without.as_str().to_owned(),
+        callback.replace("/app/", "/other/"),
+        callback.replace("https://", "http://"),
+    ] {
+        let error = registry
+            .complete_auth("remote", &mistake)
+            .await
+            .expect_err("not the callback")
+            .to_string();
+        assert!(
+            error.contains("not the OAuth callback"),
+            "{mistake}: {error}"
+        );
+    }
+    registry
+        .complete_auth("remote", &callback)
+        .await
+        .expect("the page's callback completes");
+    wait_for_state(&registry, McpServerState::Connected).await;
+    assert_eq!(
+        fixture.state.exchanged_codes.lock().expect("codes")[0],
+        "authorization-code"
+    );
+    registry.shutdown().await;
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn a_flow_for_another_redirect_registers_its_client_again() {
+    let fixture = OAuthFixture::start().await;
+    let directory = tempfile::tempdir().expect("project data");
+    let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
+    registry
+        .server("remote")
+        .expect("remote")
+        .connect()
+        .await
+        .expect_err("authorization challenge");
+    let loopback = registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("loopback flow");
+    registry.cancel_auth("remote").expect("cancel");
+    let page = registry
+        .begin_auth("remote", PAGE_REDIRECT)
+        .await
+        .expect("page flow");
+    let registrations = fixture
+        .state
+        .registrations
+        .lock()
+        .expect("registrations")
+        .clone();
+    assert_eq!(registrations.len(), 2);
+    assert_eq!(registrations[0]["redirect_uris"], json!([CLIENT_REDIRECT]));
+    assert_eq!(registrations[0]["application_type"], "native");
+    assert_eq!(registrations[1]["redirect_uris"], json!([PAGE_REDIRECT]));
+    assert_eq!(registrations[1]["application_type"], "web");
+    assert_eq!(
+        authorization_parameters(&loopback)["client_id"],
+        "cookie-test-client-1"
+    );
+    assert_eq!(
+        authorization_parameters(&page)["client_id"],
+        "cookie-test-client-2"
+    );
+    // The fixture refuses a redirect its client did not register, so the
+    // page's flow completing shows the new client was used.
+    registry
+        .complete_auth("remote", &browser_redirect(&page).await)
+        .await
+        .expect("page flow completes");
     wait_for_state(&registry, McpServerState::Connected).await;
     registry.shutdown().await;
     fixture.stop().await;

@@ -5,6 +5,20 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.11.0
+
+- MCP OAuth from the web client ([spec](../specs/web-mcp-oauth.md)):
+  `mcp.auth.begin` accepts an `https` `redirect_uri` (a host, no user info,
+  no fragment, any path and query) and plain `http` to `localhost` as well as
+  to a loopback IP literal, with or without a port, path, or query. The web
+  client uses its own page with `?oauth=callback`. A dynamic registration
+  is made for each flow's redirect (`application_type` `web` for an `https`
+  one, `native` for loopback); a configured `client_id` is used as is.
+- `mcp.auth.complete` also requires the redirect's own query parameters
+  (such as `oauth=callback`) in the `callback_url`.
+- No wire type changes. A 1.10 daemon refuses the new redirects, so a client
+  offers them only to a 1.11 daemon; a 1.10 client sees nothing new.
+
 ## 1.10.0
 
 - The machine registry remembers where runtimes ran

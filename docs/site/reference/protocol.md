@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.10.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.11.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.10.0",
+    "protocol_version": "1.11.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.10.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.11.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -293,7 +293,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `mcp.server.set_enabled` | `name`, `enabled` | The server afterwards |
 | `mcp.server.reconnect` | `name`, optional `runtime_id` and `workspace` of a server a runtime hosts | The server afterwards |
 | `mcp.server.persist` | `name`, `target` (`user_file`) | The server afterwards, written to `config.toml` |
-| `mcp.auth.begin` | `server`, the client's loopback `redirect_uri` | `authorization_url` to open in a browser |
+| `mcp.auth.begin` | `server`, the client's `redirect_uri` (loopback, or `https` since 1.11.0) | `authorization_url` to open in a browser |
 | `mcp.auth.complete` | `server`, the `callback_url` the browser was redirected to | The `server` |
 | `mcp.auth.cancel` | `server` | The `server` |
 
@@ -1065,16 +1065,25 @@ streamed part began. See
 
 The MCP OAuth callback runs on the client, so a daemon reached through a
 tunnel or on another machine can still be authorized from the client's
-browser. `mcp.auth.begin` requires `redirect_uri`, the client's own loopback
-callback (`http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`
-with no query, fragment, or credentials). The client then sends the browser's
-redirect to `mcp.auth.complete { server, callback_url }`; the daemon keeps the
-PKCE verifier, exchanges the code, and stores the tokens, which never cross
-the connection. A `callback_url` that is not a redirect to the pending
-`redirect_uri` with a `code` or `error` parameter is rejected and leaves the
-flow waiting. Any other completion ends it. A `begin` with the pending
-`redirect_uri` returns the same authorization URL; one with a different
-`redirect_uri` replaces the pending flow.
+browser. `mcp.auth.begin` requires `redirect_uri`, where the browser lands:
+the client's own loopback callback, plain `http` to a loopback IP literal or
+`localhost` (`http://127.0.0.1:<port>/<path>`), or, since 1.11.0, an `https`
+address such as the web client's own page with `?oauth=callback`. Any path
+and query are allowed; user info and fragments are refused. Before 1.11.0
+the daemon accepts only loopback IP literals with a port and no query, so a
+client offers an `https` redirect only to a 1.11 daemon. With dynamic client
+registration the daemon registers a client for the redirect of each flow
+(as `native` for a loopback redirect, `web` for an `https` one); a configured
+`client_id` is used as is, and its authorization server must allow the
+redirect. The client then sends the browser's redirect to
+`mcp.auth.complete { server, callback_url }`; the daemon keeps the PKCE
+verifier, exchanges the code, and stores the tokens, which never cross the
+connection. A `callback_url` that is not a redirect to the pending
+`redirect_uri` (its scheme, host, port, path, and every query parameter of
+its own) with a `code` or `error` parameter is rejected and leaves the flow
+waiting. Any other completion, including a `state` mismatch, ends it. A
+`begin` with the pending `redirect_uri` returns the same authorization URL;
+one with a different `redirect_uri` replaces the pending flow.
 
 A client can configure permissions before a session exists.
 `session.create` accepts an optional `permission_mode` for the new tree and

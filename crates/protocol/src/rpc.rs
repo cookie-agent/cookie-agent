@@ -2028,9 +2028,13 @@ pub struct McpServerMutationResult {
 #[serde(deny_unknown_fields)]
 pub struct McpAuthBeginParams {
     pub server: String,
-    /// The client's own loopback callback, `http://127.0.0.1:{port}/{path}`
-    /// or `http://[::1]:{port}/{path}`: the browser redirects to the machine
-    /// running the client, which hands the redirect to `mcp.auth.complete`.
+    /// Where the browser lands after authorizing, which the client catches
+    /// and hands to `mcp.auth.complete`: the client's own loopback callback,
+    /// plain `http` to a loopback IP literal or `localhost`
+    /// (`http://127.0.0.1:{port}/{path}`), or an `https` address, such as a
+    /// web page's own with `?oauth=callback` (client protocol 1.11.0; before
+    /// it, loopback IP literals with a port only). Any path and query; no
+    /// user info or fragment.
     pub redirect_uri: String,
 }
 
