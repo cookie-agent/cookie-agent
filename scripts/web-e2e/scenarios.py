@@ -1527,17 +1527,25 @@ def hover(browser, selector):
 
 def click_row(browser, selector):
     """Clicks a session row near its left end, by its title: over a
-    hovered row, its three buttons cover the middle."""
-    width = browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().width", selector)
-    origin = {ELEMENT: browser.find(selector)}
-    perform(browser, [{
-        "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
-        "actions": [
-            {"type": "pointerMove", "duration": 0, "origin": origin, "x": int(-width / 2 + 40), "y": 0},
-            {"type": "pointerDown", "button": 0},
-            {"type": "pointerUp", "button": 0},
-        ],
-    }])
+    hovered row, its three buttons cover the middle. The list can redraw
+    the row between finding it and clicking it; it is found again then."""
+    for attempt in range(5):
+        width = browser.script("return document.querySelector(arguments[0]).getBoundingClientRect().width", selector)
+        origin = {ELEMENT: browser.find(selector)}
+        try:
+            perform(browser, [{
+                "type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"},
+                "actions": [
+                    {"type": "pointerMove", "duration": 0, "origin": origin, "x": int(-width / 2 + 40), "y": 0},
+                    {"type": "pointerDown", "button": 0},
+                    {"type": "pointerUp", "button": 0},
+                ],
+            }])
+            return
+        except RuntimeError as error:
+            if "stale element reference" not in str(error) or attempt == 4:
+                raise
+            time.sleep(0.2)
 
 
 def long_press(browser, selector, hold=1200, drag=0):
