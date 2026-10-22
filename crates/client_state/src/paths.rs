@@ -97,6 +97,42 @@ impl RuntimeHomes {
             .map(|attachment| &attachment.runtime_id);
         display_path(directory, runtime.and_then(|runtime| self.get(runtime)))
     }
+
+    /// Where the session `meta` works, for a one-line label: its directory
+    /// ([`Self::session_directory`]) when one of its own attachments has a
+    /// workspace or its subagents brought none; else the workspaces its
+    /// subagents brought (`SessionMeta::delegated_attachments`), each as
+    /// `runtime:~/path` (`local`'s without the runtime), comma-joined, so a
+    /// root with only `global` shows where its subagents work.
+    #[must_use]
+    pub fn session_place(&self, meta: &SessionMeta) -> String {
+        let own = meta
+            .attachments
+            .iter()
+            .any(|attachment| attachment.workspace.is_some());
+        let mut delegated = Vec::<String>::new();
+        if !own {
+            for attachment in &meta.delegated_attachments {
+                let Some(workspace) = &attachment.workspace else {
+                    continue;
+                };
+                let path = self.display(&attachment.runtime_id, workspace);
+                let shown = if attachment.runtime_id.as_str() == RuntimeId::LOCAL {
+                    path
+                } else {
+                    format!("{}:{path}", attachment.runtime_id)
+                };
+                if !delegated.contains(&shown) {
+                    delegated.push(shown);
+                }
+            }
+        }
+        if delegated.is_empty() {
+            self.session_directory(meta)
+        } else {
+            delegated.join(", ")
+        }
+    }
 }
 
 /// What follows `home` in `path`: empty for the home itself, else the rest
@@ -280,5 +316,18 @@ mod tests {
             homes.session_directory(&session("/home/ada/x", serde_json::json!([]))),
             "/home/ada/x"
         );
+        // A root with only `global` shows where its subagents work.
+        let mut root = session("/home/ada", serde_json::json!([attachment("global", None)]));
+        assert_eq!(homes.session_place(&root), "/home/ada");
+        root.delegated_attachments = serde_json::from_value(serde_json::json!([
+            attachment("labpc", Some("/home/lab/api")),
+            attachment("local", Some("/home/ada/web")),
+        ]))
+        .unwrap();
+        assert_eq!(homes.session_place(&root), "labpc:~/api, ~/web");
+        // With a workspace of its own, it shows its directory.
+        root.attachments
+            .extend(root.delegated_attachments[1..].iter().cloned());
+        assert_eq!(homes.session_place(&root), "~");
     }
 }

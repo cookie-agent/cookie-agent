@@ -3,8 +3,11 @@
 //! machine. Badges show machines, never runtime IDs, and the `global`
 //! attachment never counts. A session with no other attachment has no
 //! badge; one machine shows its badge and the workspaces, as `~/…`; several
-//! machines show each machine, in attachment order. The machine comes from
-//! `runtimes.list`; a runtime of no known machine stands for its own
+//! machines show each machine, in attachment order. A root's badges count
+//! its own attachments followed by the ones its subagents brought
+//! (`SessionMeta::delegated_attachments`, client protocol 1.10.0;
+//! `docs/site/specs/runtime-delegation.md` section 5.3). The machine comes
+//! from `runtimes.list`; a runtime of no known machine stands for its own
 //! machine, under its runtime ID.
 
 use cookie_agent_protocol::{
@@ -154,6 +157,13 @@ impl<'a> Placed<'a> {
         }
     }
 
+    /// Whether `other` names the same runtime, capability, and workspace.
+    fn same_place(self, other: Self) -> bool {
+        self.runtime_id == other.runtime_id
+            && self.capability == other.capability
+            && self.workspace == other.workspace
+    }
+
     /// The runtime as the tooltip names it: its ID, with the capability
     /// when the runtime offers several (`alt·notes`).
     fn runtime_label(self, listing: Option<&RuntimesListResult>) -> String {
@@ -187,14 +197,22 @@ impl Place {
     }
 }
 
-/// The attachments that count for badges: all but `global`.
+/// The attachments that count for badges: the session's own, then the ones
+/// its subagents brought, all but `global`, each place once.
 fn counted(session: &SessionMeta) -> Vec<Placed<'_>> {
-    session
+    let mut counted = Vec::<Placed<'_>>::new();
+    for attachment in session
         .attachments
         .iter()
+        .chain(&session.delegated_attachments)
         .filter(|attachment| attachment.runtime_id.as_str() != RuntimeId::GLOBAL)
-        .map(Placed::of_attachment)
-        .collect()
+    {
+        let placed = Placed::of_attachment(attachment);
+        if !counted.iter().any(|known| known.same_place(placed)) {
+            counted.push(placed);
+        }
+    }
+    counted
 }
 
 /// The default attachments that count for badges: all but `global`.
@@ -423,6 +441,33 @@ mod tests {
             &RuntimeHomes::from_listing(&listing),
             true,
         )
+    }
+
+    #[test]
+    fn a_root_s_badges_add_where_its_subagents_work() {
+        // A root with only `global`: no badge of its own.
+        let mut root = session(&[("global", "global", None)]);
+        assert!(badges(&root).is_empty());
+        // Its subagents worked on labpc, twice in one place: one machine,
+        // its workspace once.
+        let delegated = session(&[
+            ("labpc", "coding", Some("/home/labpc/api")),
+            ("labpc", "coding", Some("/home/labpc/api")),
+        ]);
+        root.delegated_attachments = delegated.attachments;
+        assert_eq!(labels(&badges(&root)), ["lab", "~/api"]);
+        // Its own attachments come first, then the delegated ones.
+        root.attachments
+            .extend(session(&[("local", "coding", Some("/home/local/web"))]).attachments);
+        assert_eq!(labels(&badges(&root)), ["desk", "lab"]);
+        let listing = listing();
+        let tooltip = badges_tooltip(
+            &root,
+            Some(&listing),
+            &RuntimeHomes::from_listing(&listing),
+            true,
+        );
+        assert_eq!(tooltip, "desk · local · ~/web\nlab · labpc · ~/api");
     }
 
     #[test]

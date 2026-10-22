@@ -217,6 +217,10 @@ pub enum MachineRequest {
     Forget {
         machine: MachineName,
     },
+    /// Forget where an offline runtime ran (`machines.forget_runtime`).
+    ForgetRuntime {
+        runtime: RuntimeId,
+    },
 }
 
 /// The rows for `attachments`, each matched to its instance in `listing`.
@@ -413,8 +417,9 @@ pub fn reconnect_status(runtime_id: &RuntimeId, instance: &RuntimeInstanceInfo) 
     )
 }
 
-/// The machines view's rows: each machine, then its connected runtimes and
-/// the runtimes pinned to it that are not connected.
+/// The machines view's rows: each machine, then its connected runtimes, the
+/// runtimes pinned to it that are not connected, and the offline runtimes
+/// it remembers (client protocol 1.10.0), placed by `last_seen`.
 pub fn machine_entries(listing: &MachinesListResult) -> Vec<MachineEntry> {
     listing
         .machines
@@ -440,6 +445,18 @@ pub fn machine_entries(listing: &MachinesListResult) -> Vec<MachineEntry> {
                     runtime: runtime.clone(),
                     assigned_by: None,
                     pinned: true,
+                });
+            }
+            for runtime in machine
+                .remembered
+                .iter()
+                .filter(|remembered| !machine.pinned.contains(&remembered.runtime_id))
+            {
+                entries.push(MachineEntry::Runtime {
+                    machine: machine.name.clone(),
+                    runtime: runtime.runtime_id.clone(),
+                    assigned_by: Some(runtime.assigned_by),
+                    pinned: false,
                 });
             }
             entries
@@ -535,6 +552,7 @@ impl MachineRequest {
             Self::Unassign { runtime } => format!("unpinned runtime {runtime}"),
             Self::Merge { from, into } => format!("merged machine {from} into {into}"),
             Self::Forget { machine } => format!("forgot machine {machine}"),
+            Self::ForgetRuntime { runtime } => format!("forgot where runtime {runtime} ran"),
         }
     }
 }

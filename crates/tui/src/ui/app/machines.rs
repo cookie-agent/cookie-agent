@@ -69,6 +69,9 @@ impl App {
                 MachineRequest::Unassign { runtime } => client.unassign_machine(runtime).await,
                 MachineRequest::Merge { from, into } => client.merge_machines(from, into).await,
                 MachineRequest::Forget { machine } => client.forget_machine(machine).await,
+                MachineRequest::ForgetRuntime { runtime } => {
+                    client.forget_machine_runtime(runtime).await
+                }
             };
             let result = result
                 .map(|machines| (done, machines))

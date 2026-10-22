@@ -200,7 +200,7 @@ pub(crate) fn session_search_rows<'a>(
             " !"
         };
         let directory = match homes {
-            Some(homes) => format!(" · {}", homes.session_directory(session)),
+            Some(homes) => format!(" · {}", homes.session_place(session)),
             None => String::new(),
         };
         // The project leads the details, its emoji first.
