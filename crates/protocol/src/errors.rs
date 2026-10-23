@@ -296,6 +296,22 @@ error_codes! {
         hint: Some("Steer or queue the input instead, or wait for the run to finish."),
         description: "`run.start` on a session that is running.",
     }
+    DAEMON_RESTARTING {
+        code: "daemon_restarting",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The daemon is restarting.",
+        hint: Some("Send it again once the daemon is back; queued input waits for the restart."),
+        description: "A run asked for while a `daemon.restart` waits for the active runs to end.",
+    }
+    RESTART_UNSUPPORTED {
+        code: "restart_unsupported",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "This daemon can't restart itself.",
+        hint: Some("Stop it and start it again the way it was started."),
+        description: "`daemon.restart` on a daemon not started by `cookie daemon`, such as one embedded in a test harness or another program.",
+    }
     IDEMPOTENCY_CONFLICT {
         code: "idempotency_conflict",
         rpc: APPLICATION_ERROR,

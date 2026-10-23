@@ -960,3 +960,54 @@ async fn a_client_gone_before_its_answer_ends_the_connection_cleanly() {
     assert!(result.is_ok(), "{result:?}");
     drop(requests);
 }
+
+/// A server that does not provide `daemon.restart` refuses it with
+/// `restart_unsupported`; its params are strict and `when` defaults to
+/// `idle`.
+#[tokio::test]
+async fn a_daemon_without_a_restart_refuses_it() {
+    let mut connection = Connection::open(Arc::new(StubServer::default())).await;
+    connection.send(1, crate::DAEMON_RESTART_METHOD, json!({}));
+    let reply = connection.next().await;
+    assert_eq!(
+        reply["error"]["data"]["code"], "restart_unsupported",
+        "{reply}"
+    );
+    connection.send(2, crate::DAEMON_RESTART_METHOD, json!({ "when": "later" }));
+    let reply = connection.next().await;
+    assert_eq!(reply["error"]["data"]["code"], "unknown_variant", "{reply}");
+    let params: crate::DaemonRestartParams =
+        serde_json::from_value(json!({})).expect("empty params");
+    assert_eq!(params.when, crate::RestartWhen::Idle);
+}
+
+/// A connection the server shuts down still gets the frames already queued
+/// for it before the transport closes.
+#[tokio::test]
+async fn shutting_down_sends_what_is_queued_then_closes() {
+    let (requests, incoming) = mpsc::unbounded_channel();
+    let (outgoing, frames) = mpsc::unbounded_channel();
+    let shutdown = CancellationToken::new();
+    let served = tokio::spawn(serve(
+        Arc::new(StubServer::default()),
+        ChannelTransport { incoming, outgoing },
+        shutdown.clone(),
+        Authentication::Authenticated,
+    ));
+    let mut connection = Connection { requests, frames };
+    connection.send(0, "handshake", hello(None));
+    assert_eq!(connection.next().await["id"], 0);
+    connection.send(1, "session.list", json!({}));
+    // The answer is queued as soon as the request task runs; shut down
+    // right behind it.
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    shutdown.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(2), served)
+        .await
+        .expect("the connection ends in time")
+        .expect("serve does not panic");
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(connection.next().await["id"], 1);
+    assert!(connection.closed().await);
+}

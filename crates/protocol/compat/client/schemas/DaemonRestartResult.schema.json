@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "active_runs": {
+      "description": "The runs active when the daemon answered: what `idle` waits for and\nwhat `now` interrupts.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "scheduled": {
+      "description": "Whether this call scheduled the restart; `false` when one was already\nscheduled and this call only changed its `when`.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "scheduled",
+    "active_runs"
+  ],
+  "title": "DaemonRestartResult",
+  "type": "object"
+}

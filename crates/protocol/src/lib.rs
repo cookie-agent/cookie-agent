@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.18, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.19, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
@@ -184,6 +184,7 @@ mod content;
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub mod corpus;
 mod cron;
+mod daemon;
 pub mod diagnostics;
 mod display;
 #[cfg(not(target_arch = "wasm32"))]
@@ -238,6 +239,7 @@ pub use cookie_agent_identity::{
     RuntimeId, RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
 };
 pub use cron::*;
+pub use daemon::*;
 pub use display::*;
 pub use event::*;
 pub use extension::*;

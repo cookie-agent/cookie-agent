@@ -1,0 +1,46 @@
+{
+  "$defs": {
+    "RestartWhen": {
+      "description": "When the daemon restarts.",
+      "oneOf": [
+        {
+          "const": "idle",
+          "description": "Once no run is active in any session. New runs are refused\nmeanwhile.",
+          "type": "string"
+        },
+        {
+          "const": "now",
+          "description": "At once: running turns end as interrupted.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A restart is scheduled, sent to every client when it is and again as the\nwait progresses.",
+  "properties": {
+    "active_runs": {
+      "description": "The runs still active.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reason": {
+      "description": "What the restart waits for or is doing, for people to read.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "when": {
+      "$ref": "#/$defs/RestartWhen"
+    }
+  },
+  "required": [
+    "when",
+    "active_runs"
+  ],
+  "title": "DaemonRestartingNotification",
+  "type": "object"
+}

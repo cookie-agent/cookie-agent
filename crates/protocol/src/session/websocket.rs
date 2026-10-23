@@ -355,7 +355,8 @@ impl Transport for WebSocketTransport {
 }
 
 /// What a close frame the daemon sent means: a normal closure, going away,
-/// or a frame without a code ends the connection cleanly; another code,
+/// or a frame without a code ends the connection cleanly; a restart (1012)
+/// ends it saying the daemon is restarting; another code,
 /// such as a dial-in runtime that did not initialize, ends it with the
 /// daemon's reason.
 fn closed(
@@ -365,6 +366,9 @@ fn closed(
     match frame {
         None => Ok(None),
         Some(frame) if matches!(frame.code, CloseCode::Normal | CloseCode::Away) => Ok(None),
+        Some(frame) if u16::from(frame.code) == crate::RESTART_CLOSE_CODE => {
+            Err(TransportError::Other("the daemon is restarting".into()))
+        }
         Some(frame) => {
             let code = u16::from(frame.code);
             let reason = diagnostics::sanitize(frame.reason.as_str(), 4096);
@@ -417,6 +421,31 @@ mod tests {
 
     use super::authenticated_request;
     use crate::Client;
+
+    /// A daemon that closes to restart says so; a normal closure ends the
+    /// connection cleanly; another code keeps its reason.
+    #[test]
+    fn a_restart_close_says_the_daemon_is_restarting() {
+        use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+        let frame = |code: u16, reason: &str| {
+            Some(CloseFrame {
+                code: CloseCode::from(code),
+                reason: reason.to_owned().into(),
+            })
+        };
+        let restart = super::closed(frame(
+            crate::RESTART_CLOSE_CODE,
+            crate::RESTART_CLOSE_REASON,
+        ))
+        .expect_err("a restart is not a clean end");
+        assert_eq!(
+            restart.to_string(),
+            "transport error: the daemon is restarting"
+        );
+        assert!(matches!(super::closed(frame(1000, "")), Ok(None)));
+        let other = super::closed(frame(1011, "broken")).expect_err("an abnormal close");
+        assert!(other.to_string().contains("1011: broken"), "{other}");
+    }
 
     /// A replay page or a single large event (a model turn, a native context
     /// window) arrives as one frame well past tungstenite's 16 MiB default.

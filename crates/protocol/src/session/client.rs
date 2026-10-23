@@ -126,6 +126,9 @@ pub enum ClientDelivery {
     /// A cron job was created, changed, fired, or deleted; refetch
     /// `crons.list`.
     CronsChanged(crate::CronsChangedNotification),
+    /// The daemon will restart: when, and how many runs it still waits
+    /// for. The connection then closes and the client reconnects.
+    DaemonRestarting(crate::DaemonRestartingNotification),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -1212,6 +1215,19 @@ impl Client {
             .await
     }
 
+    /// Asks the daemon to restart `when` it says; see
+    /// [`crate::DaemonRestartParams`].
+    pub async fn restart_daemon(
+        &self,
+        when: crate::RestartWhen,
+    ) -> Result<crate::DaemonRestartResult, ClientError> {
+        self.call(
+            crate::DAEMON_RESTART_METHOD,
+            &crate::DaemonRestartParams { when },
+        )
+        .await
+    }
+
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
         self.call("mcp.server.list", &McpServerListParams {}).await
     }
@@ -2092,6 +2108,10 @@ async fn route_notification(
         crate::CRONS_CHANGED_METHOD => {
             let changed: crate::CronsChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::CronsChanged(changed));
+        }
+        crate::DAEMON_RESTARTING_METHOD => {
+            let restarting: crate::DaemonRestartingNotification = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::DaemonRestarting(restarting));
         }
         _ => {}
     }

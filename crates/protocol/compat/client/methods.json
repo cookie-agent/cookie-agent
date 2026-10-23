@@ -138,6 +138,22 @@
       "result": "CronJobResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "daemon.restart",
+      "params": "DaemonRestartParams",
+      "params_role": "command",
+      "result": "DaemonRestartResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "daemon.restarting",
+      "params": "DaemonRestartingNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "events.plugin",

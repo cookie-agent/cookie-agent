@@ -451,6 +451,11 @@
           "const": "firing_disabled",
           "description": "`[cron] enabled = false` held at the fire time.",
           "type": "string"
+        },
+        {
+          "const": "daemon_restarting",
+          "description": "The daemon was waiting to restart (client protocol 1.19.0).",
+          "type": "string"
         }
       ],
       "x-open": true

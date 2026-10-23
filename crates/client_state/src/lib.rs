@@ -1487,7 +1487,8 @@ impl StateStore {
             | ClientDelivery::MachinesChanged(_)
             | ClientDelivery::MemoryChanged(_)
             | ClientDelivery::ProjectsChanged(_)
-            | ClientDelivery::CronsChanged(_) => DeliveryOutcome::Applied,
+            | ClientDelivery::CronsChanged(_)
+            | ClientDelivery::DaemonRestarting(_) => DeliveryOutcome::Applied,
         }
     }
 

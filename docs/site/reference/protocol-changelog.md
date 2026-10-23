@@ -5,6 +5,23 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.19.0
+
+- Clients restart the daemon ([engine configuration spec](../specs/engine-configuration.md)
+  section 11):
+  - New method `daemon.restart` (`when`: `idle`, the default, or `now`),
+    answering `scheduled` and `active_runs`, and the notification
+    `daemon.restarting` (`when`, `active_runs`, optional `reason`).
+  - New errors `restart_unsupported`, for a daemon that cannot relaunch
+    itself, and `daemon_restarting`, for a run asked for while an `idle`
+    restart waits.
+  - The cron skip reason `daemon_restarting`; an older client shows it as
+    an unknown skip.
+  - A restarting daemon closes client connections with WebSocket close code
+    1012 and the reason `restarting`. Behaviour, with no message change: a
+    daemon that shuts down now sends the replies and notifications it has
+    queued and a close frame before it closes a connection.
+
 ## 1.18.0
 
 - `ConfigStatus` (in the results of `config.get`, `config.apply`, and

@@ -309,6 +309,8 @@ crate::open_enum! {
         Interrupted,
         /// `[cron] enabled = false` held at the fire time.
         FiringDisabled,
+        /// The daemon was waiting to restart (client protocol 1.19.0).
+        DaemonRestarting,
     }
 }
 

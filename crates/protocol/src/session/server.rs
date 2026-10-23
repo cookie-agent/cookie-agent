@@ -637,6 +637,17 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::ConfigReloadParams,
     ) -> Result<crate::ConfigReloadResult, ServerFault>;
+    /// Schedules a restart of the daemon. A daemon that cannot relaunch
+    /// itself, such as one embedded in another program, refuses with
+    /// `restart_unsupported`, which is what this default does.
+    async fn restart_daemon(
+        &self,
+        _params: crate::DaemonRestartParams,
+    ) -> Result<crate::DaemonRestartResult, ServerFault> {
+        Err(ServerFault::from_error(
+            crate::errors::RESTART_UNSUPPORTED.error().build(),
+        ))
+    }
     /// Moves an executing call to the background.
     async fn background_tool(
         &self,
@@ -869,7 +880,10 @@ where
     loop {
         let authenticated = matches!(authentication, Authentication::Authenticated);
         tokio::select! {
-            () = context.shutdown.cancelled() => return Ok(()),
+            () = context.shutdown.cancelled() => {
+                finish_and_close(&mut transport, &mut outbound_rx).await;
+                return Ok(());
+            }
             () = &mut unauthenticated_until, if !authenticated => return Ok(()),
             acquired = in_flight.clone().acquire_owned(), if permit.is_none() => {
                 permit = Some(acquired.expect("the in-flight semaphore is never closed"));
@@ -946,6 +960,24 @@ where
             }
         }
     }
+}
+
+/// How long a connection the server shuts down gets to send what it has
+/// queued and finish its closing handshake.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Sends the replies and notifications already queued, then closes the
+/// transport in an orderly way, all within [`SHUTDOWN_GRACE`].
+async fn finish_and_close<T: Transport>(transport: &mut T, outbound: &mut mpsc::Receiver<String>) {
+    let _ = tokio::time::timeout(SHUTDOWN_GRACE, async {
+        while let Ok(frame) = outbound.try_recv() {
+            if transport.send(MessageFrame::Text(frame)).await.is_err() {
+                return;
+            }
+        }
+        transport.close().await;
+    })
+    .await;
 }
 
 /// Checks a handshake's token where the transport did not authenticate the
@@ -1147,6 +1179,9 @@ async fn dispatch<S: ServerProtocol>(
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),
         crate::CONFIG_GET_METHOD => value(server.get_config(decode_default(params)?).await?),
         crate::CONFIG_APPLY_METHOD => value(server.apply_config(decode(params)?).await?),
+        crate::DAEMON_RESTART_METHOD => {
+            value(server.restart_daemon(decode_default(params)?).await?)
+        }
         crate::RUN_TOOL_BACKGROUND_METHOD => {
             value(server.background_tool(decode(params)?, context).await?)
         }

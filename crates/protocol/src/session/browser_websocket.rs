@@ -154,6 +154,9 @@ impl BrowserWebSocketTransport {
     }
 }
 
+/// What a connection the daemon closed to restart ends with.
+const RESTARTING: &str = "the daemon is restarting";
+
 /// Owns the socket: writes each outgoing frame to it, and closes it once the
 /// transport is dropped.
 async fn socket_task(socket: Socket, mut frames: mpsc::UnboundedReceiver<String>) {
@@ -194,6 +197,9 @@ impl Transport for BrowserWebSocketTransport {
                     clean,
                 }) => {
                     self.ended = true;
+                    if code == crate::RESTART_CLOSE_CODE {
+                        return Err(TransportError::Other(RESTARTING.into()));
+                    }
                     if clean {
                         return Ok(None);
                     }

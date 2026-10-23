@@ -1,0 +1,31 @@
+{
+  "$defs": {
+    "RestartWhen": {
+      "description": "When the daemon restarts.",
+      "oneOf": [
+        {
+          "const": "idle",
+          "description": "Once no run is active in any session. New runs are refused\nmeanwhile.",
+          "type": "string"
+        },
+        {
+          "const": "now",
+          "description": "At once: running turns end as interrupted.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Restart the daemon: it relaunches its own executable with the same\narguments and environment. A second call while a restart is scheduled\nchanges its `when`; `now` wins over `idle`.",
+  "properties": {
+    "when": {
+      "$ref": "#/$defs/RestartWhen",
+      "default": "idle"
+    }
+  },
+  "title": "DaemonRestartParams",
+  "type": "object"
+}

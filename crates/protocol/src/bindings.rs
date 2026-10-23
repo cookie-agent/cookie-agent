@@ -351,6 +351,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(CONFIG_RELOAD_METHOD, ToDaemon, ConfigReloadParams => ConfigReloadResult),
         request!(CONFIG_GET_METHOD, ToDaemon, ConfigGetParams => ConfigGetResult),
         request!(CONFIG_APPLY_METHOD, ToDaemon, ConfigApplyParams => ConfigApplyResult),
+        request!(DAEMON_RESTART_METHOD, ToDaemon, DaemonRestartParams => DaemonRestartResult),
         request!(RUN_TOOL_BACKGROUND_METHOD, ToDaemon, RunToolBackgroundParams => RunToolBackgroundResult),
         request!(SESSION_BACKGROUND_LIST_METHOD, ToDaemon, SessionBackgroundListParams => SessionBackgroundListResult),
         request!(SESSION_BACKGROUND_STOP_METHOD, ToDaemon, SessionBackgroundStopParams => SessionBackgroundStopResult),
@@ -409,6 +410,11 @@ fn client_methods() -> Vec<MethodSpec> {
             ProjectsChangedNotification
         ),
         notification!(CRONS_CHANGED_METHOD, FromDaemon, CronsChangedNotification),
+        notification!(
+            DAEMON_RESTARTING_METHOD,
+            FromDaemon,
+            DaemonRestartingNotification
+        ),
     ]
 }
 

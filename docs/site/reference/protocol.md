@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.18.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.19.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.18.0",
+    "protocol_version": "1.19.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.18.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.19.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -220,6 +220,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
+| `daemon.restart` | Optional `when`: `idle` (default) or `now` (since 1.19.0) | `scheduled` (whether this call scheduled the restart rather than changed one already scheduled) and `active_runs`; a daemon that cannot relaunch itself answers `restart_unsupported` (see [Restarting the daemon](#restarting-the-daemon)) |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
 | `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0) | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
@@ -696,8 +697,8 @@ its state: `next_fire`, `runs`, `consecutive_failures`, `last_fire`, and the
   `missed` for a fire skipped because the daemon was down, the `session_id`
   it went to, and the `run_id` and `run_end` (`{ status, at }`) of the run
   its prompt landed in. A skip `reason` is `previous_fire_not_delivered`,
-  `previous_run_still_running`, `daemon_was_down`, `interrupted`, or
-  `firing_disabled`, an open set.
+  `previous_run_still_running`, `daemon_was_down`, `interrupted`,
+  `firing_disabled`, or `daemon_restarting` (since 1.19.0), an open set.
 - **Run sessions.** A new-session fire's session records the job in
   `SessionMeta.cron` (`{ job_id, fired_at }`, also on its `session_created`
   event) and is otherwise ordinary.
@@ -709,6 +710,36 @@ run now and counts toward neither `max_runs` nor the failure count. Each
 change and fire sends `crons.changed` to every connection. An unknown job is
 `cron_not_found`, a refused value `cron_invalid`, and a failure to read or
 write `crons.json` `cron_store_failed`.
+
+### Restarting the daemon
+
+Since 1.19.0, `daemon.restart` restarts the daemon: it relaunches its own
+executable with the same arguments and environment, so a restart applies the
+`restart_required` parts of the configuration status and runs a binary
+upgraded on disk. Any client holding the token may call it.
+
+- **`when: "idle"`** (the default) waits until no run is active in any
+  session. Meanwhile a new run (`run.start`, `session.submit_input` on an
+  idle session, a producer's wake) is refused with `daemon_restarting`,
+  queued input and producers' messages wait, and a cron fire is recorded as
+  skipped with the reason `daemon_restarting`. A run's delegated children
+  still start, as part of the turn being waited for.
+- **`when: "now"`** interrupts the running turns as a stop does; they end
+  as cancelled and the restarted daemon closes out anything left.
+- **A second call** while a restart is scheduled changes its `when`; `now`
+  wins. Its `scheduled` is `false`.
+- **`daemon.restarting`** (`when`, `active_runs`, optional `reason`) reaches
+  every connection when the restart is scheduled and whenever the number of
+  active runs changes while it waits.
+- **The restart** stops the daemon as a shutdown does (runs, plugins,
+  runtimes, and MCP servers stop and the session logs and stores are
+  flushed), sends the replies already queued, and closes every client
+  connection with WebSocket close code 1012 and the reason `restarting`.
+  Clients reconnect as after any dropped connection; the handshake's
+  `engine_version` tells them when the build changed.
+- **`restart_unsupported`** answers a daemon that cannot relaunch itself:
+  only `cookie daemon` can, and an engine embedded in a test harness or
+  another program cannot.
 
 ### Plugins
 
@@ -1068,6 +1099,7 @@ subscriptions to the deleted sessions end with them: no further
 | `memory.changed` | A memory file changed through the daemon; an empty object |
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
+| `daemon.restarting` | A restart is scheduled: `when` (`idle` or `now`), the `active_runs` it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
@@ -1080,7 +1112,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, and `crons.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, `crons.changed`, and `daemon.restarting` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
