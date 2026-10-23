@@ -94,6 +94,25 @@ pub struct ServeOptions {
     /// Stops serving when cancelled, as `runtime/shutdown` does: calls still
     /// running are cancelled and the MCP servers shut down.
     pub stop: CancellationToken,
+    /// ACP agents of the runtime's own machine, hosted when the daemon
+    /// declares none, as for a runtime that dials in.
+    pub acp_agents: Vec<protocol::AcpAgentSettings>,
+    /// Replacements of [`Self::acp_agents`], such as a dial-in runtime's
+    /// configuration changing: each value is reported to the daemon with
+    /// `runtime/agents_changed`.
+    pub acp_agent_updates: Option<tokio::sync::watch::Receiver<Vec<protocol::AcpAgentSettings>>>,
+    /// The program and arguments an ACP agent runs to reach cookie's tools,
+    /// before `--socket <path>`: this executable's `runtime mcp-bridge` when
+    /// empty.
+    pub bridge_command: Vec<String>,
+}
+
+/// `cookie runtime mcp-bridge` of this executable.
+fn default_bridge_command() -> Vec<String> {
+    let program = std::env::current_exe()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "cookie".to_owned());
+    vec![program, "runtime".to_owned(), "mcp-bridge".to_owned()]
 }
 
 impl Default for ServeOptions {
@@ -106,6 +125,9 @@ impl Default for ServeOptions {
             mcp_reconnect: None,
             producer_messaging: false,
             stop: CancellationToken::new(),
+            acp_agents: Vec::new(),
+            acp_agent_updates: None,
+            bridge_command: Vec::new(),
         }
     }
 }
@@ -188,7 +210,17 @@ pub async fn serve_stdio(options: ServeOptions) {
 pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> String {
     let (peer, mut incoming) = Peer::start(transport);
     let stop = options.stop.child_token();
+    let bridge_command = if options.bridge_command.is_empty() {
+        default_bridge_command()
+    } else {
+        options.bridge_command.clone()
+    };
     let server = Arc::new(Server {
+        acp: Arc::new(crate::acp_host::AcpHost::new(
+            peer.clone(),
+            bridge_command,
+            stop.clone(),
+        )),
         peer: peer.clone(),
         options,
         initializing: AtomicBool::new(false),
@@ -254,6 +286,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 struct Server {
+    /// The ACP agents the runtime hosts.
+    acp: Arc<crate::acp_host::AcpHost>,
     peer: Peer,
     options: ServeOptions,
     /// Set by the first `runtime/initialize`.
@@ -452,6 +486,9 @@ impl Server {
             let result = self.initialize(&request);
             let initialized = result.is_ok();
             reply(request, result).await;
+            if initialized && let Some(updates) = self.options.acp_agent_updates.clone() {
+                tokio::spawn(Arc::clone(&self).follow_acp_agents(updates));
+            }
             // Reported from now on: the reply had their status until now.
             if initialized
                 && let Some(mcp) = self.state.get().and_then(|state| state.runtime_mcp.clone())
@@ -536,6 +573,13 @@ impl Server {
                 let result = self.reconnect_runtime_mcp(&state, &request).await;
                 reply(request, result).await;
             }
+            other if other.starts_with("agent/") => match self.acp.handle_request(&request).await {
+                Some(result) => reply(request, result).await,
+                None => {
+                    let error = errors::UNKNOWN_METHOD.error().field("method", other);
+                    let _ = request.fail(error.into()).await;
+                }
+            },
             other => {
                 let error = errors::UNKNOWN_METHOD.error().field("method", other);
                 let _ = request.fail(error.into()).await;
@@ -581,7 +625,37 @@ impl Server {
                 });
             }
             // Notifications this runtime does not know are ignored.
-            _ => {}
+            _ => {
+                self.acp.handle_notification(notification);
+            }
+        }
+    }
+
+    /// Reports each new value of the runtime's own ACP agents while the
+    /// daemon declared none.
+    async fn follow_acp_agents(
+        self: Arc<Self>,
+        mut updates: tokio::sync::watch::Receiver<Vec<protocol::AcpAgentSettings>>,
+    ) {
+        updates.mark_unchanged();
+        loop {
+            tokio::select! {
+                () = self.stop.cancelled() => return,
+                changed = updates.changed() => if changed.is_err() {
+                    return;
+                },
+            }
+            let daemon_declared = self
+                .state
+                .get()
+                .is_some_and(|state| !state.settings.acp_agents.is_empty());
+            if daemon_declared {
+                continue;
+            }
+            let agents = updates.borrow_and_update().clone();
+            if let Err(reason) = self.acp.replace(agents).await {
+                eprintln!("cookie runtime: ACP agents not updated: {reason}");
+            }
         }
     }
 
@@ -634,6 +708,15 @@ impl Server {
         if params.settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
             return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
         }
+        self.acp.declare(if params.settings.acp_agents.is_empty() {
+            // The latest of the runtime's own, when it follows them.
+            self.options.acp_agent_updates.as_ref().map_or_else(
+                || self.options.acp_agents.clone(),
+                |updates| updates.borrow().clone(),
+            )
+        } else {
+            params.settings.acp_agents.clone()
+        })?;
         // A daemon older than runtime protocol 1.5.0 knows no tools outside
         // an instance: every server is hosted per workspace for it.
         let shared = params.protocol_version >= RUNTIME_SCOPED_MCP;
@@ -705,6 +788,7 @@ impl Server {
             }],
             producer_messaging: self.options.producer_messaging,
             mcp_servers: mcp_reports,
+            acp_agents: self.acp.reports(),
         })
     }
 
@@ -1598,6 +1682,8 @@ impl std::fmt::Debug for Server {
     }
 }
 
+#[cfg(test)]
+mod acp_tests;
 #[cfg(test)]
 mod corpus_tests;
 #[cfg(test)]

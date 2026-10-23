@@ -81,6 +81,7 @@ fn initialize_params(
                     config,
                 })
                 .collect(),
+            acp_agents: Vec::new(),
         },
     };
     (initialize, open)

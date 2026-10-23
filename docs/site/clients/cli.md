@@ -18,6 +18,7 @@ attaching clients to it.
 | [`cookie web`](#cookie-web) | Print the daemon's web page address with its token |
 | [`cookie connect`](#cookie-connect), [`cookie disconnect`](#cookie-disconnect) | Store or remove a managed provider connection |
 | [`cookie runtime serve`](#cookie-runtime-serve) | Serve this machine's `coding` runtime over stdio or by dialing in |
+| [`cookie runtime mcp-bridge`](#cookie-runtime-mcp-bridge) | Connect an ACP agent's MCP client to cookie's tools (run by a runtime) |
 | [`cookie config`](#cookie-config) | Read and change the daemon's `config.toml` and agent documents |
 | [`cookie machine`](#cookie-machine) | List and regroup the machines the daemon's runtimes run on |
 | [`cookie memory`](#cookie-memory) | List, edit, and delete the daemon's memories |
@@ -202,13 +203,30 @@ configuration. One of `--stdio` and `--daemon` is required.
 | Option | Meaning |
 |---|---|
 | `--stdio` | Speak the runtime protocol on standard input and output, one JSON-RPC message per line, as a [`[runtimes.<id>]` template](../daemon/runtimes.md) starts it. Exits when the daemon sends `runtime/shutdown` or closes standard input. |
-| `--daemon [<URL>]` | Dial in to a daemon and stay connected: this client URL, or, without one, the daemon [Reaching a daemon](#reaching-a-daemon) finds. After a drop it connects again, waiting 1 second, doubling up to 30 seconds. Its machine's `[runtimes.local.mcp]` servers come along. |
+| `--daemon [<URL>]` | Dial in to a daemon and stay connected: this client URL, or, without one, the daemon [Reaching a daemon](#reaching-a-daemon) finds. After a drop it connects again, waiting 1 second, doubling up to 30 seconds. Its machine's `[runtimes.local.mcp]` servers and `[runtimes.local.acp.agents]` come along, and it reports changed agents as its configuration changes. |
 | `--id <RUNTIME_ID>` | The runtime ID to dial in as; this machine's host name, sanitized, when omitted. Not with `--stdio`. |
 | `--token <TOKEN>` | The daemon's token, for `--daemon`; also `COOKIE_DAEMON_TOKEN`. |
 | `--root <DIR>` | Limit `coding` to workspaces under this directory; repeat for several. A leading `~` is expanded; a root that is not a directory is an error. Any workspace when omitted. |
 
 It runs until a stop signal. See
 [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in).
+
+### `cookie runtime mcp-bridge`
+
+```text
+cookie runtime mcp-bridge --socket <PATH>
+```
+
+Copies standard input to a runtime's bridge socket and the socket to
+standard output: the stdio MCP server `cookie` a runtime hands the ACP agents
+it hosts, through which they call cookie's tools (see the
+[ACP agents spec](../specs/acp-agents.md#9-cookies-tools-for-the-agent-mcp-over-the-runtime)).
+The runtime starts it for each ACP session; it is not meant to be run by
+hand.
+
+| Option | Meaning |
+|---|---|
+| `--socket <PATH>` | The bridge socket the runtime opened for the agent's session: a Unix socket, or a named pipe on Windows. |
 
 ### `cookie config`
 

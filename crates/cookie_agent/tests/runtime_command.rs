@@ -56,6 +56,7 @@ fn params() -> InitializeParams {
             },
             agent_md: AgentMdLimits { max_bytes: 4096 },
             mcp_servers: Vec::new(),
+            acp_agents: Vec::new(),
         },
     }
 }
@@ -303,4 +304,58 @@ async fn processes_the_runtime_starts_do_not_inherit_the_daemon_token() {
         .expect("shutdown answers")
         .expect("shutdown succeeds");
     exits_successfully(&mut child).await;
+}
+
+/// `cookie runtime mcp-bridge`: what an ACP agent writes to its standard
+/// input reaches the runtime's bridge socket, and what the socket sends
+/// comes out of its standard output.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_mcp_bridge_copies_stdio_to_the_socket_and_back() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+    let listener =
+        cookie_agent_coding_runtime::acp_bridge::BridgeListener::bind().expect("a bridge socket");
+    let mut bridge = Command::new(env!("CARGO_BIN_EXE_cookie"))
+        .args(["runtime", "mcp-bridge", "--socket", listener.path()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn the bridge");
+    let socket = tokio::time::timeout(WAIT, listener.accept())
+        .await
+        .expect("the bridge connects")
+        .expect("a connection");
+    let (socket_read, mut socket_write) = tokio::io::split(socket);
+    let mut stdin = bridge.stdin.take().expect("stdin");
+    stdin
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+        .await
+        .unwrap();
+    stdin.flush().await.unwrap();
+    let mut from_agent = tokio::io::BufReader::new(socket_read).lines();
+    let line = tokio::time::timeout(WAIT, from_agent.next_line())
+        .await
+        .expect("the request reaches the socket")
+        .unwrap()
+        .unwrap();
+    assert_eq!(line, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
+    socket_write
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n")
+        .await
+        .unwrap();
+    let mut to_agent = tokio::io::BufReader::new(bridge.stdout.take().expect("stdout")).lines();
+    let line = tokio::time::timeout(WAIT, to_agent.next_line())
+        .await
+        .expect("the answer reaches the agent")
+        .unwrap()
+        .unwrap();
+    assert_eq!(line, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+    drop(stdin);
+    let status = tokio::time::timeout(WAIT, bridge.wait())
+        .await
+        .expect("the bridge exits when the agent closes its input")
+        .unwrap();
+    assert!(status.success(), "{status}");
 }
