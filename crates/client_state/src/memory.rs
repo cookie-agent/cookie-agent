@@ -1,12 +1,14 @@
 //! The `/memory` panel's rules every client shares: the memories as rows
 //! by layer and group, what a new memory starts from and where, what
-//! `memory.write` answered, how a delete's refusal reads, and the parts of
-//! an `agent://` file the daemon owns.
+//! `memory.write` answered, how a delete's refusal reads, the parts of an
+//! `agent://` file the daemon owns, and a memory's stamps and size limit,
+//! which the daemon owns too (memory spec sections 16.9.6 and 16.9.7).
 
 use cookie_agent_protocol::{
-    ClientError, MemoryIgnoredEntry, MemoryInfo, MemoryLayer, MemoryListResult, MemoryWriteResult,
-    errors,
+    ClientError, MemoryIgnoredEntry, MemoryInfo, MemoryLayer, MemoryListResult, MemoryReadResult,
+    MemoryWriteResult, SemVer, errors, memory_age, memory_size,
 };
+use jiff::Timestamp;
 
 /// The text a new memory starts from.
 pub const NEW_MEMORY: &str = "---\ndescription: \nkeywords: []\n---\n";
@@ -258,6 +260,238 @@ impl AgentMemoryParts {
     }
 }
 
+/// The client protocol minor from which a daemon stamps every memory with
+/// `created` and `modified`, reports them with `last_read` and the size
+/// limits in `memory.list` and `memory.read`, and owns the stamp lines of
+/// a memory's frontmatter, rewriting them on every save.
+pub const MEMORY_STAMPS_MINOR: u32 = 14;
+
+/// Whether a daemon whose handshake reported `version` owns the stamp lines
+/// of a memory's frontmatter, so an editor leaves them out. An older
+/// daemon's files have none of its own, and whatever a user wrote there is
+/// theirs to edit.
+#[must_use]
+pub fn daemon_stamps_memory(version: Option<SemVer>) -> bool {
+    version.is_some_and(|version| {
+        version
+            .shared_minor(cookie_agent_protocol::CLIENT_PROTOCOL_VERSION)
+            .is_some_and(|minor| minor >= MEMORY_STAMPS_MINOR)
+    })
+}
+
+/// The frontmatter keys the daemon owns on every memory.
+const STAMP_KEYS: [&str; 2] = ["created", "modified"];
+
+/// `text` without the stamp lines of its frontmatter (`created:` and
+/// `modified:` at the top level), the rest kept byte for byte. The daemon
+/// writes its own stamps on every save whatever the text says, so an editor
+/// shows the text without them and saves it as it is left. A text without
+/// frontmatter is returned whole.
+pub fn without_stamps(text: &str) -> String {
+    let Some(opening) = ["---\n", "---\r\n"]
+        .into_iter()
+        .find(|opening| text.starts_with(opening))
+    else {
+        return text.to_owned();
+    };
+    let mut kept = String::with_capacity(text.len());
+    kept.push_str(opening);
+    let mut lines = text[opening.len()..].split_inclusive('\n');
+    for line in lines.by_ref() {
+        if line.trim_end() == "---" {
+            kept.push_str(line);
+            break;
+        }
+        let stamp = STAMP_KEYS.iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.starts_with(':'))
+        });
+        if !stamp {
+            kept.push_str(line);
+        }
+    }
+    for line in lines {
+        kept.push_str(line);
+    }
+    kept
+}
+
+/// The text an editor opens for a memory read from a daemon of `version`:
+/// without the stamp lines when the daemon owns them.
+pub fn editor_text(text: &str, version: Option<SemVer>) -> String {
+    if daemon_stamps_memory(version) {
+        without_stamps(text)
+    } else {
+        text.to_owned()
+    }
+}
+
+/// What a memory's note says when it is over its limit.
+pub const OVER_LIMIT: &str = "over its limit";
+
+/// What the daemon accepts of a memory over its limit.
+pub const OVER_LIMIT_NOTE: &str =
+    "It is over its limit: only changes that make it smaller are saved until it fits.";
+
+/// A memory's stamps and size as `memory.list` or `memory.read` report
+/// them; each is absent from a daemon older than client protocol 1.14.0.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MemoryStamps {
+    pub created: Option<Timestamp>,
+    pub modified: Option<Timestamp>,
+    /// When a model last read it, if the daemon knows.
+    pub last_read: Option<Timestamp>,
+    /// The file's size in bytes, frontmatter included.
+    pub size: Option<u64>,
+    /// The `[memory]` limit of its kind, in bytes.
+    pub max_size: Option<u64>,
+}
+
+/// One of a memory's times, for a line of its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryTime {
+    /// `created`, `modified`, or `last read`.
+    pub label: &'static str,
+    pub at: Timestamp,
+}
+
+impl MemoryTime {
+    /// `created: 2026-10-01 09:12:44 UTC (3 weeks ago)`.
+    pub fn line(&self, now: Timestamp) -> String {
+        format!(
+            "{}: {} ({})",
+            self.label,
+            exact_time(self.at),
+            ago(self.at, now)
+        )
+    }
+}
+
+impl MemoryStamps {
+    pub fn of_info(memory: &MemoryInfo) -> Self {
+        Self {
+            created: memory.created,
+            modified: memory.modified,
+            last_read: memory.last_read,
+            size: Some(memory.size),
+            max_size: memory.max_size,
+        }
+    }
+
+    /// The stamps of a read; `last_read` comes from the listing, which
+    /// alone reports it.
+    pub fn of_read(read: &MemoryReadResult, last_read: Option<Timestamp>) -> Self {
+        Self {
+            created: read.created,
+            modified: read.modified,
+            last_read,
+            size: read.size,
+            max_size: read.max_size,
+        }
+    }
+
+    /// Whether the memory is over its limit.
+    pub fn over_limit(&self) -> bool {
+        matches!((self.size, self.max_size), (Some(size), Some(max)) if size > max)
+    }
+
+    /// The times known, in the order created, modified, last read.
+    pub fn times(&self) -> Vec<MemoryTime> {
+        [
+            ("created", self.created),
+            ("modified", self.modified),
+            ("last read", self.last_read),
+        ]
+        .into_iter()
+        .filter_map(|(label, at)| at.map(|at| MemoryTime { label, at }))
+        .collect()
+    }
+
+    /// `812 bytes of 2 KB`, `2.5 KB of 2 KB, over its limit`, or only the
+    /// size without a limit; `None` without a size.
+    pub fn size_text(&self) -> Option<String> {
+        let size = memory_size(self.size?);
+        Some(match self.max_size {
+            Some(max) if self.over_limit() => {
+                format!("{size} of {}, {OVER_LIMIT}", memory_size(max))
+            }
+            Some(max) => format!("{size} of {}", memory_size(max)),
+            None => size,
+        })
+    }
+
+    /// The lines a detail view shows: each time known with its exact time
+    /// and age, then the size and limit.
+    pub fn detail_lines(&self, now: Timestamp) -> Vec<String> {
+        let mut lines = self
+            .times()
+            .iter()
+            .map(|time| time.line(now))
+            .collect::<Vec<_>>();
+        if let Some(size) = self.size_text() {
+            lines.push(format!("size: {size}"));
+        }
+        lines
+    }
+
+    /// Every time known as an age, then the size and limit, such as
+    /// `created 3 weeks ago · modified 1 day ago · last read 2 minutes ago
+    /// · 812 bytes of 2 KB`.
+    pub fn ages(&self, now: Timestamp) -> String {
+        let mut parts = self
+            .times()
+            .iter()
+            .map(|time| format!("{} {}", time.label, ago(time.at, now)))
+            .collect::<Vec<_>>();
+        parts.extend(self.size_text());
+        parts.join(" · ")
+    }
+
+    /// One short line for a row: when it was modified, then its size and
+    /// limit, such as `modified 2 days ago · 812 bytes of 2 KB`.
+    pub fn summary(&self, now: Timestamp) -> String {
+        let mut parts = Vec::new();
+        if let Some(modified) = self.modified {
+            parts.push(format!("modified {}", ago(modified, now)));
+        }
+        if let Some(size) = self.size_text() {
+            parts.push(size);
+        }
+        parts.join(" · ")
+    }
+
+    /// The exact times, one per line, for a hover: `created: 2026-10-01
+    /// 09:12:44 UTC`.
+    pub fn exact_times(&self) -> String {
+        self.times()
+            .iter()
+            .map(|time| format!("{}: {}", time.label, exact_time(time.at)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// How long before `now` `then` was: `3 weeks ago`, `less than a minute
+/// ago`, in the units memory reads ages in.
+pub fn ago(then: Timestamp, now: Timestamp) -> String {
+    format!("{} ago", memory_age(then, now))
+}
+
+/// `at` in UTC to the second, such as `2026-10-01 09:12:44 UTC`. Formatted
+/// by hand: jiff's strftime would grow the web page.
+pub fn exact_time(at: Timestamp) -> String {
+    let time = jiff::tz::TimeZone::UTC.to_datetime(at);
+    format!(
+        "{}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        time.year(),
+        time.month(),
+        time.day(),
+        time.hour(),
+        time.minute(),
+        time.second()
+    )
+}
+
 /// The heading of a layer.
 pub const fn layer_title(layer: MemoryLayer) -> &'static str {
     match layer {
@@ -274,8 +508,8 @@ mod tests {
     use cookie_agent_protocol::MemoryListResult;
 
     use super::{
-        AgentMemoryParts, MemoryRow, agent_memory_parts, memory_rows, new_memory_refusal,
-        saved_status,
+        AgentMemoryParts, MemoryRow, MemoryStamps, agent_memory_parts, daemon_stamps_memory,
+        editor_text, memory_rows, new_memory_refusal, saved_status, without_stamps,
     };
 
     fn listing() -> MemoryListResult {
@@ -354,6 +588,123 @@ mod tests {
             "---\ndescription: \"Memory of the `reviewer` agent: \\\"diffs\\\"\"\n\
              keywords: [\"reviewer\", \"subagent\", \"rust\", \"a: b\"]\n---\nBody.\n"
         );
+    }
+
+    #[test]
+    fn an_editor_leaves_out_only_the_frontmatters_stamp_lines() {
+        let text = "---\ndescription: How releases are cut\ncreated: 2026-10-01T09:12:44Z\n\
+                    keywords: [release]\nmodified: 2026-10-20T16:03:10Z\ncreated_by: me\n  \
+                    created: nested\n---\ncreated: in the body\nmodified: too\n";
+        assert_eq!(
+            without_stamps(text),
+            "---\ndescription: How releases are cut\nkeywords: [release]\ncreated_by: me\n  \
+             created: nested\n---\ncreated: in the body\nmodified: too\n"
+        );
+        let crlf = "---\r\ndescription: x\r\ncreated: 2026-10-01T09:12:44Z\r\n---\r\nbody\r\n";
+        assert_eq!(
+            without_stamps(crlf),
+            "---\r\ndescription: x\r\n---\r\nbody\r\n"
+        );
+        assert_eq!(
+            without_stamps("created: no frontmatter\n"),
+            "created: no frontmatter\n"
+        );
+    }
+
+    #[test]
+    fn only_a_daemon_of_minor_fourteen_owns_the_stamp_lines() {
+        use cookie_agent_protocol::SemVer;
+        let text = "---\ndescription: x\ncreated: 2026-10-01T09:12:44Z\n---\n";
+        assert!(!daemon_stamps_memory(None));
+        assert!(!daemon_stamps_memory(Some(SemVer::new(1, 13, 0))));
+        assert!(daemon_stamps_memory(Some(SemVer::new(1, 14, 0))));
+        assert!(!daemon_stamps_memory(Some(SemVer::new(2, 14, 0))));
+        assert_eq!(
+            editor_text(text, Some(SemVer::new(1, 14, 2))),
+            "---\ndescription: x\n---\n"
+        );
+        assert_eq!(editor_text(text, Some(SemVer::new(1, 13, 0))), text);
+    }
+
+    fn at(text: &str) -> jiff::Timestamp {
+        text.parse().expect("timestamp")
+    }
+
+    #[test]
+    fn stamps_read_as_ages_exact_times_and_a_size_against_the_limit() {
+        let now = at("2026-10-22T12:00:00Z");
+        let stamps = MemoryStamps {
+            created: Some(at("2026-10-01T09:12:44Z")),
+            modified: Some(at("2026-10-20T16:03:10Z")),
+            last_read: Some(at("2026-10-22T11:58:00Z")),
+            size: Some(812),
+            max_size: Some(2048),
+        };
+        assert!(!stamps.over_limit());
+        assert_eq!(
+            stamps.detail_lines(now),
+            [
+                "created: 2026-10-01 09:12:44 UTC (3 weeks ago)",
+                "modified: 2026-10-20 16:03:10 UTC (1 day ago)",
+                "last read: 2026-10-22 11:58:00 UTC (2 minutes ago)",
+                "size: 812 bytes of 2 KB",
+            ]
+        );
+        assert_eq!(
+            stamps.summary(now),
+            "modified 1 day ago · 812 bytes of 2 KB"
+        );
+        assert_eq!(
+            stamps.ages(now),
+            "created 3 weeks ago · modified 1 day ago · last read 2 minutes ago · 812 bytes of 2 KB"
+        );
+        assert_eq!(
+            stamps.exact_times(),
+            "created: 2026-10-01 09:12:44 UTC\nmodified: 2026-10-20 16:03:10 UTC\n\
+             last read: 2026-10-22 11:58:00 UTC"
+        );
+
+        let over = MemoryStamps {
+            size: Some(2611),
+            max_size: Some(2048),
+            ..MemoryStamps::default()
+        };
+        assert!(over.over_limit());
+        assert_eq!(
+            over.size_text().as_deref(),
+            Some("2.5 KB of 2 KB, over its limit")
+        );
+        assert_eq!(over.summary(now), "2.5 KB of 2 KB, over its limit");
+        assert!(over.times().is_empty());
+
+        // An older daemon reports a size and nothing else.
+        let older = MemoryStamps {
+            size: Some(64),
+            ..MemoryStamps::default()
+        };
+        assert!(!older.over_limit());
+        assert_eq!(older.detail_lines(now), ["size: 64 bytes"]);
+    }
+
+    #[test]
+    fn a_listing_and_a_read_give_their_stamps() {
+        let info: cookie_agent_protocol::MemoryInfo = serde_json::from_value(serde_json::json!({
+            "url": "user://style", "layer": "user", "revision": "r1", "size": 3000,
+            "created": "2026-10-01T09:12:44Z", "modified": "2026-10-20T16:03:10Z",
+            "last_read": "2026-10-21T08:00:00Z", "max_size": 2048
+        }))
+        .expect("memory");
+        let listed = MemoryStamps::of_info(&info);
+        assert!(listed.over_limit());
+        assert_eq!(listed.last_read, Some(at("2026-10-21T08:00:00Z")));
+        let read: cookie_agent_protocol::MemoryReadResult =
+            serde_json::from_value(serde_json::json!({
+                "url": "user://style", "revision": "r1", "text": "---\n---\n",
+                "created": "2026-10-01T09:12:44Z", "modified": "2026-10-20T16:03:10Z",
+                "size": 3000, "max_size": 2048
+            }))
+            .expect("read");
+        assert_eq!(MemoryStamps::of_read(&read, info.last_read), listed);
     }
 
     #[test]

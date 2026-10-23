@@ -566,6 +566,16 @@ pub enum TranscriptItem {
         args: String,
         rendered_body: String,
     },
+    /// A model's memory tool saved, edited, or deleted the memory at `url`
+    /// (memory spec section 16.9.10): one line, such as `Saved
+    /// project://cookie-agent/release`, that opens the Memory view at that
+    /// memory. It is not a diagnostic, so no level filter hides it.
+    MemoryChange {
+        id: u64,
+        seq: u64,
+        change: cookie_agent_protocol::MemoryChangeKind,
+        url: String,
+    },
     Goal {
         id: u64,
         seq: u64,
@@ -692,6 +702,7 @@ impl TranscriptItem {
             | Self::PluginMessage { id, .. }
             | Self::AgentMd { id, .. }
             | Self::SkillLoaded { id, .. }
+            | Self::MemoryChange { id, .. }
             | Self::Goal { id, .. }
             | Self::ProducerMessage { id, .. } => *id,
         }
@@ -707,7 +718,7 @@ impl TranscriptItem {
             | Self::PluginMessage { version, .. }
             | Self::AgentMd { version, .. }
             | Self::SkillLoaded { version, .. } => *version,
-            Self::Goal { .. } => 0,
+            Self::Goal { .. } | Self::MemoryChange { .. } => 0,
             Self::ProducerMessage { status, .. } => match status {
                 ProducerMessageStatus::Pending => 0,
                 ProducerMessageStatus::Admitted => 1,

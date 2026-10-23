@@ -1208,13 +1208,18 @@ pub(super) fn reduce_event_from(
             },
             timestamp,
         ),
-        // A model's memory change, one line (memory spec section 16.9.10).
-        EventPayload::MemoryChanged { change, url } => push_event(
-            state,
-            EventLevel::Info,
-            format!("{} {url}", change.verb()),
-            timestamp,
-        ),
+        // A model's memory change, one line that opens the Memory view
+        // (memory spec section 16.9.10). The tool call that made it sits
+        // above it, and what the run does next below it, as for a skill.
+        EventPayload::MemoryChanged { change, url } => {
+            state.mark_event_split_pending();
+            push_item(state, timestamp, |id| TranscriptItem::MemoryChange {
+                id,
+                seq: sequence,
+                change,
+                url,
+            });
+        }
         // What a writer left out changes nothing; the debug view names it.
         EventPayload::RecordOmitted { omitted_type } => push_event(
             state,

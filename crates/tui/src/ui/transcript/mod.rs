@@ -295,6 +295,9 @@ pub(super) enum BlockId {
     PluginMessage(u64),
     AgentMd(u64),
     SkillLoaded(u64),
+    /// A model's memory change, by its event's sequence: a click opens the
+    /// Memory panel at the memory.
+    MemoryChange(u64),
     ProducerMessage(ProducerMessageId),
     MediaFile {
         turn_seq: u64,
@@ -1812,6 +1815,20 @@ impl App {
             }
             BlockId::ToolSession { session, .. } => {
                 self.watch_session(session);
+                return;
+            }
+            BlockId::MemoryChange(seq) => {
+                let url = self.store.sessions.get(&session_id).and_then(|state| {
+                    state.transcript.iter().rev().find_map(|item| match item {
+                        TranscriptItem::MemoryChange { seq: at, url, .. } if *at == seq => {
+                            Some(url.clone())
+                        }
+                        _ => None,
+                    })
+                });
+                if let Some(url) = url {
+                    self.open_memory_panel_at(url);
+                }
                 return;
             }
             _ => {}

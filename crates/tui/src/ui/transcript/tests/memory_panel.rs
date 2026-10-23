@@ -6,7 +6,9 @@
 use cookie_agent_protocol::{ClientDelivery, MemoryLayer};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::ui::app::memory_panel::{MemoryAction, MemoryRow, NEW_MEMORY, PendingEdit};
+use crate::ui::app::memory_panel::{
+    MemoryAction, MemoryRow, NEW_MEMORY, PendingEdit, sample_memory,
+};
 use crate::ui::app::*;
 use crate::ui::slash::SlashCommand;
 
@@ -172,7 +174,16 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
     })
     .await;
     let request = app.pending_memory_editor.take().unwrap();
-    assert_eq!(unstamped(&request.text), valid);
+    // The daemon stamped the file; the editor leaves its stamp lines out.
+    let stamped = std::fs::read_to_string(&path).unwrap();
+    let created = stamped
+        .lines()
+        .find(|line| line.starts_with("created: "))
+        .expect("the daemon's created stamp")
+        .to_owned();
+    assert!(stamped.contains("\nmodified: "), "{stamped}");
+    assert_eq!(request.text, valid);
+    assert_eq!(request.original, valid);
     assert!(request.revision.is_some());
     let opened = request.text.clone();
     app.finish_memory_edit(request, Ok(opened));
@@ -219,7 +230,13 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
         app.status == "Saved project://web/build."
     })
     .await;
-    assert_eq!(unstamped(&std::fs::read_to_string(&path).unwrap()), mine);
+    let overwritten = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(unstamped(&overwritten), mine);
+    // Saving text without the stamps keeps when the memory was created.
+    assert!(
+        overwritten.lines().any(|line| line == created),
+        "{overwritten}"
+    );
 
     // `d` asks first; Esc keeps the memory, and the button deletes it.
     pump_until(&mut app, &mut deliveries, |app| {
@@ -308,4 +325,107 @@ async fn saving_an_agent_memory_says_what_the_daemon_kept() {
         "{}",
         app.status
     );
+}
+
+/// The details give a memory's stamps with their exact times and its size
+/// against its limit; a memory over its limit is marked in its row and
+/// says what the daemon still accepts.
+#[tokio::test]
+async fn the_panel_shows_stamps_sizes_and_what_is_over_its_limit() {
+    let mut app = test_app().await;
+    app.open_memory_panel();
+    app.install_memory_listing(Ok(sample_memory()));
+    let feedback = memory_row(&app, "user://feedback").expect("feedback row");
+    app.memory_panel.selection.select(Some(feedback));
+    let rendered = rendered_frame(&mut app, 120, 50);
+    for text in [
+        "created: 2026-10-01 09:12:44 UTC (",
+        "modified: 2026-10-20 16:03:10 UTC (",
+        "last read: 2026-10-21 08:30:00 UTC (",
+        "size: 64 bytes of 2 KB",
+        "gpu  The GPU  over its limit",
+    ] {
+        assert!(rendered.contains(text), "{text}:\n{rendered}");
+    }
+    assert!(
+        !rendered.contains("only changes that make it smaller"),
+        "{rendered}"
+    );
+    let gpu = memory_row(&app, "machine://labpc/gpu").expect("gpu row");
+    app.memory_panel.selection.select(Some(gpu));
+    let rendered = rendered_frame(&mut app, 120, 50);
+    for text in [
+        "size: 2.9 KB of 2 KB, over its limit",
+        "only changes that make it smaller are saved",
+    ] {
+        assert!(rendered.contains(text), "{text}:\n{rendered}");
+    }
+}
+
+/// A model's memory change is a transcript line whose click opens the
+/// panel at that memory, and a line about a memory that is gone says so.
+#[tokio::test]
+async fn a_memory_change_line_opens_the_panel_at_its_memory() {
+    use cookie_agent_protocol::{EventPayload, MemoryChangeKind};
+
+    use crate::ui::transcript::BlockId;
+
+    let (mut app, session, run) = app_with_active_run().await;
+    let changed = |seq, change, url: &str| {
+        event(
+            session,
+            seq,
+            run,
+            EventPayload::MemoryChanged {
+                change,
+                url: url.into(),
+            },
+        )
+    };
+    assert!(
+        app.store
+            .apply_event(changed(1, MemoryChangeKind::Saved, "machine://labpc/gpu"))
+    );
+    assert!(
+        app.store
+            .apply_event(changed(2, MemoryChangeKind::Deleted, "project://web/old"))
+    );
+    let rendered = rendered_frame(&mut app, 100, 30);
+    for text in ["Saved machine://labpc/gpu", "Deleted project://web/old"] {
+        assert!(rendered.contains(text), "{text}:\n{rendered}");
+    }
+    let line = |app: &App, seq| {
+        app.hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == BlockId::MemoryChange(seq))
+            .and_then(|hit| hit.toggle_rect)
+            .expect("a clickable line")
+    };
+    let saved = line(&app, 1);
+    assert_eq!(
+        app.hover_target_at(saved.x, saved.y),
+        Some(PointerTarget::TranscriptBlock(BlockId::MemoryChange(1))),
+        "the line hovers"
+    );
+    app.handle_click(saved.x, saved.y).await;
+    assert_eq!(app.modal, Modal::Memory);
+    app.install_memory_listing(Ok(sample_memory()));
+    assert_eq!(
+        app.memory_panel.selection.selected(),
+        memory_row(&app, "machine://labpc/gpu")
+    );
+    // A later listing leaves the selection to the user.
+    app.memory_panel.selection.select(Some(0));
+    app.install_memory_listing(Ok(sample_memory()));
+    assert_eq!(app.memory_panel.selection.selected(), Some(0));
+
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert_eq!(app.modal, Modal::None);
+    rendered_frame(&mut app, 100, 30);
+    let deleted = line(&app, 2);
+    app.handle_click(deleted.x, deleted.y).await;
+    assert_eq!(app.modal, Modal::Memory);
+    app.install_memory_listing(Ok(sample_memory()));
+    assert_eq!(app.status, "project://web/old is not in memory now.");
 }

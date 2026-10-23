@@ -20,6 +20,8 @@ otherwise the last user text decides.
 - containing "many lines": a `bash` call that prints 100 lines;
 - containing "picture": a `read` call on `dot.png`, whose result is a media
   block;
+- containing "remember": a `memory_write` of `user://e2e-build`; containing
+  "forget": a `memory_delete` of it;
 - anything else: "ok".
 
 Every reply reports 1,000 prompt tokens, 800 of them read from the cache
@@ -138,6 +140,18 @@ def reply(request):
         return tool_reply("bash", {"command": "sleep 8; printf 'woke up\\n'"})
     if "picture" in text:
         return tool_reply("read", {"filePath": "dot.png"})
+    if "remember" in text:
+        return tool_reply(
+            "memory_write",
+            {
+                "url": "user://e2e-build",
+                "description": "The browser scenario builds with trunk",
+                "keywords": ["e2e-scenario"],
+                "body": "The user said the browser scenario builds with trunk.\n",
+            },
+        )
+    if "forget" in text:
+        return tool_reply("memory_delete", {"url": "user://e2e-build"})
     if "tool" in text:
         return tool_reply()
     if "very slow" in text:

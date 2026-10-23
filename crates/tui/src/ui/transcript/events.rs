@@ -501,6 +501,27 @@ pub(super) fn skill_loaded_layout(
     collapsible_event_block(block_id, body, context.width, context.theme)
 }
 
+/// A model's memory change: one line, `🧠 Saved project://web/build`,
+/// whose click opens the Memory panel at the memory (memory spec section
+/// 16.9.10).
+pub(super) fn memory_change_layout(
+    seq: u64,
+    change: cookie_agent_protocol::MemoryChangeKind,
+    url: &str,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let line = Line::from(vec![
+        Span::styled(format!("🧠 {} ", change.verb()), context.theme.internal()),
+        Span::styled(safe_display_text(url), context.theme.link()),
+    ]);
+    collapsible_event_block(
+        BlockId::MemoryChange(seq),
+        vec![line],
+        context.width,
+        context.theme,
+    )
+}
+
 pub(super) fn collapsible_event_block(
     block_id: BlockId,
     body: Vec<Line<'static>>,

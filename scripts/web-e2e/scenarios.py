@@ -1691,6 +1691,96 @@ def shown(browser, selector):
     )
 
 
+def memory_changes(browser):
+    """A model's memory change is one transcript line that opens the Memory
+    view at that memory, its row marked, with when it was modified and its
+    size against its limit; the editor shows its stamps read-only and leaves
+    their lines out of the text, and a save keeps when it was created. A
+    memory over its limit is marked, and a line about a deleted memory says
+    it is gone. test-web-page.sh gives this group's agent memory, each user
+    memory at most 1 KB."""
+    browser.resize(1280, 900)
+    url = "user://e2e-build"
+    path = os.path.join(HOME, ".cookie-agent", "memory", "user", "e2e-build.md")
+    row = '#page [data-memory="%s"]' % url
+    new_session(browser)
+    send(browser, "remember how the build works")
+    browser.wait("the change line", lambda: count(browser, "#transcript [data-memory-change]") == 1, timeout=40)
+    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    line = browser.text("#transcript [data-memory-change]")
+    assert re.fullmatch(r"\s*Saved\s+user://e2e-build\s*", line), line
+    # The line sits between the call that made the change and the answer
+    # after it.
+    order = browser.script(
+        "const line = document.querySelector('#transcript [data-memory-change]');"
+        " const tool = [...document.querySelectorAll('#transcript [data-tool]')]"
+        "   .find(e => e.innerText.includes('Write memory user://e2e-build'));"
+        " const answer = [...document.querySelectorAll('#transcript .markdown')]"
+        "   .find(e => e.innerText.includes('The tool ran.'));"
+        " const after = (a, b) => !!a && !!b && !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);"
+        " return [after(tool, line), after(line, answer)]"
+    )
+    assert order == [True, True], order
+    browser.shot("memory-change-line")
+
+    browser.click("#transcript [data-memory-change] button")
+    browser.wait("the Memory view at the memory", lambda: page_view(browser) == "memory"
+                 and count(browser, row + "[data-memory-focused]") == 1)
+    stamps = browser.text(row + " [data-memory-stamps]")
+    assert re.fullmatch(r"modified less than a minute ago · \d+ bytes of 1 KB", stamps.strip()), stamps
+    exact = browser.script("return document.querySelector(arguments[0]).title", row + " [data-memory-stamps]")
+    assert re.search(r"^created: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC$", exact, re.M), exact
+    assert count(browser, row + "[data-memory-over]") == 0
+    browser.shot("memory-focused")
+
+    # The editor: the stamps read-only above the text, which has none.
+    with open(path) as file:
+        created = [line for line in file.read().splitlines() if line.startswith("created: ")]
+    assert len(created) == 1, created
+    browser.click(row + " button")
+    browser.wait("the editor", lambda: count(browser, "#memory-stamps") == 1)
+    assert re.fullmatch(
+        r"created less than a minute ago · modified less than a minute ago · \d+ bytes of 1 KB",
+        browser.text("#memory-stamps").strip(),
+    ), browser.text("#memory-stamps")
+    text = browser.script("return document.querySelector('#memory-text').value")
+    assert "description: The browser scenario builds with trunk" in text, text
+    assert "created:" not in text and "modified:" not in text, text
+    browser.shot("memory-editor-stamps")
+    set_text(browser, "#memory-text", text.replace("with trunk.", "with trunk and tailwind."))
+    browser.click("#memory-save")
+    browser.wait("the saved memory", lambda: count(browser, "#memory-text") == 0)
+    with open(path) as file:
+        saved = file.read()
+    assert "trunk and tailwind" in saved, saved
+    assert created[0] in saved.splitlines(), saved
+    print("memory: a change line opens the memory, whose stamps show and survive a save")
+
+    # A memory over its limit is marked.
+    big = os.path.join(HOME, ".cookie-agent", "memory", "user", "e2e-big.md")
+    with open(big, "w") as file:
+        file.write("---\ndescription: A memory over its limit\n---\n" + "x" * 1500 + "\n")
+    view(browser, "chat")
+    view(browser, "memory")
+    big_row = '#page [data-memory="user://e2e-big"]'
+    browser.wait("the memory over its limit", lambda: count(browser, big_row + "[data-memory-over]") == 1)
+    assert "over its limit" in browser.text(big_row), browser.text(big_row)
+    assert count(browser, "#page [data-memory-focused]") == 0, "the rail kept the mark"
+    browser.shot("memory-over-limit")
+    os.remove(big)
+
+    # A line about a deleted memory says it is gone.
+    view(browser, "chat")
+    send(browser, "forget how the build works")
+    browser.wait("the delete line", lambda: count(browser, "#transcript [data-memory-change]") == 2, timeout=40)
+    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    assert not os.path.exists(path)
+    browser.script("const l = document.querySelectorAll('#transcript [data-memory-change] button'); l[l.length - 1].click()")
+    browser.wait("the gone note", lambda: page_view(browser) == "memory"
+                 and "user://e2e-build is not in memory now." in browser.text("#page [data-memory-gone]"))
+    print("memory: a line about a deleted memory says it is gone")
+
+
 def page_view(browser):
     return browser.script("const p = document.querySelector('#page'); return p ? p.dataset.view : 'chat'")
 
@@ -4051,6 +4141,8 @@ SCENARIOS = [
     ("touch_message_menu", touch_message_menu, "chat", []),
     ("projects_phone", projects_phone, "chat", []),
     ("phone_audit", audit, "chat", []),
+    # Its daemon's agent keeps memory (test-web-page.sh).
+    ("memory_changes", memory_changes, "memory", []),
     ("mcp_sign_in", mcp_sign_in, "oauth", []),
     # Its daemon's `local` runtime hosts MCP servers (test-web-page.sh).
     ("runtime_mcp", runtime_mcp, "runtime_mcp", []),

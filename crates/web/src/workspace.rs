@@ -210,6 +210,8 @@ pub struct Workspace {
     pub memory_edit: RwSignal<Option<MemoryEdit>>,
     /// A write that was not saved, waiting for the user's choice.
     pub memory_pending: RwSignal<Option<MemoryPending>>,
+    /// The memory a transcript line opened the view at: shown, and marked.
+    pub memory_focus: RwSignal<Option<String>>,
     pub plugins: RwSignal<Option<Result<Vec<cookie_agent_protocol::PluginInfo>, String>>>,
     /// The daemon's client protocol has `session.delete`.
     pub can_delete: RwSignal<bool>,
@@ -336,6 +338,7 @@ impl Workspace {
             memory: RwSignal::new(None),
             memory_edit: RwSignal::new(None),
             memory_pending: RwSignal::new(None),
+            memory_focus: RwSignal::new(None),
             plugins: RwSignal::new(None),
             can_delete: RwSignal::new(false),
             delete_error: RwSignal::new(None),

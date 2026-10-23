@@ -1,17 +1,19 @@
 //! The `/memory` panel (`docs/site/specs/memory.md` section 10): the
-//! daemon's memories by layer, grouped by machine and project; editing one
-//! in `$VISUAL`/`$EDITOR` and saving it with `memory.write` at the revision
-//! read; creating and deleting memories; and the invalid files and other
-//! entries of the memory folder with the reason. A memory that changed
-//! while it was open is never overwritten silently: the panel offers to
-//! reload it or to overwrite it.
+//! daemon's memories by layer, grouped by machine and project, with when
+//! each was created, modified, and last read, its size against its limit,
+//! and a mark when it is over it (section 16.9); editing one in
+//! `$VISUAL`/`$EDITOR`, without the stamp lines the daemon owns, and saving
+//! it with `memory.write` at the revision read; creating and deleting
+//! memories; and the invalid files and other entries of the memory folder
+//! with the reason. A memory that changed while it was open is never
+//! overwritten silently: the panel offers to reload it or to overwrite it.
 
 pub(in crate::ui) use cookie_agent_client_state::memory::{
     MemoryRow, MemoryWriteOutcome, NEW_MEMORY,
 };
 use cookie_agent_client_state::memory::{
-    delete_refusal, layer_title, memory_name, memory_rows, message_of, new_memory_refusal,
-    saved_status,
+    MemoryStamps, OVER_LIMIT, OVER_LIMIT_NOTE, delete_refusal, editor_text, layer_title,
+    memory_name, memory_rows, message_of, new_memory_refusal, saved_status,
 };
 #[cfg(test)]
 use cookie_agent_protocol::MemoryIgnoredEntry;
@@ -122,6 +124,9 @@ pub(in crate::ui) struct MemoryPanelState {
     pub(in crate::ui) confirm_delete: Option<(String, String)>,
     /// A write that was not saved, waiting for the user's choice.
     pub(in crate::ui) pending: Option<PendingEdit>,
+    /// The memory to select once the listing arrives: the one a transcript
+    /// line opened the panel at.
+    pub(in crate::ui) focus: Option<String>,
 }
 
 impl MemoryPanelState {
@@ -177,12 +182,28 @@ impl MemoryPanelState {
         }
     }
 
-    fn install(&mut self, listing: Result<MemoryListResult, String>) {
+    /// Installs a listing. The first one after the panel opened at a
+    /// memory selects it; `Some(url)` comes back when that memory is not
+    /// listed (deleted, or moved since).
+    fn install(&mut self, listing: Result<MemoryListResult, String>) -> Option<String> {
+        let listed = listing.is_ok();
         self.listing = Some(listing);
         self.refresh_in_flight = false;
-        let count = self.rows().len();
+        let rows = self.rows();
+        let count = rows.len();
         self.selection
             .select((count > 0).then(|| self.selection.selected().unwrap_or(0).min(count - 1)));
+        let url = self.focus.take_if(|_| listed)?;
+        match rows
+            .iter()
+            .position(|row| matches!(row, MemoryRow::Memory(memory) if memory.url == url))
+        {
+            Some(index) => {
+                self.selection.select(Some(index));
+                None
+            }
+            None => Some(url),
+        }
     }
 }
 
@@ -191,6 +212,13 @@ impl App {
         self.memory_panel = MemoryPanelState::default();
         self.modal = Modal::Memory;
         self.poll_memory();
+    }
+
+    /// Opens the panel with `url` selected, from a transcript line that
+    /// says a model changed it.
+    pub(in crate::ui) fn open_memory_panel_at(&mut self, url: String) {
+        self.open_memory_panel();
+        self.memory_panel.focus = Some(url);
     }
 
     /// Fetches `memory.list` for the open `/memory` panel.
@@ -210,8 +238,13 @@ impl App {
         });
     }
 
-    pub(super) fn install_memory_listing(&mut self, result: Result<MemoryListResult, String>) {
-        self.memory_panel.install(result);
+    pub(in crate::ui) fn install_memory_listing(
+        &mut self,
+        result: Result<MemoryListResult, String>,
+    ) {
+        if let Some(url) = self.memory_panel.install(result) {
+            self.status = format!("{url} is not in memory now.");
+        }
     }
 
     /// Reads `url` for `purpose`.
@@ -254,12 +287,17 @@ impl App {
                     None => format!("editing {url}"),
                 };
                 self.pending_memory_editor = Some(match read {
-                    Some(read) => MemoryEditRequest {
-                        url: read.url,
-                        text: read.text.clone(),
-                        original: read.text,
-                        revision: Some(read.revision),
-                    },
+                    Some(read) => {
+                        // The daemon owns the stamp lines and writes its own
+                        // on every save: the editor leaves them out.
+                        let text = editor_text(&read.text, self.client.daemon_version());
+                        MemoryEditRequest {
+                            url: read.url,
+                            text: text.clone(),
+                            original: text,
+                            revision: Some(read.revision),
+                        }
+                    }
                     None => MemoryEditRequest {
                         url,
                         text: NEW_MEMORY.to_owned(),
@@ -513,7 +551,7 @@ fn render_memory(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
-            Constraint::Length(8),
+            Constraint::Length(11),
             Constraint::Length(1),
             Constraint::Length(form_height),
         ])
@@ -618,6 +656,9 @@ fn row_line(row: &MemoryRow, theme: &Theme) -> Line<'static> {
             if memory.orphaned {
                 spans.push(Span::styled("  (no current agent)", theme.warning()));
             }
+            if MemoryStamps::of_info(memory).over_limit() {
+                spans.push(Span::styled(format!("  {OVER_LIMIT}"), theme.warning()));
+            }
             Line::from(spans)
         }
         MemoryRow::IgnoredHeading => {
@@ -682,10 +723,12 @@ fn detail_text(panel: &MemoryPanelState) -> String {
                     "No current agent has this ID; the file stays until you delete it.".into(),
                 );
             }
-            lines.push(format!(
-                "{} bytes, revision {}",
-                memory.size, memory.revision
-            ));
+            let stamps = MemoryStamps::of_info(&memory);
+            lines.extend(stamps.detail_lines(jiff::Timestamp::now()));
+            if stamps.over_limit() {
+                lines.push(OVER_LIMIT_NOTE.to_owned());
+            }
+            lines.push(format!("revision {}", memory.revision));
             lines.join("\n")
         }
         Some(MemoryRow::Ignored(ignored)) => format!(
@@ -701,9 +744,9 @@ fn detail_text(panel: &MemoryPanelState) -> String {
     }
 }
 
-/// A listing with every kind of row: two categories, an agent file of no
-/// current agent, a machine memory, an invalid project memory, and an
-/// ignored file.
+/// A listing with every kind of row: two categories, the first with its
+/// stamps and limit, an agent file of no current agent, a machine memory
+/// over its limit, an invalid project memory, and an ignored file.
 #[cfg(test)]
 pub(in crate::ui) fn sample_memory() -> MemoryListResult {
     let memory = |url: &str, layer, group: Option<&str>, description: Option<&str>| MemoryInfo {
@@ -728,14 +771,32 @@ pub(in crate::ui) fn sample_memory() -> MemoryListResult {
         Some("Old lessons"),
     );
     ghost.orphaned = true;
+    let at = |text: &str| text.parse::<jiff::Timestamp>().ok();
+    let feedback = MemoryInfo {
+        created: at("2026-10-01T09:12:44Z"),
+        modified: at("2026-10-20T16:03:10Z"),
+        last_read: at("2026-10-21T08:30:00Z"),
+        max_size: Some(2048),
+        ..memory(
+            "user://feedback",
+            MemoryLayer::User,
+            None,
+            Some("Corrections"),
+        )
+    };
+    let gpu = MemoryInfo {
+        size: 3000,
+        max_size: Some(2048),
+        ..memory(
+            "machine://labpc/gpu",
+            MemoryLayer::Machine,
+            Some("labpc"),
+            Some("The GPU"),
+        )
+    };
     MemoryListResult {
         memories: vec![
-            memory(
-                "user://feedback",
-                MemoryLayer::User,
-                None,
-                Some("Corrections"),
-            ),
+            feedback,
             memory(
                 "user://preferences",
                 MemoryLayer::User,
@@ -743,12 +804,7 @@ pub(in crate::ui) fn sample_memory() -> MemoryListResult {
                 Some("How the user wants work done"),
             ),
             ghost,
-            memory(
-                "machine://labpc/gpu",
-                MemoryLayer::Machine,
-                Some("labpc"),
-                Some("The GPU"),
-            ),
+            gpu,
             memory(
                 "project://web/build",
                 MemoryLayer::Project,

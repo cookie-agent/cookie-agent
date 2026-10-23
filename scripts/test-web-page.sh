@@ -4,7 +4,8 @@
 # a scripted model (scripts/web-e2e/mock-model.py), a subagent, a skill, a
 # runtime that never starts, the reference plugin, and MCP servers that want
 # OAuth (scripts/web-e2e/mock-oauth.py), with, for the runtime_mcp group,
-# MCP servers in its `local` runtime, and a second, empty
+# MCP servers in its `local` runtime, for the memory group, an agent that
+# keeps memory, and a second, empty
 # one whose page is of another origin. Run scripts/build-web.sh first so the
 # daemons embed the real page.
 #
@@ -140,6 +141,15 @@ permissions:
 ---
 Help.
 AGENT
+    # The memory group's agent keeps memory, each user memory at most 1 KB.
+    memory_config=""
+    if [[ " $* " == *" memory_changes "* ]]; then
+        sed -i 's/^  skill: allow$/  skill: allow\n  memory: allow\n  memory_write: allow/' \
+            "$allowing/.cookie-agent/agents/primary.md"
+        memory_config="
+[memory]
+user_max_bytes = 1024"
+    fi
     cat >"$allowing/.cookie-agent/agents/helper.md" <<'AGENT'
 ---
 description: Browser scenario subagent
@@ -239,6 +249,7 @@ url = "http://127.0.0.1:$oauth_port/mcp"
 [mcp.servers.oauth-paste]
 url = "http://127.0.0.1:$oauth_port/mcp"
 $runtime_mcp
+$memory_config
 TOML
     # A session made before the daemon starts, by another process: the daemon
     # lists it but has not loaded it, so the scenarios can hold its owner lock

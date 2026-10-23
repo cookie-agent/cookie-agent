@@ -9,7 +9,10 @@ use std::time::Duration;
 use cookie_agent_client_state::{
     config::{ConfigApplyOutcome, document_text, new_agent_refusal, reload_status, restart_note},
     mcp::{McpFields, PersistChoice, edit_refusal, is_global, new_definition, sort_servers},
-    memory::{MemoryWriteOutcome, NEW_MEMORY, delete_refusal, new_memory_refusal, saved_status},
+    memory::{
+        MemoryStamps, MemoryWriteOutcome, NEW_MEMORY, delete_refusal, editor_text,
+        new_memory_refusal, saved_status,
+    },
     providers::{
         ProviderAction, ProviderOperation, action_name, retry_store_contention_once,
         store_contention_message,
@@ -55,11 +58,16 @@ pub struct ConfigEdit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryEdit {
     pub url: String,
+    /// The text, without the stamp lines a daemon that owns them rewrites
+    /// on every save.
     pub text: String,
-    /// The text as read; the template for a new memory.
+    /// The text as read, likewise; the template for a new memory.
     pub original: String,
     /// The revision read; `None` for a new memory.
     pub revision: Option<String>,
+    /// Its stamps and size as read, shown read-only; `None` for a new
+    /// memory.
+    pub stamps: Option<MemoryStamps>,
 }
 
 /// Why a memory write was not saved, as the panel offers to go on.
@@ -999,7 +1007,16 @@ impl Workspace {
     pub(super) fn open_memory(self) {
         self.memory_edit.set(None);
         self.memory_pending.set(None);
+        self.memory_focus.set(None);
         self.poll_memory();
+    }
+
+    /// Opens the Memory view at `url`, from a transcript line that says a
+    /// model changed it: its project's folder opens, and its row is marked
+    /// and scrolled to.
+    pub fn open_memory_at(self, url: String) {
+        self.open_view(View::Memory, None);
+        self.memory_focus.set(Some(url));
     }
 
     pub fn poll_memory(self) {
@@ -1023,16 +1040,33 @@ impl Workspace {
         self.memory_pending.set(None);
         self.status.set(format!("reading {url}…"));
         spawn_local(async move {
+            let version = client.daemon_version();
             match client.read_memory(url.clone()).await {
                 Ok(read) => {
                     self.status.set(match read.invalid.as_deref() {
                         Some(reason) => format!("{url} is not a valid memory: {reason}"),
                         None => format!("editing {url}"),
                     });
+                    let last_read = self.memory.with_untracked(|listing| {
+                        listing
+                            .as_ref()
+                            .and_then(|listing| listing.as_ref().ok())
+                            .and_then(|listing| {
+                                listing
+                                    .memories
+                                    .iter()
+                                    .find(|memory| memory.url == read.url)
+                            })
+                            .and_then(|memory| memory.last_read)
+                    });
+                    // The daemon owns the stamp lines and writes its own on
+                    // every save: the editor leaves them out.
+                    let text = editor_text(&read.text, version);
                     self.memory_edit.set(Some(MemoryEdit {
+                        stamps: Some(MemoryStamps::of_read(&read, last_read)),
                         url: read.url,
-                        text: read.text.clone(),
-                        original: read.text,
+                        text: text.clone(),
+                        original: text,
                         revision: Some(read.revision),
                     }));
                 }
@@ -1261,5 +1295,6 @@ fn new_memory(url: String) -> MemoryEdit {
         text: NEW_MEMORY.to_owned(),
         original: NEW_MEMORY.to_owned(),
         revision: None,
+        stamps: None,
     }
 }

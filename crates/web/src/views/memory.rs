@@ -1,13 +1,17 @@
-//! The Memory view (`/memory`): the memories by layer, each project a
-//! folder that folds (folded until this browser opens it) and that can be
-//! deleted with its memories; the editor, which shows an `agent://` file's
-//! daemon-owned description and keywords as fixed; and the choices a write
-//! that was not saved offers.
+//! The Memory view (`/memory`): the memories by layer, each with when it
+//! was modified, its size against its limit, and a mark when it is over
+//! it, each project a folder that folds (folded until this browser opens
+//! it) and that can be deleted with its memories; the editor, which shows
+//! an `agent://` file's daemon-owned description and keywords as fixed and
+//! a memory's stamps read-only above its text; and the choices a write
+//! that was not saved offers. A transcript line opens the view at a
+//! memory, which is marked.
 
 use std::collections::HashMap;
 
 use cookie_agent_client_state::memory::{
-    AgentMemoryParts, MemoryRow, agent_memory_parts, layer_title, memory_name,
+    AgentMemoryParts, MemoryRow, MemoryStamps, OVER_LIMIT, OVER_LIMIT_NOTE, agent_memory_parts,
+    layer_title, memory_name,
 };
 use cookie_agent_protocol::{MemoryInfo, MemoryLayer};
 use leptos::prelude::*;
@@ -19,7 +23,7 @@ use super::{
 use crate::{
     browser,
     icons::Glyph,
-    memory::{MemoryLine, folder_key, memory_lines, open_from_storage, project_strays},
+    memory::{MemoryLine, folder_key, holds, memory_lines, open_from_storage, project_strays},
     workspace::{MemoryChoice, MemoryEdit, MemoryPending, Workspace},
 };
 
@@ -44,8 +48,37 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
     let is_open = move |project: &str| {
         toggled
             .with(|toggled| toggled.get(project).copied())
-            .unwrap_or_else(|| open_from_storage(browser::load(&folder_key(project)).as_deref()))
+            .unwrap_or_else(|| {
+                // The memory the view was opened at shows in its folder.
+                workspace
+                    .memory_focus
+                    .with(|focus| focus.as_deref().is_some_and(|url| holds(project, url)))
+                    || open_from_storage(browser::load(&folder_key(project)).as_deref())
+            })
     };
+    // The row the view was opened at scrolls into sight once, when the
+    // listing first shows it; later refreshes leave the scroll alone.
+    let scrolled = StoredValue::new(None::<String>);
+    Effect::new(move || {
+        let focus = workspace.memory_focus.get();
+        let listed = workspace
+            .memory
+            .with(|listing| matches!(listing, Some(Ok(_))));
+        if focus.is_none() {
+            scrolled.set_value(None);
+        }
+        if !listed || focus.is_none() || scrolled.get_value() == focus {
+            return;
+        }
+        scrolled.set_value(focus);
+        request_animation_frame(|| {
+            if let Ok(Some(row)) = document().query_selector("#page [data-memory-focused]") {
+                let options = web_sys::ScrollIntoViewOptions::new();
+                options.set_block(web_sys::ScrollLogicalPosition::Center);
+                row.scroll_into_view_with_scroll_into_view_options(&options);
+            }
+        });
+    });
     move || {
         if let Some(edit) = workspace.memory_edit.get() {
             return memory_editor(workspace, edit).into_any();
@@ -58,6 +91,12 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
             Some(Err(error)) => return view! { <p class=ERROR>{error}</p> }.into_any(),
             Some(Ok(listing)) => listing,
         };
+        let now = jiff::Timestamp::now();
+        // The memory the view was opened at, when it is gone.
+        let gone = workspace
+            .memory_focus
+            .get()
+            .filter(|url| !listing.memories.iter().any(|memory| memory.url == *url));
         let lines = memory_lines(&listing, is_open)
             .into_iter()
             .map(|line| match line {
@@ -80,11 +119,14 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                     .into_any()
                 }
                 MemoryLine::Row(row) => {
-                    memory_row(workspace, row, confirm_delete, new_url).into_any()
+                    memory_row(workspace, *row, confirm_delete, new_url, now).into_any()
                 }
             })
             .collect_view();
         view! {
+            {gone.map(|url| view! {
+                <p class=NOTE data-memory-gone>{format!("{url} is not in memory now.")}</p>
+            })}
             {lines}
             {move || confirm_delete.get().map(|(url, revision)| {
                 let deleted = (url.clone(), revision);
@@ -137,6 +179,7 @@ fn memory_row(
     row: MemoryRow,
     confirm_delete: RwSignal<Option<(String, String)>>,
     new_url: RwSignal<String>,
+    now: jiff::Timestamp,
 ) -> impl IntoView {
     let prefix = row.new_prefix();
     match row {
@@ -178,14 +221,43 @@ fn memory_row(
             } else {
                 "pl-6"
             };
+            let stamps = MemoryStamps::of_info(&memory);
+            let over = stamps.over_limit();
+            let summary = stamps.summary(now);
+            let exact = stamps.exact_times();
+            let focused = {
+                let url = memory.url.clone();
+                Memo::new(move |_| {
+                    workspace
+                        .memory_focus
+                        .with(|focus| focus.as_deref() == Some(url.as_str()))
+                })
+            };
             view! {
-                <div class=format!("memory-row flex items-center gap-2 {indent}") data-memory=memory.url.clone() data-revision=memory.revision.clone()>
+                <div
+                    class=move || format!(
+                        "memory-row flex items-center gap-2 rounded-md {indent} {}",
+                        if focused.get() { "ring-2 ring-caramel dark:ring-maple" } else { "" }
+                    )
+                    data-memory=memory.url.clone()
+                    data-revision=memory.revision.clone()
+                    data-memory-focused=move || focused.get().then_some("")
+                    data-memory-over=over.then_some("")
+                >
                     <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_memory(url.clone())>
                         <span class="flex w-full items-center gap-2 font-mono text-sm">
                             <Glyph icon=icondata::FaFileLinesRegular class="opacity-60" />
                             <span class="min-w-0 truncate">{memory_name(&memory).to_owned()}</span>
+                            {over.then(|| view! {
+                                <span class="shrink-0 rounded bg-red-100 px-1.5 font-sans text-xs text-red-800 dark:bg-red-950 dark:text-red-300" title=OVER_LIMIT_NOTE>
+                                    {OVER_LIMIT}
+                                </span>
+                            })}
                         </span>
                         <span class=format!("pl-6 {NOTE}")>{description}</span>
+                        {(!summary.is_empty()).then(|| view! {
+                            <span class=format!("pl-6 {NOTE} opacity-80") title=exact data-memory-stamps>{summary}</span>
+                        })}
                         {memory.invalid.clone().map(|reason| view! { <span class=ERROR>{reason}</span> })}
                     </button>
                     <button
@@ -428,9 +500,27 @@ fn memory_editor(workspace: Workspace, edit: MemoryEdit) -> impl IntoView {
         .into_any(),
     };
     let save = StoredValue::new(parts.clone());
+    // The daemon owns the stamps and rewrites them on every save: they show
+    // here, read-only, and not in the text.
+    let stamps = edit.stamps.as_ref().map(|stamps| {
+        let ages = stamps.ages(jiff::Timestamp::now());
+        let over = stamps.over_limit();
+        view! {
+            <p
+                id="memory-stamps"
+                class=format!("flex items-start gap-2 {NOTE}")
+                title=format!("{}\nThe daemon keeps these.", stamps.exact_times())
+            >
+                <Glyph icon=icondata::FaLockSolid class="mt-0.5 text-xs opacity-60" />
+                <span>{ages}</span>
+            </p>
+            {over.then(|| view! { <p class=ERROR data-memory-over-note>{OVER_LIMIT_NOTE}</p> })}
+        }
+    });
     view! {
         <div class=EDITOR_PAGE>
             <p class="font-mono text-sm font-bold" id="memory-url">{url}</p>
+            {stamps}
             {body}
             <div class=EDITOR_ACTIONS>
                 <button

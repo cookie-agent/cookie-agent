@@ -274,6 +274,16 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             let header = format!("AGENTS.md · {files} ({lines} lines)");
             collapsible(view, &key, icondata::FaBookSolid, &header, None, &body)
         }
+        // A model's memory change: one line that opens the Memory view at
+        // the memory (memory spec section 16.9.10).
+        TranscriptItem::MemoryChange { change, url, .. } => {
+            let url = escape(url);
+            format!(
+                "<div class=\"{NOTE}\" data-memory-change><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-left hover:bg-toasted active:bg-crust dark:hover:bg-ember dark:active:bg-smoke\">{}<span>{}</span><span class=\"font-mono underline decoration-dotted underline-offset-2\">{url}</span></button></div>",
+                svg(icondata::FaBrainSolid, "opacity-70"),
+                change.verb()
+            )
+        }
         TranscriptItem::SkillLoaded {
             name,
             source_path,
@@ -1106,6 +1116,43 @@ mod tests {
         assert_eq!(
             item_html(&view(&collapsed), &row(ProducerMessageStatus::Discarded)),
             None
+        );
+    }
+
+    #[test]
+    fn a_memory_change_is_a_line_that_opens_the_memory_whatever_the_level() {
+        let state = SessionState::default();
+        let names = ModelDisplayNames::default();
+        let expanded = HashSet::new();
+        let view = TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Error,
+            expanded: &expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+        };
+        let html = item_html(
+            &view,
+            &TranscriptItem::MemoryChange {
+                id: 1,
+                seq: 7,
+                change: cookie_agent_protocol::MemoryChangeKind::Saved,
+                url: "project://web/<build>".into(),
+            },
+        )
+        .expect("shown at any level");
+        assert!(
+            html.contains(
+                "data-action=\"open-memory\" data-memory-url=\"project://web/&lt;build&gt;\""
+            ),
+            "{html}"
+        );
+        assert!(html.contains("<span>Saved</span>"), "{html}");
+        assert!(
+            html.contains(">project://web/&lt;build&gt;</span>"),
+            "{html}"
         );
     }
 

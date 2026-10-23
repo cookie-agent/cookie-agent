@@ -17,13 +17,12 @@ pub fn open_from_storage(stored: Option<&str>) -> bool {
     stored == Some("open")
 }
 
-/// One line of the view. A row holds a whole listing entry; a view has few
-/// lines, so they are not boxed.
+/// One line of the view.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(clippy::large_enum_variant)]
 pub enum MemoryLine {
-    /// A shared row, shown as it is.
-    Row(MemoryRow),
+    /// A shared row, shown as it is; boxed, as a row holds a whole listing
+    /// entry.
+    Row(Box<MemoryRow>),
     /// A project's folder: its name, how many memories it holds, and
     /// whether it is open, which shows them under it.
     Project {
@@ -57,11 +56,19 @@ pub fn memory_lines(listing: &MemoryListResult, open: impl Fn(&str) -> bool) -> 
                 if !matches!(row, MemoryRow::Memory(_)) {
                     folded = false;
                 }
-                lines.push(MemoryLine::Row(row));
+                lines.push(MemoryLine::Row(Box::new(row)));
             }
         }
     }
     lines
+}
+
+/// Whether `project`'s folder holds `url`, the memory the view was opened
+/// at, which shows it open whatever this browser keeps.
+pub fn holds(project: &str, url: &str) -> bool {
+    url.strip_prefix("project://")
+        .and_then(|rest| rest.strip_prefix(project))
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The memories of `project` a delete of the project sends `memory.delete`
@@ -143,11 +150,13 @@ mod tests {
         lines
             .iter()
             .filter_map(|line| match line {
-                MemoryLine::Row(MemoryRow::Memory(memory)) => Some(memory.url.clone()),
+                MemoryLine::Row(row) => match &**row {
+                    MemoryRow::Memory(memory) => Some(memory.url.clone()),
+                    _ => None,
+                },
                 MemoryLine::Project { name, open, .. } => {
                     Some(format!("{name} {}", if *open { "open" } else { "folded" }))
                 }
-                MemoryLine::Row(_) => None,
             })
             .collect()
     }
@@ -176,6 +185,14 @@ mod tests {
                 open: false,
             })
         );
+    }
+
+    #[test]
+    fn a_folder_holds_only_its_own_projects_memories() {
+        assert!(holds("shop", "project://shop/build"));
+        assert!(!holds("shop", "project://shopping/build"));
+        assert!(!holds("shop", "user://shop/build"));
+        assert!(!holds("shop", "project://shop"));
     }
 
     #[test]

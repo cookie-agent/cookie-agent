@@ -807,6 +807,50 @@ fn a_memory_snapshot_is_a_debug_event() {
     );
 }
 
+#[test]
+fn a_memory_change_is_a_row_of_its_own_that_no_level_hides() {
+    use cookie_agent_protocol::MemoryChangeKind;
+    let session = SessionId::new_v7();
+    let run = Some(RunId::new_v7());
+    let changed = |seq, change, url: &str| {
+        stored_event(
+            session,
+            run,
+            seq,
+            EventPayload::MemoryChanged {
+                change,
+                url: url.into(),
+            },
+        )
+    };
+    let events = vec![
+        changed(1, MemoryChangeKind::Saved, "project://cookie-agent/release"),
+        changed(2, MemoryChangeKind::Edited, "user://preferences"),
+        changed(3, MemoryChangeKind::Deleted, "agent://reviewer"),
+        changed(4, MemoryChangeKind::Unknown, "machine://labpc/gpu"),
+    ];
+    let replayed = reduce_session_events(session, 0, &events);
+    let rows = replayed
+        .transcript
+        .iter()
+        .map(|item| match item {
+            TranscriptItem::MemoryChange {
+                seq, change, url, ..
+            } => (*seq, format!("{} {url}", change.verb())),
+            other => panic!("unexpected item {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [
+            (1, "Saved project://cookie-agent/release".to_owned()),
+            (2, "Edited user://preferences".to_owned()),
+            (3, "Deleted agent://reviewer".to_owned()),
+            (4, "Changed machine://labpc/gpu".to_owned()),
+        ]
+    );
+}
+
 fn goal_item(description: &str, finished: bool) -> cookie_agent_protocol::GoalItem {
     cookie_agent_protocol::GoalItem {
         description: description.into(),

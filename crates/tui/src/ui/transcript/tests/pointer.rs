@@ -219,6 +219,15 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
         state.tools.extend(done.tools);
         state.transcript.extend(running.transcript);
         state.tools.extend(running.tools);
+        // A model's memory change, whose line opens the Memory panel.
+        state
+            .transcript
+            .push(crate::state::TranscriptItem::MemoryChange {
+                id: 9_000,
+                seq: 9_000,
+                change: cookie_agent_protocol::MemoryChangeKind::Saved,
+                url: "project://web/build".into(),
+            });
         state.tools.get_mut(&call_id).expect("call").backgroundable = true;
         state.background_calls = vec![background_call("job_1"), background_call("job_2")];
         state.estimated_cost_usd = Some(0.18);

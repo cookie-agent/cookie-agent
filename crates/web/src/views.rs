@@ -1354,6 +1354,11 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     workspace.open_session(session_id);
                 }
             }
+            "open-memory" => {
+                if let Some(url) = target.get_attribute("data-memory-url") {
+                    workspace.open_memory_at(url);
+                }
+            }
             _ => {}
         }
     };
