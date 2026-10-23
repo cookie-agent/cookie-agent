@@ -305,6 +305,7 @@ fn cli_commands_and_removed_flags_are_exact() {
     // subcommand.
     assert!(Cli::try_parse_from(["cookie", "run", "--standalone", "hello"]).is_err());
     let daemon = |port| Command::Daemon {
+        command: None,
         port,
         listen: None,
         tls_cert: None,
@@ -334,12 +335,52 @@ fn cli_commands_and_removed_flags_are_exact() {
         .unwrap()
         .command,
         Some(Command::Daemon {
+            command: None,
             port: None,
             listen: Some("0.0.0.0:7419".parse().unwrap()),
             tls_cert: Some("cert.pem".into()),
             tls_key: Some("key.pem".into()),
         })
     );
+    let restart = |now, url: Option<&str>, token: Option<&str>| Command::Daemon {
+        command: Some(daemon_restart::DaemonCommand::Restart {
+            now,
+            url: url.map(str::to_owned),
+            token: token.map(str::to_owned),
+        }),
+        port: None,
+        listen: None,
+        tls_cert: None,
+        tls_key: None,
+    };
+    assert_eq!(
+        Cli::try_parse_from(["cookie", "daemon", "restart"])
+            .unwrap()
+            .command,
+        Some(restart(false, None, None))
+    );
+    assert_eq!(
+        Cli::try_parse_from([
+            "cookie",
+            "daemon",
+            "restart",
+            "--now",
+            "--url",
+            "ws://127.0.0.1:7419/ws",
+            "--token",
+            "secret"
+        ])
+        .unwrap()
+        .command,
+        Some(restart(
+            true,
+            Some("ws://127.0.0.1:7419/ws"),
+            Some("secret")
+        ))
+    );
+    // Serving options belong to the daemon itself, not to its restart.
+    assert!(Cli::try_parse_from(["cookie", "daemon", "--port", "0", "restart"]).is_err());
+    assert!(Cli::try_parse_from(["cookie", "daemon", "restart", "--port", "0"]).is_err());
     assert_eq!(
         Cli::try_parse_from(["cookie", "sessions", "upgrade"])
             .unwrap()

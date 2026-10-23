@@ -14,6 +14,7 @@ attaching clients to it.
 | [`cookie`](#cookie) | The terminal UI, on a daemon already running on this machine or in this process |
 | [`cookie run`](#cookie-run) | Run one prompt without the TUI |
 | [`cookie daemon`](#cookie-daemon) | Serve the client protocol, the web page, and dial-in runtimes |
+| [`cookie daemon restart`](#cookie-daemon-restart) | Restart a running daemon, once idle or at once |
 | [`cookie attach`](#cookie-attach) | The terminal UI on a running daemon, here or elsewhere |
 | [`cookie web`](#cookie-web) | Print the daemon's web page address with its token |
 | [`cookie connect`](#cookie-connect), [`cookie disconnect`](#cookie-disconnect) | Store or remove a managed provider connection |
@@ -40,9 +41,9 @@ attaching clients to it.
 
 ### Reaching a daemon
 
-`attach`, `web`, `connect`, `disconnect`, `config`, `machine`, `memory`,
-`project`, `cron`, `mcp`, and `runtime serve --daemon` talk to a running
-daemon. Each takes `--url` and `--token`; for `config`, `machine`, `memory`,
+`attach`, `web`, `connect`, `disconnect`, `daemon restart`, `config`,
+`machine`, `memory`, `project`, `cron`, `mcp`, and `runtime serve --daemon`
+talk to a running daemon. Each takes `--url` and `--token`; for `config`, `machine`, `memory`,
 `project`, and `cron` the two may also follow the nested subcommand. They resolve the daemon this way:
 
 - **URL:** `--url`, else `[server] url` in this machine's `config.toml`, else
@@ -129,7 +130,8 @@ cookie daemon [--port <PORT> | --listen <ADDR:PORT>] [--tls-cert <PATH> --tls-ke
 Serves the client protocol on `/ws`, the web page, and dial-in runtimes on
 `/runtime`, for sessions of any directory; the sessions are stored for the
 directory it starts in. It prints the ready line, then its address and client
-protocol version and the web page's address, and runs until a stop signal.
+protocol version, its process ID, and the web page's address, and runs
+until a stop signal or a [restart](#cookie-daemon-restart).
 Without a `[server] token` it writes a fresh one to `config.toml` first. See
 [Persistent daemon](../daemon/persistent.md#separate-server-and-client).
 
@@ -142,6 +144,35 @@ Without a `[server] token` it writes a fresh one to `config.toml` first. See
 
 See [Remote access](../daemon/remote-access.md#listening-on-other-addresses)
 before listening off loopback.
+
+#### `cookie daemon restart`
+
+```text
+cookie daemon restart [--now] [--url <URL>] [--token <TOKEN>]
+```
+
+Asks a running daemon to restart (`daemon.restart`): it relaunches its own
+executable with the same arguments and environment, which applies the
+configuration `cookie config status` lists as needing a restart and runs a
+binary upgraded on disk. Without `--now` the daemon waits until no turn is
+running in any session and refuses new turns meanwhile; the command prints
+what it waits for and how many turns are left. It then waits for the daemon
+to come back, up to a minute, and says whether its version changed.
+Ctrl-C stops waiting; the restart stays scheduled. See
+[Restarting the daemon](../daemon/persistent.md#restarting-the-daemon).
+
+| Option | Meaning |
+|---|---|
+| `--now` | Restart at once; running turns end as interrupted. Also turns a restart already waiting into an immediate one. |
+| `--url <URL>` | The daemon's client URL (see [Reaching a daemon](#reaching-a-daemon)). |
+| `--token <TOKEN>` | The daemon's token (see [Reaching a daemon](#reaching-a-daemon)). |
+
+```sh
+cookie daemon restart --url ws://127.0.0.1:7419/ws --token <token>
+```
+
+A daemon not started by `cookie daemon`, such as an engine embedded in
+another program, answers `restart_unsupported`.
 
 ### `cookie attach`
 

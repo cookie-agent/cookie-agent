@@ -100,6 +100,53 @@ runtimes it started; a runtime cancels its calls and stops its MCP servers; the
 TUI restores the terminal. A second signal during that shutdown exits the
 daemon or runtime at once.
 
+## Restarting the daemon
+
+Some changes take effect only when the daemon starts: the `server`,
+`plugins`, and `runtimes` parts of the configuration (`cookie config
+status` lists those waiting), and a new cookie binary. Any client can
+restart the daemon in place:
+
+- **TUI:** `/restart`, or the *Restart daemon* button of the banner the TUI
+  shows while a change waits for a restart.
+- **Web client:** Settings → *Restart daemon*, or the same banner.
+- **Command line:** `cookie daemon restart`, with `--now` to skip the wait:
+
+  ```sh
+  cookie daemon restart --url ws://127.0.0.1:7419/ws --token <token>
+  ```
+
+Each asks first: **when idle**, the default, waits until no turn is running
+in any session; **now** interrupts the running turns, which end as after
+any stop. While a restart waits, new turns are refused with "the daemon is
+restarting", queued input and producers' messages wait for the restarted
+daemon (queued input starts when a client opens its session again), and a cron fire due meanwhile is recorded as skipped
+(`daemon restarting`). Clients show *Restarting when idle…* until the
+connection closes, then reconnect as after any dropped connection.
+
+The daemon then shuts down as on a stop signal: it ends the runs, stops its
+plugins, MCP servers, and the runtimes it started, flushes its sessions and
+stores, and closes client connections saying it is restarting. Then it
+starts its own executable again with the same arguments, environment, and
+directory, so the restart runs the binary now on disk. It reads
+`config.toml` anew and keeps its token and port. Dial-in runtimes reconnect
+on their own; no session is lost.
+
+- **Linux and macOS:** the daemon replaces itself in place (`exec`), keeping
+  its process ID, so systemd and launchd see the same process and the
+  ready line is printed again on the same output.
+- **Windows:** the daemon starts a new process with the same command line
+  and exits with status 0; the new process waits up to 30 seconds for the
+  port to free. It inherits the old one's output, so the log goes on in the
+  same file, but it is a new process: a scheduled task counts the old one
+  as finished, and `Stop-ScheduledTask` no longer stops the daemon. Stop it
+  with `cookie daemon`'s process ID, which its listening line names
+  (`Stop-Process -Id <pid>`), or end the task's processes from Task
+  Manager.
+
+Only `cookie daemon` can restart itself; a daemon embedded in another
+program refuses with `restart_unsupported`.
+
 ## Running as a service
 
 The daemon runs until stopped, so a service manager can keep it up: start it

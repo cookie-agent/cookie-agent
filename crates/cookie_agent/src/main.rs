@@ -109,7 +109,10 @@ enum Command {
     },
     /// Run the daemon: serve the client protocol, dial-in runtimes, and the
     /// web page on loopback at `[server] port`, or on `--listen`.
+    #[command(args_conflicts_with_subcommands = true)]
     Daemon {
+        #[command(subcommand)]
+        command: Option<daemon_restart::DaemonCommand>,
         /// Loopback port to bind instead of `[server] port`. `0` selects an
         /// ephemeral port; the ready line reports the real one.
         #[arg(long, conflicts_with = "listen")]
@@ -479,8 +482,29 @@ impl ConnectIo for StdioConnectIo {
 /// into the `--token` arguments.
 const DAEMON_TOKEN_ENV: &str = "COOKIE_DAEMON_TOKEN";
 
+/// How this process was started, for `cookie daemon` to restart itself.
+struct Launch {
+    /// The command to start again; `None` when it could not be found, and
+    /// the daemon then refuses `daemon.restart`.
+    relaunch: Option<daemon_restart::Relaunch>,
+    /// This process was started by a restart, so the daemon waits for its
+    /// port to free.
+    restarted: bool,
+    /// The daemon stopped to restart: relaunch once the runtime is gone.
+    relaunch_now: bool,
+}
+
 fn main() {
     let cli = Cli::parse();
+    // Before anything changes the environment: how to start this command
+    // again.
+    let mut launch = Launch {
+        relaunch: daemon_restart::Relaunch::capture(),
+        restarted: env::var_os(daemon_restart::RESTARTED_ENV).is_some(),
+        relaunch_now: false,
+    };
+    // SAFETY: as for the token below, no other thread exists yet.
+    unsafe { env::remove_var(daemon_restart::RESTARTED_ENV) };
     // Clap has read the token into `cli`. Drop the variable so no process
     // cookie starts (the `bash` tool, MCP servers, plugins, runtime
     // templates, editors) inherits the daemon's credential.
@@ -501,7 +525,22 @@ fn main() {
         }
     };
     let error_details = cli.error_details;
-    if let Err(error) = runtime.block_on(main_result(cli)) {
+    let result = runtime.block_on(main_result(cli, &mut launch));
+    if result.is_ok()
+        && launch.relaunch_now
+        && let Some(relaunch) = &launch.relaunch
+    {
+        // Every task and socket goes with the runtime before the new image
+        // starts.
+        runtime.shutdown_timeout(Duration::from_secs(5));
+        let error = daemon_restart::relaunch(relaunch);
+        eprintln!(
+            "cookie: {}",
+            cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
+        );
+        std::process::exit(1);
+    }
+    if let Err(error) = result {
         eprintln!(
             "cookie: {}",
             cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
@@ -540,7 +579,7 @@ fn init_logging() {
         .init();
 }
 
-async fn main_result(cli: Cli) -> anyhow::Result<()> {
+async fn main_result(cli: Cli, launch: &mut Launch) -> anyhow::Result<()> {
     init_logging();
     let Cli {
         command,
@@ -621,6 +660,14 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Daemon {
+            command: Some(daemon_restart::DaemonCommand::Restart { now, url, token }),
+            ..
+        }) => {
+            let target = daemon_target(url, token)?;
+            daemon_restart::run_restart(&target.url, &target.token, now).await
+        }
+        Some(Command::Daemon {
+            command: None,
             port,
             listen,
             tls_cert,
@@ -634,7 +681,7 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             };
             let runtime = compose(workspace.as_deref().expect("daemon workspace")).await?;
             let token = daemon_token(runtime.token.clone(), runtime.config_path.as_deref())?;
-            run_daemon(
+            let exit = run_daemon(
                 runtime,
                 DaemonListen {
                     port,
@@ -642,8 +689,11 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
                     tls,
                     token,
                 },
+                launch,
             )
-            .await
+            .await?;
+            launch.relaunch_now = matches!(exit, DaemonExit::Restart);
+            Ok(())
         }
         Some(Command::Connect {
             provider_id,
@@ -2209,7 +2259,19 @@ struct DaemonListen {
     token: Zeroizing<String>,
 }
 
-async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Result<()> {
+/// Why the daemon stopped.
+enum DaemonExit {
+    /// A stop signal.
+    Stopped,
+    /// A client's `daemon.restart`: relaunch.
+    Restart,
+}
+
+async fn run_daemon(
+    mut runtime: Runtime,
+    options: DaemonListen,
+    launch: &Launch,
+) -> anyhow::Result<DaemonExit> {
     let DaemonListen {
         port,
         listen,
@@ -2220,14 +2282,23 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
         std::net::SocketAddr::from(([127, 0, 0, 1], port.unwrap_or(runtime.port)))
     });
     let scheme = if tls.is_some() { "wss" } else { "ws" };
+    // A restarted daemon waits for the process it replaces to let go of the
+    // port.
+    let bind_wait = if launch.restarted {
+        daemon_restart::RESTART_BIND_WAIT
+    } else {
+        Duration::ZERO
+    };
     let started = match cookie_agent_protocol::StopSignals::new() {
-        Ok(signals) => runtime
-            .server
-            .clone()
-            .serve_on(address, token.clone(), tls)
-            .await
-            .map(|listener| (signals, listener))
-            .map_err(|error| anyhow::Error::new(error).context("start WebSocket daemon")),
+        Ok(signals) => daemon_restart::bind_retrying(bind_wait, || {
+            runtime
+                .server
+                .clone()
+                .serve_on(address, token.clone(), tls.clone())
+        })
+        .await
+        .map(|listener| (signals, listener))
+        .map_err(|error| anyhow::Error::new(error).context("start WebSocket daemon")),
         Err(error) => Err(anyhow::Error::new(error).context("listen for stop signals")),
     };
     let (mut signals, listener) = match started {
@@ -2239,23 +2310,49 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
             return Err(error);
         }
     };
+    // Only a daemon that knows how it was started can start itself again.
+    let restart = CancellationToken::new();
+    if launch.relaunch.is_some() {
+        let restart = restart.clone();
+        runtime
+            .engine
+            .set_restart_hook(Box::new(move || restart.cancel()));
+    }
     let url = format!("{scheme}://{}/ws", listener.address());
     println!("{}", ready_line(&url, token.as_str()));
     drop(token);
     println!(
-        "cookie daemon listening on {url} (client protocol {})",
-        cookie_agent_protocol::CLIENT_PROTOCOL_VERSION
+        "cookie daemon listening on {url} (client protocol {}, process {})",
+        cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
+        std::process::id()
     );
     if let Some(line) = web_page_line(&url) {
         println!("{line}");
     }
-    signals.recv().await;
+    let exit = tokio::select! {
+        () = signals.recv() => DaemonExit::Stopped,
+        () = restart.cancelled() => DaemonExit::Restart,
+    };
     exit_on_next_stop(signals);
-    runtime.server.shutdown();
-    runtime.stop_catalog_refresh().await;
-    listener.wait().await;
-    runtime.engine.shutdown().await;
-    Ok(())
+    match exit {
+        DaemonExit::Stopped => {
+            runtime.server.shutdown();
+            runtime.stop_catalog_refresh().await;
+            listener.wait().await;
+            runtime.engine.shutdown().await;
+        }
+        DaemonExit::Restart => {
+            println!("cookie daemon restarting");
+            // The engine stops first, while clients are still connected:
+            // they see the interrupted turns end, then the connection close
+            // saying the daemon is restarting.
+            runtime.stop_catalog_refresh().await;
+            runtime.engine.shutdown().await;
+            runtime.server.shutdown_for_restart();
+            listener.wait().await;
+        }
+    }
+    Ok(exit)
 }
 
 /// Exits at once on the next stop signal, for a graceful stop that hangs.
@@ -2282,6 +2379,7 @@ fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
 
 mod config_command;
 mod cron_command;
+mod daemon_restart;
 mod local_daemon;
 mod machine_command;
 mod memory_command;
