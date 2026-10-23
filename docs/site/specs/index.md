@@ -36,6 +36,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
+| [MCP tool filters](mcp-tool-filters.md) | Draft (2026-10-23), awaiting the go-ahead; per-server `include_tools`/`exclude_tools` with `*` patterns, and MCP tools offered by the merged `mcp` rules for their names |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |
