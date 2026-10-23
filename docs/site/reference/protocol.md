@@ -802,7 +802,7 @@ not know as something the session waits on.
 |---|---|---|
 | `goal` | Its goal, which is active: goal mode keeps scheduling runs. A paused, completed, or cancelled goal schedules none. Root sessions only. | The fold of the goal events, so the metadata cache and a rebuild of it keep it |
 | `background_call` | One of its background calls, whose `<background_result>` starts a run | The daemon's live background calls |
-| `subagent` | A direct child running a turn on its own (one `session.background.list` lists), or a background delegation still queued or running; its `<subagent_report>` starts a run | The daemon's live runs and delegations |
+| `subagent` | A direct child running a turn on its own (one `session.background.list` lists), a background delegation still queued or running, or a direct child that itself waits on a background call, an external producer, or a subagent (recursively), so it can still wake and report; its `<subagent_report>` starts a run | The daemon's live runs, delegations, and its children's live waits |
 | `external_producer` | A plugin or runtime that holds a live producer registration for the session and may send to it | The daemon's live registrations |
 
 The last three end with the daemon: a restart kills background calls and
@@ -820,7 +820,9 @@ nothing for an idle or completed one; `cookie_agent_client_state::activity`
 implements that order. `sessions.changed` `upserted` announces every change:
 a goal activated, paused, resumed, completed, or cancelled; a background
 call detached or reported; a child's turn started or ended; a delegation or
-external registration made or dropped. A 1.8 daemon sends no `waiting_on`.
+external registration made or dropped; a child started or stopped waiting
+on something live. A session the daemon evicted from memory keeps reporting
+what it waits on. A 1.8 daemon sends no `waiting_on`.
 
 ### Where a root's subagents work
 

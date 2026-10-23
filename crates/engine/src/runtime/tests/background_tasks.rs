@@ -23,10 +23,10 @@ use super::support::*;
 
 /// Shared switches between a test and the calls its provider runs.
 #[derive(Default)]
-struct JobControl {
+pub(super) struct JobControl {
     /// The call reached its detach point.
-    detachable: tokio::sync::Notify,
-    release: tokio::sync::Notify,
+    pub(super) detachable: tokio::sync::Notify,
+    pub(super) release: tokio::sync::Notify,
     killed: tokio::sync::Notify,
     was_killed: std::sync::atomic::AtomicBool,
 }
@@ -49,8 +49,8 @@ impl Drop for KillFlag {
 /// `quick` returns before its detach point, anything else reaches it and
 /// runs until released or cancelled.
 #[derive(Clone)]
-struct JobProvider {
-    control: Arc<JobControl>,
+pub(super) struct JobProvider {
+    pub(super) control: Arc<JobControl>,
 }
 
 struct JobExecutor {
@@ -218,21 +218,21 @@ impl PreparedExecutor for JobExecutor {
     }
 }
 
-const JOB_AGENT: &str = "---\ndescription: Background call test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest background calls.\n";
+pub(super) const JOB_AGENT: &str = "---\ndescription: Background call test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest background calls.\n";
 
-struct JobRun {
-    fixture: Fixture,
-    session_id: SessionId,
-    run_id: cookie_agent_protocol::RunId,
-    control: Arc<JobControl>,
-    captured: tokio::task::JoinHandle<Vec<String>>,
+pub(super) struct JobRun {
+    pub(super) fixture: Fixture,
+    pub(super) session_id: SessionId,
+    pub(super) run_id: cookie_agent_protocol::RunId,
+    pub(super) control: Arc<JobControl>,
+    pub(super) captured: tokio::task::JoinHandle<Vec<String>>,
     /// `sessions.changed`, subscribed before the run started.
     changes: tokio::sync::broadcast::Receiver<cookie_agent_protocol::SessionsChangedNotification>,
 }
 
 /// Starts a run whose model calls `job` with `arguments`, then answers
 /// `responses`.
-async fn start_job_run(
+pub(super) async fn start_job_run(
     arguments: serde_json::Value,
     responses: Vec<MatchedScriptedResponse>,
     expected_requests: usize,
@@ -316,7 +316,7 @@ fn call_result(projection: &crate::session::SessionProjection) -> Option<String>
         })
 }
 
-fn background_result(
+pub(super) fn background_result(
     projection: &crate::session::SessionProjection,
 ) -> Option<(ProducerOwner, String)> {
     projection

@@ -406,7 +406,7 @@ pub struct SessionStore {
     index_changes:
         tokio::sync::broadcast::Sender<cookie_agent_protocol::SessionsChangedNotification>,
     /// What the engine's live producers make each session wait on, see
-    /// [`Self::set_live_waiting`]. Never persisted: a daemon restart ends
+    /// [`Self::record_live_waiting`]. Never persisted: a daemon restart ends
     /// every one of them.
     live_waiting: Mutex<HashMap<SessionId, Vec<WaitingOn>>>,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
@@ -545,26 +545,45 @@ impl SessionStore {
     }
 
     /// Records `kinds`, what the engine's live producers make `id` wait on,
-    /// and announces the session when that changed. The metadata cache never
-    /// holds them, so a restart, which ends them all, leaves none behind.
-    pub(crate) fn set_live_waiting(&self, id: SessionId, kinds: Vec<WaitingOn>) {
-        let previous = {
-            let mut live = self
-                .live_waiting
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if kinds.is_empty() {
-                live.remove(&id)
-            } else {
-                live.insert(id, kinds.clone())
-            }
+    /// and returns whether that changed; [`Self::announce_live_waiting`]
+    /// then tells clients. The metadata cache never holds them, so a
+    /// restart, which ends them all, leaves none behind.
+    pub(crate) fn record_live_waiting(&self, id: SessionId, kinds: Vec<WaitingOn>) -> bool {
+        let mut live = self
+            .live_waiting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = if kinds.is_empty() {
+            live.remove(&id)
+        } else {
+            live.insert(id, kinds.clone())
         };
-        if previous.unwrap_or_default() == kinds {
-            return;
+        previous.unwrap_or_default() != kinds
+    }
+
+    /// Announces `id` with what it waits on now. An evicted session is
+    /// announced from its in-memory summary, never reloaded for it.
+    pub(crate) fn announce_live_waiting(&self, id: SessionId) {
+        let meta = self
+            .cached_summary(id)
+            .map(|summary| summary.meta)
+            .or_else(|| self.get(id).ok().map(|projection| projection.meta.clone()));
+        if let Some(meta) = meta {
+            self.notify_upserted(&meta);
         }
-        let projection = self.get_resident(id).or_else(|| self.get(id).ok());
-        if let Some(projection) = projection {
-            self.notify_upserted(&projection.meta);
+    }
+
+    /// The direct parent of a delegated `id`, from memory when this process
+    /// has seen the session (resident or evicted), else from its tree.
+    pub(crate) fn parent_of(&self, id: SessionId) -> Option<SessionId> {
+        let origin = self
+            .cached_origin(id)
+            .or_else(|| self.summary(id).ok().map(|summary| summary.meta.origin))?;
+        match origin {
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => Some(parent_session_id),
+            _ => None,
         }
     }
 

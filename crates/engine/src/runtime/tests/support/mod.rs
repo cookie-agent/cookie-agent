@@ -865,6 +865,17 @@ compaction = "openai-responses-compact"
 }
 
 pub(crate) fn create_buffered_delegated_child(engine: &Engine, parent: SessionId) -> SessionId {
+    create_buffered_delegated_descendant(engine, parent, parent, 1)
+}
+
+/// A buffered delegated session under `parent`, in the tree of `root`,
+/// `depth` levels below it.
+pub(crate) fn create_buffered_delegated_descendant(
+    engine: &Engine,
+    root: SessionId,
+    parent: SessionId,
+    depth: u32,
+) -> SessionId {
     let parent_projection = engine.inner.store.get(parent).expect("parent projection");
     let EventPayload::SessionCreated {
         history_format: cookie_agent_protocol::HISTORY_FORMAT,
@@ -895,12 +906,12 @@ pub(crate) fn create_buffered_delegated_child(engine: &Engine, parent: SessionId
                 history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: "test_00000000".into(),
                 origin: cookie_agent_protocol::SessionOrigin::Delegated {
-                    root_session_id: parent,
+                    root_session_id: root,
                     parent_session_id: parent,
                     parent_run_id: cookie_agent_protocol::RunId::new_v7(),
                     parent_tool_call_id: ToolCallId::new_v7(),
                     invocation_id: InvocationId::new_v7(),
-                    depth: 1,
+                    depth,
                 },
                 cwd_identity,
                 creation_selection,

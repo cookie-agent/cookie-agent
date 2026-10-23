@@ -2662,7 +2662,8 @@ fn live_waits_join_the_goal_in_announcements_but_never_the_cache() {
         .unwrap();
     let mut changes = store.subscribe_index_changes();
 
-    store.set_live_waiting(
+    set_live_waiting(
+        &store,
         session_id,
         vec![WaitingOn::BackgroundCall, WaitingOn::ExternalProducer],
     );
@@ -2687,7 +2688,8 @@ fn live_waits_join_the_goal_in_announcements_but_never_the_cache() {
     );
 
     // The same waits again announce nothing.
-    store.set_live_waiting(
+    set_live_waiting(
+        &store,
         session_id,
         vec![WaitingOn::BackgroundCall, WaitingOn::ExternalProducer],
     );
@@ -2713,14 +2715,22 @@ fn live_waits_join_the_goal_in_announcements_but_never_the_cache() {
         ]
     );
 
-    store.set_live_waiting(session_id, Vec::new());
+    set_live_waiting(&store, session_id, Vec::new());
     assert_eq!(
         announced_waiting(&mut changes, session_id),
         [WaitingOn::Goal]
     );
-    store.set_live_waiting(session_id, vec![WaitingOn::Subagent]);
+    set_live_waiting(&store, session_id, vec![WaitingOn::Subagent]);
     store.forget_live_waiting(&HashSet::from([session_id]));
     assert_eq!(store.with_live_waiting(meta).waiting_on, [WaitingOn::Goal]);
+}
+
+/// Records `kinds` for `id` and announces it when that changed, as the
+/// engine's `refresh_live_waiting` does.
+fn set_live_waiting(store: &SessionStore, id: SessionId, kinds: Vec<WaitingOn>) {
+    if store.record_live_waiting(id, kinds) {
+        store.announce_live_waiting(id);
+    }
 }
 
 /// In-run records that only move the tip leave the `metadata` cache alone;

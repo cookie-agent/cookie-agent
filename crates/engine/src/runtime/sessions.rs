@@ -554,7 +554,7 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|child| !deleted.contains(child));
         self.inner.delegation_events.forget_sessions(deleted);
-        self.inner.store.forget_live_waiting(deleted);
+        self.forget_live_waiting(deleted);
     }
 
     /// Reverts `session_id` to `through_seq`. With `expected_last_seq`, a

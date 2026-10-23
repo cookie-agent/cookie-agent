@@ -7,6 +7,7 @@ mod agents;
 mod approvals;
 mod artifacts;
 mod background_tasks;
+mod background_waits;
 mod compaction;
 mod configuration;
 mod delegation;

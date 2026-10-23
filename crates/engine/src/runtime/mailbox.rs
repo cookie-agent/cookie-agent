@@ -36,6 +36,12 @@ pub(crate) struct SessionRuntimeState {
     pub(super) producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
     /// Each session's latest producer/goal fold, keyed by the log tip it saw.
     pub(super) producer_projections: Mutex<HashMap<SessionId, CachedProducerProjection>>,
+    /// Each delegated session that waits on something live, keyed to its
+    /// direct parent, which waits on it as a `subagent` (see
+    /// `Engine::refresh_live_waiting`). Its lock serializes those refreshes
+    /// and is taken before the producer, run, and store locks, never under
+    /// them.
+    pub(super) waking_children: Mutex<HashMap<SessionId, SessionId>>,
     /// The task driving each in-flight run loop.
     ///
     /// Shutdown joins these after cancelling their runs, so a run task gets to

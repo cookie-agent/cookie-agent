@@ -1,6 +1,7 @@
 # Background Tool Calls
 
-Status: **implemented** (decisions of 2026-10-16; all three phases landed 2026-10-16).
+Status: **implemented** (decisions of 2026-10-16; all three phases landed 2026-10-16;
+addendum of 2026-10-22 in [section 12](#12-addendum-2026-10-22-a-parent-waits-while-its-child-can-still-wake)).
 Sections 1, 7.1, and the "today" notes describe the design this replaced. This document is the
 governing specification for running supported tool calls in the background,
 whether the model asks for it or the user moves a running call there.
@@ -413,3 +414,37 @@ All questions raised during review are decided (2026-10-16):
 - Runtime tools may declare no permission, like the daemon's own (6.1).
 
 There are no open questions.
+
+## 12. Addendum 2026-10-22: a parent waits while its child can still wake
+
+Decided by the user on 2026-10-22 and implemented the same day. Turn reports
+(7.2) are unchanged: each turn's report is delivered when that turn ends.
+
+A direct child counts for its parent, which lists `subagent` in
+`SessionMeta::waiting_on`, while the child runs a turn on its own **or itself
+waits on anything that can start another turn**: its own background calls,
+external producers, and its own subagents, recursively, so a child that
+waits on a grandchild counts too. A child that ends its turn while its
+background call runs keeps its parent waiting until the call has reported
+and the turn it starts has ended.
+
+- The parent's state is derived from its children's current state, not from
+  a registration kept alive: a background delegation's registration still
+  counts while it exists (the child queued or in its first turn), but its
+  drop is not what ends the parent's wait.
+- What a session waits on live is computed in one place,
+  `Engine::live_waiting_kinds` (`engine/src/runtime/producers.rs`), and a
+  delegated session counts for its parent exactly when that list is not
+  empty. Whenever it changes between empty and not empty (a registration
+  made or dropped, a child's run started or ended, a grandchild's state),
+  `refresh_live_waiting` refreshes the parent, and so on up the tree. Each
+  step computes and records under one lock, releases it, announces, and only
+  then moves to the parent.
+- Goals do not count: only a root can have one. Agent mail slots and a
+  subagent report's own send count for nothing, as before.
+- Cron jobs, once they exist, count only while enabled with a next fire
+  time; they add their kind in `live_waiting_kinds` and so count for the
+  parent with no other change.
+- A restart ends every live producer, so the derived state resets with it.
+- The client protocol is unchanged: only when `subagent` is listed changed.
+

@@ -1,4 +1,8 @@
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    sync::Arc,
+    time::Instant,
+};
 
 use cookie_agent_protocol::*;
 
@@ -1437,13 +1441,63 @@ impl Engine {
         self.refresh_live_waiting(session);
     }
 
-    /// Tells the store what `session`'s live producers make it wait on
-    /// (`SessionMeta::waiting_on`), which it announces when that changed: a
-    /// background call's registration, a background delegation's, or an
-    /// external one, and a direct child running a turn on its own. Agent
-    /// mail slots, a subagent report's send, and the goal's own
-    /// registration count for nothing here; the fold reports an active goal.
+    /// Tells the store what `session` waits on live
+    /// (`SessionMeta::waiting_on`), which it announces when that changed,
+    /// and carries the change up the tree: a delegated session that waits on
+    /// anything live can start another turn on its own, so its parent waits
+    /// on it as a `subagent` until it neither runs nor waits (background-tools
+    /// spec, addendum 2026-10-22). Each refresh computes and records under
+    /// `waking_children`, releases every lock, announces, and only then
+    /// refreshes the parent, so no lock is held across a step.
     pub(super) fn refresh_live_waiting(&self, session: SessionId) {
+        let mut next = Some(session);
+        while let Some(session) = next {
+            let (changed, parent) = {
+                let mut waking = self
+                    .inner
+                    .sessions
+                    .waking_children
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let kinds = self.live_waiting_kinds(session, &waking);
+                let wakes = !kinds.is_empty();
+                let changed = self.inner.store.record_live_waiting(session, kinds);
+                // The parent to refresh: the one this session started or
+                // stopped counting for.
+                let parent = if !wakes {
+                    waking.remove(&session)
+                } else if let Entry::Vacant(entry) = waking.entry(session) {
+                    let parent = self.inner.store.parent_of(session);
+                    if let Some(parent) = parent {
+                        entry.insert(parent);
+                    }
+                    parent
+                } else {
+                    None
+                };
+                (changed, parent)
+            };
+            if changed {
+                self.inner.store.announce_live_waiting(session);
+            }
+            next = parent;
+        }
+    }
+
+    /// What `session` waits on live, each kind once and in order: a
+    /// background call's registration, a background delegation's, an
+    /// external one, and a direct child that runs a turn on its own or
+    /// itself waits on something live (`waking`). Agent mail slots, a
+    /// subagent report's send, and the goal's own registration count for
+    /// nothing here; the fold reports an active goal, which only a root can
+    /// have. Another source that can start a turn without the user (cron
+    /// jobs, once they exist, while enabled with a next fire time) adds its
+    /// kind here, and so counts for the parent too.
+    fn live_waiting_kinds(
+        &self,
+        session: SessionId,
+        waking: &HashMap<SessionId, SessionId>,
+    ) -> Vec<WaitingOn> {
         let mut kinds = Vec::new();
         if let Some(state) = self
             .inner
@@ -1463,12 +1517,39 @@ impl Engine {
                 kinds.push(kind);
             }
         }
-        if !kinds.contains(&WaitingOn::Subagent) && self.has_running_subagent_turn(session) {
+        if !kinds.contains(&WaitingOn::Subagent)
+            && (waking.values().any(|parent| *parent == session)
+                || self.has_running_subagent_turn(session))
+        {
             kinds.push(WaitingOn::Subagent);
         }
         kinds.sort();
         kinds.dedup();
-        self.inner.store.set_live_waiting(session, kinds);
+        kinds
+    }
+
+    /// Forgets what deleted sessions waited on, announcing nothing for them,
+    /// and refreshes each surviving parent one of them kept waiting.
+    pub(super) fn forget_live_waiting(&self, deleted: &HashSet<SessionId>) {
+        let parents = {
+            let mut waking = self
+                .inner
+                .sessions
+                .waking_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let parents = waking
+                .iter()
+                .filter(|(child, parent)| deleted.contains(child) && !deleted.contains(parent))
+                .map(|(_, parent)| *parent)
+                .collect::<HashSet<_>>();
+            waking.retain(|child, parent| !deleted.contains(child) && !deleted.contains(parent));
+            parents
+        };
+        self.inner.store.forget_live_waiting(deleted);
+        for parent in parents {
+            self.refresh_live_waiting(parent);
+        }
     }
 
     #[cfg(test)]
