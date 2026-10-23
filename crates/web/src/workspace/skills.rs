@@ -23,7 +23,9 @@ impl Workspace {
         self.panel.set(Some(Panel::Skills));
         spawn_local(async move {
             let result = client
-                .list_skills(SkillsListParams { session_id })
+                .list_skills(SkillsListParams {
+                    session_id: Some(session_id),
+                })
                 .await
                 .map(|result| result.skills)
                 .map_err(|error| crate::errors::describe_full(&error));

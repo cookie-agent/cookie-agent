@@ -389,6 +389,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
     ) -> Result<SessionPermissionPreviewResult, ServerFault>;
     async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult, ServerFault>;
     async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult, ServerFault>;
+    /// Refreshes the official skills now.
+    async fn update_skills(
+        &self,
+        params: crate::SkillsUpdateParams,
+    ) -> Result<crate::SkillsUpdateResult, ServerFault>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -1115,6 +1120,7 @@ async fn dispatch<S: ServerProtocol>(
         }
         "skills.list" => value(server.list_skills(decode(params)?).await?),
         "skills.get" => value(server.get_skill(decode(params)?).await?),
+        crate::SKILLS_UPDATE_METHOD => value(server.update_skills(decode_default(params)?).await?),
         "session.compact" => value(server.compact_session(decode(params)?, context).await?),
         "session.revert" => value(server.revert_session(decode(params)?, context).await?),
         crate::SESSION_DELETE_METHOD => {

@@ -88,7 +88,7 @@ impl LoadedConfiguration {
 pub fn load() -> Result<LoadedConfiguration, ConfigError> {
     let user = user_root();
     let mut loaded = load_from_user_root(user.as_deref())?;
-    loaded.skills = crate::load_user_skills()?;
+    loaded.skills = crate::load_user_skills_with_official(loaded.runtime.skills.official)?;
     Ok(loaded)
 }
 
@@ -120,6 +120,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         memory: crate::MemoryConfig::default(),
         cron: crate::CronConfig::default(),
         acp: crate::AcpConfig::default(),
+        skills: crate::SkillsConfig::default(),
         pricing: Default::default(),
         headers: BTreeMap::new(),
         providers: BTreeMap::new(),
@@ -340,6 +341,7 @@ fn decode_runtime_layer(
         "memory",
         "cron",
         "acp",
+        "skills",
         "headers",
         "mcp",
         "plugins",

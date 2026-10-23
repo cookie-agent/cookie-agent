@@ -284,9 +284,28 @@ impl ServerProtocol for Server {
     }
 
     async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult> {
-        self.engine
-            .list_skills(params.session_id)
-            .map_err(protocol_fault)
+        match params.session_id {
+            Some(session_id) => self.engine.list_skills(session_id).map_err(protocol_fault),
+            None => Ok(self.engine.list_daemon_skills()),
+        }
+    }
+
+    async fn update_skills(
+        &self,
+        _params: cookie_agent_protocol::SkillsUpdateParams,
+    ) -> Result<cookie_agent_protocol::SkillsUpdateResult> {
+        let report = self.engine.refresh_official_skills().await;
+        Ok(cookie_agent_protocol::SkillsUpdateResult {
+            enabled: report.enabled,
+            skills: report
+                .skills
+                .into_iter()
+                .map(|(name, version)| cookie_agent_protocol::OfficialSkill { name, version })
+                .collect(),
+            updated: report.updated,
+            removed: report.removed,
+            error: report.error,
+        })
     }
 
     async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult> {

@@ -41,14 +41,15 @@ pub use runtime::{
     McpConfig, McpOAuthConfig, McpOAuthSettings, McpServerConfig, McpServerScope, MemoryConfig,
     MessagingConfig, ModelPricing, ModelRetryConfig, PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion,
     PluginConfig, PluginsConfig, PricingConfig, ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES,
-    ServerConfig, SessionTitleConfig, SubagentOutputConfig, ToolOutputConfig, valid_daemon_token,
-    valid_daemon_url,
+    ServerConfig, SessionTitleConfig, SkillsConfig, SubagentOutputConfig, ToolOutputConfig,
+    valid_daemon_token, valid_daemon_url,
 };
 pub use runtime_templates::{AcpAgentConfig, RuntimeTemplateConfig};
 pub use skills::{
-    SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery, SkillDocument,
-    SkillFrontmatter, SkillRegistry, load_project_skills, load_skill_roots, load_user_skills,
-    parse_skill_document, render_available_skills,
+    OFFICIAL_SKILLS_DIRECTORY, SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery,
+    SkillDocument, SkillFrontmatter, SkillRegistry, load_project_skills, load_skill_roots,
+    load_skill_roots_with_official, load_user_skills, load_user_skills_with_official,
+    official_skills_root, parse_skill_document, render_available_skills,
 };
 pub use tree::{CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree};
 pub use wildcard::simple_wildcard_match;

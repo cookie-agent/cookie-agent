@@ -507,6 +507,14 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                             on:click=move |_| workspace.skill_pick.set(Some(picked.clone()))
                         >
                             <span class="font-mono text-sm font-bold">{skill.name.clone()}</span>
+                            {(skill.source == cookie_agent_protocol::SkillSource::Official)
+                                .then(|| {
+                                    view! {
+                                        <span class="ml-2 text-xs" data-official-skill="">
+                                            {cookie_agent_client_state::onboarding::skill_origin(&skill)}
+                                        </span>
+                                    }
+                                })}
                             <span class=NOTE>{skill.description.clone()}</span>
                         </button>
                     }

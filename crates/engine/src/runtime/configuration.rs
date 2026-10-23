@@ -183,6 +183,7 @@ impl Engine {
                 }
             }
         }
+        diagnostics.extend(self.official_skills_diagnostic());
         diagnostics.truncate(256);
         diagnostics
     }

@@ -236,6 +236,20 @@ pub fn parse_model_flag(text: &str) -> Result<OnboardingModelInput, String> {
     })
 }
 
+/// Where a skill comes from, as clients mark it: `user`, `project`, or
+/// `official <version>`.
+#[must_use]
+pub fn skill_origin(skill: &cookie_agent_protocol::SkillDescriptor) -> String {
+    match skill.source {
+        cookie_agent_protocol::SkillSource::User => "user".into(),
+        cookie_agent_protocol::SkillSource::Project => "project".into(),
+        cookie_agent_protocol::SkillSource::Official => match &skill.version {
+            Some(version) => format!("official {version}"),
+            None => "official".into(),
+        },
+    }
+}
+
 /// A downloaded kit archive as `onboarding.preview` and `onboarding.run`
 /// take it.
 #[must_use]
@@ -430,6 +444,26 @@ mod tests {
         let searched = model_groups(&models, "OTH");
         assert_eq!(searched.len(), 1);
         assert_eq!(searched[0].models[0].key.to_string(), "b/other");
+    }
+
+    #[test]
+    fn official_skills_are_marked_with_their_version() {
+        let skill =
+            |source: &str, version: Option<&str>| -> cookie_agent_protocol::SkillDescriptor {
+                serde_json::from_value(serde_json::json!({
+                    "name": "tidy", "description": "Tidy.", "when_to_use": null,
+                    "location": "/skills/tidy/SKILL.md", "source": source,
+                    "precedence_winner": true, "permission_effect": "allow", "visible": true,
+                    "user_invocable": true, "argument_hint": null, "version": version,
+                }))
+                .expect("skill")
+            };
+        assert_eq!(
+            super::skill_origin(&skill("official", Some("1.2.0"))),
+            "official 1.2.0"
+        );
+        assert_eq!(super::skill_origin(&skill("user", None)), "user");
+        assert_eq!(super::skill_origin(&skill("project", None)), "project");
     }
 
     #[test]

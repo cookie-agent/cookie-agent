@@ -72,6 +72,7 @@ pub(crate) mod memory_api;
 pub(crate) mod memory_runs;
 pub(crate) mod messaging_api;
 mod model_loop;
+pub(crate) mod official_skills;
 pub(crate) mod onboarding;
 mod output_capture;
 pub(crate) mod plugin_diagnostics;
@@ -977,6 +978,7 @@ pub(crate) struct Inner {
     pub(crate) compaction: CompactionState,
     pub(crate) uploads: uploads::UploadState,
     pub(crate) onboarding: onboarding::OnboardingRuntimeState,
+    pub(crate) official_skills: official_skills::OfficialSkillsState,
     /// The revision each session last saw of each memory.
     pub(crate) memory_seen: memory_runs::SeenMemories,
     runtime: Option<tokio::runtime::Handle>,
@@ -1246,6 +1248,7 @@ impl Engine {
                 compaction: CompactionState::default(),
                 uploads: uploads::UploadState::default(),
                 onboarding: onboarding::OnboardingRuntimeState::default(),
+                official_skills: official_skills::OfficialSkillsState::new(&options.data_dir),
                 memory_seen: memory_runs::SeenMemories::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),

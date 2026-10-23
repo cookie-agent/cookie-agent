@@ -685,6 +685,12 @@ impl Client {
         self.call("skills.get", &params).await
     }
 
+    /// Refreshes the daemon's official skills now.
+    pub async fn update_skills(&self) -> Result<crate::SkillsUpdateResult, ClientError> {
+        self.call(crate::SKILLS_UPDATE_METHOD, &crate::SkillsUpdateParams {})
+            .await
+    }
+
     pub async fn compact_session(
         &self,
         params: SessionCompactParams,

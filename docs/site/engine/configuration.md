@@ -53,6 +53,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `memory` | [Memory](memory.md) |
 | `cron` | [Cron Jobs](cron.md) |
 | `acp` | [ACP Agents](acp.md) |
+| `skills` | [Official skills](../extend/skills.md#official-skills): `official`, whether the daemon keeps the official skills up to date and offers them |
 | `headers` | [Request Header](headers.md) |
 | `providers` | [Providers](../extend/providers.md) |
 | `mcp` | [MCP](../extend/mcp.md) |
@@ -102,6 +103,7 @@ error. Applying a configuration does this:
 | Part | When it takes effect |
 |---|---|
 | `default_model`, `small_model` | At once for new runs: the agents are recompiled, and every entry naming them follows |
+| `skills` | `official = false` stops refreshing at once; whether the official skills are offered follows at the next start |
 | `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers`, `memory`, `cron` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
 | Agent documents and presets | At once for new runs; a run in progress keeps its agent, and its delegated children resolve against the agents it started with |
 | `providers`, `headers` | At once: models are recompiled |

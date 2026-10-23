@@ -1514,7 +1514,9 @@ impl App {
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = client
-                .list_skills(cookie_agent_protocol::SkillsListParams { session_id })
+                .list_skills(cookie_agent_protocol::SkillsListParams {
+                    session_id: Some(session_id),
+                })
                 .await
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::SkillsLoaded { session_id, result });

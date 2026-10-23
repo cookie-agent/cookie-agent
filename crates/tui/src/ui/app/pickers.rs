@@ -167,7 +167,12 @@ fn skill_label(skill: &cookie_agent_protocol::SkillDescriptor) -> String {
         .argument_hint
         .as_deref()
         .map_or(String::new(), |hint| format!(" {hint}"));
-    format!("/{}{} — {}", skill.name, hint, skill.description)
+    let official = if skill.source == cookie_agent_protocol::SkillSource::Official {
+        " (official)"
+    } else {
+        ""
+    };
+    format!("/{}{}{official} — {}", skill.name, hint, skill.description)
 }
 
 /// What Enter on the palette's current step acts on, captured before any
@@ -291,8 +296,10 @@ impl App {
         let skills = self.palette_skills();
         let skill = skills.get(list.selected()?)?;
         Some(format!(
-            "{:?} · permission {:?} · {}",
-            skill.source, skill.permission_effect, skill.location
+            "{} · permission {:?} · {}",
+            cookie_agent_client_state::onboarding::skill_origin(skill),
+            skill.permission_effect,
+            skill.location
         ))
     }
 
@@ -554,7 +561,9 @@ impl App {
         };
         match self
             .client
-            .list_skills(cookie_agent_protocol::SkillsListParams { session_id })
+            .list_skills(cookie_agent_protocol::SkillsListParams {
+                session_id: Some(session_id),
+            })
             .await
         {
             Ok(result) => {

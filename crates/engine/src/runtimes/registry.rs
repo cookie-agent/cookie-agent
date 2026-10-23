@@ -330,6 +330,12 @@ impl RuntimeInstance {
         Arc::clone(&self.current().skills)
     }
 
+    /// Replaces the skills the instance contributes, as the global runtime's
+    /// are after the official skills changed.
+    pub(crate) fn replace_skills(&self, skills: SkillRegistry) {
+        self.current().skills = Arc::new(skills);
+    }
+
     /// Whether `info` describes this instance: a restart must come back as
     /// the same runtime, capability, kind, attachment name, and workspace.
     fn same_identity(&self, info: &RuntimeInfo) -> bool {

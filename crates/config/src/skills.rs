@@ -317,11 +317,29 @@ pub fn parse_skill_document(
 /// once for engine construction; the global runtime contributes them. Skill
 /// files are intentionally not hot-reloaded.
 pub fn load_user_skills() -> Result<SkillRegistry, ConfigError> {
+    load_user_skills_with_official(false)
+}
+
+/// [`load_user_skills`], with the official skills of the data root below
+/// them when `official` is on (`[skills] official`).
+pub fn load_user_skills_with_official(official: bool) -> Result<SkillRegistry, ConfigError> {
     let shared_user = paths::home_dir()
         .ok()
         .map(|home| home.join(".agents/skills"));
     let user = user_skill_root();
-    load_skill_roots(shared_user.as_deref(), user.as_deref(), &[])
+    let official_root = official
+        .then(|| {
+            paths::user_data_root()
+                .ok()
+                .map(|root| official_skills_root(&root))
+        })
+        .flatten();
+    load_skill_roots_with_official(
+        official_root.as_deref(),
+        shared_user.as_deref(),
+        user.as_deref(),
+        &[],
+    )
 }
 
 /// Loads the project skills a coding runtime contributes for `workspace`:
@@ -343,7 +361,36 @@ pub fn load_skill_roots(
     user_root: Option<&Path>,
     project_roots: &[PathBuf],
 ) -> Result<SkillRegistry, ConfigError> {
+    load_skill_roots_with_official(None, shared_user_root, user_root, project_roots)
+}
+
+/// The folder of the official skills the daemon keeps up to date, below the
+/// data root: `<data_root>/official_skills`.
+#[must_use]
+pub fn official_skills_root(data_root: &Path) -> PathBuf {
+    data_root.join(OFFICIAL_SKILLS_DIRECTORY)
+}
+
+/// The name of the official skills folder below the data root.
+pub const OFFICIAL_SKILLS_DIRECTORY: &str = "official_skills";
+
+/// [`load_skill_roots`] with the official skills folder as the lowest root:
+/// any user or project skill of the same name wins. Entries of that folder
+/// whose names start with `.` (the daemon's own index) are not skills.
+pub fn load_skill_roots_with_official(
+    official_root: Option<&Path>,
+    shared_user_root: Option<&Path>,
+    user_root: Option<&Path>,
+    project_roots: &[PathBuf],
+) -> Result<SkillRegistry, ConfigError> {
     let mut candidates = Vec::new();
+    if let Some(root) = official_root {
+        candidates.extend(load_root_skipping_hidden(
+            root,
+            SkillSource::Official,
+            true,
+        )?);
+    }
     if let Some(root) = shared_user_root {
         candidates.extend(load_root(root, SkillSource::User)?);
     }
@@ -391,6 +438,7 @@ pub fn load_skill_roots(
         let winner_scope = match winner.source {
             SkillSource::User => "user",
             SkillSource::Project => "project",
+            SkillSource::Official => "official",
         };
         registry.diagnostics.push(SkillDiagnostic {
             name: discovery.name.clone(),
@@ -429,6 +477,14 @@ fn project_skill_roots(cwd: &Path) -> Vec<PathBuf> {
 }
 
 fn load_root(root: &Path, source: SkillSource) -> Result<Vec<SkillDocument>, ConfigError> {
+    load_root_skipping_hidden(root, source, false)
+}
+
+fn load_root_skipping_hidden(
+    root: &Path,
+    source: SkillSource,
+    skip_hidden: bool,
+) -> Result<Vec<SkillDocument>, ConfigError> {
     let metadata = match fs::metadata(root) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -444,6 +500,9 @@ fn load_root(root: &Path, source: SkillSource) -> Result<Vec<SkillDocument>, Con
     directories.sort_by_key(std::fs::DirEntry::file_name);
     let mut documents = Vec::new();
     for entry in directories {
+        if skip_hidden && entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let file_type = entry.file_type().map_err(ConfigError::Io)?;
         if !file_type.is_dir() || file_type.is_symlink() {
             return Err(ConfigError::UnsafePath);

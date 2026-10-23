@@ -275,6 +275,55 @@ impl Engine {
             })
     }
 
+    /// The daemon's own skills, without a session: the global runtime's
+    /// user and official skills. `permission_effect` is `ask` and `visible`
+    /// says whether the skill wins its name, since no agent decides them.
+    #[must_use]
+    pub fn list_daemon_skills(&self) -> SkillsListResult {
+        let registry = self.inner.runtimes.global().skills();
+        let mut skills = registry
+            .discoveries()
+            .iter()
+            .filter_map(|discovery| {
+                let document = registry.get(&discovery.name)?;
+                let mut descriptor = skill_descriptor(
+                    &discovery.name,
+                    document,
+                    discovery.precedence_winner,
+                    PermissionEffect::Ask,
+                    discovery.precedence_winner,
+                );
+                descriptor.location = discovery.path.to_string_lossy().into_owned();
+                descriptor.source = discovery.source;
+                Some(descriptor)
+            })
+            .collect::<Vec<_>>();
+        self.mark_official_versions(&mut skills);
+        skills.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| right.precedence_winner.cmp(&left.precedence_winner))
+                .then_with(|| left.location.cmp(&right.location))
+        });
+        SkillsListResult { skills }
+    }
+
+    /// Gives each official skill of `skills` its version.
+    fn mark_official_versions(&self, skills: &mut [SkillDescriptor]) {
+        if !skills
+            .iter()
+            .any(|skill| skill.source == cookie_agent_protocol::SkillSource::Official)
+        {
+            return;
+        }
+        let versions = self.official_skills();
+        for skill in skills {
+            if skill.source == cookie_agent_protocol::SkillSource::Official {
+                skill.version = versions.get(&skill.name).cloned();
+            }
+        }
+    }
+
     pub fn list_skills(&self, session: SessionId) -> Result<SkillsListResult, EngineError> {
         let projection = self.inner.store.get(session)?;
         let policy = permissions::governing_agent_for_skills(&projection);
@@ -304,6 +353,7 @@ impl Engine {
                 Some(descriptor)
             })
             .collect::<Vec<_>>();
+        self.mark_official_versions(&mut skills);
         // By name, the skill that wins its name first, then by location:
         // the order does not depend on how the platform spells paths.
         skills.sort_by(|left, right| {
@@ -890,6 +940,7 @@ fn skill_descriptor(
         visible,
         user_invocable: skill.frontmatter.user_invocable,
         argument_hint: skill.frontmatter.argument_hint.clone(),
+        version: None,
     }
 }
 

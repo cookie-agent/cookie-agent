@@ -38,12 +38,47 @@ the TUI. A session without the global runtime has no user skills, and one
 without a coding runtime has no project skills. Skill files are not
 hot-reloaded; restart the engine after changing them.
 
-The [starter kit](agents.md#the-starter-kit) installs two user skills:
-`customize-cookie-agent`, pointers for an agent asked to change cookie itself
-(its configuration, providers, runtimes, MCP servers, agents, skills, and
-cron jobs), and `add-cookie-runtime`, for bringing another machine in as a
-runtime over ssh or by dialing in. Each names the `cookie` commands to use
-and the pages to read.
+## Official skills
+
+Cookie keeps a set of official skills about itself up to date on every
+daemon: `customize-cookie-agent`, pointers for an agent asked to change
+cookie (its configuration, providers, runtimes, MCP servers, agents, skills,
+and cron jobs), and `add-cookie-runtime`, for bringing another machine in as
+a runtime over ssh or by dialing in. They come from the
+[cookie-agent/skills](https://github.com/cookie-agent/skills) repository,
+served at `https://cookie-agent.github.io/skills/`, a source whose URL
+carries no version.
+
+- **Where.** `official_skills/<name>/` in the daemon's data root
+  (`~/.cookie-agent/official_skills/`), which only the daemon writes. It is
+  the lowest skill root: a user or project skill of the same name wins, and
+  the official one shows as shadowed.
+- **Refresh.** At start and then every 24 hours the daemon reads the
+  source's `index.json`, downloads the files whose SHA-256 changed, and
+  checks each against the index before it replaces the cached copy. Skills
+  the index no longer lists, or whose `requires_cookie` range this version
+  does not satisfy, are removed. A failed refresh keeps the cached skills
+  and shows as a configuration diagnostic (`cookie config status`,
+  `/config`) until a refresh succeeds; an offline daemon keeps working. A
+  refresh that changes them reloads the daemon's skills, user skills
+  included, for new sessions.
+- **Off.** `[skills] official = false` in `config.toml` stops refreshing at
+  once and leaves the folder unused from the next start.
+- **Commands.** `cookie skills list` shows each skill with where it comes
+  from and an official skill's version, `cookie skills update` refreshes
+  now, and `cookie skills check <dir>` validates skills you write; see
+  [`cookie skills`](../clients/cli.md#cookie-skills). The TUI's skill picker
+  and the web page's skill list mark official skills.
+
+Skills grant no tools; the `skill` permission and every tool's own rules
+still decide each call.
+
+```toml
+[skills]
+official = true   # the default
+```
+
+`official` is the table's only key; an unknown key fails.
 
 ## Authoring
 

@@ -447,6 +447,9 @@ pub struct EngineConfig {
     pub cron: CronConfig,
     #[serde(default)]
     pub acp: AcpConfig,
+    /// `[skills]`: the official skills.
+    #[serde(default)]
+    pub skills: SkillsConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -475,6 +478,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) memory: Option<MemoryConfig>,
     pub(crate) cron: Option<CronConfig>,
     pub(crate) acp: Option<AcpConfig>,
+    pub(crate) skills: Option<SkillsConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -902,6 +906,23 @@ impl CronConfig {
         None
     }
 }
+/// `[skills]`: whether the daemon keeps the official skills up to date and
+/// offers them (`docs/site/specs/default-models-and-onboarding.md` section
+/// 13).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsConfig {
+    /// Refresh the official skills at start and daily, and offer them below
+    /// the user's own; `false` stops refreshing and leaves them unused.
+    #[serde(default = "yes")]
+    pub official: bool,
+}
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self { official: true }
+    }
+}
+
 /// `[acp]`: how the daemon runs ACP agents
 /// (`docs/site/specs/acp-agents.md` section 7).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -1244,6 +1265,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     }
     if let Some(value) = &layer.acp {
         runtime.acp = value.clone();
+    }
+    if let Some(value) = &layer.skills {
+        runtime.skills = value.clone();
     }
     if let Some(values) = &layer.headers {
         for (name, value) in values {

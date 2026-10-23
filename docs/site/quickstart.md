@@ -40,11 +40,13 @@ panel at any time. It walks four steps:
    same model as the default.
 4. **Starter kit** (optional). A commented `config.toml`, three agents
    (`primary`, which runs sessions, and its subagents `explore` and
-   `worker`), and two skills (`customize-cookie-agent` for changing cookie
-   itself, `add-cookie-runtime` for adding another machine), downloaded from
-   the release of your cookie version. Each file is marked **new**, **same as
+   `worker`), downloaded from the release of your cookie version. Each file is marked **new**, **same as
    yours** (skipped), or **differs**: an existing file is never overwritten;
    the kit's version is written beside it as `<name>.new`.
+
+The daemon also keeps cookie's [official skills](extend/skills.md#official-skills)
+up to date by itself, such as `customize-cookie-agent` for changing cookie and
+`add-cookie-runtime` for adding another machine; they need no step.
 
 **Finish** writes the settings and the kit together, and stays disabled, with
 the reason, until a provider and both models are chosen.

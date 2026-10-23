@@ -271,8 +271,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
-| `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
+| `skills.list` | Session ID; optional since 1.22.0, without it the daemon's own user and official skills | Discovered skills with source (`user`, `project`, or `official` since 1.22.0), precedence, visibility, permission effect, and an official skill's `version` |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
+| `skills.update` | Empty object (since 1.22.0) | Refreshes the official skills now: `enabled` (`false` with `[skills] official = false`), the `skills` kept (`name`, `version`), the ones `updated` and `removed`, and the `error` when the refresh failed and the cached ones stayed |
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
 | `session.compact.cancel` | Session ID | Whether a running manual compaction was cancelled |
 | `session.revert` | Session ID, positive `through_seq`, `expected_last_seq` | Updated session metadata |

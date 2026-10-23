@@ -1263,12 +1263,17 @@ pub struct SessionPermissionPreviewResult {
     pub permissions: Vec<EffectivePermissionAction>,
 }
 
-/// A value this build does not know reads as `user`.
+/// Where a skill comes from: `project`, `official` (an official skill the
+/// daemon keeps up to date, since client protocol 1.22.0), or `user`. A
+/// value this build does not know reads as `user`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(extend("x-open" = true))]
 pub enum SkillSource {
     Project,
+    // An official skill the daemon keeps up to date (client protocol
+    // 1.22.0); a user or project skill of the same name wins.
+    Official,
     #[serde(other)]
     User,
 }
@@ -1289,12 +1294,51 @@ pub struct SkillDescriptor {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub argument_hint: Option<String>,
+    /// An official skill's version (client protocol 1.22.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsListParams {
-    pub session_id: SessionId,
+    /// The session whose skills to list; the daemon's own (user and
+    /// official skills) when absent (client protocol 1.22.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "SessionId")]
+    pub session_id: Option<SessionId>,
+}
+
+pub const SKILLS_UPDATE_METHOD: &str = "skills.update";
+
+/// `skills.update`: refresh the official skills now.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillsUpdateParams {}
+
+/// One official skill the daemon keeps.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OfficialSkill {
+    pub name: String,
+    pub version: String,
+}
+
+/// What `skills.update` did: the official skills kept afterwards, what
+/// changed, and why the refresh failed, if it did (the cached skills stay).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SkillsUpdateResult {
+    /// `false` when `[skills] official` is off: nothing was refreshed.
+    pub enabled: bool,
+    #[schemars(length(max = 1024))]
+    pub skills: Vec<OfficialSkill>,
+    /// Skills added or changed by this refresh.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updated: Vec<String>,
+    /// Skills removed by this refresh.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

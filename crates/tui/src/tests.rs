@@ -335,6 +335,7 @@ fn build_in_process_server(
             small_model: None,
             cron: Default::default(),
             acp: Default::default(),
+            skills: Default::default(),
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),

@@ -402,10 +402,8 @@ commands (`ls *`, `cat *`, `rg *`, `git status*`, `git diff*`, …); such a
 pattern also matches a longer command that starts the same way, so narrow it
 if that matters to you. An installed kit file is yours to change: installing
 the kit again never overwrites it, writing the kit's version beside it as
-`<name>.new`. The kit also installs two skills:
-`customize-cookie-agent`, which points an agent at the commands and pages
-for changing cookie itself, and `add-cookie-runtime`, for adding another
-machine as a runtime when the user gives the agent ssh access to it.
+`<name>.new`. Skills are not in the kit: the daemon keeps the
+[official skills](skills.md#official-skills) up to date itself.
 
 ## Layering and replacement
 

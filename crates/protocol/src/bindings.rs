@@ -301,6 +301,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!("session.permission.preview", ToDaemon, SessionPermissionPreviewParams => SessionPermissionPreviewResult),
         request!("skills.list", ToDaemon, SkillsListParams => SkillsListResult),
         request!("skills.get", ToDaemon, SkillsGetParams => SkillsGetResult),
+        request!(SKILLS_UPDATE_METHOD, ToDaemon, SkillsUpdateParams => SkillsUpdateResult),
         request!("session.compact", ToDaemon, SessionCompactParams => SessionCompactResult),
         request!("session.revert", ToDaemon, SessionRevertParams => SessionRevertResult),
         request!(SESSION_DELETE_METHOD, ToDaemon, SessionDeleteParams => SessionDeleteResult),

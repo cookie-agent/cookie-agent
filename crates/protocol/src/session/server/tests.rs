@@ -181,6 +181,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SkillsGetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn update_skills(
+        &self,
+        _: crate::SkillsUpdateParams,
+    ) -> Result<crate::SkillsUpdateResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn compact_session(
         &self,
         _: crate::SessionCompactParams,
