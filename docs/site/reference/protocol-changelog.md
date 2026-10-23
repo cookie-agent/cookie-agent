@@ -5,6 +5,23 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.20.0
+
+- ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,
+  2026-10-23 addendum), all optional members an older client ignores:
+  - `acp_session_started` has `steering`: the agent takes messages into its
+    running turn (its steering extension). Clients label the Steer button
+    as queueing for a session whose agent does not.
+  - `acp_session_updated` has `notice` (`severity` `info`, `warning`, or
+    `error`, `title`, optional `description`): a notice of the agent's, or
+    a compaction it reported; `steered` (`user_inputs`, the
+    `user_input_submitted` sequence numbers, and `producer_messages`): input
+    delivered into the running turn; and `tool_presentation`
+    (`tool_call_id`, `presentation`): a new title, hint, primary argument,
+    arguments, and preview for one of the agent's tool calls whose raw
+    input arrived after it started.
+- The plugin protocol is 1.9.0 for the same event members.
+
 ## 1.19.0
 
 - Clients restart the daemon ([engine configuration spec](../specs/engine-configuration.md)

@@ -1,6 +1,6 @@
 //! What the client protocol and session history say about ACP agents
 //! (`docs/site/specs/acp-agents.md` sections 5, 10, and 11; client protocol
-//! 1.17.0, notices, steering, and tool presentations 1.19.0).
+//! 1.17.0, notices, steering, and tool presentations 1.20.0).
 //!
 //! The daemon records the ACP session a cookie session talks to
 //! (`acp_session_started`) and what the agent reports about it
@@ -99,7 +99,7 @@ pub struct AcpSessionRecord {
     /// Whether the agent takes messages into its running turn (it
     /// advertises the steering extension, `_session/steering`): input sent
     /// to steer reaches the turn, else it waits for the agent's next turn
-    /// (client protocol 1.19.0).
+    /// (client protocol 1.20.0).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub steering: bool,
 }
@@ -118,7 +118,7 @@ crate::open_enum! {
 
 /// An advisory line an ACP agent sent (its `notice` update, or what the
 /// daemon makes of a compaction update), shown where it arrives (client
-/// protocol 1.19.0).
+/// protocol 1.20.0).
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AcpNotice {
     pub severity: AcpNoticeSeverity,
@@ -130,7 +130,7 @@ pub struct AcpNotice {
 /// Input the daemon delivered into the agent's running turn through its
 /// steering extension, by the events that took it: the
 /// `user_input_submitted` events' sequence numbers and the producer
-/// messages (client protocol 1.19.0).
+/// messages (client protocol 1.20.0).
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AcpSteered {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -141,7 +141,7 @@ pub struct AcpSteered {
 
 /// A new presentation of one of the agent's own tool calls, whose title,
 /// kind, or arguments arrived after the call started (client protocol
-/// 1.19.0). It replaces the call's title, hint, primary argument,
+/// 1.20.0). It replaces the call's title, hint, primary argument,
 /// arguments, and preview; its tool identity stays.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct AcpToolPresentation {

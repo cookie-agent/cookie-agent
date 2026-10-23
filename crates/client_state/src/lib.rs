@@ -581,7 +581,7 @@ pub enum TranscriptItem {
     },
     /// A notice of a session's ACP agent (its `notice` update, or a
     /// compaction it reported), shown where it arrived; no level filter
-    /// hides it (client protocol 1.19.0).
+    /// hides it (client protocol 1.20.0).
     AcpNotice {
         id: u64,
         notice: cookie_agent_protocol::AcpNotice,
@@ -915,7 +915,7 @@ pub struct AcpSessionView {
     /// session's details show and `session.agent_option.set` changes.
     pub options: Vec<cookie_agent_protocol::AcpConfigOption>,
     /// Whether the agent takes messages into its running turn, from the
-    /// latest `acp_session_started` (client protocol 1.19.0).
+    /// latest `acp_session_started` (client protocol 1.20.0).
     pub steering: bool,
     /// The `user_input_submitted` sequence numbers of the messages steered
     /// into the agent's running turn, which the transcript marks.

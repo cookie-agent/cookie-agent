@@ -86,6 +86,42 @@
       ],
       "type": "object"
     },
+    "AcpNotice": {
+      "description": "An advisory line an ACP agent sent (its `notice` update, or what the\ndaemon makes of a compaction update), shown where it arrives (client\nprotocol 1.20.0).",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "$ref": "#/$defs/AcpNoticeSeverity"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "title"
+      ],
+      "type": "object"
+    },
+    "AcpNoticeSeverity": {
+      "description": "How much an [`AcpNotice`] matters. An unknown severity reads as\n`info`.",
+      "oneOf": [
+        {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "AcpSessionStart": {
       "description": "How the daemon got the ACP session a turn runs in. An unknown way\nreads as `new`.",
       "oneOf": [
@@ -106,6 +142,44 @@
         }
       ],
       "x-open": true
+    },
+    "AcpSteered": {
+      "description": "Input the daemon delivered into the agent's running turn through its\nsteering extension, by the events that took it: the\n`user_input_submitted` events' sequence numbers and the producer\nmessages (client protocol 1.20.0).",
+      "properties": {
+        "producer_messages": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "user_inputs": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "AcpToolPresentation": {
+      "description": "A new presentation of one of the agent's own tool calls, whose title,\nkind, or arguments arrived after the call started (client protocol\n1.20.0). It replaces the call's title, hint, primary argument,\narguments, and preview; its tool identity stays.",
+      "properties": {
+        "presentation": {
+          "$ref": "#/$defs/PreparedPresentation"
+        },
+        "tool_call_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "presentation"
+      ],
+      "type": "object"
     },
     "AgentDocumentSource": {
       "enum": [
@@ -3969,6 +4043,10 @@
               "pattern": "^[a-z][a-z0-9_]{0,31}$",
               "type": "string"
             },
+            "steering": {
+              "description": "Whether the agent takes messages into its running turn (it\nadvertises the steering extension, `_session/steering`): input sent\nto steer reaches the turn, else it waits for the agent's next turn\n(client protocol 1.20.0).",
+              "type": "boolean"
+            },
             "type": {
               "const": "acp_session_started",
               "type": "string"
@@ -3998,6 +4076,17 @@
                 "null"
               ]
             },
+            "notice": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpNotice"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A notice of the agent's, shown once where it arrives."
+            },
             "options": {
               "items": {
                 "$ref": "#/$defs/AcpConfigOption"
@@ -4017,6 +4106,28 @@
                 }
               ],
               "description": "The agent's plan, a `plan` display block."
+            },
+            "steered": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpSteered"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Input delivered into the running turn."
+            },
+            "tool_presentation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpToolPresentation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A tool call's new presentation."
             },
             "type": {
               "const": "acp_session_updated",
@@ -6102,6 +6213,54 @@
         "resources",
         "execution_context_digest",
         "capability_lifetime"
+      ],
+      "type": "object"
+    },
+    "PreparedPresentation": {
+      "description": "The presentation a runtime or plugin supplies from prepare.",
+      "properties": {
+        "arguments": {
+          "description": "The call's arguments; clients fall back to the raw model arguments\nwhen it is empty.",
+          "items": {
+            "$ref": "#/$defs/DisplayBlock"
+          },
+          "type": "array"
+        },
+        "hint": {
+          "description": "What a tool is for, such as `file_edit`.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "description": "What the call will do, such as a diff as of prepare.",
+          "items": {
+            "$ref": "#/$defs/DisplayBlock"
+          },
+          "type": "array"
+        },
+        "primary_argument": {
+          "description": "Bounded presentation text; byte-capped only, clients sanitize control characters.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[\\s\\S]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
       ],
       "type": "object"
     },
