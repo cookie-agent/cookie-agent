@@ -1,12 +1,16 @@
-//! `cookie memory`: list, edit, and delete a daemon's memory files with the
-//! `memory.*` methods, so it works against a remote daemon
-//! (`docs/site/specs/memory.md` section 10).
+//! `cookie memory`: list, show, edit, and delete a daemon's memory files
+//! with the `memory.*` methods, so it works against a remote daemon
+//! (`docs/site/specs/memory.md` section 10). The listing and `show` give
+//! each memory's stamps and its size against its limit (section 16.9);
+//! `edit` leaves out the stamp lines the daemon owns.
 
 use anyhow::Context as _;
 use clap::Subcommand;
+use cookie_agent_client_state::memory::{MemoryStamps, OVER_LIMIT_NOTE, editor_text};
 use cookie_agent_protocol::{
     Client, ClientError, MemoryInfo, MemoryLayer, MemoryListParams, MemoryListResult, errors,
 };
+use jiff::Timestamp;
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum MemoryCommand {
@@ -17,6 +21,9 @@ pub(crate) enum MemoryCommand {
         #[arg(value_parser = parse_layer)]
         layer: Option<MemoryLayer>,
     },
+    /// Show a memory, such as `project://web/build`: when it was created,
+    /// modified, and last read, its size against its limit, then its text.
+    Show { url: String },
     /// Edit a memory in `$VISUAL` or `$EDITOR`, frontmatter included, such
     /// as `project://web/build`; a memory that does not exist yet is
     /// created.
@@ -117,10 +124,40 @@ pub(crate) async fn run_memory_with<I: MemoryIo>(
                 })
                 .await
                 .context("memory.list failed")?;
-            for line in memory_lines(&listed) {
+            for line in memory_lines(&listed, Timestamp::now()) {
                 io.write_line(&line)?;
             }
             Ok(())
+        }
+        MemoryCommand::Show { url } => {
+            let read = client.read_memory(&url).await.map_err(daemon_error)?;
+            // Only the listing knows when a model last read it.
+            let last_read = client
+                .list_memory(MemoryListParams::default())
+                .await
+                .ok()
+                .and_then(|listed| {
+                    listed
+                        .memories
+                        .into_iter()
+                        .find(|memory| memory.url == read.url)
+                })
+                .and_then(|memory| memory.last_read);
+            let stamps = MemoryStamps::of_read(&read, last_read);
+            io.write_line(&read.url)?;
+            if let Some(reason) = &read.invalid {
+                io.write_line(&format!("invalid: {reason}"))?;
+            }
+            for line in stamps.detail_lines(Timestamp::now()) {
+                io.write_line(&line)?;
+            }
+            if stamps.over_limit() {
+                io.write_line(OVER_LIMIT_NOTE)?;
+            }
+            io.write_line(&format!("revision: {}", read.revision))?;
+            io.write_line("")?;
+            let text = editor_text(&read.text, client.daemon_version());
+            io.write_line(text.strip_suffix('\n').unwrap_or(&text))
         }
         MemoryCommand::Edit { url } => edit(client, &url, io).await,
         MemoryCommand::Rm { url, yes } => {
@@ -153,15 +190,17 @@ fn message_of(error: &ClientError) -> String {
 }
 
 /// Opens `url` in the editor and writes it back at the revision read; a new
-/// memory starts from [`NEW_MEMORY`]. Invalid text can be edited again; a
-/// memory that changed meanwhile can be reloaded and edited again.
+/// memory starts from [`NEW_MEMORY`]. The editor leaves out the stamp lines
+/// a daemon that owns them writes on every save. Invalid text can be edited
+/// again; a memory that changed meanwhile can be reloaded and edited again.
 async fn edit<I: MemoryIo>(client: &Client, url: &str, io: &mut I) -> anyhow::Result<()> {
+    let version = client.daemon_version();
     let (mut original, mut revision) = match client.read_memory(url).await {
         Ok(read) => {
             if let Some(reason) = &read.invalid {
                 io.write_line(&format!("{} is not a valid memory: {reason}", read.url))?;
             }
-            (read.text, Some(read.revision))
+            (editor_text(&read.text, version), Some(read.revision))
         }
         Err(error) if error.is(&errors::MEMORY_NOT_FOUND) => (NEW_MEMORY.to_owned(), None),
         Err(error) => return Err(daemon_error(error)),
@@ -212,7 +251,7 @@ async fn edit<I: MemoryIo>(client: &Client, url: &str, io: &mut I) -> anyhow::Re
                     anyhow::bail!("{url} was not changed");
                 }
                 (original, revision) = match client.read_memory(url).await {
-                    Ok(read) => (read.text, Some(read.revision)),
+                    Ok(read) => (editor_text(&read.text, version), Some(read.revision)),
                     Err(error) if error.is(&errors::MEMORY_NOT_FOUND) => {
                         (NEW_MEMORY.to_owned(), None)
                     }
@@ -225,10 +264,11 @@ async fn edit<I: MemoryIo>(client: &Client, url: &str, io: &mut I) -> anyhow::Re
     }
 }
 
-/// `cookie memory list`: one line per memory, under a heading per layer and
-/// per agent, machine, or project group, then what the memory folder holds
-/// besides memories.
-pub(crate) fn memory_lines(listed: &MemoryListResult) -> Vec<String> {
+/// `cookie memory list`: two lines per memory, its URL and description,
+/// then its stamps and size against its limit, under a heading per layer
+/// and per agent, machine, or project group, then what the memory folder
+/// holds besides memories.
+pub(crate) fn memory_lines(listed: &MemoryListResult, now: Timestamp) -> Vec<String> {
     let mut lines = Vec::new();
     let mut heading: Option<(MemoryLayer, Option<&str>)> = None;
     for memory in &listed.memories {
@@ -243,6 +283,7 @@ pub(crate) fn memory_lines(listed: &MemoryListResult) -> Vec<String> {
         }
         heading = Some(here);
         lines.push(memory_line(memory));
+        lines.push(stamps_line(memory, now));
     }
     if lines.is_empty() {
         lines.push("No memories.".to_owned());
@@ -280,6 +321,16 @@ fn memory_line(memory: &MemoryInfo) -> String {
     if memory.orphaned {
         line.push_str("  (no current agent)");
     }
-    line.push_str(&format!("  [{} B]", memory.size));
     line
+}
+
+/// The line under a memory's: `created 3 weeks ago · modified 2 days ago ·
+/// last read 1 hour ago · 812 bytes of 2 KB`, with what the daemon reports.
+fn stamps_line(memory: &MemoryInfo, now: Timestamp) -> String {
+    let indent = if memory.group.is_some() {
+        "      "
+    } else {
+        "    "
+    };
+    format!("{indent}{}", MemoryStamps::of_info(memory).ages(now))
 }

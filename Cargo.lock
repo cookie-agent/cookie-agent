@@ -730,6 +730,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cookie_agent_client_state",
  "cookie_agent_coding_runtime",
  "cookie_agent_config",
  "cookie_agent_engine",
@@ -738,6 +739,7 @@ dependencies = [
  "cookie_agent_runtime_api",
  "cookie_agent_server",
  "cookie_agent_tui",
+ "jiff",
  "libc",
  "serde",
  "serde_json",

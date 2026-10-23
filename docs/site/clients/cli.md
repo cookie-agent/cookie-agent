@@ -313,7 +313,16 @@ Manages the daemon's memories. See
 
 `cookie memory list [LAYER]` lists the memories of every layer, or of one:
 `user`, `agent`, `machine`, or `project`. Invalid files and entries that are
-not memories are listed with the reason.
+not memories are listed with the reason. Under each memory, a line gives
+when it was created, modified, and last read by a model, and its size
+against its limit.
+
+#### `cookie memory show`
+
+`cookie memory show <URL>` prints a memory, such as `project://web/build`:
+when it was created, modified, and last read, its size against its limit
+(and whether it is over it), then its text without the `created` and
+`modified` lines the daemon keeps.
 
 #### `cookie memory edit`
 

@@ -1987,6 +1987,12 @@ fn memory_commands_take_a_layer_a_url_and_a_confirmation_switch() {
         }
     );
     assert_eq!(
+        parsed(&["cookie", "memory", "show", "project://web/build"]),
+        MemoryCommand::Show {
+            url: "project://web/build".into()
+        }
+    );
+    assert_eq!(
         parsed(&["cookie", "memory", "edit", "project://web/build"]),
         MemoryCommand::Edit {
             url: "project://web/build".into()
@@ -2009,6 +2015,7 @@ fn memory_commands_take_a_layer_a_url_and_a_confirmation_switch() {
     for arguments in [
         &["cookie", "memory", "list", "projects"][..],
         &["cookie", "memory", "edit"][..],
+        &["cookie", "memory", "show"][..],
         &["cookie", "memory", "rm"][..],
     ] {
         assert!(Cli::try_parse_from(arguments).is_err(), "{arguments:?}");
@@ -2165,8 +2172,8 @@ async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
         mine
     );
 
-    // The listing groups by layer and project and names what is not a
-    // memory.
+    // The listing groups by layer and project, gives each memory's stamps
+    // and its size against its limit, and names what is not a memory.
     std::fs::write(memory.join("projects/web/notes.txt"), "stray").unwrap();
     // Sizes count the whole file, the daemon's stamps included.
     let size = |path: &str| std::fs::metadata(memory.join(path)).unwrap().len();
@@ -2180,23 +2187,67 @@ async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
     )
     .await
     .unwrap();
+    // The limit is the configuration's; only its place is checked.
+    let stamps = |line: &str, path: &str| {
+        line.starts_with(&format!(
+            "      created less than a minute ago · modified less than a minute ago · {} bytes of ",
+            size(path)
+        )) && line.ends_with(" KB")
+    };
     assert_eq!(
-        io.output,
+        io.output[..3],
         [
-            "Projects".to_owned(),
-            "  web".to_owned(),
-            format!(
-                "    project://web/build  Build conventions  [{} B]",
-                size("projects/web/build.md")
-            ),
-            format!(
-                "    project://web/overview  Overview of the `web` project, loaded in full into its sessions  [{} B]",
-                size("projects/web/overview.md")
-            ),
-            "Not memories (ignored)".to_owned(),
-            "  projects/web/notes.txt: not a `.md` file".to_owned(),
+            "Projects",
+            "  web",
+            "    project://web/build  Build conventions"
         ]
     );
+    assert!(
+        stamps(&io.output[3], "projects/web/build.md"),
+        "{:?}",
+        io.output
+    );
+    assert_eq!(
+        io.output[4],
+        "    project://web/overview  Overview of the `web` project, loaded in full into its sessions"
+    );
+    assert!(
+        stamps(&io.output[5], "projects/web/overview.md"),
+        "{:?}",
+        io.output
+    );
+    assert_eq!(
+        io.output[6..],
+        [
+            "Not memories (ignored)",
+            "  projects/web/notes.txt: not a `.md` file"
+        ]
+    );
+
+    // `show` gives the stamps with their exact times, the size against the
+    // limit, and the text without the stamp lines.
+    let mut io = ScriptedMemoryIo::new(&[], &[]);
+    run_memory_with(&client, MemoryCommand::Show { url: url.into() }, &mut io)
+        .await
+        .unwrap();
+    assert_eq!(io.output[0], url);
+    assert!(
+        io.output[1].starts_with("created: ")
+            && io.output[1].ends_with(" UTC (less than a minute ago)"),
+        "{:?}",
+        io.output
+    );
+    assert!(io.output[2].starts_with("modified: "), "{:?}", io.output);
+    assert!(
+        io.output[3].starts_with(&format!(
+            "size: {} bytes of ",
+            size("projects/web/build.md")
+        )),
+        "{:?}",
+        io.output
+    );
+    assert!(io.output[4].starts_with("revision: "), "{:?}", io.output);
+    assert_eq!(io.output[5..], ["", mine.trim_end()]);
     let mut io = ScriptedMemoryIo::new(&[], &[]);
     run_memory_with(&client, MemoryCommand::List { layer: None }, &mut io)
         .await
