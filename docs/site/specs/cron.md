@@ -291,14 +291,18 @@ The cron provider, `builtin.cron`, offers five tools, each gated by
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `cron_create` | `prompt`, `schedule` (`{cron}` or `{in}`), `max_runs?`, `name?`, `target` (`"self"`, `{subagent: <handle>}`, or `{new: {agent?, permission_rules?, runtimes?, project?}}`), `delivery?` | The job: id, next fire time in local time and UTC |
+| `cron_create` | `prompt`, `schedule` (`{cron}` or `{in}`), `max_runs?`, `name?`, `target` (`"self"`, a session handle, or `{new: {agent?, permission_rules?, runtimes?, project?}}`), `delivery?` | The job: id, next fire time in local time and UTC |
 | `cron_list` | `target?` (a kind, to filter) | Each job the rules let it see: id, name, schedule, next fire, target, enabled, the last fire's outcome |
 | `cron_update` | `id`, any field of `cron_create`, `enabled?` | The updated job |
 | `cron_delete` | `id` | Confirmation |
 | `cron_run` | `id`, `background?` | Runs the job now as a delegated subagent of the caller (section 8.2) |
 
-- `"self"` is the calling session. A subagent is named by its handle, as
-  `delegate_subagent` names it.
+- **`target`** (simplified 2026-10-22) is `"self"` (the calling session),
+  a session handle as `delegate_subagent` names subagents, or `{new: …}`.
+  A handle that is not a session below the caller is refused in the tool
+  result. The permission resource still comes from the session: `session`
+  for a root, `subagent` for a delegated session, so `"self"` from a
+  subagent is `subagent`.
 - Descriptions say: schedules are in the host's local time; a fire is
   marked as a scheduled job; prefer updating a job to creating a near
   duplicate; `max_runs` defaults to 1, and `"unlimited"` runs until
