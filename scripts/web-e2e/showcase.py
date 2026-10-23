@@ -239,6 +239,7 @@ def close_all():
     # Project folders start folded at every size.
     browser.script("localStorage.removeItem('cookie.memory_project:greeter')")
     browser.script(
+        "const m = document.querySelector('[data-row-menu-backdrop]'); if (m) m.click();"
         "const s = document.querySelector('#sheet h2 ~ button'); if (s) s.click();"
         "const c = document.querySelector('#connection-close'); if (c) c.click();"
         "const d = document.querySelector('[data-drawer-backdrop]'); if (d) d.click();"
@@ -418,19 +419,21 @@ def edit_project(name, emoji, workspace=None, agent=None, agents_md=None):
 
 
 def move_to(title, name):
-    """Moves the session titled `title` into the project `name` with Move to
-    project…."""
+    """Moves the session titled `title` into the project `name` with its
+    ⋮ menu's Move to project…."""
     row = row_of(title)
     hover(row + " [data-session]", dx=-80)
-    click(row + " [data-move]")
+    click(row + " [data-row-menu]")
+    click("[data-row-menu-list] [data-menu-item=move]")
     click('#sheet [data-move-to="%s"]' % project_id(name))
     time.sleep(0.6)
 
 
 def projects_showcase(size, width):
     """The project sections (one folded), a header's buttons, a session
-    being dragged onto a header, Move to project…, the editor and its emoji
-    picker, New session's project picker, and a project's delete."""
+    being dragged onto a header, a row's ⋮ menu and its Move to project…,
+    the editor and its emoji picker, New session's project picker, and a
+    project's delete."""
     close_all()
     drawer = width < 1024
     scope = "#drawer" if drawer else "#sidebar"
@@ -459,11 +462,15 @@ def projects_showcase(size, width):
         click("main [data-sidebar-toggle]")
         long_press(row_of("Brainstorm release names", scope) + " [data-session]")
         both_themes("%s-project-row-actions" % size)
-        click(row_of("Brainstorm release names", scope) + " ~ [data-delete-actions-frame] [data-move-reveal]")
+        click(row_of("Brainstorm release names", scope) + " ~ [data-delete-actions-frame] [data-row-menu]")
+        both_themes("%s-project-row-menu" % size)
+        click("[data-row-menu-list] [data-menu-item=move]")
     else:
         row = row_of("Brainstorm release names")
         hover(row + " [data-session]", dx=-80)
-        click(row + " [data-move]")
+        click(row + " [data-row-menu]")
+        both_themes("%s-project-row-menu" % size)
+        click("[data-row-menu-list] [data-menu-item=move]")
     both_themes("%s-project-move" % size)
     close_all()
     if drawer:

@@ -1,7 +1,7 @@
 //! Where the page is, independent of the browser: the rail's views, the
 //! Settings sections, the history entries browser Back closes, and the
-//! press that offers to delete a session row on a touch screen. The
-//! session's ⋮ menu is [`crate::commands`].
+//! press that offers to delete a session row on a touch screen, and where
+//! a row's ⋮ menu opens. The session's ⋮ menu is [`crate::commands`].
 
 /// A full view the rail switches to.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -257,6 +257,48 @@ impl Press {
     }
 }
 
+/// The gap between a row's ⋮ and the menu it opens, in CSS pixels.
+pub const MENU_GAP: f64 = 4.0;
+
+/// Where a row's menu stands in a wide window, in CSS pixels from the
+/// viewport's edges: its right edge under the ⋮'s, and its top just
+/// below the ⋮, or its bottom just above it when the menu would run past
+/// the bottom of the screen there and there is more room above.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuPlace {
+    /// From the viewport's top to the menu's, when it opens downwards.
+    pub top: Option<f64>,
+    /// From the viewport's bottom to the menu's, when it opens upwards.
+    pub bottom: Option<f64>,
+    /// From the viewport's right edge to the menu's.
+    pub right: f64,
+}
+
+/// Places a menu `height` px tall for a ⋮ spanning `top` to `bottom` with
+/// its right edge at `right`, in a viewport `width` by `viewport_height`.
+pub fn menu_place(
+    (top, bottom, right): (f64, f64, f64),
+    (width, viewport_height): (f64, f64),
+    height: f64,
+) -> MenuPlace {
+    let below = viewport_height - bottom - MENU_GAP;
+    let above = top - MENU_GAP;
+    let right = (width - right).max(0.0);
+    if height <= below || below >= above {
+        MenuPlace {
+            top: Some(bottom + MENU_GAP),
+            bottom: None,
+            right,
+        }
+    } else {
+        MenuPlace {
+            top: None,
+            bottom: Some(viewport_height - top + MENU_GAP),
+            right,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +414,42 @@ mod tests {
         assert!(press.fired(), "the lift ends a long press");
         press.start(10.0, 10.0);
         assert!(!press.fired(), "a new press starts unfired");
+    }
+
+    #[test]
+    fn a_row_menu_opens_below_its_button_unless_the_screen_ends_first() {
+        // Room below: under the ⋮, right edges level.
+        assert_eq!(
+            menu_place((100.0, 144.0, 280.0), (1280.0, 800.0), 60.0),
+            MenuPlace {
+                top: Some(148.0),
+                bottom: None,
+                right: 1000.0,
+            }
+        );
+        // Exactly enough room below still opens downwards.
+        assert_eq!(
+            menu_place((700.0, 744.0, 280.0), (1280.0, 800.0), 52.0).top,
+            Some(748.0)
+        );
+        // Too little room below and more above: over the ⋮.
+        assert_eq!(
+            menu_place((700.0, 744.0, 280.0), (1280.0, 800.0), 53.0),
+            MenuPlace {
+                top: None,
+                bottom: Some(104.0),
+                right: 1000.0,
+            }
+        );
+        // Too little room either way: wherever there is more.
+        assert_eq!(
+            menu_place((20.0, 64.0, 280.0), (1280.0, 100.0), 90.0).top,
+            Some(68.0)
+        );
+        // A ⋮ past the right edge keeps the menu on the screen.
+        assert_eq!(
+            menu_place((100.0, 144.0, 1300.0), (1280.0, 800.0), 60.0).right,
+            0.0
+        );
     }
 }

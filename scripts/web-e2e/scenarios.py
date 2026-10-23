@@ -3830,7 +3830,8 @@ def projects(browser):
     a project made in the editor with an emoji, default attachments, a
     default agent, and an AGENTS.md; a new session in it from its header's
     +, prefilled; sessions moved by mouse and by finger onto a header and
-    with Move to project…; folding remembered; the editor's unsaved-edit
+    with the row's ⋮ menu's Move to project…, which Escape and a click
+    outside close; folding remembered; the editor's unsaved-edit
     guard, its rename, and its conflict; and the delete, refused while a
     session runs, then confirmed with what goes."""
     close_sheet(browser)
@@ -3930,12 +3931,12 @@ def projects(browser):
     drag_row(browser, 'aside [data-session-row="%s"] [data-session]' % second, header(project) + " [data-section-toggle]", touch=True)
     browser.wait("the finger-dragged session", lambda: section_of(browser, second) == "project:" + project)
     print("a finger drag moved a session into the project")
-    # Move to project… sends one back out.
+    # The row's ⋮ menu's Move to project… sends one back out.
     row = 'aside [data-session-row="%s"]' % second
     hover(browser, "#transcript")
     before = browser.script(ROW_LAYOUT, row)
     hover(browser, row)
-    browser.wait("the move button", lambda: shown(browser, row + " [data-move]"))
+    browser.wait("the ⋮", lambda: shown(browser, row + " [data-row-menu]"))
     # The buttons lie over the row's end: its title, time, and badges keep
     # their layout.
     time.sleep(0.3)
@@ -3944,14 +3945,49 @@ def projects(browser):
         "return [...document.querySelectorAll(arguments[0] + ' [data-row-actions] button')].map((b) => b.getAttribute('aria-label'))",
         row,
     )
-    assert order[:2] == ["Move to project…", "Rename the session"], order
+    assert order[:2] == ["More actions", "Rename the session"], order
     browser.shot("project-row-buttons")
-    browser.click(row + " [data-move]")
+    opened = open_session_id(browser)
+    menu = "aside [data-row-menu-list]"
+    # A click opens the menu under the ⋮, right edges level, without
+    # opening the session; Escape closes it and gives the ⋮ the focus.
+    browser.click(row + " [data-row-menu]")
+    browser.wait("the row's menu", lambda: count(browser, menu) == 1)
+    items = browser.script(
+        "return [...document.querySelectorAll(arguments[0] + ' [role=menuitem]')].map((b) => b.innerText.trim())", menu
+    )
+    assert items == ["Move to project…"], items
+    trigger, box = browser.script(
+        "const r = (s) => document.querySelector(s).getBoundingClientRect();"
+        "const t = r(arguments[0]), m = r(arguments[1]);"
+        "return [[Math.round(t.bottom), Math.round(t.right)], [Math.round(m.top), Math.round(m.right)]]",
+        row + " [data-row-menu]", menu,
+    )
+    assert box[0] >= trigger[0] and abs(box[1] - trigger[1]) <= 1, (trigger, box)
+    assert browser.script("return document.activeElement.dataset.menuItem") == "move"
+    assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", row + " [data-row-menu]") == "true"
+    browser.shot("project-row-menu")
+    browser.type(menu + " [data-menu-item=move]", ESCAPE)
+    browser.wait("the closed menu", lambda: count(browser, menu) == 0)
+    assert browser.script("return document.activeElement.dataset.rowMenu") == second, "the ⋮ lost the focus"
+    assert open_session_id(browser) == opened, "the ⋮ opened the session"
+    # Enter on the focused ⋮ opens it again; a click outside closes it.
+    browser.type(row + " [data-row-menu]", ENTER)
+    browser.wait("the row's menu by keyboard", lambda: count(browser, menu) == 1)
+    browser.click("aside [data-row-menu-backdrop]")
+    browser.wait("the menu closed by a click outside", lambda: count(browser, menu) == 0)
+    assert open_session_id(browser) == opened, "the click outside opened the session"
+    hover(browser, row)
+    browser.wait("the ⋮", lambda: shown(browser, row + " [data-row-menu]"))
+    browser.click(row + " [data-row-menu]")
+    browser.wait("the row's menu", lambda: count(browser, menu) == 1)
+    browser.click(menu + " [data-menu-item=move]")
     browser.wait("the picker", lambda: count(browser, "#sheet [data-move-to]") >= 2)
+    assert count(browser, menu) == 0, "the menu stayed open"
     browser.shot("project-move-picker")
     browser.click('#sheet [data-move-to="none"]')
     browser.wait("the moved session", lambda: section_of(browser, second) == "none")
-    print("Move to project… moved a session out of its project")
+    print("the ⋮ menu's Move to project… moved a session out of its project; Escape and a click outside close it")
 
     # The header's pencil and trash show on hover, left of its +.
     hover(browser, "#transcript")
@@ -4066,10 +4102,19 @@ def projects(browser):
     print("deleted the project with its sessions:", browser.text("#status"))
 
 
+def phone_section_of(phone, session):
+    """The section key a session's row is listed under in the drawer."""
+    return phone.script(
+        "const r = document.querySelector('#drawer [data-session-row=\"' + arguments[0] + '\"]');"
+        "return r && r.closest('[data-project-section]').dataset.projectSection",
+        session,
+    )
+
+
 def projects_phone():
     """Projects on a phone: a long press on a header shows its buttons, a
-    long press on a row offers Move, Rename, and Delete, and a finger drags
-    a row onto a header."""
+    long press on a row offers its ⋮, Rename, and Delete, a finger drags a
+    row onto a header, and the ⋮'s sheet moves it back out."""
     phone = Browser()
     try:
         phone.phone(375, 800)
@@ -4091,11 +4136,11 @@ def projects_phone():
             "return r ? r.dataset.sessionRow : null"
         )
         long_press(phone, '#drawer [data-session-row="%s"] [data-session]' % row)
-        phone.wait("the row's actions", lambda: count(phone, "#drawer [data-delete-actions] [data-move-reveal]") == 1)
+        phone.wait("the row's actions", lambda: count(phone, "#drawer [data-delete-actions] [data-row-menu]") == 1)
         labels = phone.script(
             "return [...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => b.getAttribute('aria-label'))"
         )
-        assert labels == ["Move to project…", "Rename", "Delete", "Cancel"], labels
+        assert labels == ["More actions", "Rename", "Delete", "Cancel"], labels
         # A narrow phone shows the four as icons, on one line.
         tops = phone.script(
             "return [...new Set([...document.querySelectorAll('#drawer [data-delete-actions] button')].map((b) => Math.round(b.getBoundingClientRect().top)))]"
@@ -4105,10 +4150,37 @@ def projects_phone():
         phone.shot("phone-row-actions")
         phone.click("#drawer [data-actions-cancel]")
         drag_row(phone, '#drawer [data-session-row="%s"] [data-session]' % row, target + " [data-section-toggle]", touch=True)
-        phone.wait("the moved row", lambda: phone.script(
-            "const r = document.querySelector('#drawer [data-session-row=\"' + arguments[0] + '\"]');"
-            "return r && r.closest('[data-project-section]').dataset.projectSection", row) == "project:" + project)
+        phone.wait("the moved row", lambda: phone_section_of(phone, row) == "project:" + project)
         print("phone: long presses show the header's and the row's buttons; a finger drags a row onto a header")
+        # The ⋮ a long press reveals opens a sheet from the bottom, the
+        # screen's width, with rows a finger can hit; a tap outside closes
+        # it, and its Move to project… moves the row back out.
+        long_press(phone, '#drawer [data-session-row="%s"] [data-session]' % row)
+        phone.wait("the row's ⋮", lambda: count(phone, "#drawer [data-delete-actions] [data-row-menu]") == 1)
+        menu = "#drawer [data-row-menu-list]"
+        phone.click("#drawer [data-delete-actions] [data-row-menu]")
+        phone.wait("the row's sheet", lambda: count(phone, menu) == 1)
+        frame = phone.script(
+            "const m = document.querySelector(arguments[0]).getBoundingClientRect();"
+            "return [Math.round(m.left), Math.round(m.width), Math.round(innerWidth), Math.round(m.bottom), Math.round(innerHeight)]",
+            menu,
+        )
+        assert frame[0] == 0 and frame[1] == frame[2] and abs(frame[3] - frame[4]) <= 1, "not a bottom sheet: %s" % frame
+        assert "Move to project…" in phone.text(menu), phone.text(menu)
+        fits(phone, "the row's sheet")
+        phone.shot("phone-row-menu")
+        phone.click("#drawer [data-row-menu-backdrop]")
+        phone.wait("the sheet closed by a tap outside", lambda: count(phone, menu) == 0)
+        assert count(phone, "#drawer") == 1, "the tap outside closed the drawer"
+        phone.click("#drawer [data-delete-actions] [data-row-menu]")
+        phone.wait("the row's sheet", lambda: count(phone, menu) == 1)
+        phone.click(menu + " [data-menu-item=move]")
+        phone.wait("the picker", lambda: count(phone, "#sheet [data-move-to]") >= 2)
+        phone.click('#sheet [data-move-to="none"]')
+        phone.wait("the closed picker", lambda: count(phone, "#sheet") == 0)
+        phone.click("main [data-sidebar-toggle]")
+        phone.wait("the row moved back out", lambda: phone_section_of(phone, row) == "none")
+        print("phone: the row's ⋮ opens a bottom sheet a tap outside closes; its Move to project… moved the row")
     finally:
         phone.close()
 

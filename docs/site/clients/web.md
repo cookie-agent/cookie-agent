@@ -176,7 +176,7 @@ address bar.
   - **Deleting.** Hover over a session's row for its trash button (on a
     touch screen, press the row for about half a second and let go; the
     press never opens the session, scrolling cancels it, and it offers
-    **Move** and **Rename** too). A confirmation in the row
+    the row's **⋮** and **Rename** too). A confirmation in the row
     names the session; **Delete** removes it and its subagents from the
     daemon's disk, for good. The daemon refuses while the session tree
     runs, while another cookie process holds it, or when it changed since
@@ -197,8 +197,11 @@ address bar.
   - **Moving a session.** Drag its row onto a project's header, or onto
     **No project**: a mouse drags at once, a finger after pressing the row
     for half a second (the list scrolls when the row nears its edge). Or
-    hover over the row for **Move to project…**, left of its pencil, which
-    lists the projects and **No project**. The session keeps its runtimes
+    hover over the row for its **⋮**, left of its pencil, and choose
+    **Move to project…**, which lists the projects and **No project**.
+    The ⋮ menu holds a row's less frequent actions: it opens under the
+    button (a sheet from the bottom on a phone), the arrow keys move
+    through it, and **Escape** or a click outside closes it. The session keeps its runtimes
     and agent; its next message sees the project's memory and `AGENTS.md`.
   - **Deleting a project** asks first, saying how many sessions and
     memories go with it; the daemon refuses while one of its sessions
@@ -664,8 +667,9 @@ changes (`crons.changed`), from any client or agent.
   view closes it; choosing Chat leaves it open on the sessions, and a tap
   on the open session's row switches its tree and leaves it open too. It opens only from the button: a swipe from the edge is
   the browser's Back. A long press on a session's row, let go in place,
-  reveals its **Move**, which lists the projects, its **Rename**, which
-  makes its title a field, and its **Delete**, then the confirmation; held
+  reveals its **⋮**, a sheet with **Move to project…**, which lists the
+  projects, its **Rename**, which makes its title a field, and its
+  **Delete**, then the confirmation; held
   and moved, it drags the row onto a project's header. A long press on a
   project's header shows its pencil and trash.
 - **List first.** A view with a list shows the list when you choose it

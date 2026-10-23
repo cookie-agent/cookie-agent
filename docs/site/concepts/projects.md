@@ -53,8 +53,8 @@ no defaults, the first time the daemon started.
 
 - **The web client** groups its sessions sidebar by project, **No
   project** last; each header shows the project's emoji, its name, and its
-  default runtimes as badges. Drag a session onto a header, or use its
-  **Move to project…**, to move it. The project editor sets the name,
+  default runtimes as badges. Drag a session onto a header, or use its row's
+  **⋮** › **Move to project…**, to move it. The project editor sets the name,
   emoji, defaults, and `AGENTS.md`, and New session starts from a project's
   defaults. See [Projects](../clients/web.md#sessions-and-chat) in the web
   guide.

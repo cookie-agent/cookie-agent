@@ -45,6 +45,7 @@ mod manage;
 mod memory;
 mod projects;
 mod restart;
+mod row_menu;
 mod shell;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
@@ -95,7 +96,7 @@ const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 round
 /// (lighter in dark), and further still when pressed. 44 px square.
 const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-toasted text-ink hover:bg-crust hover:text-espresso active:bg-[color-mix(in_oklab,var(--color-crust),var(--color-espresso)_18%)] dark:bg-ember dark:text-sand dark:hover:bg-smoke dark:hover:text-latte dark:active:bg-[color-mix(in_oklab,var(--color-smoke),var(--color-latte)_18%)]";
 /// A button of a row's actions a long press revealed: narrower than
-/// [`BUTTON`], so that Move, Rename, Delete, and ✕ share a phone's line.
+/// [`BUTTON`], so that ⋮, Rename, Delete, and ✕ share a phone's line.
 const REVEALED: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-crust px-2 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke";
 /// A session's title as a field: in a session row, and in the title bar.
 const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-md border border-caramel bg-cream px-2 text-sm font-bold text-espresso focus:outline-none dark:border-maple dark:bg-night dark:text-latte";
@@ -288,6 +289,7 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         renaming: RwSignal::new(None),
         draft: RwSignal::new(String::new()),
         fresh: StoredValue::new(false),
+        menu: RwSignal::new(None),
     };
     // Dragging a session onto a project's header, and the headers' own
     // buttons.
@@ -367,8 +369,8 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// The session list's row actions, shared by its rows: move, rename, and
-/// delete.
+/// The session list's row actions, shared by its rows: rename, delete,
+/// and the ⋮ menu (Move to project…).
 #[derive(Clone, Copy)]
 struct RowActions {
     /// The row a mouse (or pen) is over, which shows its buttons.
@@ -382,11 +384,15 @@ struct RowActions {
     draft: RwSignal<String>,
     /// The field just opened: its text is selected once it shows.
     fresh: StoredValue<bool>,
+    /// The row whose ⋮ menu is open, and whether it is the ⋮ a long press
+    /// revealed (or the one on hover).
+    menu: RwSignal<Option<(SessionId, bool)>>,
 }
 
 impl RowActions {
     /// Turns `session`'s title into a field holding it.
     fn begin_rename(self, workspace: Workspace, session_id: SessionId) {
+        self.menu.set(None);
         self.revealed.set(None);
         self.confirming.set(None);
         self.draft.set(workspace.title_draft(session_id));
@@ -459,16 +465,43 @@ fn session_row(
     };
     let label = session_label(&session);
     let confirm_label = label.clone();
+    let menu_label = label.clone();
+    let reveal_label = label.clone();
     let RowActions {
         hovered,
         revealed,
         confirming,
         renaming,
+        menu,
         ..
     } = actions;
     let is_renaming = move || renaming.get() == Some(session_id);
-    let movable = move || workspace.has_projects.get();
-    let shown = move || hovered.get() == Some(session_id) && !is_renaming();
+    // The hover buttons stay while their ⋮ menu is open.
+    let shown = move || {
+        (hovered.get() == Some(session_id) || menu.get() == Some((session_id, false)))
+            && !is_renaming()
+    };
+    // The ⋮ menu's actions; a long press's row lets go of its buttons
+    // first.
+    let menu_items = move |revealed_row: bool| {
+        move || {
+            let mut items = Vec::new();
+            if workspace.has_projects.get() {
+                items.push(row_menu::MenuItem {
+                    id: "move",
+                    label: "Move to project…",
+                    icon: icondata::FaFolderOpenSolid,
+                    act: Callback::new(move |()| {
+                        if revealed_row {
+                            revealed.set(None);
+                        }
+                        workspace.ask_move(session_id);
+                    }),
+                });
+            }
+            items
+        }
+    };
     // A mouse drags the row onto a project's header at once; a finger
     // after a long press, which let go in place reveals the buttons.
     let on_pointerdown = move |event: ev::PointerEvent| {
@@ -592,7 +625,8 @@ fn session_row(
             </button>
             // Shown while a mouse is over the row, or the keyboard is in
             // it; a touch screen's long press offers them below. Their
-            // group grows leftwards: a third button goes before the pencil.
+            // group grows leftwards: the ⋮ goes before the pencil, and
+            // rarer actions go in its menu.
             <div
                 class=move || {
                     let shown = if shown() {
@@ -604,18 +638,7 @@ fn session_row(
                 }
                 data-row-actions
             >
-                <Show when=movable>
-                    <button
-                        type="button"
-                        class=ROW_ACTION
-                        aria-label="Move to project…"
-                        title="Move to project…"
-                        data-move=session_id.to_string()
-                        on:click=move |_| workspace.ask_move(session_id)
-                    >
-                        <Glyph icon=icondata::FaFolderOpenSolid />
-                    </button>
-                </Show>
+                {row_menu::row_menu(menu, (session_id, false), session_id.to_string(), menu_label.clone(), ROW_ACTION, menu_items(false))}
                 <button
                     type="button"
                     class=ROW_ACTION
@@ -634,6 +657,7 @@ fn session_row(
                         title="Delete the session and its subagents"
                         data-delete=session_id.to_string()
                         on:click=move |_| {
+                            menu.set(None);
                             revealed.set(None);
                             confirming.set(Some(session_id));
                         }
@@ -645,26 +669,12 @@ fn session_row(
             </Show>
         </div>
         <Show when=move || revealed.get() == Some(session_id) && confirming.get() != Some(session_id)>
-            // Labels only where the line fits them: on a narrow phone the
-            // three are icons, named by their aria-labels, so the four
-            // buttons stay on one line.
+            // Labels only where the line fits them: on a narrow phone
+            // Rename and Delete are icons, named by their aria-labels, so
+            // the four buttons stay on one line. The ⋮ is always an icon.
             <div class="@container" data-delete-actions-frame>
             <div class="flex flex-wrap gap-1.5 px-2 pb-1" data-delete-actions>
-                <Show when=movable>
-                    <button
-                        type="button"
-                        class=REVEALED
-                        aria-label="Move to project…"
-                        data-move-reveal=session_id.to_string()
-                        on:click=move |_| {
-                            revealed.set(None);
-                            workspace.ask_move(session_id);
-                        }
-                    >
-                        <Glyph icon=icondata::FaFolderOpenSolid />
-                        <span class="hidden @[22rem]:inline">"Move"</span>
-                    </button>
-                </Show>
+                {row_menu::row_menu(menu, (session_id, true), session_id.to_string(), reveal_label.clone(), REVEALED, menu_items(true))}
                 <button
                     type="button"
                     class=REVEALED
