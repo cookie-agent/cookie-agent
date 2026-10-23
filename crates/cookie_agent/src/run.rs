@@ -286,9 +286,12 @@ impl DriverState {
 }
 
 pub async fn execute(engine: &Engine, args: RunArgs) -> i32 {
-    let mut stdin = io::stdin().lock();
-    let mut stdout = io::stdout().lock();
-    let mut stderr = io::stderr().lock();
+    // Unlocked handles, which lock per write: this future holds them across
+    // awaits on the main thread, and a held lock would block every runtime
+    // worker that logs or prints meanwhile, the run's own work included.
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
     let signals = cookie_agent_protocol::StopSignals::new();
     execute_with_io(engine, args, &mut stdin, &mut stdout, &mut stderr, async {
         match signals {
