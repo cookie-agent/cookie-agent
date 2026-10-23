@@ -1,11 +1,14 @@
 use serde_json::json;
 
+use jiff::Timestamp;
+
 use super::{
-    MAX_HIT_LINE_CHARS, MemoryCall, MemoryTools, check, hit_line, permission_name, search_output,
+    MemoryCall, MemoryTools, PART_B, check, near_output, permission_name, prompt_section,
+    read_output, search_output,
 };
-use crate::memory::{
-    search::{HitDetail, SearchHit},
-    url::MemoryUrl,
+use crate::{
+    memory::{limits::MemoryLimits, search::SearchHit, similar::NearMemory, url::MemoryUrl},
+    runtime::memory_runs::{MemoryAccess, MemoryCaller, RelatedMemory},
 };
 
 fn error(name: &str, arguments: serde_json::Value) -> String {
@@ -90,9 +93,16 @@ fn arguments_are_strict() {
         ),
         (
             "memory_edit",
-            json!({"url": "project://web/build", "old": "a", "new": "b"}),
+            json!({"url": "project://web/build", "old": "a", "new": "b", "revision": "0123456789abcdef"}),
         ),
-        ("memory_delete", json!({"url": "project://web/build"})),
+        (
+            "memory_delete",
+            json!({"url": "project://web/build", "revision": "0123456789abcdef"}),
+        ),
+        (
+            "memory_write",
+            json!({"url": "project://web/build", "description": "d", "body": "", "revision": "0123456789abcdef"}),
+        ),
         // `body` is required.
         (
             "memory_write",
@@ -107,16 +117,9 @@ fn arguments_are_strict() {
 }
 
 #[test]
-fn urls_revisions_and_memories_are_checked_before_the_call_runs() {
+fn urls_and_memories_are_checked_before_the_call_runs() {
     assert!(error("memory_read", json!({"url": "user://Profile"})).contains("user://Profile"));
     assert!(error("memory_read", json!({"url": "file:///etc"})).contains("not a memory URL"));
-    assert!(
-        error(
-            "memory_delete",
-            json!({"url": "project://web/build", "revision": "nope"})
-        )
-        .contains("not a memory revision")
-    );
     assert!(
         error(
             "memory_write",
@@ -124,8 +127,7 @@ fn urls_revisions_and_memories_are_checked_before_the_call_runs() {
         )
         .contains("would not be a valid memory")
     );
-    // Every layer's delete is accepted; a user category's or an agent
-    // file's clears its body when it runs.
+    // Every layer's edit and delete is accepted, with no revision.
     for url in [
         "user://profile",
         "agent://default",
@@ -134,50 +136,266 @@ fn urls_revisions_and_memories_are_checked_before_the_call_runs() {
     ] {
         assert!(
             matches!(
-                check(
-                    "memory_delete",
-                    json!({"url": url, "revision": "0123456789abcdef"})
-                ),
+                check("memory_delete", json!({"url": url})),
                 Ok(MemoryCall::Delete { .. })
+            ),
+            "{url}"
+        );
+        assert!(
+            matches!(
+                check("memory_edit", json!({"url": url, "old": "a", "new": "b"})),
+                Ok(MemoryCall::Edit { .. })
             ),
             "{url}"
         );
     }
 }
 
+/// `new: true` says a memory like ones that exist is new, and needs a
+/// one-line `reason`; `reason` goes only with it.
 #[test]
-fn search_results_show_what_their_rule_allows() {
-    let hits = [
-        SearchHit {
-            url: MemoryUrl::parse("project://web/build").unwrap(),
-            description: "Build conventions".into(),
-            detail: Some(HitDetail {
-                keywords: vec!["cargo".into(), "msrv".into()],
-                lines: vec!["- run cargo test".into()],
-            }),
-        },
-        SearchHit {
-            url: MemoryUrl::parse("user://profile").unwrap(),
-            description: "Who the user is".into(),
-            detail: None,
-        },
+fn new_and_reason_go_together() {
+    let write = |extra: serde_json::Value| {
+        let mut arguments = json!({"url": "project://web/build", "description": "d", "body": ""});
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        check("memory_write", arguments)
+    };
+    assert!(matches!(
+        write(json!({"new": true, "reason": "covers the CI side, not the release"})),
+        Ok(MemoryCall::Write { new: true, .. })
+    ));
+    assert!(matches!(
+        write(json!({})),
+        Ok(MemoryCall::Write { new: false, .. })
+    ));
+    for (extra, expected) in [
+        (json!({"new": true}), "needs a one-line `reason`"),
+        (json!({"reason": "x"}), "goes with `new: true`"),
+        (json!({"new": true, "reason": " "}), "one line"),
+        (json!({"new": true, "reason": "a\nb"}), "one line"),
+        (json!({"new": true, "reason": "r".repeat(201)}), "one line"),
+    ] {
+        let found = write(extra.clone()).err().expect("refused").to_string();
+        assert!(found.contains(expected), "{extra}: {found}");
+    }
+}
+
+fn caller(delegated: bool) -> MemoryCaller {
+    let rule = |action, resource: &str, effect| {
+        cookie_agent_protocol::PermissionRule::new(
+            action,
+            cookie_agent_protocol::WildcardPattern::new(resource).unwrap(),
+            effect,
+        )
+    };
+    let mut agent =
+        crate::test_support::agent_snapshot("builder", cookie_agent_protocol::AgentMode::Primary);
+    agent.permissions = vec![
+        rule(
+            cookie_agent_protocol::PermissionAction::MEMORY,
+            "*",
+            cookie_agent_protocol::PermissionEffect::Allow,
+        ),
+        rule(
+            cookie_agent_protocol::PermissionAction::MEMORY_WRITE,
+            "project://*",
+            cookie_agent_protocol::PermissionEffect::Allow,
+        ),
+        rule(
+            cookie_agent_protocol::PermissionAction::MEMORY_WRITE,
+            "agent://*",
+            cookie_agent_protocol::PermissionEffect::Ask,
+        ),
     ];
-    assert_eq!(
-        search_output(&hits),
-        "project://web/build: Build conventions [keywords: cargo, msrv]\n  | - run cargo test\n\nuser://profile: Who the user is\n  (reading it needs approval)"
-    );
-    assert_eq!(search_output(&[]), "No memories match.");
+    MemoryCaller {
+        agent,
+        overlay: cookie_agent_protocol::SessionPermissionOverlay::empty(),
+        related: RelatedMemory {
+            delegated,
+            machines: vec![cookie_agent_protocol::MachineName::new("labpc").unwrap()],
+            project: Some("cookie-agent".to_owned()),
+        },
+    }
+}
+
+fn at(text: &str) -> Timestamp {
+    text.parse().unwrap()
 }
 
 #[test]
-fn long_matching_lines_are_cut() {
-    let exact = "x".repeat(MAX_HIT_LINE_CHARS);
-    assert_eq!(hit_line(&exact), exact);
-    let long = "é".repeat(MAX_HIT_LINE_CHARS + 1);
+fn search_results_say_whether_a_memory_is_related_editable_and_how_old() {
+    let now = at("2026-10-22T12:00:00Z");
+    let hit = |url: &str, description: &str, days: i64, keywords: &[&str], full| SearchHit {
+        url: MemoryUrl::parse(url).unwrap(),
+        description: description.into(),
+        keywords: keywords
+            .iter()
+            .map(|keyword| (*keyword).to_owned())
+            .collect(),
+        modified: now - jiff::SignedDuration::from_hours(24 * days),
+        full,
+    };
+    let hits = [
+        hit(
+            "project://cookie-agent/release",
+            "How releases are cut: gh release create starts it; publish oven-sdk first",
+            21,
+            &["release", "cargo-dist", "oven-sdk"],
+            true,
+        ),
+        hit(
+            "agent://builder",
+            "Memory of the `builder` agent: Primary agent for building features",
+            5,
+            &["builder", "primary"],
+            true,
+        ),
+        hit(
+            "agent://reviewer",
+            "Memory of the `reviewer` agent: Reviews a diff for bugs and missing tests",
+            2,
+            &["reviewer", "subagent"],
+            true,
+        ),
+        hit("machine://box/notes", "Notes", 0, &[], true),
+        hit(
+            "user://preferences",
+            "How the user likes to work",
+            31,
+            &[],
+            false,
+        ),
+    ];
     assert_eq!(
-        hit_line(&long),
-        format!("{}…", "é".repeat(MAX_HIT_LINE_CHARS))
+        search_output(&hits, &caller(false), now),
+        "project://cookie-agent/release — How releases are cut: gh release create starts it; publish oven-sdk first
+  related · editable · 3 weeks old
+  keywords: release, cargo-dist, oven-sdk
+
+agent://builder — Memory of the `builder` agent: Primary agent for building features
+  related · editable · 5 days old
+  keywords: builder, primary
+
+agent://reviewer — Memory of the `reviewer` agent: Reviews a diff for bugs and missing tests
+  unrelated · editable · 2 days old
+  keywords: reviewer, subagent
+
+machine://box/notes — Notes
+  unrelated · read-only · less than a minute old
+
+user://preferences — How the user likes to work
+  related · read-only · 1 month old
+  (reading it needs approval)"
     );
+    // For a delegated run only its own agent file is related.
+    let delegated = search_output(&hits[..1], &caller(true), now);
+    assert!(delegated.contains("unrelated · editable"), "{delegated}");
+    assert_eq!(
+        search_output(&[], &caller(false), now),
+        "No memories match."
+    );
+}
+
+#[test]
+fn a_read_shows_stamps_and_size_but_no_url_or_revision() {
+    let data = tempfile::tempdir().unwrap();
+    let memory = crate::memory::MemoryRoot::new(data.path());
+    assert!(memory.create_defaults_if_absent().unwrap());
+    let created = at("2026-10-01T09:12:44Z");
+    let modified = at("2026-10-20T16:03:10Z");
+    let text = crate::memory::file::MemoryDocument::new(
+        "How releases are cut",
+        vec!["release".to_owned()],
+        "- tag first\n",
+    )
+    .unwrap()
+    .with_stamps(Some(created), Some(modified))
+    .render();
+    let path = data.path().join("memory/projects/cookie-agent/release.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, &text).unwrap();
+    let url = MemoryUrl::parse("project://cookie-agent/release").unwrap();
+    let read = memory.read(&url).unwrap();
+    let output = read_output(
+        &url,
+        &read,
+        &caller(false),
+        &MemoryLimits::all(2048),
+        at("2026-10-22T12:00:00Z"),
+    );
+    assert_eq!(
+        output,
+        format!(
+            "related: yes
+editable: yes
+created: 2026-10-01T09:12:44Z (3 weeks ago)
+modified: 2026-10-20T16:03:10Z (1 day ago)
+size: {} bytes
+max size: 2048 bytes
+description: How releases are cut
+keywords: release
+
+- tag first
+",
+            text.len()
+        )
+    );
+    let small = read_output(
+        &url,
+        &read,
+        &caller(true),
+        &MemoryLimits::all(10),
+        at("2026-10-22T12:00:00Z"),
+    );
+    assert!(small.starts_with("related: no\n"), "{small}");
+    assert!(
+        small.contains(&format!(
+            "size: {} bytes, over its limit\nmax size: 10 bytes",
+            text.len()
+        )),
+        "{small}"
+    );
+}
+
+#[test]
+fn a_saved_memory_lists_the_memories_near_it() {
+    let near = [NearMemory {
+        url: MemoryUrl::parse("project://web/release").unwrap(),
+        description: "How releases are cut".into(),
+    }];
+    assert_eq!(
+        near_output(&near),
+        "\n\nMemories near it:\n- project://web/release — How releases are cut\nIf one of these already covers it, edit that and delete this."
+    );
+}
+
+/// Part A for every run with memory, the delegated variant for a delegated
+/// run, and part B only with the write tools (section 16.9.1).
+#[test]
+fn the_memory_section_has_part_b_only_with_the_write_tools() {
+    let access = |available, writable| MemoryAccess {
+        available,
+        writable,
+    };
+    assert_eq!(prompt_section(access(false, false), false), None);
+    let root = prompt_section(access(true, false), false).unwrap();
+    assert!(
+        root.starts_with("Memory related to this session is included automatically"),
+        "{root}"
+    );
+    assert!(!root.contains(PART_B));
+    let delegated = prompt_section(access(true, true), true).unwrap();
+    assert_eq!(
+        delegated,
+        format!(
+            "Your own agent memory is included automatically at the start of each run. Use memory_search for anything else.\n\n{PART_B}"
+        )
+    );
+    assert!(PART_B.contains("\n1. Could a later session re-derive it"));
+    assert!(PART_B.ends_with("before you add to it."));
 }
 
 /// `keywords` may be left out; `description` too for an agent's memory,
@@ -198,7 +416,7 @@ fn keywords_are_optional_and_an_agent_memory_needs_no_description() {
     assert!(matches!(
         check(
             "memory_write",
-            json!({"url": "agent://reviewer", "body": "- a lesson\n", "revision": "0123456789abcdef"})
+            json!({"url": "agent://reviewer", "body": "- a lesson\n"})
         ),
         Ok(MemoryCall::Write {
             described: false,

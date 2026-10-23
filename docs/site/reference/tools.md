@@ -1432,7 +1432,7 @@ memory_search(layer?: "user" | "agent" | "machine" | "project", limit?: integer,
 Description sent to the model:
 
 ```text
-Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, name, description, and body; results are ranked by keyword hits first. Results show each memory's URL, description, keywords, and up to three matching lines; a result you need approval to read shows only its URL and description. Search for the project a task belongs to by repository name, remote URL, or directory before starting work. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.
+Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, description, and URL segments (user, agent, machine, or project, then the names after it), never its body; results are ranked by keyword hits first. Each result shows a memory's URL and description, whether it is related to this session, whether you may change it, and its age, then its keywords; a result you need approval to read shows only its first two lines. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
@@ -1511,7 +1511,7 @@ memory_read(url: string)
 Description sent to the model:
 
 ```text
-Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns its description, keywords, body, and revision; send the revision to memory_write, memory_edit, or memory_delete to change it.
+Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and its body.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
@@ -1547,23 +1547,24 @@ Only when the session has the `global` runtime attached and the agent or the ses
 <!-- generated: tool memory_write -->
 
 ```text
-memory_write(body: string, description?: string, keywords?: string[], revision?: string, url: string)
+memory_write(body: string, description?: string, keywords?: string[], new?: boolean, reason?: string, url: string)
 ```
 
 Description sent to the model:
 
 ```text
-Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. A project:// memory needs a project that exists: projects are created from a client, not by writing memory. user:// categories cannot be created, only changed. Every agent already has an agent://<agent> memory, whose description the daemon sets and whose keywords always include the agent ID and its mode: leave `description` out for agent:// (any you send is replaced) and add keywords freely. Every project has a project://<project>/overview, shown in full to the project's sessions, whose description the daemon sets too: leave it out there as well. Give every other memory a one-line description, and each memory the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.
+Create or replace one memory, following the memory instructions in the system prompt. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.
 ```
 
-Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+Only when `memory_read` is sent too and some memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` `memory_write` rule matches it). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `body` | `string` | yes | The memory's Markdown body; may be empty. |
-| `description` | `string` | no | One line, 1 to 200 characters, shown in indexes and search results. Required except for agent:// and a project's overview, whose description the daemon sets. |
+| `description` | `string` | no | One line, 1 to 200 characters, that states the memory's fact; shown in indexes and search results. Required except for agent:// and a project's overview, whose description the daemon sets. |
 | `keywords` | `string[]` | no | Up to 32 keywords of 1 to 64 characters a later search would use; none when left out. |
-| `revision` | `string` | no | The revision memory_read returned, to replace an existing memory; leave it out to create one. |
+| `new` | `boolean` | no | True to create a memory that looks like ones that exist, after checking it is new; needs `reason`. |
+| `reason` | `string` | no | With `new`: one line saying why it is not one of the near memories. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
@@ -1578,7 +1579,7 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
           "type": "string"
         },
         "description": {
-          "description": "One line, 1 to 200 characters, shown in indexes and search results.\nRequired except for agent:// and a project's overview, whose\ndescription the daemon sets.",
+          "description": "One line, 1 to 200 characters, that states the memory's fact; shown\nin indexes and search results. Required except for agent:// and a\nproject's overview, whose description the daemon sets.",
           "type": [
             "string",
             "null"
@@ -1591,8 +1592,12 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
           },
           "type": "array"
         },
-        "revision": {
-          "description": "The revision memory_read returned, to replace an existing memory;\nleave it out to create one.",
+        "new": {
+          "description": "True to create a memory that looks like ones that exist, after\nchecking it is new; needs `reason`.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "With `new`: one line saying why it is not one of the near memories.",
           "type": [
             "string",
             "null"
@@ -1619,22 +1624,21 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
 <!-- generated: tool memory_edit -->
 
 ```text
-memory_edit(new: string, old: string, revision: string, url: string)
+memory_edit(new: string, old: string, url: string)
 ```
 
 Description sent to the model:
 
 ```text
-Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. An agent:// memory keeps the description and keywords the daemon gives it, and a project's overview its description. Never save secrets.
+Replace the one occurrence of `old` in a memory's body with `new`, following the memory instructions in the system prompt. Fails when `old` occurs zero or several times; include more context to make it unique.
 ```
 
-Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+Only when `memory_read` is sent too and some memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` `memory_write` rule matches it). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `new` | `string` | yes | Its replacement. |
 | `old` | `string` | yes | Text that occurs exactly once in the body. |
-| `revision` | `string` | yes | The revision memory_read returned. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
@@ -1652,10 +1656,6 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
           "description": "Text that occurs exactly once in the body.",
           "type": "string"
         },
-        "revision": {
-          "description": "The revision memory_read returned.",
-          "type": "string"
-        },
         "url": {
           "description": "The memory URL.",
           "type": "string"
@@ -1664,8 +1664,7 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
       "required": [
         "url",
         "old",
-        "new",
-        "revision"
+        "new"
       ],
       "title": "EditArgs",
       "type": "object"
@@ -1679,20 +1678,19 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
 <!-- generated: tool memory_delete -->
 
 ```text
-memory_delete(revision: string, url: string)
+memory_delete(url: string)
 ```
 
 Description sent to the model:
 
 ```text
-Delete one memory at the revision memory_read returned. machine:// and project:// memories are deleted. user:// and agent:// memories cannot be deleted: for those, the call clears the body and keeps the file with its description and keywords, so the category or agent file stays.
+Delete one memory. Nothing is kept: the deletion is final.
 ```
 
-Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+Only when `memory_read` is sent too and some memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` `memory_write` rule matches it). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `revision` | `string` | yes | The revision memory_read returned. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
@@ -1702,18 +1700,13 @@ Only when `memory_read` is sent too. A delegated run may write only its own agen
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "revision": {
-          "description": "The revision memory_read returned.",
-          "type": "string"
-        },
         "url": {
           "description": "The memory URL.",
           "type": "string"
         }
       },
       "required": [
-        "url",
-        "revision"
+        "url"
       ],
       "title": "DeleteArgs",
       "type": "object"

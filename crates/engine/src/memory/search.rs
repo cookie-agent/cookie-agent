@@ -1,15 +1,18 @@
-//! Memory search (`docs/site/specs/memory.md` sections 8.1 and 9.3).
+//! Memory search (`docs/site/specs/memory.md` sections 16.9.3 and 9.3).
 //!
-//! The query is split into terms on whitespace. A memory scores, in this
-//! order of weight: the keywords that occur in the query; the terms that
-//! occur in its name, its project or machine name, or its description; the
-//! terms that occur in its body. All matching is case-insensitive substring
-//! matching. Scores compare by the first count, then the second, then the
-//! third; memories that score zero are left out, and ties go to the more
-//! recently modified file. Files are read on every search; invalid ones are
-//! skipped.
+//! The query is split into terms on whitespace. A memory is matched
+//! against its keywords, its description, and the segments of its URL,
+//! split on `://` and `/`; bodies are never searched. A memory scores, in
+//! this order of weight: the keywords that occur in the query, then the
+//! terms that occur in its description or one of its URL segments. All
+//! matching is case-insensitive substring matching. Scores compare by the
+//! first count, then the second; memories that score zero are left out, and
+//! ties go to the more recently modified memory. Files are read on every
+//! search; invalid ones are skipped.
 
 use std::{cmp::Reverse, collections::BTreeSet};
+
+use jiff::Timestamp;
 
 use super::{
     MemoryError, MemoryRoot,
@@ -18,16 +21,14 @@ use super::{
     url::{MemoryLayer, MemoryUrl},
 };
 
-/// Body lines a hit shows at most.
-pub(crate) const MAX_HIT_LINES: usize = 3;
-
 /// How much of a match the caller may see, decided per URL by its `memory`
 /// permission rules (section 9.3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Visibility {
-    /// URL, description, keywords, and matching body lines.
+    /// URL, description, keywords, and what the caller may do with it.
     Full,
-    /// URL and description only.
+    /// URL, description, and what the caller may do with it; reading it
+    /// asks first.
     Summary,
     /// Left out, and not counted against the limit.
     Hidden,
@@ -38,16 +39,12 @@ pub(crate) enum Visibility {
 pub(crate) struct SearchHit {
     pub(crate) url: MemoryUrl,
     pub(crate) description: String,
-    /// Present for [`Visibility::Full`] hits.
-    pub(crate) detail: Option<HitDetail>,
-}
-
-/// What a fully visible hit adds to its URL and description.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct HitDetail {
+    /// The memory's keywords; empty for a [`Visibility::Summary`] hit.
     pub(crate) keywords: Vec<String>,
-    /// Up to [`MAX_HIT_LINES`] body lines holding a query term, in order.
-    pub(crate) lines: Vec<String>,
+    /// When the memory was last modified.
+    pub(crate) modified: Timestamp,
+    /// Whether the caller may read it without asking.
+    pub(crate) full: bool,
 }
 
 /// A memory's score, compared field by field.
@@ -55,12 +52,22 @@ pub(crate) struct HitDetail {
 struct Score {
     keywords: usize,
     names: usize,
-    body: usize,
 }
 
 struct Query {
     text: String,
     terms: Vec<String>,
+}
+
+/// The segments of `url`, split on `://` and `/`: its scheme, then its
+/// group and name (section 16.9.3).
+pub(crate) fn url_segments(url: &MemoryUrl) -> Vec<String> {
+    let text = url.to_string();
+    let (scheme, rest) = text.split_once("://").unwrap_or((text.as_str(), ""));
+    std::iter::once(scheme)
+        .chain(rest.split('/'))
+        .map(str::to_owned)
+        .collect()
 }
 
 impl Query {
@@ -84,32 +91,16 @@ impl Query {
             .into_iter()
             .filter(|keyword| self.text.contains(keyword.as_str()))
             .count();
-        let names = [
-            url.name().to_owned(),
-            url.group().unwrap_or_default().to_owned(),
-            document.description().to_lowercase(),
-        ];
-        let body = document.body().to_lowercase();
+        let mut names = url_segments(url);
+        names.push(document.description().to_lowercase());
         Score {
             keywords,
-            names: self.count(|term| names.iter().any(|name| name.contains(term))),
-            body: self.count(|term| body.contains(term)),
+            names: self
+                .terms
+                .iter()
+                .filter(|term| names.iter().any(|name| name.contains(term.as_str())))
+                .count(),
         }
-    }
-
-    fn count(&self, matches: impl Fn(&str) -> bool) -> usize {
-        self.terms.iter().filter(|term| matches(term)).count()
-    }
-
-    fn lines(&self, body: &str) -> Vec<String> {
-        body.lines()
-            .filter(|line| {
-                let line = line.to_lowercase();
-                self.terms.iter().any(|term| line.contains(term.as_str()))
-            })
-            .take(MAX_HIT_LINES)
-            .map(|line| line.trim_end().to_owned())
-            .collect()
     }
 }
 
@@ -122,7 +113,6 @@ impl MemoryRoot {
         query: &str,
         layer: Option<MemoryLayer>,
         limit: usize,
-        max_file_bytes: usize,
         mut visibility: impl FnMut(&MemoryUrl) -> Visibility,
     ) -> Result<Vec<SearchHit>, MemoryError> {
         let query = Query::new(query);
@@ -131,7 +121,7 @@ impl MemoryRoot {
         }
         let scope = layer.map_or(ListScope::All, ListScope::Layer);
         let mut ranked = self
-            .list(&scope, max_file_bytes)?
+            .list(&scope)?
             .entries
             .into_iter()
             .filter_map(|entry| {
@@ -154,19 +144,22 @@ impl MemoryRoot {
             ))
         });
         let mut hits = Vec::new();
-        for (_, _, url, document) in ranked {
-            let detail = match visibility(&url) {
+        for (_, modified, url, document) in ranked {
+            let full = match visibility(&url) {
                 Visibility::Hidden => continue,
-                Visibility::Summary => None,
-                Visibility::Full => Some(HitDetail {
-                    keywords: document.keywords().to_vec(),
-                    lines: query.lines(document.body()),
-                }),
+                Visibility::Summary => false,
+                Visibility::Full => true,
             };
             hits.push(SearchHit {
                 url,
                 description: document.description().to_owned(),
-                detail,
+                keywords: if full {
+                    document.keywords().to_vec()
+                } else {
+                    Vec::new()
+                },
+                modified,
+                full,
             });
             if hits.len() == limit {
                 break;
@@ -185,8 +178,6 @@ mod tests {
     };
 
     use super::*;
-
-    const LIMIT: usize = 4096;
 
     fn put(root: &Path, path: &str, text: &str, age_seconds: u64) {
         let path = root.join("memory").join(path);
@@ -212,7 +203,22 @@ mod tests {
     }
 
     #[test]
-    fn keywords_outrank_names_and_descriptions_which_outrank_bodies() {
+    fn urls_split_into_their_segments() {
+        for (url, segments) in [
+            ("user://preferences", vec!["user", "preferences"]),
+            ("agent://reviewer", vec!["agent", "reviewer"]),
+            (
+                "project://cookie-agent/release",
+                vec!["project", "cookie-agent", "release"],
+            ),
+            ("machine://labpc/cuda", vec!["machine", "labpc", "cuda"]),
+        ] {
+            assert_eq!(url_segments(&MemoryUrl::parse(url).unwrap()), segments);
+        }
+    }
+
+    #[test]
+    fn keywords_outrank_descriptions_and_url_segments_and_bodies_never_match() {
         let data = tempfile::tempdir().unwrap();
         let root = data.path();
         put(
@@ -239,30 +245,22 @@ mod tests {
             &memory("Build", "Cargo", ""),
             0,
         );
-        put(
-            root,
-            "user/profile.md",
-            &memory("Who", "z", "nothing here\n"),
-            0,
-        );
         let memory = MemoryRoot::new(root);
-        let hits = memory.search("CARGO clippy", None, 10, LIMIT, all).unwrap();
-        // The keyword hit first; one name hit each (project name, then
-        // description) tie on score and go by URL at equal times; the body
-        // hit matches two terms but only in the body.
+        let hits = memory.search("CARGO clippy", None, 10, all).unwrap();
+        // The keyword hit first; one segment or description hit each tie
+        // on score and go by URL at equal times; the body is not searched.
         assert_eq!(
             urls(&hits),
             [
                 "project://web/keyword",
                 "project://cargo/other",
                 "project://web/named",
-                "project://web/body",
             ]
         );
     }
 
     #[test]
-    fn more_terms_in_the_same_tier_rank_higher_and_ties_go_to_newer_files() {
+    fn more_terms_rank_higher_and_ties_go_to_newer_memories() {
         let data = tempfile::tempdir().unwrap();
         let root = data.path();
         put(
@@ -283,14 +281,20 @@ mod tests {
             &memory("gpu driver notes", "x", ""),
             900,
         );
+        // A stamp wins over the file's time.
+        put(
+            root,
+            "machines/labpc/stamped.md",
+            "---\ndescription: gpu notes\nmodified: 2001-09-09T01:46:40Z\n---\n",
+            5_000,
+        );
         let memory = MemoryRoot::new(root);
-        let hits = memory
-            .search("gpu driver notes", None, 10, LIMIT, all)
-            .unwrap();
+        let hits = memory.search("gpu driver notes", None, 10, all).unwrap();
         assert_eq!(
             urls(&hits),
             [
                 "machine://labpc/both",
+                "machine://labpc/stamped",
                 "machine://labpc/new",
                 "machine://labpc/old"
             ]
@@ -298,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_file_matches_by_its_agent_id_and_the_layer_narrows() {
+    fn a_memory_matches_by_its_url_segments_and_the_layer_narrows() {
         let data = tempfile::tempdir().unwrap();
         let root = data.path();
         put(root, "agents/reviewer.md", &memory("Lessons", "x", ""), 0);
@@ -309,12 +313,14 @@ mod tests {
             0,
         );
         let memory = MemoryRoot::new(root);
-        let hits = memory.search("reviewer", None, 10, LIMIT, all).unwrap();
+        let hits = memory.search("reviewer", None, 10, all).unwrap();
         assert_eq!(hits.len(), 2);
         let hits = memory
-            .search("reviewer", Some(MemoryLayer::Agent), 10, LIMIT, all)
+            .search("reviewer", Some(MemoryLayer::Agent), 10, all)
             .unwrap();
         assert_eq!(urls(&hits), ["agent://reviewer"]);
+        let hits = memory.search("machine", None, 10, all).unwrap();
+        assert!(hits.is_empty());
     }
 
     #[test]
@@ -324,60 +330,15 @@ mod tests {
         put(
             root,
             "projects/web/a.md",
-            &memory("Alpha", "one", "two\n"),
+            &memory("Alpha", "one", "zeta\n"),
             0,
         );
         put(root, "projects/web/broken.md", "no frontmatter alpha\n", 0);
-        put(
-            root,
-            "projects/web/oversized.md",
-            &memory("alpha", "x", &"y".repeat(LIMIT)),
-            0,
-        );
         let memory = MemoryRoot::new(root);
-        assert!(
-            memory
-                .search("zeta", None, 10, LIMIT, all)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            memory
-                .search("   ", None, 10, LIMIT, all)
-                .unwrap()
-                .is_empty()
-        );
-        let hits = memory.search("alpha", None, 10, LIMIT, all).unwrap();
+        assert!(memory.search("zeta", None, 10, all).unwrap().is_empty());
+        assert!(memory.search("   ", None, 10, all).unwrap().is_empty());
+        let hits = memory.search("alpha", None, 10, all).unwrap();
         assert_eq!(urls(&hits), ["project://web/a"]);
-    }
-
-    #[test]
-    fn full_hits_show_keywords_and_up_to_three_matching_lines() {
-        let data = tempfile::tempdir().unwrap();
-        let root = data.path();
-        put(
-            root,
-            "projects/web/a.md",
-            &memory(
-                "Deploy",
-                "deploy, ship",
-                "intro\nDeploy with make  \nno\nship it\ndeploy again\ndeploy fourth\n",
-            ),
-            0,
-        );
-        let memory = MemoryRoot::new(root);
-        let hits = memory.search("deploy ship", None, 10, LIMIT, all).unwrap();
-        assert_eq!(
-            hits[0].detail,
-            Some(HitDetail {
-                keywords: vec!["deploy".into(), "ship".into()],
-                lines: vec![
-                    "Deploy with make".into(),
-                    "ship it".into(),
-                    "deploy again".into()
-                ],
-            })
-        );
     }
 
     #[test]
@@ -391,7 +352,7 @@ mod tests {
         let memory = MemoryRoot::new(root);
         let mut asked = Vec::new();
         let hits = memory
-            .search("build", None, 2, LIMIT, |url| {
+            .search("build", None, 2, |url| {
                 asked.push(url.to_string());
                 match url.layer() {
                     MemoryLayer::Agent => Visibility::Hidden,
@@ -401,9 +362,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(urls(&hits), ["user://profile", "project://web/a"]);
-        assert_eq!(hits[0].detail, None);
+        assert!(!hits[0].full && hits[0].keywords.is_empty());
         assert_eq!(hits[0].description, "build");
-        assert!(hits[1].detail.is_some());
+        assert!(hits[1].full);
+        assert_eq!(hits[1].keywords, ["build"]);
+        assert_eq!(
+            hits[1].modified,
+            Timestamp::from_second(1_000_000_000 - 2).unwrap()
+        );
         // Asked in rank order, and no further than the limit needs.
         assert_eq!(
             asked,

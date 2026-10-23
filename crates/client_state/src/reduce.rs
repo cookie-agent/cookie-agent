@@ -1208,6 +1208,13 @@ pub(super) fn reduce_event_from(
             },
             timestamp,
         ),
+        // A model's memory change, one line (memory spec section 16.9.10).
+        EventPayload::MemoryChanged { change, url } => push_event(
+            state,
+            EventLevel::Info,
+            format!("{} {url}", change.verb()),
+            timestamp,
+        ),
         // What a writer left out changes nothing; the debug view names it.
         EventPayload::RecordOmitted { omitted_type } => push_event(
             state,

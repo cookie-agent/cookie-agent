@@ -37,16 +37,18 @@ pub(crate) fn is_overview(url: &MemoryUrl) -> bool {
     matches!(url, MemoryUrl::Project { name, .. } if name.as_str() == OVERVIEW)
 }
 
-/// `document` with the daemon's description for the overview of `project`.
+/// `document` with the daemon's description for the overview of `project`;
+/// its stamps stay.
 pub(crate) fn managed_overview(
     project: &MemoryName,
     document: &MemoryDocument,
 ) -> Result<MemoryDocument, super::file::InvalidMemory> {
-    MemoryDocument::new(
+    Ok(MemoryDocument::new(
         overview_description(project.as_str()),
         document.keywords().to_vec(),
         document.body(),
-    )
+    )?
+    .with_stamps(document.created(), document.modified()))
 }
 
 impl MemoryRoot {
@@ -75,14 +77,14 @@ impl MemoryRoot {
     /// description: a missing file is created with an empty body, and a
     /// valid file with another description has its frontmatter rewritten,
     /// its keywords and body kept. An invalid file, something other than a
-    /// regular file, or a rewrite past `max_file_bytes` is left alone, and
+    /// regular file, or a rewrite past `overview_max_bytes` is left alone, and
     /// so is everything while the memory folder does not exist. Returns
     /// whether it wrote anything, which it signals.
     pub(crate) fn ensure_overview(
         &self,
         _lock: &MemoryLock,
         project: &MemoryName,
-        max_file_bytes: usize,
+        overview_max_bytes: usize,
     ) -> Result<bool, MemoryError> {
         if !self.root.is_dir() {
             return Ok(false);
@@ -90,13 +92,17 @@ impl MemoryRoot {
         let path = self.file_path(&overview_url(project));
         let description = overview_description(project.as_str());
         let text = match read_bytes(&path)? {
-            None => Some(
-                MemoryDocument::new(description, Vec::new(), "")
-                    .expect("the overview's frontmatter is valid")
-                    .render(),
-            ),
+            None => {
+                let now = Some(jiff::Timestamp::now());
+                Some(
+                    MemoryDocument::new(description, Vec::new(), "")
+                        .expect("the overview's frontmatter is valid")
+                        .with_stamps(now, now)
+                        .render(),
+                )
+            }
             Some((_, metadata)) if !metadata.is_file() => None,
-            Some((bytes, _)) => MemoryDocument::parse(&bytes, max_file_bytes)
+            Some((bytes, _)) => MemoryDocument::parse(&bytes)
                 .ok()
                 .filter(|document| document.description() != description)
                 .and_then(|document| managed_overview(project, &document).ok())
@@ -105,7 +111,7 @@ impl MemoryRoot {
                         .ok()
                         .and_then(|text| with_frontmatter(text, &managed))
                 })
-                .filter(|text| text.len() <= max_file_bytes),
+                .filter(|text| text.len() <= overview_max_bytes),
         };
         let Some(text) = text else {
             return Ok(false);

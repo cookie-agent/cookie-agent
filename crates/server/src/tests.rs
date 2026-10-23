@@ -68,6 +68,14 @@ pub(crate) fn create_private_test_dir(path: &std::path::Path) {
     cookie_agent_models::secure_store::SecureDirectory::open(path).expect("private test directory");
 }
 
+/// `text` without the stamp lines the daemon writes into a memory's
+/// frontmatter.
+fn unstamped(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !line.starts_with("created: ") && !line.starts_with("modified: "))
+        .collect()
+}
+
 #[tokio::test]
 async fn plugin_events_are_filtered_by_connection_session_subscription() {
     let harness = harness();
@@ -1782,7 +1790,7 @@ async fn memory_is_listed_read_written_and_deleted_through_rpc() {
         json!({ "url": "project://web/build" }),
     )
     .await;
-    assert_eq!(read["result"]["text"], text);
+    assert_eq!(unstamped(read["result"]["text"].as_str().unwrap()), text);
     assert_eq!(read["result"]["revision"], revision.as_str());
     assert!(read["result"].get("invalid").is_none(), "{read}");
 
@@ -1843,7 +1851,7 @@ async fn memory_is_listed_read_written_and_deleted_through_rpc() {
     .await;
     assert_eq!(code(&refused), "memory_refused", "{refused}");
     assert_eq!(
-        std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap(),
+        unstamped(&std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap()),
         text
     );
 
@@ -1889,7 +1897,13 @@ async fn memory_is_listed_read_written_and_deleted_through_rpc() {
         ["project://web/build", "project://web/overview"]
     );
     assert_eq!(project["result"]["memories"][0]["group"], "web");
-    assert_eq!(project["result"]["memories"][0]["size"], text.len());
+    // The size counts the whole file, the daemon's stamps included.
+    assert_eq!(
+        project["result"]["memories"][0]["size"],
+        std::fs::metadata(memory.join("projects/web/build.md"))
+            .unwrap()
+            .len()
+    );
     assert_eq!(
         project["result"]["ignored"],
         json!([{ "path": "projects/web/notes.txt", "reason": "not a `.md` file" }])

@@ -1,9 +1,11 @@
 //! The memory folder, `<data_root>/memory` (`docs/site/specs/memory.md`
 //! section 4): its advisory lock, its first-start defaults, the machine
 //! memory folders that renaming and merging machines move, and the memory
-//! store: URLs ([`url`]), the file format and revisions ([`file`]), reads,
-//! listings, and changes ([`store`]), search ([`search`]), and the snapshot
-//! a session's model sees ([`snapshot`], rendered by [`render`]).
+//! store: URLs ([`url`]), the file format and revisions ([`file`]), the
+//! limits ([`limits`]), reads, listings, and changes ([`store`]), when
+//! memories were last read ([`reads`]), search ([`search`]), the
+//! similar-memory check ([`similar`]), and the snapshot a session's model
+//! sees ([`snapshot`], rendered by [`render`]).
 //!
 //! Every change to memory or to the machine registry holds [`MemoryLock`],
 //! because two plain `cookie` processes are two daemons sharing one data
@@ -11,9 +13,13 @@
 
 pub(crate) mod agents;
 pub(crate) mod file;
+pub(crate) mod format;
+pub(crate) mod limits;
 pub(crate) mod projects;
+pub(crate) mod reads;
 pub(crate) mod render;
 pub(crate) mod search;
+pub(crate) mod similar;
 pub(crate) mod snapshot;
 pub(crate) mod store;
 pub(crate) mod url;
@@ -30,6 +36,9 @@ use cookie_agent_protocol::MachineName;
 pub(crate) const MEMORY_DIR: &str = "memory";
 /// The lock file inside the memory folder.
 pub(crate) const LOCK_FILE: &str = ".lock";
+/// Where the daemon keeps when each memory was last read, inside the
+/// memory folder ([`reads`]).
+pub(crate) const READS_FILE: &str = ".reads.json";
 /// The folder of user categories inside the memory folder.
 pub(crate) const USER_DIR: &str = "user";
 /// The folder of agent memories inside the memory folder.
@@ -76,6 +85,8 @@ pub(crate) struct MemoryRoot {
     root: PathBuf,
     /// Bumped after each write, edit, or delete through this root.
     changes: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
+    /// When each memory was last read.
+    reads: std::sync::Arc<reads::ReadTimes>,
 }
 
 /// The held memory lock; dropping it releases the lock.
@@ -149,6 +160,7 @@ impl MemoryRoot {
         Self {
             root: data_dir.join(MEMORY_DIR),
             changes: std::sync::Arc::new(tokio::sync::watch::channel(0).0),
+            reads: std::sync::Arc::default(),
         }
     }
 
@@ -185,6 +197,7 @@ impl MemoryRoot {
                 let path = staging.join(layer);
                 fs::create_dir_all(&path).map_err(io_error(&path))?;
             }
+            let now = Some(jiff::Timestamp::now());
             for (category, description, keywords) in DEFAULT_CATEGORIES {
                 let document = file::MemoryDocument::new(
                     description,
@@ -194,7 +207,8 @@ impl MemoryRoot {
                         .collect(),
                     "",
                 )
-                .expect("the default categories are valid");
+                .expect("the default categories are valid")
+                .with_stamps(now, now);
                 let path = staging
                     .join(USER_DIR)
                     .join(format!("{category}.{MEMORY_EXTENSION}"));

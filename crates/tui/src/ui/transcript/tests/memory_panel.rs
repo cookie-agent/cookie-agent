@@ -49,6 +49,14 @@ fn row_of(app: &App, wanted: impl Fn(&MemoryRow) -> bool) -> usize {
         .expect("the row")
 }
 
+/// `text` without the stamp lines the daemon writes into a memory's
+/// frontmatter.
+fn unstamped(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !line.starts_with("created: ") && !line.starts_with("modified: "))
+        .collect()
+}
+
 fn memory_row(app: &App, url: &str) -> Option<usize> {
     app.memory_panel
         .rows()
@@ -152,7 +160,7 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
     .await;
     assert_eq!(app.status, "Created project://web/build.");
     let path = memory.join("projects/web/build.md");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), valid);
+    assert_eq!(unstamped(&std::fs::read_to_string(&path).unwrap()), valid);
 
     // Enter opens the selected memory at its revision; an unchanged edit
     // saves nothing.
@@ -164,9 +172,10 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
     })
     .await;
     let request = app.pending_memory_editor.take().unwrap();
-    assert_eq!(request.text, valid);
+    assert_eq!(unstamped(&request.text), valid);
     assert!(request.revision.is_some());
-    app.finish_memory_edit(request, Ok(valid.into()));
+    let opened = request.text.clone();
+    app.finish_memory_edit(request, Ok(opened));
     assert_eq!(app.status, "No changes to project://web/build.");
 
     // A memory changed while it was open is not overwritten: reload opens
@@ -210,7 +219,7 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
         app.status == "Saved project://web/build."
     })
     .await;
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+    assert_eq!(unstamped(&std::fs::read_to_string(&path).unwrap()), mine);
 
     // `d` asks first; Esc keeps the memory, and the button deletes it.
     pump_until(&mut app, &mut deliveries, |app| {

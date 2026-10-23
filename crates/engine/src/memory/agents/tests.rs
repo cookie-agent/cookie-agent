@@ -1,9 +1,26 @@
 use std::{collections::BTreeMap, fs};
 
 use super::*;
-use crate::memory::{file::MemoryRevision, store::Origin};
+use crate::memory::{file::MemoryRevision, limits::MemoryLimits, store::WriteMode};
 
 const LIMIT: usize = 4096;
+
+/// When the tests' writes happen.
+fn now() -> jiff::Timestamp {
+    "2026-10-22T12:00:00Z".parse().unwrap()
+}
+
+/// `text` without its stamp lines, which sync writes with the time.
+fn unstamped(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !line.starts_with("created: ") && !line.starts_with("modified: "))
+        .collect()
+}
+
+/// The text of `agent`'s file, without its stamps.
+fn file_text(data: &tempfile::TempDir, agent: &str) -> String {
+    unstamped(&fs::read_to_string(path(data, agent)).unwrap())
+}
 
 fn id(value: &str) -> AgentId {
     AgentId::new(value).unwrap()
@@ -112,16 +129,13 @@ fn a_sync_creates_one_empty_file_per_agent_and_then_does_nothing() {
     assert!(changes.has_changed().unwrap());
     changes.mark_unchanged();
     assert_eq!(
-        fs::read_to_string(path(&data, "reviewer")).unwrap(),
+        file_text(&data, "reviewer"),
         "---\ndescription: \"Memory of the `reviewer` agent: Reviews code\"\nkeywords: [reviewer, subagent]\n---\n"
     );
     let read = memory
-        .read(
-            &MemoryUrl::Agent {
-                agent: id("default"),
-            },
-            LIMIT,
-        )
+        .read(&MemoryUrl::Agent {
+            agent: id("default"),
+        })
         .unwrap();
     let document = read.entry.document.unwrap();
     assert_eq!(
@@ -167,7 +181,7 @@ fn a_sync_rewrites_the_frontmatter_and_keeps_the_body_and_extra_keywords() {
         .unwrap();
     assert_eq!(sync.updated, [id("reviewer")]);
     assert_eq!(
-        fs::read_to_string(path(&data, "reviewer")).unwrap(),
+        file_text(&data, "reviewer"),
         "---\ndescription: \"Memory of the `reviewer` agent: Reviews Rust code\"\nkeywords: [reviewer, all, rust]\n---\n- check twice\r\n"
     );
     // An invalid file is left for the user to fix.
@@ -178,10 +192,7 @@ fn a_sync_rewrites_the_frontmatter_and_keeps_the_body_and_extra_keywords() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(
-        fs::read_to_string(path(&data, "reviewer")).unwrap(),
-        "no frontmatter"
-    );
+    assert_eq!(file_text(&data, "reviewer"), "no frontmatter");
 }
 
 #[test]
@@ -253,23 +264,26 @@ fn writes_and_edits_keep_what_the_daemon_owns() {
         agent: id("reviewer"),
     };
     let managed = |_: &AgentId| AgentMemory::Managed(agents[&id("reviewer")].clone());
-    let current = memory.read(&url, LIMIT).unwrap().entry.revision;
+    let current = memory.read(&url).unwrap().entry.revision;
     let written = memory
         .write(
             &url,
             "---\ndescription: Mine now\nkeywords: [rust]\n---\n- a lesson\r\n",
-            Some(&current),
-            Origin::User,
+            WriteMode::Client(Some(&current)),
             managed,
-            LIMIT,
+            &MemoryLimits::all(LIMIT),
+            now(),
         )
         .unwrap();
-    let text = fs::read_to_string(path(&data, "reviewer")).unwrap();
+    let text = file_text(&data, "reviewer");
     assert_eq!(
         text,
         "---\ndescription: \"Memory of the `reviewer` agent: Reviews code\"\nkeywords: [reviewer, subagent, rust]\n---\n- a lesson\r\n"
     );
-    assert_eq!(written.revision, MemoryRevision::of(text.as_bytes()));
+    assert_eq!(
+        written.revision,
+        MemoryRevision::of(&fs::read(path(&data, "reviewer")).unwrap())
+    );
     let kept = written.kept.unwrap();
     assert_eq!(
         kept.description.as_deref(),
@@ -286,10 +300,10 @@ fn writes_and_edits_keep_what_the_daemon_owns() {
         .write(
             &url,
             &text,
-            Some(&written.revision),
-            Origin::User,
+            WriteMode::Client(Some(&written.revision)),
             managed,
-            LIMIT,
+            &MemoryLimits::all(LIMIT),
+            now(),
         )
         .unwrap();
     assert_eq!(again.kept, None);
@@ -300,12 +314,18 @@ fn writes_and_edits_keep_what_the_daemon_owns() {
         "---\ndescription: Stale\n---\n- a lesson\n",
     )
     .unwrap();
-    let stale = memory.read(&url, LIMIT).unwrap().entry.revision;
     memory
-        .edit(&url, "a lesson", "two lessons", &stale, managed, LIMIT)
+        .edit(
+            &url,
+            "a lesson",
+            "two lessons",
+            managed,
+            &MemoryLimits::all(LIMIT),
+            now(),
+        )
         .unwrap();
     assert_eq!(
-        fs::read_to_string(path(&data, "reviewer")).unwrap(),
+        file_text(&data, "reviewer"),
         "---\ndescription: \"Memory of the `reviewer` agent: Reviews code\"\nkeywords: [reviewer, subagent]\n---\n- two lessons\n"
     );
 
@@ -316,19 +336,19 @@ fn writes_and_edits_keep_what_the_daemon_owns() {
     )
     .unwrap();
     let gone = MemoryUrl::Agent { agent: id("gone") };
-    let revision = memory.read(&gone, LIMIT).unwrap().entry.revision;
+    let revision = memory.read(&gone).unwrap().entry.revision;
     let written = memory
         .write(
             &gone,
             "---\ndescription: New\nkeywords: [x]\n---\n- changed\n",
-            Some(&revision),
-            Origin::User,
+            WriteMode::Client(Some(&revision)),
             |_: &cookie_agent_protocol::AgentId| AgentMemory::Unknown,
-            LIMIT,
+            &MemoryLimits::all(LIMIT),
+            now(),
         )
         .unwrap();
     assert_eq!(
-        fs::read_to_string(path(&data, "gone")).unwrap(),
+        file_text(&data, "gone"),
         "---\ndescription: Old notes\nkeywords: [x]\n---\n- changed\n"
     );
     assert_eq!(

@@ -24,11 +24,14 @@ fn the_overview_is_made_once_and_keeps_its_body_and_keywords() {
     assert!(changes.has_changed().unwrap());
     changes.mark_unchanged();
     let path = memory.project_dir(&name("web")).join("overview.md");
-    let made = fs::read_to_string(&path).unwrap();
+    let made = crate::memory::file::MemoryDocument::parse(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(
-        made,
-        "---\ndescription: Overview of the `web` project, loaded in full into its sessions\n---\n"
+        made.description(),
+        "Overview of the `web` project, loaded in full into its sessions"
     );
+    assert_eq!(made.body(), "");
+    // A new overview is stamped as created.
+    assert!(made.created().is_some() && made.created() == made.modified());
     // Nothing to do writes and signals nothing.
     assert!(!memory.ensure_overview(&lock, &name("web"), LIMIT).unwrap());
     assert!(!changes.has_changed().unwrap());

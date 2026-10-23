@@ -70,12 +70,15 @@ impl Workspace {
             .join(format!("data/memory/agents/{agent}.md"))
     }
 
+    /// `agent`'s file's text, without its stamp lines.
     fn memory(&self, agent: &str) -> String {
-        fs::read_to_string(self.memory_file(agent))
-            .unwrap_or_else(|error| panic!("{agent}: {error}"))
+        unstamped(
+            &fs::read_to_string(self.memory_file(agent))
+                .unwrap_or_else(|error| panic!("{agent}: {error}")),
+        )
     }
 
-    /// Every agent memory file, by agent.
+    /// Every agent memory file's text, without its stamp lines, by agent.
     fn memory_files(&self) -> BTreeMap<String, String> {
         let folder = self.directory.path().join("data/memory/agents");
         fs::read_dir(folder)
@@ -84,11 +87,18 @@ impl Workspace {
             .map(|path| {
                 (
                     path.file_stem().unwrap().to_string_lossy().into_owned(),
-                    fs::read_to_string(&path).unwrap(),
+                    unstamped(&fs::read_to_string(&path).unwrap()),
                 )
             })
             .collect()
     }
+}
+
+/// `text` without its stamp lines, which the daemon writes with the time.
+fn unstamped(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !line.starts_with("created: ") && !line.starts_with("modified: "))
+        .collect()
 }
 
 fn set_old(path: &Path) {

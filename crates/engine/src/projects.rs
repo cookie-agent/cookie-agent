@@ -432,7 +432,7 @@ impl ProjectStore {
         name: ProjectName,
         emoji: Option<String>,
         defaults: Option<ProjectDefaults>,
-        max_file_bytes: usize,
+        overview_max_bytes: usize,
     ) -> Result<Project, ProjectError> {
         if let Some(emoji) = &emoji {
             validate_emoji(emoji).map_err(|reason| ProjectError::Invalid {
@@ -459,7 +459,7 @@ impl ProjectStore {
         let project = self.place_new(name, emoji, defaults)?;
         if let Err(error) =
             self.memory
-                .ensure_overview(&memory_lock, &project.memory_name(), max_file_bytes)
+                .ensure_overview(&memory_lock, &project.memory_name(), overview_max_bytes)
         {
             let _ = fs::remove_dir_all(self.project_dir(&project.id));
             return Err(error.into());
@@ -514,7 +514,7 @@ impl ProjectStore {
         id: &ProjectId,
         expected: &str,
         change: ProjectChange,
-        max_file_bytes: usize,
+        overview_max_bytes: usize,
     ) -> Result<Project, ProjectError> {
         if let Some(Some(emoji)) = &change.emoji {
             validate_emoji(emoji).map_err(|reason| ProjectError::Invalid {
@@ -603,7 +603,7 @@ impl ProjectStore {
         updated.revision = revision(&bytes, updated.agents_md.as_deref().map(str::as_bytes));
         if let Err(error) =
             self.memory
-                .ensure_overview(&memory_lock, &updated.memory_name(), max_file_bytes)
+                .ensure_overview(&memory_lock, &updated.memory_name(), overview_max_bytes)
         {
             eprintln!(
                 "cookie-agent: the overview of project `{}`: {error}",
@@ -656,7 +656,7 @@ impl ProjectStore {
     /// project could have the name. Returns the projects it created.
     pub(crate) fn adopt_memory_folders(
         &self,
-        max_file_bytes: usize,
+        overview_max_bytes: usize,
     ) -> Result<Vec<Project>, ProjectError> {
         let _mutation = lock(&self.mutation);
         let memory_lock = self.memory.lock()?;
@@ -686,10 +686,11 @@ impl ProjectStore {
             }
         }
         for project in &projects {
-            if let Err(error) =
-                self.memory
-                    .ensure_overview(&memory_lock, &project.memory_name(), max_file_bytes)
-            {
+            if let Err(error) = self.memory.ensure_overview(
+                &memory_lock,
+                &project.memory_name(),
+                overview_max_bytes,
+            ) {
                 eprintln!(
                     "cookie-agent: the overview of project `{}`: {error}",
                     project.name

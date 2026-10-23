@@ -1,5 +1,7 @@
 //! Reading, listing, and changing memory files (`docs/site/specs/memory.md`
-//! sections 4 and 8).
+//! sections 4 and 8, as section 16.9 amends them: stamps, size limits per
+//! kind of memory, model writes without revisions, and the similar-memory
+//! check).
 //!
 //! Reads never take the lock: every write replaces a file by renaming a
 //! flushed temporary file over it, so a reader sees the old or the new file
@@ -14,6 +16,8 @@ use std::{
     time::SystemTime,
 };
 
+use jiff::Timestamp;
+
 use cookie_agent_identity::AgentId;
 use cookie_agent_models::secure_store::{read_replaced, while_replacing as replaced};
 use cookie_agent_protocol::MachineName;
@@ -21,7 +25,10 @@ use cookie_agent_protocol::MachineName;
 use super::{
     MEMORY_EXTENSION, MemoryError, MemoryRoot,
     agents::{AgentMemory, with_frontmatter},
-    file::{InvalidMemory, MemoryDocument, MemoryRevision, too_large},
+    file::{InvalidMemory, MAX_FILE_BYTES, MemoryDocument, MemoryRevision, to_second, too_large},
+    format,
+    limits::MemoryLimits,
+    similar::{NearMemory, Similarity},
     url::{MemoryLayer, MemoryName, MemoryUrl},
 };
 
@@ -60,15 +67,21 @@ fn unknown_project(url: &MemoryUrl, project: &MemoryName, projects: &[String]) -
     ))
 }
 
-/// Who asks for a change. Model tools may not delete `user://` or
-/// `agent://` files, whose bodies they clear instead
-/// ([`MemoryRoot::clear_body`]), nor create `user://` files; the user,
-/// through a client, may (sections 8 and 10).
+/// How a write checks the memory it replaces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Origin {
-    Model,
-    /// The client surface (`memory.*`).
-    User,
+pub(crate) enum WriteMode<'a> {
+    /// A client's `memory.write` (section 10): without a revision the
+    /// memory must not exist; with one, it must exist at that revision.
+    Client(Option<&'a MemoryRevision>),
+    /// A model's `memory_write` (section 16.9.8): replacing a memory needs
+    /// `seen`, the revision the session last saw of it, to be its current
+    /// one. A new memory is first compared with the memories around it
+    /// (section 16.9.5); `new` says the writer already looked, so only an
+    /// identical body refuses it.
+    Model {
+        seen: Option<&'a MemoryRevision>,
+        new: bool,
+    },
 }
 
 /// Why a store operation failed.
@@ -105,6 +118,57 @@ pub(crate) enum StoreError {
         old: String,
         count: usize,
     },
+    /// A model's replacing write of a memory its session has not seen as
+    /// it is now.
+    #[error(
+        "{url} was not written: this memory changed since you saw it, or you have not read it: read it first, or edit it. Its current content:\n\n{content}"
+    )]
+    Unseen { url: MemoryUrl, content: String },
+    /// The change would leave the memory over its limit.
+    #[error("{}", too_large_message(url, *size, *max, current.as_deref()))]
+    TooLarge {
+        url: MemoryUrl,
+        size: usize,
+        max: usize,
+        /// The memory's current text, when it exists.
+        current: Option<String>,
+    },
+    /// A new memory looks like memories that exist.
+    #[error("{}", similar_message(url, near))]
+    Similar {
+        url: MemoryUrl,
+        near: Vec<NearMemory>,
+    },
+    /// A new memory has the body of one that exists.
+    #[error("{url} was not created: {existing} already holds exactly this body")]
+    Identical { url: MemoryUrl, existing: MemoryUrl },
+}
+
+fn too_large_message(url: &MemoryUrl, size: usize, max: usize, current: Option<&str>) -> String {
+    let (size_text, max_text) = (format::size(size as u64), format::size(max as u64));
+    match current {
+        None => format!(
+            "{url} was not created: it would be {size_text}, over its limit of {max_text}. Make it shorter."
+        ),
+        Some(current) if current.len() > max => format!(
+            "{url} was not written: it is {}, already over its limit of {max_text}, and only a change that makes it smaller is accepted until it fits; this one would leave it at {size_text}. Condense it first. Its current content:\n\n{current}",
+            format::size(current.len() as u64)
+        ),
+        Some(current) => format!(
+            "{url} was not written: it would be {size_text}, over its limit of {max_text}. Condense it first: merge or drop what it holds. Its current content:\n\n{current}"
+        ),
+    }
+}
+
+fn similar_message(url: &MemoryUrl, near: &[NearMemory]) -> String {
+    let listed = near
+        .iter()
+        .map(|near| format!("- {} — {}", near.url, near.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{url} was not created: memories like it already exist:\n{listed}\nIf one of these covers it, edit that instead. If it is new, write it again with `new: true` and a one-line `reason`."
+    )
 }
 
 /// A memory file as found on disk.
@@ -114,7 +178,10 @@ pub(crate) struct MemoryEntry {
     pub(crate) revision: MemoryRevision,
     /// The file's size in bytes, which `memory.list` reports.
     pub(crate) size: u64,
-    pub(crate) modified: SystemTime,
+    /// When the memory was created and last modified: its stamps, or the
+    /// file's modification time for a file without them (section 16.9.6).
+    pub(crate) created: Timestamp,
+    pub(crate) modified: Timestamp,
     /// The parsed memory, or why the file is invalid.
     pub(crate) document: Result<MemoryDocument, InvalidMemory>,
 }
@@ -170,15 +237,10 @@ pub(crate) struct Written {
     /// What an `agent://` write kept of the file's frontmatter; `None` when
     /// the text was written as given.
     pub(crate) kept: Option<KeptMetadata>,
-}
-
-/// What [`MemoryRoot::clear_body`] did, with the file's revision after it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ClearedBody {
-    /// The body was removed; the frontmatter stays as it was.
-    Cleared(MemoryRevision),
-    /// The body was already empty, so nothing was written.
-    AlreadyEmpty(MemoryRevision),
+    /// The write created the memory.
+    pub(crate) created: bool,
+    /// Memories near a new one (section 16.9.5), for the writer to check.
+    pub(crate) near: Vec<NearMemory>,
 }
 
 /// Something in the memory folder that is not a memory file of the layout:
@@ -246,48 +308,56 @@ pub(super) fn read_bytes(path: &Path) -> Result<Option<(Vec<u8>, fs::Metadata)>,
     Ok(Some((bytes, metadata)))
 }
 
-fn entry(
-    url: MemoryUrl,
-    bytes: &[u8],
-    metadata: &fs::Metadata,
-    max_file_bytes: usize,
-) -> MemoryEntry {
+/// The modification time of the file `metadata` describes, to the second.
+fn modified_time(metadata: &fs::Metadata) -> Timestamp {
+    let time = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    to_second(Timestamp::try_from(time).unwrap_or(Timestamp::UNIX_EPOCH))
+}
+
+fn entry(url: MemoryUrl, bytes: &[u8], metadata: &fs::Metadata) -> MemoryEntry {
     let document = if metadata.is_file() {
-        MemoryDocument::parse(bytes, max_file_bytes)
+        MemoryDocument::parse(bytes)
     } else {
         Err(InvalidMemory(NOT_FILE.to_owned()))
     };
+    let file_time = modified_time(metadata);
+    let stamps = document.as_ref().ok();
     MemoryEntry {
         url,
         revision: MemoryRevision::of(bytes),
         size: bytes.len() as u64,
-        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        created: stamps
+            .and_then(MemoryDocument::created)
+            .unwrap_or(file_time),
+        modified: stamps
+            .and_then(MemoryDocument::modified)
+            .unwrap_or(file_time),
         document,
     }
 }
 
-/// Reads a memory file for listing and search. A file over the limit is not
-/// read whole: it is invalid, and its revision is hashed while streaming.
-fn load(path: &Path, url: MemoryUrl, max_file_bytes: usize) -> Result<MemoryEntry, MemoryError> {
+/// Reads a memory file for listing and search. A file larger than any
+/// memory may be is not read whole: it is invalid, and its revision is
+/// hashed while streaming.
+fn load(path: &Path, url: MemoryUrl) -> Result<MemoryEntry, MemoryError> {
     let metadata = replaced(path, || fs::metadata(path)).map_err(io_error(path))?;
-    if metadata.len() > max_file_bytes as u64 {
+    if metadata.len() > MAX_FILE_BYTES as u64 {
         use sha2::{Digest as _, Sha256};
         let mut hasher = Sha256::new();
         let mut file = replaced(path, || fs::File::open(path)).map_err(io_error(path))?;
         let size = io::copy(&mut file, &mut hasher).map_err(io_error(path))?;
+        let file_time = modified_time(&metadata);
         return Ok(MemoryEntry {
             url,
             revision: MemoryRevision::from_digest(hasher.finalize().as_slice()),
             size,
-            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            document: Err(too_large(
-                usize::try_from(size).unwrap_or(usize::MAX),
-                max_file_bytes,
-            )),
+            created: file_time,
+            modified: file_time,
+            document: Err(too_large(usize::try_from(size).unwrap_or(usize::MAX))),
         });
     }
     let bytes = read_replaced(path).map_err(io_error(path))?;
-    Ok(entry(url, &bytes, &metadata, max_file_bytes))
+    Ok(entry(url, &bytes, &metadata))
 }
 
 /// The stem of a `<name>.md` file name, or why it is not a memory file.
@@ -324,27 +394,19 @@ impl MemoryRoot {
     }
 
     /// Reads one memory whole: its text, revision, and parsed content.
-    pub(crate) fn read(
-        &self,
-        url: &MemoryUrl,
-        max_file_bytes: usize,
-    ) -> Result<MemoryRead, StoreError> {
+    pub(crate) fn read(&self, url: &MemoryUrl) -> Result<MemoryRead, StoreError> {
         let path = self.file_path(url);
         let (bytes, metadata) =
             read_bytes(&path)?.ok_or_else(|| StoreError::NotFound { url: url.clone() })?;
         Ok(MemoryRead {
             text: String::from_utf8_lossy(&bytes).into_owned(),
-            entry: entry(url.clone(), &bytes, &metadata, max_file_bytes),
+            entry: entry(url.clone(), &bytes, &metadata),
         })
     }
 
     /// Every memory file in `scope`, valid or not, and what else lies in
     /// its folders.
-    pub(crate) fn list(
-        &self,
-        scope: &ListScope,
-        max_file_bytes: usize,
-    ) -> Result<MemoryListing, MemoryError> {
+    pub(crate) fn list(&self, scope: &ListScope) -> Result<MemoryListing, MemoryError> {
         let mut listing = MemoryListing::default();
         let wants = |layer: MemoryLayer| match scope {
             ListScope::All => true,
@@ -357,10 +419,10 @@ impl MemoryRoot {
             self.list_top(&mut listing)?;
         }
         if wants(MemoryLayer::User) {
-            self.list_flat(MemoryLayer::User, &mut listing, max_file_bytes)?;
+            self.list_flat(MemoryLayer::User, &mut listing)?;
         }
         if wants(MemoryLayer::Agent) {
-            self.list_flat(MemoryLayer::Agent, &mut listing, max_file_bytes)?;
+            self.list_flat(MemoryLayer::Agent, &mut listing)?;
         }
         for layer in [MemoryLayer::Machine, MemoryLayer::Project] {
             if wants(layer) {
@@ -369,7 +431,7 @@ impl MemoryRoot {
                     ListScope::Project(project) => Some(project.as_str()),
                     _ => None,
                 };
-                self.list_grouped(layer, only, &mut listing, max_file_bytes)?;
+                self.list_grouped(layer, only, &mut listing)?;
             }
         }
         if let ListScope::Agent(agent) = scope {
@@ -393,7 +455,7 @@ impl MemoryRoot {
                         reason: NOT_FOLDER,
                     });
                 }
-            } else if name != super::LOCK_FILE {
+            } else if name != super::LOCK_FILE && name != super::READS_FILE {
                 listing.ignored.push(IgnoredEntry {
                     path: name,
                     reason: UNKNOWN_TOP,
@@ -408,7 +470,6 @@ impl MemoryRoot {
         &self,
         layer: MemoryLayer,
         listing: &mut MemoryListing,
-        max_file_bytes: usize,
     ) -> Result<(), MemoryError> {
         let dir = self.root.join(layer.dir());
         for (file_name, kind) in read_dir_sorted(&dir)? {
@@ -419,14 +480,7 @@ impl MemoryRoot {
                     .ok_or(BAD_NAME),
                 _ => MemoryUrl::parse(&format!("agent://{stem}")).map_err(|_| BAD_AGENT),
             });
-            self.push(
-                listing,
-                path,
-                &kind,
-                url,
-                &dir.join(&file_name),
-                max_file_bytes,
-            )?;
+            self.push(listing, path, &kind, url, &dir.join(&file_name))?;
         }
         Ok(())
     }
@@ -437,7 +491,6 @@ impl MemoryRoot {
         layer: MemoryLayer,
         only: Option<&str>,
         listing: &mut MemoryListing,
-        max_file_bytes: usize,
     ) -> Result<(), MemoryError> {
         let dir = self.root.join(layer.dir());
         for (group, kind) in read_dir_sorted(&dir)? {
@@ -473,14 +526,7 @@ impl MemoryRoot {
                 let url = memory_stem(&file_name).and_then(|stem| {
                     MemoryUrl::parse(&format!("{layer}://{group}/{stem}")).map_err(|_| BAD_NAME)
                 });
-                self.push(
-                    listing,
-                    path,
-                    &kind,
-                    url,
-                    &group_dir.join(&file_name),
-                    max_file_bytes,
-                )?;
+                self.push(listing, path, &kind, url, &group_dir.join(&file_name))?;
             }
         }
         Ok(())
@@ -493,7 +539,6 @@ impl MemoryRoot {
         kind: &fs::FileType,
         url: Result<MemoryUrl, &'static str>,
         file: &Path,
-        max_file_bytes: usize,
     ) -> Result<(), MemoryError> {
         if kind.is_dir() {
             listing.ignored.push(IgnoredEntry {
@@ -510,7 +555,7 @@ impl MemoryRoot {
             return Ok(());
         }
         match url {
-            Ok(url) => match load(file, url, max_file_bytes) {
+            Ok(url) => match load(file, url) {
                 Ok(entry) => listing.entries.push(entry),
                 // Removed since the folder was read.
                 Err(MemoryError::Io { source, .. }) if not_found(&source) => {}
@@ -521,32 +566,54 @@ impl MemoryRoot {
         Ok(())
     }
 
+    /// The valid memories in the same place as `url` (section 16.9.5): the
+    /// same project, the same machine, the user categories, or the agent's
+    /// file; `url` itself left out.
+    fn neighbours(&self, url: &MemoryUrl) -> Result<Vec<(MemoryUrl, MemoryDocument)>, MemoryError> {
+        let scope = match url {
+            MemoryUrl::User { .. } => ListScope::Layer(MemoryLayer::User),
+            MemoryUrl::Agent { agent } => ListScope::Agent(agent.clone()),
+            MemoryUrl::Machine { machine, .. } => ListScope::Machine(machine.clone()),
+            MemoryUrl::Project { project, .. } => ListScope::Project(project.clone()),
+        };
+        Ok(self
+            .list(&scope)?
+            .entries
+            .into_iter()
+            .filter(|entry| entry.url != *url)
+            .filter_map(|entry| Some((entry.url, entry.document.ok()?)))
+            .collect())
+    }
+
     /// Creates or replaces one memory from its whole file text, which must
-    /// be a valid memory within `max_file_bytes`. Without `expected` the
-    /// file must not exist; with it, the file must exist at that revision.
-    /// Creating a `user://` file is refused for [`Origin::Model`]; creating
-    /// an `agent://` file needs `agents` to know its agent. An `agent://`
-    /// file keeps the frontmatter the daemon owns (section 16.7): the
-    /// daemon's description and keywords for an agent it keeps a file for,
-    /// and the description the file has otherwise; the text's own
-    /// frontmatter is replaced when it differs, its body kept as given.
-    /// A project's overview keeps the daemon's description the same way.
-    /// A write to a project that does not exist is refused; the first
-    /// memory of a machine creates its folder.
+    /// be a valid memory. `mode` says how the memory it replaces is checked
+    /// ([`WriteMode`]). The daemon stamps the file (section 16.9.6): a new
+    /// memory is created now, a replaced one keeps when it was created,
+    /// and either is modified now; stamps the text gives are ignored. The
+    /// result must fit the memory's limit in `limits`, unless the memory
+    /// is already over it and the write makes it smaller (section 16.9.7).
+    /// Creating an `agent://` file needs `owners` to know its agent. An
+    /// `agent://` file keeps the frontmatter the daemon owns (section
+    /// 16.7): the daemon's description and keywords for an agent it keeps a
+    /// file for, and the description the file has otherwise; a project's
+    /// overview keeps the daemon's description the same way. The body is
+    /// kept as given and the frontmatter rendered anew. A write to a
+    /// project that does not exist is refused; the first memory of a
+    /// machine creates its folder.
     pub(crate) fn write(
         &self,
         url: &MemoryUrl,
         text: &str,
-        expected: Option<&MemoryRevision>,
-        origin: Origin,
+        mode: WriteMode<'_>,
         owners: impl MemoryOwners,
-        max_file_bytes: usize,
+        limits: &MemoryLimits,
+        now: Timestamp,
     ) -> Result<Written, StoreError> {
         let invalid = |reason| StoreError::Invalid {
             url: url.clone(),
             reason,
         };
-        let document = MemoryDocument::parse(text.as_bytes(), max_file_bytes).map_err(invalid)?;
+        let document = MemoryDocument::parse(text.as_bytes()).map_err(invalid)?;
         let lock = self.lock()?;
         if let MemoryUrl::Project { project, .. } = url
             && let Some(projects) = owners.unknown_project(project)
@@ -554,32 +621,61 @@ impl MemoryRoot {
             return Err(unknown_project(url, project, &projects));
         }
         let path = self.file_path(url);
-        let existing = read_bytes(&path)?.map(|(bytes, _)| bytes);
-        let current = existing.as_deref().map(MemoryRevision::of);
-        match (current, expected) {
-            (Some(revision), None) => {
+        let existing = read_bytes(&path)?;
+        let current = existing
+            .as_ref()
+            .map(|(bytes, _)| MemoryRevision::of(bytes));
+        let existing_text = existing
+            .as_ref()
+            .map(|(bytes, _)| String::from_utf8_lossy(bytes).into_owned());
+        let mut near = Vec::new();
+        match (mode, current) {
+            (WriteMode::Client(None), Some(revision)) => {
                 return Err(StoreError::Exists {
                     url: url.clone(),
                     revision,
                 });
             }
-            (None, Some(_)) => return Err(StoreError::NotFound { url: url.clone() }),
-            (Some(current), Some(expected)) if current != *expected => {
+            (WriteMode::Client(Some(_)), None) => {
+                return Err(StoreError::NotFound { url: url.clone() });
+            }
+            (WriteMode::Client(Some(expected)), Some(current)) if current != *expected => {
                 return Err(StoreError::RevisionMismatch {
                     url: url.clone(),
                     current,
                 });
             }
-            (None, None) if matches!(url, MemoryUrl::User { .. }) && origin == Origin::Model => {
-                return Err(StoreError::Refused(format!(
-                    "{url} does not exist, and only the user adds user categories"
-                )));
+            (WriteMode::Model { seen, .. }, Some(current)) if seen != Some(&current) => {
+                return Err(StoreError::Unseen {
+                    url: url.clone(),
+                    content: existing_text.unwrap_or_default(),
+                });
             }
-            (Some(_), Some(_)) | (None, None) => {}
+            (WriteMode::Model { new, .. }, None) => {
+                match super::similar::compare(&document, &self.neighbours(url)?) {
+                    Similarity::Identical(existing) => {
+                        return Err(StoreError::Identical {
+                            url: url.clone(),
+                            existing,
+                        });
+                    }
+                    Similarity::Strong(found) if !new => {
+                        return Err(StoreError::Similar {
+                            url: url.clone(),
+                            near: found,
+                        });
+                    }
+                    Similarity::Strong(found) | Similarity::Weak(found) => near = found,
+                    Similarity::None => {}
+                }
+            }
+            (WriteMode::Client(_) | WriteMode::Model { .. }, _) => {}
         }
-        let mut text = std::borrow::Cow::Borrowed(text);
-        let mut kept = None;
-        let target = match url {
+        let existing_document = existing
+            .as_ref()
+            .and_then(|(bytes, _)| MemoryDocument::parse(bytes).ok());
+        let mut target = None;
+        match url {
             MemoryUrl::Agent { agent } => {
                 let status = owners.agent(agent);
                 if existing.is_none() && !status.exists() {
@@ -587,13 +683,12 @@ impl MemoryRoot {
                         "{url} names no agent in the agent registry"
                     )));
                 }
-                match &status {
+                target = match &status {
                     AgentMemory::Managed(spec) => {
                         Some(spec.apply(agent, &document).map_err(invalid)?)
                     }
-                    AgentMemory::Registered | AgentMemory::Unknown => existing
-                        .as_deref()
-                        .and_then(|bytes| MemoryDocument::parse(bytes, max_file_bytes).ok())
+                    AgentMemory::Registered | AgentMemory::Unknown => existing_document
+                        .as_ref()
                         .map(|current| {
                             MemoryDocument::new(
                                 current.description(),
@@ -603,14 +698,15 @@ impl MemoryRoot {
                         })
                         .transpose()
                         .map_err(invalid)?,
-                }
+                };
             }
             MemoryUrl::Project { project, .. } if super::projects::is_overview(url) => {
-                Some(super::projects::managed_overview(project, &document).map_err(invalid)?)
+                target =
+                    Some(super::projects::managed_overview(project, &document).map_err(invalid)?);
             }
-            _ => None,
-        };
-        if let Some(target) = target.filter(|target| *target != document) {
+            _ => {}
+        }
+        let kept = target.as_ref().and_then(|target| {
             let added = target
                 .keywords()
                 .iter()
@@ -627,35 +723,47 @@ impl MemoryRoot {
                     .then(|| target.description().to_owned()),
                 keywords: added,
             };
-            let replaced = with_frontmatter(&text, &target).ok_or_else(|| {
-                invalid(InvalidMemory("the frontmatter was not found".to_owned()))
-            })?;
-            if replaced.len() > max_file_bytes {
-                return Err(invalid(too_large(replaced.len(), max_file_bytes)));
-            }
-            text = std::borrow::Cow::Owned(replaced);
-            kept = (metadata != KeptMetadata::default()).then_some(metadata);
-        }
-        let revision = write_file(&path, text.as_bytes())?;
+            (metadata != KeptMetadata::default()).then_some(metadata)
+        });
+        let created = existing.as_ref().map_or(now, |(_, metadata)| {
+            existing_document
+                .as_ref()
+                .and_then(MemoryDocument::created)
+                .unwrap_or_else(|| modified_time(metadata))
+        });
+        let stamped = target
+            .unwrap_or_else(|| document.clone())
+            .with_stamps(Some(created), Some(now));
+        let written = with_frontmatter(text, &stamped)
+            .ok_or_else(|| invalid(InvalidMemory("the frontmatter was not found".to_owned())))?;
+        check_size(url, &written, existing_text.as_deref(), limits)?;
+        let revision = write_file(&path, written.as_bytes())?;
         drop(lock);
         self.changed();
-        Ok(Written { revision, kept })
+        Ok(Written {
+            revision,
+            kept,
+            created: existing.is_none(),
+            near,
+        })
     }
 
-    /// Replaces the one occurrence of `old` in the body of a memory at
-    /// revision `expected` with `new`. Fails, changing nothing, when `old`
-    /// occurs zero or several times or the result is not a valid memory.
-    /// The file is written in the form [`MemoryDocument::render`] gives,
-    /// with the daemon's description and keywords for an agent file the
-    /// daemon keeps (section 16.7).
+    /// Replaces the one occurrence of `old` in the body of a memory with
+    /// `new`, whatever else changed in it since the caller saw it (section
+    /// 16.9.8). Fails, changing nothing, when `old` occurs zero or several
+    /// times, the result is not a valid memory, or it does not fit the
+    /// memory's limit ([`MemoryRoot::write`]). The file is written in the
+    /// form [`MemoryDocument::render`] gives, stamped as modified now, with
+    /// the daemon's description and keywords for an agent file the daemon
+    /// keeps (section 16.7).
     pub(crate) fn edit(
         &self,
         url: &MemoryUrl,
         old: &str,
         new: &str,
-        expected: &MemoryRevision,
         owners: impl MemoryOwners,
-        max_file_bytes: usize,
+        limits: &MemoryLimits,
+        now: Timestamp,
     ) -> Result<MemoryRevision, StoreError> {
         let lock = self.lock()?;
         if let MemoryUrl::Project { project, .. } = url
@@ -664,20 +772,13 @@ impl MemoryRoot {
             return Err(unknown_project(url, project, &projects));
         }
         let path = self.file_path(url);
-        let (bytes, _) =
+        let (bytes, metadata) =
             read_bytes(&path)?.ok_or_else(|| StoreError::NotFound { url: url.clone() })?;
-        let current = MemoryRevision::of(&bytes);
-        if current != *expected {
-            return Err(StoreError::RevisionMismatch {
-                url: url.clone(),
-                current,
-            });
-        }
         let invalid = |reason| StoreError::Invalid {
             url: url.clone(),
             reason,
         };
-        let document = MemoryDocument::parse(&bytes, max_file_bytes).map_err(invalid)?;
+        let document = MemoryDocument::parse(&bytes).map_err(invalid)?;
         let count = if old.is_empty() {
             0
         } else {
@@ -712,78 +813,34 @@ impl MemoryRoot {
         {
             edited = super::projects::managed_overview(project, &edited).map_err(invalid)?;
         }
-        let text = edited.render();
-        if text.len() > max_file_bytes {
-            return Err(invalid(too_large(text.len(), max_file_bytes)));
-        }
+        let created = document
+            .created()
+            .unwrap_or_else(|| modified_time(&metadata));
+        let text = edited.with_stamps(Some(created), Some(now)).render();
+        check_size(url, &text, Some(&String::from_utf8_lossy(&bytes)), limits)?;
         let revision = write_file(&path, text.as_bytes())?;
         drop(lock);
         self.changed();
         Ok(revision)
     }
 
-    /// Removes the body of a valid memory at revision `expected`, keeping
-    /// the file and its frontmatter byte for byte. This is what a model
-    /// tool's delete of a `user://` or `agent://` memory does
-    /// (section 16.6). A body that is already empty is left alone, and
-    /// nothing is written or signalled.
-    pub(crate) fn clear_body(
-        &self,
-        url: &MemoryUrl,
-        expected: &MemoryRevision,
-        max_file_bytes: usize,
-    ) -> Result<ClearedBody, StoreError> {
-        let lock = self.lock()?;
-        let path = self.file_path(url);
-        let (bytes, _) =
-            read_bytes(&path)?.ok_or_else(|| StoreError::NotFound { url: url.clone() })?;
-        let current = MemoryRevision::of(&bytes);
-        if current != *expected {
-            return Err(StoreError::RevisionMismatch {
-                url: url.clone(),
-                current,
-            });
-        }
-        let invalid = |reason| StoreError::Invalid {
-            url: url.clone(),
-            reason,
-        };
-        MemoryDocument::parse(&bytes, max_file_bytes).map_err(invalid)?;
-        let frontmatter = std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(MemoryDocument::frontmatter_len)
-            .ok_or_else(|| invalid(InvalidMemory("the frontmatter was not found".to_owned())))?;
-        if frontmatter == bytes.len() {
-            return Ok(ClearedBody::AlreadyEmpty(current));
-        }
-        let revision = write_file(&path, &bytes[..frontmatter])?;
-        drop(lock);
-        self.changed();
-        Ok(ClearedBody::Cleared(revision))
-    }
-
-    /// Deletes a memory at revision `expected`. Deleting a `user://` or
-    /// `agent://` file is refused for [`Origin::Model`], whose deletes of
-    /// those clear the body instead ([`Self::clear_body`]). A project's
-    /// folder stays when its last memory goes: it belongs to the project.
+    /// Deletes a memory, at revision `expected` when one is given (a
+    /// client's delete). A model's delete deletes, whatever the layer
+    /// (section 16.9.11). A project's folder stays when its last memory
+    /// goes: it belongs to the project.
     pub(crate) fn delete(
         &self,
         url: &MemoryUrl,
-        expected: &MemoryRevision,
-        origin: Origin,
+        expected: Option<&MemoryRevision>,
     ) -> Result<(), StoreError> {
-        if origin == Origin::Model && matches!(url.layer(), MemoryLayer::User | MemoryLayer::Agent)
-        {
-            return Err(StoreError::Refused(format!(
-                "{url} can only be deleted by the user; a model tool clears its body instead"
-            )));
-        }
         let lock = self.lock()?;
         let path = self.file_path(url);
         let (bytes, _) =
             read_bytes(&path)?.ok_or_else(|| StoreError::NotFound { url: url.clone() })?;
         let current = MemoryRevision::of(&bytes);
-        if current != *expected {
+        if let Some(expected) = expected
+            && current != *expected
+        {
             return Err(StoreError::RevisionMismatch {
                 url: url.clone(),
                 current,
@@ -794,6 +851,89 @@ impl MemoryRoot {
         self.changed();
         Ok(())
     }
+
+    /// Stamps every valid memory file without stamps with its modification
+    /// time, as `created` and `modified` (section 16.9.6), adding only the
+    /// missing lines before the frontmatter's closing `---`, so the rest of
+    /// the file stays as written. Run once at start; until a file is
+    /// stamped, reads take its modification time instead. Returns how many
+    /// files it stamped, and signals when it stamped any.
+    pub(crate) fn stamp_unstamped(&self) -> Result<usize, MemoryError> {
+        if !self.root.is_dir() {
+            return Ok(0);
+        }
+        let lock = self.lock()?;
+        let mut stamped = 0;
+        for entry in self.list(&ListScope::All)?.entries {
+            let Ok(document) = &entry.document else {
+                continue;
+            };
+            if document.created().is_some() && document.modified().is_some() {
+                continue;
+            }
+            let path = self.file_path(&entry.url);
+            let Some((bytes, metadata)) = read_bytes(&path)? else {
+                continue;
+            };
+            let Some(text) = std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| add_stamps(text, modified_time(&metadata)))
+            else {
+                continue;
+            };
+            write_file(&path, text.as_bytes())?;
+            stamped += 1;
+        }
+        drop(lock);
+        if stamped > 0 {
+            self.changed();
+        }
+        Ok(stamped)
+    }
+}
+
+/// `text`, a valid memory file, with the stamps it lacks set to `time`,
+/// added as lines just before its frontmatter's closing `---`. `None` when
+/// it has both, or its frontmatter is not found.
+fn add_stamps(text: &str, time: Timestamp) -> Option<String> {
+    let document = MemoryDocument::parse(text.as_bytes()).ok()?;
+    let frontmatter = MemoryDocument::frontmatter_len(text)?;
+    let fence = text[..frontmatter].trim_end_matches(['\n', '\r']).len() - "---".len();
+    let mut lines = String::new();
+    for (key, stamp) in [
+        ("created", document.created()),
+        ("modified", document.modified()),
+    ] {
+        if stamp.is_none() {
+            lines.push_str(&format!("{key}: {time}\n"));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!("{}{lines}{}", &text[..fence], &text[fence..]))
+}
+
+/// Whether `text` may replace `current` (absent for a new memory) at
+/// `url`: it fits the memory's limit, or the memory is over it and `text`
+/// is smaller (section 16.9.7).
+fn check_size(
+    url: &MemoryUrl,
+    text: &str,
+    current: Option<&str>,
+    limits: &MemoryLimits,
+) -> Result<(), StoreError> {
+    let max = limits.max_bytes(url);
+    let shrinks_an_oversized = current.is_some_and(|current| current.len() > text.len());
+    if text.len() <= max || shrinks_an_oversized && current.is_some_and(|c| c.len() > max) {
+        return Ok(());
+    }
+    Err(StoreError::TooLarge {
+        url: url.clone(),
+        size: text.len(),
+        max,
+        current: current.map(str::to_owned),
+    })
 }
 
 /// Writes `bytes` to `path` through a flushed temporary file in the same

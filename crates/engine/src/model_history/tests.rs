@@ -2820,6 +2820,7 @@ fn memory_event(seq: u64, run: RunId, body: Option<&str>) -> StoredEvent {
                     description: "Reviews".into(),
                     keywords: Vec::new(),
                     body: body.into(),
+                    status: cookie_agent_protocol::MemoryDocumentStatus::default(),
                 }),
                 omitted: false,
                 listed: None,

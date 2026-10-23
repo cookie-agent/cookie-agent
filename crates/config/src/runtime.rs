@@ -746,15 +746,28 @@ const fn default_producer_max_body_bytes() -> usize {
 /// message travels in.
 pub const PRODUCER_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
-/// `[memory]`: size limits of memory files and of the memory snapshot
-/// (`docs/site/specs/memory.md` section 11).
+/// `[memory]`: size limits of memory documents and of the memory snapshot
+/// (`docs/site/specs/memory.md` sections 11 and 16.9.7).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
-    /// Largest memory file, frontmatter included, in bytes. A larger file
-    /// is invalid and a write that would produce one fails.
-    #[serde(default = "default_memory_max_file_bytes")]
-    pub max_file_bytes: usize,
+    /// Largest `user://` category, frontmatter included, in bytes.
+    #[serde(default = "default_memory_document_bytes")]
+    pub user_max_bytes: usize,
+    /// Largest `agent://` file, frontmatter included, in bytes.
+    #[serde(default = "default_memory_document_bytes")]
+    pub agent_max_bytes: usize,
+    /// Largest `machine://` memory, frontmatter included, in bytes.
+    #[serde(default = "default_memory_document_bytes")]
+    pub machine_max_bytes: usize,
+    /// Largest `project://` memory other than an overview, frontmatter
+    /// included, in bytes.
+    #[serde(default = "default_memory_document_bytes")]
+    pub project_max_bytes: usize,
+    /// Largest project overview (`project://<project>/overview`),
+    /// frontmatter included, in bytes.
+    #[serde(default = "default_memory_document_bytes")]
+    pub overview_max_bytes: usize,
     /// Room for the user categories in a snapshot, in bytes of rendered
     /// text.
     #[serde(default = "default_memory_snapshot_user_bytes")]
@@ -767,7 +780,11 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            max_file_bytes: default_memory_max_file_bytes(),
+            user_max_bytes: default_memory_document_bytes(),
+            agent_max_bytes: default_memory_document_bytes(),
+            machine_max_bytes: default_memory_document_bytes(),
+            project_max_bytes: default_memory_document_bytes(),
+            overview_max_bytes: default_memory_document_bytes(),
             snapshot_user_bytes: default_memory_snapshot_user_bytes(),
             snapshot_index_bytes: default_memory_snapshot_index_bytes(),
         }
@@ -777,36 +794,46 @@ impl MemoryConfig {
     /// The bound a whole memory snapshot event stays under.
     pub const EVENT_MAX_BYTES: usize = 64 * 1024;
     /// What a snapshot's fixed text, headings, element tags, and escaping
-    /// may add to the three limits. The limits are validated so that
-    /// `max_file_bytes + snapshot_user_bytes + snapshot_index_bytes +
+    /// may add to the snapshot's limits. The limits are validated so that
+    /// `agent_max_bytes + snapshot_user_bytes + snapshot_index_bytes +
     /// RENDER_OVERHEAD_BYTES <= EVENT_MAX_BYTES`.
     pub const RENDER_OVERHEAD_BYTES: usize = 8 * 1024;
-    /// The largest sum of the three limits.
+    /// The largest sum of the snapshot's limits, and the largest any one
+    /// document limit may be.
     pub const MAX_LIMITS_SUM: usize = Self::EVENT_MAX_BYTES - Self::RENDER_OVERHEAD_BYTES;
 
     fn invalid_reason(&self) -> Option<&'static str> {
-        if self.max_file_bytes == 0
-            || self.snapshot_user_bytes == 0
-            || self.snapshot_index_bytes == 0
+        let documents = [
+            self.user_max_bytes,
+            self.agent_max_bytes,
+            self.machine_max_bytes,
+            self.project_max_bytes,
+            self.overview_max_bytes,
+        ];
+        if documents
+            .iter()
+            .chain([&self.snapshot_user_bytes, &self.snapshot_index_bytes])
+            .any(|limit| *limit == 0)
         {
-            return Some(
-                "memory.max_file_bytes, snapshot_user_bytes, and snapshot_index_bytes must be positive",
-            );
+            return Some("every memory limit must be positive");
+        }
+        if documents.iter().any(|limit| *limit > Self::MAX_LIMITS_SUM) {
+            return Some("a memory document limit must not exceed 57344");
         }
         let sum = self
-            .max_file_bytes
+            .agent_max_bytes
             .checked_add(self.snapshot_user_bytes)
             .and_then(|sum| sum.checked_add(self.snapshot_index_bytes));
         if sum.is_none_or(|sum| sum > Self::MAX_LIMITS_SUM) {
             return Some(
-                "memory.max_file_bytes plus snapshot_user_bytes plus snapshot_index_bytes must not exceed 57344",
+                "memory.agent_max_bytes plus snapshot_user_bytes plus snapshot_index_bytes must not exceed 57344",
             );
         }
         None
     }
 }
-const fn default_memory_max_file_bytes() -> usize {
-    4096
+const fn default_memory_document_bytes() -> usize {
+    2048
 }
 const fn default_memory_snapshot_user_bytes() -> usize {
     12 * 1024

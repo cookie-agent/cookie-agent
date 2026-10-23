@@ -64,8 +64,10 @@ fn availability(name: &str) -> Option<&'static str> {
              URL instead."
         }
         "memory_write" | "memory_edit" | "memory_delete" => {
-            "Only when `memory_read` is sent too. A delegated run may write only its own \
-             agent's memory, `agent://<agent>`."
+            "Only when `memory_read` is sent too and some memory URL is both readable (an \
+             `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` \
+             `memory_write` rule matches it). A delegated run whose agent document has no \
+             memory keys gets its own agent's memory, `agent://<agent>`, by default."
         }
         "list_runtimes" => {
             "Only when the session has the `global` runtime attached and the agent or the \

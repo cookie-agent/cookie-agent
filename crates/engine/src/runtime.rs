@@ -68,7 +68,7 @@ mod loop_guard;
 pub(crate) mod machine_api;
 mod mailbox;
 pub(crate) mod memory_api;
-mod memory_runs;
+pub(crate) mod memory_runs;
 pub(crate) mod messaging_api;
 mod model_loop;
 mod output_capture;
@@ -878,6 +878,8 @@ pub(crate) struct Inner {
     pub(crate) background: background_tasks::BackgroundTaskState,
     pub(crate) compaction: CompactionState,
     pub(crate) uploads: uploads::UploadState,
+    /// The revision each session last saw of each memory.
+    pub(crate) memory_seen: memory_runs::SeenMemories,
     runtime: Option<tokio::runtime::Handle>,
     janitor_task: Mutex<Option<JoinHandle<()>>>,
     #[cfg(test)]
@@ -994,9 +996,16 @@ impl Engine {
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
         // The first start keys off the memory folder's absence, so it runs
         // before anything can take the memory lock or move machine folders.
-        crate::memory::MemoryRoot::new(&options.data_dir)
+        let memory = crate::memory::MemoryRoot::new(&options.data_dir);
+        memory
             .create_defaults_if_absent()
             .map_err(|error| EngineError::Memory(error.to_string()))?;
+        // Memories written before stamps get theirs from their files' times
+        // (docs/site/specs/memory.md section 16.9.6); until then reads take
+        // those times, so a failure only waits for the next start.
+        if let Err(error) = memory.stamp_unstamped() {
+            eprintln!("cookie-agent: memory stamps: {error}");
+        }
         let machines = Arc::new(crate::machines::MachineRegistry::open(&options.data_dir)?);
         let projects = Arc::new(crate::projects::ProjectStore::new(
             &options.data_dir,
@@ -1005,7 +1014,7 @@ impl Engine {
         // Every memory folder of a project becomes a project before any
         // memory write can be refused for naming none.
         if let Err(error) =
-            projects.adopt_memory_folders(options.config.runtime.memory.max_file_bytes)
+            projects.adopt_memory_folders(options.config.runtime.memory.overview_max_bytes)
         {
             eprintln!("cookie-agent: projects: {error}");
         }
@@ -1118,6 +1127,7 @@ impl Engine {
                 background: background_tasks::BackgroundTaskState::default(),
                 compaction: CompactionState::default(),
                 uploads: uploads::UploadState::default(),
+                memory_seen: memory_runs::SeenMemories::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),
                 #[cfg(test)]

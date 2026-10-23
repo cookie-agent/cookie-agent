@@ -66,7 +66,7 @@ impl Engine {
         let engine = self.clone();
         self.memory_root().sync_agents(
             move || desired_agent_memory(&engine.current_runtime()),
-            self.memory_limits().max_file_bytes,
+            self.memory_limits().agent_max_bytes,
         )
     }
 

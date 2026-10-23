@@ -3,6 +3,14 @@ use cookie_agent_protocol::ProviderId;
 /// A syntactically valid 43-character base64url daemon token.
 const TEST_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+/// `text` without the stamp lines the daemon writes into a memory's
+/// frontmatter.
+fn unstamped(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !line.starts_with("created: ") && !line.starts_with("modified: "))
+        .collect()
+}
+
 /// Compose with the workspace's `.cookie-agent` as the user layer root, isolating tests from any
 /// real user-level configuration on the host.
 async fn compose_isolated<T: CatalogTransport + 'static>(
@@ -2110,7 +2118,7 @@ async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
     );
     assert_eq!(io.output.last().unwrap(), "Created project://web/build.");
     assert_eq!(
-        std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap(),
+        unstamped(&std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap()),
         valid
     );
 
@@ -2138,7 +2146,13 @@ async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
     run_memory_with(&client, MemoryCommand::Edit { url: url.into() }, &mut io)
         .await
         .expect("edit");
-    assert_eq!(io.seen, [valid, changed]);
+    assert_eq!(
+        io.seen
+            .iter()
+            .map(|text| unstamped(text))
+            .collect::<Vec<_>>(),
+        [valid, changed]
+    );
     assert_eq!(
         io.output,
         [
@@ -2147,13 +2161,15 @@ async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
         ]
     );
     assert_eq!(
-        std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap(),
+        unstamped(&std::fs::read_to_string(memory.join("projects/web/build.md")).unwrap()),
         mine
     );
 
     // The listing groups by layer and project and names what is not a
     // memory.
     std::fs::write(memory.join("projects/web/notes.txt"), "stray").unwrap();
+    // Sizes count the whole file, the daemon's stamps included.
+    let size = |path: &str| std::fs::metadata(memory.join(path)).unwrap().len();
     let mut io = ScriptedMemoryIo::new(&[], &[]);
     run_memory_with(
         &client,
@@ -2171,9 +2187,12 @@ async fn cookie_memory_lists_edits_and_deletes_the_daemon_memories() {
             "  web".to_owned(),
             format!(
                 "    project://web/build  Build conventions  [{} B]",
-                mine.len()
+                size("projects/web/build.md")
             ),
-            "    project://web/overview  Overview of the `web` project, loaded in full into its sessions  [85 B]".to_owned(),
+            format!(
+                "    project://web/overview  Overview of the `web` project, loaded in full into its sessions  [{} B]",
+                size("projects/web/overview.md")
+            ),
             "Not memories (ignored)".to_owned(),
             "  projects/web/notes.txt: not a `.md` file".to_owned(),
         ]

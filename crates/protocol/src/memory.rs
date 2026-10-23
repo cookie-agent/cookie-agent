@@ -66,6 +66,38 @@ pub struct MemorySnapshot {
     /// an empty snapshot and in one an earlier daemon took.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<Sha256Digest>,
+    /// When the snapshot was taken; the ages it shows are measured to this
+    /// time, so equal snapshots render equal text (client protocol
+    /// 1.14.0). Absent in an empty snapshot and in one an earlier daemon
+    /// took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken_at: Option<jiff::Timestamp>,
+}
+
+/// How full one memory document was when a snapshot showed it, and when
+/// it was last modified (client protocol 1.14.0). Every member is absent
+/// in a snapshot an earlier daemon took. A document whose `size` exceeds
+/// its `max_size` is over its limit: only writes that make it smaller are
+/// accepted until it fits.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MemoryDocumentStatus {
+    /// When the memory was last modified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<jiff::Timestamp>,
+    /// The file's size in bytes, frontmatter included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// The `[memory]` limit of its kind, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
+}
+
+impl MemoryDocumentStatus {
+    /// Whether the document was over its limit.
+    #[must_use]
+    pub fn over_limit(&self) -> bool {
+        matches!((self.size, self.max_size), (Some(size), Some(max)) if size > max)
+    }
 }
 
 /// The session's project and what the snapshot holds of its memories.
@@ -94,6 +126,8 @@ pub struct MemorySnapshotCategory {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
     pub body: String,
+    #[serde(flatten)]
+    pub status: MemoryDocumentStatus,
 }
 
 /// The run's agent and its memory file.
@@ -120,6 +154,8 @@ pub struct MemorySnapshotMemory {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
     pub body: String,
+    #[serde(flatten)]
+    pub status: MemoryDocumentStatus,
 }
 
 /// One machine of the session and the index of its memories.
@@ -148,6 +184,8 @@ pub struct MemorySnapshotIndexEntry {
     pub description: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    #[serde(flatten)]
+    pub status: MemoryDocumentStatus,
 }
 
 impl MemorySnapshot {
@@ -178,7 +216,12 @@ impl MemorySnapshot {
             || !self.machines.is_empty()
             || self.project.is_some();
         match &self.agent {
-            None if holds_more || self.delegated || self.writable || self.rules.is_some() => {
+            None if holds_more
+                || self.delegated
+                || self.writable
+                || self.rules.is_some()
+                || self.taken_at.is_some() =>
+            {
                 return invalid;
             }
             None => {}
@@ -326,6 +369,22 @@ pub struct MemoryInfo {
     /// An `agent://` file whose agent the agent registry no longer has.
     #[serde(default, skip_serializing_if = "is_false")]
     pub orphaned: bool,
+    /// When the memory was created: its stamp, or the file's modification
+    /// time before it has one (client protocol 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<jiff::Timestamp>,
+    /// When the memory was last modified, likewise (client protocol
+    /// 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<jiff::Timestamp>,
+    /// When a model last read the memory, if the daemon knows (client
+    /// protocol 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read: Option<jiff::Timestamp>,
+    /// The `[memory]` limit of its kind, in bytes; a `size` above it is
+    /// over its limit (client protocol 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
 }
 
 /// Something in the memory folder that is not a memory file of its layout.
@@ -353,6 +412,18 @@ pub struct MemoryReadResult {
     /// Why the file is not a valid memory, when it is not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalid: Option<String>,
+    /// When the memory was created and last modified, as in
+    /// [`MemoryInfo`] (client protocol 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<jiff::Timestamp>,
+    /// The file's size and the `[memory]` limit of its kind, in bytes
+    /// (client protocol 1.14.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
 }
 
 /// Create or replace one memory from its whole text, frontmatter included.
@@ -390,6 +461,35 @@ pub struct MemoryDeleteParams {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct MemoryDeleteResult {}
+
+crate::open_enum! {
+    /// What a model did to a memory (`docs/site/specs/memory.md` section
+    /// 16.9.10).
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum MemoryChangeKind {
+        /// `memory_write` created or replaced it.
+        Saved,
+        /// `memory_edit` changed it.
+        Edited,
+        /// `memory_delete` deleted it.
+        Deleted,
+    }
+}
+
+impl MemoryChangeKind {
+    /// The verb a transcript line starts with: `Saved`, `Edited`, or
+    /// `Deleted`; `Changed` for a kind this build does not know.
+    #[must_use]
+    pub const fn verb(self) -> &'static str {
+        match self {
+            Self::Saved => "Saved",
+            Self::Edited => "Edited",
+            Self::Deleted => "Deleted",
+            Self::Unknown => "Changed",
+        }
+    }
+}
 
 /// A memory file was created, changed, or deleted through this daemon;
 /// refetch `memory.list`.

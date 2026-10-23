@@ -608,7 +608,7 @@ error_codes! {
         ],
         message: "The text is not a valid memory: {reason}.",
         hint: Some("A memory starts with frontmatter that holds a one-line description and optional keywords, then its Markdown body."),
-        description: "`memory.write` text that does not parse, breaks a rule of the file format, or is longer than `[memory] max_file_bytes`; nothing changed.",
+        description: "`memory.write` text that does not parse, breaks a rule of the file format, or is larger than any memory may be (57344 bytes); nothing changed.",
     }
     MEMORY_REFUSED {
         code: "memory_refused",
@@ -619,7 +619,7 @@ error_codes! {
         ],
         message: "The memory change was refused: {reason}.",
         hint: None,
-        description: "A `memory.*` change the memory rules do not allow, such as creating an `agent://` memory for an agent the agent registry does not have.",
+        description: "A `memory.*` change the memory rules do not allow, such as creating an `agent://` memory for an agent the agent registry does not have, or a write that would leave a memory over its `[memory]` limit.",
     }
     MEMORY_BUSY {
         code: "memory_busy",

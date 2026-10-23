@@ -185,6 +185,7 @@ fn taken(agent: &str, writable: bool, delegated: bool, machines: &[&str]) -> Mem
             })
             .collect(),
         rules: Some(rules()),
+        taken_at: Some("2026-10-22T12:00:00Z".parse().unwrap()),
         ..MemorySnapshot::default()
     }
 }
@@ -272,6 +273,16 @@ fn each_refresh_trigger_takes_a_new_snapshot() {
         snapshot_change(Some((&earlier, false)), &same),
         SnapshotChange::Take
     );
+    // A snapshot that records no time, which an earlier daemon took, could
+    // show no ages or fullness (section 16.9.7).
+    let untimed = MemorySnapshot {
+        taken_at: None,
+        ..latest.clone()
+    };
+    assert_eq!(
+        snapshot_change(Some((&untimed, false)), &same),
+        SnapshotChange::Take
+    );
     // Memory became unavailable: an empty snapshot.
     assert_eq!(
         snapshot_change(
@@ -314,9 +325,10 @@ fn an_empty_agent_memory_keeps_the_snapshot_until_a_refresh() {
         description: "Memory of the `reviewer` agent".into(),
         keywords: vec!["reviewer".into(), "subagent".into()],
         body: String::new(),
+        status: cookie_agent_protocol::MemoryDocumentStatus::default(),
     });
     assert_eq!(
-        crate::memory::render::agent_section(empty.agent.as_ref().unwrap()),
+        crate::memory::render::agent_section(empty.agent.as_ref().unwrap(), None),
         None
     );
     let same = facts(BOTH, "reviewer", false, &["labpc"]);
@@ -373,6 +385,7 @@ fn search_results_follow_the_memory_rule_for_their_url() {
                 PermissionEffect::Allow,
             )],
         },
+        related: super::RelatedMemory::default(),
     };
     let visibility = |url: &str| caller.visibility(&MemoryUrl::parse(url).unwrap());
     assert_eq!(visibility("project://web/build"), Visibility::Full);

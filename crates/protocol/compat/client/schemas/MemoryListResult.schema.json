@@ -21,6 +21,14 @@
     "MemoryInfo": {
       "description": "One memory file.",
       "properties": {
+        "created": {
+          "description": "When the memory was created: its stamp, or the file's modification\ntime before it has one (client protocol 1.14.0).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "description": {
           "description": "The memory's description; absent for an invalid file.",
           "type": [
@@ -48,8 +56,33 @@
           },
           "type": "array"
         },
+        "last_read": {
+          "description": "When a model last read the memory, if the daemon knows (client\nprotocol 1.14.0).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "layer": {
           "$ref": "#/$defs/MemoryLayer"
+        },
+        "max_size": {
+          "description": "The `[memory]` limit of its kind, in bytes; a `size` above it is\nover its limit (client protocol 1.14.0).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modified": {
+          "description": "When the memory was last modified, likewise (client protocol\n1.14.0).",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "orphaned": {
           "description": "An `agent://` file whose agent the agent registry no longer has.",

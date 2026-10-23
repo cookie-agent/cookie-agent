@@ -33,15 +33,36 @@ impl Engine {
             .collect();
         let context = SessionToolContext::for_prompt_composition(session, delegate_targets);
         let providers = self.session_tool_sources(session)?;
+        // The memory provider decides from the run's frozen policy, with the
+        // visibility test the tool list uses (memory spec section 16.9.1).
+        let memory_access = super::memory_runs::memory_access(
+            true,
+            &policy.agent,
+            Some(&projection.permission_overlay),
+        );
+        let delegated = matches!(
+            projection.meta.origin,
+            cookie_agent_protocol::SessionOrigin::Delegated { .. }
+        );
         let mut rendered = Vec::new();
         let mut total_body_bytes = 0usize;
 
         for crate::runtimes::SourcedProvider { provider, .. } in providers {
             let provider_id = provider.provider_id();
             validate_provider_id(provider_id)?;
-            let sections = provider.prompt_sections(&context).map_err(|error| {
-                EngineError::ToolPrompt(format!("provider `{provider_id}`: {error}"))
-            })?;
+            let sections = if provider_id == crate::memory_tools::PROVIDER_ID {
+                crate::memory_tools::prompt_section(memory_access, delegated)
+                    .map(|body| PromptSection {
+                        title: "Memory".to_owned(),
+                        body,
+                    })
+                    .into_iter()
+                    .collect()
+            } else {
+                provider.prompt_sections(&context).map_err(|error| {
+                    EngineError::ToolPrompt(format!("provider `{provider_id}`: {error}"))
+                })?
+            };
             let mut provider_body_bytes = 0usize;
             for section in sections {
                 let section = normalize_section(provider_id, section)?;

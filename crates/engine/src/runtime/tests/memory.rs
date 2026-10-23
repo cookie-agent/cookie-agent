@@ -2,10 +2,7 @@
 //! the snapshot each run admission records, its place in history, and the
 //! memory tools.
 
-use std::{
-    collections::HashMap,
-    time::{Duration, SystemTime},
-};
+use std::{collections::HashMap, time::Duration};
 
 use cookie_agent_protocol::{
     ClientRunId, EventOrigin, EventPayload, MemorySnapshot, PermissionAction, PermissionEffect,
@@ -14,11 +11,7 @@ use cookie_agent_protocol::{
 };
 
 use super::{producers::request_tool_names, support::*};
-use crate::memory::{
-    file::{MemoryDocument, MemoryRevision},
-    store::Origin,
-    url::MemoryUrl,
-};
+use crate::memory::{file::MemoryDocument, limits::MemoryLimits, store::WriteMode, url::MemoryUrl};
 
 const LIMIT: usize = 4096;
 
@@ -140,36 +133,30 @@ fn url(value: &str) -> MemoryUrl {
 /// Replaces a memory's text as the user would, from a client.
 fn user_write(fixture: &Fixture, target: &str, description: &str, body: &str) {
     let root = fixture.engine.memory_root();
-    let current = root
-        .read(&url(target), LIMIT)
-        .ok()
-        .map(|read| read.entry.revision);
+    let current = root.read(&url(target)).ok().map(|read| read.entry.revision);
     root.write(
         &url(target),
         &MemoryDocument::new(description, vec!["zebra".into()], body)
             .unwrap()
             .render(),
-        current.as_ref(),
-        Origin::User,
+        WriteMode::Client(current.as_ref()),
         |_: &cookie_agent_protocol::AgentId| crate::memory::agents::AgentMemory::Registered,
-        LIMIT,
+        &MemoryLimits::all(LIMIT),
+        jiff::Timestamp::now(),
     )
     .map(|written| written.revision)
     .unwrap();
 }
 
-fn revision_of(description: &str, keywords: &[&str], body: &str) -> String {
-    let text = MemoryDocument::new(
-        description,
-        keywords
-            .iter()
-            .map(|keyword| (*keyword).to_owned())
-            .collect(),
-        body,
-    )
-    .unwrap()
-    .render();
-    MemoryRevision::of(text.as_bytes()).to_string()
+/// The memory changes each transcript line of `session` names, in order.
+fn memory_changes(fixture: &Fixture, session: SessionId) -> Vec<String> {
+    events(fixture, session)
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::MemoryChanged { change, url } => Some(format!("{} {url}", change.verb())),
+            _ => None,
+        })
+        .collect()
 }
 
 fn rule(action: PermissionAction, effect: PermissionEffect) -> PermissionRule {
@@ -356,8 +343,10 @@ async fn the_snapshot_follows_memory_access_and_write_access() {
     fixture.engine.shutdown().await;
 }
 
+/// Gaining write access takes a new snapshot and brings part B, the
+/// rubric, into the memory section (section 16.9.1).
 #[tokio::test]
-async fn losing_write_access_takes_a_snapshot_without_the_save_paragraph() {
+async fn gaining_write_access_takes_a_snapshot_and_adds_the_rubric() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
@@ -392,8 +381,12 @@ async fn losing_write_access_takes_a_snapshot_without_the_save_paragraph() {
         memory_tool_names(&requests[0]),
         ["memory_read", "memory_search"]
     );
-    assert!(!requests[0].contains("Save what a later session should know"));
-    assert!(requests[1].contains("Save what a later session should know"));
+    for request in &requests {
+        assert!(request.contains("tool_instructions provider=\\\"builtin.memory\\\""));
+        assert!(request.contains("Memory related to this session is included automatically"));
+    }
+    assert!(!requests[0].contains("You manage your own memory."));
+    assert!(requests[1].contains("You manage your own memory."));
     fixture.engine.shutdown().await;
 }
 
@@ -499,8 +492,7 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
     let (fixture, selection) =
         custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     create_project(&fixture, "web").await;
-    let created = revision_of("Build conventions", &["cargo"], "- run cargo test\n");
-    let edited = revision_of("Build conventions", &["cargo"], "- run cargo nextest\n");
+    user_write(&fixture, "user://feedback", "Feedback", "- unseen\n");
     let calls = [
         (
             "start-memory-tools",
@@ -518,19 +510,25 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
             "read-1",
             "edit-1",
             "memory_edit",
-            serde_json::json!({"url": "project://web/build", "old": "cargo test", "new": "cargo nextest", "revision": created}),
+            serde_json::json!({"url": "project://web/build", "old": "cargo test", "new": "cargo nextest"}),
         ),
         (
             "edit-1",
             "search-1",
             "memory_search",
-            serde_json::json!({"query": "nextest"}),
+            serde_json::json!({"query": "build"}),
         ),
         (
             "search-1",
+            "replace-1",
+            "memory_write",
+            serde_json::json!({"url": "project://web/build", "description": "Build conventions", "keywords": ["cargo"], "body": "- run cargo nextest --no-fail-fast\n"}),
+        ),
+        (
+            "replace-1",
             "delete-1",
             "memory_delete",
-            serde_json::json!({"url": "project://web/build", "revision": edited}),
+            serde_json::json!({"url": "project://web/build"}),
         ),
         (
             "delete-1",
@@ -542,7 +540,7 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
             "create-user",
             "delete-user",
             "memory_delete",
-            serde_json::json!({"url": "user://profile", "revision": "0123456789abcdef"}),
+            serde_json::json!({"url": "user://profile"}),
         ),
         (
             "delete-user",
@@ -552,9 +550,9 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         ),
         (
             "create-ghost",
-            "stale",
+            "unseen",
             "memory_write",
-            serde_json::json!({"url": "project://web/build", "description": "Gone", "keywords": [], "body": "", "revision": edited}),
+            serde_json::json!({"url": "user://feedback", "description": "Feedback", "body": "- replaced\n"}),
         ),
     ];
     for (matcher, id, name, arguments) in calls {
@@ -567,15 +565,27 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
     }
     responses
         .send(MatchedScriptedResponse::last_message_contains(
-            "stale",
+            "\"unseen\"",
             scripted_text_body("done"),
         ))
         .unwrap();
+    // A rule that hides the user's memories from the snapshot, so the
+    // session has not seen `user://feedback`.
     let session = fixture
         .engine
         .create_session(selection.clone())
         .unwrap()
         .session_id;
+    set_overlay(
+        &fixture,
+        session,
+        vec![PermissionRule::new(
+            PermissionAction::MEMORY,
+            WildcardPattern::new("user://feedback").unwrap(),
+            PermissionEffect::Ask,
+        )],
+    )
+    .await;
     run(&fixture, session, &selection, "go", "start-memory-tools").await;
     let requests = captured.await.unwrap();
     let ended = terminations(&fixture, session);
@@ -597,268 +607,69 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         );
         termination.error.as_ref().unwrap().message.to_string()
     };
-    assert_eq!(
-        output("write-1"),
-        format!("Created project://web/build; its revision is now {created}.")
-    );
+    assert_eq!(output("write-1"), "Created project://web/build.");
     let read = output("read-1");
+    // No URL and no revision; the session is in no project, so the memory
+    // is unrelated.
     assert!(
-        read.starts_with(&format!("url: project://web/build\nrevision: {created}\n")),
+        read.starts_with("related: no\neditable: yes\ncreated: "),
         "{read}"
     );
-    assert!(read.ends_with("- run cargo test\n"), "{read}");
-    assert_eq!(
-        output("edit-1"),
-        format!("Edited project://web/build; its revision is now {edited}.")
-    );
+    assert!(read.contains("\nmax size: 2048 bytes\ndescription: Build conventions\nkeywords: cargo\n\n- run cargo test\n"), "{read}");
+    assert!(!read.contains("revision"), "{read}");
+    assert_eq!(output("edit-1"), "Edited project://web/build.");
     assert_eq!(
         output("search-1"),
-        "project://web/build: Build conventions [keywords: cargo]\n  | - run cargo nextest"
+        "project://web/build — Build conventions\n  unrelated · editable · less than a minute old\n  keywords: cargo"
     );
+    // A write of its own counts as seeing the memory.
+    assert_eq!(output("replace-1"), "Replaced project://web/build.");
     assert_eq!(output("delete-1"), "Deleted project://web/build.");
     assert!(
         fixture
             .engine
             .memory_root()
-            .read(&url("project://web/build"), LIMIT)
+            .read(&url("project://web/build"))
             .is_err()
     );
-    assert!(failure("create-user").contains("only the user adds user categories"));
-    // A user category's delete clears its body, at the revision it read.
-    assert!(failure("delete-user").contains("user://profile changed since it was read"));
+    // The rules alone decide: a model adds and deletes user categories.
+    assert_eq!(output("create-user"), "Created user://hobbies.");
+    assert_eq!(output("delete-user"), "Deleted user://profile.");
+    assert!(
+        fixture
+            .engine
+            .memory_root()
+            .read(&url("user://profile"))
+            .is_err()
+    );
     assert!(failure("create-ghost").contains("names no agent"));
-    assert!(failure("stale").contains("does not exist"));
+    let unseen = failure("unseen");
+    assert!(
+        unseen.contains("this memory changed since you saw it, or you have not read it"),
+        "{unseen}"
+    );
+    assert!(unseen.contains("- unseen"), "{unseen}");
+    // Every change is one transcript line.
+    assert_eq!(
+        memory_changes(&fixture, session),
+        [
+            "Saved project://web/build",
+            "Edited project://web/build",
+            "Saved project://web/build",
+            "Deleted project://web/build",
+            "Saved user://hobbies",
+            "Deleted user://profile",
+        ]
+    );
     // Results reach the model.
-    assert!(requests[2].contains(&created));
+    assert!(requests[2].contains("max size: 2048 bytes"));
     fixture.engine.shutdown().await;
 }
 
-/// `user://` and `agent://` memories cannot be deleted by a model: a
-/// delete clears the body, keeps the file and its frontmatter as written,
-/// and says so; `machine://` and `project://` deletes remove the file.
+/// A delete is a `memory_write` like any other: a rule that denies the URL
+/// refuses it and the file stays as it was.
 #[tokio::test]
-async fn deleting_user_and_agent_memories_clears_their_bodies() {
-    let (endpoint, responses, captured) = scripted_channel_server(8).await;
-    let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
-    let root = fixture.engine.memory_root().clone();
-    let feedback_frontmatter = "---\n# kept as written\ndescription: \"Feedback: corrections\"\nkeywords:\n  - feedback\n---\n";
-    // The daemon made the agent's file at start, with an empty body.
-    let agent_frontmatter = root.read(&url("agent://primary"), LIMIT).unwrap().text;
-    assert_eq!(
-        agent_frontmatter,
-        "---\ndescription: \"Memory of the `primary` agent: Memory test agent\"\nkeywords: [primary]\n---\n"
-    );
-    let agent_frontmatter = agent_frontmatter.as_str();
-    let mut revisions = HashMap::new();
-    for (target, text) in [
-        (
-            "user://feedback",
-            format!("{feedback_frontmatter}- prefer short answers\n"),
-        ),
-        (
-            "agent://primary",
-            format!("{agent_frontmatter}- check twice\n"),
-        ),
-        (
-            "machine://labpc/gpu",
-            "---\ndescription: GPU notes\n---\n- two cards\n".to_owned(),
-        ),
-        (
-            "project://web/build",
-            "---\ndescription: Build notes\n---\n- cargo\n".to_owned(),
-        ),
-    ] {
-        let current = root
-            .read(&url(target), LIMIT)
-            .ok()
-            .map(|read| read.entry.revision);
-        let revision = root
-            .write(
-                &url(target),
-                &text,
-                current.as_ref(),
-                Origin::User,
-                |_: &cookie_agent_protocol::AgentId| crate::memory::agents::AgentMemory::Registered,
-                LIMIT,
-            )
-            .map(|written| written.revision)
-            .unwrap();
-        revisions.insert(target, revision.to_string());
-    }
-    let feedback_cleared = MemoryRevision::of(feedback_frontmatter.as_bytes()).to_string();
-    let agent_cleared = MemoryRevision::of(agent_frontmatter.as_bytes()).to_string();
-    let calls = [
-        (
-            "start-clearing",
-            "clear-user",
-            serde_json::json!({"url": "user://feedback", "revision": revisions["user://feedback"]}),
-        ),
-        (
-            "clear-user",
-            "clear-agent",
-            serde_json::json!({"url": "agent://primary", "revision": revisions["agent://primary"]}),
-        ),
-        (
-            "clear-agent",
-            "again-user",
-            serde_json::json!({"url": "user://feedback", "revision": feedback_cleared}),
-        ),
-        (
-            "again-user",
-            "stale-user",
-            serde_json::json!({"url": "user://feedback", "revision": revisions["user://feedback"]}),
-        ),
-        (
-            "stale-user",
-            "delete-machine",
-            serde_json::json!({"url": "machine://labpc/gpu", "revision": revisions["machine://labpc/gpu"]}),
-        ),
-        (
-            "delete-machine",
-            "delete-project",
-            serde_json::json!({"url": "project://web/build", "revision": revisions["project://web/build"]}),
-        ),
-    ];
-    for (matcher, id, arguments) in calls {
-        responses
-            .send(MatchedScriptedResponse::last_message_contains(
-                matcher,
-                scripted_tool_body(id, "memory_delete", arguments),
-            ))
-            .unwrap();
-    }
-    for matcher in ["delete-project", "fresh"] {
-        responses
-            .send(MatchedScriptedResponse::last_message_contains(
-                matcher,
-                scripted_text_body("done"),
-            ))
-            .unwrap();
-    }
-    let mut changes = fixture.engine.subscribe_memory_changes();
-    changes.mark_unchanged();
-    let session = fixture
-        .engine
-        .create_session(selection.clone())
-        .unwrap()
-        .session_id;
-    run(&fixture, session, &selection, "go", "start-clearing").await;
-    let ended = terminations(&fixture, session);
-    let output = |id: &str| {
-        let termination = &ended[id];
-        assert_eq!(
-            termination.outcome,
-            ToolTerminationOutcome::Completed,
-            "{termination:?}"
-        );
-        termination.result.as_ref().unwrap().output.clone()
-    };
-    assert_eq!(
-        output("clear-user"),
-        format!(
-            "user://feedback cannot be deleted, so its content was cleared; its description and keywords stay. New revision: {feedback_cleared}."
-        )
-    );
-    assert_eq!(
-        output("clear-agent"),
-        format!(
-            "agent://primary cannot be deleted, so its content was cleared; its description and keywords stay. New revision: {agent_cleared}."
-        )
-    );
-    assert_eq!(
-        output("again-user"),
-        format!(
-            "user://feedback cannot be deleted, and its content is already empty, so nothing changed. Its revision is still {feedback_cleared}."
-        )
-    );
-    let stale = &ended["stale-user"];
-    assert_eq!(stale.outcome, ToolTerminationOutcome::Failed);
-    assert_eq!(
-        stale.error.as_ref().unwrap().message.to_string(),
-        format!(
-            "user://feedback changed since it was read; its current revision is {feedback_cleared}"
-        )
-    );
-    assert_eq!(output("delete-machine"), "Deleted machine://labpc/gpu.");
-    assert_eq!(output("delete-project"), "Deleted project://web/build.");
-    assert!(changes.has_changed().unwrap());
-
-    // The files: user and agent ones stay with their frontmatter byte for
-    // byte; the machine and project ones are gone.
-    let path = |target: &str| root.path().join(url(target).relative_path());
-    assert_eq!(
-        std::fs::read_to_string(path("user://feedback")).unwrap(),
-        feedback_frontmatter
-    );
-    assert_eq!(
-        std::fs::read_to_string(path("agent://primary")).unwrap(),
-        agent_frontmatter
-    );
-    assert!(!path("machine://labpc/gpu").exists());
-    assert!(!path("project://web/build").exists());
-
-    // Listings show the cleared memories with their descriptions.
-    let listed = fixture
-        .engine
-        .list_memory(cookie_agent_protocol::MemoryListParams::default())
-        .await
-        .unwrap();
-    let info = |target: &str| {
-        listed
-            .memories
-            .iter()
-            .find(|memory| memory.url == target)
-            .unwrap_or_else(|| panic!("{target} is listed"))
-            .clone()
-    };
-    let feedback = info("user://feedback");
-    assert_eq!(
-        feedback.description.as_deref(),
-        Some("Feedback: corrections")
-    );
-    assert_eq!(feedback.keywords, ["feedback"]);
-    assert_eq!(feedback.revision, feedback_cleared);
-    assert_eq!(feedback.invalid, None);
-    let agent_file = info("agent://primary");
-    assert_eq!(
-        agent_file.description.as_deref(),
-        Some("Memory of the `primary` agent: Memory test agent")
-    );
-    assert_eq!(agent_file.revision, agent_cleared);
-
-    // A new session's snapshot shows them too.
-    let fresh = fixture
-        .engine
-        .create_session(selection.clone())
-        .unwrap()
-        .session_id;
-    run(&fixture, fresh, &selection, "fresh", "fresh").await;
-    let requests = captured.await.unwrap();
-    // The results reach the model.
-    assert!(requests[1].contains(&feedback_cleared));
-    let taken = snapshots(&fixture, fresh);
-    let snapshot = taken.last().unwrap();
-    let category = snapshot
-        .user
-        .iter()
-        .find(|category| category.category == "feedback")
-        .unwrap();
-    assert_eq!(category.description, "Feedback: corrections");
-    assert_eq!(category.body, "");
-    let own = snapshot.agent.as_ref().unwrap().memory.as_ref().unwrap();
-    assert_eq!(
-        own.description,
-        "Memory of the `primary` agent: Memory test agent"
-    );
-    assert_eq!(own.body, "");
-    fixture.engine.shutdown().await;
-}
-
-/// Clearing is a `memory_write` like any other: a rule that denies the
-/// URL refuses it and the file stays as it was.
-#[tokio::test]
-async fn clearing_a_body_follows_the_memory_write_rules() {
+async fn a_delete_follows_the_memory_write_rules() {
     let (endpoint, responses, _captured) = scripted_channel_server(2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
@@ -871,14 +682,13 @@ async fn clearing_a_body_follows_the_memory_write_rules() {
         .path()
         .join(url("user://feedback").relative_path());
     let before = std::fs::read(&path).unwrap();
-    let revision = MemoryRevision::of(&before).to_string();
     responses
         .send(MatchedScriptedResponse::last_message_contains(
             "start-denied",
             scripted_tool_body(
                 "denied",
                 "memory_delete",
-                serde_json::json!({"url": "user://feedback", "revision": revision}),
+                serde_json::json!({"url": "user://feedback"}),
             ),
         ))
         .unwrap();
@@ -908,6 +718,7 @@ async fn clearing_a_body_follows_the_memory_write_rules() {
         "{denied:?}"
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(memory_changes(&fixture, session).is_empty());
     fixture.engine.shutdown().await;
 }
 
@@ -928,15 +739,18 @@ async fn search_results_follow_the_memory_rules_and_the_limit_counts_what_is_sho
     .into_iter()
     .enumerate()
     {
-        user_write(&fixture, target, "About zebras", "zebra line\n");
         // Newest first: the denied machine memory, then the user one.
+        let modified = jiff::Timestamp::now() - Duration::from_secs(100 * index as u64);
         let path = root.join(url(target).relative_path());
-        std::fs::File::options()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(100 * index as u64))
-            .unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            MemoryDocument::new("About zebras", vec!["zebra".into()], "zebra line\n")
+                .unwrap()
+                .with_stamps(Some(modified), Some(modified))
+                .render(),
+        )
+        .unwrap();
     }
     responses
         .send(MatchedScriptedResponse::last_message_contains(
@@ -966,7 +780,7 @@ async fn search_results_follow_the_memory_rules_and_the_limit_counts_what_is_sho
     assert_eq!(search.outcome, ToolTerminationOutcome::Completed);
     assert_eq!(
         search.result.as_ref().unwrap().output,
-        "user://profile: About zebras\n  (reading it needs approval)\n\nproject://web/zebra: About zebras [keywords: zebra]\n  | zebra line"
+        "user://profile — About zebras\n  related · read-only · 1 minute old\n  (reading it needs approval)\n\nproject://web/zebra — About zebras\n  unrelated · read-only · 3 minutes old\n  keywords: zebra"
     );
     // No approval was asked for the search.
     assert!(
@@ -989,15 +803,8 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
         .unwrap()
         .session_id;
     let child = create_buffered_delegated_child(&fixture.engine, parent);
-    // The daemon made the agent's file; replacing it needs its revision.
-    let own_revision = fixture
-        .engine
-        .memory_root()
-        .read(&url("agent://primary"), LIMIT)
-        .unwrap()
-        .entry
-        .revision
-        .to_string();
+    // The daemon made the agent's file; the snapshot shows it, so the
+    // session has seen it and may replace it.
     // A delegation gives the child its parent's attachments.
     for runtime in ["global", "local"] {
         fixture
@@ -1020,7 +827,7 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
             scripted_tool_body(
                 "own",
                 "memory_write",
-                serde_json::json!({"url": "agent://primary", "description": "Lessons", "keywords": ["checks"], "body": "- check twice\n", "revision": own_revision}),
+                serde_json::json!({"url": "agent://primary", "description": "Lessons", "keywords": ["checks"], "body": "- check twice\n"}),
             ),
         ),
         ("\"own\"", scripted_text_body("done")),
@@ -1067,18 +874,18 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
     let read = fixture
         .engine
         .memory_root()
-        .read(&url("agent://primary"), LIMIT)
+        .read(&url("agent://primary"))
         .unwrap();
-    let revision = read.entry.revision.to_string();
+    let document = read.entry.document.unwrap();
     assert_eq!(
-        read.text,
-        "---\ndescription: \"Memory of the `primary` agent: Memory test agent\"\nkeywords: [primary, checks]\n---\n- check twice\n"
+        document.description(),
+        "Memory of the `primary` agent: Memory test agent"
     );
+    assert_eq!(document.keywords(), ["primary", "checks"]);
+    assert_eq!(document.body(), "- check twice\n");
     assert_eq!(
         own.result.as_ref().unwrap().output,
-        format!(
-            "Replaced agent://primary; its revision is now {revision}. The description of agent://primary is the daemon's and cannot be changed, so it stays \"Memory of the `primary` agent: Memory test agent\". Its keywords always include `primary`, so they were added back; other keywords are kept."
-        )
+        "Replaced agent://primary. The description of agent://primary is the daemon's and cannot be changed, so it stays \"Memory of the `primary` agent: Memory test agent\". Its keywords always include `primary`, so they were added back; other keywords are kept."
     );
     fixture.engine.shutdown().await;
 }
@@ -1086,8 +893,10 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
 #[tokio::test]
 async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    // Without write access the memory section stays short, so this small
+    // history still has something to compact.
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{ memory: allow }"));
     let session = fixture
         .engine
         .create_session(selection.clone())

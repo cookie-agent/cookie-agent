@@ -6,10 +6,15 @@ use std::{
 
 use cookie_agent_protocol::{AgentId, AttachmentName, MachineName};
 
-use super::{ReadRules, SnapshotLimits, SnapshotRequest};
-use crate::memory::{MemoryRoot, render};
+use super::{ReadRules, SnapshotRequest};
+use crate::memory::{MemoryRoot, limits::MemoryLimits, render};
 
 const MAX_FILE: usize = 4096;
+
+/// When the tests' snapshots are taken.
+fn now() -> jiff::Timestamp {
+    "2026-10-22T12:00:00Z".parse().unwrap()
+}
 
 /// Writes `text` at `path` in the memory folder, `age_seconds` old.
 fn put(root: &Path, path: &str, text: &str, age_seconds: u64) {
@@ -33,11 +38,7 @@ fn root() -> (tempfile::TempDir, MemoryRoot) {
     (data, memory)
 }
 
-fn request(
-    delegated: bool,
-    machines: &[(&str, &[&str])],
-    limits: SnapshotLimits,
-) -> SnapshotRequest {
+fn request(delegated: bool, machines: &[(&str, &[&str])], limits: MemoryLimits) -> SnapshotRequest {
     SnapshotRequest {
         project: None,
         agent: AgentId::new("reviewer").unwrap(),
@@ -56,16 +57,17 @@ fn request(
             })
             .collect(),
         limits,
+        now: now(),
         read: ReadRules::all(),
         rules: None,
     }
 }
 
-fn limits(user_bytes: usize, index_bytes: usize) -> SnapshotLimits {
-    SnapshotLimits {
-        max_file_bytes: MAX_FILE,
-        user_bytes,
-        index_bytes,
+fn limits(user_bytes: usize, index_bytes: usize) -> MemoryLimits {
+    MemoryLimits {
+        snapshot_user_bytes: user_bytes,
+        snapshot_index_bytes: index_bytes,
+        ..MemoryLimits::all(MAX_FILE)
     }
 }
 
@@ -98,7 +100,7 @@ fn a_root_snapshot_holds_user_agent_and_machines() {
     put(data.path(), "projects/web/build.md", &file("Build", ""), 0);
 
     let snapshot = memory
-        .snapshot(&request(
+        .snapshot_only(&request(
             false,
             &[("laptop", &["local_web"]), ("labpc", &["labpc_api"])],
             limits(12_288, 4096),
@@ -157,7 +159,7 @@ fn a_delegated_snapshot_holds_only_its_agent() {
     );
     put(data.path(), "machines/labpc/x.md", &file("X", ""), 0);
     let snapshot = memory
-        .snapshot(&request(true, &[("labpc", &[])], limits(12_288, 4096)))
+        .snapshot_only(&request(true, &[("labpc", &[])], limits(12_288, 4096)))
         .unwrap();
     assert!(snapshot.delegated);
     assert!(snapshot.user.is_empty() && snapshot.user_omitted.is_empty());
@@ -176,7 +178,7 @@ fn user_categories_that_do_not_fit_are_named_from_the_first_that_does_not() {
     put(data.path(), "user/c.md", &file("C", "c"), 0);
     let sized = |fitting: usize, omitted: &[&str]| {
         let snapshot = memory
-            .snapshot(&request(false, &[], limits(MAX_FILE, 4096)))
+            .snapshot_only(&request(false, &[], limits(MAX_FILE, 4096)))
             .unwrap();
         let mut user = snapshot.user;
         user.truncate(fitting);
@@ -187,6 +189,7 @@ fn user_categories_that_do_not_fit_are_named_from_the_first_that_does_not() {
                 .map(|name| (*name).to_owned())
                 .collect::<Vec<_>>(),
             &[],
+            Some(now()),
         )
         .len()
     };
@@ -194,18 +197,18 @@ fn user_categories_that_do_not_fit_are_named_from_the_first_that_does_not() {
     // not fit, so `c`, which would, is omitted too.
     let only_a = sized(1, &["b", "c"]);
     let snapshot = memory
-        .snapshot(&request(false, &[], limits(only_a, 4096)))
+        .snapshot_only(&request(false, &[], limits(only_a, 4096)))
         .unwrap();
     assert_eq!(snapshot.user.len(), 1);
     assert_eq!(snapshot.user[0].category, "a");
     assert_eq!(snapshot.user_omitted, ["b", "c"]);
     assert_eq!(
-        render::user_section(&snapshot.user, &snapshot.user_omitted, &[]).len(),
+        render::user_section(&snapshot.user, &snapshot.user_omitted, &[], Some(now())).len(),
         only_a
     );
     // One byte less and nothing fits.
     let snapshot = memory
-        .snapshot(&request(false, &[], limits(only_a - 1, 4096)))
+        .snapshot_only(&request(false, &[], limits(only_a - 1, 4096)))
         .unwrap();
     assert!(snapshot.user.is_empty());
     assert_eq!(snapshot.user_omitted, ["a", "b", "c"]);
@@ -224,16 +227,16 @@ fn machine_memories_past_the_index_limit_are_counted() {
     );
     let machines: &[(&str, &[&str])] = &[("laptop", &[]), ("labpc", &[])];
     let full = memory
-        .snapshot(&request(false, machines, limits(12_288, 4096)))
+        .snapshot_only(&request(false, machines, limits(12_288, 4096)))
         .unwrap()
         .machines;
     // Room for the first machine's memory and the newest of the second.
     let mut fitted = full.clone();
     fitted[1].memories.truncate(1);
     fitted[1].omitted = 1;
-    let room = render::machines_section(&fitted).len();
+    let room = render::machines_section(&fitted, Some(now())).len();
     let snapshot = memory
-        .snapshot(&request(false, machines, limits(12_288, room)))
+        .snapshot_only(&request(false, machines, limits(12_288, room)))
         .unwrap();
     assert_eq!(snapshot.machines, fitted);
     assert_eq!(
@@ -241,42 +244,56 @@ fn machine_memories_past_the_index_limit_are_counted() {
         "machine://labpc/three"
     );
     let snapshot = memory
-        .snapshot(&request(false, machines, limits(12_288, room - 1)))
+        .snapshot_only(&request(false, machines, limits(12_288, room - 1)))
         .unwrap();
     assert_eq!(snapshot.machines[0].memories.len(), 1);
     assert!(snapshot.machines[1].memories.is_empty());
     assert_eq!(snapshot.machines[1].omitted, 2);
 }
 
+/// The agent's file shows whole while its escaped text fits the room the
+/// other snapshot limits leave, even over its own limit (section 16.9.7).
 #[test]
-fn an_agent_file_whose_escaped_text_exceeds_the_file_limit_is_omitted() {
+fn an_agent_file_shows_while_it_fits_the_room_the_other_limits_leave() {
     let (data, memory) = root();
     // 60 `<memory` tags: 420 bytes of body, 600 escaped.
     let body = "<memory".repeat(60);
     let text = file("Reviews", &body);
     put(data.path(), "agents/reviewer.md", &text, 0);
-    let limits_at = |max_file_bytes| SnapshotLimits {
-        max_file_bytes,
-        user_bytes: 4096,
-        index_bytes: 4096,
-    };
     let fits = render::agent_content_bytes("Reviews", &body);
     assert!(text.len() < fits);
+    let room = cookie_agent_config::MemoryConfig::MAX_LIMITS_SUM;
+    // Limits that leave `left` bytes of the event's room for the agent.
+    let limits_at = |agent_max_bytes, left| MemoryLimits {
+        agent_max_bytes,
+        ..limits(4096, room - 4096 - left)
+    };
+    // Over its 100-byte limit, it shows while it fits, with its fullness.
     let shown = memory
-        .snapshot(&request(true, &[], limits_at(fits)))
-        .unwrap()
-        .agent
+        .snapshot(&request(true, &[], limits_at(100, fits)))
         .unwrap();
-    assert!(shown.memory.is_some() && !shown.omitted);
+    let agent = shown.snapshot.agent.unwrap();
+    let status = &agent.memory.as_ref().unwrap().status;
+    assert!(status.over_limit() && !agent.omitted);
+    assert_eq!(status.max_size, Some(100));
+    assert_eq!(status.size, Some(text.len() as u64));
+    assert_eq!(
+        shown
+            .shown
+            .iter()
+            .map(|(url, _)| url.to_string())
+            .collect::<Vec<_>>(),
+        ["agent://reviewer"]
+    );
     let omitted = memory
-        .snapshot(&request(true, &[], limits_at(fits - 1)))
-        .unwrap()
-        .agent
+        .snapshot(&request(true, &[], limits_at(100, fits - 1)))
         .unwrap();
-    assert!(omitted.memory.is_none() && omitted.omitted);
+    let agent = omitted.snapshot.agent.unwrap();
+    assert!(agent.memory.is_none() && agent.omitted);
+    assert!(omitted.shown.is_empty());
 }
 
-fn in_project(project: &str, limits: SnapshotLimits) -> SnapshotRequest {
+fn in_project(project: &str, limits: MemoryLimits) -> SnapshotRequest {
     SnapshotRequest {
         project: Some(cookie_agent_protocol::ProjectName::new(project).unwrap()),
         ..request(false, &[("laptop", &[])], limits)
@@ -297,7 +314,7 @@ fn a_project_snapshot_holds_the_overview_whole_and_an_index_of_the_rest() {
     put(data.path(), "projects/web/broken.md", "no frontmatter", 0);
     put(data.path(), "projects/api/other.md", &file("Other", ""), 0);
     let snapshot = memory
-        .snapshot(&in_project("web", limits(12_288, 4096)))
+        .snapshot_only(&in_project("web", limits(12_288, 4096)))
         .unwrap();
     let project = snapshot.project.unwrap();
     assert_eq!(project.project.as_str(), "web");
@@ -325,7 +342,7 @@ fn a_project_snapshot_holds_the_overview_whole_and_an_index_of_the_rest() {
         50,
     );
     let snapshot = memory
-        .snapshot(&in_project("web", limits(12_288, 4096)))
+        .snapshot_only(&in_project("web", limits(12_288, 4096)))
         .unwrap();
     assert_eq!(snapshot.project.unwrap().overview, None);
     // A delegated run has no project.
@@ -333,7 +350,7 @@ fn a_project_snapshot_holds_the_overview_whole_and_an_index_of_the_rest() {
         delegated: true,
         ..in_project("web", limits(12_288, 4096))
     };
-    assert_eq!(memory.snapshot(&delegated).unwrap().project, None);
+    assert_eq!(memory.snapshot_only(&delegated).unwrap().project, None);
 }
 
 #[test]
@@ -355,17 +372,21 @@ fn the_overview_shares_the_user_limit_and_the_index_the_machines_limit() {
     put(data.path(), "projects/web/b.md", &file("B", ""), 10);
     put(data.path(), "machines/laptop/m.md", &file("M", ""), 0);
     let full = memory
-        .snapshot(&in_project("web", limits(12_288, 4096)))
+        .snapshot_only(&in_project("web", limits(12_288, 4096)))
         .unwrap();
     let project = full.project.clone().unwrap();
-    let overview_bytes =
-        render::project_overview(&project.project, project.overview.as_ref().unwrap()).len();
-    let user_bytes = render::user_section(&full.user, &[], &[]).len();
+    let overview_bytes = render::project_overview(
+        &project.project,
+        project.overview.as_ref().unwrap(),
+        Some(now()),
+    )
+    .len();
+    let user_bytes = render::user_section(&full.user, &[], &[], Some(now())).len();
 
     // The overview comes first: with room for it but not for the feedback
     // category as well, the category is named, not shown.
     let snapshot = memory
-        .snapshot(&in_project(
+        .snapshot_only(&in_project(
             "web",
             limits(overview_bytes + user_bytes - 1, 4096),
         ))
@@ -374,16 +395,16 @@ fn the_overview_shares_the_user_limit_and_the_index_the_machines_limit() {
     assert_eq!(snapshot.user_omitted, ["feedback"]);
     // An overview too long for the user limit is listed instead.
     let snapshot = memory
-        .snapshot(&in_project("web", limits(overview_bytes - 1, 4096)))
+        .snapshot_only(&in_project("web", limits(overview_bytes - 1, 4096)))
         .unwrap();
     let project = snapshot.project.unwrap();
     assert_eq!(project.overview, None);
     assert_eq!(project.memories[0].url, "project://web/overview");
 
     // The project's index comes before the machines'.
-    let index_bytes = render::project_index(full.project.as_ref().unwrap()).len();
+    let index_bytes = render::project_index(full.project.as_ref().unwrap(), Some(now())).len();
     let snapshot = memory
-        .snapshot(&in_project("web", limits(12_288, index_bytes)))
+        .snapshot_only(&in_project("web", limits(12_288, index_bytes)))
         .unwrap();
     assert_eq!(snapshot.project.unwrap().memories.len(), 2);
     assert!(snapshot.machines[0].memories.is_empty());
@@ -437,7 +458,7 @@ fn the_read_rules_show_list_or_leave_out_each_memory() {
         _ => Visibility::Full,
     });
     let snapshot = memory
-        .snapshot(&SnapshotRequest {
+        .snapshot_only(&SnapshotRequest {
             read: read.clone(),
             ..in_project("web", limits(12_288, 4096))
         })
@@ -515,7 +536,7 @@ fn the_read_rules_show_list_or_leave_out_each_memory() {
         }
     });
     let snapshot = memory
-        .snapshot(&SnapshotRequest {
+        .snapshot_only(&SnapshotRequest {
             read: asked,
             ..request(false, &[], limits(12_288, 4096))
         })
@@ -534,7 +555,7 @@ fn the_read_rules_show_list_or_leave_out_each_memory() {
 
     // A delegated run's agent file follows the same rules.
     let delegated = memory
-        .snapshot(&SnapshotRequest {
+        .snapshot_only(&SnapshotRequest {
             read,
             ..request(true, &[], limits(12_288, 4096))
         })

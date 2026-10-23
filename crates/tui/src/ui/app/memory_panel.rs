@@ -716,6 +716,10 @@ pub(in crate::ui) fn sample_memory() -> MemoryListResult {
         keywords: Vec::new(),
         invalid: description.is_none().then(|| "no frontmatter".to_owned()),
         orphaned: false,
+        created: None,
+        modified: None,
+        last_read: None,
+        max_size: None,
     };
     let mut ghost = memory(
         "agent://ghost",

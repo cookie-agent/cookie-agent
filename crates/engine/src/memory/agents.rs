@@ -130,33 +130,38 @@ impl AgentMemorySpec {
         keywords
     }
 
-    /// `document` with the daemon's description and keywords.
+    /// `document` with the daemon's description and keywords; its stamps
+    /// stay.
     pub(crate) fn apply(
         &self,
         agent: &AgentId,
         document: &MemoryDocument,
     ) -> Result<MemoryDocument, InvalidMemory> {
-        MemoryDocument::new(
+        Ok(MemoryDocument::new(
             self.description.clone(),
             self.keywords(agent, document.keywords()),
             document.body(),
-        )
+        )?
+        .with_stamps(document.created(), document.modified()))
     }
 
-    /// A new file's text: the daemon's frontmatter and an empty body.
+    /// A new file's text: the daemon's frontmatter, stamped now, and an
+    /// empty body.
     fn new_file(&self, agent: &AgentId) -> Result<String, InvalidMemory> {
+        let now = Some(jiff::Timestamp::now());
         MemoryDocument::new(self.description.clone(), self.daemon_keywords(agent), "")
-            .map(|document| document.render())
+            .map(|document| document.with_stamps(now, now).render())
     }
 }
 
-/// `text`, a valid memory file, with the frontmatter of `document` in place
-/// of its own; the body's bytes stay as they are.
+/// `text`, a valid memory file, with the frontmatter of `document`, its
+/// stamps included, in place of its own; the body's bytes stay as they are.
 pub(crate) fn with_frontmatter(text: &str, document: &MemoryDocument) -> Option<String> {
     let body = &text[MemoryDocument::frontmatter_len(text)?..];
     let mut replaced =
         MemoryDocument::new(document.description(), document.keywords().to_vec(), "")
             .ok()?
+            .with_stamps(document.created(), document.modified())
             .render();
     replaced.push_str(body);
     Some(replaced)
@@ -166,8 +171,8 @@ pub(crate) fn with_frontmatter(text: &str, document: &MemoryDocument) -> Option<
 /// an empty body: its description starts as the daemon's do and its
 /// keywords are only the daemon's two. Such a file was made by the daemon
 /// and never touched, so it goes when its agent does.
-fn untouched(agent: &AgentId, bytes: &[u8], max_file_bytes: usize) -> bool {
-    let Ok(document) = MemoryDocument::parse(bytes, max_file_bytes) else {
+fn untouched(agent: &AgentId, bytes: &[u8]) -> bool {
+    let Ok(document) = MemoryDocument::parse(bytes) else {
         return false;
     };
     let prefix = description_prefix(agent);
@@ -202,13 +207,13 @@ impl MemoryRoot {
     /// Brings the agent files in line with `desired`, the agents the
     /// daemon keeps a file for, which is asked for once the memory lock is
     /// held so that the latest registries win a race between two syncs.
-    /// A file that is invalid, or would grow past `max_file_bytes`, is left
+    /// A file that is invalid, or would grow past `agent_max_bytes`, is left
     /// as it is. Nothing happens while the memory folder does not exist:
     /// the next start's first start creates it.
     pub(crate) fn sync_agents(
         &self,
         desired: impl FnOnce() -> BTreeMap<AgentId, AgentMemorySpec>,
-        max_file_bytes: usize,
+        agent_max_bytes: usize,
     ) -> Result<AgentSync, MemoryError> {
         if !self.root.is_dir() {
             return Ok(AgentSync::default());
@@ -230,7 +235,7 @@ impl MemoryRoot {
             if !metadata.is_file() {
                 continue;
             }
-            let Ok(document) = MemoryDocument::parse(&bytes, max_file_bytes) else {
+            let Ok(document) = MemoryDocument::parse(&bytes) else {
                 continue;
             };
             let Ok(managed) = spec.apply(agent, &document) else {
@@ -247,7 +252,7 @@ impl MemoryRoot {
             else {
                 continue;
             };
-            if text.len() > max_file_bytes {
+            if text.len() > agent_max_bytes {
                 continue;
             }
             write_file(&path, text.as_bytes())?;
@@ -269,7 +274,7 @@ impl MemoryRoot {
             let Some((bytes, _)) = read_bytes(&path)? else {
                 continue;
             };
-            if untouched(&agent, &bytes, max_file_bytes) {
+            if untouched(&agent, &bytes) {
                 std::fs::remove_file(&path).map_err(super::store::io_error(&path))?;
                 sync.removed.push(agent);
             }

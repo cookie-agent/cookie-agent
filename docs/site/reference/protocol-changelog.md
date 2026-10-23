@@ -5,6 +5,31 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.14.0
+
+- Memory that stays worth keeping ([memory spec section 16.9](../specs/memory.md#169-addendum-2026-10-22-memory-that-stays-worth-keeping)):
+  - A new audit event, `memory_changed { change, url }`, records each
+    write, edit, or delete a model's memory tool makes; `change` is the open
+    enum `MemoryChangeKind` (`saved`, `edited`, `deleted`; an unknown value
+    reads as a change). A transcript shows it as one line, such as `Saved
+    project://cookie-agent/release`. Plugin protocol 1.6.0 too, since
+    plugins receive events.
+  - `memory_loaded` records when the snapshot was taken (`taken_at`), and
+    each memory it shows, whole or as an index line, carries the optional
+    `modified`, `size`, and `max_size` (`MemoryDocumentStatus`, flattened
+    into `MemorySnapshotCategory`, `MemorySnapshotMemory`, and
+    `MemorySnapshotIndexEntry`); a `size` above `max_size` marks a memory
+    over its limit. A snapshot without `taken_at` was taken by an earlier
+    daemon, and a run takes a new one.
+  - `memory.list` entries (`MemoryInfo`) carry the optional `created`,
+    `modified`, `last_read`, and `max_size`; `memory.read` (`MemoryReadResult`)
+    carries `created`, `modified`, `size`, and `max_size`. `memory.write`
+    and `memory.delete` keep their revisions. A `memory.write` that would
+    leave a memory over its limit is `memory_refused`.
+- A 1.13 client ignores the new members and skips `memory_changed`, which
+  is marked skippable; a 1.14 client reading a 1.13 daemon sees no stamps
+  or limits. History format 1 is unchanged.
+
 ## 1.13.0
 
 - Runtime-scoped MCP servers (`scope = "runtime"` on a runtime template's

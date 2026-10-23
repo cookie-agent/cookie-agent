@@ -234,8 +234,8 @@ Empty: user://feedback, user://profile, user://references
   and those that did not fit `[memory] snapshot_user_bytes` on a
   `Not shown (too long):` line.
 - **About this agent** holds the run's agent's file, or
-  `Not shown (too long): agent://<agent>` when its escaped text exceeds
-  `[memory] max_file_bytes`. An agent file with an empty body, as the daemon
+  `Not shown (too long): agent://<agent>` when its escaped text exceeds the
+  room the snapshot limits leave in the 64 KiB event. An agent file with an empty body, as the daemon
   makes one for every agent, or none, leaves the section out, as in the
   example above.
 - **Machines in this session** has one `<machine>` per machine of the

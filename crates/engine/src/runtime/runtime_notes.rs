@@ -5,7 +5,9 @@
 //! attachment, the system prompt says only where it works (its working
 //! directory and machine). With several, the system prompt lists them by
 //! machine and runtime, and each of their tools' descriptions names the
-//! attachment it belongs to.
+//! attachment it belongs to. A session in a project also names its project
+//! (section 16.9.2): a `Project:` line, or a `project` attribute on the
+//! `<machines>` block.
 
 use std::collections::HashMap;
 
@@ -80,7 +82,11 @@ impl Engine {
     /// or the list of several. Nothing when there is nothing to say, and
     /// skipped rather than truncated at the prompt's byte limit.
     pub(crate) fn compose_runtimes_prompt(&self, policy: &mut FrozenRunPolicy, session: SessionId) {
-        let Some(block) = runtimes_prompt(&self.attachment_facts(session)) else {
+        let project = self.session_project(session).map(|project| project.name);
+        let Some(block) = runtimes_prompt(
+            &self.attachment_facts(session),
+            project.as_ref().map(|name| name.as_str()),
+        ) else {
             return;
         };
         let fits = policy
@@ -137,23 +143,33 @@ fn tool_note(attachment: &AttachmentFacts) -> String {
     }
 }
 
-/// The system prompt's block for `attachments` (those besides `global`).
-fn runtimes_prompt(attachments: &[AttachmentFacts]) -> Option<String> {
+/// The system prompt's block for `attachments` (those besides `global`) of
+/// a session in `project`, if any.
+fn runtimes_prompt(attachments: &[AttachmentFacts], project: Option<&str>) -> Option<String> {
+    let project_line = project.map(|project| format!("Project: {project}"));
     match attachments {
-        [] => None,
+        [] => project_line,
         [only] => {
-            let workspace = only.workspace.as_deref()?;
-            let mut block = format!("Working directory: {workspace}");
-            if let Some(machine) = &only.machine {
-                block.push_str(&format!("\nMachine: {machine}"));
-                if let Some(platform) = &only.platform {
-                    block.push_str(&format!(" ({platform})"));
+            let mut lines = Vec::new();
+            if let Some(workspace) = only.workspace.as_deref() {
+                let mut block = format!("Working directory: {workspace}");
+                if let Some(machine) = &only.machine {
+                    block.push_str(&format!("\nMachine: {machine}"));
+                    if let Some(platform) = &only.platform {
+                        block.push_str(&format!(" ({platform})"));
+                    }
                 }
+                lines.push(block);
             }
-            Some(block)
+            lines.extend(project_line);
+            (!lines.is_empty()).then(|| lines.join("\n"))
         }
         several => {
-            let mut block = format!("{SEVERAL_ATTACHMENTS}\n<machines>\n");
+            let open = project.map_or_else(
+                || "<machines>".to_owned(),
+                |project| format!("<machines project=\"{}\">", escape_xml_attribute(project)),
+            );
+            let mut block = format!("{SEVERAL_ATTACHMENTS}\n{open}\n");
             for machine in group_by_machine(several) {
                 push_machine(&mut block, &machine);
             }
@@ -294,64 +310,105 @@ mod tests {
 
     #[test]
     fn one_attachment_gives_its_working_directory_and_machine() {
-        assert_eq!(runtimes_prompt(&[]), None);
+        assert_eq!(runtimes_prompt(&[], None), None);
         assert_eq!(
-            runtimes_prompt(&[attachment(
-                "local_web",
-                "local",
-                Some("/home/me/web"),
-                Some("linux"),
-                Some("laptop")
-            )]),
+            runtimes_prompt(
+                &[attachment(
+                    "local_web",
+                    "local",
+                    Some("/home/me/web"),
+                    Some("linux"),
+                    Some("laptop")
+                )],
+                None
+            ),
             Some("Working directory: /home/me/web\nMachine: laptop (linux)".into())
         );
         // No platform: the machine alone; no machine: no machine line.
         assert_eq!(
-            runtimes_prompt(&[attachment("w", "local", Some("/w"), None, Some("laptop"))]),
+            runtimes_prompt(
+                &[attachment("w", "local", Some("/w"), None, Some("laptop"))],
+                None
+            ),
             Some("Working directory: /w\nMachine: laptop".into())
         );
         assert_eq!(
-            runtimes_prompt(&[attachment("w", "local", Some("/w"), Some("linux"), None)]),
+            runtimes_prompt(
+                &[attachment("w", "local", Some("/w"), Some("linux"), None)],
+                None
+            ),
             Some("Working directory: /w".into())
         );
         // Without a workspace, one attachment adds nothing.
         assert_eq!(
-            runtimes_prompt(&[attachment(
-                "desktop",
-                "desk",
-                None,
-                Some("linux"),
-                Some("m")
-            )]),
+            runtimes_prompt(
+                &[attachment(
+                    "desktop",
+                    "desk",
+                    None,
+                    Some("linux"),
+                    Some("m")
+                )],
+                None
+            ),
             None
         );
     }
 
     #[test]
+    fn a_project_adds_a_line_or_an_attribute() {
+        let one = attachment("w", "local", Some("/w"), None, Some("laptop"));
+        assert_eq!(
+            runtimes_prompt(std::slice::from_ref(&one), Some("web")),
+            Some("Working directory: /w\nMachine: laptop\nProject: web".into())
+        );
+        assert_eq!(
+            runtimes_prompt(&[], Some("web")),
+            Some("Project: web".into())
+        );
+        let several = runtimes_prompt(
+            &[
+                one,
+                attachment("v", "labpc", Some("/v"), None, Some("labpc")),
+            ],
+            Some("web"),
+        )
+        .unwrap();
+        assert!(
+            several.contains("\n<machines project=\"web\">\n<machine name=\"laptop\">"),
+            "{several}"
+        );
+        assert!(!several.contains("Project:"));
+    }
+
+    #[test]
     fn several_attachments_nest_in_their_runtimes_and_machines() {
-        let block = runtimes_prompt(&[
-            attachment(
-                "local_web",
-                "local",
-                Some("/home/me/web"),
-                Some("linux"),
-                Some("laptop"),
-            ),
-            attachment(
-                "labpc_api",
-                "labpc",
-                Some("/srv/api"),
-                Some("linux"),
-                Some("labpc"),
-            ),
-            attachment(
-                "local_api",
-                "local",
-                Some("/home/me/api"),
-                Some("linux"),
-                Some("laptop"),
-            ),
-        ])
+        let block = runtimes_prompt(
+            &[
+                attachment(
+                    "local_web",
+                    "local",
+                    Some("/home/me/web"),
+                    Some("linux"),
+                    Some("laptop"),
+                ),
+                attachment(
+                    "labpc_api",
+                    "labpc",
+                    Some("/srv/api"),
+                    Some("linux"),
+                    Some("labpc"),
+                ),
+                attachment(
+                    "local_api",
+                    "local",
+                    Some("/home/me/api"),
+                    Some("linux"),
+                    Some("laptop"),
+                ),
+            ],
+            None,
+        )
         .unwrap();
         assert_eq!(
             block,
@@ -375,17 +432,20 @@ mod tests {
 
     #[test]
     fn runtimes_of_one_machine_with_different_platforms_carry_their_own() {
-        let block = runtimes_prompt(&[
-            attachment("host_a", "host", Some("/a"), Some("linux"), Some("pc")),
-            attachment(
-                "box_b",
-                "box",
-                Some("/b&\"c\""),
-                Some("windows"),
-                Some("pc"),
-            ),
-            attachment("lost", "lost", None, None, None),
-        ])
+        let block = runtimes_prompt(
+            &[
+                attachment("host_a", "host", Some("/a"), Some("linux"), Some("pc")),
+                attachment(
+                    "box_b",
+                    "box",
+                    Some("/b&\"c\""),
+                    Some("windows"),
+                    Some("pc"),
+                ),
+                attachment("lost", "lost", None, None, None),
+            ],
+            None,
+        )
         .unwrap();
         assert!(
             block.ends_with(

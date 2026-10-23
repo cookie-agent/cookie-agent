@@ -1,16 +1,20 @@
-//! The memory file format (`docs/site/specs/memory.md` section 4.3) and
-//! revisions (section 4.4).
+//! The memory file format (`docs/site/specs/memory.md` section 4.3, with
+//! the stamps of section 16.9.6) and revisions (section 4.4).
 //!
 //! A memory file is YAML frontmatter between `---` lines, with a required
-//! `description` and optional `keywords`, followed by a Markdown body that
-//! may be empty. Parsing is strict: an unknown key, a wrong type, a
-//! frontmatter that does not parse, or a file over `[memory]
-//! max_file_bytes` makes the file invalid, with a reason. Control
-//! characters other than newline and tab make it invalid too (section 13);
-//! `\r\n` line endings are read as `\n`.
+//! `description`, optional `keywords`, and the `created` and `modified`
+//! stamps the daemon sets, followed by a Markdown body that may be empty.
+//! Parsing is strict: an unknown key, a wrong type, a stamp that is not a
+//! timestamp, a frontmatter that does not parse, or a file larger than any
+//! memory may be ([`MAX_FILE_BYTES`]) makes the file invalid, with a
+//! reason. A file over its kind's `[memory]` limit is still valid; writes
+//! enforce the limits (section 16.9.7). Control characters other than
+//! newline and tab make a file invalid too (section 13); `\r\n` line
+//! endings are read as `\n`.
 
 use std::fmt;
 
+use jiff::Timestamp;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
@@ -21,6 +25,10 @@ pub(crate) const MAX_KEYWORDS: usize = 32;
 /// Longest keyword, in characters.
 pub(crate) const MAX_KEYWORD_CHARS: usize = 64;
 
+/// The largest memory file the daemon reads, in bytes: the most any
+/// `[memory]` document limit may be. A larger file is invalid.
+pub(crate) const MAX_FILE_BYTES: usize = cookie_agent_config::MemoryConfig::MAX_LIMITS_SUM;
+
 const FENCE: &str = "---";
 
 /// A memory file's content: its frontmatter and its body.
@@ -28,6 +36,10 @@ const FENCE: &str = "---";
 pub(crate) struct MemoryDocument {
     description: String,
     keywords: Vec<String>,
+    /// When the memory was created and last modified, as the daemon
+    /// stamped it; absent in a file written before stamps.
+    created: Option<Timestamp>,
+    modified: Option<Timestamp>,
     body: String,
 }
 
@@ -38,6 +50,27 @@ struct Frontmatter {
     description: String,
     #[serde(default)]
     keywords: Vec<String>,
+    #[serde(default)]
+    created: Option<String>,
+    #[serde(default)]
+    modified: Option<String>,
+}
+
+/// A stamp's text, as [`MemoryDocument::render`] writes it: an RFC 3339
+/// UTC timestamp to the second.
+fn parse_stamp(key: &str, value: Option<String>) -> Result<Option<Timestamp>, InvalidMemory> {
+    value
+        .map(|value| {
+            value
+                .parse::<Timestamp>()
+                .map_err(|_| invalid(format!("{key} `{value}` is not a timestamp")))
+        })
+        .transpose()
+}
+
+/// `time` to the second, as stamps hold it.
+pub(crate) fn to_second(time: Timestamp) -> Timestamp {
+    Timestamp::from_second(time.as_second()).unwrap_or(time)
 }
 
 /// Why a memory file or a memory to write is not valid.
@@ -75,10 +108,31 @@ impl MemoryDocument {
         let document = Self {
             description: description.into(),
             keywords,
+            created: None,
+            modified: None,
             body: body.into(),
         };
         document.check()?;
         Ok(document)
+    }
+
+    /// This memory with the stamps `created` and `modified`.
+    pub(crate) fn with_stamps(
+        mut self,
+        created: Option<Timestamp>,
+        modified: Option<Timestamp>,
+    ) -> Self {
+        self.created = created.map(to_second);
+        self.modified = modified.map(to_second);
+        self
+    }
+
+    pub(crate) const fn created(&self) -> Option<Timestamp> {
+        self.created
+    }
+
+    pub(crate) const fn modified(&self) -> Option<Timestamp> {
+        self.modified
     }
 
     pub(crate) fn description(&self) -> &str {
@@ -93,9 +147,13 @@ impl MemoryDocument {
         &self.body
     }
 
-    /// This memory with `body` in place of its body, checked again.
+    /// This memory with `body` in place of its body, checked again; the
+    /// stamps stay.
     pub(crate) fn with_body(&self, body: String) -> Result<Self, InvalidMemory> {
-        Self::new(self.description.clone(), self.keywords.clone(), body)
+        Ok(
+            Self::new(self.description.clone(), self.keywords.clone(), body)?
+                .with_stamps(self.created, self.modified),
+        )
     }
 
     fn check(&self) -> Result<(), InvalidMemory> {
@@ -130,11 +188,10 @@ impl MemoryDocument {
         check_text("the body", &self.body)
     }
 
-    /// Parses a memory file's bytes. `max_file_bytes` is `[memory]
-    /// max_file_bytes`.
-    pub(crate) fn parse(bytes: &[u8], max_file_bytes: usize) -> Result<Self, InvalidMemory> {
-        if bytes.len() > max_file_bytes {
-            return Err(too_large(bytes.len(), max_file_bytes));
+    /// Parses a memory file's bytes.
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, InvalidMemory> {
+        if bytes.len() > MAX_FILE_BYTES {
+            return Err(too_large(bytes.len()));
         }
         let text = std::str::from_utf8(bytes).map_err(|_| invalid("the file is not UTF-8"))?;
         let text = text.replace("\r\n", "\n");
@@ -155,7 +212,12 @@ impl MemoryDocument {
         check_text("the file", &text)?;
         let frontmatter: Frontmatter =
             serde_yaml::from_str(yaml).map_err(|error| invalid(format!("frontmatter: {error}")))?;
-        Self::new(frontmatter.description, frontmatter.keywords, body)
+        let created = parse_stamp("created", frontmatter.created)?;
+        let modified = parse_stamp("modified", frontmatter.modified)?;
+        Ok(
+            Self::new(frontmatter.description, frontmatter.keywords, body)?
+                .with_stamps(created, modified),
+        )
     }
 
     /// The length in bytes of a memory file's frontmatter as written: its
@@ -185,7 +247,7 @@ impl MemoryDocument {
     }
 
     /// The file text of this memory: `description`, `keywords` when there
-    /// are any, and the body as it is.
+    /// are any, the stamps it has, and the body as it is.
     pub(crate) fn render(&self) -> String {
         let mut text = String::from("---\ndescription: ");
         text.push_str(&yaml_scalar(&self.description, false));
@@ -200,15 +262,20 @@ impl MemoryDocument {
             }
             text.push_str("]\n");
         }
+        for (key, stamp) in [("created", self.created), ("modified", self.modified)] {
+            if let Some(stamp) = stamp {
+                text.push_str(&format!("{key}: {stamp}\n"));
+            }
+        }
         text.push_str("---\n");
         text.push_str(&self.body);
         text
     }
 }
 
-pub(crate) fn too_large(bytes: usize, max_file_bytes: usize) -> InvalidMemory {
+pub(crate) fn too_large(bytes: usize) -> InvalidMemory {
     invalid(format!(
-        "the file is {bytes} bytes, more than [memory] max_file_bytes ({max_file_bytes})"
+        "the file is {bytes} bytes, more than any memory may be ({MAX_FILE_BYTES})"
     ))
 }
 
@@ -277,10 +344,8 @@ impl fmt::Display for MemoryRevision {
 mod tests {
     use super::*;
 
-    const LIMIT: usize = 4096;
-
     fn parse(text: &str) -> Result<MemoryDocument, InvalidMemory> {
-        MemoryDocument::parse(text.as_bytes(), LIMIT)
+        MemoryDocument::parse(text.as_bytes())
     }
 
     fn reason(text: &str) -> String {
@@ -359,7 +424,7 @@ mod tests {
             let found = reason(text);
             assert!(found.contains(expected), "{text:?}: {found}");
         }
-        let found = MemoryDocument::parse(b"---\ndescription: \xff\n---\n", LIMIT)
+        let found = MemoryDocument::parse(b"---\ndescription: \xff\n---\n")
             .unwrap_err()
             .0;
         assert!(found.contains("UTF-8"), "{found}");
@@ -384,12 +449,35 @@ mod tests {
     }
 
     #[test]
-    fn the_size_limit_counts_the_whole_file() {
+    fn a_file_larger_than_any_memory_may_be_is_invalid() {
         let head = "---\ndescription: x\n---\n";
-        let fits = format!("{head}{}", "b".repeat(LIMIT - head.len()));
+        let fits = format!("{head}{}", "b".repeat(MAX_FILE_BYTES - head.len()));
         assert!(parse(&fits).is_ok());
         let over = format!("{fits}b");
-        assert!(reason(&over).contains("more than [memory] max_file_bytes (4096)"));
+        assert!(reason(&over).contains("more than any memory may be (57344)"));
+    }
+
+    #[test]
+    fn stamps_read_back_and_must_be_timestamps() {
+        let created: Timestamp = "2026-10-01T09:12:44Z".parse().unwrap();
+        let modified: Timestamp = "2026-10-20T16:03:10.250Z".parse().unwrap();
+        let document = MemoryDocument::new("x", vec![], "body")
+            .unwrap()
+            .with_stamps(Some(created), Some(modified));
+        let text = document.render();
+        assert_eq!(
+            text,
+            "---\ndescription: x\ncreated: 2026-10-01T09:12:44Z\nmodified: 2026-10-20T16:03:10Z\n---\nbody"
+        );
+        let read = parse(&text).unwrap();
+        assert_eq!(read, document);
+        assert_eq!(read.created(), Some(created));
+        assert_eq!(
+            read.modified().map(Timestamp::as_second),
+            Some(modified.as_second())
+        );
+        assert!(reason("---\ndescription: x\ncreated: yesterday\n---\n").contains("created"));
+        assert!(reason("---\ndescription: x\nmodified: [1]\n---\n").contains("frontmatter"));
     }
 
     #[test]

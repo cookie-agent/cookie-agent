@@ -131,7 +131,7 @@ impl Engine {
                 params.name,
                 params.emoji,
                 params.defaults,
-                engine.memory_limits().max_file_bytes,
+                engine.memory_limits().overview_max_bytes,
             )?;
             Ok(engine.project_info(project, &[]))
         })
@@ -156,7 +156,7 @@ impl Engine {
                     defaults: params.defaults,
                     agents_md: params.agents_md,
                 },
-                engine.memory_limits().max_file_bytes,
+                engine.memory_limits().overview_max_bytes,
             )?;
             Ok(engine.project_info(project, &engine.raw_roots()))
         })

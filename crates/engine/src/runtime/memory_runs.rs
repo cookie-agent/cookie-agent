@@ -3,7 +3,10 @@
 //! the snapshot taken at run admission, and what the memory tools read of
 //! the calling run.
 
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Mutex,
+};
 
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentSnapshot, AttachmentName, EventPayload as Event, MachineName,
@@ -16,8 +19,10 @@ use super::{Engine, EngineError, event_origin};
 use crate::{
     memory::{
         MemoryRoot,
+        file::MemoryRevision,
+        limits::MemoryLimits,
         search::Visibility,
-        snapshot::{ReadRules, SnapshotLimits, SnapshotRequest},
+        snapshot::{ReadRules, SnapshotRequest},
         url::MemoryUrl,
     },
     permissions::{
@@ -26,6 +31,46 @@ use crate::{
     },
     policy::FrozenRunPolicy,
 };
+
+/// The revision each session last saw of each memory (section 16.9.8):
+/// through `memory_read`, the snapshot, or a write of its own. Out of the
+/// model's sight, and kept in memory only: after a restart a session reads
+/// a memory again before it replaces it whole.
+#[derive(Debug, Default)]
+pub(crate) struct SeenMemories(Mutex<HashMap<SessionId, HashMap<MemoryUrl, MemoryRevision>>>);
+
+impl SeenMemories {
+    fn with<T>(
+        &self,
+        work: impl FnOnce(&mut HashMap<SessionId, HashMap<MemoryUrl, MemoryRevision>>) -> T,
+    ) -> T {
+        work(
+            &mut self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Records that `session` saw `url` at `revision`.
+    pub(crate) fn saw(&self, session: SessionId, url: MemoryUrl, revision: MemoryRevision) {
+        self.with(|seen| seen.entry(session).or_default().insert(url, revision));
+    }
+
+    /// The revision `session` last saw of `url`.
+    pub(crate) fn seen(&self, session: SessionId, url: &MemoryUrl) -> Option<MemoryRevision> {
+        self.with(|seen| seen.get(&session)?.get(url).cloned())
+    }
+
+    /// Forgets what `session` saw of `url`, which it deleted.
+    pub(crate) fn forget(&self, session: SessionId, url: &MemoryUrl) {
+        self.with(|seen| {
+            if let Some(urls) = seen.get_mut(&session) {
+                urls.remove(url);
+            }
+        });
+    }
+}
 
 /// What a run may do with memory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -155,7 +200,10 @@ pub(crate) fn snapshot_change(
                 .map(|machine| machine.machine.clone())
                 .collect::<BTreeSet<_>>();
             let project = latest.project.as_ref().map(|project| &project.project);
+            // A snapshot an earlier daemon took has no time, so its ages
+            // and fullness could not be shown.
             let changed = compacted
+                || latest.taken_at.is_none()
                 || latest.rules.as_ref() != Some(&facts.rules)
                 || agent.agent != facts.agent
                 || latest.writable != facts.access.writable
@@ -185,30 +233,71 @@ fn latest_snapshot(events: &[std::sync::Arc<StoredEvent>]) -> Option<(&MemorySna
     None
 }
 
+/// The memory related to a session (section 16.9.11): what its snapshot
+/// includes automatically.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RelatedMemory {
+    /// A delegated run's related memory is its own agent file alone.
+    pub(crate) delegated: bool,
+    /// The session's machines, and the name of its project.
+    pub(crate) machines: Vec<MachineName>,
+    pub(crate) project: Option<String>,
+}
+
+impl RelatedMemory {
+    /// Whether the memory at `url` is related to a run of `agent`: for a
+    /// root run every `user://` memory, its own agent file, its machines'
+    /// memories, and its project's; for a delegated run its own agent file.
+    pub(crate) fn contains(&self, url: &MemoryUrl, agent: &AgentId) -> bool {
+        match url {
+            MemoryUrl::Agent { agent: owner } => owner == agent,
+            _ if self.delegated => false,
+            MemoryUrl::User { .. } => true,
+            MemoryUrl::Machine { machine, .. } => self.machines.contains(machine),
+            MemoryUrl::Project { project, .. } => self.project.as_deref() == Some(project.as_str()),
+        }
+    }
+}
+
 /// What the memory tools read of the run calling them.
 #[derive(Clone, Debug)]
 pub(crate) struct MemoryCaller {
     pub(crate) agent: AgentSnapshot,
     pub(crate) overlay: SessionPermissionOverlay,
+    pub(crate) related: RelatedMemory,
 }
 
 impl MemoryCaller {
-    /// How much of a search hit at `url` the caller may see: its `memory`
-    /// rule for the URL (section 9.3).
-    pub(crate) fn visibility(&self, url: &MemoryUrl) -> Visibility {
-        match effective_permission_with_overlay(
+    fn effect(&self, action: &PermissionAction, url: &MemoryUrl) -> PermissionEffect {
+        effective_permission_with_overlay(
             &self.agent,
             Some(&self.overlay),
-            &PermissionAction::MEMORY,
+            action,
             &url.to_string(),
             PermissionScope::runtime(GLOBAL_RUNTIME_ID, None),
         )
         .0
-        {
+    }
+
+    /// How much of a search hit at `url` the caller may see: its `memory`
+    /// rule for the URL (section 9.3).
+    pub(crate) fn visibility(&self, url: &MemoryUrl) -> Visibility {
+        match self.effect(&PermissionAction::MEMORY, url) {
             PermissionEffect::Allow => Visibility::Full,
             PermissionEffect::Ask => Visibility::Summary,
             PermissionEffect::Deny => Visibility::Hidden,
         }
+    }
+
+    /// Whether the caller's `memory_write` rules let it change the memory
+    /// at `url`, with or without asking (section 16.9.4).
+    pub(crate) fn editable(&self, url: &MemoryUrl) -> bool {
+        self.effect(&PermissionAction::MEMORY_WRITE, url) != PermissionEffect::Deny
+    }
+
+    /// Whether the memory at `url` is related to the caller's session.
+    pub(crate) fn related(&self, url: &MemoryUrl) -> bool {
+        self.related.contains(url, &self.agent.agent)
     }
 }
 
@@ -219,8 +308,8 @@ impl Engine {
     }
 
     /// The `[memory]` limits as configured now.
-    pub(crate) fn memory_limits(&self) -> SnapshotLimits {
-        SnapshotLimits::of(&self.inner.config.load().runtime.memory)
+    pub(crate) fn memory_limits(&self) -> MemoryLimits {
+        MemoryLimits::of(&self.inner.config.load().runtime.memory)
     }
 
     /// Whether the session has the `global` runtime attached.
@@ -327,6 +416,7 @@ impl Engine {
                 let caller = MemoryCaller {
                     agent: policy.agent.clone(),
                     overlay: projection.permission_overlay.clone(),
+                    related: RelatedMemory::default(),
                 };
                 let request = SnapshotRequest {
                     agent: facts.agent,
@@ -335,12 +425,25 @@ impl Engine {
                     machines,
                     project: facts.project,
                     limits: self.memory_limits(),
+                    now: jiff::Timestamp::now(),
                     read: ReadRules::new(move |url| caller.visibility(url)),
                     rules: Some(facts.rules),
                 };
                 let root = self.memory_root().clone();
-                match tokio::task::spawn_blocking(move || root.snapshot(&request)).await {
-                    Ok(Ok(snapshot)) => snapshot,
+                let now = request.now;
+                match tokio::task::spawn_blocking(move || {
+                    let taken = root.snapshot(&request)?;
+                    root.record_reads(taken.shown.iter().map(|(url, _)| url), now);
+                    Ok::<_, crate::memory::MemoryError>(taken)
+                })
+                .await
+                {
+                    Ok(Ok(taken)) => {
+                        for (url, revision) in taken.shown {
+                            self.inner.memory_seen.saw(session, url, revision);
+                        }
+                        taken.snapshot
+                    }
                     Ok(Err(error)) => {
                         eprintln!("cookie-agent: memory snapshot of session {session}: {error}");
                         return Ok(());
@@ -361,7 +464,34 @@ impl Engine {
         .await
     }
 
-    /// The run `run` as the memory tools see it.
+    /// Appends the transcript line for a model's change to the memory at
+    /// `url` (section 16.9.10). The memory changed whatever happens here,
+    /// so a failure to append is reported, not returned.
+    pub(crate) async fn record_memory_change(
+        &self,
+        session: SessionId,
+        run: RunId,
+        change: cookie_agent_protocol::MemoryChangeKind,
+        url: &MemoryUrl,
+    ) {
+        if let Err(error) = self
+            .append(
+                session,
+                Some(run),
+                event_origin("engine:memory"),
+                Event::MemoryChanged {
+                    change,
+                    url: url.to_string(),
+                },
+            )
+            .await
+        {
+            eprintln!("cookie-agent: memory change of session {session}: {error}");
+        }
+    }
+
+    /// The run `run` as the memory tools see it. Blocking: it reads the
+    /// session's project.
     pub(crate) fn memory_caller(&self, run: RunId) -> Result<MemoryCaller, String> {
         let active = self
             .inner
@@ -377,9 +507,19 @@ impl Engine {
             .store
             .get(active.session)
             .map_err(|error| error.to_string())?;
+        let variables = self.memory_variables(active.session);
         Ok(MemoryCaller {
             agent: active.policy.agent.clone(),
             overlay: projection.permission_overlay.clone(),
+            related: RelatedMemory {
+                delegated: matches!(projection.meta.origin, SessionOrigin::Delegated { .. }),
+                machines: variables
+                    .machines
+                    .iter()
+                    .filter_map(|machine| MachineName::new(machine.as_str()).ok())
+                    .collect(),
+                project: variables.project,
+            },
         })
     }
 

@@ -2,6 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "A memory file's whole text, frontmatter included, and its revision.",
   "properties": {
+    "created": {
+      "description": "When the memory was created and last modified, as in\n[`MemoryInfo`] (client protocol 1.14.0).",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "invalid": {
       "description": "Why the file is not a valid memory, when it is not.",
       "type": [
@@ -9,8 +17,32 @@
         "null"
       ]
     },
+    "max_size": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "modified": {
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "revision": {
       "type": "string"
+    },
+    "size": {
+      "description": "The file's size and the `[memory]` limit of its kind, in bytes\n(client protocol 1.14.0).",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "text": {
       "type": "string"

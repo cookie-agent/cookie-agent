@@ -54,9 +54,9 @@ keywords: [cargo, clippy, msrv, no-fail-fast, cookie-agent]
 `description` is required (one line, 1 to 200 characters); `keywords` is an
 optional list of up to 32 search terms. Names are a lowercase letter or digit
 followed by up to 63 lowercase letters, digits, or `-`; machine folders use
-machine names. A file that breaks these rules, or is larger than
-`[memory] max_file_bytes` ([Memory [memory]](../engine/memory.md)), is
-invalid: search and the snapshot skip it. You may edit the files with any
+machine names. A file that breaks these rules, or is larger than 57344
+bytes, is invalid: search and the snapshot skip it. Each kind of memory has
+a size limit ([Memory [memory]](../engine/memory.md)) that writes keep to. You may edit the files with any
 editor; a session that writes a memory you changed since it read it gets an
 error naming the current revision instead of overwriting your edit.
 

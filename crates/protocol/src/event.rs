@@ -2502,6 +2502,15 @@ pub enum EventPayload {
         #[serde(flatten)]
         snapshot: MemorySnapshot,
     },
+    /// A model's memory tool saved, edited, or deleted the memory at `url`
+    /// (`docs/site/specs/memory.md` section 16.9.10; client protocol
+    /// 1.14.0). A transcript shows it as one line, such as `Saved
+    /// project://cookie-agent/release`. An audit event: the memory itself
+    /// lives outside the session.
+    MemoryChanged {
+        change: MemoryChangeKind,
+        url: String,
+    },
     /// A notice about the engine, a plugin, or a runtime: something it
     /// turned off, could not do, or dropped. `detail` is display-only.
     Diagnostic {
@@ -2932,6 +2941,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "internal_agent_started",
     "internal_agent_text_delta",
     "internal_agent_usage_recorded",
+    "memory_changed",
     "memory_loaded",
     "message_injected",
     "model_attempt_started",
@@ -3094,6 +3104,7 @@ impl EventPayload {
             | Self::NativeCompactionStarted { .. }
             | Self::NativeCompactionFinished { .. }
             | Self::ToolCallProgress { .. }
+            | Self::MemoryChanged { .. }
             | Self::RecordOmitted { .. } => true,
             // The approval projection ignores the doom-loop step; an unknown
             // step reads as a state step, the safe side for its writer's

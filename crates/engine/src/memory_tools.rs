@@ -1,11 +1,16 @@
 //! The memory tools of the `global` runtime (`docs/site/specs/memory.md`
-//! section 8): `memory_search` and `memory_read` under the `memory` action,
-//! `memory_write`, `memory_edit`, and `memory_delete` under `memory_write`,
-//! each with the memory URL as resource. `memory_search` is checked per
-//! result instead (section 9.3), so it declares no permission.
-//! `memory_delete` deletes `machine://` and `project://` memories; a
-//! `user://` or `agent://` memory cannot be deleted by a model, so the call
-//! clears its body and keeps its frontmatter (section 16.6).
+//! section 8, as section 16.9 amends it): `memory_search` and
+//! `memory_read` under the `memory` action, `memory_write`, `memory_edit`,
+//! and `memory_delete` under `memory_write`, each with the memory URL as
+//! resource. `memory_search` is checked per result instead (section 9.3),
+//! so it declares no permission. Writes carry no revision: an edit applies
+//! when its `old` text occurs once, and a replacing write needs the session
+//! to have seen the memory as it is (section 16.9.8). A delete deletes.
+//!
+//! The provider also contributes the `<tool_instructions
+//! provider="builtin.memory">` section (section 16.9.1): part A, what the
+//! snapshot includes and when to search, for every run offered a memory
+//! tool, and part B, the rubric, for a run also offered the write tools.
 //!
 //! The provider is built with the `global` runtime, before the engine
 //! exists, and holds the engine through a handle bound once the engine is
@@ -18,7 +23,7 @@ use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    ApprovalResourceSource, DisplayBlock, Open, PermissionAction,
+    ApprovalResourceSource, DisplayBlock, MemoryChangeKind, Open, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime,
 };
 use cookie_agent_runtime_api::{
@@ -26,18 +31,24 @@ use cookie_agent_runtime_api::{
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
     authoring::{parse_args, prepared_operation, prepared_resource, safe_title, schema},
 };
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Engine,
     memory::{
-        file::{MemoryDocument, MemoryRevision},
+        file::MemoryDocument,
+        format,
         search::SearchHit,
-        store::{ClearedBody, Origin, StoreError},
+        similar::NearMemory,
+        store::{StoreError, WriteMode},
         url::{MemoryLayer, MemoryUrl},
     },
-    runtime::Inner,
+    runtime::{
+        Inner,
+        memory_runs::{MemoryAccess, MemoryCaller},
+    },
 };
 
 /// The provider's ID; composition recognizes memory tools by it.
@@ -54,9 +65,53 @@ const MAX_QUERY_CHARS: usize = 200;
 /// The most results one search returns, and how many it returns by default.
 const MAX_LIMIT: u32 = 25;
 const DEFAULT_LIMIT: u32 = 10;
-/// The longest matching body line a search result shows, in characters;
-/// a longer one is cut and ends with `…`.
-pub(crate) const MAX_HIT_LINE_CHARS: usize = 200;
+/// The longest `reason` a write that insists it is new may give.
+const MAX_REASON_CHARS: usize = 200;
+
+/// Part A of the memory section for a root run (section 16.9.1).
+const PART_A_ROOT: &str = "Memory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.";
+
+/// Part A of the memory section for a delegated run.
+const PART_A_DELEGATED: &str = "Your own agent memory is included automatically at the start of each run. Use memory_search for anything else.";
+
+/// Part B of the memory section, the rubric, for a run offered the write
+/// tools. The approval reviewer gets it too (section 16.9.12).
+pub(crate) const PART_B: &str = concat!(
+    "You manage your own memory. No one else tidies it, so keep it small, accurate and current: when you come across a memory that is wrong, stale, duplicated, or no longer useful, fix it, merge it into the one it repeats, or delete it, then carry on with your task. A memory earns its place only while a later session would miss it.\n",
+    "\n",
+    "Memory related to this session, the memory shown to you above, is yours to maintain. Do not write, edit or delete memory unrelated to it unless what it says is stale or wrong, or the user explicitly asks you to.\n",
+    "\n",
+    "Memory is for what a later session cannot recover by looking at the project or running a command, and that will still be true and useful across many sessions. Before saving, ask:\n",
+    "1. Could a later session re-derive it by reading files, listing a directory, running a command, or checking git? Then do not save it.\n",
+    "2. Will it still be true and relevant in weeks, across different tasks? If it describes the current task or its state, do not save it.\n",
+    "3. Is it already in memory or in AGENTS.md? Search first; update that entry, or save nothing.\n",
+    "4. Would a later session act better for knowing it? If not, do not save it.\n",
+    "\n",
+    "Save only: the user's preferences and how they work, and the corrections they gave with why (`user://`); lessons about doing your job as this agent (`agent://<you>`); decisions, constraints and references not visible in code or git (`project://`); stable facts about a machine that are costly to rediscover (`machine://`).\n",
+    "\n",
+    "Never save: directory listings, file trees, code summaries, command output, logs, test results, task progress or plans, one-off debugging steps, secrets, or anything from tool output, web pages, or other agents that the user did not confirm. Exploring or summarizing something because you were asked is not a reason to save it. Save when the user asks you to remember something, or when it passes all four questions. Most sessions save nothing.\n",
+    "\n",
+    "One fact per memory, with a description that states the fact. Prefer updating a memory to adding one. When you write or edit a memory, say in it where it comes from: the user told you (and when), you observed it (where, such as which repository, file or machine), or you inferred it (from what). Keep that current when you change the fact. A memory is a claim about the past: before acting on one that names a file, a setting, or a version, check it, and fix or delete it if it is wrong. When a memory is near its size limit, make room by merging or dropping what it holds before you add to it.",
+);
+
+/// The body of the memory provider's section for a run with `access`:
+/// part A for a root or a `delegated` run, and part B when the run may
+/// write. `None` for a run offered no memory tool.
+pub(crate) fn prompt_section(access: MemoryAccess, delegated: bool) -> Option<String> {
+    if !access.available {
+        return None;
+    }
+    let part_a = if delegated {
+        PART_A_DELEGATED
+    } else {
+        PART_A_ROOT
+    };
+    Some(if access.writable {
+        format!("{part_a}\n\n{PART_B}")
+    } else {
+        part_a.to_owned()
+    })
+}
 
 /// The memory tools, holding the engine once it is bound.
 #[derive(Default)]
@@ -117,11 +172,11 @@ pub fn memory_tool_specs() -> Vec<ToolSpec> {
     MemoryTools::specs()
 }
 
-const SEARCH_DESCRIPTION: &str = "Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, name, description, and body; results are ranked by keyword hits first. Results show each memory's URL, description, keywords, and up to three matching lines; a result you need approval to read shows only its URL and description. Search for the project a task belongs to by repository name, remote URL, or directory before starting work. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.";
-const READ_DESCRIPTION: &str = "Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns its description, keywords, body, and revision; send the revision to memory_write, memory_edit, or memory_delete to change it.";
-const WRITE_DESCRIPTION: &str = "Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. A project:// memory needs a project that exists: projects are created from a client, not by writing memory. user:// categories cannot be created, only changed. Every agent already has an agent://<agent> memory, whose description the daemon sets and whose keywords always include the agent ID and its mode: leave `description` out for agent:// (any you send is replaced) and add keywords freely. Every project has a project://<project>/overview, shown in full to the project's sessions, whose description the daemon sets too: leave it out there as well. Give every other memory a one-line description, and each memory the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.";
-const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. An agent:// memory keeps the description and keywords the daemon gives it, and a project's overview its description. Never save secrets.";
-const DELETE_DESCRIPTION: &str = "Delete one memory at the revision memory_read returned. machine:// and project:// memories are deleted. user:// and agent:// memories cannot be deleted: for those, the call clears the body and keeps the file with its description and keywords, so the category or agent file stays.";
+const SEARCH_DESCRIPTION: &str = "Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, description, and URL segments (user, agent, machine, or project, then the names after it), never its body; results are ranked by keyword hits first. Each result shows a memory's URL and description, whether it is related to this session, whether you may change it, and its age, then its keywords; a result you need approval to read shows only its first two lines. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.";
+const READ_DESCRIPTION: &str = "Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and its body.";
+const WRITE_DESCRIPTION: &str = "Create or replace one memory, following the memory instructions in the system prompt. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.";
+const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old` in a memory's body with `new`, following the memory instructions in the system prompt. Fails when `old` occurs zero or several times; include more context to make it unique.";
+const DELETE_DESCRIPTION: &str = "Delete one memory. Nothing is kept: the deletion is final.";
 
 fn spec(
     name: &str,
@@ -196,9 +251,9 @@ struct ReadArgs {
 struct WriteArgs {
     /// The memory URL.
     url: String,
-    /// One line, 1 to 200 characters, shown in indexes and search results.
-    /// Required except for agent:// and a project's overview, whose
-    /// description the daemon sets.
+    /// One line, 1 to 200 characters, that states the memory's fact; shown
+    /// in indexes and search results. Required except for agent:// and a
+    /// project's overview, whose description the daemon sets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     /// Up to 32 keywords of 1 to 64 characters a later search would use;
@@ -207,10 +262,13 @@ struct WriteArgs {
     keywords: Vec<String>,
     /// The memory's Markdown body; may be empty.
     body: String,
-    /// The revision memory_read returned, to replace an existing memory;
-    /// leave it out to create one.
+    /// True to create a memory that looks like ones that exist, after
+    /// checking it is new; needs `reason`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    new: bool,
+    /// With `new`: one line saying why it is not one of the near memories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    revision: Option<String>,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
@@ -222,8 +280,6 @@ struct EditArgs {
     old: String,
     /// Its replacement.
     new: String,
-    /// The revision memory_read returned.
-    revision: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
@@ -231,8 +287,6 @@ struct EditArgs {
 struct DeleteArgs {
     /// The memory URL.
     url: String,
-    /// The revision memory_read returned.
-    revision: String,
 }
 
 /// One checked call.
@@ -251,17 +305,16 @@ enum MemoryCall {
         /// Whether the call gave a description, and keywords.
         described: bool,
         keyworded: bool,
-        revision: Option<MemoryRevision>,
+        /// The writer says the memory is new (section 16.9.5).
+        new: bool,
     },
     Edit {
         url: MemoryUrl,
         old: String,
         new: String,
-        revision: MemoryRevision,
     },
     Delete {
         url: MemoryUrl,
-        revision: MemoryRevision,
     },
 }
 
@@ -273,7 +326,7 @@ impl MemoryCall {
             Self::Read { url }
             | Self::Write { url, .. }
             | Self::Edit { url, .. }
-            | Self::Delete { url, .. } => Some(url),
+            | Self::Delete { url } => Some(url),
         }
     }
 }
@@ -282,16 +335,8 @@ fn parse_url(value: &str) -> Result<MemoryUrl, ToolError> {
     MemoryUrl::parse(value).map_err(|error| ToolError::execution(error.to_string()))
 }
 
-fn parse_revision(value: &str) -> Result<MemoryRevision, ToolError> {
-    MemoryRevision::parse(value).ok_or_else(|| {
-        ToolError::execution(format!(
-            "`{value}` is not a memory revision; send the 16 hex digits memory_read returned"
-        ))
-    })
-}
-
-/// Checks a call's arguments: strict members, a valid URL, revision, and
-/// memory, and the bounds of a search.
+/// Checks a call's arguments: strict members, a valid URL and memory, the
+/// bounds of a search, and a `reason` exactly when the write says `new`.
 fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolError> {
     match name {
         SEARCH => {
@@ -323,6 +368,28 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
         WRITE => {
             let args: WriteArgs = parse_args(WRITE, arguments)?;
             let url = parse_url(&args.url)?;
+            match (&args.reason, args.new) {
+                (None, true) => {
+                    return Err(ToolError::execution(
+                        "`new: true` needs a one-line `reason` saying why this memory is not one of the near ones",
+                    ));
+                }
+                (Some(_), false) => {
+                    return Err(ToolError::execution(
+                        "`reason` goes with `new: true`, for a memory that looks like ones that exist",
+                    ));
+                }
+                (Some(reason), true)
+                    if reason.trim().is_empty()
+                        || reason.contains('\n')
+                        || reason.chars().count() > MAX_REASON_CHARS =>
+                {
+                    return Err(ToolError::execution(format!(
+                        "`reason` must be one line of 1 to {MAX_REASON_CHARS} characters"
+                    )));
+                }
+                _ => {}
+            }
             let described = args.description.is_some();
             let keyworded = !args.keywords.is_empty();
             // An agent file's description, and a project overview's, is the
@@ -351,7 +418,7 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
                 document,
                 described,
                 keyworded,
-                revision: args.revision.as_deref().map(parse_revision).transpose()?,
+                new: args.new,
             })
         }
         EDIT => {
@@ -360,14 +427,12 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
                 url: parse_url(&args.url)?,
                 old: args.old,
                 new: args.new,
-                revision: parse_revision(&args.revision)?,
             })
         }
         DELETE => {
             let args: DeleteArgs = parse_args(DELETE, arguments)?;
             Ok(MemoryCall::Delete {
                 url: parse_url(&args.url)?,
-                revision: parse_revision(&args.revision)?,
             })
         }
         other => Err(ToolError::execution(format!(
@@ -477,7 +542,7 @@ impl ToolProvider for MemoryTools {
                         }),
                 );
                 entries.extend(text("body").map(|value| ("body", value)));
-                entries.extend(text("revision").map(|value| ("revision", value)));
+                entries.extend(text("reason").map(|value| ("reason", value)));
                 (
                     format!("Write memory {primary}"),
                     cookie_agent_protocol::ToolHint::FILE_WRITE,
@@ -598,24 +663,28 @@ impl PreparedExecutor for MemoryExecutor {
     ) -> Result<ToolCompletion, ToolError> {
         let engine = self.engine;
         let root = engine.memory_root().clone();
-        let max_file_bytes = engine.memory_limits().max_file_bytes;
+        let limits = engine.memory_limits();
+        let session = context.session;
+        let caller = {
+            let engine = engine.clone();
+            let run = context.run;
+            blocking(move || engine.memory_caller(run))
+                .await?
+                .map_err(ToolError::execution)?
+        };
         match self.call {
             MemoryCall::Search {
                 query,
                 layer,
                 limit,
             } => {
-                let caller = engine
-                    .memory_caller(context.run)
-                    .map_err(ToolError::execution)?;
+                let visibility = caller.clone();
                 let hits = blocking(move || {
-                    root.search(&query, layer, limit, max_file_bytes, |url| {
-                        caller.visibility(url)
-                    })
+                    root.search(&query, layer, limit, |url| visibility.visibility(url))
                 })
                 .await?
                 .map_err(|error| ToolError::execution(error.to_string()))?;
-                let output = search_output(&hits);
+                let output = search_output(&hits, &caller, Timestamp::now());
                 let count = hits.len();
                 Ok(result(
                     format!(
@@ -632,19 +701,19 @@ impl PreparedExecutor for MemoryExecutor {
             MemoryCall::Read { url } => {
                 let read = {
                     let url = url.clone();
-                    blocking(move || root.read(&url, max_file_bytes))
-                        .await?
-                        .map_err(store_error)?
+                    blocking(move || {
+                        let read = root.read(&url)?;
+                        root.record_reads([&url], Timestamp::now());
+                        Ok::<_, StoreError>(read)
+                    })
+                    .await?
+                    .map_err(store_error)?
                 };
-                let revision = read.entry.revision.to_string();
-                let mut output = format!("url: {url}\nrevision: {revision}\n");
-                if let Err(reason) = &read.entry.document {
-                    output.push_str(&format!(
-                        "This memory is invalid ({reason}); search and the snapshot skip it until it is fixed.\n"
-                    ));
-                }
-                output.push('\n');
-                output.push_str(&read.text);
+                engine
+                    .inner
+                    .memory_seen
+                    .saw(session, url.clone(), read.entry.revision.clone());
+                let output = read_output(&url, &read, &caller, &limits, Timestamp::now());
                 let body = read
                     .entry
                     .document
@@ -654,7 +723,7 @@ impl PreparedExecutor for MemoryExecutor {
                     format!("Read memory {url}"),
                     output,
                     crate::base_tools::markdown_display(body),
-                    serde_json::json!({ "url": url.to_string(), "revision": revision }),
+                    serde_json::json!({ "url": url.to_string() }),
                 ))
             }
             MemoryCall::Write {
@@ -662,26 +731,39 @@ impl PreparedExecutor for MemoryExecutor {
                 document,
                 described,
                 keyworded,
-                revision,
+                new,
             } => {
-                let created = revision.is_none();
+                let seen = engine.inner.memory_seen.seen(session, &url);
                 let owners = engine.clone();
                 let target = url.clone();
                 let written = blocking(move || {
                     root.write(
                         &target,
                         &document.render(),
-                        revision.as_ref(),
-                        Origin::Model,
+                        WriteMode::Model {
+                            seen: seen.as_ref(),
+                            new,
+                        },
                         crate::runtime::EngineMemoryOwners(&owners),
-                        max_file_bytes,
+                        &limits,
+                        Timestamp::now(),
                     )
                 })
                 .await?
                 .map_err(store_error)?;
-                let new_revision = written.revision.to_string();
-                let verb = if created { "Created" } else { "Replaced" };
-                let mut output = format!("{verb} {url}; its revision is now {new_revision}.");
+                engine
+                    .inner
+                    .memory_seen
+                    .saw(session, url.clone(), written.revision.clone());
+                engine
+                    .record_memory_change(session, context.run, MemoryChangeKind::Saved, &url)
+                    .await;
+                let verb = if written.created {
+                    "Created"
+                } else {
+                    "Replaced"
+                };
+                let mut output = format!("{verb} {url}.");
                 // What the call left out was never the model's to keep.
                 if let Some(mut kept) = written.kept {
                     if !described {
@@ -696,69 +778,52 @@ impl PreparedExecutor for MemoryExecutor {
                         output.push_str(&notice);
                     }
                 }
+                if !written.near.is_empty() {
+                    output.push_str(&near_output(&written.near));
+                }
                 Ok(result(
                     format!("{verb} memory {url}"),
                     output,
-                    key_value(vec![
-                        ("url", url.to_string()),
-                        ("revision", new_revision.clone()),
-                    ]),
-                    serde_json::json!({ "url": url.to_string(), "revision": new_revision }),
+                    key_value(vec![("url", url.to_string())]),
+                    serde_json::json!({ "url": url.to_string() }),
                 ))
             }
-            MemoryCall::Edit {
-                url,
-                old,
-                new,
-                revision,
-            } => {
+            MemoryCall::Edit { url, old, new } => {
                 let target = url.clone();
                 let owners = engine.clone();
-                let new_revision = blocking(move || {
+                let revision = blocking(move || {
                     root.edit(
                         &target,
                         &old,
                         &new,
-                        &revision,
                         crate::runtime::EngineMemoryOwners(&owners),
-                        max_file_bytes,
+                        &limits,
+                        Timestamp::now(),
                     )
                 })
                 .await?
-                .map_err(store_error)?
-                .to_string();
+                .map_err(store_error)?;
+                // A write of its own counts as seeing the memory.
+                engine.inner.memory_seen.saw(session, url.clone(), revision);
+                engine
+                    .record_memory_change(session, context.run, MemoryChangeKind::Edited, &url)
+                    .await;
                 Ok(result(
                     format!("Edited memory {url}"),
-                    format!("Edited {url}; its revision is now {new_revision}."),
-                    key_value(vec![
-                        ("url", url.to_string()),
-                        ("revision", new_revision.clone()),
-                    ]),
-                    serde_json::json!({ "url": url.to_string(), "revision": new_revision }),
+                    format!("Edited {url}."),
+                    key_value(vec![("url", url.to_string())]),
+                    serde_json::json!({ "url": url.to_string() }),
                 ))
             }
-            MemoryCall::Delete { url, revision } => {
-                if matches!(url.layer(), MemoryLayer::User | MemoryLayer::Agent) {
-                    let target = url.clone();
-                    let cleared =
-                        blocking(move || root.clear_body(&target, &revision, max_file_bytes))
-                            .await?
-                            .map_err(store_error)?;
-                    let (title, output, revision) = cleared_result(&url, cleared);
-                    return Ok(result(
-                        title,
-                        output,
-                        key_value(vec![
-                            ("url", url.to_string()),
-                            ("revision", revision.clone()),
-                        ]),
-                        serde_json::json!({ "url": url.to_string(), "revision": revision }),
-                    ));
-                }
+            MemoryCall::Delete { url } => {
                 let target = url.clone();
-                blocking(move || root.delete(&target, &revision, Origin::Model))
+                blocking(move || root.delete(&target, None))
                     .await?
                     .map_err(store_error)?;
+                engine.inner.memory_seen.forget(session, &url);
+                engine
+                    .record_memory_change(session, context.run, MemoryChangeKind::Deleted, &url)
+                    .await;
                 Ok(result(
                     format!("Deleted memory {url}"),
                     format!("Deleted {url}."),
@@ -770,56 +835,99 @@ impl PreparedExecutor for MemoryExecutor {
     }
 }
 
-/// The title and text of a delete that cleared a `user://` or `agent://`
-/// memory's body instead, and the revision after it. The text says plainly
-/// that the memory still exists, so the model does not take it for gone.
-fn cleared_result(url: &MemoryUrl, cleared: ClearedBody) -> (String, String, String) {
-    match cleared {
-        ClearedBody::Cleared(revision) => (
-            format!("Cleared memory {url}"),
-            format!(
-                "{url} cannot be deleted, so its content was cleared; its description and keywords stay. New revision: {revision}."
-            ),
-            revision.to_string(),
-        ),
-        ClearedBody::AlreadyEmpty(revision) => (
-            format!("Memory {url} already empty"),
-            format!(
-                "{url} cannot be deleted, and its content is already empty, so nothing changed. Its revision is still {revision}."
-            ),
-            revision.to_string(),
-        ),
+/// The memories near a new one, as its write's result lists them
+/// (section 16.9.5).
+fn near_output(near: &[NearMemory]) -> String {
+    let mut text = String::from("\n\nMemories near it:");
+    for memory in near {
+        text.push_str(&format!("\n- {} — {}", memory.url, memory.description));
     }
+    text.push_str("\nIf one of these already covers it, edit that and delete this.");
+    text
 }
 
-/// A body line as a result shows it: cut after
-/// [`MAX_HIT_LINE_CHARS`] characters.
-fn hit_line(line: &str) -> String {
-    match line.char_indices().nth(MAX_HIT_LINE_CHARS) {
-        Some((end, _)) => format!("{}…", &line[..end]),
-        None => line.to_owned(),
-    }
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
-/// The search results as the model reads them: one paragraph per memory,
-/// in rank order.
-fn search_output(hits: &[SearchHit]) -> String {
+/// What `memory_read` returns (section 16.9.4): whether the memory is
+/// related and editable, its stamps with their ages, its size and limit,
+/// its description and keywords, then its body. No URL and no revision.
+fn read_output(
+    url: &MemoryUrl,
+    read: &crate::memory::store::MemoryRead,
+    caller: &MemoryCaller,
+    limits: &crate::memory::limits::MemoryLimits,
+    now: Timestamp,
+) -> String {
+    let entry = &read.entry;
+    let max = limits.max_bytes(url) as u64;
+    let mut lines = vec![
+        format!("related: {}", yes_no(caller.related(url))),
+        format!("editable: {}", yes_no(caller.editable(url))),
+        format!(
+            "created: {} ({} ago)",
+            entry.created,
+            format::age(entry.created, now)
+        ),
+        format!(
+            "modified: {} ({} ago)",
+            entry.modified,
+            format::age(entry.modified, now)
+        ),
+        if entry.size > max {
+            format!("size: {} bytes, over its limit", entry.size)
+        } else {
+            format!("size: {} bytes", entry.size)
+        },
+        format!("max size: {max} bytes"),
+    ];
+    let body = match &entry.document {
+        Ok(document) => {
+            lines.push(format!("description: {}", document.description()));
+            if !document.keywords().is_empty() {
+                lines.push(format!("keywords: {}", document.keywords().join(", ")));
+            }
+            document.body()
+        }
+        Err(reason) => {
+            lines.push(format!(
+                "This memory is invalid ({reason}); search and the snapshot skip it until it is fixed."
+            ));
+            read.text.as_str()
+        }
+    };
+    format!("{}\n\n{body}", lines.join("\n"))
+}
+
+/// The search results as the model reads them (section 16.9.4): one
+/// paragraph per memory, in rank order.
+fn search_output(hits: &[SearchHit], caller: &MemoryCaller, now: Timestamp) -> String {
     if hits.is_empty() {
         return "No memories match.".to_owned();
     }
     hits.iter()
         .map(|hit| {
-            let mut text = format!("{}: {}", hit.url, hit.description);
-            match &hit.detail {
-                Some(detail) => {
-                    if !detail.keywords.is_empty() {
-                        text.push_str(&format!(" [keywords: {}]", detail.keywords.join(", ")));
-                    }
-                    for line in &detail.lines {
-                        text.push_str(&format!("\n  | {}", hit_line(line)));
-                    }
-                }
-                None => text.push_str("\n  (reading it needs approval)"),
+            let mut text = format!(
+                "{} — {}\n  {} · {} · {} old",
+                hit.url,
+                hit.description,
+                if caller.related(&hit.url) {
+                    "related"
+                } else {
+                    "unrelated"
+                },
+                if caller.editable(&hit.url) {
+                    "editable"
+                } else {
+                    "read-only"
+                },
+                format::age(hit.modified, now)
+            );
+            if !hit.full {
+                text.push_str("\n  (reading it needs approval)");
+            } else if !hit.keywords.is_empty() {
+                text.push_str(&format!("\n  keywords: {}", hit.keywords.join(", ")));
             }
             text
         })

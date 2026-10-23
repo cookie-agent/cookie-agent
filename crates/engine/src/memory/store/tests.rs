@@ -15,12 +15,17 @@ fn text(description: &str, body: &str) -> String {
         .render()
 }
 
-fn no_agents(_: &AgentId) -> AgentMemory {
-    AgentMemory::Unknown
-}
-
 fn any_agent(_: &AgentId) -> AgentMemory {
     AgentMemory::Registered
+}
+
+/// When the tests' writes happen, and a time before it.
+fn now() -> Timestamp {
+    "2026-10-22T12:00:00Z".parse().unwrap()
+}
+
+fn earlier() -> Timestamp {
+    "2026-10-01T09:12:44Z".parse().unwrap()
 }
 
 /// A data root whose memory folder exists, as after a first start.
@@ -31,418 +36,416 @@ fn root() -> (tempfile::TempDir, MemoryRoot) {
     (data, memory)
 }
 
+fn client(revision: Option<&MemoryRevision>) -> WriteMode<'_> {
+    WriteMode::Client(revision)
+}
+
+fn model(seen: Option<&MemoryRevision>, new: bool) -> WriteMode<'_> {
+    WriteMode::Model { seen, new }
+}
+
+fn write_at(
+    memory: &MemoryRoot,
+    target: &str,
+    text: &str,
+    mode: WriteMode<'_>,
+    limits: &MemoryLimits,
+    at: Timestamp,
+) -> Result<Written, StoreError> {
+    memory.write(&url(target), text, mode, any_agent, limits, at)
+}
+
+fn write(
+    memory: &MemoryRoot,
+    target: &str,
+    text: &str,
+    mode: WriteMode<'_>,
+) -> Result<Written, StoreError> {
+    write_at(memory, target, text, mode, &MemoryLimits::all(LIMIT), now())
+}
+
+fn edit(
+    memory: &MemoryRoot,
+    target: &str,
+    old: &str,
+    new: &str,
+) -> Result<MemoryRevision, StoreError> {
+    memory.edit(
+        &url(target),
+        old,
+        new,
+        any_agent,
+        &MemoryLimits::all(LIMIT),
+        now(),
+    )
+}
+
+/// Creates `target` with `body` as a client would, at [`earlier`].
 fn create(memory: &MemoryRoot, target: &str, body: &str) -> MemoryRevision {
-    memory
-        .write(
-            &url(target),
-            &text("d", body),
-            None,
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision)
+    write_at(
+        memory,
+        target,
+        &text("d", body),
+        client(None),
+        &MemoryLimits::all(LIMIT),
+        earlier(),
+    )
+    .unwrap()
+    .revision
+}
+
+fn stamped(description: &str, body: &str, created: Timestamp, modified: Timestamp) -> String {
+    MemoryDocument::new(description, vec!["k".to_owned()], body)
         .unwrap()
+        .with_stamps(Some(created), Some(modified))
+        .render()
 }
 
 #[test]
-fn a_write_creates_then_replaces_only_at_the_read_revision() {
+fn a_client_write_creates_then_replaces_only_at_the_read_revision() {
     let (_data, memory) = root();
     let target = url("project://web/build");
     let first = create(&memory, "project://web/build", "one\n");
-    let read = memory.read(&target, LIMIT).unwrap();
+    let read = memory.read(&target).unwrap();
     assert_eq!(read.entry.revision, first);
-    assert_eq!(read.text, text("d", "one\n"));
+    assert_eq!(read.text, stamped("d", "one\n", earlier(), earlier()));
     assert_eq!(read.entry.document.as_ref().unwrap().body(), "one\n");
-    assert_eq!(first, MemoryRevision::of(text("d", "one\n").as_bytes()));
+    assert_eq!(
+        (read.entry.created, read.entry.modified),
+        (earlier(), earlier())
+    );
 
     // Creating again fails and names the current revision.
-    let again = memory
-        .write(
-            &target,
-            &text("d", "x"),
-            None,
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision);
+    let again = write(
+        &memory,
+        "project://web/build",
+        &text("d", "x"),
+        client(None),
+    );
     assert!(matches!(again, Err(StoreError::Exists { revision, .. }) if revision == first));
 
-    let second = memory
-        .write(
-            &target,
-            &text("d", "two\n"),
-            Some(&first),
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision)
-        .unwrap();
+    let second = write(
+        &memory,
+        "project://web/build",
+        &text("d", "two\n"),
+        client(Some(&first)),
+    )
+    .unwrap()
+    .revision;
     assert_ne!(second, first);
     // The old revision no longer replaces it.
-    let stale = memory
-        .write(
-            &target,
-            &text("d", "three\n"),
-            Some(&first),
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision);
+    let stale = write(
+        &memory,
+        "project://web/build",
+        &text("d", "three\n"),
+        client(Some(&first)),
+    );
     assert!(
         matches!(stale, Err(StoreError::RevisionMismatch { current, .. }) if current == second)
     );
+    // A replaced memory keeps when it was created and is modified now.
     assert_eq!(
-        memory.read(&target, LIMIT).unwrap().text,
-        text("d", "two\n")
+        memory.read(&target).unwrap().text,
+        stamped("d", "two\n", earlier(), now())
     );
 
     // Replacing a file that does not exist fails.
-    let missing = memory
-        .write(
-            &url("project://web/other"),
-            &text("d", ""),
-            Some(&first),
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision);
+    let missing = write(
+        &memory,
+        "project://web/other",
+        &text("d", ""),
+        client(Some(&first)),
+    );
     assert!(matches!(missing, Err(StoreError::NotFound { .. })));
     assert!(matches!(
-        memory.read(&url("project://web/other"), LIMIT),
+        memory.read(&url("project://web/other")),
         Err(StoreError::NotFound { .. })
     ));
 }
 
+/// The daemon sets the stamps: what a write gives for them is ignored, and
+/// the body stays byte for byte; no temporary file is left.
 #[test]
-fn a_write_keeps_the_text_it_was_given_and_leaves_no_temporary_file() {
+fn a_write_stamps_the_frontmatter_keeps_the_body_and_leaves_no_temporary_file() {
     let (_data, memory) = root();
-    let authored = "---\n# a comment\ndescription: 'quoted'\n---\nbody\n";
-    let target = url("machine://labpc/gpu");
-    memory
-        .write(&target, authored, None, Origin::User, no_agents, LIMIT)
-        .map(|written| written.revision)
-        .unwrap();
+    let authored =
+        "---\n# a comment\ndescription: 'quoted'\ncreated: 1999-01-01T00:00:00Z\n---\nbody\r\n";
+    write(&memory, "machine://labpc/gpu", authored, client(None)).unwrap();
     let folder = memory.machine_dir(&MachineName::new("labpc").unwrap());
     let names = fs::read_dir(&folder)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(names, ["gpu.md"]);
-    assert_eq!(fs::read_to_string(folder.join("gpu.md")).unwrap(), authored);
+    assert_eq!(
+        fs::read_to_string(folder.join("gpu.md")).unwrap(),
+        format!(
+            "---\ndescription: quoted\ncreated: {}\nmodified: {}\n---\nbody\r\n",
+            now(),
+            now()
+        )
+    );
 }
 
 #[test]
-fn invalid_or_oversized_writes_are_refused() {
+fn invalid_writes_are_refused() {
     let (_data, memory) = root();
-    let target = url("project://web/a");
     for written in [
         "no frontmatter",
         "---\ndescription: x\nextra: 1\n---\n",
         "---\ndescription: x\n---\n\u{0}",
+        "---\ndescription: x\nmodified: soon\n---\n",
     ] {
-        let result = memory
-            .write(&target, written, None, Origin::User, any_agent, LIMIT)
-            .map(|written| written.revision);
+        let result = write(&memory, "project://web/a", written, client(None));
         assert!(
             matches!(result, Err(StoreError::Invalid { .. })),
             "{written:?}"
         );
     }
-    let head = "---\ndescription: x\n---\n";
-    let fits = format!("{head}{}", "b".repeat(100 - head.len()));
-    assert!(
-        memory
-            .write(
-                &target,
-                &format!("{fits}b"),
-                None,
-                Origin::User,
-                any_agent,
-                100
-            )
-            .map(|written| written.revision)
-            .is_err()
-    );
-    assert!(
-        memory
-            .write(&target, &fits, None, Origin::User, any_agent, 100)
-            .map(|written| written.revision)
-            .is_ok()
-    );
 }
 
+/// Each kind of memory has its own limit; a change that would leave a
+/// memory over it is refused with the current content, and a memory
+/// already over it takes only changes that make it smaller (section
+/// 16.9.7).
 #[test]
-fn only_the_user_creates_user_categories_and_agent_files_need_an_agent() {
-    let (_data, memory) = root();
-    let category = url("user://work");
-    let refused = memory
-        .write(
-            &category,
-            &text("d", ""),
-            None,
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision);
-    assert!(matches!(refused, Err(StoreError::Refused(_))));
-    assert!(memory.read(&category, LIMIT).is_err());
-    memory
-        .write(
-            &category,
-            &text("d", ""),
-            None,
-            Origin::User,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision)
-        .unwrap();
-
-    // The model may edit an existing category.
-    let existing = memory.read(&url("user://feedback"), LIMIT).unwrap();
-    memory
-        .write(
-            &url("user://feedback"),
-            &text("d", "new"),
-            Some(&existing.entry.revision),
-            Origin::Model,
-            no_agents,
-            LIMIT,
-        )
-        .map(|written| written.revision)
-        .unwrap();
-
-    let agent = url("agent://reviewer");
-    for origin in [Origin::Model, Origin::User] {
-        let refused = memory.write(
-            &agent,
-            &text("d", ""),
-            None,
-            origin,
-            |id: &AgentId| {
-                if id.as_str() == "default" {
-                    AgentMemory::Registered
-                } else {
-                    AgentMemory::Unknown
-                }
-            },
-            LIMIT,
-        );
-        assert!(matches!(refused, Err(StoreError::Refused(_))), "{origin:?}");
-    }
-    memory
-        .write(
-            &agent,
-            &text("d", ""),
-            None,
-            Origin::Model,
-            |id: &AgentId| {
-                if id.as_str() == "reviewer" {
-                    AgentMemory::Registered
-                } else {
-                    AgentMemory::Unknown
-                }
-            },
-            LIMIT,
-        )
-        .map(|written| written.revision)
-        .unwrap();
-}
-
-#[test]
-fn deleting_user_and_agent_files_is_for_the_user_only() {
-    let (_data, memory) = root();
-    let agent = url("agent://reviewer");
-    let agent_revision = memory
-        .write(
-            &agent,
-            &text("d", ""),
-            None,
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision)
-        .unwrap();
-    let category = url("user://profile");
-    let category_revision = memory.read(&category, LIMIT).unwrap().entry.revision;
-    for (target, revision) in [(&agent, &agent_revision), (&category, &category_revision)] {
-        let refused = memory.delete(target, revision, Origin::Model);
-        assert!(matches!(refused, Err(StoreError::Refused(_))), "{target}");
-        assert!(memory.read(target, LIMIT).is_ok());
-        memory.delete(target, revision, Origin::User).unwrap();
-        assert!(matches!(
-            memory.read(target, LIMIT),
-            Err(StoreError::NotFound { .. })
-        ));
-    }
-}
-
-/// A model's delete of a user category or an agent file clears its body:
-/// the file stays with its frontmatter exactly as written, and listings,
-/// the snapshot, and search still show it with its description.
-#[test]
-fn clearing_a_body_keeps_the_file_and_its_frontmatter_byte_for_byte() {
-    use crate::memory::{
-        search::Visibility,
-        snapshot::{SnapshotLimits, SnapshotRequest},
-    };
-
+fn size_limits_refuse_growth_and_let_an_oversized_memory_shrink() {
     let (data, memory) = root();
-    let feedback_frontmatter = "---\r\n# Written by hand\r\ndescription: \"Feedback: corrections\"\r\nkeywords:\r\n  - feedback\r\n  - zebra\r\n---\r\n";
-    let agent_frontmatter = "---\ndescription: How reviews go\nkeywords: [review, zebra]\n---\n";
-    let mut changes = memory.subscribe();
-    for (target, frontmatter, body) in [
-        (
-            "user://feedback",
-            feedback_frontmatter,
-            "- prefer short answers\r\n",
-        ),
-        ("agent://reviewer", agent_frontmatter, "- zebra checklist\n"),
-    ] {
-        let target = url(target);
-        let current = memory
-            .read(&target, LIMIT)
-            .ok()
-            .map(|read| read.entry.revision);
-        let written = memory
-            .write(
-                &target,
-                &format!("{frontmatter}{body}"),
-                current.as_ref(),
-                Origin::User,
-                any_agent,
-                LIMIT,
-            )
-            .map(|written| written.revision)
-            .unwrap();
-        changes.mark_unchanged();
-
-        // A stale revision changes nothing.
-        let stale = MemoryRevision::of(b"something else");
-        assert!(matches!(
-            memory.clear_body(&target, &stale, LIMIT),
-            Err(StoreError::RevisionMismatch { current, .. }) if current == written
-        ));
-        assert!(!changes.has_changed().unwrap());
-
-        let cleared = memory.clear_body(&target, &written, LIMIT).unwrap();
-        let revision = MemoryRevision::of(frontmatter.as_bytes());
-        assert_eq!(cleared, ClearedBody::Cleared(revision.clone()), "{target}");
-        let path = data.path().join("memory").join(target.relative_path());
-        assert_eq!(fs::read(&path).unwrap(), frontmatter.as_bytes(), "{target}");
-        assert!(changes.has_changed().unwrap());
-        changes.mark_unchanged();
-
-        // An empty body is left alone.
-        assert_eq!(
-            memory.clear_body(&target, &revision, LIMIT).unwrap(),
-            ClearedBody::AlreadyEmpty(revision.clone())
-        );
-        assert_eq!(fs::read(&path).unwrap(), frontmatter.as_bytes());
-        assert!(!changes.has_changed().unwrap());
-    }
-
-    let listing = memory.list(&ListScope::All, LIMIT).unwrap();
-    let described = |target: &str| {
-        let entry = listing
-            .entries
-            .iter()
-            .find(|entry| entry.url.to_string() == target)
-            .unwrap_or_else(|| panic!("{target} is listed"));
-        let document = entry.document.as_ref().unwrap();
-        assert_eq!(document.body(), "");
-        document.description().to_owned()
+    let created = stamped("d", "", now(), now());
+    let at = |max| MemoryLimits {
+        project_max_bytes: max,
+        ..MemoryLimits::all(LIMIT)
     };
-    assert_eq!(described("user://feedback"), "Feedback: corrections");
-    assert_eq!(described("agent://reviewer"), "How reviews go");
-
-    let snapshot = memory
-        .snapshot(&SnapshotRequest {
-            project: None,
-            agent: AgentId::new("reviewer").unwrap(),
-            delegated: false,
-            writable: true,
-            machines: Vec::new(),
-            limits: SnapshotLimits {
-                max_file_bytes: LIMIT,
-                user_bytes: 16 * 1024,
-                index_bytes: 16 * 1024,
-            },
-            read: crate::memory::snapshot::ReadRules::all(),
-            rules: None,
-        })
-        .unwrap();
-    let feedback = snapshot
-        .user
-        .iter()
-        .find(|category| category.category == "feedback")
-        .unwrap();
-    assert_eq!(feedback.description, "Feedback: corrections");
-    assert_eq!(feedback.keywords, ["feedback", "zebra"]);
-    assert_eq!(feedback.body, "");
-    let agent = snapshot.agent.as_ref().unwrap().memory.as_ref().unwrap();
-    assert_eq!(agent.description, "How reviews go");
-    assert_eq!(agent.body, "");
-    let text = crate::memory::render::snapshot_turn(&snapshot).unwrap();
-    assert!(text.contains("user://feedback"), "{text}");
-    // An empty agent memory is left out of the rendered text.
-    assert!(!text.contains("About this agent"), "{text}");
-
-    // Search still finds both by their keywords, with no body lines.
-    let hits = memory
-        .search("zebra", None, 10, LIMIT, |_| Visibility::Full)
-        .unwrap();
-    let found = hits
-        .iter()
-        .map(|hit| (hit.url.to_string(), hit.description.as_str()))
-        .collect::<Vec<_>>();
-    assert_eq!(found.len(), 2, "{found:?}");
-    assert!(found.contains(&("user://feedback".to_owned(), "Feedback: corrections")));
-    assert!(found.contains(&("agent://reviewer".to_owned(), "How reviews go")));
-    assert!(
-        hits.iter()
-            .all(|hit| hit.detail.as_ref().unwrap().lines.is_empty())
+    // A body of `x` then `b`s that makes the file `bytes` long.
+    let body = |bytes: usize| format!("x{}", "b".repeat(bytes - created.len() - 1));
+    let refused = write_at(
+        &memory,
+        "project://web/a",
+        &text("d", &body(101)),
+        client(None),
+        &at(100),
+        now(),
     );
+    let Err(error @ StoreError::TooLarge { current: None, .. }) = refused else {
+        panic!("{refused:?}");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("101 bytes, over its limit of 100 bytes"),
+        "{error}"
+    );
+    let first = write_at(
+        &memory,
+        "project://web/a",
+        &text("d", &body(100)),
+        client(None),
+        &at(100),
+        now(),
+    )
+    .unwrap()
+    .revision;
+    // The limit is the kind's: a machine memory of the same size fits its own.
+    write_at(
+        &memory,
+        "machine://labpc/a",
+        &text("d", &body(101)),
+        client(None),
+        &at(100),
+        now(),
+    )
+    .unwrap();
+
+    // Growing past it is refused, showing what the memory holds now.
+    let grown = memory.edit(
+        &url("project://web/a"),
+        "x",
+        "xy",
+        any_agent,
+        &at(100),
+        now(),
+    );
+    let Err(
+        error @ StoreError::TooLarge {
+            current: Some(_), ..
+        },
+    ) = grown
+    else {
+        panic!("{grown:?}");
+    };
+    assert!(error.to_string().contains("Condense it first"), "{error}");
+    assert!(error.to_string().ends_with(&body(100)), "{error}");
+
+    // Lowered under the memory's size, only a smaller memory is accepted.
+    let path = data.path().join("memory/projects/web/a.md");
+    let size = fs::metadata(&path).unwrap().len() as usize;
+    let lowered = at(50);
+    let same = write_at(
+        &memory,
+        "project://web/a",
+        &text("d", &body(100)),
+        client(Some(&first)),
+        &lowered,
+        now(),
+    );
+    assert!(matches!(same, Err(StoreError::TooLarge { .. })), "{same:?}");
+    let smaller = memory
+        .edit(
+            &url("project://web/a"),
+            "xb",
+            "x",
+            any_agent,
+            &lowered,
+            now(),
+        )
+        .unwrap();
+    assert!((fs::metadata(&path).unwrap().len() as usize) < size);
+    write_at(
+        &memory,
+        "project://web/a",
+        &text("d", ""),
+        client(Some(&smaller)),
+        &lowered,
+        now(),
+    )
+    .unwrap();
 }
 
+/// A model replaces a memory only at the revision its session last saw,
+/// and its error shows the current content (section 16.9.8).
 #[test]
-fn clearing_needs_an_existing_valid_memory() {
-    let (data, memory) = root();
-    let ghost = url("agent://ghost");
+fn a_model_replaces_only_what_its_session_saw() {
+    let (_data, memory) = root();
+    let first = create(&memory, "user://habits", "- one\n");
+    let unseen = write(
+        &memory,
+        "user://habits",
+        &text("Habits", "- two\n"),
+        model(None, false),
+    );
+    let Err(error @ StoreError::Unseen { .. }) = unseen else {
+        panic!("{unseen:?}");
+    };
+    let message = error.to_string();
+    assert!(message.contains("this memory changed since you saw it, or you have not read it: read it first, or edit it"), "{message}");
+    assert!(
+        message.ends_with(&stamped("d", "- one\n", earlier(), earlier())),
+        "{message}"
+    );
+    let stale = MemoryRevision::of(b"older");
     assert!(matches!(
-        memory.clear_body(&ghost, &MemoryRevision::of(b""), LIMIT),
+        write(
+            &memory,
+            "user://habits",
+            &text("Habits", "- two\n"),
+            model(Some(&stale), false)
+        ),
+        Err(StoreError::Unseen { .. })
+    ));
+    let replaced = write(
+        &memory,
+        "user://habits",
+        &text("Habits", "- two\n"),
+        model(Some(&first), false),
+    )
+    .unwrap();
+    assert!(!replaced.created);
+    // A model may create a user category, and delete one (section 16.9.11).
+    let created = write(
+        &memory,
+        "user://tools",
+        &text("Favourite shell aliases", "- jq\n"),
+        model(None, false),
+    )
+    .unwrap();
+    assert!(created.created);
+    memory.delete(&url("user://tools"), None).unwrap();
+    memory.delete(&url("user://feedback"), None).unwrap();
+    assert!(matches!(
+        memory.read(&url("user://feedback")),
         Err(StoreError::NotFound { .. })
     ));
-    let path = data.path().join("memory/user/broken.md");
-    fs::write(&path, "no frontmatter\n").unwrap();
-    let revision = MemoryRevision::of(b"no frontmatter\n");
+}
+
+/// A new memory like ones in the same place is refused unless the writer
+/// says it is new; one with an existing body is always refused; a weak
+/// match is saved and listed (section 16.9.5).
+#[test]
+fn a_new_memory_is_compared_with_the_memories_around_it() {
+    let (_data, memory) = root();
+    let release = "---\ndescription: How releases are cut\nkeywords: [release, cargo-dist]\n---\n- tag first\n";
+    write(&memory, "project://web/release", release, client(None)).unwrap();
+    let elsewhere = "---\ndescription: Elsewhere\nkeywords: [release, cargo-dist, gpu]\n---\n- x\n";
+    write(&memory, "machine://labpc/release", elsewhere, client(None)).unwrap();
+
+    let near = "---\ndescription: Publishing\nkeywords: [release, cargo-dist]\n---\n- publish oven-sdk first\n";
+    let refused = write(&memory, "project://web/publish", near, model(None, false));
+    let Err(error @ StoreError::Similar { .. }) = refused else {
+        panic!("{refused:?}");
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("- project://web/release — How releases are cut"),
+        "{message}"
+    );
+    assert!(!message.contains("machine://"), "{message}");
+    assert!(message.contains("`new: true`"), "{message}");
+    let insisted = write(&memory, "project://web/publish", near, model(None, true)).unwrap();
+    assert_eq!(
+        insisted
+            .near
+            .iter()
+            .map(|near| near.url.to_string())
+            .collect::<Vec<_>>(),
+        ["project://web/release"]
+    );
+
+    // A weaker match is saved and listed.
+    let weak = "---\ndescription: Changelog style\nkeywords: [release, changelog]\n---\n- keep a changelog\n";
+    let written = write(&memory, "project://web/changelog", weak, model(None, false)).unwrap();
+    assert!(!written.near.is_empty());
+
+    // The same body is refused even when the writer insists.
+    let copy = "---\ndescription: Something else\n---\n- tag first\n";
     assert!(matches!(
-        memory.clear_body(&url("user://broken"), &revision, LIMIT),
-        Err(StoreError::Invalid { .. })
+        write(&memory, "project://web/copy", copy, model(None, true)),
+        Err(StoreError::Identical { existing, .. }) if existing.to_string() == "project://web/release"
     ));
-    assert_eq!(fs::read(&path).unwrap(), b"no frontmatter\n");
+    // A client's write is never compared.
+    write(&memory, "project://web/copy", copy, client(None)).unwrap();
 }
 
 #[test]
-fn a_delete_needs_the_current_revision() {
+fn creating_an_agent_file_needs_an_agent() {
+    let (_data, memory) = root();
+    let unknown = memory.write(
+        &url("agent://ghost"),
+        &text("d", ""),
+        client(None),
+        |_: &AgentId| AgentMemory::Unknown,
+        &MemoryLimits::all(LIMIT),
+        now(),
+    );
+    assert!(
+        matches!(unknown, Err(StoreError::Refused(_))),
+        "{unknown:?}"
+    );
+    write(&memory, "agent://reviewer", &text("d", ""), client(None)).unwrap();
+}
+
+#[test]
+fn a_delete_needs_the_current_revision_only_when_given_one() {
     let (_data, memory) = root();
     let target = url("machine://labpc/gpu");
     let first = create(&memory, "machine://labpc/gpu", "a");
     let stale = MemoryRevision::of(b"something else");
     assert!(matches!(
-        memory.delete(&target, &stale, Origin::Model),
+        memory.delete(&target, Some(&stale)),
         Err(StoreError::RevisionMismatch { current, .. }) if current == first
     ));
-    memory.delete(&target, &first, Origin::Model).unwrap();
+    memory.delete(&target, Some(&first)).unwrap();
     assert!(matches!(
-        memory.delete(&target, &first, Origin::Model),
+        memory.delete(&target, None),
         Err(StoreError::NotFound { .. })
     ));
     // A machine keeps its folder; it belongs to the machine registry.
@@ -457,11 +460,9 @@ fn a_delete_needs_the_current_revision() {
 fn a_project_folder_stays_when_its_last_memory_goes() {
     let (data, memory) = root();
     let folder = data.path().join("memory/projects/web");
-    let a = create(&memory, "project://web/a", "");
+    create(&memory, "project://web/a", "");
     assert!(folder.is_dir());
-    memory
-        .delete(&url("project://web/a"), &a, Origin::Model)
-        .unwrap();
+    memory.delete(&url("project://web/a"), None).unwrap();
     // The folder belongs to the project, not to its memories.
     assert!(folder.is_dir());
 }
@@ -481,16 +482,17 @@ impl MemoryOwners for Owners {
 }
 
 #[test]
-fn writes_to_a_project_that_does_not_exist_are_refused_for_model_and_user() {
+fn writes_to_a_project_that_does_not_exist_are_refused() {
     let (data, memory) = root();
-    for origin in [Origin::Model, Origin::User] {
+    let limits = MemoryLimits::all(LIMIT);
+    for mode in [client(None), model(None, true)] {
         let refused = memory.write(
             &url("project://shop/build"),
             &text("d", "x"),
-            None,
-            origin,
+            mode,
             Owners,
-            LIMIT,
+            &limits,
+            now(),
         );
         let Err(StoreError::Refused(reason)) = refused else {
             panic!("{refused:?}");
@@ -499,14 +501,14 @@ fn writes_to_a_project_that_does_not_exist_are_refused_for_model_and_user() {
         assert!(reason.contains("created from a client"), "{reason}");
     }
     assert!(!data.path().join("memory/projects/shop").exists());
-    let written = memory
+    memory
         .write(
             &url("project://web/build"),
             &text("d", "x"),
-            None,
-            Origin::Model,
+            client(None),
             Owners,
-            LIMIT,
+            &limits,
+            now(),
         )
         .unwrap();
     // An edit is a write too.
@@ -516,15 +518,14 @@ fn writes_to_a_project_that_does_not_exist_are_refused_for_model_and_user() {
         text("d", "old"),
     )
     .unwrap();
-    let old = memory.read(&url("project://shop/old"), LIMIT).unwrap();
     assert!(matches!(
         memory.edit(
             &url("project://shop/old"),
             "old",
             "new",
-            &old.entry.revision,
             Owners,
-            LIMIT
+            &limits,
+            now()
         ),
         Err(StoreError::Refused(_))
     ));
@@ -533,9 +534,9 @@ fn writes_to_a_project_that_does_not_exist_are_refused_for_model_and_user() {
             &url("project://web/build"),
             "x",
             "y",
-            &written.revision,
             Owners,
-            LIMIT,
+            &limits,
+            now(),
         )
         .unwrap();
 }
@@ -544,14 +545,15 @@ fn writes_to_a_project_that_does_not_exist_are_refused_for_model_and_user() {
 fn a_project_overview_keeps_the_daemons_description() {
     let (_data, memory) = root();
     let overview = url("project://web/overview");
+    let limits = MemoryLimits::all(LIMIT);
     let written = memory
         .write(
             &overview,
             &text("Mine", "A web shop.\n"),
-            None,
-            Origin::User,
+            client(None),
             Owners,
-            LIMIT,
+            &limits,
+            now(),
         )
         .unwrap();
     let kept = written.kept.expect("the description was kept");
@@ -559,7 +561,7 @@ fn a_project_overview_keeps_the_daemons_description() {
         kept.description.as_deref(),
         Some("Overview of the `web` project, loaded in full into its sessions")
     );
-    let read = memory.read(&overview, LIMIT).unwrap();
+    let read = memory.read(&overview).unwrap();
     let document = read.entry.document.unwrap();
     assert_eq!(
         document.description(),
@@ -568,16 +570,9 @@ fn a_project_overview_keeps_the_daemons_description() {
     assert_eq!(document.keywords(), ["k"]);
     assert_eq!(document.body(), "A web shop.\n");
     let revision = memory
-        .edit(
-            &overview,
-            "web",
-            "book",
-            &read.entry.revision,
-            Owners,
-            LIMIT,
-        )
+        .edit(&overview, "web", "book", Owners, &limits, now())
         .unwrap();
-    let edited = memory.read(&overview, LIMIT).unwrap();
+    let edited = memory.read(&overview).unwrap();
     assert_eq!(edited.entry.revision, revision);
     assert_eq!(
         edited.entry.document.unwrap().description(),
@@ -585,53 +580,42 @@ fn a_project_overview_keeps_the_daemons_description() {
     );
 }
 
+/// An edit applies whenever its `old` text occurs exactly once in the
+/// current body, whatever else changed (section 16.9.8).
 #[test]
 fn an_edit_replaces_exactly_one_occurrence() {
     let (_data, memory) = root();
     let target = url("project://web/a");
-    let first = create(&memory, "project://web/a", "alpha beta\nbeta gamma\n");
+    create(&memory, "project://web/a", "alpha beta\nbeta gamma\n");
     for (old, expected) in [
         ("delta", "does not occur"),
         ("beta", "occurs 2 times"),
         ("", "does not occur"),
     ] {
-        let error = memory
-            .edit(&target, old, "x", &first, any_agent, LIMIT)
-            .unwrap_err();
+        let error = edit(&memory, "project://web/a", old, "x").unwrap_err();
         assert!(error.to_string().contains(expected), "{old}: {error}");
     }
     // The frontmatter is not part of the body.
-    let error = memory
-        .edit(&target, "description", "x", &first, any_agent, LIMIT)
-        .unwrap_err();
+    let error = edit(&memory, "project://web/a", "description", "x").unwrap_err();
     assert!(matches!(error, StoreError::NoOccurrence { .. }));
 
-    let second = memory
-        .edit(&target, "alpha", "ALPHA", &first, any_agent, LIMIT)
-        .unwrap();
-    let read = memory.read(&target, LIMIT).unwrap();
+    let second = edit(&memory, "project://web/a", "alpha", "ALPHA").unwrap();
+    let read = memory.read(&target).unwrap();
     assert_eq!(read.entry.revision, second);
-    assert_eq!(read.text, text("d", "ALPHA beta\nbeta gamma\n"));
-
-    // Edits need the current revision, keep the file valid, and fit.
-    assert!(matches!(
-        memory.edit(&target, "gamma", "x", &first, any_agent, LIMIT),
-        Err(StoreError::RevisionMismatch { current, .. }) if current == second
-    ));
-    assert!(matches!(
-        memory.edit(&target, "gamma", "\u{7}", &second, any_agent, LIMIT),
-        Err(StoreError::Invalid { .. })
-    ));
-    let size = read.text.len();
-    assert!(matches!(
-        memory.edit(&target, "gamma", "gammas", &second, any_agent, size),
-        Err(StoreError::Invalid { .. })
-    ));
-    assert!(
-        memory
-            .edit(&target, "gamma", "gamm", &second, any_agent, size)
-            .is_ok()
+    assert_eq!(
+        read.text,
+        stamped("d", "ALPHA beta\nbeta gamma\n", earlier(), now())
     );
+    // Another change does not stop an edit that does not touch it.
+    edit(&memory, "project://web/a", "gamma", "GAMMA").unwrap();
+    assert!(matches!(
+        edit(&memory, "project://web/a", "gamma", "\u{7}"),
+        Err(StoreError::NoOccurrence { .. })
+    ));
+    assert!(matches!(
+        edit(&memory, "project://web/a", "GAMMA", "\u{7}"),
+        Err(StoreError::Invalid { .. })
+    ));
 }
 
 #[test]
@@ -642,28 +626,56 @@ fn editing_an_invalid_file_is_refused() {
     fs::write(&path, "no frontmatter alpha").unwrap();
     let revision = MemoryRevision::of(b"no frontmatter alpha");
     assert!(matches!(
-        memory.edit(
-            &url("project://web/a"),
-            "alpha",
-            "beta",
-            &revision,
-            any_agent,
-            LIMIT
-        ),
+        edit(&memory, "project://web/a", "alpha", "beta"),
         Err(StoreError::Invalid { .. })
     ));
     // Writing the whole file at its revision repairs it.
-    memory
-        .write(
-            &url("project://web/a"),
-            &text("d", ""),
-            Some(&revision),
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision)
+    write(
+        &memory,
+        "project://web/a",
+        &text("d", ""),
+        client(Some(&revision)),
+    )
+    .unwrap();
+}
+
+/// A file written before stamps reads with its modification time, and
+/// the start stamps it so, adding only the missing lines (section 16.9.6).
+#[test]
+fn files_without_stamps_get_their_modification_time() {
+    let (data, memory) = root();
+    let path = data.path().join("memory/machines/labpc/gpu.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let authored = "---\n# kept\ndescription: GPU\nmodified: 2026-10-20T16:03:10Z\n---\nbody\n";
+    fs::write(&path, authored).unwrap();
+    let file = fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(std::time::SystemTime::from(earlier()))
         .unwrap();
+    drop(file);
+    let read = memory.read(&url("machine://labpc/gpu")).unwrap();
+    let modified: Timestamp = "2026-10-20T16:03:10Z".parse().unwrap();
+    assert_eq!(
+        (read.entry.created, read.entry.modified),
+        (earlier(), modified)
+    );
+
+    let changes = memory.subscribe();
+    // The default categories have stamps already.
+    assert_eq!(memory.stamp_unstamped().unwrap(), 1);
+    assert!(changes.has_changed().unwrap());
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        format!(
+            "---\n# kept\ndescription: GPU\nmodified: 2026-10-20T16:03:10Z\ncreated: {}\n---\nbody\n",
+            earlier()
+        )
+    );
+    let read = memory.read(&url("machine://labpc/gpu")).unwrap();
+    assert_eq!(
+        (read.entry.created, read.entry.modified),
+        (earlier(), modified)
+    );
+    assert_eq!(memory.stamp_unstamped().unwrap(), 0);
 }
 
 #[test]
@@ -689,12 +701,12 @@ fn listing_reports_invalid_files_and_ignores_what_breaks_the_layout() {
     put("projects/web/a.md", &valid);
     put(
         "projects/web/big.md",
-        &format!("{valid}{}", "x".repeat(LIMIT)),
+        &format!("{valid}{}", "x".repeat(MAX_FILE_BYTES)),
     );
     put("projects/web_1/a.md", &valid);
     put("stray.txt", "x");
 
-    let listing = memory.list(&ListScope::All, LIMIT).unwrap();
+    let listing = memory.list(&ListScope::All).unwrap();
     let entries = listing
         .entries
         .iter()
@@ -737,7 +749,7 @@ fn listing_reports_invalid_files_and_ignores_what_breaks_the_layout() {
     assert!(
         reason("project://web/big")
             .unwrap()
-            .contains("max_file_bytes")
+            .contains("more than any memory may be")
     );
     assert_eq!(reason("project://web/a"), None);
     let big = listing
@@ -745,10 +757,10 @@ fn listing_reports_invalid_files_and_ignores_what_breaks_the_layout() {
         .iter()
         .find(|entry| entry.url.to_string() == "project://web/big")
         .unwrap();
-    assert_eq!(big.size, (valid.len() + LIMIT) as u64);
+    assert_eq!(big.size, (valid.len() + MAX_FILE_BYTES) as u64);
     assert_eq!(
         big.revision,
-        MemoryRevision::of(format!("{valid}{}", "x".repeat(LIMIT)).as_bytes())
+        MemoryRevision::of(format!("{valid}{}", "x".repeat(MAX_FILE_BYTES)).as_bytes())
     );
 
     let ignored = listing
@@ -787,7 +799,7 @@ fn listing_narrows_by_layer_agent_machine_and_project() {
     }
     let urls = |scope: ListScope| {
         memory
-            .list(&scope, LIMIT)
+            .list(&scope)
             .unwrap()
             .entries
             .into_iter()
@@ -822,7 +834,7 @@ fn the_first_start_creates_the_defaults_once_and_never_touches_an_existing_folde
     for layer in ["user", "agents", "machines", "projects"] {
         assert!(base.join(layer).is_dir(), "{layer}");
     }
-    let listing = memory.list(&ListScope::All, LIMIT).unwrap();
+    let listing = memory.list(&ListScope::All).unwrap();
     assert!(listing.ignored.is_empty());
     let found = listing
         .entries
@@ -913,38 +925,18 @@ fn successful_changes_through_any_clone_signal_subscribers() {
     let (_data, memory) = root();
     let mut changes = memory.subscribe();
     let tool = memory.clone();
-    let revision = create(&tool, "project://web/build", "b");
+    create(&tool, "project://web/build", "b");
     assert!(changes.has_changed().unwrap());
     changes.mark_unchanged();
 
     // A refused write changes nothing and signals nothing.
-    let refused = tool
-        .write(
-            &url("project://web/build"),
-            &text("d", "c"),
-            None,
-            Origin::Model,
-            any_agent,
-            LIMIT,
-        )
-        .map(|written| written.revision);
+    let refused = write(&tool, "project://web/build", &text("d", "c"), client(None));
     assert!(matches!(refused, Err(StoreError::Exists { .. })));
     assert!(!changes.has_changed().unwrap());
 
-    let revision = tool
-        .edit(
-            &url("project://web/build"),
-            "b",
-            "c",
-            &revision,
-            any_agent,
-            LIMIT,
-        )
-        .unwrap();
+    edit(&tool, "project://web/build", "b", "c").unwrap();
     assert!(changes.has_changed().unwrap());
     changes.mark_unchanged();
-    memory
-        .delete(&url("project://web/build"), &revision, Origin::User)
-        .unwrap();
+    memory.delete(&url("project://web/build"), None).unwrap();
     assert!(changes.has_changed().unwrap());
 }

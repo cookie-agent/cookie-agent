@@ -12,7 +12,8 @@ use super::{Engine, EngineError};
 use crate::memory::{
     MemoryError,
     file::MemoryRevision,
-    store::{ListScope, MemoryEntry, Origin, StoreError},
+    limits::MemoryLimits,
+    store::{ListScope, MemoryEntry, StoreError, WriteMode},
     url::{self, MemoryName, MemoryUrl},
 };
 
@@ -71,10 +72,18 @@ impl From<StoreError> for MemoryRequestError {
                 url: url.to_string(),
                 reason: reason.to_string(),
             },
-            // Edits are a tool's; a client replaces whole files.
+            StoreError::TooLarge { ref url, .. } => Self::Refused {
+                url: url.to_string(),
+                reason: error.to_string(),
+            },
+            // Edits, seen revisions, and the similar-memory check are a
+            // tool's; a client replaces whole files at a revision.
             error @ (StoreError::Refused(_)
             | StoreError::NoOccurrence { .. }
-            | StoreError::SeveralOccurrences { .. }) => Self::Store(error.to_string()),
+            | StoreError::SeveralOccurrences { .. }
+            | StoreError::Unseen { .. }
+            | StoreError::Similar { .. }
+            | StoreError::Identical { .. }) => Self::Store(error.to_string()),
         }
     }
 }
@@ -186,13 +195,13 @@ impl Engine {
     ) -> Result<MemoryListResult, EngineError> {
         let scope = list_scope(params)?;
         self.memory_blocking(move |engine| {
-            let max_file_bytes = engine.memory_limits().max_file_bytes;
-            let listing = engine.memory_root().list(&scope, max_file_bytes)?;
+            let limits = engine.memory_limits();
+            let listing = engine.memory_root().list(&scope)?;
             Ok(MemoryListResult {
                 memories: listing
                     .entries
                     .into_iter()
-                    .map(|entry| memory_info(&engine, entry))
+                    .map(|entry| memory_info(&engine, entry, &limits))
                     .collect(),
                 ignored: listing
                     .ignored
@@ -214,13 +223,17 @@ impl Engine {
     ) -> Result<MemoryReadResult, EngineError> {
         let url = parse_url(&params.url)?;
         self.memory_blocking(move |engine| {
-            let max_file_bytes = engine.memory_limits().max_file_bytes;
-            let read = engine.memory_root().read(&url, max_file_bytes)?;
+            let limits = engine.memory_limits();
+            let read = engine.memory_root().read(&url)?;
             Ok(MemoryReadResult {
-                url: url.to_string(),
                 text: read.text,
                 revision: read.entry.revision.as_str().to_owned(),
                 invalid: read.entry.document.err().map(|reason| reason.to_string()),
+                created: Some(read.entry.created),
+                modified: Some(read.entry.modified),
+                size: Some(read.entry.size),
+                max_size: Some(limits.max_bytes(&url) as u64),
+                url: url.to_string(),
             })
         })
         .await
@@ -240,16 +253,16 @@ impl Engine {
         let revision = params.revision.as_deref().map(parse_revision).transpose()?;
         let text = params.text;
         self.memory_blocking(move |engine| {
-            let max_file_bytes = engine.memory_limits().max_file_bytes;
+            let limits = engine.memory_limits();
             let written = engine
                 .memory_root()
                 .write(
                     &url,
                     &text,
-                    revision.as_ref(),
-                    Origin::User,
+                    WriteMode::Client(revision.as_ref()),
                     super::project_api::EngineMemoryOwners(&engine),
-                    max_file_bytes,
+                    &limits,
+                    jiff::Timestamp::now(),
                 )
                 .map_err(|error| match error {
                     StoreError::Refused(reason) => MemoryRequestError::Refused {
@@ -275,7 +288,7 @@ impl Engine {
         self.memory_blocking(move |engine| {
             engine
                 .memory_root()
-                .delete(&url, &revision, Origin::User)
+                .delete(&url, Some(&revision))
                 .map_err(|error| match error {
                     StoreError::Refused(reason) => MemoryRequestError::Refused {
                         url: url.to_string(),
@@ -295,7 +308,7 @@ impl Engine {
     }
 }
 
-fn memory_info(engine: &Engine, entry: MemoryEntry) -> MemoryInfo {
+fn memory_info(engine: &Engine, entry: MemoryEntry, limits: &MemoryLimits) -> MemoryInfo {
     let orphaned = match &entry.url {
         MemoryUrl::Agent { agent } => !engine.agent_registered(agent),
         _ => false,
@@ -309,6 +322,10 @@ fn memory_info(engine: &Engine, entry: MemoryEntry) -> MemoryInfo {
         Err(reason) => (None, Vec::new(), Some(reason.to_string())),
     };
     MemoryInfo {
+        created: Some(entry.created),
+        modified: Some(entry.modified),
+        last_read: engine.memory_root().last_read(&entry.url),
+        max_size: Some(limits.max_bytes(&entry.url) as u64),
         layer: layer_of(entry.url.layer()),
         group: entry.url.group().map(str::to_owned),
         url: entry.url.to_string(),

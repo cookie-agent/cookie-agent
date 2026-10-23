@@ -5,19 +5,26 @@
 //! rendered text. Each memory is first filtered by the run's `memory` rules
 //! (section 7.5): one they allow is shown, one they ask for is listed by
 //! URL and description only, and one they deny is left out uncounted.
+//! Every memory shown carries when it was modified, its size, and its
+//! kind's limit (section 16.9.7); the snapshot records when it was taken,
+//! so its ages render the same every time.
 
 use std::{cmp::Reverse, sync::Arc};
 
 use cookie_agent_protocol::{
-    AgentId, AttachmentName, MachineName, MemorySnapshot, MemorySnapshotAgent,
-    MemorySnapshotCategory, MemorySnapshotIndexEntry, MemorySnapshotMachine, MemorySnapshotMemory,
-    MemorySnapshotProject, ProjectName, Sha256Digest,
+    AgentId, AttachmentName, MachineName, MemoryDocumentStatus, MemorySnapshot,
+    MemorySnapshotAgent, MemorySnapshotCategory, MemorySnapshotIndexEntry, MemorySnapshotMachine,
+    MemorySnapshotMemory, MemorySnapshotProject, ProjectName, Sha256Digest,
 };
+use jiff::Timestamp;
 
 use super::{
-    MemoryError, MemoryRoot, render,
+    MemoryError, MemoryRoot,
+    file::{MemoryDocument, MemoryRevision},
+    limits::MemoryLimits,
+    render,
     search::Visibility,
-    store::{ListScope, StoreError},
+    store::{ListScope, MemoryEntry, StoreError},
     url::{MemoryLayer, MemoryUrl},
 };
 
@@ -47,24 +54,6 @@ impl std::fmt::Debug for ReadRules {
     }
 }
 
-/// The `[memory]` limits a snapshot is taken under, read when it is taken.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SnapshotLimits {
-    pub(crate) max_file_bytes: usize,
-    pub(crate) user_bytes: usize,
-    pub(crate) index_bytes: usize,
-}
-
-impl SnapshotLimits {
-    pub(crate) fn of(config: &cookie_agent_config::MemoryConfig) -> Self {
-        Self {
-            max_file_bytes: config.max_file_bytes,
-            user_bytes: config.snapshot_user_bytes,
-            index_bytes: config.snapshot_index_bytes,
-        }
-    }
-}
-
 /// What a run needs from memory.
 #[derive(Clone, Debug)]
 pub(crate) struct SnapshotRequest {
@@ -76,7 +65,9 @@ pub(crate) struct SnapshotRequest {
     pub(crate) machines: Vec<(MachineName, Vec<AttachmentName>)>,
     /// The session's project. Ignored for a delegated run.
     pub(crate) project: Option<ProjectName>,
-    pub(crate) limits: SnapshotLimits,
+    pub(crate) limits: MemoryLimits,
+    /// When the snapshot is taken.
+    pub(crate) now: Timestamp,
     /// What the run's `memory` rules let it read.
     pub(crate) read: ReadRules,
     /// The fingerprint of those rules, which the snapshot records.
@@ -91,8 +82,8 @@ type UserEntries = (
     Vec<MemorySnapshotIndexEntry>,
 );
 
-/// A memory's index line, with its file's modification time for ordering.
-type Dated = (std::time::SystemTime, MemorySnapshotIndexEntry);
+/// A memory's index line, with when it was modified for ordering.
+type Dated = (Timestamp, MemorySnapshotIndexEntry);
 
 /// `entries` newest first, then by URL.
 fn newest_first(entries: &mut [Dated]) {
@@ -101,96 +92,175 @@ fn newest_first(entries: &mut [Dated]) {
     });
 }
 
+/// A snapshot and the memories it shows whole, with the revisions it
+/// showed, which the session has then seen (section 16.9.8).
+#[derive(Clone, Debug)]
+pub(crate) struct TakenSnapshot {
+    pub(crate) snapshot: MemorySnapshot,
+    pub(crate) shown: Vec<(MemoryUrl, MemoryRevision)>,
+}
+
+/// How full `entry` is under `limits`, and when it was modified.
+fn status(entry: &MemoryEntry, limits: &MemoryLimits) -> MemoryDocumentStatus {
+    MemoryDocumentStatus {
+        modified: Some(entry.modified),
+        size: Some(entry.size),
+        max_size: Some(limits.max_bytes(&entry.url) as u64),
+    }
+}
+
+/// `entry`'s index line.
+fn index_entry(
+    entry: &MemoryEntry,
+    document: &MemoryDocument,
+    limits: &MemoryLimits,
+) -> MemorySnapshotIndexEntry {
+    MemorySnapshotIndexEntry {
+        url: entry.url.to_string(),
+        description: document.description().to_owned(),
+        keywords: document.keywords().to_vec(),
+        status: status(entry, limits),
+    }
+}
+
+/// `entry`'s content, whole.
+fn whole(
+    entry: &MemoryEntry,
+    document: &MemoryDocument,
+    limits: &MemoryLimits,
+) -> MemorySnapshotMemory {
+    MemorySnapshotMemory {
+        description: document.description().to_owned(),
+        keywords: document.keywords().to_vec(),
+        body: document.body().to_owned(),
+        status: status(entry, limits),
+    }
+}
+
 impl MemoryRoot {
     /// Reads memory into a snapshot for `request`. Invalid files are left
     /// out; only a failure to read a folder fails.
-    pub(crate) fn snapshot(
-        &self,
-        request: &SnapshotRequest,
-    ) -> Result<MemorySnapshot, MemoryError> {
+    pub(crate) fn snapshot(&self, request: &SnapshotRequest) -> Result<TakenSnapshot, MemoryError> {
         let limits = request.limits;
-        let agent = self.agent_entry(&request.agent, limits.max_file_bytes, &request.read)?;
+        let mut shown = Vec::new();
+        let agent = self.agent_entry(&request.agent, &limits, &request.read, &mut shown)?;
         if request.delegated {
-            return Ok(MemorySnapshot {
-                delegated: true,
-                writable: request.writable,
-                agent: Some(agent),
-                rules: request.rules.clone(),
-                ..MemorySnapshot::default()
+            return Ok(TakenSnapshot {
+                snapshot: MemorySnapshot {
+                    delegated: true,
+                    writable: request.writable,
+                    agent: Some(agent),
+                    rules: request.rules.clone(),
+                    taken_at: Some(request.now),
+                    ..MemorySnapshot::default()
+                },
+                shown,
             });
         }
         // The project's overview comes out of the user section's room, and
         // its index out of the machines index's, each before them: the
         // session's own project matters most.
         let (overview, project_memories) = match &request.project {
-            Some(project) => self.project_entries(project, limits, &request.read)?,
+            Some(project) => self.project_entries(project, &limits, &request.read)?,
             None => (None, Vec::new()),
         };
         let overview_bytes = match (&request.project, &overview) {
-            (Some(project), Some(overview)) => render::project_overview(project, overview).len(),
+            (Some(project), Some((overview, _))) => {
+                render::project_overview(project, overview, Some(request.now)).len()
+            }
             _ => 0,
         };
-        let (overview, overview_bytes, project_memories) = if overview_bytes > limits.user_bytes {
-            // Too long to show whole: listed in the index instead.
-            let project = request.project.as_ref().expect("an overview has a project");
-            let url = super::projects::overview_url(
-                &super::url::MemoryName::new(project.as_str())
-                    .expect("project names are memory names"),
-            );
-            let mut memories = project_memories;
-            let overview = overview.expect("a measured overview");
-            memories.insert(
-                0,
+        let (overview, overview_bytes, project_memories) =
+            if overview_bytes > limits.snapshot_user_bytes {
+                // Too long to show whole: listed in the index instead.
+                let project = request.project.as_ref().expect("an overview has a project");
+                let url = super::projects::overview_url(
+                    &super::url::MemoryName::new(project.as_str())
+                        .expect("project names are memory names"),
+                );
+                let mut memories = project_memories;
+                let (overview, _) = overview.expect("a measured overview");
+                memories.insert(
+                    0,
+                    (
+                        request.now,
+                        MemorySnapshotIndexEntry {
+                            url: url.to_string(),
+                            description: overview.description,
+                            keywords: overview.keywords,
+                            status: overview.status,
+                        },
+                    ),
+                );
+                (None, 0, memories)
+            } else {
+                if let Some((_, revision)) = &overview {
+                    let project = request.project.as_ref().expect("an overview has a project");
+                    shown.push((
+                        super::projects::overview_url(
+                            &super::url::MemoryName::new(project.as_str())
+                                .expect("project names are memory names"),
+                        ),
+                        revision.clone(),
+                    ));
+                }
                 (
-                    std::time::SystemTime::now(),
-                    MemorySnapshotIndexEntry {
-                        url: url.to_string(),
-                        description: overview.description,
-                        keywords: overview.keywords,
-                    },
-                ),
-            );
-            (None, 0, memories)
-        } else {
-            (overview, overview_bytes, project_memories)
-        };
-        let user_limits = SnapshotLimits {
-            user_bytes: limits.user_bytes - overview_bytes,
+                    overview.map(|(overview, _)| overview),
+                    overview_bytes,
+                    project_memories,
+                )
+            };
+        let user_limits = MemoryLimits {
+            snapshot_user_bytes: limits.snapshot_user_bytes - overview_bytes,
             ..limits
         };
-        let (user, user_omitted, user_listed) = self.user_entries(user_limits, &request.read)?;
+        let (user, user_omitted, user_listed) =
+            self.user_entries(&user_limits, &request.read, &mut shown, request.now)?;
         let project = request.project.as_ref().map(|project| {
             // Listing one more can be shorter than counting it, so every
             // count is measured.
             let fits = (1..=project_memories.len())
                 .rev()
                 .find(|&count| {
-                    render::project_index(&project_index(project, &project_memories, count)).len()
-                        <= limits.index_bytes
+                    render::project_index(
+                        &project_index(project, &project_memories, count),
+                        Some(request.now),
+                    )
+                    .len()
+                        <= limits.snapshot_index_bytes
                 })
                 .unwrap_or(0);
             let mut entry = project_index(project, &project_memories, fits);
             entry.overview = overview;
             entry
         });
-        let project_bytes = project
-            .as_ref()
-            .map_or(0, |project| render::project_index(project).len());
-        let machine_limits = SnapshotLimits {
-            index_bytes: limits.index_bytes.saturating_sub(project_bytes),
+        let project_bytes = project.as_ref().map_or(0, |project| {
+            render::project_index(project, Some(request.now)).len()
+        });
+        let machine_limits = MemoryLimits {
+            snapshot_index_bytes: limits.snapshot_index_bytes.saturating_sub(project_bytes),
             ..limits
         };
-        let machines = self.machine_entries(&request.machines, machine_limits, &request.read)?;
-        Ok(MemorySnapshot {
-            delegated: false,
-            writable: request.writable,
-            user,
-            user_omitted,
-            user_listed,
-            agent: Some(agent),
-            machines,
-            project,
-            rules: request.rules.clone(),
+        let machines = self.machine_entries(
+            &request.machines,
+            &machine_limits,
+            &request.read,
+            request.now,
+        )?;
+        Ok(TakenSnapshot {
+            snapshot: MemorySnapshot {
+                delegated: false,
+                writable: request.writable,
+                user,
+                user_omitted,
+                user_listed,
+                agent: Some(agent),
+                machines,
+                project,
+                rules: request.rules.clone(),
+                taken_at: Some(request.now),
+            },
+            shown,
         })
     }
 
@@ -198,21 +268,19 @@ impl MemoryRoot {
     /// and the rules allow it; and its other valid memories the rules let
     /// the run see, newest first, the overview among them when the rules
     /// ask before reading it.
+    #[allow(clippy::type_complexity)]
     fn project_entries(
         &self,
         project: &ProjectName,
-        limits: SnapshotLimits,
+        limits: &MemoryLimits,
         read: &ReadRules,
-    ) -> Result<(Option<MemorySnapshotMemory>, Vec<Dated>), MemoryError> {
+    ) -> Result<(Option<(MemorySnapshotMemory, MemoryRevision)>, Vec<Dated>), MemoryError> {
         let name =
             super::url::MemoryName::new(project.as_str()).expect("project names are memory names");
         let mut overview = None;
         let mut memories = Vec::new();
-        for entry in self
-            .list(&ListScope::Project(name), limits.max_file_bytes)?
-            .entries
-        {
-            let Ok(document) = entry.document else {
+        for entry in self.list(&ListScope::Project(name))?.entries {
+            let Ok(document) = &entry.document else {
                 continue;
             };
             let visibility = read.of(&entry.url);
@@ -221,22 +289,11 @@ impl MemoryRoot {
             }
             if super::projects::is_overview(&entry.url) && visibility == Visibility::Full {
                 if !document.body().trim().is_empty() {
-                    overview = Some(MemorySnapshotMemory {
-                        description: document.description().to_owned(),
-                        keywords: document.keywords().to_vec(),
-                        body: document.body().to_owned(),
-                    });
+                    overview = Some((whole(&entry, document, limits), entry.revision.clone()));
                 }
                 continue;
             }
-            memories.push((
-                entry.modified,
-                MemorySnapshotIndexEntry {
-                    url: entry.url.to_string(),
-                    description: document.description().to_owned(),
-                    keywords: document.keywords().to_vec(),
-                },
-            ));
+            memories.push((entry.modified, index_entry(&entry, document, limits)));
         }
         newest_first(&mut memories);
         Ok((overview, memories))
@@ -247,30 +304,30 @@ impl MemoryRoot {
     /// categories the rules ask before reading, listed.
     fn user_entries(
         &self,
-        limits: SnapshotLimits,
+        limits: &MemoryLimits,
         read: &ReadRules,
+        shown: &mut Vec<(MemoryUrl, MemoryRevision)>,
+        now: Timestamp,
     ) -> Result<UserEntries, MemoryError> {
         let mut categories = Vec::new();
+        let mut revisions = Vec::new();
         let mut listed = Vec::new();
-        for entry in self
-            .list(&ListScope::Layer(MemoryLayer::User), limits.max_file_bytes)?
-            .entries
-        {
-            let Ok(document) = entry.document else {
+        for entry in self.list(&ListScope::Layer(MemoryLayer::User))?.entries {
+            let Ok(document) = &entry.document else {
                 continue;
             };
             match read.of(&entry.url) {
-                Visibility::Full => categories.push(MemorySnapshotCategory {
-                    category: entry.url.name().to_owned(),
-                    description: document.description().to_owned(),
-                    keywords: document.keywords().to_vec(),
-                    body: document.body().to_owned(),
-                }),
-                Visibility::Summary => listed.push(MemorySnapshotIndexEntry {
-                    url: entry.url.to_string(),
-                    description: document.description().to_owned(),
-                    keywords: document.keywords().to_vec(),
-                }),
+                Visibility::Full => {
+                    categories.push(MemorySnapshotCategory {
+                        category: entry.url.name().to_owned(),
+                        description: document.description().to_owned(),
+                        keywords: document.keywords().to_vec(),
+                        body: document.body().to_owned(),
+                        status: status(&entry, limits),
+                    });
+                    revisions.push((entry.url.clone(), entry.revision.clone()));
+                }
+                Visibility::Summary => listed.push(index_entry(&entry, document, limits)),
                 Visibility::Hidden => {}
             }
         }
@@ -281,67 +338,70 @@ impl MemoryRoot {
         // Each check renders the section as it would end with this file the
         // last one shown, so the section that is kept was measured whole.
         let fits = (1..=categories.len())
-            .take_while(|&shown| {
-                render::user_section(&categories[..shown], &names[shown..], &listed).len()
-                    <= limits.user_bytes
+            .take_while(|&count| {
+                render::user_section(&categories[..count], &names[count..], &listed, Some(now))
+                    .len()
+                    <= limits.snapshot_user_bytes
             })
             .last()
             .unwrap_or(0);
         let mut user = categories;
         user.truncate(fits);
+        shown.extend(revisions.into_iter().take(fits));
         Ok((user, names[fits..].to_vec(), listed))
     }
 
     /// The run's agent's file, whole, when it exists, is valid, and the
-    /// rules allow it; marked omitted when its rendered content exceeds
-    /// `max_file_bytes`; listed when the rules ask before reading it.
+    /// rules allow it; marked omitted when its rendered content exceeds the
+    /// room the snapshot's other limits leave in the event bound, which is
+    /// at least `agent_max_bytes`, so a file over its limit still shows
+    /// while it fits; listed when the rules ask before reading it.
     fn agent_entry(
         &self,
         agent: &AgentId,
-        max_file_bytes: usize,
+        limits: &MemoryLimits,
         read: &ReadRules,
+        shown: &mut Vec<(MemoryUrl, MemoryRevision)>,
     ) -> Result<MemorySnapshotAgent, MemoryError> {
         let url = MemoryUrl::Agent {
             agent: agent.clone(),
         };
-        let document = match self.read(&url, max_file_bytes) {
-            Ok(read) => read.entry.document.ok(),
+        let entry = match self.read(&url) {
+            Ok(read) => Some(read.entry).filter(|entry| entry.document.is_ok()),
             Err(StoreError::NotFound { .. }) => None,
             Err(StoreError::Memory(error)) => return Err(error),
             Err(_) => None,
         };
-        let mut entry = MemorySnapshotAgent {
+        let mut agent_entry = MemorySnapshotAgent {
             agent: agent.clone(),
             memory: None,
             omitted: false,
             listed: None,
         };
-        let document = match read.of(&url) {
-            Visibility::Full => document,
+        let found = match read.of(&url) {
+            Visibility::Full => entry,
             Visibility::Summary => {
-                entry.listed = document.map(|document| MemorySnapshotIndexEntry {
-                    url: url.to_string(),
-                    description: document.description().to_owned(),
-                    keywords: document.keywords().to_vec(),
+                agent_entry.listed = entry.as_ref().map(|entry| {
+                    let document = entry.document.as_ref().expect("a valid agent file");
+                    index_entry(entry, document, limits)
                 });
                 None
             }
             Visibility::Hidden => None,
         };
-        if let Some(document) = document {
-            if render::agent_content_bytes(document.description(), document.body())
-                <= max_file_bytes
-            {
-                entry.memory = Some(MemorySnapshotMemory {
-                    description: document.description().to_owned(),
-                    keywords: document.keywords().to_vec(),
-                    body: document.body().to_owned(),
-                });
+        if let Some(found) = found {
+            let document = found.document.as_ref().expect("a valid agent file");
+            let room = cookie_agent_config::MemoryConfig::MAX_LIMITS_SUM
+                .saturating_sub(limits.snapshot_user_bytes + limits.snapshot_index_bytes)
+                .max(limits.agent_max_bytes);
+            if render::agent_content_bytes(document.description(), document.body()) <= room {
+                agent_entry.memory = Some(whole(&found, document, limits));
+                shown.push((url, found.revision.clone()));
             } else {
-                entry.omitted = true;
+                agent_entry.omitted = true;
             }
         }
-        Ok(entry)
+        Ok(agent_entry)
     }
 
     /// One entry per machine, its valid memories the rules let the run see
@@ -350,26 +410,20 @@ impl MemoryRoot {
     fn machine_entries(
         &self,
         machines: &[(MachineName, Vec<AttachmentName>)],
-        limits: SnapshotLimits,
+        limits: &MemoryLimits,
         read: &ReadRules,
+        now: Timestamp,
     ) -> Result<Vec<MemorySnapshotMachine>, MemoryError> {
         let mut all = Vec::with_capacity(machines.len());
         for (machine, _) in machines {
             let mut entries = self
-                .list(&ListScope::Machine(machine.clone()), limits.max_file_bytes)?
+                .list(&ListScope::Machine(machine.clone()))?
                 .entries
                 .into_iter()
                 .filter(|entry| read.of(&entry.url) != Visibility::Hidden)
                 .filter_map(|entry| {
-                    let document = entry.document.ok()?;
-                    Some((
-                        entry.modified,
-                        MemorySnapshotIndexEntry {
-                            url: entry.url.to_string(),
-                            description: document.description().to_owned(),
-                            keywords: document.keywords().to_vec(),
-                        },
-                    ))
+                    let document = entry.document.as_ref().ok()?;
+                    Some((entry.modified, index_entry(&entry, document, limits)))
                 })
                 .collect::<Vec<_>>();
             newest_first(&mut entries);
@@ -400,7 +454,8 @@ impl MemoryRoot {
         };
         let fits = (1..=total)
             .take_while(|&count| {
-                render::machines_section(&shown(count)).len() <= limits.index_bytes
+                render::machines_section(&shown(count), Some(now)).len()
+                    <= limits.snapshot_index_bytes
             })
             .last()
             .unwrap_or(0);
@@ -419,6 +474,17 @@ fn project_index(project: &ProjectName, memories: &[Dated], count: usize) -> Mem
             .map(|(_, entry)| entry.clone())
             .collect(),
         omitted: (memories.len() - count) as u64,
+    }
+}
+
+#[cfg(test)]
+impl MemoryRoot {
+    /// The snapshot alone, for tests that do not look at what it showed.
+    pub(crate) fn snapshot_only(
+        &self,
+        request: &SnapshotRequest,
+    ) -> Result<MemorySnapshot, MemoryError> {
+        self.snapshot(request).map(|taken| taken.snapshot)
     }
 }
 

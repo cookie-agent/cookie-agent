@@ -1,6 +1,7 @@
 use cookie_agent_protocol::{
-    AgentId, AttachmentName, MachineName, MemorySnapshot, MemorySnapshotAgent,
-    MemorySnapshotCategory, MemorySnapshotIndexEntry, MemorySnapshotMachine, MemorySnapshotMemory,
+    AgentId, AttachmentName, MachineName, MemoryDocumentStatus, MemorySnapshot,
+    MemorySnapshotAgent, MemorySnapshotCategory, MemorySnapshotIndexEntry, MemorySnapshotMachine,
+    MemorySnapshotMemory,
 };
 
 use super::{
@@ -14,6 +15,7 @@ fn category(name: &str, description: &str, body: &str) -> MemorySnapshotCategory
         description: description.into(),
         keywords: vec!["kept".into()],
         body: body.into(),
+        status: MemoryDocumentStatus::default(),
     }
 }
 
@@ -24,6 +26,7 @@ fn agent(id: &str, memory: Option<(&str, &str)>) -> MemorySnapshotAgent {
             description: description.into(),
             keywords: Vec::new(),
             body: body.into(),
+            status: MemoryDocumentStatus::default(),
         }),
         omitted: false,
         listed: None,
@@ -38,6 +41,7 @@ fn index(url: &str, description: &str, keywords: &[&str]) -> MemorySnapshotIndex
             .iter()
             .map(|keyword| (*keyword).to_owned())
             .collect(),
+        status: MemoryDocumentStatus::default(),
     }
 }
 
@@ -65,6 +69,7 @@ fn a_root_snapshot_renders_the_spec_example() {
     let snapshot = MemorySnapshot {
         project: None,
         rules: None,
+        taken_at: None,
         user_listed: Vec::new(),
         delegated: false,
         writable: true,
@@ -115,10 +120,6 @@ fn a_root_snapshot_renders_the_spec_example() {
         "<system-reminder>
 # Memory
 {BACKGROUND}
-
-Project notes are never shown here. Before starting a task, search memory (memory_search) for the project it belongs to, by repository name, directory, or remote, and for anything else the task touches. Read a listed memory with memory_read.
-
-Save what a later session should know: memory_write for a new memory, memory_edit to change one. Prefer editing an existing memory over adding a near-duplicate. Give each memory keywords a later search would use. Never save secrets. Lessons about doing your job as this agent go in agent://default.
 
 ## About the user
 
@@ -178,10 +179,6 @@ fn a_delegated_snapshot_renders_the_spec_example() {
 # Memory
 {BACKGROUND}
 
-Only your own agent's notes are shown here. Search memory (memory_search) for the user's preferences, the project, and the machines your task touches. Read a listed memory with memory_read.
-
-You may save only lessons about doing your job as this agent, in agent://reviewer: memory_write to create it, memory_edit to change it. Keep it short and current: update an entry rather than adding a near-duplicate. Never save secrets.
-
 ## About this agent (reviewer)
 
 <memory url=\"agent://reviewer\" description=\"What the user wants from code reviews\">
@@ -192,42 +189,74 @@ You may save only lessons about doing your job as this agent, in agent://reviewe
     assert_eq!(snapshot_turn(&snapshot).as_deref(), Some(expected.as_str()));
 }
 
+/// How to search and save is the memory section of the system prompt
+/// (section 16.9.1): the turn holds no such paragraph, so write access
+/// changes nothing in it.
 #[test]
-fn without_write_access_the_save_paragraph_is_left_out() {
-    let delegated = MemorySnapshot {
-        delegated: true,
-        writable: false,
-        agent: Some(agent("reviewer", Some(("Reviews", "- bugs first\n")))),
-        ..MemorySnapshot::default()
+fn write_access_does_not_change_the_turn() {
+    for delegated in [false, true] {
+        let snapshot = |writable| MemorySnapshot {
+            delegated,
+            writable,
+            agent: Some(agent("reviewer", Some(("Reviews", "- bugs first\n")))),
+            ..MemorySnapshot::default()
+        };
+        let text = snapshot_turn(&snapshot(true)).expect("renders");
+        assert_eq!(snapshot_turn(&snapshot(false)), Some(text.clone()));
+        assert!(!text.contains("memory_search") && !text.contains("memory_write"));
+    }
+}
+
+/// A snapshot that records when it was taken shows each memory's age,
+/// size, and limit, and marks one over its limit.
+#[test]
+fn memories_show_their_age_size_and_limit() {
+    let taken: jiff::Timestamp = "2026-10-22T12:00:00Z".parse().unwrap();
+    let status = |days: i64, size: u64| MemoryDocumentStatus {
+        modified: Some(taken - jiff::SignedDuration::from_hours(24 * days)),
+        size: Some(size),
+        max_size: Some(2048),
     };
-    assert_eq!(
-        snapshot_turn(&delegated).as_deref(),
-        Some(
-            format!(
-                "<system-reminder>
-# Memory
-{BACKGROUND}
-
-Only your own agent's notes are shown here. Search memory (memory_search) for the user's preferences, the project, and the machines your task touches. Read a listed memory with memory_read.
-
-## About this agent (reviewer)
-
-<memory url=\"agent://reviewer\" description=\"Reviews\">
-- bugs first
-</memory>
-</system-reminder>"
-            )
-            .as_str()
-        )
-    );
-    let root = MemorySnapshot {
-        writable: false,
-        user: vec![category("profile", "Who the user is", "")],
+    let mut feedback = category("feedback", "Corrections", "- a\n");
+    feedback.status = status(21, 1434);
+    let mut over = category("preferences", "Ways", "- b\n");
+    over.status = status(2, 2600);
+    let mut scratch = index("machine://labpc/scratch", "Use /scratch", &["disk"]);
+    scratch.status = status(5, 300);
+    let mut big = index("machine://labpc/big", "Big", &[]);
+    big.status = status(40, 3000);
+    let snapshot = MemorySnapshot {
+        user: vec![feedback, over],
         agent: Some(agent("default", None)),
+        machines: vec![machine("labpc", &[], vec![scratch, big], 0)],
+        taken_at: Some(taken),
         ..MemorySnapshot::default()
     };
-    let text = snapshot_turn(&root).expect("a snapshot with an agent renders");
-    assert!(!text.contains("Save what a later session"), "{text}");
+    let text = snapshot_turn(&snapshot).expect("renders");
+    for expected in [
+        "<memory url=\"user://feedback\" description=\"Corrections\" modified=\"3 weeks ago\" size=\"1.4 KB\" max_size=\"2 KB\">",
+        "<memory url=\"user://preferences\" description=\"Ways\" modified=\"2 days ago\" size=\"2.5 KB\" max_size=\"2 KB\" status=\"over its limit\">",
+        "- machine://labpc/scratch: Use /scratch [keywords: disk] (5 days old)",
+        "- machine://labpc/big: Big (1 month old, over its limit)",
+    ] {
+        assert!(text.contains(expected), "{expected}\n{text}");
+    }
+    // Ages are measured to when the snapshot was taken, so equal events
+    // render equal text; without that time, no age is shown.
+    assert_eq!(snapshot_turn(&snapshot.clone()), Some(text));
+    let untimed = snapshot_turn(&MemorySnapshot {
+        taken_at: None,
+        ..snapshot
+    })
+    .unwrap();
+    assert!(
+        untimed.contains("description=\"Corrections\" size=\"1.4 KB\""),
+        "{untimed}"
+    );
+    assert!(
+        untimed.contains("- machine://labpc/big: Big (over its limit)"),
+        "{untimed}"
+    );
 }
 
 /// The user and machine sections keep their heading when empty; an agent
@@ -323,7 +352,6 @@ fn a_snapshot_with_no_memory_to_show_renders_nothing() {
         ..nothing.clone()
     };
     let text = snapshot_turn(&listed).expect("a listed memory renders");
-    assert!(text.contains("Save what a later session"), "{text}");
     assert!(
         text.contains(
             "## About the user\n\nListed only, as reading asks first (memory_read):\n- user://preferences: How the user works"
@@ -352,7 +380,8 @@ fn omissions_are_named_or_counted() {
         user_section(
             &[category("profile", "Who", "")],
             &["preferences".into(), "references".into()],
-            &[]
+            &[],
+            None
         ),
         "## About the user
 
@@ -372,7 +401,7 @@ Not shown (too long): user://preferences, user://references"
             .ends_with("## About this agent (reviewer)\n\nNot shown (too long): agent://reviewer\n</system-reminder>")
     );
     assert_eq!(
-        machines_section(&[machine("labpc", &[], Vec::new(), 4)]),
+        machines_section(&[machine("labpc", &[], Vec::new(), 4)], None),
         "## Machines in this session
 
 <machine name=\"labpc\">
@@ -406,16 +435,19 @@ fn bodies_escape_only_the_turns_own_tags() {
 
 #[test]
 fn machine_lines_escape_like_bodies_and_attributes_fully() {
-    let section = machines_section(&[machine(
-        "labpc",
-        &["a", "b"],
-        vec![index(
-            "machine://labpc/x",
-            "<memory> & Vec<u8>",
-            &["<machine"],
+    let section = machines_section(
+        &[machine(
+            "labpc",
+            &["a", "b"],
+            vec![index(
+                "machine://labpc/x",
+                "<memory> & Vec<u8>",
+                &["<machine"],
+            )],
+            0,
         )],
-        0,
-    )]);
+        None,
+    );
     assert_eq!(
         section,
         "## Machines in this session
@@ -434,7 +466,7 @@ fn agent_content_is_measured_escaped() {
 }
 
 #[test]
-fn a_project_section_follows_the_machines_and_changes_the_search_paragraph() {
+fn a_project_section_follows_the_machines() {
     let project = cookie_agent_protocol::MemorySnapshotProject {
         project: cookie_agent_protocol::ProjectName::new("cookie-agent").expect("project name"),
         overview: Some(MemorySnapshotMemory {
@@ -442,6 +474,7 @@ fn a_project_section_follows_the_machines_and_changes_the_search_paragraph() {
                 .into(),
             keywords: Vec::new(),
             body: "A coding agent in Rust.\n".into(),
+            status: MemoryDocumentStatus::default(),
         }),
         memories: vec![index(
             "project://cookie-agent/release",
@@ -451,7 +484,7 @@ fn a_project_section_follows_the_machines_and_changes_the_search_paragraph() {
         omitted: 2,
     };
     assert_eq!(
-        project_section(&project),
+        project_section(&project, None),
         "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\n<memory url=\"project://cookie-agent/overview\" description=\"Overview of the `cookie-agent` project, loaded in full into its sessions\">\nA coding agent in Rust.\n</memory>\n\nOther memories of this project (read with memory_read):\n- project://cookie-agent/release: How releases are cut [keywords: release]\n- 2 more; search with layer \"project\"."
     );
     let snapshot = MemorySnapshot {
@@ -463,8 +496,6 @@ fn a_project_section_follows_the_machines_and_changes_the_search_paragraph() {
         ..MemorySnapshot::default()
     };
     let turn = snapshot_turn(&snapshot).expect("a turn");
-    assert!(turn.contains("This session's project notes are listed below. Search memory (memory_search) for other projects only when the task reaches into them."));
-    assert!(!turn.contains("Project notes are never shown here."));
     let machines_at = turn.find("## Machines in this session").expect("machines");
     let project_at = turn.find("## Project cookie-agent").expect("project");
     assert!(machines_at < project_at);
@@ -478,17 +509,7 @@ fn a_project_section_follows_the_machines_and_changes_the_search_paragraph() {
         ..project
     };
     assert_eq!(
-        project_section(&bare),
+        project_section(&bare, None),
         "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\nOther memories of this project (read with memory_read):\nNone."
-    );
-    // Outside a project the paragraph stays as it was.
-    let outside = MemorySnapshot {
-        project: None,
-        ..snapshot
-    };
-    assert!(
-        snapshot_turn(&outside)
-            .expect("a turn")
-            .contains("Project notes are never shown here.")
     );
 }

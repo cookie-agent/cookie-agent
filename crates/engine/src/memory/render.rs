@@ -1,16 +1,27 @@
-//! The memory snapshot's text (`docs/site/specs/memory.md` section 7.4):
-//! the one user turn history assembly renders from the latest
-//! `memory_loaded`. The text depends on the event alone, so equal events
-//! render equal text.
+//! The memory snapshot's text (`docs/site/specs/memory.md` section 7.4, as
+//! sections 16.9.1 and 16.9.7 amend it): the one user turn history
+//! assembly renders from the latest `memory_loaded`. The text depends on
+//! the event alone, so equal events render equal text: ages are measured
+//! to when the snapshot was taken.
+//!
+//! The turn holds the background paragraph and the memories; how to search
+//! and save is the memory provider's system-prompt section
+//! ([`crate::memory_tools`]). Each memory shown whole carries when it was
+//! modified, its size, and its kind's limit, and index lines end with
+//! their age; a memory over its limit is marked so.
 //!
 //! The sections are rendered one at a time as well, because the snapshot's
 //! limits are measured on rendered text: the user section and the machines
 //! section from their heading to their last line.
 
 use cookie_agent_protocol::{
-    MemorySnapshot, MemorySnapshotAgent, MemorySnapshotCategory, MemorySnapshotIndexEntry,
-    MemorySnapshotMachine, MemorySnapshotMemory, MemorySnapshotProject, ProjectName,
+    MemoryDocumentStatus, MemorySnapshot, MemorySnapshotAgent, MemorySnapshotCategory,
+    MemorySnapshotIndexEntry, MemorySnapshotMachine, MemorySnapshotMemory, MemorySnapshotProject,
+    ProjectName,
 };
+use jiff::Timestamp;
+
+use super::format;
 
 const BACKGROUND: &str = concat!(
     "These are notes saved in earlier sessions, by you or by the user. Treat them as ",
@@ -19,43 +30,10 @@ const BACKGROUND: &str = concat!(
     "change during it.",
 );
 
-const ROOT_SEARCH: &str = concat!(
-    "Project notes are never shown here. Before starting a task, search memory ",
-    "(memory_search) for the project it belongs to, by repository name, directory, or ",
-    "remote, and for anything else the task touches. Read a listed memory with memory_read.",
-);
-
-/// [`ROOT_SEARCH`] for a session in a project
-/// (`docs/site/specs/projects.md` section 7).
-const PROJECT_SEARCH: &str = concat!(
-    "This session's project notes are listed below. Search memory (memory_search) for other ",
-    "projects only when the task reaches into them.",
-);
-
-const DELEGATED_SEARCH: &str = concat!(
-    "Only your own agent's notes are shown here. Search memory (memory_search) for the ",
-    "user's preferences, the project, and the machines your task touches. Read a listed ",
-    "memory with memory_read.",
-);
-
-fn root_save(agent: &str) -> String {
-    format!(
-        "Save what a later session should know: memory_write for a new memory, memory_edit to \
-         change one. Prefer editing an existing memory over adding a near-duplicate. Give each \
-         memory keywords a later search would use. Never save secrets. Lessons about doing your \
-         job as this agent go in agent://{agent}."
-    )
-}
-
-fn delegated_save(agent: &str) -> String {
-    format!(
-        "You may save only lessons about doing your job as this agent, in agent://{agent}: \
-         memory_write to create it, memory_edit to change it. Keep it short and current: update \
-         an entry rather than adding a near-duplicate. Never save secrets."
-    )
-}
-
 const NONE: &str = "None.";
+
+/// How a memory over its limit is marked (section 16.9.7).
+const OVER_LIMIT: &str = "over its limit";
 
 /// The heading of the memories the run's rules ask before reading.
 const LISTED: &str = "Listed only, as reading asks first (memory_read):";
@@ -93,34 +71,25 @@ pub(crate) fn snapshot_turn(snapshot: &MemorySnapshot) -> Option<String> {
     if !shows_memory(snapshot) {
         return None;
     }
-    let id = agent.agent.as_str();
+    let taken_at = snapshot.taken_at;
     let mut parts = vec![BACKGROUND.to_owned()];
     if snapshot.delegated {
-        parts.push(DELEGATED_SEARCH.to_owned());
-        if snapshot.writable {
-            parts.push(delegated_save(id));
-        }
-        parts.extend(agent_section(agent));
+        parts.extend(agent_section(agent, taken_at));
     } else {
-        parts.push(
-            if snapshot.project.is_some() {
-                PROJECT_SEARCH
-            } else {
-                ROOT_SEARCH
-            }
-            .to_owned(),
-        );
-        if snapshot.writable {
-            parts.push(root_save(id));
-        }
         parts.push(user_section(
             &snapshot.user,
             &snapshot.user_omitted,
             &snapshot.user_listed,
+            taken_at,
         ));
-        parts.extend(agent_section(agent));
-        parts.push(machines_section(&snapshot.machines));
-        parts.extend(snapshot.project.as_ref().map(project_section));
+        parts.extend(agent_section(agent, taken_at));
+        parts.push(machines_section(&snapshot.machines, taken_at));
+        parts.extend(
+            snapshot
+                .project
+                .as_ref()
+                .map(|project| project_section(project, taken_at)),
+        );
     }
     Some(format!(
         "<system-reminder>\n# Memory\n{}\n</system-reminder>",
@@ -135,6 +104,7 @@ pub(crate) fn user_section(
     user: &[MemorySnapshotCategory],
     omitted: &[String],
     listed: &[MemorySnapshotIndexEntry],
+    taken_at: Option<Timestamp>,
 ) -> String {
     let mut blocks = user
         .iter()
@@ -144,6 +114,8 @@ pub(crate) fn user_section(
                 &format!("user://{}", category.category),
                 &category.description,
                 &category.body,
+                &category.status,
+                taken_at,
             )
         })
         .collect::<Vec<_>>();
@@ -170,23 +142,38 @@ pub(crate) fn user_section(
         blocks.push(lines.join("\n"));
     }
     if !listed.is_empty() {
-        blocks.push(listed_block(listed));
+        blocks.push(listed_block(listed, taken_at));
     }
     section("## About the user", blocks)
 }
 
 /// The memories the run's rules ask before reading, one index line each.
-fn listed_block(listed: &[MemorySnapshotIndexEntry]) -> String {
+fn listed_block(listed: &[MemorySnapshotIndexEntry], taken_at: Option<Timestamp>) -> String {
     let mut lines = vec![LISTED.to_owned()];
-    lines.extend(listed.iter().map(index_line));
+    lines.extend(listed.iter().map(|memory| index_line(memory, taken_at)));
     lines.join("\n")
 }
 
-/// `- <url>: <description> [keywords: …]`, escaped.
-fn index_line(memory: &MemorySnapshotIndexEntry) -> String {
+/// How old `status` says a memory was when the snapshot was taken.
+fn age(status: &MemoryDocumentStatus, taken_at: Option<Timestamp>) -> Option<String> {
+    Some(format::age(status.modified?, taken_at?))
+}
+
+/// `- <url>: <description> [keywords: …] (<age> old)`, escaped; the
+/// parenthesis also says when the memory is over its limit, and is left
+/// out when there is nothing to say (a snapshot an earlier daemon took).
+fn index_line(memory: &MemorySnapshotIndexEntry, taken_at: Option<Timestamp>) -> String {
     let mut line = format!("- {}: {}", memory.url, memory.description);
     if !memory.keywords.is_empty() {
         line.push_str(&format!(" [keywords: {}]", memory.keywords.join(", ")));
+    }
+    let notes = age(&memory.status, taken_at)
+        .map(|age| format!("{age} old"))
+        .into_iter()
+        .chain(memory.status.over_limit().then(|| OVER_LIMIT.to_owned()))
+        .collect::<Vec<_>>();
+    if !notes.is_empty() {
+        line.push_str(&format!(" ({})", notes.join(", ")));
     }
     escape_text(&line)
 }
@@ -195,14 +182,21 @@ fn index_line(memory: &MemorySnapshotIndexEntry) -> String {
 /// shown. An agent file with an empty body, or none, adds no section at all
 /// (section 16.7): the daemon keeps a file for every agent, and most stay
 /// empty.
-pub(crate) fn agent_section(agent: &MemorySnapshotAgent) -> Option<String> {
+pub(crate) fn agent_section(
+    agent: &MemorySnapshotAgent,
+    taken_at: Option<Timestamp>,
+) -> Option<String> {
     let url = format!("agent://{}", agent.agent);
     let block = match &agent.memory {
-        Some(memory) if !is_blank(&memory.body) => {
-            memory_element(&url, &memory.description, &memory.body)
-        }
+        Some(memory) if !is_blank(&memory.body) => memory_element(
+            &url,
+            &memory.description,
+            &memory.body,
+            &memory.status,
+            taken_at,
+        ),
         None if agent.omitted => format!("Not shown (too long): {url}"),
-        None => listed_block(std::slice::from_ref(agent.listed.as_ref()?)),
+        None => listed_block(std::slice::from_ref(agent.listed.as_ref()?), taken_at),
         Some(_) => return None,
     };
     Some(section(
@@ -219,42 +213,65 @@ pub(crate) fn agent_content_bytes(description: &str, body: &str) -> usize {
 }
 
 /// `## Machines in this session`: one element per machine of the session.
-pub(crate) fn machines_section(machines: &[MemorySnapshotMachine]) -> String {
+pub(crate) fn machines_section(
+    machines: &[MemorySnapshotMachine],
+    taken_at: Option<Timestamp>,
+) -> String {
     section(
         "## Machines in this session",
-        machines.iter().map(machine_element).collect(),
+        machines
+            .iter()
+            .map(|machine| machine_element(machine, taken_at))
+            .collect(),
     )
 }
 
 /// `## Project <name>`: the session's project, its overview when it has
 /// one, and the index of its other memories.
-pub(crate) fn project_section(project: &MemorySnapshotProject) -> String {
+pub(crate) fn project_section(
+    project: &MemorySnapshotProject,
+    taken_at: Option<Timestamp>,
+) -> String {
     let name = project.project.as_str();
     let mut blocks = vec![format!(
         "## Project {name}\nThis session belongs to the {name} project."
     )];
     if let Some(overview) = &project.overview {
-        blocks.push(project_overview(&project.project, overview));
+        blocks.push(project_overview(&project.project, overview, taken_at));
     }
-    blocks.push(project_index(project));
+    blocks.push(project_index(project, taken_at));
     blocks.join("\n\n")
 }
 
 /// The overview's element. Its length counts toward the user section's
 /// limit.
-pub(crate) fn project_overview(project: &ProjectName, overview: &MemorySnapshotMemory) -> String {
+pub(crate) fn project_overview(
+    project: &ProjectName,
+    overview: &MemorySnapshotMemory,
+    taken_at: Option<Timestamp>,
+) -> String {
     memory_element(
         &format!("project://{project}/overview"),
         &overview.description,
         &overview.body,
+        &overview.status,
+        taken_at,
     )
 }
 
 /// The index of the project's other memories. Its length counts toward the
 /// machines index's limit.
-pub(crate) fn project_index(project: &MemorySnapshotProject) -> String {
+pub(crate) fn project_index(
+    project: &MemorySnapshotProject,
+    taken_at: Option<Timestamp>,
+) -> String {
     let mut lines = vec!["Other memories of this project (read with memory_read):".to_owned()];
-    lines.extend(project.memories.iter().map(index_line));
+    lines.extend(
+        project
+            .memories
+            .iter()
+            .map(|memory| index_line(memory, taken_at)),
+    );
     if project.omitted > 0 {
         lines.push(format!(
             "- {} more; search with layer \"project\".",
@@ -267,7 +284,7 @@ pub(crate) fn project_index(project: &MemorySnapshotProject) -> String {
     lines.join("\n")
 }
 
-fn machine_element(machine: &MemorySnapshotMachine) -> String {
+fn machine_element(machine: &MemorySnapshotMachine, taken_at: Option<Timestamp>) -> String {
     let mut open = format!(
         "<machine name=\"{}\"",
         escape_attribute(machine.machine.as_str())
@@ -285,7 +302,11 @@ fn machine_element(machine: &MemorySnapshotMachine) -> String {
         ));
     }
     open.push('>');
-    let mut lines = machine.memories.iter().map(index_line).collect::<Vec<_>>();
+    let mut lines = machine
+        .memories
+        .iter()
+        .map(|memory| index_line(memory, taken_at))
+        .collect::<Vec<_>>();
     if machine.omitted > 0 {
         lines.push(format!(
             "- {} more; search with layer \"machine\".",
@@ -306,13 +327,34 @@ fn section(heading: &str, blocks: Vec<String>) -> String {
     }
 }
 
-fn memory_element(url: &str, description: &str, body: &str) -> String {
-    format!(
-        "<memory url=\"{}\" description=\"{}\">\n{}\n</memory>",
+/// One memory shown whole: `<memory url=… description=… modified=…
+/// size=… max_size=…>`, with `status="over its limit"` when it is. The
+/// status attributes are left out when the event has none.
+fn memory_element(
+    url: &str,
+    description: &str,
+    body: &str,
+    status: &MemoryDocumentStatus,
+    taken_at: Option<Timestamp>,
+) -> String {
+    let mut open = format!(
+        "<memory url=\"{}\" description=\"{}\"",
         escape_attribute(url),
-        escape_attribute(description),
-        escape_text(trim_body(body))
-    )
+        escape_attribute(description)
+    );
+    if let Some(age) = age(status, taken_at) {
+        open.push_str(&format!(" modified=\"{age} ago\""));
+    }
+    if let Some(size) = status.size {
+        open.push_str(&format!(" size=\"{}\"", format::size(size)));
+    }
+    if let Some(max_size) = status.max_size {
+        open.push_str(&format!(" max_size=\"{}\"", format::size(max_size)));
+    }
+    if status.over_limit() {
+        open.push_str(&format!(" status=\"{OVER_LIMIT}\""));
+    }
+    format!("{open}>\n{}\n</memory>", escape_text(trim_body(body)))
 }
 
 fn is_blank(body: &str) -> bool {

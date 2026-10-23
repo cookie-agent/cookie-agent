@@ -2345,6 +2345,27 @@
       ],
       "type": "object"
     },
+    "MemoryChangeKind": {
+      "description": "What a model did to a memory (`docs/site/specs/memory.md` section\n16.9.10).",
+      "oneOf": [
+        {
+          "const": "saved",
+          "description": "`memory_write` created or replaced it.",
+          "type": "string"
+        },
+        {
+          "const": "edited",
+          "description": "`memory_edit` changed it.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "`memory_delete` deleted it.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "MemorySnapshotAgent": {
       "description": "The run's agent and its memory file.",
       "properties": {
@@ -2403,6 +2424,32 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "max_size": {
+          "description": "The `[memory]` limit of its kind, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modified": {
+          "description": "When the memory was last modified.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "The file's size in bytes, frontmatter included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2423,6 +2470,32 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "max_size": {
+          "description": "The `[memory]` limit of its kind, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modified": {
+          "description": "When the memory was last modified.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "The file's size in bytes, frontmatter included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "url": {
           "description": "The memory URL, such as `machine://<machine>/<name>` or\n`project://<project>/<name>`.",
@@ -2487,6 +2560,32 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "max_size": {
+          "description": "The `[memory]` limit of its kind, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modified": {
+          "description": "When the memory was last modified.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "The file's size in bytes, frontmatter included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [
@@ -5633,6 +5732,14 @@
             "null"
           ]
         },
+        "taken_at": {
+          "description": "When the snapshot was taken; the ages it shows are measured to this\ntime, so equal snapshots render equal text (client protocol\n1.14.0). Absent in an empty snapshot and in one an earlier daemon\ntook.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "type": {
           "const": "memory_loaded",
           "type": "string"
@@ -5665,6 +5772,27 @@
       },
       "required": [
         "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A model's memory tool saved, edited, or deleted the memory at `url`\n(`docs/site/specs/memory.md` section 16.9.10; client protocol\n1.14.0). A transcript shows it as one line, such as `Saved\nproject://cookie-agent/release`. An audit event: the memory itself\nlives outside the session.",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/MemoryChangeKind"
+        },
+        "type": {
+          "const": "memory_changed",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "change",
+        "url"
       ],
       "type": "object"
     },

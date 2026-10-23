@@ -17,8 +17,10 @@ pub fn open_from_storage(stored: Option<&str>) -> bool {
     stored == Some("open")
 }
 
-/// One line of the view.
+/// One line of the view. A row holds a whole listing entry; a view has few
+/// lines, so they are not boxed.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum MemoryLine {
     /// A shared row, shown as it is.
     Row(MemoryRow),

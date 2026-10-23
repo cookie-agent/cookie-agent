@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.13.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.14.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.13.0",
+    "protocol_version": "1.14.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.13.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.14.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -570,7 +570,8 @@ given. A filter that contradicts `layer` or another filter is `-32602`.
 A **revision** is the first 16 hex digits of the SHA-256 of the file's
 bytes. `memory.write` takes the whole file text, frontmatter included, and
 checks it like the model's `memory_write`: it must parse, follow the file
-format, and fit `[memory] max_file_bytes`. Without `revision` it creates the
+format, and fit its kind's `[memory]` limit (a memory already over it may
+only shrink; otherwise `memory_refused`). Without `revision` it creates the
 memory, and fails with `memory_exists` when it exists; with `revision` it
 replaces the memory at that revision, and fails with
 `memory_revision_mismatch` when the file changed since, or

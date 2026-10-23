@@ -122,7 +122,7 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
     assert!(parent_prompt.contains("tool_instructions provider=\\\"test.delegate\\\""));
     let child_prompt = request_body(&requests[1]).to_string();
     assert!(!child_prompt.contains("Available subagents:"));
-    assert!(!child_prompt.contains("tool_instructions"));
+    assert!(!child_prompt.contains("tool_instructions provider=\\\"test.delegate\\\""));
     assert_eq!(
         fixture
             .engine

@@ -170,6 +170,7 @@ never stored.
 | `delegated_attachments_added` | state | runless | The attachments a root's subagent brought that the root did not record yet ([delegated attachments](#delegated-attachments)) |
 | `agent_md_loaded` | state | run | The `AGENTS.md` context of one attachment, or of the session's project |
 | `memory_loaded` | state | run | The [memory snapshot](#memory-snapshots) the model sees from this run on |
+| `memory_changed` | audit | run | A model's memory tool saved, edited, or deleted a memory: one transcript line |
 | `diagnostic` | audit | either | A notice about the engine, a plugin, or a runtime |
 | `record_omitted` | audit | either | A record its writer deliberately did not carry over |
 | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` | state | runless or run | The session goal |

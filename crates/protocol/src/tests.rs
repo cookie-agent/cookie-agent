@@ -1167,6 +1167,37 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
     assert_eq!(invalid.validate(), Err(EventSchemaError::InvalidAgentMd));
 }
 
+/// A model's memory change is an audit event, one transcript line (client
+/// protocol 1.14.0); a kind this build does not know reads as `Changed`.
+#[test]
+fn memory_changed_is_an_audit_event() {
+    let payload = EventPayload::MemoryChanged {
+        change: MemoryChangeKind::Saved,
+        url: "project://cookie-agent/release".into(),
+    };
+    assert!(payload.is_audit());
+    let value = serde_json::to_value(&payload).unwrap();
+    assert_eq!(
+        value,
+        json!({"type": "memory_changed", "change": "saved", "url": "project://cookie-agent/release"})
+    );
+    assert_eq!(
+        serde_json::from_value::<EventPayload>(value).unwrap(),
+        payload
+    );
+    let future: MemoryChangeKind = serde_json::from_value(json!("archived")).unwrap();
+    assert_eq!(future.verb(), "Changed");
+    assert_eq!(
+        [
+            MemoryChangeKind::Saved,
+            MemoryChangeKind::Edited,
+            MemoryChangeKind::Deleted
+        ]
+        .map(MemoryChangeKind::verb),
+        ["Saved", "Edited", "Deleted"]
+    );
+}
+
 #[test]
 fn memory_loaded_round_trips_and_checks_its_shape() {
     let agent = MemorySnapshotAgent {
@@ -1175,6 +1206,11 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
             description: "Reviews".into(),
             keywords: vec!["review".into()],
             body: "- bugs first\n".into(),
+            status: MemoryDocumentStatus {
+                modified: Some("2026-10-20T16:03:10Z".parse().unwrap()),
+                size: Some(2600),
+                max_size: Some(2048),
+            },
         }),
         omitted: false,
         listed: None,
@@ -1187,12 +1223,14 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
             description: "Who the user is".into(),
             keywords: Vec::new(),
             body: String::new(),
+            status: MemoryDocumentStatus::default(),
         }],
         user_omitted: vec!["references".into()],
         user_listed: vec![MemorySnapshotIndexEntry {
             url: "user://feedback".into(),
             description: "Corrections".into(),
             keywords: Vec::new(),
+            status: MemoryDocumentStatus::default(),
         }],
         agent: Some(agent.clone()),
         machines: vec![MemorySnapshotMachine {
@@ -1202,6 +1240,7 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
                 url: "machine://labpc/scratch".into(),
                 description: "Use /scratch".into(),
                 keywords: Vec::new(),
+                status: MemoryDocumentStatus::default(),
             }],
             omitted: 2,
         }],
@@ -1211,15 +1250,18 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
                 description: "Overview of the `web` project".into(),
                 keywords: Vec::new(),
                 body: "A web shop.\n".into(),
+                status: MemoryDocumentStatus::default(),
             }),
             memories: vec![MemorySnapshotIndexEntry {
                 url: "project://web/release".into(),
                 description: "How releases are cut".into(),
                 keywords: vec!["release".into()],
+                status: MemoryDocumentStatus::default(),
             }],
             omitted: 1,
         }),
         rules: Some(crate::Sha256Digest::of_bytes(b"memory rules")),
+        taken_at: Some("2026-10-22T12:00:00Z".parse().unwrap()),
     };
     let event = |snapshot: MemorySnapshot| StoredEvent {
         engine_version: None,
@@ -1239,6 +1281,13 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
     assert_eq!(value["payload"]["project"]["project"], "web");
     assert_eq!(value["payload"]["project"]["omitted"], 1);
     assert_eq!(value["payload"]["user_listed"][0]["url"], "user://feedback");
+    // A document's fullness sits beside its content (client protocol
+    // 1.14.0), and says when it is over its limit.
+    assert_eq!(value["payload"]["taken_at"], "2026-10-22T12:00:00Z");
+    assert_eq!(value["payload"]["agent"]["memory"]["size"], 2600);
+    assert_eq!(value["payload"]["agent"]["memory"]["max_size"], 2048);
+    assert!(agent.memory.as_ref().unwrap().status.over_limit());
+    assert!(value["payload"]["user"][0].get("size").is_none());
     assert_eq!(
         serde_json::from_value::<StoredEvent>(value).unwrap(),
         stored
@@ -1295,11 +1344,16 @@ fn memory_loaded_round_trips_and_checks_its_shape() {
         rules: root.rules.clone(),
         ..MemorySnapshot::unavailable()
     });
+    invalid(MemorySnapshot {
+        taken_at: root.taken_at,
+        ..MemorySnapshot::unavailable()
+    });
     // A listed agent file is neither shown nor omitted.
     let listed = Some(MemorySnapshotIndexEntry {
         url: "agent://reviewer".into(),
         description: "Reviews".into(),
         keywords: Vec::new(),
+        status: MemoryDocumentStatus::default(),
     });
     invalid(MemorySnapshot {
         agent: Some(MemorySnapshotAgent {

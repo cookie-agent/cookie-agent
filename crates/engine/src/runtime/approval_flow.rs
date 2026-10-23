@@ -54,6 +54,11 @@ pub(super) const APPROVAL_NO_PRIOR_DECISIONS: &str = "[none]\n";
 pub(super) const APPROVAL_TOOL_CALL_PREFIX: &str = "\n\n<tool_call>\n";
 pub(super) const APPROVAL_TOOL_CALL_SUFFIX: &str = "\n</tool_call>";
 pub(super) const APPROVAL_NO_USER_MESSAGE: &str = "[no user message]";
+/// The rubric the reviewer of a memory change gets before the call
+/// (`docs/site/specs/memory.md` section 16.9.12): part B of the memory
+/// section, which the agent was given too.
+pub(super) const APPROVAL_MEMORY_RUBRIC_PREFIX: &str = "\n\n<memory_rubric>\nThe tool call changes memory. The agent was told to keep memory by this rubric; deny a change that fails it.\n\n";
+pub(super) const APPROVAL_MEMORY_RUBRIC_SUFFIX: &str = "\n</memory_rubric>";
 /// Prior decisions shown to the approval reviewer, newest kept.
 const APPROVAL_PRIOR_DECISION_LIMIT: usize = 5;
 /// Byte cap for each resource or feedback string in a prior-decision line.
@@ -496,8 +501,11 @@ impl Engine {
             .collect::<Vec<_>>();
         let prior =
             prior_approval_decisions(tree_events.iter().map(|events| events.as_slice()), &actions);
-        let prompt =
+        let mut prompt =
             approval_stateless_input(tool, latest_user_message(&events, run).as_deref(), &prior);
+        if actions.contains(&cookie_agent_protocol::PermissionAction::MEMORY_WRITE) {
+            prompt = with_memory_rubric(&prompt);
+        }
         let history = internal_text_history(
             expand_internal_prompt(policy, DEFAULT_APPROVAL_PROMPT),
             prompt.clone(),
@@ -547,6 +555,20 @@ fn approval_stateless_input(
         latest_user.unwrap_or(APPROVAL_NO_USER_MESSAGE),
         render_prior_decisions(prior),
         serde_json::to_string(&tool_call).expect("safe approval tool call serializes")
+    )
+}
+
+/// `prompt`, a reviewer request, with the memory rubric before its tool
+/// call.
+fn with_memory_rubric(prompt: &str) -> String {
+    let at = prompt
+        .rfind(APPROVAL_TOOL_CALL_PREFIX)
+        .unwrap_or(prompt.len());
+    format!(
+        "{}{APPROVAL_MEMORY_RUBRIC_PREFIX}{}{APPROVAL_MEMORY_RUBRIC_SUFFIX}{}",
+        &prompt[..at],
+        crate::memory_tools::PART_B,
+        &prompt[at..]
     )
 }
 
@@ -1101,6 +1123,32 @@ mod tests {
             first_serialized.as_bytes()[first_params..],
             second_serialized.as_bytes()[second_params..]
         );
+    }
+
+    /// A memory change's reviewer gets the rubric the agent was given,
+    /// between the prior decisions and the call (memory spec section
+    /// 16.9.12).
+    #[test]
+    fn a_memory_change_is_reviewed_with_the_rubric() {
+        let input = approval_stateless_input(
+            ApprovalToolInput {
+                tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+                name: "memory_write",
+                origin: None,
+                normalized_parameters: &serde_json::json!({"url": "project://web/notes", "body": "- ls output"}),
+            },
+            Some("remember this"),
+            &[],
+        );
+        let reviewed = super::with_memory_rubric(&input);
+        let rubric = reviewed
+            .find(super::APPROVAL_MEMORY_RUBRIC_PREFIX)
+            .expect("the rubric");
+        assert!(reviewed.find(APPROVAL_PRIOR_DECISIONS_SUFFIX).unwrap() < rubric);
+        let call = reviewed.find(APPROVAL_TOOL_CALL_PREFIX).unwrap();
+        assert!(rubric < call);
+        assert!(reviewed[rubric..call].contains(crate::memory_tools::PART_B));
+        assert!(reviewed.ends_with(&input[input.find(APPROVAL_TOOL_CALL_PREFIX).unwrap()..]));
     }
 
     #[test]

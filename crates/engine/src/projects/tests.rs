@@ -22,8 +22,13 @@ fn memory_dir(data: &tempfile::TempDir, project: &str) -> PathBuf {
     data.path().join("memory/projects").join(project)
 }
 
+/// The overview's text without its stamp lines.
 fn overview(data: &tempfile::TempDir, project: &str) -> String {
-    fs::read_to_string(memory_dir(data, project).join("overview.md")).unwrap()
+    fs::read_to_string(memory_dir(data, project).join("overview.md"))
+        .unwrap()
+        .split_inclusive('\n')
+        .filter(|line| !line.starts_with("created: ") && !line.starts_with("modified: "))
+        .collect()
 }
 
 fn project_file(data: &tempfile::TempDir, id: &ProjectId) -> PathBuf {
