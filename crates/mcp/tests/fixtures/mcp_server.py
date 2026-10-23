@@ -18,9 +18,12 @@ if os.environ.get("MCP_FIXTURE_PID_FILE"):
     os.replace(pid_path + ".tmp", pid_path)
 
 if os.environ.get("MCP_FIXTURE_CWD_FILE"):
-    # Where the server was started, for tests of its working directory.
-    with open(os.environ["MCP_FIXTURE_CWD_FILE"], "w", encoding="utf-8") as cwd_file:
+    # Where the server was started, for tests of its working directory. The
+    # file appears whole, since tests read it as soon as it exists.
+    cwd_path = os.environ["MCP_FIXTURE_CWD_FILE"]
+    with open(cwd_path + ".tmp", "w", encoding="utf-8") as cwd_file:
         cwd_file.write(os.getcwd())
+    os.replace(cwd_path + ".tmp", cwd_path)
 
 
 def send(message):
