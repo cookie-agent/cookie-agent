@@ -118,7 +118,7 @@ models:
     agents/primary.md  # mode primary, models: [${default_model}]
     agents/explore.md  # mode subagent, read-only exploring, models: [${small_model}, ${default_model}]
     agents/worker.md   # mode subagent, does a delegated task, models: [${default_model}]
-    manifest.json      # kit version, the cookie version it was built for, each file's sha256
+    manifest.json      # skills are not in the kit (section 13)      # kit version, the cookie version it was built for, each file's sha256
   ```
 
 - **Agents:** `primary` is the root agent (the daemon already falls back to an
@@ -273,3 +273,72 @@ offers a first session on `primary`.
 ## 12. Open questions
 
 None.
+
+## 13. Addendum 2026-10-23: official skills kept up to date
+
+Status: **approved** (2026-10-23), being implemented.
+
+The starter kit is installed once, so skills added in later releases would
+never reach a daemon that already onboarded. Skills are cookie's own
+instructions about cookie; agent documents and `config.toml` are the user's.
+So skills leave the kit and are fetched from a versionless official source
+that every daemon keeps current.
+
+**Decided 2026-10-23:**
+
+- A repository, `cookie-agent/skills`, served by GitHub Pages at
+  `https://cookie-agent.github.io/skills/`, holds the official skills; its
+  URL carries no version.
+- Daemons use them by default (`[skills] official = true`) and refresh them
+  at start and then daily.
+- The kit keeps `config.toml` and the agent documents; its skills
+  (`customize-cookie-agent` and the runtime setup skill) move to the
+  repository.
+
+### 13.1 The source
+
+- `index.json`: `{ "version": 1, "skills": [ { "name", "version",
+  "requires_cookie", "files": [ { "path", "sha256" } ] } ] }`.
+  `requires_cookie` is a semver range (`">=0.4.0"`) matched against the
+  daemon's own version.
+- `<name>/SKILL.md` and any other files a skill lists.
+- **CI in the repository** runs the latest release's `cookie skills check`
+  on every push and nightly: each skill parses, names only `cookie`
+  subcommands that exist, and links only to documentation pages that exist
+  (unversioned `/doc/latest/` paths). A failing skill does not publish.
+
+### 13.2 The daemon
+
+- **Managed skills** live in `~/.cookie-agent/managed/skills/<name>/`,
+  written only by the daemon.
+- **Refresh:** at start and then every 24 hours; the index first, then the
+  files whose hashes changed, each checked against the index before it
+  replaces the cached copy. Skills the index no longer lists, or whose
+  `requires_cookie` this version does not satisfy, are removed from the
+  managed folder. Network failures keep the cached copies and are reported
+  as a configuration diagnostic; offline daemons keep working.
+- **Discovery:** the managed folder is one more skill root with the lowest
+  precedence: a user or project skill of the same name wins.
+- **Configuration:** `[skills] official = true` (default) or `false`, which
+  stops refreshing and leaves the managed folder unused.
+- **Trust:** the source URL is fixed to the official one, over HTTPS, with
+  every file hash-checked. Skills grant no tools; permission rules still
+  decide every call.
+
+### 13.3 Commands and clients
+
+- `cookie skills update` refreshes now (through the daemon); `cookie skills
+  list` shows each skill with its origin (user, project, official) and, for
+  official ones, its version.
+- `cookie skills check <dir>` validates skills: parsing, `cookie`
+  subcommands, documentation links (used by the repository's CI and by
+  anyone writing skills).
+- Clients' skill lists mark official skills.
+- Onboarding needs no step for them: they are on by default.
+
+### 13.4 Tests
+
+The refresh against a local fixture server (new, changed, removed, a hash
+mismatch refused, a `requires_cookie` range not met, offline with a cache),
+precedence against a user skill of the same name, `official = false`,
+`cookie skills check` passing and failing cases.
