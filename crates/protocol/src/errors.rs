@@ -705,6 +705,33 @@ error_codes! {
         hint: Some("See the details, then check that the cookie data directory is readable and writable."),
         description: "Reading or writing a project's folder, taking the memory lock, or moving the project's memory folder failed; nothing changed.",
     }
+    CRON_NOT_FOUND {
+        code: "cron_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("id", "The cron job ID.")],
+        message: "There is no cron job {id}.",
+        hint: Some("See `crons.list` for the jobs."),
+        description: "A `crons.*` request named a job the daemon does not have.",
+    }
+    CRON_INVALID {
+        code: "cron_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("field", "The member that was refused."),
+            required("reason", "Why, in the daemon's words."),
+        ],
+        message: "The cron job's {field} was refused: {reason}.",
+        hint: None,
+        description: "A `crons.create` or `crons.update` value the daemon does not accept: a cron expression that does not parse or never matches, a delay outside 1s to 365d, a time not in the future, a target session that does not exist or has the other kind, a template whose agent cannot run as a root, or a member the job's kind has no use for; nothing changed.",
+    }
+    CRON_STORE_FAILED {
+        code: "cron_store_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The cron jobs could not be read or changed.",
+        hint: Some("See the details, then check that the cookie data directory is readable and writable."),
+        description: "Reading or writing `crons.json`, or taking the memory lock, failed; nothing changed.",
+    }
     CONFIG_APPLY_REFUSED {
         code: "config_apply_refused",
         rpc: APPLICATION_ERROR,

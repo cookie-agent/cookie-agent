@@ -42,6 +42,7 @@ impl ServerProtocol for Server {
         self.start_machine_notifications(context.clone());
         self.start_memory_notifications(context.clone());
         self.start_project_notifications(context.clone());
+        self.start_cron_notifications(context.clone());
         self.start_background_notifications(context.clone());
         self.start_upload_cleanup(&context);
         self.start_engine_event_notifications(context);
@@ -747,6 +748,56 @@ impl ServerProtocol for Server {
             .set_session_project(params.session_id, params.project)
             .await
             .map(|session| cookie_agent_protocol::SessionProjectSetResult { session })
+            .map_err(protocol_fault)
+    }
+
+    async fn list_crons(
+        &self,
+        _params: cookie_agent_protocol::CronsListParams,
+    ) -> Result<cookie_agent_protocol::CronsListResult> {
+        Ok(self.engine.list_crons())
+    }
+
+    async fn create_cron(
+        &self,
+        params: cookie_agent_protocol::CronCreateParams,
+    ) -> Result<cookie_agent_protocol::CronJobResult> {
+        self.engine
+            .create_cron(params)
+            .await
+            .map(|job| cookie_agent_protocol::CronJobResult { job })
+            .map_err(protocol_fault)
+    }
+
+    async fn update_cron(
+        &self,
+        params: cookie_agent_protocol::CronUpdateParams,
+    ) -> Result<cookie_agent_protocol::CronJobResult> {
+        self.engine
+            .update_cron(params)
+            .await
+            .map(|job| cookie_agent_protocol::CronJobResult { job })
+            .map_err(protocol_fault)
+    }
+
+    async fn delete_cron(
+        &self,
+        params: cookie_agent_protocol::CronDeleteParams,
+    ) -> Result<cookie_agent_protocol::CronDeleteResult> {
+        self.engine
+            .delete_cron(params.id)
+            .await
+            .map(|()| cookie_agent_protocol::CronDeleteResult {})
+            .map_err(protocol_fault)
+    }
+
+    async fn run_cron(
+        &self,
+        params: cookie_agent_protocol::CronRunParams,
+    ) -> Result<cookie_agent_protocol::CronRunResult> {
+        self.engine
+            .run_cron(params.id)
+            .await
             .map_err(protocol_fault)
     }
 

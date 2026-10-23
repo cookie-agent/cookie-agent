@@ -21,7 +21,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     // inputs, and memory stays off for the same reason.
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n  memory: deny\n---\nTest steering compaction.\n",
+        "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n  memory: deny\n  cron: deny\n---\nTest steering compaction.\n",
         Some((
             "compaction.md",
             "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 64 }\npermissions: {}\n---\nSummarize.\n",

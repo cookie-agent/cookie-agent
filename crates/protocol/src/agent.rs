@@ -52,9 +52,13 @@ impl PermissionAction {
     pub const MEMORY_WRITE: Self = Self(Cow::Borrowed("memory_write"));
     /// Listing the daemon's machines and runtimes (`list_runtimes`).
     pub const LIST_RUNTIMES: Self = Self(Cow::Borrowed("list_runtimes"));
+    /// Listing, creating, changing, running, and deleting cron jobs
+    /// (`cron_create`, `cron_list`, `cron_update`, `cron_delete`,
+    /// `cron_run`); the resource is a job's target kind.
+    pub const CRON: Self = Self(Cow::Borrowed("cron"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 11] = [
+    pub const BUILT_IN: [Self; 12] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -66,6 +70,7 @@ impl PermissionAction {
         Self::MEMORY,
         Self::MEMORY_WRITE,
         Self::LIST_RUNTIMES,
+        Self::CRON,
     ];
 
     pub const MAX_LEN: usize = 32;

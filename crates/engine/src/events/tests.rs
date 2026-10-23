@@ -58,6 +58,7 @@ fn stored_event() -> StoredEvent {
         seq: 1,
         timestamp: jiff::Timestamp::new(1, 0).expect("timestamp"),
         payload: EventPayload::SessionCreated {
+            cron: None,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: "test_00000000".into(),
             origin: SessionOrigin::Root,

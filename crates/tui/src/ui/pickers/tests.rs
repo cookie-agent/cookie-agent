@@ -62,6 +62,7 @@ where
 
 fn session_meta(session_id: SessionId) -> SessionMeta {
     SessionMeta {
+        cron: None,
         project: None,
         session_id,
         origin: SessionOrigin::Root,

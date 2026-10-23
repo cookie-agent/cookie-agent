@@ -29,6 +29,7 @@ fn tree_session(
             recipient,
             EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
+                cron: None,
                 history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: "test_00000000".into(),
                 origin: SessionOrigin::Delegated {

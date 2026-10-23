@@ -122,7 +122,11 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&parent_tool_call_id);
+        let cron = self.cron_delegation(parent_tool_call_id);
+        let pending_cron_run =
+            pending_tool.is_some_and(|tool| tool == "cron_run") && cron.is_some();
         if pending_tool.is_none_or(|tool| tool != "delegate_subagent")
+            && !pending_cron_run
             && !pending_skill_fork
             && !direct_skill_fork
         {
@@ -147,13 +151,17 @@ impl Engine {
             .get(&parent_run_id)
             .map(|active| active.policy.clone())
             .ok_or_else(|| EngineError::ToolFailed("delegate parent run is not active".into()))?;
-        let Some(parent_delegation) = &parent_policy.agent.delegation else {
-            return Err(EngineError::ToolFailed("delegate admission denied".into()));
-        };
+        let depth_ceiling = self
+            .delegation_ceiling(&parent_policy, cron.is_some())
+            .map_err(|_| EngineError::ToolFailed("delegate admission denied".into()))?;
         let depth = session_depth(&parent.meta.origin);
-        if depth >= parent_delegation.effective_depth_ceiling
-            || !parent_delegation.targets.contains(agent)
-        {
+        let target_allowed = cron.is_some()
+            || parent_policy
+                .agent
+                .delegation
+                .as_ref()
+                .is_some_and(|delegation| delegation.targets.contains(agent));
+        if depth >= depth_ceiling || !target_allowed {
             return Err(EngineError::ToolFailed("delegate admission denied".into()));
         }
         let invocation_id = invocation_id(parent_session_id, parent_run_id, parent_tool_call_id);
@@ -281,6 +289,12 @@ impl Engine {
             super::handles::generate_handle(agent.as_str(), &existing, super::handles::random_hex)?
         };
         let creation = Event::SessionCreated {
+            cron: cron
+                .as_ref()
+                .map(|cron| cookie_agent_protocol::SessionCron {
+                    job_id: cron.job.clone(),
+                    fired_at: cron.fired_at,
+                }),
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin,
             short_id,
@@ -299,7 +313,15 @@ impl Engine {
             Some(attachments) => attachments,
             None => self.inherited_attachments(&parent)?,
         };
-        let attachments = super::attachments::initial_attachment_events(&child_attachments);
+        let mut attachments = super::attachments::initial_attachment_events(&child_attachments);
+        // A cron job's run now starts with the job's rules as its overlay.
+        if let Some(cron) = cron.as_ref().filter(|cron| !cron.rules.is_empty()) {
+            attachments.push(Event::SessionPermissionOverlaySet {
+                overlay: cookie_agent_protocol::SessionPermissionOverlay {
+                    rules: cron.rules.clone(),
+                },
+            });
+        }
         let store = self.inner.store.clone();
         self.spawn_admission_blocking(move || {
             store.create_with_initial(

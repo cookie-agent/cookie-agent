@@ -67,6 +67,10 @@ pub(crate) struct DelegationRuntimeState {
     /// Woken whenever a recovery claim is released or a reconciliation pass
     /// ends, so a settling waiter need not poll on its own.
     pub(crate) recovery_settled: tokio::sync::Notify,
+    /// The new-session cron jobs `cron_run` calls run now as delegated
+    /// children, by the call's ID, while the child is admitted
+    /// (`docs/site/specs/cron.md` section 8.2).
+    pub(crate) cron_runs: Mutex<HashMap<ToolCallId, super::cron_run::CronDelegation>>,
 }
 
 impl Default for DelegationRuntimeState {
@@ -85,6 +89,7 @@ impl Default for DelegationRuntimeState {
             admission_blocking_tasks: Mutex::new(Vec::new()),
             admission_tasks_closing: AtomicBool::new(false),
             recovery_waiters: Mutex::new(HashSet::new()),
+            cron_runs: Mutex::new(HashMap::new()),
             recovery_pending: Mutex::new(HashMap::new()),
             recovery_settled: tokio::sync::Notify::new(),
         }
@@ -199,7 +204,7 @@ impl Engine {
             .runs
             .get(&run)
             .and_then(|run| run.pending_calls.get(&tool_call_id))
-            .is_none_or(|name| name != "delegate_subagent")
+            .is_none_or(|name| !super::cron_run::is_delegating_tool(name))
         {
             return false;
         }
@@ -272,7 +277,7 @@ impl Engine {
         if run
             .pending_calls
             .get(&parent_tool_call_id)
-            .is_some_and(|tool| tool == "delegate_subagent")
+            .is_some_and(|tool| super::cron_run::is_delegating_tool(tool))
         {
             let result = cancelled_delegate_result_with_reason(
                 None,
@@ -361,7 +366,9 @@ impl Engine {
         // The runtimes a root names start before anything is reserved, and
         // outside the admission lock: a template may take seconds to start.
         // A runtime that does not start fails the call with nothing created.
+        let cron = self.cron_delegation(invocation.parent_tool_call_id);
         let delegated_attachments = match &invocation.capabilities {
+            _ if cron.is_some() => cron.as_ref().map(|cron| cron.attachments.clone()),
             Some(capabilities) => {
                 if invocation.resume_session_id.is_some() {
                     return Err(EngineError::ToolFailed(
@@ -493,14 +500,16 @@ impl Engine {
             .cloned()
             .ok_or_else(|| EngineError::ToolFailed("delegate parent run is not active".into()))?;
         let parent_policy = Arc::clone(&active_parent.policy);
-        let parent_delegation = parent_policy
-            .agent
-            .delegation
-            .as_ref()
-            .ok_or_else(|| EngineError::ToolFailed("delegation is disabled".into()))?;
-        if !parent_delegation.targets.contains(&invocation.agent_type)
-            || session_depth(&parent.meta.origin) >= parent_delegation.effective_depth_ceiling
-        {
+        // A cron job's run now names its agent itself: any agent but an
+        // internal one, within the depth (cron spec section 8.2).
+        let depth_ceiling = self.delegation_ceiling(&parent_policy, cron.is_some())?;
+        let target_allowed = cron.is_some()
+            || parent_policy
+                .agent
+                .delegation
+                .as_ref()
+                .is_some_and(|delegation| delegation.targets.contains(&invocation.agent_type));
+        if !target_allowed || session_depth(&parent.meta.origin) >= depth_ceiling {
             return Err(EngineError::ToolFailed(
                 "delegate target or depth is not allowed".into(),
             ));
@@ -516,12 +525,18 @@ impl Engine {
             })
             .transpose()?;
         let child_agent = resolve_agent(&parent_policy.registry, &invocation.agent_type)?;
-        if !child_agent.document.frontmatter.enabled
-            || !matches!(
+        let delegable_mode = if cron.is_some() {
+            !matches!(
+                child_agent.document.frontmatter.mode,
+                cookie_agent_config::AgentMode::Internal
+            )
+        } else {
+            matches!(
                 child_agent.document.frontmatter.mode,
                 cookie_agent_config::AgentMode::Subagent | cookie_agent_config::AgentMode::All
             )
-        {
+        };
+        if !child_agent.document.frontmatter.enabled || !delegable_mode {
             return Err(EngineError::DisabledAgent(invocation.agent_type));
         }
         let fallback_index = active_parent.fallback_index.load(Ordering::Acquire) as usize;
@@ -562,7 +577,7 @@ impl Engine {
             &parent_policy,
             &child_selection,
             inherited,
-            parent_delegation.effective_depth_ceiling,
+            depth_ceiling,
             policy::ResultLimits::from_config(&self.inner.config.load().runtime),
             &self.memory_variables(invocation.parent_session_id),
         )?;
@@ -1357,7 +1372,7 @@ impl Engine {
             .is_some_and(|run| {
                 run.pending_calls
                     .get(&tool_call_id)
-                    .is_some_and(|tool| tool == "delegate_subagent")
+                    .is_some_and(|tool| super::cron_run::is_delegating_tool(tool))
             });
         if !pending {
             return Ok(false);

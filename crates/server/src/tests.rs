@@ -2308,3 +2308,124 @@ async fn projects_are_created_changed_and_deleted_and_sessions_move_through_rpc(
     harness.server.shutdown();
     harness.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn cron_jobs_are_created_listed_changed_and_deleted_through_rpc() {
+    let mut catalog = (*openai_catalog()).clone();
+    Arc::make_mut(&mut catalog.providers)
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let harness = harness_with_catalog(Arc::new(catalog), |_| {});
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let mut viewer = connect(Arc::clone(&harness.server)).await;
+    let code = |reply: &Value| {
+        reply["error"]["data"]["code"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned()
+    };
+    let (connected, _) = request(
+        &mut client,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"crons-rpc-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+    let selection = json!({
+        "agent": "default",
+        "model": { "model": "openai/gpt-5-mini", "variant": null }
+    });
+    let (created, _) = request(
+        &mut client,
+        3,
+        "session.create",
+        json!({ "selection": selection, "runtimes": [], "global": false }),
+    )
+    .await;
+    let session = created["result"]["session"]["session_id"].clone();
+
+    let (refused, _) = request(
+        &mut client,
+        4,
+        "crons.create",
+        json!({ "prompt": "Check.", "schedule": { "cron": "0 0 30 2 *" }, "target": { "session": session } }),
+    )
+    .await;
+    assert_eq!(code(&refused), "cron_invalid", "{refused}");
+    assert_eq!(refused["error"]["data"]["field"], "schedule");
+    let (job, early) = request(
+        &mut client,
+        5,
+        "crons.create",
+        json!({
+            "name": "Nightly",
+            "prompt": "Check the build.",
+            "schedule": { "cron": "0 3 * * *" },
+            "max_runs": "unlimited",
+            "target": { "session": session }
+        }),
+    )
+    .await;
+    let job = job["result"]["job"].clone();
+    assert_eq!(job["name"], "Nightly", "{job}");
+    assert_eq!(job["delivery"], "queue");
+    assert_eq!(job["max_runs"], "unlimited");
+    assert_eq!(job["created_by"], "user");
+    assert!(job["next_fire"].is_string());
+    let id = job["id"].clone();
+    if !early.iter().any(|frame| frame["method"] == "crons.changed") {
+        notification_where(&mut client, "crons.changed", |_| true).await;
+    }
+    notification_where(&mut viewer, "crons.changed", |_| true).await;
+    let (listed, _) = request(&mut viewer, 2, "crons.list", json!({})).await;
+    assert_eq!(listed["result"]["jobs"][0]["id"], id, "{listed}");
+    assert_eq!(listed["result"]["firing"], true);
+    let (meta, _) = request(
+        &mut viewer,
+        3,
+        "session.get",
+        json!({ "session_id": session }),
+    )
+    .await;
+    assert_eq!(
+        meta["result"]["session"]["waiting_on"],
+        json!(["scheduled_job"]),
+        "{meta}"
+    );
+
+    let (updated, _) = request(
+        &mut client,
+        6,
+        "crons.update",
+        json!({ "id": id, "name": null, "enabled": false }),
+    )
+    .await;
+    let updated = &updated["result"]["job"];
+    assert!(updated.get("name").is_none(), "{updated}");
+    assert_eq!(updated["enabled"], false);
+    assert_eq!(
+        updated["disabled_reason"],
+        json!({ "kind": "disabled", "by": "user" })
+    );
+    let (missing, _) = request(&mut client, 7, "crons.delete", json!({ "id": "zzzzzzzz" })).await;
+    assert_eq!(code(&missing), "cron_not_found", "{missing}");
+    let (deleted, _) = request(&mut client, 8, "crons.delete", json!({ "id": id })).await;
+    assert_eq!(deleted["result"], json!({}), "{deleted}");
+    let (listed, _) = request(&mut client, 9, "crons.list", json!({})).await;
+    assert_eq!(listed["result"]["jobs"], json!([]), "{listed}");
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
+}

@@ -102,14 +102,21 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
     // `list_runtimes` and `mcp` have defaults by mode (runtimes spec 7.1),
-    // and the built-in agent's own rules name no memory action, so its root
-    // run takes the memory default (memory spec 16.9.11).
+    // and the built-in agent's own rules name no memory or cron action, so
+    // its root run takes the memory default (memory spec 16.9.11) and the
+    // cron default, which brings `list_agents` (cron spec 7 and 8.1).
     assert_eq!(
         tool_names,
         [
             "bash",
+            "cron_create",
+            "cron_delete",
+            "cron_list",
+            "cron_run",
+            "cron_update",
             "edit",
             "fixture_mcp",
+            "list_agents",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -245,10 +252,16 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        // A primary agent that names no MCP, `list_runtimes` or memory rule
-        // gets them by default in a root run.
+        // A primary agent that names no MCP, `list_runtimes`, memory, or
+        // cron rule gets them by default in a root run.
         [
+            "cron_create",
+            "cron_delete",
+            "cron_list",
+            "cron_run",
+            "cron_update",
             "fixture_mcp",
+            "list_agents",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -302,9 +315,15 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .collect::<Vec<_>>(),
         [
             "bash",
+            "cron_create",
+            "cron_delete",
+            "cron_list",
+            "cron_run",
+            "cron_update",
             "delegate",
             "edit",
             "fixture_mcp",
+            "list_agents",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -413,6 +432,12 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             .collect::<Vec<_>>(),
         [
             "alpha",
+            "cron_create",
+            "cron_delete",
+            "cron_list",
+            "cron_run",
+            "cron_update",
+            "list_agents",
             "list_runtimes",
             "memory_delete",
             "memory_edit",
@@ -600,13 +625,15 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     let (endpoint, server) = scripted_preset_switch_delegation_server().await;
     let (mut fixture, shared_selection) = custom_fixture_with_endpoint(&endpoint);
     fixture.engine.shutdown().await;
-    // Memory stays off: its prompt section does not fit the small context
-    // the historical compaction below works in.
+    // Memory and cron stay off: their prompt section and tools do not fit
+    // the small context the historical compaction below works in.
     for agent in fixture.config.agents.values_mut() {
-        agent.frontmatter.permissions.insert(
-            "memory".parse().expect("memory key"),
-            cookie_agent_config::PermissionValue::Effect(PermissionEffect::Deny),
-        );
+        for key in ["memory", "cron"] {
+            agent.frontmatter.permissions.insert(
+                key.parse().expect("permission key"),
+                cookie_agent_config::PermissionValue::Effect(PermissionEffect::Deny),
+            );
+        }
     }
     let primary_id = AgentId::new("primary").expect("primary ID");
     let worker_id = AgentId::new("worker").expect("worker ID");

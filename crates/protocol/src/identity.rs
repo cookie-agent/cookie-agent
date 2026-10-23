@@ -160,6 +160,32 @@ bounded_control_free_type!(
 );
 bounded_control_free_type!(ProviderItemId, 512, "Bounded provider item identity.");
 bounded_control_free_type!(CwdIdentity, 4096, "Opaque canonical workspace identity.");
+/// A cron job's ID (`docs/site/specs/cron.md` section 3): eight lowercase
+/// ASCII letters and digits, assigned by the daemon.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CronJobId(String);
+string_wire_impl!(
+    CronJobId,
+    8,
+    "^[a-z0-9]{8}$",
+    "A cron job's ID: eight lowercase ASCII letters and digits.",
+    validate_cron_job_id
+);
+
+fn validate_cron_job_id(value: &str) -> Result<(), WireStringError> {
+    if value.len() == CronJobId::MAX_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        Ok(())
+    } else {
+        Err(WireStringError::Invalid(
+            "must be eight lowercase ASCII letters and digits",
+        ))
+    }
+}
+
 /// A producer's label, chosen by its sender at registration.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProducerName(String);
@@ -219,6 +245,21 @@ string_wire_impl!(
 impl ProducerSource {
     const PLUGIN: &'static str = "plugin:";
     const RUNTIME: &'static str = "runtime:";
+    const CRON: &'static str = "cron:";
+
+    /// The source of cron job `job`'s fires (`docs/site/specs/cron.md`
+    /// section 9): the daemon's own, which no connection can claim, since
+    /// a connection's source is always `plugin:` or `runtime:`.
+    #[must_use]
+    pub fn cron(job: &CronJobId) -> Self {
+        Self(format!("{}{job}", Self::CRON))
+    }
+
+    /// The cron job ID, for a cron source.
+    #[must_use]
+    pub fn cron_job(&self) -> Option<&str> {
+        self.0.strip_prefix(Self::CRON)
+    }
 
     /// The source of the configured plugin `plugin`.
     pub fn plugin(plugin: &str) -> Result<Self, WireStringError> {

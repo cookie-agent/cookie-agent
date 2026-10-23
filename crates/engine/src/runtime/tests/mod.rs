@@ -10,6 +10,7 @@ mod background_tasks;
 mod background_waits;
 mod compaction;
 mod configuration;
+mod crons;
 mod delegation;
 mod delegation_queue;
 mod delegation_revert;

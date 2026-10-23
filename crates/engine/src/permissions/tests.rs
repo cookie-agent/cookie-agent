@@ -2134,11 +2134,14 @@ fn mode_defaults_follow_the_agent_mode() {
         |action: &str, resource: &str, effect| (action.to_owned(), resource.to_owned(), effect);
     let allow = PermissionEffect::Allow;
     let ask = PermissionEffect::Ask;
-    // Memory's defaults depend on delegation too; they have their own tests.
+    // Memory's and cron's defaults depend on delegation too; they have
+    // their own tests.
     let mode_rules = |mode| {
         let mut rules = root_rules(&agent_document("worker", mode, &[]));
         rules.retain(|rule| {
-            rule.action != PermissionAction::MEMORY && rule.action != PermissionAction::MEMORY_WRITE
+            rule.action != PermissionAction::MEMORY
+                && rule.action != PermissionAction::MEMORY_WRITE
+                && rule.action != PermissionAction::CRON
         });
         rule_triples(&rules)
     };
@@ -2152,6 +2155,51 @@ fn mode_defaults_follow_the_agent_mode() {
     assert_eq!(mode_rules(AgentMode::Subagent), [triple("mcp", "*", ask)]);
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(rules.is_empty());
+}
+
+#[test]
+fn root_runs_manage_cron_jobs_by_default_and_delegated_runs_do_not() {
+    let cron = |rules: Vec<PermissionRule>| {
+        rule_triples(
+            &rules
+                .into_iter()
+                .filter(|rule| rule.action == PermissionAction::CRON)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let delegated = |document: &cookie_agent_config::AgentDocument| {
+        super::agent_permission_rules(document, true, &super::MemoryVariables::default())
+    };
+    let allow_all = [("cron".to_owned(), "*".to_owned(), PermissionEffect::Allow)];
+    for mode in [AgentMode::Primary, AgentMode::All, AgentMode::Subagent] {
+        let document = agent_document("worker", mode, &[]);
+        assert_eq!(cron(root_rules(&document)), allow_all, "{mode:?}");
+        assert!(cron(delegated(&document)).is_empty(), "{mode:?}");
+    }
+    let internal = agent_document("worker", AgentMode::Internal, &[]);
+    assert!(cron(root_rules(&internal)).is_empty());
+    // A `cron` key replaces the default, root or delegated.
+    let granted = agent_document(
+        "worker",
+        AgentMode::Primary,
+        &[(
+            "cron",
+            resources(&[
+                ("session", PermissionEffect::Allow),
+                ("new", PermissionEffect::Ask),
+            ]),
+        )],
+    );
+    let expected = [
+        (
+            "cron".to_owned(),
+            "session".to_owned(),
+            PermissionEffect::Allow,
+        ),
+        ("cron".to_owned(), "new".to_owned(), PermissionEffect::Ask),
+    ];
+    assert_eq!(cron(root_rules(&granted)), expected);
+    assert_eq!(cron(delegated(&granted)), expected);
 }
 
 /// The memory rules of `rules`, as `(action, resource, effect)`.

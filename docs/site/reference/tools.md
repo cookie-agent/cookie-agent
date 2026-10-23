@@ -48,6 +48,12 @@ block under the system prompt in the TUI transcript.
 | [`memory_edit`](#memory_edit) | `memory_write` |
 | [`memory_delete`](#memory_delete) | `memory_write` |
 | [`list_runtimes`](#list_runtimes) | `list_runtimes` |
+| [`list_agents`](#list_agents) | *none* |
+| [`cron_create`](#cron_create) | `cron` |
+| [`cron_list`](#cron_list) | *none* |
+| [`cron_update`](#cron_update) | `cron` |
+| [`cron_delete`](#cron_delete) | `cron` |
+| [`cron_run`](#cron_run) | `cron` |
 
 <!-- /generated -->
 
@@ -1773,3 +1779,561 @@ is never truncated.
   </machine>
 </runtimes>
 ```
+
+### `list_agents`
+
+<!-- generated: tool list_agents -->
+
+```text
+list_agents(for?: "delegate" | "cron")
+```
+
+Description sent to the model:
+
+```text
+List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules a run of it starts with, the daemon's defaults marked (default). Leave `for` out to list both.
+```
+
+Only when the session has the `global` runtime attached and the run is offered `delegate_subagent` or a cron tool. It has no permission of its own.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `for` | `"delegate" \| "cron"` | no | List only the agents usable for this |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "for": {
+          "description": "List only the agents usable for this",
+          "enum": [
+            "delegate",
+            "cron"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+`list_agents` reads the agent registry of the calling run's preset. Each
+agent shows its mode, description, presets, models, what it is usable for,
+and the permission rules a run of it starts with: its document's rules and
+the daemon's defaults for the actions it names no key for, marked
+`(default)`. An agent usable both as a delegation target and for a
+new-session job shows its rules as a root run and as a subagent when they
+differ ([cron spec](../specs/cron.md) section 8.1).
+
+## Cron tools
+
+The cron tools manage the daemon's scheduled prompts
+([cron spec](../specs/cron.md)). Every one but `cron_list` is checked under
+`cron`, with the target kind of each job it touches as a resource:
+`session`, `subagent`, or `new`; `cron_update` that changes a job's kind is
+checked for both. `cron_list` shows only the jobs whose kind the rules allow
+or ask for. A target an agent names is `"self"`, a session below its own,
+or a new-session template; anything else is refused whatever the rules say.
+Agents never set a job's permission mode or pin its model.
+
+### `cron_create`
+
+<!-- generated: tool cron_create -->
+
+```text
+cron_create(delivery?: "queue" | "steer", max_runs?: integer | "unlimited", name?: string, prompt: string, schedule: object | object, target: string | object)
+```
+
+Description sent to the model:
+
+```text
+Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; "unlimited" runs until the job is deleted or disabled.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `delivery` | `"queue" \| "steer"` | no |  |
+| `max_runs` | `integer \| "unlimited"` | no | Cron schedules only: how many fires before the job finishes, default 1, or "unlimited" |
+| `name` | `string` | no | A short name, at most 80 characters |
+| `prompt` | `string` | yes | What to do at each fire |
+| `schedule` | `object \| object` | yes | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
+| `target` | `string \| object` | yes | "self", a subagent's handle, or {"new": {...}} |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "delivery": {
+          "enum": [
+            "queue",
+            "steer"
+          ],
+          "type": "string"
+        },
+        "max_runs": {
+          "description": "Cron schedules only: how many fires before the job finishes, default 1, or \"unlimited\"",
+          "oneOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "unlimited"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "name": {
+          "description": "A short name, at most 80 characters",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "What to do at each fire",
+          "type": "string"
+        },
+        "schedule": {
+          "description": "{\"cron\": \"<minute hour day-of-month month day-of-week>\"} in host local time, or {\"in\": \"<n>s|m|h|d\"} to fire once after a delay (1s to 365d)",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cron": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cron"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "in": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "in"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "target": {
+          "description": "\"self\", a subagent's handle, or {\"new\": {...}}",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "new": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "agent": {
+                      "description": "The agent each new session runs; this session's agent when omitted",
+                      "type": "string"
+                    },
+                    "permission_rules": {
+                      "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
+                      "items": {
+                        "properties": {
+                          "action": {
+                            "type": "string"
+                          },
+                          "effect": {
+                            "enum": [
+                              "allow",
+                              "ask",
+                              "deny"
+                            ],
+                            "type": "string"
+                          },
+                          "resource": {
+                            "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "resource",
+                          "effect"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "project": {
+                      "description": "A project's name; this session's project when omitted",
+                      "type": "string"
+                    },
+                    "runtimes": {
+                      "description": "Runtimes besides global, as list_runtimes names them; this session's when omitted",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "capability": {
+                            "type": "string"
+                          },
+                          "runtime_id": {
+                            "type": "string"
+                          },
+                          "workspace": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "runtime_id"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "required": [
+                "new"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "prompt",
+        "schedule",
+        "target"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `cron_list`
+
+<!-- generated: tool cron_list -->
+
+```text
+cron_list(target?: "session" | "subagent" | "new")
+```
+
+Description sent to the model:
+
+```text
+List the daemon's cron jobs your permissions let you see: id, name, schedule, next fire (local time and UTC), target, whether enabled, and the last fire's outcome. Pass `target` (session, subagent, or new) to list one kind.
+```
+
+Only next to the other cron tools. It needs no rule of its own: it lists the jobs whose target kind the `cron` rules allow or ask for.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `target` | `"session" \| "subagent" \| "new"` | no |  |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "enum": [
+            "session",
+            "subagent",
+            "new"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `cron_update`
+
+<!-- generated: tool cron_update -->
+
+```text
+cron_update(delivery?: "queue" | "steer", enabled?: boolean, id: string, max_runs?: integer | "unlimited", name?: string, prompt?: string, schedule?: object | object, target?: string | object)
+```
+
+Description sent to the model:
+
+```text
+Change a cron job: any member of cron_create, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; "unlimited" runs until the job is deleted or disabled.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `delivery` | `"queue" \| "steer"` | no |  |
+| `enabled` | `boolean` | no |  |
+| `id` | `string` | yes | The job's ID, e.g. "k3v9q2xa" |
+| `max_runs` | `integer \| "unlimited"` | no | Cron schedules only: how many fires before the job finishes, default 1, or "unlimited" |
+| `name` | `string` | no |  |
+| `prompt` | `string` | no |  |
+| `schedule` | `object \| object` | no | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
+| `target` | `string \| object` | no | "self", a subagent's handle, or {"new": {...}} |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "delivery": {
+          "enum": [
+            "queue",
+            "steer"
+          ],
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The job's ID, e.g. \"k3v9q2xa\"",
+          "type": "string"
+        },
+        "max_runs": {
+          "description": "Cron schedules only: how many fires before the job finishes, default 1, or \"unlimited\"",
+          "oneOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "unlimited"
+              ],
+              "type": "string"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "schedule": {
+          "description": "{\"cron\": \"<minute hour day-of-month month day-of-week>\"} in host local time, or {\"in\": \"<n>s|m|h|d\"} to fire once after a delay (1s to 365d)",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "cron": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cron"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "in": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "in"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "target": {
+          "description": "\"self\", a subagent's handle, or {\"new\": {...}}",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "new": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "agent": {
+                      "description": "The agent each new session runs; this session's agent when omitted",
+                      "type": "string"
+                    },
+                    "permission_rules": {
+                      "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
+                      "items": {
+                        "properties": {
+                          "action": {
+                            "type": "string"
+                          },
+                          "effect": {
+                            "enum": [
+                              "allow",
+                              "ask",
+                              "deny"
+                            ],
+                            "type": "string"
+                          },
+                          "resource": {
+                            "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "action",
+                          "resource",
+                          "effect"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "project": {
+                      "description": "A project's name; this session's project when omitted",
+                      "type": "string"
+                    },
+                    "runtimes": {
+                      "description": "Runtimes besides global, as list_runtimes names them; this session's when omitted",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "capability": {
+                            "type": "string"
+                          },
+                          "runtime_id": {
+                            "type": "string"
+                          },
+                          "workspace": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "runtime_id"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "required": [
+                "new"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `cron_delete`
+
+<!-- generated: tool cron_delete -->
+
+```text
+cron_delete(id: string)
+```
+
+Description sent to the model:
+
+```text
+Delete a cron job. Sessions its fires started stay.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | `string` | yes | The job's ID, e.g. "k3v9q2xa" |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The job's ID, e.g. \"k3v9q2xa\"",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `cron_run`
+
+<!-- generated: tool cron_run -->
+
+```text
+cron_run(id: string)
+```
+
+Description sent to the model:
+
+```text
+Run a cron job now. An in-session job fires into its session as a scheduled fire would. A new-session job runs as your subagent with the job's agent, rules, and runtimes and the prompt as its first input: in the foreground (default) the call waits for its first turn and returns the result; in the background it returns the subagent's handle at once and its turns arrive as <subagent_report>s. A run now counts toward neither max_runs nor the failure count.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `id` | `string` | yes | The job's ID, e.g. "k3v9q2xa" |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The job's ID, e.g. \"k3v9q2xa\"",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->

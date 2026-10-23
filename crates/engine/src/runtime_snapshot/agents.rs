@@ -427,7 +427,10 @@ pub(crate) fn delegation_targets(
     targets
 }
 
-fn selection_available(models: &CompiledModelRuntime, selection: &ModelSelection) -> bool {
+pub(crate) fn selection_available(
+    models: &CompiledModelRuntime,
+    selection: &ModelSelection,
+) -> bool {
     models.model(&selection.model).is_some_and(|model| {
         model.model.status == CompiledModelStatus::Available
             && selection

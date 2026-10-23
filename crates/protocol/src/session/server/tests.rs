@@ -424,6 +424,33 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SessionProjectSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_crons(
+        &self,
+        _: crate::CronsListParams,
+    ) -> Result<crate::CronsListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn create_cron(
+        &self,
+        _: crate::CronCreateParams,
+    ) -> Result<crate::CronJobResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn update_cron(
+        &self,
+        _: crate::CronUpdateParams,
+    ) -> Result<crate::CronJobResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn delete_cron(
+        &self,
+        _: crate::CronDeleteParams,
+    ) -> Result<crate::CronDeleteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn run_cron(&self, _: crate::CronRunParams) -> Result<crate::CronRunResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: crate::PluginsListParams,

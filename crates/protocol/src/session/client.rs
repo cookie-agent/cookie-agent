@@ -123,6 +123,9 @@ pub enum ClientDelivery {
     /// A project was created, changed, or deleted; refetch
     /// `projects.list`.
     ProjectsChanged(crate::ProjectsChangedNotification),
+    /// A cron job was created, changed, fired, or deleted; refetch
+    /// `crons.list`.
+    CronsChanged(crate::CronsChangedNotification),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -1112,6 +1115,46 @@ impl Client {
         .await
     }
 
+    /// Every cron job with its state and history.
+    pub async fn list_crons(&self) -> Result<crate::CronsListResult, ClientError> {
+        self.call(crate::CRONS_LIST_METHOD, &crate::CronsListParams {})
+            .await
+    }
+
+    /// Creates a cron job.
+    pub async fn create_cron(
+        &self,
+        params: crate::CronCreateParams,
+    ) -> Result<crate::CronJobResult, ClientError> {
+        self.call(crate::CRONS_CREATE_METHOD, &params).await
+    }
+
+    /// Changes a cron job.
+    pub async fn update_cron(
+        &self,
+        params: crate::CronUpdateParams,
+    ) -> Result<crate::CronJobResult, ClientError> {
+        self.call(crate::CRONS_UPDATE_METHOD, &params).await
+    }
+
+    /// Deletes a cron job; its run sessions stay.
+    pub async fn delete_cron(
+        &self,
+        id: crate::CronJobId,
+    ) -> Result<crate::CronDeleteResult, ClientError> {
+        self.call(crate::CRONS_DELETE_METHOD, &crate::CronDeleteParams { id })
+            .await
+    }
+
+    /// Fires a cron job now.
+    pub async fn run_cron(
+        &self,
+        id: crate::CronJobId,
+    ) -> Result<crate::CronRunResult, ClientError> {
+        self.call(crate::CRONS_RUN_METHOD, &crate::CronRunParams { id })
+            .await
+    }
+
     /// The configured plugins, in the order their hooks run.
     pub async fn list_plugins(&self) -> Result<crate::PluginsListResult, ClientError> {
         self.call(crate::PLUGINS_LIST_METHOD, &crate::PluginsListParams {})
@@ -2026,6 +2069,10 @@ async fn route_notification(
         crate::PROJECTS_CHANGED_METHOD => {
             let changed: crate::ProjectsChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::ProjectsChanged(changed));
+        }
+        crate::CRONS_CHANGED_METHOD => {
+            let changed: crate::CronsChangedNotification = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::CronsChanged(changed));
         }
         _ => {}
     }

@@ -729,6 +729,32 @@ fn memory_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule>
         .collect()
 }
 
+/// The rules a run of an agent of `mode` gets for `cron` when its agent
+/// document names no `cron` key (`docs/site/specs/cron.md` section 7): a
+/// root run of a non-internal agent manages every job; a `delegated` run
+/// and an internal agent get nothing, so the cron tools are hidden unless
+/// granted.
+pub(crate) fn cron_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    if delegated || mode == AgentMode::Internal {
+        return Vec::new();
+    }
+    vec![PermissionRule::new(
+        PermissionAction::CRON,
+        WildcardPattern::new("*").expect("static default pattern"),
+        PermissionEffect::Allow,
+    )]
+}
+
+/// Every rule the daemon supplies to a run of an agent of `mode`, root or
+/// `delegated`, each for an action its document names no key for.
+pub(crate) fn run_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    mode_default_rules(mode)
+        .into_iter()
+        .chain(memory_default_rules(mode, delegated))
+        .chain(cron_default_rules(mode, delegated))
+        .collect()
+}
+
 /// What the memory rule variables stand for in one run
 /// (`docs/site/specs/memory.md` section 16.9.9), besides `${agent_id}`,
 /// which is the run's agent: the session's machines in order, and the name
@@ -785,7 +811,8 @@ fn expand_memory_variables(
 /// The rules an agent document gives its runs: the document's own, then
 /// the [mode defaults](mode_default_rules) of each action the document
 /// names no key for, with or without a runtime selector, and the
-/// [memory defaults](memory_default_rules) for a root or `delegated` run
+/// [memory defaults](memory_default_rules) and the [cron default](cron_default_rules)
+/// for a root or `delegated` run
 /// likewise. A declared key replaces its action's default entirely. The
 /// memory rule variables are expanded with `variables` as the run's policy
 /// is frozen, so frozen rules, which the wire carries, never hold one.
@@ -800,14 +827,34 @@ pub(crate) fn agent_permission_rules(
         .flat_map(|(key, value)| value.rules(key))
         .collect::<Vec<_>>();
     rules.extend(
-        mode_default_rules(document.frontmatter.mode)
+        run_default_rules(document.frontmatter.mode, delegated)
             .into_iter()
-            .chain(memory_default_rules(document.frontmatter.mode, delegated))
             .filter(|rule| !permissions.keys().any(|key| key.action == rule.action)),
     );
     rules
         .into_iter()
         .flat_map(|rule| expand_memory_variables(rule, &document.id, variables))
+        .collect()
+}
+
+/// The rules a root or `delegated` run of `document`'s agent starts with,
+/// as [`agent_permission_rules`] gives them before the memory variables are
+/// expanded, each with whether the daemon supplied it as a default.
+pub(crate) fn agent_rules_with_sources(
+    document: &cookie_agent_config::AgentDocument,
+    delegated: bool,
+) -> Vec<(PermissionRule, bool)> {
+    let permissions = &document.frontmatter.permissions;
+    permissions
+        .iter()
+        .flat_map(|(key, value)| value.rules(key))
+        .map(|rule| (rule, false))
+        .chain(
+            run_default_rules(document.frontmatter.mode, delegated)
+                .into_iter()
+                .filter(|rule| !permissions.keys().any(|key| key.action == rule.action))
+                .map(|rule| (rule, true)),
+        )
         .collect()
 }
 
@@ -1394,10 +1441,7 @@ fn effective_permission_view(
     overlay: &SessionPermissionOverlay,
     declared: &[PermissionAction],
 ) -> Vec<EffectivePermissionAction> {
-    let defaults = mode_default_rules(policy.mode)
-        .into_iter()
-        .chain(memory_default_rules(policy.mode, delegated))
-        .collect::<Vec<_>>();
+    let defaults = run_default_rules(policy.mode, delegated);
     let agent_source = |action: &PermissionAction| {
         let of_action = |rule: &&PermissionRule| rule.action == *action;
         let default = defaults.iter().filter(of_action).collect::<Vec<_>>();

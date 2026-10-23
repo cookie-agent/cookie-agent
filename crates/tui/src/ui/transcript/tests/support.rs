@@ -549,6 +549,7 @@ pub(crate) fn session_created_from_bindings(
         seq,
         timestamp: Timestamp::now(),
         payload: EventPayload::SessionCreated {
+            cron: None,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: "test_00000000".into(),
             origin: SessionOrigin::Root,
@@ -940,6 +941,7 @@ pub(crate) fn tool_terminated(
 
 pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
     SessionMeta {
+        cron: None,
         project: None,
         short_id: None,
         session_id: id,

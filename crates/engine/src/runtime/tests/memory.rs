@@ -900,7 +900,7 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     // history still has something to compact.
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        &agent("{ memory: allow, memory_write: deny }"),
+        &agent("{ memory: allow, memory_write: deny, cron: deny }"),
     );
     let session = fixture
         .engine

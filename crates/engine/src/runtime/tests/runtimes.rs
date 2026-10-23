@@ -31,15 +31,15 @@ fn published_names(fixture: &Fixture, session: SessionId, policy: &FrozenRunPoli
         .collect()
 }
 
-/// `policy` without its memory rules, so the `global` runtime's memory
-/// tools stay out of tests about other tools.
 /// `policy` without the default rules that publish the `global` runtime's
-/// memory tools and `list_runtimes`.
+/// memory tools, `list_runtimes`, and the cron tools, so they stay out of
+/// tests about other tools.
 fn without_memory(mut policy: FrozenRunPolicy) -> FrozenRunPolicy {
     policy.agent.permissions.retain(|rule| {
         rule.action != cookie_agent_protocol::PermissionAction::MEMORY
             && rule.action != cookie_agent_protocol::PermissionAction::MEMORY_WRITE
             && rule.action != cookie_agent_protocol::PermissionAction::LIST_RUNTIMES
+            && rule.action != cookie_agent_protocol::PermissionAction::CRON
     });
     policy
 }

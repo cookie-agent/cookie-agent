@@ -77,6 +77,9 @@ mod producer_claims;
 mod project_api;
 pub(crate) mod runtime_delegation;
 pub(crate) use project_api::EngineMemoryOwners;
+pub(crate) mod cron_api;
+mod cron_fire;
+mod cron_run;
 pub(crate) mod producers;
 mod prompt_blocks;
 mod recovery;
@@ -307,6 +310,9 @@ pub enum EngineError {
     /// A project request was refused or failed.
     #[error(transparent)]
     Project(#[from] crate::projects::ProjectError),
+    /// A cron request was refused or failed.
+    #[error(transparent)]
+    Cron(#[from] crate::crons::CronError),
     #[error("plugin request rejected: {0}")]
     Plugin(String),
     #[error(transparent)]
@@ -863,6 +869,9 @@ pub(crate) struct Inner {
     pub(crate) machines: Arc<crate::machines::MachineRegistry>,
     /// The projects sessions belong to.
     pub(crate) projects: Arc<crate::projects::ProjectStore>,
+    /// The cron jobs.
+    pub(crate) crons: Arc<crate::crons::CronStore>,
+    pub(crate) cron_scheduler: cron_fire::CronSchedulerState,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     /// MCP changes and failures of every runtime.
@@ -1018,6 +1027,7 @@ impl Engine {
         {
             eprintln!("cookie-agent: projects: {error}");
         }
+        let crons = Arc::new(crate::crons::CronStore::open(&options.data_dir)?);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
         let placement = Arc::clone(&store);
@@ -1056,11 +1066,21 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, runtimes_tool.as_ref())?;
         mcp.reserve_provider(runtimes_tool.as_ref())
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let cron_tools = Arc::new(crate::cron_tools::CronTools::new());
+        reserve_provider_id(&mut provider_ids, cron_tools.as_ref())?;
+        mcp.reserve_provider(cron_tools.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let agents_tool = Arc::new(crate::agents_tool::AgentsTool::new());
+        reserve_provider_id(&mut provider_ids, agents_tool.as_ref())?;
+        mcp.reserve_provider(agents_tool.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         let plugins = Arc::new(crate::PluginRegistry::new(options.config.plugins.clone()));
         let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone()];
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
         global_providers.push(memory_tools.clone());
         global_providers.push(runtimes_tool.clone());
+        global_providers.push(cron_tools.clone());
+        global_providers.push(agents_tool.clone());
         // Each plugin's tools compose under the plugin's name.
         global_providers.extend(plugins.tool_providers());
         let runtimes = Arc::new(crate::runtimes::RuntimeRegistry::new(
@@ -1113,6 +1133,8 @@ impl Engine {
                 runtimes,
                 machines,
                 projects,
+                crons,
+                cron_scheduler: cron_fire::CronSchedulerState::default(),
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 mcp_hub,
@@ -1136,6 +1158,8 @@ impl Engine {
         };
         memory_tools.bind(&engine);
         runtimes_tool.bind(&engine);
+        cron_tools.bind(&engine);
+        agents_tool.bind(&engine);
         // Engine unit tests compose their own base-layer stand-ins.
         #[cfg(not(test))]
         if let Err(error) = engine.register_base_layer() {
@@ -1184,6 +1208,7 @@ impl Engine {
             engine.inner.plugins.start_eager(runtime);
         }
         engine.start_subagent_janitor();
+        engine.start_cron_scheduler();
         Ok(engine)
     }
 
@@ -1744,6 +1769,10 @@ impl Engine {
             .ok()
             .and_then(|mut task| task.take());
         if let Some(task) = janitor {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(task) = self.take_cron_scheduler() {
             task.abort();
             let _ = task.await;
         }

@@ -495,6 +495,9 @@ impl Engine {
         let envelope = envelope?;
         if let Some((run, ended)) = run_edge {
             self.observe_subagent_run(session, run, ended);
+            if ended {
+                self.observe_cron_run(session, run);
+            }
         }
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.log(session)?.event_snapshot().iter() {

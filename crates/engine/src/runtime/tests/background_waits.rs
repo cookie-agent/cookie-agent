@@ -43,7 +43,7 @@ fn listed_waiting(engine: &crate::Engine, session: SessionId) -> Vec<WaitingOn> 
 /// The parent's agent, which its buffered child shares. Memory stays off:
 /// a root run's memory snapshot would follow the system prompt, and the
 /// parent's first report request has to end in that prompt for the script.
-const CHILD_JOB_AGENT: &str = "---\ndescription: Background call test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n  memory: deny\n---\nTest background calls.\n";
+const CHILD_JOB_AGENT: &str = "---\ndescription: Background call test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n  memory: deny\n  cron: deny\n---\nTest background calls.\n";
 
 /// A parent whose delegated child ran one turn that left a background
 /// `job` call running, after the parent's run for that turn's report ended.

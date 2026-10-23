@@ -1207,6 +1207,24 @@ impl Engine {
                         )
                     })
         })?;
+        // `cron_list` comes with the other cron tools, and `list_agents` with
+        // them or with `delegate_subagent` (cron spec section 8.1).
+        let from_global = |tool: &ComposedTool, provider: &str| {
+            tool.source.attachment.is_some() && tool.source.provider.provider_id() == provider
+        };
+        let offers_cron = composition.tools.iter().any(|tool| {
+            from_global(tool, crate::cron_tools::PROVIDER_ID) && tool.spec.permission_name.is_some()
+        });
+        let offers_delegate = composition
+            .tools
+            .iter()
+            .any(|tool| tool.source.attachment.is_none() && tool.spec.name == "delegate_subagent");
+        composition.tools.retain(|tool| {
+            (offers_cron || !from_global(tool, crate::cron_tools::PROVIDER_ID))
+                && (offers_cron
+                    || offers_delegate
+                    || !from_global(tool, crate::agents_tool::PROVIDER_ID))
+        });
         // `stop_background` only makes sense next to a tool that can run in
         // the background.
         if !composition.tools.iter().any(|tool| tool.spec.background) {

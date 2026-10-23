@@ -4587,6 +4587,27 @@
       ],
       "type": "object"
     },
+    "SessionCron": {
+      "description": "The job a new-session job's run session was started by\n(`SessionMeta::cron`).",
+      "properties": {
+        "fired_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "fired_at"
+      ],
+      "type": "object"
+    },
     "SessionOrigin": {
       "oneOf": [
         {
@@ -5464,6 +5485,17 @@
         },
         "creation_selection": {
           "$ref": "#/$defs/RunSelection"
+        },
+        "cron": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionCron"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The cron job whose fire created this session (client protocol\n1.15.0); absent for every other session."
         },
         "cwd_identity": {
           "description": "Opaque canonical workspace identity.",

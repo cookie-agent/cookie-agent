@@ -1,9 +1,12 @@
 //! The transport-free single-conversation Cookie Agent runtime.
 
 pub mod actor;
+mod agents_tool;
 mod base_tools;
 mod blocking;
 mod config_store;
+mod cron_tools;
+mod crons;
 mod delegation_api;
 pub mod delegation_events;
 pub mod events;
@@ -34,9 +37,12 @@ mod test_support;
 pub mod testing;
 mod usage;
 
+pub use agents_tool::agents_tool_spec;
 pub use base_tools::base_layer_tool_specs;
 pub use cookie_agent_mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;
+pub use cron_tools::cron_tool_specs;
+pub use crons::CronError;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation, DelegatedCapability};
 pub use machines::MachineError;
 pub use memory_tools::memory_tool_specs;

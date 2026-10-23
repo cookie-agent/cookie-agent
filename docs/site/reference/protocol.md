@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.14.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.15.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.14.0",
+    "protocol_version": "1.15.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.14.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.15.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -258,6 +258,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `project.create` | `name`, optional `emoji`, optional `defaults` | The new `project` |
 | `project.update` | `project` ID, `revision`, optional `name`, `emoji` (`null` clears), `defaults` (`null` clears), `agents_md` (`""` removes) | The `project` afterwards |
 | `project.delete` | `project` ID, `revision` | `deleted_sessions` and `deleted_memories` |
+| `crons.list` | Empty object | Every cron job with its state and history, in creation order, and whether the daemon is `firing` (see [Cron jobs](#cron-jobs)) |
+| `crons.create` | `prompt`, `schedule`, `target`, optional `name`, `max_runs`, `delivery`, `permission_mode`, `max_consecutive_failures`, `enabled` | The new `job` |
+| `crons.update` | Job `id`, any member of `crons.create` (`null` clears `name`, `permission_mode`, `max_consecutive_failures`) | The `job` afterwards |
+| `crons.delete` | Job `id` | Empty object; the sessions its fires started stay |
+| `crons.run` | Job `id` | The `job` afterwards and the `session_id` the fire went to, absent when it was skipped |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -656,6 +661,54 @@ has is `project_name_taken`; an unknown ID is `project_not_found`.
 Each change sends `projects.changed` to every connection. A failure to read
 or write a project is `project_store_failed`.
 
+### Cron jobs
+
+Since 1.15.0 the daemon keeps cron jobs: prompts it fires on a schedule, into
+an existing session or into a new session per fire (see the
+[cron spec](../specs/cron.md)). A `CronJob` is its daemon-assigned `id`
+(eight lowercase letters and digits), an optional `name`, the `prompt`, the
+`schedule`, `max_runs`, the `target`, `delivery` for an in-session job,
+`permission_mode` for a new-session job, an optional
+`max_consecutive_failures`, `enabled` with a `disabled_reason` (`finished`,
+`failed` with `failures`, or `disabled` `by` the user or an agent),
+`created_by` (`"user"` or `{ agent: { agent, session } }`), `created_at`, and
+its state: `next_fire`, `runs`, `consecutive_failures`, `last_fire`, and the
+`history` of its latest fires.
+
+- **Schedule.** `{ cron: "<minute hour day-of-month month day-of-week>" }`
+  in the daemon host's local time, day of month and day of week combining
+  with OR when both are restricted; `{ in: "<n>s|m|h|d" }` (1s to 365d) on
+  create and update, which the daemon stores as `{ at: <time> }`; or
+  `{ at: <time> }` in the future. `max_runs` is a whole number from 1 or
+  `"unlimited"`, 1 when omitted, for cron schedules only. A job that reaches
+  it is kept disabled as `finished` when you created it, and deleted when an
+  agent did.
+- **Target.** `{ session: <root session ID> }`, `{ subagent: <delegated
+  session ID> }`, or `{ new: <template> }`. A template is `{ agent, preset?,
+  model?, permission_rules?, runtimes?, global?, cwd?, project? }`, checked
+  as `session.create` would check it; its agent must be able to run as a
+  root. `delivery` is `queue` (default) or `steer`; `permission_mode`
+  defaults to `auto_approve_n`.
+- **Fires.** Each `history` entry is a `CronFire`: `scheduled_at` (absent
+  for a run now), `fired_at`, `run_now`, the `outcome` (`pending`,
+  `delivered`, `skipped` with a `reason`, or `failed` with an `error`),
+  `missed` for a fire skipped because the daemon was down, the `session_id`
+  it went to, and the `run_id` and `run_end` (`{ status, at }`) of the run
+  its prompt landed in. A skip `reason` is `previous_fire_not_delivered`,
+  `previous_run_still_running`, `daemon_was_down`, `interrupted`, or
+  `firing_disabled`, an open set.
+- **Run sessions.** A new-session fire's session records the job in
+  `SessionMeta.cron` (`{ job_id, fired_at }`, also on its `session_created`
+  event) and is otherwise ordinary.
+- **Waiting.** A session targeted by an enabled job with a next fire lists
+  `scheduled_job` in `SessionMeta.waiting_on`.
+
+`crons.run` fires a job now, as a scheduled fire would; it is recorded as a
+run now and counts toward neither `max_runs` nor the failure count. Each
+change and fire sends `crons.changed` to every connection. An unknown job is
+`cron_not_found`, a refused value `cron_invalid`, and a failure to read or
+write `crons.json` `cron_store_failed`.
+
 ### Plugins
 
 `plugins.list` returns every configured [plugin](../extend/plugins.md) in the
@@ -978,6 +1031,7 @@ subscriptions to the deleted sessions end with them: no further
 | `machines.changed` | The machine registry changed, or a runtime joined a new machine; an empty object |
 | `memory.changed` | A memory file changed through the daemon; an empty object |
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
+| `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
@@ -990,7 +1044,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, and `projects.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, and `crons.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -1017,7 +1071,8 @@ bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `runtimes.changed` and `plugins.changed` work the same way for
 `runtimes.list` and `plugins.list`, `machines.changed` for
 `machines.list` and `runtimes.list`, `memory.changed` for
-`memory.list`, and `projects.changed` for `projects.list`.
+`memory.list`, `projects.changed` for `projects.list`, and `crons.changed`
+for `crons.list`.
 
 ### Connection failures
 

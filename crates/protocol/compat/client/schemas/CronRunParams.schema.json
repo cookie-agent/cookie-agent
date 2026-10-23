@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Fire a job now, as a scheduled fire would. It is recorded as a run now,\ncounts toward neither `max_runs` nor the failure count, and moves\nnothing else.",
+  "properties": {
+    "id": {
+      "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+      "maxLength": 8,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]{8}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "CronRunParams",
+  "type": "object"
+}

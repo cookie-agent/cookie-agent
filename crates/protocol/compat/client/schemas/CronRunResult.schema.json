@@ -1,0 +1,737 @@
+{
+  "$defs": {
+    "CronActor": {
+      "description": "Who created or changed a job: you, through a client, or an agent from a\nsession.",
+      "oneOf": [
+        {
+          "enum": [
+            "user"
+          ],
+          "type": "string"
+        },
+        {
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/CronAgentActor"
+            }
+          },
+          "required": [
+            "agent"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CronAgentActor": {
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "session": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "session"
+      ],
+      "type": "object"
+    },
+    "CronDisabledReason": {
+      "description": "Why a job is disabled.",
+      "oneOf": [
+        {
+          "description": "It ran `max_runs` times, or its one-shot time passed.",
+          "properties": {
+            "kind": {
+              "const": "finished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It failed this many times in a row.",
+          "properties": {
+            "failures": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "failures"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "You or an agent disabled it.",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/CronActor"
+            },
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "by"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
+    "CronFire": {
+      "description": "One entry of a job's history.",
+      "properties": {
+        "fired_at": {
+          "description": "When the daemon fired, or recorded the skip.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "missed": {
+          "description": "For a fire skipped because the daemon was down, how many fires were\nmissed, from `scheduled_at` on.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/CronFireOutcome"
+        },
+        "run_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CronRunEnd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "description": "The run the prompt started or joined, once it has one.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_now": {
+          "description": "A run now (`crons.run` or `cron_run`), which counts toward neither\n`max_runs` nor the failure count.",
+          "type": "boolean"
+        },
+        "scheduled_at": {
+          "description": "The schedule's time; absent for a run now.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "description": "The session the fire went to: the new session for a new-session job,\nthe child session for an agent's run now of one.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "fired_at",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "CronFireOutcome": {
+      "description": "What a fire did.",
+      "oneOf": [
+        {
+          "description": "Recorded and being delivered.",
+          "properties": {
+            "kind": {
+              "const": "pending",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The prompt was accepted by its session, or its new session was\ncreated.",
+          "properties": {
+            "kind": {
+              "const": "delivered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "skipped",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/CronSkipReason"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The fire could not start, or the run it started failed.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
+    "CronJob": {
+      "description": "One job with its state and history.",
+      "properties": {
+        "consecutive_failures": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "created_by": {
+          "$ref": "#/$defs/CronActor"
+        },
+        "delivery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProducerDeliveryMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For an in-session job."
+        },
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CronDisabledReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "history": {
+          "default": [],
+          "description": "The latest fires, oldest first, as many as `[cron] history` keeps.",
+          "items": {
+            "$ref": "#/$defs/CronFire"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": "string"
+        },
+        "last_fire": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_consecutive_failures": {
+          "description": "The job's own `[cron] max_consecutive_failures`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_runs": {
+          "description": "Meaningful for a cron schedule; a one-shot fires once.",
+          "oneOf": [
+            {
+              "maximum": 4294967295,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "const": "unlimited",
+              "type": "string"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_fire": {
+          "description": "The next due time; absent for a disabled or finished job.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a new-session job: the run sessions' permission mode."
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "runs": {
+          "default": 0,
+          "description": "Scheduled fires delivered, counted against `max_runs`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schedule": {
+          "$ref": "#/$defs/CronSchedule"
+        },
+        "target": {
+          "$ref": "#/$defs/CronTarget"
+        }
+      },
+      "required": [
+        "id",
+        "prompt",
+        "schedule",
+        "max_runs",
+        "target",
+        "enabled",
+        "created_by",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "CronRunEnd": {
+      "description": "How the run a fire started, or steered into, ended.",
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        }
+      },
+      "required": [
+        "status",
+        "at"
+      ],
+      "type": "object"
+    },
+    "CronSchedule": {
+      "description": "When a job fires. The daemon stores and returns `cron` and `at`; `in`\nis accepted on create and update only and becomes `at` at once.",
+      "oneOf": [
+        {
+          "description": "A five-field cron expression (minute, hour, day of month, month, day\nof week) in the daemon host's local time; day of month and day of\nweek combine with OR when both are restricted, as in Vixie cron.",
+          "properties": {
+            "cron": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cron"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Once, this long from now: a whole number with `s`, `m`, `h`, or `d`,\nfrom `1s` to `365d`.",
+          "properties": {
+            "in": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "in"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Once, at this time.",
+          "properties": {
+            "at": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "at"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CronSkipReason": {
+      "description": "Why a fire was skipped. A value this build does not know is still a\nskip.",
+      "oneOf": [
+        {
+          "const": "previous_fire_not_delivered",
+          "description": "The job's previous fire into its session was still waiting.",
+          "type": "string"
+        },
+        {
+          "const": "previous_run_still_running",
+          "description": "The run session of the job's previous fire was still running.",
+          "type": "string"
+        },
+        {
+          "const": "daemon_was_down",
+          "description": "The daemon was not running at the fire time; `missed` counts the\nfires missed.",
+          "type": "string"
+        },
+        {
+          "const": "interrupted",
+          "description": "The daemon stopped after recording the fire and before\ndelivering it.",
+          "type": "string"
+        },
+        {
+          "const": "firing_disabled",
+          "description": "`[cron] enabled = false` held at the fire time.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "CronTarget": {
+      "description": "Where each fire goes.",
+      "oneOf": [
+        {
+          "description": "A root session.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A delegated session.",
+          "properties": {
+            "subagent": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "subagent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A new root session per fire, from this template.",
+          "properties": {
+            "new": {
+              "$ref": "#/$defs/CronTemplate"
+            }
+          },
+          "required": [
+            "new"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CronTemplate": {
+      "description": "What a new-session job's sessions start with. `runtimes`, `global`, and\n`cwd` have the shape of `session.create`'s members of the same names.",
+      "properties": {
+        "agent": {
+          "description": "The agent each run session starts with; it must be able to run as a\nroot (`primary` or `all`).",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "cwd": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "global": {
+          "description": "Whether a run session attaches the global runtime; `true` when\nomitted.",
+          "type": "boolean"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A model pin; the agent's own model chain when omitted. Only clients\nset it."
+        },
+        "permission_rules": {
+          "description": "Rules added to each run session as its permission overlay.",
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The project the run sessions belong to.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimes": {
+          "description": "The runtimes a run session attaches besides `global`, in order, as\n`session.create`'s `runtimes` names them; as `session.create`\nwithout `runtimes` when omitted.",
+          "items": {
+            "$ref": "#/$defs/ProjectRuntime"
+          },
+          "maxItems": 256,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "ModelSelection": {
+      "description": "One exact base or named-variant model selection.",
+      "properties": {
+        "model": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "variant": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "PermissionEffect": {
+      "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "PermissionMode": {
+      "description": "A value this build does not know reads as `ask`: asking.",
+      "enum": [
+        "auto_approve",
+        "auto_approve_n",
+        "auto_approve_y",
+        "yolo",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "PermissionRule": {
+      "properties": {
+        "action": {
+          "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "minLength": 1,
+          "pattern": "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "type": "string",
+          "x-cookie-agent-maxUtf8Bytes": 4096
+        },
+        "runtime": {
+          "description": "Runtime selector (`bash@labpc`): the rule applies only to tools of\nruntimes with this runtime ID. Absent, it applies everywhere,\nincluding the base layer.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "ProducerDeliveryMode": {
+      "description": "Per-send mode. Queue remains accepted-but-deferred during an active run;\nsteer joins the next safe request without interrupting an in-flight request.",
+      "enum": [
+        "steer",
+        "queue"
+      ],
+      "type": "string"
+    },
+    "ProjectRuntime": {
+      "description": "One runtime a project's new sessions attach, as `session.create`'s\n`runtimes` names it.",
+      "properties": {
+        "capability": {
+          "description": "The capability to attach; the runtime's only capability when\nomitted.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Required exactly when the capability takes a workspace.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id"
+      ],
+      "type": "object"
+    },
+    "SessionStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "job": {
+      "$ref": "#/$defs/CronJob"
+    },
+    "session_id": {
+      "description": "The session the fire went to.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "job"
+  ],
+  "title": "CronRunResult",
+  "type": "object"
+}

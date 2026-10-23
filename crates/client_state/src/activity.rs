@@ -69,6 +69,7 @@ pub fn waiting_label(kinds: &[WaitingOn]) -> String {
             WaitingOn::BackgroundCall => "background call",
             WaitingOn::Subagent => "subagent",
             WaitingOn::ExternalProducer => "external producer",
+            WaitingOn::ScheduledJob => "scheduled job",
             WaitingOn::Unknown => "another producer",
         };
         if !names.contains(&name) {

@@ -99,7 +99,7 @@ impl Engine {
             }
             for run in session.runs.values() {
                 for (tool_call_id, tool) in &run.pending_calls {
-                    if tool == "delegate_subagent" {
+                    if super::cron_run::is_delegating_tool(tool) {
                         continue;
                     }
                     let failure = restart_tool_failure();
@@ -194,7 +194,7 @@ impl Engine {
                     run.pending_calls
                         .get(&entry.reservation.parent_tool_call_id)
                 })
-                .is_some_and(|tool| tool == "delegate_subagent");
+                .is_some_and(|tool| super::cron_run::is_delegating_tool(tool));
             let teaser =
                 self.finished_teaser(entry.reservation.invocation_id, SessionStatus::Failed);
             self.inner.delegation_events.mark_finished_with_reason(
@@ -269,7 +269,7 @@ impl Engine {
             )
         }) {
             for (call, tool) in &run.pending_calls {
-                if tool == "delegate_subagent" {
+                if super::cron_run::is_delegating_tool(tool) {
                     let recovery_key = (session_id, run.id, *call);
                     if self
                         .inner

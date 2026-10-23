@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A job was created, changed, fired, or deleted; refetch `crons.list`.",
+  "title": "CronsChangedNotification",
+  "type": "object"
+}

@@ -92,6 +92,54 @@
     {
       "direction": "from_daemon",
       "kind": "notification",
+      "method": "crons.changed",
+      "params": "CronsChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "crons.create",
+      "params": "CronCreateParams",
+      "params_role": "command",
+      "result": "CronJobResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "crons.delete",
+      "params": "CronDeleteParams",
+      "params_role": "command",
+      "result": "CronDeleteResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "crons.list",
+      "params": "CronsListParams",
+      "params_role": "command",
+      "result": "CronsListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "crons.run",
+      "params": "CronRunParams",
+      "params_role": "command",
+      "result": "CronRunResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "crons.update",
+      "params": "CronUpdateParams",
+      "params_role": "command",
+      "result": "CronJobResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
       "method": "events.plugin",
       "params": "ExtensionBusEventParams",
       "params_role": "information",

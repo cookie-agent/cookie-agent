@@ -12,7 +12,7 @@ use cookie_agent_runtime_api::authoring::{
 
 use crate::{Engine, EngineError, ToolLayer, ToolProvider, ToolSpec};
 
-mod delegate;
+pub(crate) mod delegate;
 mod goal;
 mod message;
 mod read_artifact;

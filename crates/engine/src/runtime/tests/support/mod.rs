@@ -753,7 +753,7 @@ compaction = "openai-responses-compact"
     // the compaction tests on this fixture use.
     write_private_test_file(
         &agents.join("primary.md"),
-        "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: { memory: deny }\n---\nTest native compaction.\n",
+        "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: { memory: deny, cron: deny }\n---\nTest native compaction.\n",
     );
     let mut config = load_from_user_root(Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;
@@ -886,6 +886,7 @@ pub(crate) fn create_buffered_delegated_descendant(
         creation_selection,
         creation_agent,
         revisions,
+        cron: _,
     } = parent_projection
         .log
         .event_snapshot()
@@ -904,6 +905,7 @@ pub(crate) fn create_buffered_delegated_descendant(
             child,
             cookie_agent_protocol::EventOrigin::new("engine:test").expect("event origin"),
             EventPayload::SessionCreated {
+                cron: None,
                 history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: "test_00000000".into(),
                 origin: cookie_agent_protocol::SessionOrigin::Delegated {

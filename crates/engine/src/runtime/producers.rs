@@ -321,6 +321,9 @@ impl Engine {
                 .or_default()
                 .registrations
                 .retain(|record| match &record.authority.owner {
+                    // A cron fire's registration lives only while its
+                    // prompt is sent.
+                    ProducerOwner::External { source, .. } if source.cron_job().is_some() => true,
                     ProducerOwner::External { source, .. } => {
                         record.authority.connection_epoch.is_some_and(|epoch| {
                             self.external_connection_is_current(source, epoch)
@@ -1309,6 +1312,17 @@ impl Engine {
         authority: &ProducerAuthority,
     ) -> Result<(), EngineError> {
         if let ProducerOwner::External { source, .. } = &authority.owner {
+            // A cron job's fires are the daemon's own: no connection has a
+            // `cron:` source.
+            if source.cron_job().is_some() {
+                return if authority.connection_epoch.is_none() {
+                    Ok(())
+                } else {
+                    Err(EngineError::Producer(format!(
+                        "{source} belongs to the daemon"
+                    )))
+                };
+            }
             let Some(connection_epoch) = authority.connection_epoch else {
                 return Err(EngineError::Producer(
                     "missing producer connection epoch".into(),
@@ -1511,11 +1525,17 @@ impl Engine {
                 let kind = match &registration.authority.owner {
                     ProducerOwner::Tool { .. } => WaitingOn::BackgroundCall,
                     ProducerOwner::Delegation { .. } => WaitingOn::Subagent,
+                    // A fire's own registration lasts only while it sends;
+                    // the job counts through the store below.
+                    owner if super::cron_fire::is_cron_owner(owner) => continue,
                     ProducerOwner::External { .. } => WaitingOn::ExternalProducer,
                     _ => continue,
                 };
                 kinds.push(kind);
             }
+        }
+        if self.inner.crons.waits_on(session) {
+            kinds.push(WaitingOn::ScheduledJob);
         }
         if !kinds.contains(&WaitingOn::Subagent)
             && (waking.values().any(|parent| *parent == session)

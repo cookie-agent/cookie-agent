@@ -1,0 +1,392 @@
+{
+  "$defs": {
+    "CronSchedule": {
+      "description": "When a job fires. The daemon stores and returns `cron` and `at`; `in`\nis accepted on create and update only and becomes `at` at once.",
+      "oneOf": [
+        {
+          "description": "A five-field cron expression (minute, hour, day of month, month, day\nof week) in the daemon host's local time; day of month and day of\nweek combine with OR when both are restricted, as in Vixie cron.",
+          "properties": {
+            "cron": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cron"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Once, this long from now: a whole number with `s`, `m`, `h`, or `d`,\nfrom `1s` to `365d`.",
+          "properties": {
+            "in": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "in"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Once, at this time.",
+          "properties": {
+            "at": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "at"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CronTarget": {
+      "description": "Where each fire goes.",
+      "oneOf": [
+        {
+          "description": "A root session.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A delegated session.",
+          "properties": {
+            "subagent": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "subagent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A new root session per fire, from this template.",
+          "properties": {
+            "new": {
+              "$ref": "#/$defs/CronTemplate"
+            }
+          },
+          "required": [
+            "new"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CronTemplate": {
+      "description": "What a new-session job's sessions start with. `runtimes`, `global`, and\n`cwd` have the shape of `session.create`'s members of the same names.",
+      "properties": {
+        "agent": {
+          "description": "The agent each run session starts with; it must be able to run as a\nroot (`primary` or `all`).",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "cwd": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "global": {
+          "description": "Whether a run session attaches the global runtime; `true` when\nomitted.",
+          "type": "boolean"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A model pin; the agent's own model chain when omitted. Only clients\nset it."
+        },
+        "permission_rules": {
+          "description": "Rules added to each run session as its permission overlay.",
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The project the run sessions belong to.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimes": {
+          "description": "The runtimes a run session attaches besides `global`, in order, as\n`session.create`'s `runtimes` names them; as `session.create`\nwithout `runtimes` when omitted.",
+          "items": {
+            "$ref": "#/$defs/ProjectRuntime"
+          },
+          "maxItems": 256,
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "ModelSelection": {
+      "description": "One exact base or named-variant model selection.",
+      "properties": {
+        "model": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "variant": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "PermissionEffect": {
+      "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "PermissionMode": {
+      "description": "A value this build does not know reads as `ask`: asking.",
+      "enum": [
+        "auto_approve",
+        "auto_approve_n",
+        "auto_approve_y",
+        "yolo",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "PermissionRule": {
+      "properties": {
+        "action": {
+          "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "minLength": 1,
+          "pattern": "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "type": "string",
+          "x-cookie-agent-maxUtf8Bytes": 4096
+        },
+        "runtime": {
+          "description": "Runtime selector (`bash@labpc`): the rule applies only to tools of\nruntimes with this runtime ID. Absent, it applies everywhere,\nincluding the base layer.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "ProducerDeliveryMode": {
+      "description": "Per-send mode. Queue remains accepted-but-deferred during an active run;\nsteer joins the next safe request without interrupting an in-flight request.",
+      "enum": [
+        "steer",
+        "queue"
+      ],
+      "type": "string"
+    },
+    "ProjectRuntime": {
+      "description": "One runtime a project's new sessions attach, as `session.create`'s\n`runtimes` names it.",
+      "properties": {
+        "capability": {
+          "description": "The capability to attach; the runtime's only capability when\nomitted.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Required exactly when the capability takes a workspace.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Change a job. Only the members present change; `null` clears an\noptional one. A new schedule or enabling the job computes its next fire\nfrom now; enabling it also resets its failure count.",
+  "properties": {
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProducerDeliveryMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "enabled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "id": {
+      "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+      "maxLength": 8,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]{8}$",
+      "type": "string"
+    },
+    "max_consecutive_failures": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_runs": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "maximum": 4294967295,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "const": "unlimited",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "permission_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PermissionMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "schedule": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CronSchedule"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CronTarget"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "CronUpdateParams",
+  "type": "object"
+}

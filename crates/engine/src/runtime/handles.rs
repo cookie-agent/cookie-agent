@@ -172,6 +172,54 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// The session `reference` (a handle or a UUID) names among the
+    /// sessions below `caller` in its tree: its children, their children,
+    /// and so on.
+    pub(crate) fn resolve_descendant(
+        &self,
+        caller: SessionId,
+        reference: &str,
+    ) -> Result<SessionId, EngineError> {
+        let sessions = self.tree_sessions(caller)?;
+        let candidates = descendants(&sessions, caller);
+        match_reference(&candidates, reference)
+            .ok_or_else(|| subagent_reference_error(&candidates, reference))
+    }
+}
+
+/// The sessions of a tree's `sessions` below `caller`.
+pub(crate) fn descendants(sessions: &[SessionMeta], caller: SessionId) -> Vec<SessionMeta> {
+    let below = |meta: &SessionMeta| {
+        let mut origin = &meta.origin;
+        // A tree has no cycles; the bound only guards a malformed listing.
+        for _ in 0..=sessions.len() {
+            let SessionOrigin::Delegated {
+                parent_session_id, ..
+            } = origin
+            else {
+                return false;
+            };
+            if *parent_session_id == caller {
+                return true;
+            }
+            match sessions
+                .iter()
+                .find(|parent| parent.session_id == *parent_session_id)
+            {
+                Some(parent) => origin = &parent.origin,
+                None => return false,
+            }
+        }
+        false
+    };
+    sessions
+        .iter()
+        .filter(|meta| below(meta))
+        .cloned()
+        .collect()
+}
+
 /// Narrows a caller's tree to the sessions an operation may address. The
 /// caller itself is never a candidate.
 pub(crate) fn scoped_candidates(
@@ -264,6 +312,7 @@ mod tests {
 
     fn meta(id: SessionId, short_id: Option<&str>) -> SessionMeta {
         SessionMeta {
+            cron: None,
             project: None,
             session_id: id,
             origin: SessionOrigin::Root,
@@ -371,6 +420,38 @@ mod tests {
             depth: 1,
         };
         meta
+    }
+
+    #[test]
+    fn descendants_are_every_session_below_the_caller() {
+        // root -> child -> grandchild, plus root -> sibling.
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        let grandchild = SessionId::new_v7();
+        let sibling = SessionId::new_v7();
+        let sessions = vec![
+            meta(root, Some("root_00000000")),
+            delegated_meta(child, root, Some("explore_1a2b3c4d")),
+            delegated_meta(grandchild, child, Some("coder_9f8e7d6b")),
+            delegated_meta(sibling, root, Some("writer_12345678")),
+        ];
+        let ids = |caller| {
+            descendants(&sessions, caller)
+                .into_iter()
+                .map(|meta| meta.session_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(root), [child, grandchild, sibling]);
+        assert_eq!(ids(child), [grandchild]);
+        assert!(ids(grandchild).is_empty());
+        assert!(ids(sibling).is_empty());
+        let below_child = descendants(&sessions, child);
+        assert_eq!(
+            match_reference(&below_child, "coder_9f8e7d6b"),
+            Some(grandchild)
+        );
+        assert_eq!(match_reference(&below_child, "writer_12345678"), None);
+        assert_eq!(match_reference(&below_child, &root.to_string()), None);
     }
 
     #[test]

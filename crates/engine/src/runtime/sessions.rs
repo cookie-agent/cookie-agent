@@ -103,8 +103,27 @@ impl Engine {
         selection: RunSelection,
         mode: Option<PermissionMode>,
         rules: Vec<PermissionRule>,
+        runtimes: super::attachments::SessionRuntimes,
+        project: Option<cookie_agent_protocol::ProjectId>,
+    ) -> Result<SessionMeta, EngineError> {
+        self.create_root_session(selection, mode, rules, runtimes, project, None)
+            .await
+    }
+
+    /// [`Self::create_session_in_project`] for a session a cron job's fire
+    /// creates when `cron` names the job and the session's title: its
+    /// creation records the job (`SessionMeta::cron`) and the title.
+    pub(crate) async fn create_root_session(
+        &self,
+        selection: RunSelection,
+        mode: Option<PermissionMode>,
+        rules: Vec<PermissionRule>,
         mut runtimes: super::attachments::SessionRuntimes,
         project: Option<cookie_agent_protocol::ProjectId>,
+        cron: Option<(
+            cookie_agent_protocol::SessionCron,
+            cookie_agent_protocol::SessionTitle,
+        )>,
     ) -> Result<SessionMeta, EngineError> {
         crate::permissions::check_rule_selectors(&rules)?;
         let overlay = SessionPermissionOverlay { rules };
@@ -137,7 +156,7 @@ impl Engine {
             .cwd
             .as_deref()
             .unwrap_or_else(|| self.inner.store.cwd());
-        let meta = self.create_session_in(selection, &attachments, cwd, project)?;
+        let meta = self.create_session_in(selection, &attachments, cwd, project, cron)?;
         let session_id = meta.session_id;
         self.connect_session(session_id).await;
         if !overlay.rules.is_empty() {
@@ -168,7 +187,7 @@ impl Engine {
         selection: RunSelection,
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
     ) -> Result<SessionMeta, EngineError> {
-        self.create_session_in(selection, attachments, self.inner.store.cwd(), None)
+        self.create_session_in(selection, attachments, self.inner.store.cwd(), None, None)
     }
 
     /// Creates a root session of the client directory `cwd` whose creation
@@ -181,8 +200,13 @@ impl Engine {
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
         cwd: &std::path::Path,
         project: Option<cookie_agent_protocol::ProjectId>,
+        cron: Option<(
+            cookie_agent_protocol::SessionCron,
+            cookie_agent_protocol::SessionTitle,
+        )>,
     ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
+        let (cron, title) = cron.unzip();
         let id = SessionId::new_v7();
         let cwd_identity = session_cwd_identity(attachments, cwd)?;
         // A new root begins an empty tree, so its first handle is trivially
@@ -194,6 +218,7 @@ impl Engine {
             super::handles::random_hex,
         )?;
         let creation = Event::SessionCreated {
+            cron: cron.clone(),
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin: SessionOrigin::Root,
             short_id,
@@ -209,6 +234,21 @@ impl Engine {
         if let Some(project) = project {
             initial.push(Event::SessionProjectSet {
                 project: Some(project),
+            });
+        }
+        // A run session's title is set with its creation, runless, as a
+        // rename is, so no automatic title replaces it.
+        if let (Some(title), Some(cron)) = (title, &cron) {
+            initial.push(Event::SessionTitleCommitted {
+                change: cookie_agent_protocol::SessionTitleChange::UserSet {
+                    title,
+                    client_rename_id: cookie_agent_protocol::ClientRenameId::new(format!(
+                        "cron:{}:{}",
+                        cron.job_id, cron.fired_at
+                    ))
+                    .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
+                },
+                input_through_seq: 0,
             });
         }
         self.inner.store.create_with_initial(
@@ -555,6 +595,7 @@ impl Engine {
             .retain(|child| !deleted.contains(child));
         self.inner.delegation_events.forget_sessions(deleted);
         self.forget_live_waiting(deleted);
+        self.delete_crons_targeting(deleted);
     }
 
     /// Reverts `session_id` to `through_seq`. With `expected_last_seq`, a

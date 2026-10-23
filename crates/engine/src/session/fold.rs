@@ -106,7 +106,7 @@ fn projection_fold_with(
 ) -> Result<SessionProjection, SessionError> {
     let events = log.event_snapshot();
     let physical_tip = log.last_event().expect("creation checked by EventLog");
-    let (origin, short_id, cwd_identity, creation_selection, creation_agent, revisions) =
+    let (origin, short_id, cwd_identity, creation_selection, creation_agent, revisions, cron) =
         match &events
             .first()
             .expect("creation checked by EventLog")
@@ -120,6 +120,7 @@ fn projection_fold_with(
                 creation_selection,
                 creation_agent,
                 revisions,
+                cron,
             } => (
                 origin.clone(),
                 Some(short_id.clone()),
@@ -130,6 +131,7 @@ fn projection_fold_with(
                     |previous| previous.creation_agent.clone(),
                 ),
                 revisions.clone(),
+                cron.clone(),
             ),
             _ => unreachable!(),
         };
@@ -165,6 +167,7 @@ fn projection_fold_with(
         project: None,
         waiting_on: Vec::new(),
         delegated_attachments: Vec::new(),
+        cron,
     };
     let mut projection = SessionProjection {
         meta,

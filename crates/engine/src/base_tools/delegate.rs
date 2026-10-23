@@ -577,7 +577,7 @@ impl PreparedExecutor for DelegateExecutor {
 /// The line a delegation that moves to the background adds to its immediate
 /// result: the subagent's handle, which the model copies instead of a 36-char
 /// UUID (the UUID stands in for a pre-handle session).
-fn detach_note(
+pub(crate) fn detach_note(
     child_session_id: cookie_agent_protocol::SessionId,
     short_id: Option<String>,
 ) -> String {

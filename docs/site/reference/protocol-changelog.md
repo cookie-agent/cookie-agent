@@ -5,6 +5,29 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.15.0
+
+- Cron jobs ([cron spec](../specs/cron.md), phase 1): the daemon keeps
+  scheduled prompts in `crons.json` and fires them into a session or into a
+  new session per fire.
+  - New methods `crons.list`, `crons.create`, `crons.update`,
+    `crons.delete`, and `crons.run`, and the notification `crons.changed`;
+    new errors `cron_not_found`, `cron_invalid`, and `cron_store_failed`.
+  - `SessionMeta.cron` (`{ job_id, fired_at }`), also the optional `cron`
+    member of `session_created`, names the job whose fire created a run
+    session. A reader that does not know it shows an ordinary session.
+  - `WaitingOn::ScheduledJob` (`scheduled_job`): an enabled job with a next
+    fire targets the session. A 1.14 client reads it as an unknown producer
+    (`Unknown`), still something the session waits on.
+  - A fire's prompt is a producer message whose `producer_owner` is
+    `external` with `source` `cron:<job id>` and `name` `scheduled`: the
+    closed `ProducerOwner` keeps its shape, and the source kind `cron` is
+    the daemon's own, which no plugin or runtime connection has.
+  - The built-in permission action `cron` joins `PermissionAction::BUILT_IN`,
+    so the effective permissions list it.
+  - Plugin protocol 1.7.0 too, since plugins receive events and
+    `SessionMeta`. History format 1 and the runtime protocol are unchanged.
+
 ## 1.14.0
 
 - Memory that stays worth keeping ([memory spec section 16.9](../specs/memory.md#169-addendum-2026-10-22-memory-that-stays-worth-keeping)):

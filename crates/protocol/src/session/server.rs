@@ -582,6 +582,31 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::SessionProjectSetParams,
     ) -> Result<crate::SessionProjectSetResult, ServerFault>;
+    /// Lists the cron jobs with their state and history.
+    async fn list_crons(
+        &self,
+        params: crate::CronsListParams,
+    ) -> Result<crate::CronsListResult, ServerFault>;
+    /// Creates a cron job.
+    async fn create_cron(
+        &self,
+        params: crate::CronCreateParams,
+    ) -> Result<crate::CronJobResult, ServerFault>;
+    /// Changes a cron job.
+    async fn update_cron(
+        &self,
+        params: crate::CronUpdateParams,
+    ) -> Result<crate::CronJobResult, ServerFault>;
+    /// Deletes a cron job.
+    async fn delete_cron(
+        &self,
+        params: crate::CronDeleteParams,
+    ) -> Result<crate::CronDeleteResult, ServerFault>;
+    /// Fires a cron job now.
+    async fn run_cron(
+        &self,
+        params: crate::CronRunParams,
+    ) -> Result<crate::CronRunResult, ServerFault>;
     /// Lists the configured plugins.
     async fn list_plugins(
         &self,
@@ -1104,6 +1129,11 @@ async fn dispatch<S: ServerProtocol>(
         crate::SESSION_PROJECT_SET_METHOD => {
             value(server.set_session_project(decode(params)?).await?)
         }
+        crate::CRONS_LIST_METHOD => value(server.list_crons(decode_default(params)?).await?),
+        crate::CRONS_CREATE_METHOD => value(server.create_cron(decode(params)?).await?),
+        crate::CRONS_UPDATE_METHOD => value(server.update_cron(decode(params)?).await?),
+        crate::CRONS_DELETE_METHOD => value(server.delete_cron(decode(params)?).await?),
+        crate::CRONS_RUN_METHOD => value(server.run_cron(decode(params)?).await?),
         crate::PLUGINS_LIST_METHOD => value(server.list_plugins(decode_default(params)?).await?),
         crate::PLUGINS_RESTART_METHOD => value(server.restart_plugin(decode(params)?).await?),
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),

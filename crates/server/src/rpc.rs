@@ -363,6 +363,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Machine(error) => machine_error(error),
         EngineError::MemoryRequest(error) => memory_error(error),
         EngineError::Project(error) => project_error(error),
+        EngineError::Cron(error) => cron_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()
             .field("reason", reason_text(reason)),
@@ -514,6 +515,18 @@ fn project_error(error: &cookie_agent_engine::ProjectError) -> errors::ErrorBuil
             .field("session_id", session_id)
             .field("root_session_id", root_session_id),
         ProjectError::Store(_) => errors::PROJECT_STORE_FAILED.error(),
+    }
+}
+
+fn cron_error(error: &cookie_agent_engine::CronError) -> errors::ErrorBuilder {
+    use cookie_agent_engine::CronError;
+    match error {
+        CronError::NotFound(id) => errors::CRON_NOT_FOUND.error().field("id", id),
+        CronError::Invalid { field, reason } => errors::CRON_INVALID
+            .error()
+            .field("field", field)
+            .field("reason", reason_text(reason)),
+        CronError::Store(_) => errors::CRON_STORE_FAILED.error(),
     }
 }
 

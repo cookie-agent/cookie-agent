@@ -135,7 +135,7 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
 async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
     let (endpoint, captured) = scripted_model_server().await;
     // Memory stays off, so the provider's section opens the tool block.
-    let primary = "---\ndescription: Prompt order agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  skill: allow\n  memory: deny\n---\nTest prompt.\n";
+    let primary = "---\ndescription: Prompt order agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  skill: allow\n  memory: deny\n  cron: deny\n---\nTest prompt.\n";
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             &endpoint,
@@ -614,7 +614,7 @@ async fn agent_document_can_opt_out_of_agent_md() {
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Lean agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nagent_md: false\npermissions: { memory: deny }\n---\nLean prompt.\n",
+        "---\ndescription: Lean agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nagent_md: false\npermissions: { memory: deny, cron: deny }\n---\nLean prompt.\n",
     );
     assert!(fixture.config.runtime.agent_md.enabled);
     write_private_test_file(

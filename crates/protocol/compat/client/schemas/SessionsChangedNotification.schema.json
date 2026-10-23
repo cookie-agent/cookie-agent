@@ -106,6 +106,27 @@
       ],
       "type": "object"
     },
+    "SessionCron": {
+      "description": "The job a new-session job's run session was started by\n(`SessionMeta::cron`).",
+      "properties": {
+        "fired_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "fired_at"
+      ],
+      "type": "object"
+    },
     "SessionMeta": {
       "properties": {
         "agent_revision": {
@@ -129,6 +150,17 @@
         },
         "creation_selection": {
           "$ref": "#/$defs/RunSelection"
+        },
+        "cron": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionCron"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The cron job whose fire created the session, and when it fired\n(client protocol 1.15.0). Absent for every other session and from\nan older daemon."
         },
         "cwd_identity": {
           "description": "Opaque canonical workspace identity.",
@@ -381,6 +413,11 @@
         {
           "const": "external_producer",
           "description": "A plugin or runtime holds a live producer registration for the\nsession and may send to it.",
+          "type": "string"
+        },
+        {
+          "const": "scheduled_job",
+          "description": "An enabled cron job with a next fire time targets the session\n(client protocol 1.15.0); its fire starts a run.",
           "type": "string"
         }
       ],

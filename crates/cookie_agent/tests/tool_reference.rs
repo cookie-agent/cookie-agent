@@ -1,6 +1,7 @@
 //! Renders the generated regions of `docs/site/reference/tools.md` from the
 //! built-in tool specs: the local coding runtime's tools, the engine's base
-//! layer, and the `global` runtime's memory tools and `list_runtimes`.
+//! layer, and the `global` runtime's memory tools, `list_runtimes`,
+//! `list_agents`, and cron tools.
 //!
 //! The page is written by hand around the regions. A region starts with a
 //! `<!-- generated: KEY -->` line and ends with `<!-- /generated -->`: the key
@@ -13,7 +14,9 @@
 use std::fmt::Write as _;
 
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
-use cookie_agent_engine::{base_layer_tool_specs, memory_tool_specs, runtimes_tool_spec};
+use cookie_agent_engine::{
+    agents_tool_spec, base_layer_tool_specs, cron_tool_specs, memory_tool_specs, runtimes_tool_spec,
+};
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
 use serde_json::Value;
@@ -37,6 +40,8 @@ fn documented_specs() -> Vec<ToolSpec> {
     specs.extend(base_layer_tool_specs(DELEGATE_TARGET_PLACEHOLDER));
     specs.extend(memory_tool_specs());
     specs.push(runtimes_tool_spec());
+    specs.push(agents_tool_spec());
+    specs.extend(cron_tool_specs());
     specs
 }
 
@@ -73,6 +78,20 @@ fn availability(name: &str) -> Option<&'static str> {
             "Only when the session has the `global` runtime attached and the agent or the \
              session overlay has an `allow` or `ask` rule for `list_runtimes`, which `primary` \
              and `all` agents have by default."
+        }
+        "list_agents" => {
+            "Only when the session has the `global` runtime attached and the run is offered \
+             `delegate_subagent` or a cron tool. It has no permission of its own."
+        }
+        "cron_create" | "cron_update" | "cron_delete" | "cron_run" => {
+            "Only when the session has the `global` runtime attached and the agent or the \
+             session overlay has an `allow` or `ask` rule for `cron`, which a root run of any \
+             agent but an internal one has by default; a delegated run has none unless its \
+             agent document grants it."
+        }
+        "cron_list" => {
+            "Only next to the other cron tools. It needs no rule of its own: it lists the jobs \
+             whose target kind the `cron` rules allow or ask for."
         }
         "read_artifact" => {
             "Always, whatever the agent's permission rules: it reads only output retained by \

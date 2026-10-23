@@ -191,6 +191,9 @@ crate::open_enum! {
         /// A plugin or runtime holds a live producer registration for the
         /// session and may send to it.
         ExternalProducer,
+        /// An enabled cron job with a next fire time targets the session
+        /// (client protocol 1.15.0); its fire starts a run.
+        ScheduledJob,
     }
 }
 
@@ -357,6 +360,11 @@ pub struct SessionMeta {
     /// that has recorded nothing since.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegated_attachments: Vec<crate::RuntimeAttachment>,
+    /// The cron job whose fire created the session, and when it fired
+    /// (client protocol 1.15.0). Absent for every other session and from
+    /// an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<crate::SessionCron>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -410,6 +418,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             waiting_on: Vec<WaitingOn>,
             #[serde(default)]
             delegated_attachments: Vec<crate::RuntimeAttachment>,
+            #[serde(default)]
+            cron: Option<crate::SessionCron>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -436,6 +446,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             project: w.project,
             waiting_on: w.waiting_on,
             delegated_attachments: w.delegated_attachments,
+            cron: w.cron,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -2451,6 +2462,10 @@ pub enum EventPayload {
         creation_agent: Box<AgentSnapshot>,
         /// The revisions the session was created against.
         revisions: RuntimeRevisions,
+        /// The cron job whose fire created this session (client protocol
+        /// 1.15.0); absent for every other session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cron: Option<crate::SessionCron>,
     },
     SessionPermissionOverlaySet {
         overlay: SessionPermissionOverlay,

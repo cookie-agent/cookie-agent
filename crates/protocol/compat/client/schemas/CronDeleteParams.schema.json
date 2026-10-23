@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Delete a job. Its run sessions stay.",
+  "properties": {
+    "id": {
+      "description": "A cron job's ID: eight lowercase ASCII letters and digits.",
+      "maxLength": 8,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]{8}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "CronDeleteParams",
+  "type": "object"
+}

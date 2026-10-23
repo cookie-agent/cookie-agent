@@ -236,6 +236,9 @@ impl Engine {
             }
             .into());
         }
+        // A new-session job naming the project goes with it; the jobs of
+        // its sessions go with the sessions.
+        self.delete_crons_of_project(id.clone()).await?;
         let mut deleted_sessions = 0;
         for root in roots {
             let last_seq = self.inner.store.get(root)?.meta.last_event_seq;
