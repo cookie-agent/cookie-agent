@@ -1,7 +1,8 @@
 # Cron jobs
 
-Status: **draft** (2026-10-22), settled with the user, awaiting the go-ahead
-to implement. Builds on [background tool calls](background-tools.md)
+Status: **phase 1 implemented** (2026-10-23): the engine and the protocol;
+the clients (phase 2) and the docs (phase 3) follow. See
+[Implementation notes](#16-implementation-notes). Builds on [background tool calls](background-tools.md)
 (sections 12 and 13: what keeps a parent waiting, and producer waits that
 let a session page out), [projects](projects.md), and the
 [memory spec](memory.md) (its permission defaults).
@@ -470,3 +471,171 @@ history = 20                   # fires kept per job
 ## 15. Open questions
 
 None.
+
+## 16. Implementation notes
+
+### 16.1 Phase 1: engine and protocol (2026-10-23)
+
+Landed: the store, the scheduler with exactly-once fires, missed-fire and
+interrupted-fire records, and the kill switch; in-session fires (`queue` and
+`steer`, the `<scheduled_job>` marking, the skip while undelivered);
+new-session fires (the template, `auto_approve_n` by default,
+`SessionMeta::cron`, the title, the skip while the previous run runs);
+failure counting and auto-disable; `max_runs`; deletion with sessions and
+projects; `WaitingOn::ScheduledJob` and the parent's wait; the `cron`
+permission with its root default and hard limits; the five tools and
+`list_agents`; `crons.list/create/update/delete/run` and `crons.changed`;
+and `[cron]`. Client protocol 1.15.0, plugin protocol 1.7.0; the runtime
+protocol and history format 1 are unchanged. The TUI, web, and CLI only
+compile against it; their UI is phase 2.
+
+Where it is:
+
+- **Wire types:** `crates/protocol/src/cron.rs` (`CronJob`, `CronSchedule`,
+  `CronTarget`, `CronTemplate`, `CronFire`, the params and results,
+  `SessionCron`), `CronJobId` in `identity.rs`, `WaitingOn::ScheduledJob`
+  and `SessionMeta::cron` in `event.rs`, `PermissionAction::CRON` in
+  `agent.rs`, the `cron_*` error codes in `errors.rs`.
+- **Store and schedules:** `crates/engine/src/crons.rs` (`CronStore`,
+  `crons.json`) and `crates/engine/src/crons/schedule.rs` (the five-field
+  parser and the delays). No dependency was added: the parser is about 250
+  lines over `jiff`, which the engine already uses.
+- **Requests:** `crates/engine/src/runtime/cron_api.rs`; **firing:**
+  `runtime/cron_fire.rs` (scheduler, fires, runs now, start-up
+  reconciliation, run outcomes); **`cron_run`:** `runtime/cron_run.rs`.
+- **Tools:** `crates/engine/src/cron_tools.rs` (`builtin.cron`) and
+  `crates/engine/src/agents_tool.rs` (`builtin.agents`). Both are providers
+  of the `global` runtime bound to the engine like the memory tools and
+  `list_runtimes`, so they reach a session only with `global` attached.
+- **Defaults:** `cron_default_rules` in `crates/engine/src/permissions.rs`,
+  beside `memory_default_rules`; `run_default_rules` gathers every default.
+- **Daemon:** the routes in `crates/server/src/service/routes.rs`, the
+  notification in `runtime_notifications.rs`, the error mapping in
+  `crates/server/src/rpc.rs`; `[cron]` in `crates/config/src/runtime.rs`.
+
+Decisions taken where the spec left room, and deviations:
+
+- **Delivery's owner (section 9).** A fire's prompt is a producer message
+  owned by `ProducerOwner::External { source: "cron:<job id>", name:
+  "scheduled" }`. `ProducerOwner` keeps its shape; `ProducerSource` already
+  admits any lowercase kind, and `cron` is the daemon's own: every
+  connection's source is `plugin:` or `runtime:`, so none can claim it. The
+  engine accepts a `cron:` owner only without a connection epoch, keeps its
+  short-lived registration through reconciliation, and counts it for
+  nothing in `live_waiting_kinds` (the store adds `scheduled_job`). Older
+  readers show it as an external producer named `cron:<id> · scheduled`.
+- **`SessionMeta::cron`** is folded from an optional `cron` member of
+  `session_created`, which earlier readers ignore (an additive member, not a
+  new event, so no older reader opens such a log render-only). A cron run's
+  child session records it too.
+- **The run session's title** is committed with the session's creation as
+  `user_set`, with the client rename ID `cron:<job id>:<fired at>`: a root
+  session's only runless title change, and one that keeps automatic titles
+  away. The user can rename it as usual.
+- **The fire's key** is `<job id>:<scheduled time>` for a scheduled fire and
+  `<job id>:now:<UUIDv7>` for a run now; it is the producer idempotency key
+  and identifies the history entry.
+- **Exactly once.** The claim (job enabled, `next_fire` equal to the
+  scheduled time, no entry for that time) and the pending entry are written
+  before delivery, under the store's lock: section 11's "state lock" is the
+  memory lock (`memory/.lock`), which `machines.json` and the projects
+  already take, and every change rereads the file under it. At start, a pending entry whose
+  session holds a message with its owner and key becomes `delivered` (and
+  counts toward `max_runs`); a run session that records the job and fire
+  time but has no prompt gets the prompt then; anything else becomes
+  `skipped (interrupted)`.
+- **Two daemons sharing a data root** both read `crons.json`, and the claim
+  under the memory lock makes each fire happen once. A daemon whose session
+  store (working directory) lacks a target session fails that fire.
+- **Missed fires** are counted up to a million per entry; the entry's
+  `fired_at` is the daemon's start. A fire made late while the daemon runs
+  (a suspended host) fires once and moves to the next match after now, with
+  no record of the matches in between.
+- **The kill switch** records each due fire as `skipped` with the reason
+  `firing_disabled`, a value added to the open skip reasons, and moves the
+  job on, so turning firing back on does not fire a backlog. Runs now
+  (`crons.run`, `cron_run`) are explicit and ignore it.
+- **Runs now** obey the skips of scheduled fires (a run now of an in-session
+  job whose previous prompt still waits is recorded as skipped, and
+  `crons.run` returns no `session_id`). A run now never moves `next_fire`,
+  `runs`, or the failure count; its run's end is still recorded.
+- **Finishing.** A job with no next fire after a fire, delivered, skipped,
+  or failed, is finished: kept disabled as `finished` when you created it,
+  deleted when an agent did. This is how a one-shot ends. A failed fire does
+  not count toward `max_runs`, so a cron job keeps trying until it has
+  delivered `max_runs` times or reaches the failure limit. Enabling a
+  finished job resets its `runs`; enabling a one-shot whose time passed is
+  refused until it gets a new schedule.
+- **Outcomes.** A fire's run is the run that admitted or consumed its
+  prompt, recorded when that run ends. A message admitted to a run that is
+  cancelled and later taken by another run keeps the first run's end. An
+  interrupted run (a restart) counts for nothing, like a cancelled one. A
+  run session that fails to start (the agent is gone, no model, a runtime is
+  offline, creation fails) records the fire as `failed` with the error and
+  counts a failure.
+- **Schedules.** Cron fields accept the three-letter month and day names
+  and 7 for Sunday besides numbers. `a/n` runs from `a` to the field's end.
+  A spring-forward gap fires at the instant it jumps to; a fall-back fold
+  fires at the first occurrence only. An expression is refused when no
+  month has one of its days (`0 0 30 2 *`); restricting the day of week too
+  makes it reachable (Vixie OR). `crons.create` and `crons.update` also
+  take `{at}`, which must be in the future; `max_runs` other than 1 with a
+  one-shot schedule is refused.
+- **Validation details.** A name is trimmed, non-blank, at most 80
+  characters, without control characters; a prompt is non-blank and at most
+  32 KiB. `delivery` on a new-session job and `permission_mode` on an
+  in-session job are refused. A new schedule or target, or enabling, computes
+  `next_fire` from now. A template's runtimes must be known to the daemon
+  (a template or a remembered dial-in runtime); they are started only at a
+  fire.
+- **Agents' requests.** The tools never pass a mode or a model, and the
+  engine refuses an agent's request that names either; an agent's update may
+  keep a mode or a pin you set. `created_by` and `disabled by` name the
+  calling run's agent and session.
+- **Template defaults (section 3.1).** An agent's `{new: {}}` takes the
+  calling run's agent, the calling session's preset, its attachments as
+  explicit `runtimes` and `global` (so a fire attaches what the session had
+  when the job was made), and its project (a delegated session's root's).
+  `project` may be given by name or ID.
+- **Permissions.** The resource is the target kind; `cron_update` that
+  changes the kind is one call with two resources, the strictest deciding.
+  `cron_list` declares no permission of its own: it is published only next
+  to another cron tool and filters jobs by whether the rules allow or ask
+  for their kind. A job's target sessions are checked only when the agent
+  sets one: an agent may change or delete any job its rules allow.
+- **`list_agents`** is published exactly when the run's tools include
+  `delegate_subagent` or a cron tool other than `cron_list`; its prepared
+  operation names no permission. For a run offered the cron tools it lists
+  every enabled non-internal agent of the run's preset, as section 8.1 says,
+  including `subagent`-mode ones, which a new-session job refuses; the mode
+  is shown. An agent usable for both shows its rules as a root run and as a
+  subagent when they differ. Memory rule variables are shown unexpanded.
+- **`cron_run` of a new-session job** goes through `delegate_subagent`'s
+  path: the call's template (rules, attachments, job) waits in
+  `DelegationRuntimeState::cron_runs` by tool call ID while the child is
+  admitted, which lets the job's agent through whatever the caller's
+  delegation targets are (any agent but an internal one), uses the caller's
+  delegation depth (or `[delegation] max_depth` when the caller delegates to
+  nothing), attaches the template's runtimes, and writes the template's
+  rules as the child's overlay with its creation. The child counts against
+  depth and residency like any child. The model pin is not applied: the
+  child takes the agent's own chain, as every delegated child does. The
+  agent is resolved in the caller's preset. Recovery treats a pending
+  `cron_run` like a pending `delegate_subagent`; a `cron_run` interrupted by
+  a restart is not redelivered. `get_subagent_result` exists only for a
+  caller that can delegate; a background `cron_run`'s child still reports
+  its turns. Its history entry is `delivered` with the child's session.
+- **`cron_run` is background-capable,** so `stop_background` is offered next
+  to it.
+- **Deletion.** The jobs of every session a delete or a revert removes are
+  deleted with it. A project's delete first deletes the new-session jobs
+  naming it, then its sessions with their jobs.
+- **`crons.list`** also says whether the daemon is `firing`.
+- **Corpora.** No 1.15.0 corpus was recorded, as for 1.9.0 to 1.14.0.
+
+What phase 2 and 3 need: the TUI and web panels and the clock mark (from
+`SessionMeta::cron` and `crons.list`), `cookie cron`, the TUI's and web's
+labels for `scheduled_job` (the shared `waiting_label` already names it),
+and the scheduling guide and the permissions page. The protocol reference,
+changelog, tools reference, error reference, and the `[cron]` configuration
+page are up to date.
