@@ -1338,6 +1338,15 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         follow.set_value(Follow::default());
         shown();
     });
+    // A message the user sends shows at the end, followed again however far
+    // up they had scrolled.
+    Effect::new(move |first: Option<()>| {
+        workspace.sent.track();
+        if first.is_some() {
+            follow.update_value(Follow::jump);
+            pin();
+        }
+    });
     // The content growing or the box shrinking moves the end: pinned before
     // the frame paints, and only then.
     let observer = StoredValue::new_local(None::<(web_sys::ResizeObserver, Closure<dyn Fn()>)>);

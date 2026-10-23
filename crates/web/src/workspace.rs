@@ -119,6 +119,9 @@ pub struct Workspace {
     pub revision: RwSignal<u64>,
     runtime: StoredValue<RuntimeState>,
     pub runtime_revision: RwSignal<u64>,
+    /// Notified whenever the user sends a message (or steers or queues one):
+    /// the transcript jumps to its end and follows it again.
+    pub sent: Trigger,
     pub sessions: RwSignal<Vec<SessionMeta>>,
     pub selected: RwSignal<Option<SessionId>>,
     /// Composing a session that does not exist yet: the first message
@@ -312,6 +315,7 @@ impl Workspace {
             revision: RwSignal::new(0),
             runtime: StoredValue::new(RuntimeState::default()),
             runtime_revision: RwSignal::new(0),
+            sent: Trigger::new(),
             sessions: RwSignal::new(Vec::new()),
             selected: RwSignal::new(None),
             new_session: RwSignal::new(true),
@@ -1390,6 +1394,7 @@ impl Workspace {
             self.bounce_draft(text, files);
             return;
         }
+        self.sent.notify();
         let selection = self.draft.get_untracked();
         spawn_local(async move {
             let mut content = content;

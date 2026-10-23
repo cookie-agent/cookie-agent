@@ -120,7 +120,8 @@ impl Follow {
         Some(end)
     }
 
-    /// The jump-to-latest button: back to the end, following it.
+    /// The jump-to-latest button, or a message the user sends: back to the
+    /// end, following it.
     pub fn jump(&mut self) {
         self.following = true;
     }
@@ -299,6 +300,24 @@ mod tests {
             view: 500,
         };
         assert_eq!(follow.pin(overflows), Some(200));
+    }
+
+    #[test]
+    fn a_message_sent_while_scrolled_up_follows_again_as_its_row_arrives() {
+        let mut follow = at_end();
+        follow.back();
+        follow.scrolled(at(600));
+        follow.jump();
+        assert_eq!(follow.pin(at(600)), Some(1500));
+        follow.scrolled(at(1500));
+        // The message's row, then the reply, grow the end: followed.
+        let grown = Metrics {
+            top: 1500,
+            height: 2080,
+            view: 500,
+        };
+        assert_eq!(follow.pin(grown), Some(1580));
+        assert!(follow.following());
     }
 
     #[test]

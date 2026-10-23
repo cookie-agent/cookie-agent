@@ -634,6 +634,21 @@ def follows(browser, what, seconds=1.0):
     assert after["gap"] <= 2 and not after["jump"], "%s: not at the end: %s" % (what, after)
 
 
+def idle(browser, what, text):
+    """Waits until the open session's run is over: `text` shows, the
+    status line is not working, and its row in the list says so too, so
+    what follows starts from an idle session."""
+    row = "aside [data-session-row]:has([aria-current=true])"
+    browser.wait(
+        what,
+        lambda: text in browser.text("#transcript")
+        and "working" not in browser.text("#status-bar")
+        and count(browser, row) == 1
+        and "running" not in browser.text(row),
+        timeout=90,
+    )
+
+
 def streaming_scroll(browser):
     """While a reply streams, the transcript follows its end only when the
     content grows, any scroll up stops that at once until the user comes
@@ -658,7 +673,13 @@ def streaming_scroll(browser):
     browser.click("[data-jump-latest]")
     follows(browser, "the jump to the latest")
     print("a scroll up during a stream stays put; the end or the jump follows again")
-    browser.wait("the long reply's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+    # A message sent while scrolled up jumps to the end and follows again.
+    wheel(browser, -400)
+    stays_put(browser, "a wheel up before sending")
+    send(browser, "noted, thanks")
+    follows(browser, "the message sent")
+    print("a message sent while scrolled up follows the end again")
+    idle(browser, "the long reply's end", "alpha 599 ")
 
     # A folded call at the end gets progress: nothing grows, nothing pins.
     send(browser, "stream long, label beta")
@@ -703,7 +724,7 @@ def streaming_scroll(browser):
     assert max(latencies) < 250, "a toggle took %.0f ms" % max(latencies)
     browser.click("[data-jump-latest]")
     follows(browser, "the jump after the toggles")
-    browser.wait("the reply's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+    idle(browser, "the reply's end", "beta 599 ")
 
     # A phone: a finger dragging the page down stops following.
     session = browser.script(
@@ -717,7 +738,7 @@ def streaming_scroll(browser):
         phone.click("main [data-sidebar-toggle]")
         phone.wait("the drawer", lambda: count(phone, '#drawer [data-session="%s"]' % session) > 0)
         phone.script("document.querySelector(arguments[0]).click()", '#drawer [data-session="%s"]' % session)
-        phone.wait("the session", lambda: "beta 500 " in phone.text("#transcript"), timeout=30)
+        phone.wait("the session", lambda: "beta 599 " in phone.text("#transcript"), timeout=30)
         send(browser, "stream only, label gamma")
         phone.wait("the long reply", lambda: "gamma 60 " in phone.text("#transcript"), timeout=30)
         follows(phone, "the phone's stream")
@@ -736,7 +757,7 @@ def streaming_scroll(browser):
         print("phone: a finger dragging the page down stays put; the jump follows again")
     finally:
         phone.close()
-    browser.wait("the last reply's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+    idle(browser, "the last reply's end", "gamma 599 ")
 
 
 def pinned_rows(browser):
