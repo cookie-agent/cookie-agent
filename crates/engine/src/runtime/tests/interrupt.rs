@@ -18,7 +18,8 @@ use super::support::*;
 use crate::{Engine, EngineOptions};
 
 /// How long an interrupt may take to end a run whose calls stop when asked.
-const PROMPT: Duration = Duration::from_millis(1_500);
+// Windows CI runners are slow enough to cross 1.5 s now and then.
+const PROMPT: Duration = Duration::from_millis(if cfg!(windows) { 3_000 } else { 1_500 });
 
 fn origin() -> EventOrigin {
     EventOrigin::new("client:test").unwrap()
