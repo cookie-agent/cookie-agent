@@ -81,9 +81,11 @@ omitted value uses the 30-second default. The built-in `compaction` agent has a
 3-minute default, and an authored `compaction.md` can set its own exact timeout.
 
 Tool visibility is derived only from `permissions`: with no `permissions`
-field, no tools are visible. An action's tools become visible when the agent or
-session overlay has any `allow` or `ask` rule for it — any resource pattern
-counts, even if a competing deny wins at execution time — and unmatched
+field, no tools are visible. An action's tools become visible when the run's
+merged rules (the defaults, the agent document, and the session overlay; see
+[Session permission overlays](#session-permission-overlays)) hold any `allow`
+or `ask` rule for it — any resource pattern counts, even if a competing deny
+wins at execution time — and unmatched
 resources deny by default, so approval requires an explicit `ask` rule. `edit`
 uses the `write` action. Delegation tools additionally require a `delegate` map
 naming at least one eligible target. See
@@ -665,8 +667,9 @@ Credential files, `.env` and `.env.*`, and non-file resource labels all use the
 configured rules for their action, including in session overlays. Broad file
 allows such as `"*": allow` or
 `"${workspace_dir}/*": allow` apply without a protected-file override. Explicit
-`deny` and `ask` rules follow the same specificity and overlay precedence as any
-other file; unmatched resources are denied.
+`deny` and `ask` rules follow the same specificity as any other file, across
+the agent document and the session overlay alike; unmatched resources are
+denied.
 
 The synthesized `default` agent still declares explicit dotenv read denies and
 `.env.example` allows in its permission map. These are ordinary policy rules,
@@ -710,13 +713,14 @@ are spelled with `/`, as path labels are: `C:\Users\ada` makes `~/x`
 ### Tool availability and delegation
 
 Tools are opt-in. A permission action must have at least one `allow`
-or `ask` rule in the agent document or session overlay before that action's
-tools are visible. Any resource pattern counts, not just `"*"`. Visibility does
-not resolve rule precedence: an overlay `deny` does not hide a tool if the agent
-still declares an `allow` or `ask` rule for that action. An action omitted from
-both layers, or with only `deny` rules, advertises no tools for any provider.
-Resource patterns and overlay precedence still decide individual calls once
-tools are visible.
+or `ask` rule in the run's merged rules (defaults, agent document, and session
+overlay) before that action's tools are visible. Any resource pattern counts,
+not just `"*"`. Visibility does not resolve rule precedence: an overlay `deny`
+hides a tool only when it replaces every `allow` or `ask` rule for that action,
+so `bash: {"rm *": deny}` in the overlay leaves `bash` offered while the agent
+allows `"*"`. An action with no rule at any level, or with only `deny` rules,
+advertises no tools for any provider. The most specific matching rule decides
+individual calls once tools are visible.
 
 For example, this agent exposes read, write/edit, and bash with granular write
 and command policies while leaving delegation hidden; it names no `mcp` key,
@@ -797,7 +801,8 @@ both with the memory URL as resource (`user://<category>`,
 `agent://<agent>`, `machine://<machine>/<name>`,
 `project://<project>/<name>`). `memory: allow` lets an agent read every
 memory, per-URL rules narrow it, and `memory_write` rules let it write. A
-session overlay can grant either for one session tree, as for any action.
+session overlay can grant or deny either for one session tree, as for any
+action: `memory: deny` in `/permissions` turns memory off for that session.
 
 **Root runs.** A root run of an agent that is not internal, the built-in
 `default` included, gets these rules for each of `memory` and
@@ -940,7 +945,8 @@ permissions:
     subagent: allow
 ```
 
-A session overlay can grant `cron` for one session tree, as for any action.
+A session overlay can grant or deny `cron` for one session tree, as for any
+action: `cron: deny` in `/permissions` hides the cron tools for that session.
 
 **Hard limits.** Beyond the rules:
 
@@ -997,7 +1003,8 @@ offers only the `my_chrome` server's tools, `mcp: allow` runs every MCP tool
 without asking, and `mcp: deny` hides them all. A key with only a runtime
 selector, such as `mcp@labpc: allow`, declares the action too, so the
 other runtimes' MCP tools stay hidden. `/permissions` shows the default with
-the source `default`. Session overlays apply on top as for any action.
+the source `default`. Session overlays apply on top as for any action, so
+`mcp: deny` in `/permissions` hides the MCP tools for one session.
 
 ### Web fetching
 
@@ -1061,7 +1068,8 @@ Run `/permissions` to edit the selected session's permission overlay. The
 panel lists every action with its effective `allow`, `ask`, or `deny` effect,
 and each action's resource patterns hang beneath it. The source column marks
 where a rule comes from: `session` (an overlay rule), `agent` (the agent
-document), or `default` (no rule covers the action). The selected rule is
+document), or `default` (the daemon's default for the action, or no rule
+covers it). The table is the run's merged rule list (see below). The selected rule is
 explained in plain words under the table, and the header shows the session
 tree's permission mode; `m` cycles it, like clicking the mode in the bottom bar.
 
@@ -1088,10 +1096,35 @@ selected before `/new` is never changed.
 Overlay rules accept the same runtime selector as agent documents
 (`session.permission.set` and `session.permission.clear` take an optional
 `runtime`), and a rule's selector is part of its identity: `bash` and
-`bash@labpc` with the same pattern are two rules. An overlay rule is evaluated
-before matching rules from the frozen agent snapshot. If no overlay rule matches, evaluation falls back to the agent
-document and then the normal default (`deny`). This default affects evaluation
-only; an action omitted from both layers has no visible tools. Changes affect
+`bash@labpc` with the same pattern are two rules.
+
+The overlay merges with the run's frozen rules (the agent document's, and the
+defaults of each action it names no key for) into one list. An overlay rule
+with the same action, runtime selector, and pattern as a frozen rule replaces
+it (patterns compare with the memory variables expanded and a leading `~`
+expanded against the runtime's home); every other overlay rule is added after
+the frozen rules. That list decides which tools are offered, every call (the
+most specific matching rule wins, and at equal specificity the overlay rule,
+which comes later), permission-name-only checks (a `*` rule, one with a
+runtime selector before a bare one), the memory tools and snapshot, and what
+`/permissions` shows. A resource no rule matches is denied, and an action with
+no rule at any level has no visible tools. For example, with the agent's
+`bash: {"*": ask, "git push *": deny}`:
+
+- an overlay `bash: {"*": allow}` replaces the `*` row: commands run without
+  asking, but `git push` stays denied, because the document's pattern is more
+  specific;
+- an overlay `bash: {"git push *": allow}` replaces the document's deny:
+  `git push` runs and other commands still ask;
+- an overlay `cron: deny` or `mcp: deny` replaces that action's default and
+  hides its tools.
+
+A session `*` rule replaces only the `*` row in the table; the document's
+other patterns stay listed with their source, because they still apply.
+Before 2026-10-23 any matching overlay rule beat every agent rule, whatever
+the patterns, and an overlay `deny` never hid a tool the agent offered.
+
+Changes affect
 subsequent visibility and permission evaluations only. They do not rewrite an
 active run's frozen agent/model
 identity or retroactively cancel an operation already executing. A pending

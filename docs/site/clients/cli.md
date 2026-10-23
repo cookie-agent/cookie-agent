@@ -558,8 +558,11 @@ the runner cancels the root run and waits for the matching terminal event.
 permission action, such as `read`, `write`, `bash`, `webfetch`, `delegate`, or
 `mcp` (a lowercase letter, then lowercase letters, digits, or `_`, at most 32
 bytes), and `skill:<name>` — each entry adds an `allow` overlay rule (resource
-`*`, or the given skill name). It does not deny omitted actions or replace
-existing agent policy.
+`*`, or the given skill name). It does not deny omitted actions. The rule
+replaces only the agent's rule with the same pattern: `--allowed-tools bash`
+turns the agent's `bash: ask` into `allow`, but a narrower agent rule such as
+`delegate: {reviewer: ask}` still decides the calls it matches (see
+[How the levels combine](../concepts/permissions.md#how-the-levels-combine)).
 
 ### Skills
 

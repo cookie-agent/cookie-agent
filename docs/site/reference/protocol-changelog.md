@@ -27,6 +27,17 @@ adds and a major breaks; before it, every minor could break the wire (see the
     so the effective permissions list it.
   - Plugin protocol 1.7.0 too, since plugins receive events and
     `SessionMeta`. History format 1 and the runtime protocol are unchanged.
+- Behaviour, with no message or field change and no version bump
+  (2026-10-23, [permission consolidation](../specs/permission-consolidation.md)):
+  a session's permission overlay merges with the agent's frozen rules into one
+  list. An overlay rule replaces the agent rule with the same action, runtime
+  selector, and pattern, and the most specific matching rule decides a call,
+  so a broad overlay rule no longer beats a narrower agent rule. An overlay
+  `deny` that replaces every allowing rule now hides the action's tools.
+  `session.permission.get` (and the results of `session.permission.set`,
+  `session.permission.clear`, and `session.permission.preview`) keeps listing the agent's
+  patterns under an overlay `*` rule, each with its source, where it used to
+  drop them. Recorded approvals and decisions replay as they were written.
 
 ## 1.14.0
 

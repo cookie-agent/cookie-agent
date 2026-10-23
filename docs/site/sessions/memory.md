@@ -306,8 +306,10 @@ the memory related to its session, `user://`, its own `agent://` file, and
 its session's machines and project. A key replaces the default for its
 action: `memory_write: deny` leaves an agent that only reads, and
 `memory: deny` turns memory off. `memory: allow` lets an agent read every
-memory, and `memory_write` rules let it write; a session overlay rule grants
-them for one session tree.
+memory, and `memory_write` rules let it write. A session rule in
+`/permissions` grants or denies them for one session tree, replacing the
+agent's rule with the same pattern, so `memory: deny` there turns memory off
+for that session without touching the agent document.
 Rules may name the agent, machine, and project of the run with variables
 such as `${agent_id}`. See
 [Memory permissions](../extend/agents.md#memory-permissions) for the

@@ -266,4 +266,7 @@ permissions:
     subagent: allow
 ```
 
-See [Cron permissions](../extend/agents.md#cron-permissions).
+A session rule in `/permissions` works the same way for one session tree:
+`cron: deny` there hides the cron tools for that session, and `cron:
+{"new": deny}` keeps the others. See
+[Cron permissions](../extend/agents.md#cron-permissions).

@@ -351,7 +351,7 @@ connected MCP tool is offered and each call asks; an `internal` agent gets
 none. A declared `mcp` key replaces the default entirely: with only
 `"my_chrome_*": ask`, the agent sees only that server's tools, and deny-only
 `mcp` rules hide them all (see [MCP default](agents.md#mcp-default)). Any
-`mcp` `allow` or `ask` rule in the agent or overlay exposes the connected MCP
+`mcp` `allow` or `ask` rule in the run's merged rules (agent and overlay) exposes the connected MCP
 tools at the action level. Calls then use the complete generated tool name as their scoped
 resource: more-specific patterns override broader patterns, and unmatched calls
 are denied. Each delegated agent is evaluated against its own permission map.

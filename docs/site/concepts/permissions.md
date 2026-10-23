@@ -84,9 +84,36 @@ the rules say, an agent can target only its own session or one below it, and
 only you, from a client, can set a new-session job's permission mode or pin
 its model. See [Cron permissions](../extend/agents.md#cron-permissions).
 
-Rules can also be added to one session tree without touching the agent, in
-`/permissions` or with `cookie run --allowed-tools`; these *overlay* rules are
-checked before the agent's. See
+## How the levels combine
+
+A run's rules come from three levels: the daemon's defaults, the agent
+document, and the session's own rules, which you add in `/permissions`, the
+web client's permissions panel, or with `cookie run --allowed-tools` without
+touching the agent. They merge into **one rule list**:
+
+1. the defaults, for each action the document names no key for;
+2. the document's rules;
+3. the session's rules. A session rule with the same action, runtime selector,
+   and pattern as a rule above replaces it; any other session rule is added.
+
+That one list decides everything: a tool is offered when some rule for its
+action allows or asks, and a call follows the most specific matching rule,
+with a session rule winning a tie. `/permissions` shows the same list, each
+rule with its source (`session`, `agent`, or `default`).
+
+| Session rule | Document and defaults | A call |
+|---|---|---|
+| `cron: deny` | default `cron: allow` | none: the cron tools are hidden |
+| `memory: {"user://*": deny}` | default `memory: allow` | `user://` denied, every other memory readable |
+| `bash: {"cargo test *": allow}` | `bash: {"*": ask}` | `cargo test` runs, the rest asks |
+| `bash: {"*": allow}` | `bash: {"*": ask, "git push *": deny}` | `git push` denied, the rest runs |
+| `bash: {"git push *": allow}` | `bash: {"*": ask, "git push *": deny}` | `git push` runs, the rest asks |
+| `mcp: deny` | default `mcp: {"*": ask}` | none: the MCP tools are hidden |
+
+So a session can turn off a tool a default gives (memory, cron, MCP,
+`list_runtimes`), and a broad session rule does not override a narrower rule
+of the document: to change that rule for one session, override that exact
+pattern, which is what editing a row in `/permissions` does. See
 [Session permission overlays](../extend/agents.md#session-permission-overlays).
 
 ## Rules for one runtime

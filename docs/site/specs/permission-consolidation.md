@@ -1,6 +1,7 @@
 # Permission consolidation
 
-Status: **draft** (2026-10-23), awaiting the go-ahead to implement.
+Status: **implemented** (2026-10-23); see
+[Implementation notes](#10-implementation-notes).
 
 ## 1. Goal and scope
 
@@ -183,3 +184,58 @@ view), tests, then docs.
 ## 9. Open questions
 
 None.
+
+## 10. Implementation notes
+
+Landed 2026-10-23 in one phase, as section 8 planned.
+
+- **One function builds the list.** `MergedRules`
+  (`crates/engine/src/permissions.rs`) takes the frozen policy's rules, the
+  session overlay, and the home of the runtime being decided for, and holds
+  each rule with its source. `offers`, `decide`, and `decide_name_only` are
+  the three decisions of section 3.2; the old overlay-first paths
+  (`effective_permission_with_overlay` and
+  `effective_loose_permission_with_overlay` consulting the overlay before
+  the policy, and `tool_visible` chaining both levels) are gone, and the
+  remaining entry points are thin wrappers over the list. Callers: the
+  call pipeline (`decide_operation_with_overlay` and `_with_grants`), tool
+  composition and call preparation (`tool_visible_with_grants`, now also
+  given the tool's runtime home), skills, `send_message` visibility,
+  `memory_access` (memory and the write tools' readable-and-writable test),
+  the memory tools' and snapshot's read rules (`MemoryCaller`), the cron
+  tools' `cron_list` filter, `list_agents`, grant invalidation
+  (`rule_effects`), and the `/permissions` view.
+- **Order.** The frozen policy lists the document's rules before the
+  defaults. The two never share an action, so section 3.1's order
+  (defaults, then document) and the frozen order rank every tie the same;
+  the list keeps the frozen order.
+- **Sources.** Telling a default from a document rule needs to know
+  whether the run is delegated, which only the view does. So the view
+  relabels policy rules (`MergedRules::label_defaults`, the same
+  per-action test as before), while a decision trace keeps labelling every
+  policy rule `agent_document`, as recorded history already does; a rule
+  an overlay rule replaced no longer appears among a trace's candidates.
+- **Identity without a home.** Visibility checks that have no runtime home
+  at hand (`send_message`, `list_agents`, memory on `global`) and the view
+  compare `~` patterns as written; the call pipeline and tool composition
+  compare them expanded against the tool's runtime home.
+- **The memory snapshot's rules fingerprint** still hashes the agent's and
+  the overlay's `memory` rules separately. The merged list is a function of
+  both, so the fingerprint changes exactly when it can.
+- **Clients.** The TUI and web client already rendered the view's rows as
+  given, without assuming a session `*` hides the document's patterns; only
+  the TUI's explanation line changed, from "checked before the agent's
+  rules" to "replaces the agent's rule with this pattern, and the most
+  specific rule wins".
+- **Tests.** The examples of section 3.3 are one test each, beside the
+  building, visibility, name-only, view, and grant tests, in
+  `crates/engine/src/permissions/tests/merged.rs`; memory's in
+  `crates/engine/src/runtime/memory_runs/tests.rs`. Five older tests
+  encoded the overlay-first behaviour and were changed: a broad overlay
+  rule over a narrower agent rule now loses to it, and an overlay `deny`
+  of the agent's own pattern now hides the tool.
+- **`cookie run --allowed-tools`** adds `"*": allow` overlay rules, so it
+  now replaces only the agent's `*` rule: a narrower agent rule such as
+  `delegate: {reviewer: ask}` still decides what it matches. Two headless
+  tests relied on `--allowed-tools delegate` beating that rule; their agent
+  now writes `delegate: ask`, and the CLI page says so.

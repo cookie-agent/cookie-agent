@@ -309,11 +309,12 @@ session and drive the run loop:
   `model_fallback`; the fallback position is sticky. Before each
   request the loop compacts when the latest turn's reported usage reaches the
   threshold (see [Compaction](sessions/compaction.md)).
-- **Permissions.** Every prepared tool call is matched against the agent's
-  ordered permission rules (see [Permissions](extend/agents.md#permissions)), and
-  unmatched checks deny by default. Tool visibility is gated the same way: a
-  tool is advertised to the model only when its action has an `allow` or `ask`
-  rule in the agent document or session overlay. The
+- **Permissions.** Every prepared tool call is matched against one merged
+  rule list per run, the daemon's defaults, the agent document's rules, and
+  the session overlay's (see [Permissions](extend/agents.md#permissions)):
+  the most specific matching rule wins, and unmatched checks deny by default.
+  Tool visibility reads the same list: a tool is advertised to the model only
+  when its action has an `allow` or `ask` rule in it. The
   permission pipeline is stateless; approvals and tree grants live in an
   in-memory `ApprovalStore` rebuilt from durable events.
 - **Approvals.** A stateless approval evaluator (the `approval` internal agent)
