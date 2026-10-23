@@ -216,9 +216,10 @@ Every client walks the same four steps, using only the RPCs of section 8 and
    price where the catalog has them; choosing one offers its variants,
    preselecting the model's own default variant.
 3. **Small model** (required): the same list, with **no suggestion** (decided
-   2026-10-23). Its variant picker preselects the lowest effort the model
-   offers, in the order `off`, `low`, `medium`, `high`, then any others as the
-   model lists them. The same model as the default is allowed.
+   2026-10-23). Its variant picker preselects the model's first listed
+   variant: models list their variants in increasing effort, so the first is
+   the cheapest, and no variant names are hard-coded. The same model as the
+   default is allowed.
 4. **Starter kit** (optional): `onboarding.preview` per file, **new**,
    **same as yours (skipped)**, or **differs → written as `.new`** with a diff
    on request; install, skip, or use a downloaded archive.
