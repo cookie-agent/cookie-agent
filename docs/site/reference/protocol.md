@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.20.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.21.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.20.0",
+    "protocol_version": "1.21.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -766,14 +766,19 @@ over the Agent Client Protocol (see the
 
 - An `AgentDescriptor` of the catalog view's `agents` has the optional
   `runtime` (`runtime_id`, `agent`, the agent's own ID on the runtime, and
-  `available`) for an ACP agent. Its ID is `<runtime>-<agent>`, the
-  runtime ID's `_` spelled `-` (`local-claude`, `client-myhost-codex`); a
-  client reads the runtime from `runtime`, never from the ID. Its
+  `available`) for an ACP agent exactly one runtime offers, and, since
+  1.21.0, `runtimes`, every runtime that offers it. Its ID is the key of the
+  runtimes' declarations (`claude`); a session runs it on the one runtime it
+  attaches that offers it, so clients show it as runnable for a draft or
+  session with exactly one of those attached. Its
   `resolved_fallback` is the synthetic model `acp/<agent ID>`: a run selects
-  it like any agent, and the agent chooses its own model. An agent whose
-  runtime is away is listed with `available: false` and
-  `runnable_as_root: false`; creating a session or delegating with it is
-  refused at once.
+  it like any agent, and the agent chooses its own model. An offering
+  runtime that is away, or has the agent disabled, is listed with
+  `available: false`; an agent no runtime can run is `runnable_as_root:
+  false`. Creating a session, starting a run, or delegating with it is
+  refused at once when the session's runtimes cannot run it (none of them
+  offers it, two do, or the one that does is away), and attaching a second
+  runtime that offers a session's ACP agent is refused.
 - The event `acp_session_started` records the ACP session the agent talks
   to the session in (`agent`, `runtime_id`, `runtime_agent`,
   `acp_session_id`, `cwd`, `protocol_version`, `agent_info`, and `how`:

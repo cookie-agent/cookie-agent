@@ -5,6 +5,18 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.21.0
+
+- ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,
+  naming) are named by the key of their runtimes' declarations (`claude`), not `<runtime>-<agent>`, and every runtime that declares an
+  ID offers the one agent: `AgentDescriptor` has `runtimes`, every runtime
+  that offers it (`runtime_id`, `agent`, `available`); `runtime` stays for
+  an agent exactly one runtime offers, so a client older than 1.21.0 lists
+  one several runtimes offer as a daemon agent. A session runs the agent on
+  the one runtime it attaches that offers it; with none or two, creating the
+  session, starting a run, or delegating is refused, and so is attaching a
+  second runtime that offers a session's ACP agent.
+
 ## 1.20.0
 
 - ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,
