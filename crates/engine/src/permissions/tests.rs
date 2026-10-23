@@ -8,6 +8,8 @@ use cookie_agent_protocol::{
 
 use super::{PermissionPipeline, select_governing_agent, tool_visible};
 
+mod merged;
+
 fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
     AgentSnapshot {
         agent: AgentId::new("test").expect("agent id"),
@@ -687,15 +689,31 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
     ));
 }
 
+/// A broad session rule no longer beats a narrower document rule: the most
+/// specific rule of the merged list wins. A session rule with the document
+/// rule's own pattern replaces it.
 #[test]
-fn session_overlay_precedes_more_specific_agent_rules() {
+fn a_broad_session_rule_does_not_beat_a_narrower_document_rule() {
     let policy = policy(vec![rule(
         "agent-specific",
         PermissionAction::BASH,
         "git status",
         PermissionEffect::Allow,
     )]);
-    let overlay = SessionPermissionOverlay {
+    let decide_with = |overlay: &SessionPermissionOverlay| {
+        PermissionPipeline::default().decide_operation_with_overlay(
+            &policy,
+            Some(overlay),
+            &operation(vec![resource(
+                PermissionAction::BASH,
+                "git status",
+                b"git status",
+            )]),
+            &[Some("git status".into())],
+            Some(std::path::Path::new("/workspace")),
+        )
+    };
+    let broad = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-wildcard",
             PermissionAction::BASH,
@@ -703,28 +721,33 @@ fn session_overlay_precedes_more_specific_agent_rules() {
             PermissionEffect::Deny,
         )],
     };
-    let decision = PermissionPipeline::default().decide_operation_with_overlay(
-        &policy,
-        Some(&overlay),
-        &operation(vec![resource(
+    let decision = decide_with(&broad);
+    assert_eq!(decision.effect, PermissionEffect::Allow);
+    let layers = decision.evaluations[0]
+        .trace
+        .candidates
+        .iter()
+        .map(|candidate| candidate.source_layer.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(layers, ["agent_document", "session_overlay"]);
+
+    let exact = SessionPermissionOverlay {
+        rules: vec![rule(
+            "overlay-exact",
             PermissionAction::BASH,
             "git status",
-            b"git status",
-        )]),
-        &[Some("git status".into())],
-        Some(std::path::Path::new("/workspace")),
-    );
+            PermissionEffect::Deny,
+        )],
+    };
+    let decision = decide_with(&exact);
     assert_eq!(decision.effect, PermissionEffect::Deny);
-    assert_eq!(
-        decision.evaluations[0]
-            .trace
-            .candidates
-            .last()
-            .expect("overlay candidate")
-            .source_layer
-            .as_str(),
-        "session_overlay"
-    );
+    let layers = decision.evaluations[0]
+        .trace
+        .candidates
+        .iter()
+        .map(|candidate| candidate.source_layer.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(layers, ["session_overlay"], "the document rule is replaced");
 }
 
 #[test]
@@ -1015,13 +1038,14 @@ fn resource_names_do_not_override_configured_permission_effects() {
                 PermissionEffect::Ask,
             ] {
                 let rules = vec![rule("configured", action.clone(), "*", effect)];
+                // The session's `*` rule replaces the document's.
                 for (policy, overlay) in [
                     (policy(rules.clone()), None),
                     (
                         policy(vec![rule(
                             "agent",
                             action.clone(),
-                            name,
+                            "*",
                             PermissionEffect::Deny,
                         )]),
                         Some(SessionPermissionOverlay { rules }),
@@ -1085,11 +1109,12 @@ fn dotenv_files_accept_broad_policy_and_overlay_allows() {
                 );
                 assert_eq!(decision.evaluations[0].trace.candidates.len(), 1);
 
+                // The session's rule replaces the document's with its pattern.
                 let decision = PermissionPipeline::default().decide_operation_with_overlay(
                     &policy(vec![rule(
                         "agent-deny",
                         action.clone(),
-                        path,
+                        pattern,
                         PermissionEffect::Deny,
                     )]),
                     Some(&overlay),
@@ -1102,9 +1127,12 @@ fn dotenv_files_accept_broad_policy_and_overlay_allows() {
                     PermissionEffect::Allow,
                     "overlay {action:?} {pattern} {path}"
                 );
+                assert_eq!(decision.evaluations[0].trace.candidates.len(), 1);
                 assert_eq!(
-                    decision.evaluations[0].trace.precedence_reason,
-                    "session overlay matching rule takes precedence over the agent document"
+                    decision.evaluations[0].trace.candidates[0]
+                        .source_layer
+                        .as_str(),
+                    "session_overlay"
                 );
             }
         }
@@ -1145,14 +1173,17 @@ fn dotenv_specific_rules_override_broad_allows_in_each_layer() {
                 );
                 assert_eq!(decision.effect, effect, "{action:?} {specific}");
 
+                // A specific session rule beats the document's broad allow.
                 let decision = PermissionPipeline::default().decide_operation_with_overlay(
                     &policy(vec![rule(
-                        "agent-allow",
+                        "agent-broad-allow",
                         action.clone(),
-                        path,
+                        broad,
                         PermissionEffect::Allow,
                     )]),
-                    Some(&SessionPermissionOverlay { rules }),
+                    Some(&SessionPermissionOverlay {
+                        rules: vec![rules[0].clone()],
+                    }),
                     &operation(vec![resource(action.clone(), path, path.as_bytes())]),
                     &[Some(path.into())],
                     Some(std::path::Path::new("/workspace")),
@@ -1389,8 +1420,11 @@ fn visibility_uses_any_rule_without_resource_precedence() {
     );
 }
 
+/// A session `deny` hides a tool only when it replaces every rule that
+/// allows or asks for its action; a deny with another pattern leaves the
+/// document's rules offering it.
 #[test]
-fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
+fn session_denies_hide_a_tool_only_by_replacing_its_allowing_rules() {
     let empty_policy = policy(Vec::new());
     let named_allow = SessionPermissionOverlay {
         rules: vec![rule(
@@ -1444,7 +1478,7 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
         "*",
         PermissionEffect::Allow,
     )]);
-    assert!(PermissionPipeline::tool_visible_with_overlay(
+    assert!(!PermissionPipeline::tool_visible_with_overlay(
         &policy_allow,
         Some(&wildcard_deny),
         "read",
@@ -1465,7 +1499,7 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
             PermissionEffect::Deny,
         )],
     };
-    assert!(PermissionPipeline::tool_visible_with_overlay(
+    assert!(!PermissionPipeline::tool_visible_with_overlay(
         &named_policy_allow,
         Some(&identical_named_deny),
         "read",

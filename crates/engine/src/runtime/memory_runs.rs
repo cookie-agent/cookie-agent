@@ -26,8 +26,8 @@ use crate::{
         url::MemoryUrl,
     },
     permissions::{
-        MemoryVariables, PermissionScope, effective_permission_with_overlay, patterns_intersect,
-        tool_visible,
+        MemoryVariables, MergedRules, PermissionScope, effective_permission_with_overlay,
+        patterns_intersect,
     },
     policy::FrozenRunPolicy,
 };
@@ -82,25 +82,25 @@ pub(crate) struct MemoryAccess {
 }
 
 /// Whether a run of `agent` has memory (section 6): its agent is not
-/// internal, `global_attached`, and the agent or the session overlay holds
-/// an `allow` or `ask` rule for `memory` that reaches the `global`
-/// runtime. A writable run can also both read and write some memory URL
-/// (section 16.9.1): the pattern of one of those `memory` rules and the
-/// pattern of an `allow` or `ask` `memory_write` rule overlap. The frozen
-/// rules already have their variables expanded.
+/// internal, `global_attached`, and the merged list of its rules and the
+/// session overlay ([`MergedRules`]) holds an `allow` or `ask` rule for
+/// `memory` that reaches the `global` runtime. A writable run can also both
+/// read and write some memory URL (section 16.9.1): the pattern of one of
+/// those `memory` rules and the pattern of an `allow` or `ask`
+/// `memory_write` rule of the merged list overlap. The frozen rules already
+/// have their variables expanded.
 pub(crate) fn memory_access(
     global_attached: bool,
     agent: &AgentSnapshot,
     overlay: Option<&SessionPermissionOverlay>,
 ) -> MemoryAccess {
-    let visible = |action: &PermissionAction| {
-        tool_visible(&agent.permissions, overlay, action, Some(GLOBAL_RUNTIME_ID))
-    };
+    let merged = MergedRules::new(&agent.permissions, overlay, None);
+    let visible = |action: &PermissionAction| merged.offers(action, Some(GLOBAL_RUNTIME_ID));
     let patterns = |action: PermissionAction| {
-        agent
-            .permissions
+        merged
+            .rules()
             .iter()
-            .chain(overlay.into_iter().flat_map(|overlay| &overlay.rules))
+            .map(|merged| merged.rule)
             .filter(move |rule| {
                 rule.action == action
                     && rule.applies_to(Some(GLOBAL_RUNTIME_ID))

@@ -3123,8 +3123,7 @@ permissions:
     grant-a: allow
     grant-b: ask
   bash: ask
-  delegate:
-    reviewer: ask
+  delegate: ask
 ---
 Use loaded skills.
 "#,

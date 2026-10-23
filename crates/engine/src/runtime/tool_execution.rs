@@ -1196,14 +1196,12 @@ impl Engine {
                     .permission_name
                     .as_deref()
                     .is_none_or(|permission_name| {
-                        PermissionPipeline::tool_visible_with_overlay(
+                        PermissionPipeline::tool_visible_with_grants(
                             &policy.agent,
                             Some(&session_projection.permission_overlay),
+                            None,
                             permission_name,
-                            source
-                                .origin
-                                .runtime()
-                                .map(cookie_agent_runtime_api::RuntimeInfo::id),
+                            PermissionScope::of(&source.origin),
                         )
                     })
         })?;

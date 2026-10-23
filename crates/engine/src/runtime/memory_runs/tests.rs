@@ -440,3 +440,73 @@ fn a_root_runs_project_or_its_name_changing_takes_a_new_snapshot() {
         SnapshotChange::Keep
     );
 }
+
+/// Memory, the write tools, and the snapshot's read rules follow the merged
+/// list of the agent's rules and the session overlay
+/// (`docs/site/specs/permission-consolidation.md` section 3.2): a session
+/// rule replaces the agent rule with its pattern, and the most specific rule
+/// decides a URL.
+#[test]
+fn memory_follows_the_merged_rules() {
+    let agent = agent(
+        AgentMode::Primary,
+        vec![
+            rule(PermissionAction::MEMORY, "*", PermissionEffect::Allow),
+            rule(
+                PermissionAction::MEMORY,
+                "agent://reviewer",
+                PermissionEffect::Allow,
+            ),
+            rule(
+                PermissionAction::MEMORY_WRITE,
+                "user://*",
+                PermissionEffect::Allow,
+            ),
+        ],
+    );
+    let overlay = |rules| SessionPermissionOverlay { rules };
+    assert_eq!(memory_access(true, &agent, None), BOTH);
+    // A session `*` deny replaces only the agent's `*`: its
+    // `agent://reviewer` rule still offers memory, which `user://*` no
+    // longer overlaps.
+    let star_denied = overlay(vec![rule(
+        PermissionAction::MEMORY,
+        "*",
+        PermissionEffect::Deny,
+    )]);
+    assert_eq!(memory_access(true, &agent, Some(&star_denied)), READ_ONLY);
+    // Denying every rule that reads turns memory off.
+    let all_denied = overlay(vec![
+        rule(PermissionAction::MEMORY, "*", PermissionEffect::Deny),
+        rule(
+            PermissionAction::MEMORY,
+            "agent://reviewer",
+            PermissionEffect::Deny,
+        ),
+    ]);
+    assert_eq!(memory_access(true, &agent, Some(&all_denied)), NONE);
+    // Replacing the only write rule leaves reading.
+    let write_denied = overlay(vec![rule(
+        PermissionAction::MEMORY_WRITE,
+        "user://*",
+        PermissionEffect::Deny,
+    )]);
+    assert_eq!(memory_access(true, &agent, Some(&write_denied)), READ_ONLY);
+    // A narrower deny keeps both.
+    let narrow = overlay(vec![rule(
+        PermissionAction::MEMORY,
+        "user://profile",
+        PermissionEffect::Deny,
+    )]);
+    assert_eq!(memory_access(true, &agent, Some(&narrow)), BOTH);
+
+    let caller = MemoryCaller {
+        agent,
+        overlay: star_denied,
+        related: super::RelatedMemory::default(),
+    };
+    let visibility = |url: &str| caller.visibility(&MemoryUrl::parse(url).unwrap());
+    assert_eq!(visibility("user://profile"), Visibility::Hidden);
+    assert_eq!(visibility("agent://reviewer"), Visibility::Full);
+    assert!(caller.editable(&MemoryUrl::parse("user://profile").unwrap()));
+}

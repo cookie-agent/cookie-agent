@@ -85,8 +85,10 @@ impl<'a> From<Option<&'a Path>> for PermissionScope<'a> {
     }
 }
 
-/// Visibility is action-level opt-in, not a resource authorization decision.
-/// `runtime` is the runtime ID of the tool (`None` for the base layer).
+/// Visibility is action-level opt-in, not a resource authorization decision:
+/// whether the merged list of `rules` (a frozen policy) and `overlay` offers
+/// `action` to a tool of the runtime with ID `runtime` (`None` for the base
+/// layer), as the run's merged rule list decides it.
 #[must_use]
 pub fn tool_visible(
     rules: &[PermissionRule],
@@ -94,14 +96,219 @@ pub fn tool_visible(
     action: &PermissionAction,
     runtime: Option<&str>,
 ) -> bool {
-    rules
-        .iter()
-        .chain(overlay.into_iter().flat_map(|overlay| &overlay.rules))
-        .any(|rule| {
+    MergedRules::new(rules, overlay, None).offers(action, runtime)
+}
+
+/// One rule of a run's [merged list](MergedRules) and the level it comes
+/// from.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MergedRule<'a> {
+    pub(crate) rule: &'a PermissionRule,
+    pub(crate) source: PermissionRuleSource,
+}
+
+/// A run's permissions as one rule list
+/// (`docs/site/specs/permission-consolidation.md` section 3): the frozen
+/// policy's rules (the agent document's, and the defaults of each action it
+/// names no key for), then the session overlay's. An overlay rule replaces
+/// every policy rule with its identity (action, runtime selector, and
+/// pattern, a leading `~` expanded against the scope's home as matching
+/// expands it); every other overlay rule is added. Policy rules carry the
+/// source `agent_document` until [`label_defaults`](Self::label_defaults)
+/// tells the defaults apart; overlay rules carry `session_overlay`.
+///
+/// Every permission decision reads this list: which tools are offered
+/// ([`offers`](Self::offers)), each call ([`decide`](Self::decide),
+/// [`decide_name_only`](Self::decide_name_only)), the memory checks, and the
+/// `/permissions` view. It is computed from the frozen policy and the
+/// current overlay at each decision, so an overlay change applies to the next
+/// one without refreezing the run.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MergedRules<'a> {
+    rules: Vec<MergedRule<'a>>,
+}
+
+impl<'a> MergedRules<'a> {
+    /// The merged list of the frozen `policy` and `overlay`, for a runtime
+    /// that reported `home` (`None` compares `~` patterns as written).
+    pub(crate) fn new(
+        policy: &'a [PermissionRule],
+        overlay: Option<&'a SessionPermissionOverlay>,
+        home: Option<&str>,
+    ) -> Self {
+        let session = overlay.map_or(&[][..], |overlay| overlay.rules.as_slice());
+        let rules = policy
+            .iter()
+            .filter(|rule| {
+                !session
+                    .iter()
+                    .any(|session| same_identity(rule, session, home))
+            })
+            .map(|rule| MergedRule {
+                rule,
+                source: PermissionRuleSource::AgentDocument,
+            })
+            .chain(session.iter().map(|rule| MergedRule {
+                rule,
+                source: PermissionRuleSource::SessionOverlay,
+            }))
+            .collect();
+        Self { rules }
+    }
+
+    /// The merged list of `policy`'s frozen rules and `overlay`.
+    pub(crate) fn of(
+        policy: &'a AgentSnapshot,
+        overlay: Option<&'a SessionPermissionOverlay>,
+        home: Option<&str>,
+    ) -> Self {
+        Self::new(&policy.permissions, overlay, home)
+    }
+
+    /// The rules in order: policy rules, then session rules.
+    pub(crate) fn rules(&self) -> &[MergedRule<'a>] {
+        &self.rules
+    }
+
+    /// This list with the policy rules of each action whose rules are
+    /// exactly that action's defaults for a root or `delegated` run of
+    /// `policy`'s agent labelled `default`.
+    pub(crate) fn label_defaults(mut self, policy: &AgentSnapshot, delegated: bool) -> Self {
+        let defaults = run_default_rules(policy.mode, delegated);
+        let mut from_defaults = HashMap::<&PermissionAction, bool>::new();
+        for merged in &mut self.rules {
+            if merged.source != PermissionRuleSource::AgentDocument {
+                continue;
+            }
+            let action = &merged.rule.action;
+            let default = *from_defaults.entry(action).or_insert_with(|| {
+                let of_action = |rule: &&PermissionRule| rule.action == *action;
+                let default = defaults.iter().filter(of_action).collect::<Vec<_>>();
+                let rules = policy
+                    .permissions
+                    .iter()
+                    .filter(of_action)
+                    .collect::<Vec<_>>();
+                !default.is_empty() && expanded_from_defaults(&default, &rules, &policy.agent)
+            });
+            if default {
+                merged.source = PermissionRuleSource::Default;
+            }
+        }
+        self
+    }
+
+    /// Whether a tool checked under `action` on the runtime with ID
+    /// `runtime` is offered: some rule for `action` applying to that runtime
+    /// allows or asks.
+    pub(crate) fn offers(&self, action: &PermissionAction, runtime: Option<&str>) -> bool {
+        self.rules.iter().any(|MergedRule { rule, .. }| {
             rule.action == *action
                 && rule.applies_to(runtime)
                 && matches!(rule.effect, PermissionEffect::Allow | PermissionEffect::Ask)
         })
+    }
+
+    /// The effect of `action` on `resource` in `scope`: the most specific
+    /// matching rule's ([`specificity`]), a later rule winning a tie, else
+    /// deny. The list must have been built with `scope.home`.
+    pub(crate) fn decide(
+        &self,
+        action: &PermissionAction,
+        resource: &str,
+        scope: PermissionScope<'_>,
+    ) -> (PermissionEffect, String) {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter(|(_, merged)| rule_matches(merged.rule, action, resource, scope))
+            .max_by_key(|(index, merged)| specificity(merged.rule, *index, scope.home))
+            .map_or_else(
+                || {
+                    (
+                        PermissionEffect::Deny,
+                        "no matching rule; deny by default".into(),
+                    )
+                },
+                |(_, merged)| {
+                    (
+                        merged.rule.effect,
+                        "most-specific matching pattern: more literal characters, then fewer wildcards, then a runtime selector, then later declaration".into(),
+                    )
+                },
+            )
+    }
+
+    /// The effect of `action` checked by name only in `scope`: its `*`
+    /// rules', a runtime-selected one over a bare one, then the later one;
+    /// deny without one.
+    pub(crate) fn decide_name_only(
+        &self,
+        action: &PermissionAction,
+        scope: PermissionScope<'_>,
+    ) -> (PermissionEffect, String) {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter(|(_, merged)| name_only_rule(merged.rule, action, scope))
+            .max_by_key(|(index, merged)| (merged.rule.runtime.is_some(), *index))
+            .map_or_else(
+                || {
+                    (
+                        PermissionEffect::Deny,
+                        "no bare or `*` rule; deny by default for a permission-name-only check"
+                            .into(),
+                    )
+                },
+                |(_, merged)| {
+                    (
+                        merged.rule.effect,
+                        "bare or `*` permission rule applies to the permission-name-only check"
+                            .into(),
+                    )
+                },
+            )
+    }
+
+    /// The rules that `keep` admits, in order, as a decision trace lists
+    /// them.
+    fn traced(&self, keep: impl Fn(&PermissionRule) -> bool) -> Vec<MatchedPermissionRule> {
+        self.rules
+            .iter()
+            .filter(|merged| keep(merged.rule))
+            .map(|MergedRule { rule, source }| MatchedPermissionRule {
+                source_layer: SafeCode::new(match source {
+                    PermissionRuleSource::SessionOverlay => "session_overlay",
+                    PermissionRuleSource::AgentDocument => "agent_document",
+                    PermissionRuleSource::Default => "default",
+                })
+                .expect("static safe code"),
+                action: rule.action.clone(),
+                runtime: rule.runtime.clone(),
+                resource: rule.resource.clone(),
+                effect: rule.effect,
+            })
+            .collect()
+    }
+}
+
+/// Whether `left` and `right` have one identity in the merged list: the same
+/// action and runtime selector, and the same pattern once a leading `~` is
+/// expanded against `home`.
+fn same_identity(left: &PermissionRule, right: &PermissionRule, home: Option<&str>) -> bool {
+    left.action == right.action
+        && left.runtime == right.runtime
+        && (left.resource == right.resource
+            || rule_pattern(left, home) == rule_pattern(right, home))
+}
+
+/// Whether `rule` governs a name-only check of `action` in `scope`.
+fn name_only_rule(
+    rule: &PermissionRule,
+    action: &PermissionAction,
+    scope: PermissionScope<'_>,
+) -> bool {
+    rule.action == *action && rule.applies_to(scope.runtime) && rule.resource.as_str() == "*"
 }
 
 /// Whether some resource matches both `left` and `right`, wildcard
@@ -310,40 +517,22 @@ impl PermissionPipeline {
         let scope = scope.into();
         assert!(!operation.resources().is_empty());
         assert_eq!(operation.resources().len(), policy_labels.len());
+        let merged = MergedRules::of(policy, overlay, scope.home);
         let evaluations = operation
             .resources()
             .iter()
             .zip(policy_labels)
             .map(|(resource, normalized)| {
-                let (candidates, effect, reason) = match normalized {
-                    Some(normalized) => {
-                        let candidates = matching_rules(
-                            policy,
-                            overlay,
-                            &resource.capability,
-                            normalized,
-                            scope,
-                        );
-                        let (effect, reason) = effective_permission_with_overlay(
-                            policy,
-                            overlay,
-                            &resource.capability,
-                            normalized,
-                            scope,
-                        );
-                        (candidates, effect, reason)
-                    }
-                    None => {
-                        let candidates =
-                            matching_loose_rules(policy, overlay, &resource.capability, scope);
-                        let (effect, reason) = effective_loose_permission_with_overlay(
-                            policy,
-                            overlay,
-                            &resource.capability,
-                            scope,
-                        );
-                        (candidates, effect, reason)
-                    }
+                let action = &resource.capability;
+                let (candidates, (effect, reason)) = match normalized {
+                    Some(normalized) => (
+                        merged.traced(|rule| rule_matches(rule, action, normalized, scope)),
+                        merged.decide(action, normalized, scope),
+                    ),
+                    None => (
+                        merged.traced(|rule| name_only_rule(rule, action, scope)),
+                        merged.decide_name_only(action, scope),
+                    ),
                 };
                 ApprovalEvaluation {
                     resource_digest: resource.binding_digest.clone(),
@@ -422,8 +611,9 @@ impl PermissionPipeline {
     }
 
     /// Whether a tool with `permission_name` of the runtime with ID `runtime`
-    /// (`None` for the base layer) is visible. A tool that needs no permission
-    /// has no name to ask about and is always visible.
+    /// (`None` for the base layer) is visible: whether the merged list of
+    /// `policy` and `overlay` offers it. A tool that
+    /// needs no permission has no name to ask about and is always visible.
     #[must_use]
     pub fn tool_visible_with_overlay(
         policy: &AgentSnapshot,
@@ -431,12 +621,22 @@ impl PermissionPipeline {
         permission_name: &str,
         runtime: Option<&str>,
     ) -> bool {
-        let Ok(action) = Self::action_for_permission_name(permission_name) else {
-            return false;
-        };
-        tool_visible(&policy.permissions, overlay, &action, runtime)
+        Self::tool_visible_with_grants(
+            policy,
+            overlay,
+            None,
+            permission_name,
+            PermissionScope {
+                runtime,
+                workspace: None,
+                home: None,
+            },
+        )
     }
 
+    /// Whether a tool with `permission_name` in `scope` is visible: the
+    /// merged list of `policy` and `overlay` offers it, or one of `grants`
+    /// allows a resource of it that the merged list does not deny.
     #[must_use]
     pub fn tool_visible_with_grants<'a>(
         policy: &AgentSnapshot,
@@ -446,25 +646,26 @@ impl PermissionPipeline {
         scope: impl Into<PermissionScope<'a>>,
     ) -> bool {
         let scope = scope.into();
-        if Self::tool_visible_with_overlay(policy, overlay, permission_name, scope.runtime) {
-            return true;
-        }
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
+        let merged = MergedRules::of(policy, overlay, scope.home);
+        if merged.offers(&action, scope.runtime) {
+            return true;
+        }
         grants.is_some_and(|grants| {
             grants.rules.iter().any(|grant| {
                 grant.action == action
                     && grant.effect == PermissionEffect::Allow
                     && grant.applies_to(scope.runtime)
-                    && effective_permission_with_overlay(
-                        policy,
-                        overlay,
-                        &action,
-                        &expand_home_pattern(grant.resource.as_str(), scope.home),
-                        scope,
-                    )
-                    .0 != PermissionEffect::Deny
+                    && merged
+                        .decide(
+                            &action,
+                            &expand_home_pattern(grant.resource.as_str(), scope.home),
+                            scope,
+                        )
+                        .0
+                        != PermissionEffect::Deny
             })
         })
     }
@@ -486,105 +687,20 @@ fn aggregate_effect(evaluations: &[ApprovalEvaluation]) -> PermissionEffect {
     }
 }
 
-/// The precedence of a rule among the rules that match: a qualified rule
-/// ranks above an unqualified one, then later declarations win.
-fn loose_rank(rule: &PermissionRule, declaration_index: usize) -> (bool, usize) {
-    (rule.runtime.is_some(), declaration_index)
-}
-
-pub(crate) fn effective_loose_permission<'a>(
-    policy: &AgentSnapshot,
-    action: &PermissionAction,
-    scope: impl Into<PermissionScope<'a>>,
-) -> (PermissionEffect, String) {
-    let scope = scope.into();
-    policy
-        .permissions
-        .iter()
-        .enumerate()
-        .filter(|(_, rule)| {
-            rule.action == *action
-                && rule.applies_to(scope.runtime)
-                && rule.resource.as_str() == "*"
-        })
-        .max_by_key(|(index, rule)| loose_rank(rule, *index))
-        .map_or_else(
-            || {
-                (
-                    PermissionEffect::Deny,
-                    "no bare or `*` rule; deny by default for a permission-name-only check".into(),
-                )
-            },
-            |(_, rule)| {
-                (
-                    rule.effect,
-                    "bare or `*` permission rule applies to the permission-name-only check".into(),
-                )
-            },
-        )
-}
-
-pub(crate) fn effective_loose_permission_with_overlay<'a>(
-    policy: &AgentSnapshot,
-    overlay: Option<&SessionPermissionOverlay>,
-    action: &PermissionAction,
-    scope: impl Into<PermissionScope<'a>>,
-) -> (PermissionEffect, String) {
-    let scope = scope.into();
-    overlay
-        .and_then(|overlay| {
-            overlay
-                .rules
-                .iter()
-                .enumerate()
-                .filter(|(_, rule)| {
-                    rule.action == *action
-                        && rule.applies_to(scope.runtime)
-                        && rule.resource.as_str() == "*"
-                })
-                .max_by_key(|(index, rule)| loose_rank(rule, *index))
-        })
-        .map_or_else(
-            || effective_loose_permission(policy, action, scope),
-            |(_, rule)| {
-                (
-                    rule.effect,
-                    "session overlay wildcard rule takes precedence over the agent document".into(),
-                )
-            },
-        )
-}
-
+/// The effect of `action` on `resource` in `scope` under `policy`'s frozen
+/// rules alone.
+#[cfg(test)]
 pub(crate) fn effective_permission<'a>(
     policy: &AgentSnapshot,
     action: &PermissionAction,
     resource: &str,
     scope: impl Into<PermissionScope<'a>>,
 ) -> (PermissionEffect, String) {
-    let scope = scope.into();
-    let winner = policy
-        .permissions
-        .iter()
-        .enumerate()
-        .filter(|(_, rule)| rule_matches(rule, action, resource, scope))
-        .max_by_key(|(index, rule)| specificity(rule, *index, scope.home));
-    winner
-        .map_or_else(
-            || {
-                (
-                    PermissionEffect::Deny,
-                    "no matching rule; deny by default".into(),
-                )
-            },
-            |(_, rule)| {
-                (
-                    rule.effect,
-                    "most-specific matching pattern: more literal characters, then fewer wildcards, then a runtime selector, then later declaration".into(),
-                )
-            },
-        )
+    effective_permission_with_overlay(policy, None, action, resource, scope)
 }
 
+/// The effect of `action` on `resource` in `scope` under the merged list of
+/// `policy` and `overlay` ([`MergedRules::decide`]).
 pub(crate) fn effective_permission_with_overlay<'a>(
     policy: &AgentSnapshot,
     overlay: Option<&SessionPermissionOverlay>,
@@ -593,23 +709,7 @@ pub(crate) fn effective_permission_with_overlay<'a>(
     scope: impl Into<PermissionScope<'a>>,
 ) -> (PermissionEffect, String) {
     let scope = scope.into();
-    let winner = overlay.and_then(|overlay| {
-        overlay
-            .rules
-            .iter()
-            .enumerate()
-            .filter(|(_, rule)| rule_matches(rule, action, resource, scope))
-            .max_by_key(|(index, rule)| specificity(rule, *index, scope.home))
-    });
-    winner.map_or_else(
-        || effective_permission(policy, action, resource, scope),
-        |(_, rule)| {
-            (
-                rule.effect,
-                "session overlay matching rule takes precedence over the agent document".into(),
-            )
-        },
-    )
+    MergedRules::of(policy, overlay, scope.home).decide(action, resource, scope)
 }
 
 /// Whether `rule` governs `resource` of `action` in `scope`.
@@ -937,59 +1037,6 @@ fn specificity(
         rule.runtime.is_some(),
         declaration_index,
     )
-}
-
-fn matching_rules(
-    policy: &AgentSnapshot,
-    overlay: Option<&SessionPermissionOverlay>,
-    action: &PermissionAction,
-    resource: &str,
-    scope: PermissionScope<'_>,
-) -> Vec<MatchedPermissionRule> {
-    matched(policy, overlay, |rule| {
-        rule_matches(rule, action, resource, scope)
-    })
-}
-
-fn matching_loose_rules(
-    policy: &AgentSnapshot,
-    overlay: Option<&SessionPermissionOverlay>,
-    action: &PermissionAction,
-    scope: PermissionScope<'_>,
-) -> Vec<MatchedPermissionRule> {
-    matched(policy, overlay, |rule| {
-        rule.action == *action && rule.applies_to(scope.runtime) && rule.resource.as_str() == "*"
-    })
-}
-
-/// The agent-document rules, then the overlay rules, that `keep` admits.
-fn matched(
-    policy: &AgentSnapshot,
-    overlay: Option<&SessionPermissionOverlay>,
-    keep: impl Fn(&PermissionRule) -> bool,
-) -> Vec<MatchedPermissionRule> {
-    let traced = |layer: &'static str| {
-        move |rule: &PermissionRule| MatchedPermissionRule {
-            source_layer: SafeCode::new(layer).expect("static safe code"),
-            action: rule.action.clone(),
-            runtime: rule.runtime.clone(),
-            resource: rule.resource.clone(),
-            effect: rule.effect,
-        }
-    };
-    policy
-        .permissions
-        .iter()
-        .filter(|rule| keep(rule))
-        .map(traced("agent_document"))
-        .chain(
-            overlay
-                .into_iter()
-                .flat_map(|overlay| overlay.rules.iter())
-                .filter(|rule| keep(rule))
-                .map(traced("session_overlay")),
-        )
-        .collect()
 }
 
 /// Refuses overlay rules a client sends with a runtime selector their
@@ -1370,11 +1417,13 @@ fn rule_effects(
                 workspace: owned.workspace.as_deref(),
                 home: owned.home.as_deref(),
             };
+            let merged = MergedRules::of(policy, Some(overlay), scope.home);
             if resource == "*" {
-                effective_loose_permission_with_overlay(policy, Some(overlay), action, scope).0
+                merged.decide_name_only(action, scope).0
             } else {
-                let resource = expand_home_pattern(resource, scope.home);
-                effective_permission_with_overlay(policy, Some(overlay), action, &resource, scope).0
+                merged
+                    .decide(action, &expand_home_pattern(resource, scope.home), scope)
+                    .0
             }
         })
         .collect()
@@ -1429,39 +1478,26 @@ fn expanded_from_defaults(
     rules.next().is_none()
 }
 
-/// The effective permission of every action: the built-in actions, then the
+/// The effective permission of every action, as the merged list of `policy`
+/// and `overlay` ([`MergedRules`]) gives it: the built-in actions, then the
 /// other actions the session's tools `declared`, then any other action a rule
-/// names, each group in first-seen order. An action whose agent rules are
-/// exactly its [mode default](mode_default_rules), or its [memory
-/// default](memory_default_rules) for a root or `delegated` run, reports them
-/// with the source `default`.
+/// names, each group in first-seen order. Each action reports its last
+/// unqualified `*` rule as its effect (deny with the source `default`
+/// without one) and lists every other rule as a pattern, each with its
+/// source; an action whose policy rules are exactly its [mode
+/// default](mode_default_rules), or its [memory default](memory_default_rules)
+/// for a root or `delegated` run, reports them with the source `default`. A
+/// session `*` rule replaces only the `*` row: the document's other patterns
+/// stay listed, because they still apply.
 fn effective_permission_view(
     policy: &AgentSnapshot,
     delegated: bool,
     overlay: &SessionPermissionOverlay,
     declared: &[PermissionAction],
 ) -> Vec<EffectivePermissionAction> {
-    let defaults = run_default_rules(policy.mode, delegated);
-    let agent_source = |action: &PermissionAction| {
-        let of_action = |rule: &&PermissionRule| rule.action == *action;
-        let default = defaults.iter().filter(of_action).collect::<Vec<_>>();
-        let rules = policy
-            .permissions
-            .iter()
-            .filter(of_action)
-            .collect::<Vec<_>>();
-        if !default.is_empty() && expanded_from_defaults(&default, &rules, &policy.agent) {
-            PermissionRuleSource::Default
-        } else {
-            PermissionRuleSource::AgentDocument
-        }
-    };
+    let merged = MergedRules::of(policy, Some(overlay), None).label_defaults(policy, delegated);
     let mut actions = PermissionAction::BUILT_IN.to_vec();
-    let named = policy
-        .permissions
-        .iter()
-        .chain(&overlay.rules)
-        .map(|rule| &rule.action);
+    let named = merged.rules().iter().map(|merged| &merged.rule.action);
     for action in declared.iter().chain(named) {
         if !actions.contains(action) {
             actions.push(action.clone());
@@ -1470,52 +1506,33 @@ fn effective_permission_view(
     actions
         .into_iter()
         .map(|action| {
-            let unqualified_wildcard = |rule: &&PermissionRule| {
-                rule.action == action && rule.runtime.is_none() && rule.resource.as_str() == "*"
-            };
-            let overlay_wildcard = overlay.rules.iter().rev().find(unqualified_wildcard);
-            let agent_wildcard = policy.permissions.iter().rev().find(unqualified_wildcard);
-            let agent_source = agent_source(&action);
-            let (effect, source) = overlay_wildcard.map_or_else(
-                || {
-                    agent_wildcard.map_or(
-                        (PermissionEffect::Deny, PermissionRuleSource::Default),
-                        |rule| (rule.effect, agent_source),
+            let of_action = merged
+                .rules()
+                .iter()
+                .filter(|merged| merged.rule.action == action);
+            let wildcard = of_action.clone().rfind(|merged| {
+                merged.rule.runtime.is_none() && merged.rule.resource.as_str() == "*"
+            });
+            let (effect, source) = wildcard.map_or(
+                (PermissionEffect::Deny, PermissionRuleSource::Default),
+                |merged| (merged.rule.effect, merged.source),
+            );
+            let patterns = of_action
+                .filter(|merged| {
+                    merged.rule.runtime.is_some() || merged.rule.resource.as_str() != "*"
+                })
+                .map(|MergedRule { rule, source }| {
+                    (
+                        (rule.runtime.clone(), rule.resource.as_str().to_owned()),
+                        EffectivePermissionRule {
+                            runtime: rule.runtime.clone(),
+                            resource: rule.resource.clone(),
+                            effect: rule.effect,
+                            source: *source,
+                        },
                     )
-                },
-                |rule| (rule.effect, PermissionRuleSource::SessionOverlay),
-            );
-            let listed = |rule: &&PermissionRule| {
-                rule.action == action && (rule.runtime.is_some() || rule.resource.as_str() != "*")
-            };
-            let entry = |rule: &PermissionRule, source| {
-                (
-                    (rule.runtime.clone(), rule.resource.as_str().to_owned()),
-                    EffectivePermissionRule {
-                        runtime: rule.runtime.clone(),
-                        resource: rule.resource.clone(),
-                        effect: rule.effect,
-                        source,
-                    },
-                )
-            };
-            let mut patterns = BTreeMap::new();
-            if overlay_wildcard.is_none() {
-                patterns.extend(
-                    policy
-                        .permissions
-                        .iter()
-                        .filter(listed)
-                        .map(|rule| entry(rule, agent_source)),
-                );
-            }
-            patterns.extend(
-                overlay
-                    .rules
-                    .iter()
-                    .filter(listed)
-                    .map(|rule| entry(rule, PermissionRuleSource::SessionOverlay)),
-            );
+                })
+                .collect::<BTreeMap<_, _>>();
             EffectivePermissionAction {
                 action,
                 effect,
