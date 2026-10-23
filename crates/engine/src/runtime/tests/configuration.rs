@@ -171,6 +171,30 @@ async fn parts_that_need_a_restart_are_reported_until_they_match_again() {
     assert!(status.restart_required.is_empty());
 }
 
+/// A token the daemon created at start and wrote to the file is the one it
+/// serves with, so the file holding it is no `server` change; another
+/// token is.
+#[tokio::test]
+async fn the_token_the_daemon_wrote_at_start_needs_no_restart() {
+    let fixture = reloadable();
+    let written = "B".repeat(43);
+    fixture.write("config.toml", &format!("[server]\ntoken = \"{written}\"\n"));
+    let status = fixture.engine.reload_configuration().await.expect("reload");
+    assert_eq!(status.restart_required, [RestartRequiredPart::Server]);
+    fixture.engine.note_served_server_token(&written);
+    assert!(
+        fixture
+            .engine
+            .configuration_status()
+            .restart_required
+            .is_empty()
+    );
+    let other = "C".repeat(43);
+    fixture.write("config.toml", &format!("[server]\ntoken = \"{other}\"\n"));
+    let status = fixture.engine.reload_configuration().await.expect("reload");
+    assert_eq!(status.restart_required, [RestartRequiredPart::Server]);
+}
+
 #[tokio::test]
 async fn mcp_servers_follow_the_reloaded_file_under_the_runtime_layer() {
     let fixture = reloadable();

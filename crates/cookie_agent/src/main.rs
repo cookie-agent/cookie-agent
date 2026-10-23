@@ -681,6 +681,9 @@ async fn main_result(cli: Cli, launch: &mut Launch) -> anyhow::Result<()> {
             };
             let runtime = compose(workspace.as_deref().expect("daemon workspace")).await?;
             let token = daemon_token(runtime.token.clone(), runtime.config_path.as_deref())?;
+            if runtime.token.is_none() {
+                runtime.engine.note_served_server_token(token.as_str());
+            }
             let exit = run_daemon(
                 runtime,
                 DaemonListen {

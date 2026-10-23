@@ -948,6 +948,9 @@ pub(crate) struct Inner {
     pub(crate) cron_scheduler: cron_fire::CronSchedulerState,
     /// A restart a client scheduled, and the hook that does it.
     pub(crate) restart: restart::RestartState,
+    /// The token the daemon created at start, which the started
+    /// configuration lacks.
+    pub(crate) served_server_token: std::sync::OnceLock<String>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     /// MCP changes and failures of every runtime.
@@ -1217,6 +1220,7 @@ impl Engine {
                 crons,
                 cron_scheduler: cron_fire::CronSchedulerState::default(),
                 restart: restart::RestartState::default(),
+                served_server_token: std::sync::OnceLock::new(),
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 mcp_hub,

@@ -87,6 +87,13 @@ pub struct ConfigurationStatus {
 }
 
 impl Engine {
+    /// Records the token the daemon serves with when it created one at
+    /// start and wrote it to `config.toml`, so the file holding it does not
+    /// read as a `server` change waiting for a restart.
+    pub fn note_served_server_token(&self, token: &str) {
+        let _ = self.inner.served_server_token.set(token.to_owned());
+    }
+
     /// The applied configuration generation.
     #[must_use]
     pub fn configuration(&self) -> Arc<LoadedConfiguration> {
@@ -99,7 +106,15 @@ impl Engine {
         let started = &self.inner.started_config;
         let mut restart_required = Vec::new();
         let (now, then) = (&applied.runtime.server, &started.runtime.server);
-        if now.host != then.host || now.port != then.port || now.token != then.token {
+        // A token the daemon created at start and wrote to the file is the
+        // one it serves with.
+        let served_token = self
+            .inner
+            .served_server_token
+            .get()
+            .map(String::as_str)
+            .or(then.token.as_deref());
+        if now.host != then.host || now.port != then.port || now.token.as_deref() != served_token {
             restart_required.push(RestartRequiredPart::Server);
         }
         if applied.plugins != started.plugins {
