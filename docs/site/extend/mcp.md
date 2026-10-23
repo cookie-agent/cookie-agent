@@ -380,13 +380,26 @@ MCP availability is permission-driven. An agent document with no `mcp` key
 (in any form, `mcp@<runtime>` included) gets the daemon's default
 `mcp: {"*": ask}` when its mode is `primary`, `all`, or `subagent`, so every
 connected MCP tool is offered and each call asks; an `internal` agent gets
-none. A declared `mcp` key replaces the default entirely: with only
-`"my_chrome_*": ask`, the agent sees only that server's tools, and deny-only
-`mcp` rules hide them all (see [MCP default](agents.md#mcp-default)). Any
-`mcp` `allow` or `ask` rule in the run's merged rules (agent and overlay) exposes the connected MCP
-tools at the action level. Calls then use the complete generated tool name as their scoped
-resource: more-specific patterns override broader patterns, and unmatched calls
-are denied. Each delegated agent is evaluated against its own permission map.
+none. A declared `mcp` key replaces the default entirely (see
+[MCP default](agents.md#mcp-default)).
+
+An MCP tool's permission resource is its complete published name, known
+before any call, so each tool is offered by its own rules: a tool is offered
+when the run's merged rules (agent document, defaults, and session overlay)
+do not deny `mcp` for its name on its runtime. The most specific matching
+rule decides, as it does for a call: `allow` and `ask` offer the tool,
+`deny` or no matching rule hides it. With only `"my_chrome_*": allow`, the
+agent sees only that server's tools, and the YAML above hides
+`github_delete_repo` while offering the rest of `github`'s tools. Narrow
+`mcp` rules therefore narrow the tool list, not only the calls, and a
+session override in `/permissions` changes the list at the next model
+request. An "allow for this session" grant never offers a tool the merged
+rules deny. Calls use the same name as their resource: more-specific patterns
+override broader ones, and unmatched calls are denied. Each delegated agent
+is evaluated against its own permission map.
+
+`include_tools` and `exclude_tools` drop a server's tools for every agent;
+permissions choose among the published ones per agent.
 
 Each MCP description and result is treated as untrusted server output.
 

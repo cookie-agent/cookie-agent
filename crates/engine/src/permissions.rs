@@ -634,6 +634,35 @@ impl PermissionPipeline {
         )
     }
 
+    /// Whether the tool its provider knows as `tool_name`, checked under
+    /// `permission_name` in `scope`, is offered. A tool whose action's
+    /// resource is the tool's name
+    /// ([`PermissionAction::is_tool_name`]) is offered when the merged list
+    /// of `policy` and `overlay` does not deny that name: a matching `allow`
+    /// or `ask` offers it, a `deny` or no matching rule hides it. A grant
+    /// cannot offer it otherwise, since it never overrides a deny. Any other
+    /// tool is offered as [`Self::tool_visible_with_grants`] decides.
+    #[must_use]
+    pub fn tool_offered<'a>(
+        policy: &AgentSnapshot,
+        overlay: Option<&SessionPermissionOverlay>,
+        grants: Option<&SessionPermissionOverlay>,
+        permission_name: &str,
+        tool_name: &str,
+        scope: impl Into<PermissionScope<'a>>,
+    ) -> bool {
+        let scope = scope.into();
+        match Self::action_for_permission_name(permission_name) {
+            Ok(action) if action.is_tool_name() => {
+                MergedRules::of(policy, overlay, scope.home)
+                    .decide(&action, tool_name, scope)
+                    .0
+                    != PermissionEffect::Deny
+            }
+            _ => Self::tool_visible_with_grants(policy, overlay, grants, permission_name, scope),
+        }
+    }
+
     /// Whether a tool with `permission_name` in `scope` is visible: the
     /// merged list of `policy` and `overlay` offers it, or one of `grants`
     /// allows a resource of it that the merged list does not deny.

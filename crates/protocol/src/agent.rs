@@ -108,6 +108,15 @@ impl PermissionAction {
         *self == Self::BASH
     }
 
+    /// Whether a tool's resource is its own published name (`mcp`), known
+    /// when the tool list is built, so each tool is offered by its own
+    /// rules rather than by the action (`docs/site/specs/mcp-tool-filters.md`
+    /// section 3).
+    #[must_use]
+    pub fn is_tool_name(&self) -> bool {
+        *self == Self::MCP
+    }
+
     /// Whether the action belongs to the daemon's base-layer tools, which no
     /// runtime selector reaches, except `delegate@<runtime>`: it checks a
     /// delegation that gives the child that runtime.

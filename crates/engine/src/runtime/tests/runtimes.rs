@@ -1362,3 +1362,193 @@ async fn a_session_created_for_a_client_directory_works_there() {
     assert_ne!(default.cwd_identity, session.cwd_identity);
     fixture.engine.shutdown().await;
 }
+
+/// A provider that publishes `tools` as MCP tools do: each checked under
+/// `mcp`, whose resource is the tool's own name.
+struct FakeMcpTools {
+    tools: &'static [&'static str],
+}
+
+#[async_trait]
+impl ToolProvider for FakeMcpTools {
+    fn provider_id(&self) -> &'static str {
+        "test.fake_mcp"
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(self
+            .tools
+            .iter()
+            .map(|&name| ToolSpec {
+                name: name.to_owned(),
+                collision: ToolCollision::default(),
+                permission_name: Some("mcp".into()),
+                description: format!("[fake] {name}"),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+                concurrency: Default::default(),
+                result_truncation: Default::default(),
+                output: Default::default(),
+                background: false,
+                background_default: false,
+            })
+            .collect())
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(Some("mcp"))
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Ok((Some("mcp"), Some(name.to_owned())))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Ok(name.to_owned())
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        Err(ToolError::execution(format!("prepared `{}`", call.name)))
+    }
+}
+
+/// `policy` whose `mcp` rules are `rules`, without the defaults that
+/// publish the `global` runtime's own tools.
+fn with_mcp_rules(
+    policy: FrozenRunPolicy,
+    rules: &[(&str, cookie_agent_protocol::PermissionEffect)],
+) -> FrozenRunPolicy {
+    use cookie_agent_protocol::{PermissionAction, PermissionRule, WildcardPattern};
+    let mut policy = without_memory(policy);
+    policy
+        .agent
+        .permissions
+        .retain(|rule| rule.action != PermissionAction::MCP);
+    policy
+        .agent
+        .permissions
+        .extend(rules.iter().map(|&(pattern, effect)| PermissionRule {
+            runtime: None,
+            action: PermissionAction::MCP,
+            resource: WildcardPattern::new(pattern).expect("pattern"),
+            effect,
+        }));
+    policy
+}
+
+fn mcp_names(fixture: &Fixture, session: SessionId, policy: &FrozenRunPolicy) -> Vec<String> {
+    let mut names = published_names(fixture, session, policy)
+        .into_iter()
+        .filter(|name| name.starts_with("my_chrome_") || name.starts_with("github_"))
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn mcp_tools_are_offered_by_the_merged_rules_for_their_names() {
+    use cookie_agent_protocol::{PermissionAction, PermissionEffect, WildcardPattern};
+    let (fixture, selection) = custom_fixture();
+    let base = frozen_root_policy(&fixture, &selection);
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    fixture.engine.register_tool_provider(
+        ToolLayer::Global,
+        Arc::new(FakeMcpTools {
+            tools: &[
+                "my_chrome_click",
+                "my_chrome_browser_install",
+                "github_search",
+            ],
+        }),
+    );
+
+    // A narrow allow offers only the tools it matches.
+    let narrow = with_mcp_rules(base.clone(), &[("my_chrome_*", PermissionEffect::Allow)]);
+    assert_eq!(
+        mcp_names(&fixture, session, &narrow),
+        ["my_chrome_browser_install", "my_chrome_click"]
+    );
+    // `ask` offers every tool it covers.
+    let asks = with_mcp_rules(base.clone(), &[("*", PermissionEffect::Ask)]);
+    assert_eq!(
+        mcp_names(&fixture, session, &asks),
+        [
+            "github_search",
+            "my_chrome_browser_install",
+            "my_chrome_click"
+        ]
+    );
+    // A deny pattern hides one tool of an allowed server.
+    let one_denied = with_mcp_rules(
+        base.clone(),
+        &[
+            ("my_chrome_*", PermissionEffect::Allow),
+            ("my_chrome_browser_install", PermissionEffect::Deny),
+        ],
+    );
+    assert_eq!(
+        mcp_names(&fixture, session, &one_denied),
+        ["my_chrome_click"]
+    );
+
+    // A call to a hidden tool is refused before its provider prepares it;
+    // an offered one reaches the provider.
+    let turn = test_turn_context(&one_denied);
+    let prepare = |name: &str| {
+        fixture.engine.prepare_tool_call(
+            session,
+            RunId::new_v7(),
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: name.into(),
+                arguments: serde_json::json!({}),
+            },
+            &one_denied,
+            Arc::clone(&turn),
+        )
+    };
+    let refused = prepare("my_chrome_browser_install").await;
+    assert_eq!(
+        refused.prepared.err().map(|failure| failure.message),
+        Some("tool `my_chrome_browser_install` is not enabled for this session".into())
+    );
+    let offered = prepare("my_chrome_click").await;
+    assert_eq!(
+        offered.prepared.err().map(|failure| failure.message),
+        Some("prepared `my_chrome_click`".into())
+    );
+
+    // A session override changes the list at the next composition.
+    fixture
+        .engine
+        .set_session_permission(
+            session,
+            &PermissionAction::MCP,
+            None,
+            WildcardPattern::new("github_*").expect("pattern"),
+            PermissionEffect::Deny,
+            origin(),
+        )
+        .await
+        .expect("session override");
+    assert_eq!(
+        mcp_names(&fixture, session, &asks),
+        ["my_chrome_browser_install", "my_chrome_click"]
+    );
+    fixture.engine.shutdown().await;
+}

@@ -560,11 +560,12 @@ impl Engine {
         if !enabled
             || (!direct_skill
                 && !permission_name.as_deref().is_none_or(|permission_name| {
-                    PermissionPipeline::tool_visible_with_grants(
+                    PermissionPipeline::tool_offered(
                         &policy.agent,
                         Some(permission_overlay),
                         grants.as_ref(),
                         permission_name,
+                        &call.name,
                         PermissionScope::of(&origin),
                     )
                 }))
@@ -1206,11 +1207,12 @@ impl Engine {
                     .permission_name
                     .as_deref()
                     .is_none_or(|permission_name| {
-                        PermissionPipeline::tool_visible_with_grants(
+                        PermissionPipeline::tool_offered(
                             &policy.agent,
                             Some(&session_projection.permission_overlay),
                             None,
                             permission_name,
+                            &tool.name,
                             PermissionScope::of(&source.origin),
                         )
                     })

@@ -2716,3 +2716,220 @@ fn wildcard_patterns_intersect_exactly() {
         assert!(!super::patterns_intersect(right, left), "{right} {left}");
     }
 }
+
+/// Whether the MCP tool `name` is offered under `rules`, `overlay`, and
+/// `grants` on the runtime `runtime`.
+fn mcp_offered(
+    rules: &AgentSnapshot,
+    overlay: Option<&SessionPermissionOverlay>,
+    grants: Option<&SessionPermissionOverlay>,
+    name: &str,
+    runtime: Option<&str>,
+) -> bool {
+    PermissionPipeline::tool_offered(
+        rules,
+        overlay,
+        grants,
+        "mcp",
+        name,
+        super::PermissionScope {
+            runtime,
+            workspace: None,
+            home: None,
+        },
+    )
+}
+
+#[test]
+fn a_narrow_mcp_allow_offers_only_the_tools_it_matches() {
+    let narrow = policy(vec![rule(
+        "chrome",
+        PermissionAction::MCP,
+        "my_chrome_*",
+        PermissionEffect::Allow,
+    )]);
+    assert!(mcp_offered(&narrow, None, None, "my_chrome_click", None));
+    assert!(!mcp_offered(&narrow, None, None, "github_search", None));
+    // The action is still offered: the per-name check is what narrows it.
+    assert!(PermissionPipeline::tool_visible(&narrow, "mcp"));
+}
+
+#[test]
+fn an_mcp_ask_offers_and_a_deny_pattern_hides_one_tool_of_an_allowed_server() {
+    let asks = policy(vec![rule(
+        "ask",
+        PermissionAction::MCP,
+        "*",
+        PermissionEffect::Ask,
+    )]);
+    assert!(mcp_offered(&asks, None, None, "github_search", None));
+    let one_denied = policy(vec![
+        rule(
+            "chrome",
+            PermissionAction::MCP,
+            "my_chrome_*",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "install",
+            PermissionAction::MCP,
+            "my_chrome_browser_install",
+            PermissionEffect::Deny,
+        ),
+    ]);
+    assert!(mcp_offered(
+        &one_denied,
+        None,
+        None,
+        "my_chrome_click",
+        None
+    ));
+    assert!(!mcp_offered(
+        &one_denied,
+        None,
+        None,
+        "my_chrome_browser_install",
+        None
+    ));
+    assert!(!mcp_offered(
+        &policy(Vec::new()),
+        None,
+        None,
+        "my_chrome_click",
+        None
+    ));
+}
+
+#[test]
+fn a_session_override_changes_which_mcp_tools_are_offered() {
+    let asks = policy(vec![rule(
+        "ask",
+        PermissionAction::MCP,
+        "*",
+        PermissionEffect::Ask,
+    )]);
+    let deny_github = SessionPermissionOverlay {
+        rules: vec![rule(
+            "github",
+            PermissionAction::MCP,
+            "github_*",
+            PermissionEffect::Deny,
+        )],
+    };
+    assert!(!mcp_offered(
+        &asks,
+        Some(&deny_github),
+        None,
+        "github_search",
+        None
+    ));
+    assert!(mcp_offered(
+        &asks,
+        Some(&deny_github),
+        None,
+        "my_chrome_click",
+        None
+    ));
+    let deny_all = SessionPermissionOverlay {
+        rules: vec![rule(
+            "all",
+            PermissionAction::MCP,
+            "*",
+            PermissionEffect::Deny,
+        )],
+    };
+    assert!(!mcp_offered(
+        &asks,
+        Some(&deny_all),
+        None,
+        "my_chrome_click",
+        None
+    ));
+}
+
+#[test]
+fn an_mcp_tool_is_offered_by_the_rules_of_its_runtime() {
+    let on_labpc = policy(vec![PermissionRule {
+        runtime: Some(cookie_agent_protocol::RuntimeId::new("labpc").expect("runtime ID")),
+        action: PermissionAction::MCP,
+        resource: WildcardPattern::new("browser_*").expect("wildcard"),
+        effect: PermissionEffect::Allow,
+    }]);
+    assert!(mcp_offered(
+        &on_labpc,
+        None,
+        None,
+        "browser_click",
+        Some("labpc")
+    ));
+    assert!(!mcp_offered(
+        &on_labpc,
+        None,
+        None,
+        "browser_click",
+        Some("global")
+    ));
+}
+
+#[test]
+fn a_grant_never_offers_an_mcp_tool_the_merged_rules_deny() {
+    let grants = SessionPermissionOverlay {
+        rules: vec![rule(
+            "grant",
+            PermissionAction::MCP,
+            "github_*",
+            PermissionEffect::Allow,
+        )],
+    };
+    let asks = policy(vec![rule(
+        "ask",
+        PermissionAction::MCP,
+        "*",
+        PermissionEffect::Ask,
+    )]);
+    assert!(mcp_offered(
+        &asks,
+        None,
+        Some(&grants),
+        "github_search",
+        None
+    ));
+    let denied = policy(vec![rule(
+        "deny",
+        PermissionAction::MCP,
+        "github_*",
+        PermissionEffect::Deny,
+    )]);
+    assert!(!mcp_offered(
+        &denied,
+        None,
+        Some(&grants),
+        "github_search",
+        None
+    ));
+    assert!(!mcp_offered(
+        &policy(Vec::new()),
+        None,
+        Some(&grants),
+        "github_search",
+        None
+    ));
+}
+
+#[test]
+fn tools_of_other_actions_stay_offered_by_action() {
+    let narrow = policy(vec![rule(
+        "cargo",
+        PermissionAction::BASH,
+        "cargo test *",
+        PermissionEffect::Allow,
+    )]);
+    assert!(PermissionPipeline::tool_offered(
+        &narrow,
+        None,
+        None,
+        "bash",
+        "bash",
+        super::PermissionScope::BASE,
+    ));
+}

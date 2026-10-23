@@ -18,6 +18,12 @@ adds and a major breaks; before it, every minor could break the wire (see the
     protocol 1.6.0 adds the same member to an MCP server report, so a
     runtime's servers say it too. The plugin protocol and history format 1
     are unchanged.
+- Behaviour, with no message or field change: an MCP tool is offered only
+  when the run's merged rules do not deny `mcp` for its published name on its
+  runtime, where any `mcp` `allow` or `ask` rule used to offer every MCP
+  tool. Agents with narrow `mcp` rules see fewer tools, and a session
+  override changes the list at the next model request. Other actions stay
+  offered by action.
 
 ## 1.15.0
 

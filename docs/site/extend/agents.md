@@ -646,8 +646,8 @@ part of the local storage threat model, not an `allow`/`ask`/`deny` decision.
 
 MCP checks are always scoped. A rule such as `"github_*": allow` covers every
 tool from that generated server prefix, while a more-specific deny can override
-one tool. An unmatched MCP tool is denied; with no `mcp` key at all, the
-[MCP default](#mcp-default) `"*": ask` matches every MCP tool.
+one tool. An unmatched MCP tool is denied and not offered; with no `mcp` key
+at all, the [MCP default](#mcp-default) `"*": ask` matches every MCP tool.
 
 When a tool has no resource label, only the permission's bare effect or `"*"`
 rule applies. Specific patterns are inapplicable rather than matching or
@@ -747,9 +747,11 @@ permissions:
 Implement and verify requested workspace changes.
 ```
 
-MCP tools follow the same rule: the `mcp` action must contain a non-deny rule,
-which the [MCP default](#mcp-default) supplies when the document names no
-`mcp` key; `mcp: deny` hides them. Delegation tools additionally require the `delegate` map to name at least one
+MCP tools follow the same rule per tool: an MCP tool is offered only when
+the merged rules do not deny `mcp` for its name, which the
+[MCP default](#mcp-default) `"*": ask` covers when the document names no
+`mcp` key; `mcp: deny` hides them all, and `"github_*": allow` offers only
+`github`'s tools (see [MCP tool names](mcp.md#tool-names-and-permissions)). Delegation tools additionally require the `delegate` map to name at least one
 eligible target with `allow` or `ask`. There is no separate tool allowlist.
 
 There is also no separate MCP server approval prompt or trust store. Configured,
