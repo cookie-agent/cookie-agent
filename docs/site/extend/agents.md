@@ -176,11 +176,25 @@ You review changes for this project before they are committed.
   `internal`. Its body may be empty; a nonempty body is sent with the
   session's first prompt to the agent.
 - `permissions` decide the calls the agent makes of cookie's tools, as for a
-  model, and the agent's own permission requests: its ACP tool kind maps to
-  an action (`read` and `search` to `read`, `edit`, `delete`, and `move` to
-  `write`, `execute` to `bash`, `fetch` to `webfetch`, every other kind to
-  `acp` with the resource `<kind> <title>`), and each resource must be
-  allowed. Without an `acp` key, `acp` defaults to `ask`.
+  model, and the agent's own permission requests, whose ACP tool kind maps
+  to an action:
+
+  | ACP request | Decided as |
+  |---|---|
+  | `read`, `search` | `read`, by the location's path |
+  | `edit`, `delete`, `move` | `write`, by the location's path |
+  | `execute` | `bash`, by the command |
+  | `fetch` | `webfetch`, by the URL |
+  | a tool of an MCP server the agent connects itself (`mcp__<server>__<tool>`) | `mcp`, by `<server>_<tool>`, the name cookie gives the same tool |
+  | a tool of cookie's own MCP server (`mcp__cookie__<tool>`) | allowed at once: the call reaches cookie, whose rules decide it |
+  | `think` | allowed |
+  | `switch_mode`, any other kind | asks, through the approval flow |
+
+  A request with several locations needs each allowed, so
+  `bash: {"git *": allow}` allows the agent's own `git` as it allows
+  cookie's `bash` tool, and `mcp: {"exa_*": allow}` covers both cookie's
+  and the agent's `exa` tools. Cookie answers with the agent's allow-once
+  or reject-once option, never an "always" one.
 
 ## AGENTS.md context
 
@@ -805,7 +819,16 @@ equivalent to code: a repository can ship both a server definition and an agent
 that permits it. Review them and work only in repositories you trust.
 
 Delegation targets come from the keys in the `delegate` permission map and must
-resolve to enabled `subagent` or `all` agents. This action controls
+resolve to enabled `subagent` or `all` agents. A named target no agent has
+yet, and a pattern that matches none, do not fail the configuration: the
+name may be an [ACP agent](../daemon/runtimes.md#acp-agents) whose runtime has not
+reported it, such as a dial-in runtime that has not connected since the
+daemon started. Until one does, the configuration status carries a
+diagnostic (`cookie config status`, `/config`, and the web's configuration
+page show it), the agent is not among the targets, and delegating to it is
+refused with "no agent `<id>` (its runtime is not connected)". A typo stays
+a diagnostic. A target whose document exists but is disabled or of mode
+`primary` still fails the configuration. This action controls
 `delegate_subagent` and `get_subagent_result`. Both tools use the target
 subagent's agent type as their permission resource.
 Result retains its existing ownership and argument

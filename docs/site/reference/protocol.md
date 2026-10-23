@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.17.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.18.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.17.0",
+    "protocol_version": "1.18.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.17.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.18.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -219,7 +219,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `provider.disconnect` | Provider, the `expected_revision` of the catalog view, expected connection generation, client ID | Disconnect receipt (ID and time), effective auth, the new catalog view, replay state |
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
-| `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied |
+| `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
 | `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0) | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |

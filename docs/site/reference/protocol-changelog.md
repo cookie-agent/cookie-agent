@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.18.0
+
+- `ConfigStatus` (in the results of `config.get`, `config.apply`, and
+  `config.reload`) has the optional `diagnostics`: what the applied
+  configuration names that does not exist yet, such as a delegation target
+  no agent has (an ACP agent whose runtime has not reported it, or a typo).
+  The configuration applies anyway; a diagnostic clears once the agent
+  appears. An older client does not show them.
+
 ## 1.17.0
 
 - ACP agents ([ACP agents spec](../specs/acp-agents.md), phases 1 to 3):

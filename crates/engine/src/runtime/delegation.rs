@@ -509,6 +509,11 @@ impl Engine {
                 .delegation
                 .as_ref()
                 .is_some_and(|delegation| delegation.targets.contains(&invocation.agent_type));
+        if !target_allowed && parent_policy.names_unknown_target(&invocation.agent_type) {
+            return Err(EngineError::ToolFailed(
+                parent_policy.delegate_refusal(&invocation.agent_type),
+            ));
+        }
         if !target_allowed || session_depth(&parent.meta.origin) >= depth_ceiling {
             return Err(EngineError::ToolFailed(
                 "delegate target or depth is not allowed".into(),

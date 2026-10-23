@@ -424,7 +424,9 @@ impl ToolProvider for DelegateToolProvider {
                     ));
                 }
                 if !self.targets(ctx.session)?.contains(&args.agent_type) {
-                    return Err(ToolError::execution("delegate target is not allowed"));
+                    return Err(ToolError::execution(
+                        self.engine.delegate_refusal(ctx.session, &args.agent_type),
+                    ));
                 }
                 let capabilities = self.check_capabilities(ctx.session, &args)?;
                 let parts =

@@ -1498,7 +1498,7 @@ impl Engine {
                     .map(|(command, args)| (command.clone(), args.to_vec()))
                     .unwrap_or_default();
                 vec![wire::McpServer {
-                    name: "cookie".to_owned(),
+                    name: super::mcp::BRIDGE_SERVER.to_owned(),
                     command,
                     args,
                     env: Vec::new(),

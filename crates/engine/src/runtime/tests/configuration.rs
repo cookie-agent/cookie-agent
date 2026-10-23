@@ -110,8 +110,19 @@ async fn an_invalid_configuration_keeps_the_applied_one_and_reports_why() {
     );
     assert_eq!(fixture.snapshot(), before);
 
-    // A broken delegation is caught across documents.
+    // A broken delegation is caught across documents: the primary cannot
+    // delegate to an agent of mode `primary`, itself.
     fixture.write("config.toml", "");
+    fixture.write(
+        "agents/primary.md",
+        &PRIMARY.replace(
+            "permissions: {}",
+            "permissions:\n  delegate:\n    primary: allow",
+        ),
+    );
+    assert!(fixture.engine.reload_configuration().await.is_err());
+
+    // A target no agent has applies, with a diagnostic naming it.
     fixture.write(
         "agents/primary.md",
         &PRIMARY.replace(
@@ -119,7 +130,15 @@ async fn an_invalid_configuration_keeps_the_applied_one_and_reports_why() {
             "permissions:\n  delegate:\n    ghost: allow",
         ),
     );
-    assert!(fixture.engine.reload_configuration().await.is_err());
+    let status = fixture.engine.reload_configuration().await.expect("reload");
+    assert_eq!(status.error, None);
+    assert!(
+        status
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("`ghost`, which is not known yet")),
+        "{status:?}"
+    );
 
     // The next good reload clears the error.
     fixture.write("agents/primary.md", PRIMARY);
@@ -274,7 +293,8 @@ async fn a_change_set_is_written_validated_and_applied_together() {
         ));
     }
     // A result that is not a valid configuration changes nothing: the
-    // primary still delegates to the reviewer.
+    // primary still delegates to the reviewer, which cannot be of mode
+    // `primary`.
     let reviewer = reread
         .documents
         .iter()
@@ -285,7 +305,14 @@ async fn a_change_set_is_written_validated_and_applied_together() {
     assert!(matches!(
         fixture
             .engine
-            .apply_config_changes(revision.clone(), vec![delete_reviewer(reviewer)])
+            .apply_config_changes(
+                revision.clone(),
+                vec![ConfigChange::Put {
+                    path: path("agents/reviewer.md"),
+                    text: REVIEWER.replace("mode: subagent", "mode: primary"),
+                    expected_fingerprint: Some(reviewer),
+                }],
+            )
             .await,
         Err(EngineError::Config(_))
     ));

@@ -80,6 +80,10 @@ pub struct ConfigurationStatus {
     pub restart_required: Vec<RestartRequiredPart>,
     /// Why the last reload failed, until one succeeds.
     pub error: Option<String>,
+    /// What the applied configuration names that does not exist yet, such
+    /// as a delegation target no agent has: an ACP agent whose runtime has
+    /// not reported it, or a typo. Recomputed whenever the agents change.
+    pub diagnostics: Vec<String>,
 }
 
 impl Engine {
@@ -107,6 +111,7 @@ impl Engine {
         ConfigurationStatus {
             applied_revision: applied.revision.clone(),
             restart_required,
+            diagnostics: self.configuration_diagnostics(),
             error: self
                 .inner
                 .config_error
@@ -114,6 +119,22 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
         }
+    }
+
+    /// The diagnostics of the published agents: those of the shared agents,
+    /// then each preset's own.
+    fn configuration_diagnostics(&self) -> Vec<String> {
+        let published = self.current_runtime();
+        let mut diagnostics = published.agents.delegation_diagnostics();
+        for (preset, registry) in &published.agent_presets {
+            for diagnostic in registry.delegation_diagnostics() {
+                if !diagnostics.contains(&diagnostic) {
+                    diagnostics.push(format!("preset `{preset}`: {diagnostic}"));
+                }
+            }
+        }
+        diagnostics.truncate(256);
+        diagnostics
     }
 
     /// The user root the configuration is read from and written to.

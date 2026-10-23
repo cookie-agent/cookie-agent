@@ -1085,6 +1085,11 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
         view! {
             {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
             {config.status.error.clone().map(|error| view! { <p class=ERROR>{format!("The running configuration has an error: {error}")}</p> })}
+            {(!config.status.diagnostics.is_empty()).then(|| view! {
+                <ul class="flex flex-col gap-1 text-sm text-caramel dark:text-maple" id="config-diagnostics">
+                    {config.status.diagnostics.iter().map(|diagnostic| view! { <li>{diagnostic.clone()}</li> }).collect_view()}
+                </ul>
+            })}
             <div class="flex items-center gap-2" data-config-path="config.toml">
                 <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_config("config.toml")>
                     <span class="flex items-center gap-2 font-mono text-sm whitespace-pre">

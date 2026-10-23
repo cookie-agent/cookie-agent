@@ -24,6 +24,10 @@ use super::super::{Engine, Inner};
 use crate::runtime_snapshot::RuntimeAgent;
 use crate::runtimes::RuntimeClient;
 
+/// The name the agent knows cookie's MCP server by, in `session/new` and
+/// in the names it gives the server's tools (`mcp__cookie__<tool>`).
+pub(crate) const BRIDGE_SERVER: &str = "cookie";
+
 /// The MCP versions the server answers with, newest first; a client asking
 /// for another gets the first.
 const MCP_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -144,7 +148,7 @@ impl Engine {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "cookie", "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": {"name": BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION")},
                 }))
             }
             "ping" => Ok(json!({})),

@@ -3,29 +3,61 @@
 //!
 //! A `session/request_permission` names one of the agent's tool calls. Its
 //! ACP kind maps onto one of cookie's actions, and its locations, command,
-//! or URL onto that action's resources; the agent's merged rules decide
-//! each, through the same pipeline as cookie's tools, grants included. An
-//! `ask` goes through the approval flow. The answer is the agent's
-//! allow-once or reject-once option, never an "always" one.
+//! URL, or MCP tool onto that action's resources; the agent's merged rules
+//! decide each, through the same pipeline as cookie's tools. A call of
+//! cookie's own tools, which reach cookie's MCP server where the rules
+//! decide them, and a `think` are allowed at once; `switch_mode` and every
+//! kind that maps onto no action go through the approval flow, as does an
+//! `ask`. The answer is the agent's allow-once or reject-once option, never
+//! an "always" one.
 
 use cookie_agent_protocol::{
-    ApprovalConstraints, ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger,
-    PermissionAction, PermissionEffect, PreparedBindingLifetime, ToolCallId,
+    ApprovalConstraints, ApprovalEvaluation, ApprovalId, ApprovalRequest, ApprovalResourceSource,
+    ApprovalTrigger, DecisionTrace, PermissionAction, PermissionEffect, PreparedBindingLifetime,
+    ToolCallId,
 };
 use cookie_agent_runtime_api::authoring::{prepared_operation, prepared_resource};
 use serde_json::Value;
 
 use super::super::{ActiveRun, Engine};
+use super::mcp::BRIDGE_SERVER;
 use super::wire::{self, ToolCallFields};
 use crate::runtime_snapshot::RuntimeAgent;
 
-/// What a permission request asks: one action and the resources it needs,
-/// each of which must be allowed.
+/// What a permission request asks, by its mapping (spec section 8).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MappedRequest {
-    pub action: PermissionAction,
-    pub resources: Vec<String>,
+pub(crate) enum MappedRequest {
+    /// Allowed at once: a call of cookie's own tools, which cookie's MCP
+    /// server decides when it arrives, or a `think`.
+    Allow,
+    /// Decided by the agent's rules: one action and the resources it
+    /// needs, each of which must be allowed.
+    Rules {
+        action: PermissionAction,
+        resources: Vec<String>,
+    },
+    /// Decided by the approval flow alone: `switch_mode` and every kind
+    /// that maps onto no action. `label` names the kind (an action label
+    /// no rule decides), `resource` what the request shows.
+    Ask {
+        label: PermissionAction,
+        resource: String,
+    },
 }
+
+/// The ACP tool kinds of ACP v1.
+const KNOWN_KINDS: [&str; 10] = [
+    "read",
+    "edit",
+    "delete",
+    "move",
+    "search",
+    "execute",
+    "think",
+    "fetch",
+    "switch_mode",
+    "other",
+];
 
 /// The first string member of `input` among `names`.
 fn input_string<'a>(input: Option<&'a Value>, names: &[&str]) -> Option<&'a str> {
@@ -83,27 +115,73 @@ fn paths_of(call: &ToolCallFields) -> Vec<String> {
     .collect()
 }
 
+/// The MCP server and tool a call of kind `other` (or of a kind ACP v1
+/// does not know) goes to, as the adapters name them: Claude Code titles
+/// it `mcp__<server>__<tool>`, Codex `Tool: <server>/<tool>` with
+/// `{server, tool}` as its raw input, and Gemini CLI `<tool> (<server> MCP
+/// Server)`. The whole title must have the form, so a command or a path
+/// that merely contains one never matches.
+fn mcp_tool_of(call: &ToolCallFields) -> Option<(String, String)> {
+    let input = call.raw_input.as_ref();
+    let from_input = input_string(input, &["server", "serverName", "server_name"])
+        .zip(input_string(input, &["tool", "toolName", "tool_name"]));
+    if let Some((server, tool)) = from_input {
+        return Some((server.to_owned(), tool.to_owned()));
+    }
+    let title = call.title.as_deref()?.trim();
+    let named = if let Some(rest) = title.strip_prefix("mcp__") {
+        rest.split_once("__")
+    } else if let Some(rest) = title.strip_prefix("Tool: ") {
+        rest.split_once('/')
+    } else if let Some(rest) = title.strip_suffix(" MCP Server)") {
+        rest.rsplit_once(" (").map(|(tool, server)| (server, tool))
+    } else {
+        None
+    };
+    named
+        .filter(|(server, tool)| {
+            [server, tool].iter().all(|part| {
+                !part.is_empty() && !part.chars().any(|c| c.is_whitespace() || c.is_control())
+            })
+        })
+        .map(|(server, tool)| (server.to_owned(), tool.to_owned()))
+}
+
+/// A name as cookie publishes an MCP server's tools: ASCII letters,
+/// digits, `_`, and `-` kept, everything else `_`.
+fn mcp_name_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Maps the tool call a permission request names onto cookie's action
 /// and resources: `call` as the request carries it, merged over `known`,
 /// what the agent reported of the call before.
 pub(crate) fn map_request(call: &ToolCallFields, known: Option<&ToolCallFields>) -> MappedRequest {
     let merged = merge(known, call);
     let kind = merged.kind.as_deref().unwrap_or("other");
-    let title = merged.title.clone().unwrap_or_default();
     match kind {
-        "read" | "search" => MappedRequest {
+        "read" | "search" => MappedRequest::Rules {
             action: PermissionAction::READ,
             resources: paths_of(&merged),
         },
-        "edit" | "delete" | "move" => MappedRequest {
+        "edit" | "delete" | "move" => MappedRequest::Rules {
             action: PermissionAction::WRITE,
             resources: paths_of(&merged),
         },
-        "execute" => MappedRequest {
+        "execute" => MappedRequest::Rules {
             action: PermissionAction::BASH,
             resources: command_of(&merged).into_iter().collect(),
         },
-        "fetch" => MappedRequest {
+        "fetch" => MappedRequest::Rules {
             action: PermissionAction::WEBFETCH,
             resources: input_string(merged.raw_input.as_ref(), &["url", "uri"])
                 .map(str::to_owned)
@@ -111,9 +189,34 @@ pub(crate) fn map_request(call: &ToolCallFields, known: Option<&ToolCallFields>)
                 .into_iter()
                 .collect(),
         },
-        other => MappedRequest {
-            action: PermissionAction::ACP,
-            resources: vec![format!("{other} {title}").trim().to_owned()],
+        "think" => MappedRequest::Allow,
+        "switch_mode" => ask(kind, &merged),
+        other => match mcp_tool_of(&merged) {
+            Some((server, _)) if server == BRIDGE_SERVER => MappedRequest::Allow,
+            Some((server, tool)) => MappedRequest::Rules {
+                action: PermissionAction::MCP,
+                resources: vec![format!(
+                    "{}_{}",
+                    mcp_name_part(&server),
+                    mcp_name_part(&tool)
+                )],
+            },
+            None if KNOWN_KINDS.contains(&other) => ask(other, &merged),
+            None => ask("other", &merged),
+        },
+    }
+}
+
+fn ask(kind: &str, call: &ToolCallFields) -> MappedRequest {
+    let label = PermissionAction::new(kind)
+        .unwrap_or_else(|_| PermissionAction::new("other").expect("`other` is an action label"));
+    let title = call.title.as_deref().map(str::trim).unwrap_or_default();
+    MappedRequest::Ask {
+        label,
+        resource: if title.is_empty() {
+            kind.to_owned()
+        } else {
+            title.to_owned()
         },
     }
 }
@@ -195,18 +298,21 @@ impl Engine {
         known: Option<&ToolCallFields>,
         tool_call_id: Option<ToolCallId>,
     ) -> bool {
-        let mapped = map_request(&request.tool_call, known);
-        if mapped.resources.is_empty() {
+        let (action, resources, by_rules) = match map_request(&request.tool_call, known) {
+            MappedRequest::Allow => return true,
+            MappedRequest::Rules { action, resources } => (action, resources, true),
+            MappedRequest::Ask { label, resource } => (label, vec![resource], false),
+        };
+        if resources.is_empty() {
             return false;
         }
         let tool = format!("acp:{}", agent.id);
-        let resources = mapped
-            .resources
+        let prepared = resources
             .iter()
             .map(|resource| {
                 prepared_resource(
-                    mapped.action.clone(),
-                    mapped.action.as_str(),
+                    action.clone(),
+                    action.as_str(),
                     resource.as_bytes(),
                     resource.as_bytes(),
                     PreparedBindingLifetime::RestartStable,
@@ -216,84 +322,106 @@ impl Engine {
             .collect::<Result<Vec<_>, _>>();
         let arguments = serde_json::json!({
             "tool_call": request.tool_call.tool_call_id,
-            "action": mapped.action.as_str(),
-            "resources": mapped.resources,
+            "action": action.as_str(),
+            "resources": resources,
         });
-        let Ok(resources) = resources else {
+        let Ok(prepared) = prepared else {
             return false;
         };
         let Ok(operation) = prepared_operation(
             &tool,
             &arguments,
-            vec![(mapped.action.clone(), "request_permission")],
-            resources,
+            vec![(action.clone(), "request_permission")],
+            prepared,
             agent.id.as_str().as_bytes(),
         ) else {
             return false;
         };
-        let Ok(session) = self.inner.store.get(active.session) else {
-            return false;
-        };
-        let overlay = session.permission_overlay.clone();
-        let labels = mapped
-            .resources
-            .iter()
-            .cloned()
-            .map(Some)
-            .collect::<Vec<_>>();
-        let workspace = std::path::Path::new(cwd);
-        let decision = self.inner.permissions.decide_operation_with_grants(
-            &active.policy.agent,
-            Some(&overlay),
-            None,
-            &operation,
-            &labels,
-            crate::permissions::PermissionScope::runtime(agent.runtime.as_str(), Some(workspace))
-                .with_home(home),
-        );
-        match decision.effect {
-            PermissionEffect::Allow => true,
-            PermissionEffect::Deny => false,
-            PermissionEffect::Ask => {
-                let tool_call_id = tool_call_id.unwrap_or_else(ToolCallId::new_v7);
-                let request = match ApprovalRequest::new(
-                    ApprovalId::new_v7(),
-                    1,
-                    tool_call_id,
-                    ApprovalTrigger::PermissionPolicy,
-                    operation,
-                    decision.evaluations,
-                    ApprovalConstraints {
-                        allow_once: true,
-                        allow_tree_grant: !mapped.action.is_path(),
-                        cancellable: true,
-                        expires_at: super::super::approval_flow::approval_expiry(
-                            self.inner.config.load().runtime.approval.timeout_ms,
+        let evaluations = if !by_rules {
+            // No rule decides it: the kind maps onto no action.
+            operation
+                .resources()
+                .iter()
+                .zip(&resources)
+                .map(|(prepared, resource)| ApprovalEvaluation {
+                    resource_digest: prepared.binding_digest.clone(),
+                    effect: PermissionEffect::Ask,
+                    trace: DecisionTrace {
+                        action: action.clone(),
+                        normalized_resource: resource.clone(),
+                        candidates: Vec::new(),
+                        effect: PermissionEffect::Ask,
+                        precedence_reason: format!(
+                            "an ACP agent's `{}` request maps onto no action and always asks",
+                            action.as_str()
                         ),
                     },
-                ) {
-                    Ok(request) => request,
-                    Err(_) => return false,
-                };
-                let executor: cookie_agent_runtime_api::PreparedExecutorCell =
-                    std::sync::Arc::new(tokio::sync::Mutex::new(Some(Box::new(AnsweredExecutor))));
-                self.await_user_approval(
-                    active,
-                    run,
-                    request,
-                    executor,
-                    true,
-                    super::super::approval_flow::ApprovalToolInput {
-                        tool_call_id,
-                        name: &tool,
-                        origin: None,
-                        normalized_parameters: &arguments,
-                    },
+                })
+                .collect()
+        } else {
+            let Ok(session) = self.inner.store.get(active.session) else {
+                return false;
+            };
+            let overlay = session.permission_overlay.clone();
+            let labels = resources.iter().cloned().map(Some).collect::<Vec<_>>();
+            let workspace = std::path::Path::new(cwd);
+            let decision = self.inner.permissions.decide_operation_with_grants(
+                &active.policy.agent,
+                Some(&overlay),
+                None,
+                &operation,
+                &labels,
+                crate::permissions::PermissionScope::runtime(
+                    agent.runtime.as_str(),
+                    Some(workspace),
                 )
-                .await
-                .is_ok_and(|outcome| outcome.approved)
+                .with_home(home),
+            );
+            match decision.effect {
+                PermissionEffect::Allow => return true,
+                PermissionEffect::Deny => return false,
+                PermissionEffect::Ask => decision.evaluations,
             }
-        }
+        };
+        let tool_call_id = tool_call_id.unwrap_or_else(ToolCallId::new_v7);
+        let request = match ApprovalRequest::new(
+            ApprovalId::new_v7(),
+            1,
+            tool_call_id,
+            ApprovalTrigger::PermissionPolicy,
+            operation,
+            evaluations,
+            ApprovalConstraints {
+                allow_once: true,
+                // A tree grant names an action the rules decide; a request
+                // no rule decides is answered once.
+                allow_tree_grant: by_rules && !action.is_path(),
+                cancellable: true,
+                expires_at: super::super::approval_flow::approval_expiry(
+                    self.inner.config.load().runtime.approval.timeout_ms,
+                ),
+            },
+        ) {
+            Ok(request) => request,
+            Err(_) => return false,
+        };
+        let executor: cookie_agent_runtime_api::PreparedExecutorCell =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Some(Box::new(AnsweredExecutor))));
+        self.await_user_approval(
+            active,
+            run,
+            request,
+            executor,
+            true,
+            super::super::approval_flow::ApprovalToolInput {
+                tool_call_id,
+                name: &tool,
+                origin: None,
+                normalized_parameters: &arguments,
+            },
+        )
+        .await
+        .is_ok_and(|outcome| outcome.approved)
     }
 }
 
@@ -314,5 +442,127 @@ impl cookie_agent_runtime_api::PreparedExecutor for AnsweredExecutor {
         Err(cookie_agent_runtime_api::ToolError::execution(
             "an ACP agent runs its own calls",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{MappedRequest, map_request};
+    use cookie_agent_protocol::PermissionAction;
+
+    fn call(value: serde_json::Value) -> super::ToolCallFields {
+        serde_json::from_value(value).expect("tool call")
+    }
+
+    fn rules(action: PermissionAction, resource: &str) -> MappedRequest {
+        MappedRequest::Rules {
+            action,
+            resources: vec![resource.to_owned()],
+        }
+    }
+
+    #[test]
+    fn mcp_tools_map_by_each_adapters_naming() {
+        // Claude Code, Codex, and Gemini CLI name an MCP tool each their way.
+        for (fields, expected) in [
+            (
+                json!({"toolCallId": "a", "kind": "other", "title": "mcp__exa__web_search"}),
+                rules(PermissionAction::MCP, "exa_web_search"),
+            ),
+            (
+                json!({"toolCallId": "b", "kind": "other", "title": "Tool: exa/web.search",
+                       "rawInput": {"server": "exa", "tool": "web.search", "arguments": {}}}),
+                rules(PermissionAction::MCP, "exa_web_search"),
+            ),
+            (
+                json!({"toolCallId": "c", "title": "web_search (exa MCP Server)"}),
+                rules(PermissionAction::MCP, "exa_web_search"),
+            ),
+            (
+                json!({"toolCallId": "d", "kind": "other", "title": "mcp__cookie__memory_read"}),
+                MappedRequest::Allow,
+            ),
+            (
+                json!({"toolCallId": "e", "kind": "other", "rawInput": {"server": "cookie", "tool": "cron_list"}}),
+                MappedRequest::Allow,
+            ),
+            (
+                json!({"toolCallId": "f", "kind": "other", "title": "memory_read (cookie MCP Server)"}),
+                MappedRequest::Allow,
+            ),
+        ] {
+            assert_eq!(
+                map_request(&call(fields.clone()), None),
+                expected,
+                "{fields}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_whole_title_names_an_mcp_tool() {
+        for title in [
+            "run mcp__cookie__memory_read",
+            "mcp__cookie__memory_read now",
+            "mcp__cookie__",
+            "Tool: /x",
+        ] {
+            let mapped = map_request(
+                &call(json!({"toolCallId": "a", "kind": "other", "title": title})),
+                None,
+            );
+            assert!(
+                matches!(&mapped, MappedRequest::Ask { label, .. } if label.as_str() == "other"),
+                "{title}: {mapped:?}"
+            );
+        }
+        // A command is a command, whatever it names.
+        assert_eq!(
+            map_request(
+                &call(
+                    json!({"toolCallId": "a", "kind": "execute", "title": "mcp__cookie__memory_read"})
+                ),
+                None,
+            ),
+            rules(PermissionAction::BASH, "mcp__cookie__memory_read")
+        );
+    }
+
+    #[test]
+    fn think_allows_and_the_rest_asks() {
+        assert_eq!(
+            map_request(&call(json!({"toolCallId": "a", "kind": "think"})), None),
+            MappedRequest::Allow
+        );
+        for (kind, label) in [
+            ("switch_mode", "switch_mode"),
+            ("other", "other"),
+            ("teleport", "other"),
+            ("Not A Label", "other"),
+        ] {
+            let mapped = map_request(
+                &call(json!({"toolCallId": "a", "kind": kind, "title": "Go to plan"})),
+                None,
+            );
+            assert_eq!(
+                mapped,
+                MappedRequest::Ask {
+                    label: PermissionAction::new(label).unwrap(),
+                    resource: "Go to plan".to_owned(),
+                },
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_known_call_fills_what_the_request_leaves_out() {
+        let known = call(json!({"toolCallId": "a", "kind": "other", "title": "mcp__exa__search"}));
+        assert_eq!(
+            map_request(&call(json!({"toolCallId": "a"})), Some(&known)),
+            rules(PermissionAction::MCP, "exa_search")
+        );
     }
 }

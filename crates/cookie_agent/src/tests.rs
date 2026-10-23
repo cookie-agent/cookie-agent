@@ -1775,6 +1775,35 @@ async fn cookie_config_edits_and_sets_the_daemon_configuration() {
     .expect("remove");
     assert!(!workspace.join(".cookie-agent/agents/reviewer.md").exists());
 
+    // A delegation target no runtime has reported yet applies, with a note.
+    let lead = "---\ndescription: Lead\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\" }]\npermissions:\n  delegate: { labpc-codex: allow }\n---\nLead.\n";
+    io.edits.push_back(lead.to_owned());
+    io.output.clear();
+    run_config_with(
+        &client,
+        ConfigCommand::Edit {
+            path: Some("agents/lead.md".into()),
+        },
+        &mut io,
+    )
+    .await
+    .expect("an unknown delegation target applies");
+    assert!(
+        io.output.iter().any(|line| line
+            .starts_with("Note: agent `lead` delegates to `labpc-codex`, which is not known yet")),
+        "{:?}",
+        io.output
+    );
+    run_config_with(
+        &client,
+        ConfigCommand::Remove {
+            path: "agents/lead.md".into(),
+        },
+        &mut io,
+    )
+    .await
+    .expect("remove");
+
     // A hand edit shows in the status until it is reloaded.
     std::fs::write(
         workspace.join(".cookie-agent/config.toml"),

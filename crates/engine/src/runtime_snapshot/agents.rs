@@ -239,6 +239,51 @@ impl AgentRegistry {
     pub(crate) fn preset(&self) -> Option<&str> {
         self.preset.as_deref()
     }
+
+    /// The delegation rules of its agents that reach no agent yet: a named
+    /// target no agent has, and a pattern that matches no eligible agent.
+    /// Either may be an ACP agent a runtime has not reported (or a typo);
+    /// the configuration loads, and the diagnostic clears once a runtime
+    /// reports a matching agent.
+    pub(crate) fn delegation_diagnostics(&self) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        for (id, agent) in &self.agents {
+            let Some(PermissionValue::Resources(resources)) =
+                agent.document.frontmatter.permissions.get(
+                    &cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
+                )
+            else {
+                continue;
+            };
+            for (resource, effect) in resources {
+                if *effect == PermissionEffect::Deny {
+                    continue;
+                }
+                let pattern = resource.as_str();
+                if pattern.contains('*') || pattern.contains('?') {
+                    let single = IndexMap::from([(
+                        cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
+                        PermissionValue::Resources(IndexMap::from([(resource.clone(), *effect)])),
+                    )]);
+                    if delegation_targets(&single, &self.agents).is_empty() {
+                        diagnostics.push(format!(
+                            "agent `{id}` delegates to `{pattern}`, which matches no agent yet: \
+                             no enabled subagent document matches it and no connected runtime \
+                             reports an agent it matches"
+                        ));
+                    }
+                } else if AgentId::new(pattern)
+                    .is_ok_and(|target| !self.agents.contains_key(&target))
+                {
+                    diagnostics.push(format!(
+                        "agent `{id}` delegates to `{pattern}`, which is not known yet: no \
+                         agent document has that ID and no connected runtime reports it"
+                    ));
+                }
+            }
+        }
+        diagnostics
+    }
 }
 
 fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelection> {
@@ -520,7 +565,12 @@ pub(crate) fn delegation_targets(
                     // Wildcard delegation uses the same matching as every
                     // other permission: expand against the known agent set.
                     targets.extend(eligible_matches(pattern));
-                } else if let Ok(target) = AgentId::new(pattern) {
+                } else if let Ok(target) = AgentId::new(pattern)
+                    && known_agents.contains_key(&target)
+                {
+                    // A name no agent has yet (an ACP agent whose runtime
+                    // has not reported it) becomes a target once one does;
+                    // until then it is a configuration diagnostic.
                     targets.push(target);
                 }
             }
@@ -579,10 +629,23 @@ mod tests {
             cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
             PermissionValue::Resources(resources),
         )]);
-        assert_eq!(
-            delegation_targets(&permissions, &known),
-            [cookie_agent_protocol::AgentId::new("reviewer").unwrap()]
-        );
+        // A named target is one only once an agent has the name.
+        assert!(delegation_targets(&permissions, &known).is_empty());
+        let reviewer = cookie_agent_protocol::AgentId::new("reviewer").unwrap();
+        let known = BTreeMap::from([(
+            reviewer.clone(),
+            ResolvedAgent {
+                document: built_in_internal_documents()
+                    .expect("built-in internal documents")
+                    .into_values()
+                    .next()
+                    .expect("a document"),
+                resolved_fallback: Vec::new(),
+                runnable_as_root: false,
+                acp: None,
+            },
+        )]);
+        assert_eq!(delegation_targets(&permissions, &known), [reviewer]);
     }
 
     #[test]

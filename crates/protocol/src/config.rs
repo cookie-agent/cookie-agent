@@ -39,6 +39,13 @@ pub struct ConfigStatus {
     /// running on the applied configuration meanwhile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// What the applied configuration names that does not exist yet, such
+    /// as a delegation target no agent has (an ACP agent whose runtime has
+    /// not reported it, or a typo); the configuration still applies, and a
+    /// diagnostic clears once the agent appears (client protocol 1.18.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub diagnostics: Vec<String>,
 }
 
 /// Re-read the configuration from disk and apply it, for edits made by hand.

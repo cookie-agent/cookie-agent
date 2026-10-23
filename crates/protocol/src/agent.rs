@@ -56,9 +56,6 @@ impl PermissionAction {
     /// (`cron_create`, `cron_list`, `cron_update`, `cron_delete`,
     /// `cron_run`); the resource is a job's target kind.
     pub const CRON: Self = Self(Cow::Borrowed("cron"));
-    /// An ACP agent's own permission requests of a kind that maps onto no
-    /// other action (`docs/site/specs/acp-agents.md` section 8).
-    pub const ACP: Self = Self(Cow::Borrowed("acp"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
     pub const BUILT_IN: [Self; 12] = [

@@ -590,33 +590,27 @@ fn validate_agent_document(
             let pattern = rule.resource.as_str();
             if pattern.contains('*') || pattern.contains('?') {
                 // Wildcard delegation uses the same runtime matching as every
-                // other permission; statically the pattern must match at
-                // least one known eligible subagent so it cannot be dead.
-                let matches = all
-                    .iter()
-                    .filter(|(id, target_document)| {
-                        crate::simple_wildcard_match(pattern, id.as_str())
-                            && eligible(target_document)
-                    })
-                    .map(|(id, _)| id.clone())
-                    .collect::<Vec<_>>();
-                if matches.is_empty() {
-                    return Err(ConfigError::UnmatchedDelegationPattern {
-                        agent: document.id.clone(),
-                        pattern: pattern.to_owned(),
-                    });
-                }
-                expanded.extend(matches);
+                // other permission. A pattern that matches no eligible agent
+                // yet may match an ACP agent a runtime reports later: the
+                // engine reports it as a configuration diagnostic.
+                expanded.extend(
+                    all.iter()
+                        .filter(|(id, target_document)| {
+                            crate::simple_wildcard_match(pattern, id.as_str())
+                                && eligible(target_document)
+                        })
+                        .map(|(id, _)| id.clone()),
+                );
                 continue;
             }
             let target =
                 AgentId::new(pattern).map_err(|_| ConfigError::Delegation(document.id.clone()))?;
-            let target_document =
-                all.get(&target)
-                    .ok_or_else(|| ConfigError::UnknownDelegationTarget {
-                        agent: document.id.clone(),
-                        target: target.clone(),
-                    })?;
+            // A target without a document may be an ACP agent a runtime
+            // reports later; the engine reports it as a configuration
+            // diagnostic until one does.
+            let Some(target_document) = all.get(&target) else {
+                continue;
+            };
             if !eligible(target_document) {
                 return Err(ConfigError::IneligibleDelegationTarget {
                     agent: document.id.clone(),

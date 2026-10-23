@@ -127,6 +127,28 @@ impl FrozenRunPolicy {
         })
     }
 
+    /// Whether the agent's rules name `target` itself as a delegation
+    /// target, with an effect other than `deny`, and no agent has it: an
+    /// ACP agent whose runtime has not reported it yet (or a typo).
+    pub(crate) fn names_unknown_target(&self, target: &protocol::AgentId) -> bool {
+        self.registry.get(target).is_none()
+            && self.agent.permissions.iter().any(|rule| {
+                rule.action == protocol::PermissionAction::DELEGATE
+                    && rule.effect != protocol::PermissionEffect::Deny
+                    && rule.resource.as_str() == target.as_str()
+            })
+    }
+
+    /// Why a delegation to `target`, which is not one of the run's
+    /// targets, is refused.
+    pub(crate) fn delegate_refusal(&self, target: &protocol::AgentId) -> String {
+        if self.names_unknown_target(target) {
+            format!("no agent `{target}` (its runtime is not connected)")
+        } else {
+            "delegate target is not allowed".to_owned()
+        }
+    }
+
     pub(crate) fn delegate_targets(&self, depth: u32) -> Vec<protocol::AgentId> {
         let Some(delegation) = &self.agent.delegation else {
             return Vec::new();
@@ -1205,19 +1227,7 @@ pub(crate) fn freeze_acp_agent_policy(
         }));
     }
     let document = &agent.document;
-    let mut permissions = crate::permissions::agent_permission_rules(document, delegated, memory);
-    if !permissions
-        .iter()
-        .any(|rule| rule.action == protocol::PermissionAction::ACP)
-    {
-        permissions.push(protocol::PermissionRule {
-            action: protocol::PermissionAction::ACP,
-            runtime: None,
-            resource: protocol::WildcardPattern::new("*")
-                .map_err(|_| EngineError::RuntimeCompileFailed)?,
-            effect: protocol::PermissionEffect::Ask,
-        });
-    }
+    let permissions = crate::permissions::agent_permission_rules(document, delegated, memory);
     let targets = delegation_targets(&document.frontmatter.permissions, registry.agents());
     let delegation = (!targets.is_empty()).then_some(protocol::FrozenDelegationPolicy {
         targets,

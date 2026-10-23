@@ -11,6 +11,13 @@ Each prompt's last text block is a command:
   stop <reason>          answers with stop reason <reason>
   permission <kind> <r>  asks permission for a call of ACP kind <kind> on <r>
                          (a path, a command, or a URL) and says the outcome
+  permission-tool <kind> <title>
+                         asks permission for a call of ACP kind <kind> titled
+                         <title>, with no locations or raw input
+  permission-mcp <server> <tool>
+                         asks permission as Codex does for an MCP tool: kind
+                         other, titled "Tool: <server>/<tool>", raw input
+                         {server, tool, arguments}
   wait                   says "waiting" and waits for session/cancel
   ask-wait <kind> <r>    asks permission and waits for session/cancel
   exit                   exits with status 3 after writing to stderr
@@ -173,13 +180,18 @@ def mcp_open(session):
     return True
 
 
-def permission(session_id, call_id, kind, resource):
-    raw = {"execute": {"command": resource}, "fetch": {"url": resource}}.get(kind, {"path": resource})
-    locations = [{"path": resource}] if kind in ("read", "edit", "delete", "move", "search") else []
-    update(session_id, {
-        "sessionUpdate": "tool_call", "toolCallId": call_id, "title": f"{kind} {resource}",
-        "kind": kind, "status": "pending", "rawInput": raw, "locations": locations,
-    })
+def permission(session_id, call_id, kind, resource, title=None, raw=None):
+    if title is None:
+        raw = {"execute": {"command": resource}, "fetch": {"url": resource}}.get(kind, {"path": resource})
+        title = f"{kind} {resource}"
+    locations = [{"path": resource}] if resource and kind in ("read", "edit", "delete", "move", "search") else []
+    call = {
+        "sessionUpdate": "tool_call", "toolCallId": call_id, "title": title,
+        "kind": kind, "status": "pending", "locations": locations,
+    }
+    if raw is not None:
+        call["rawInput"] = raw
+    update(session_id, call)
     answer = request("session/request_permission", {
         "sessionId": session_id,
         "toolCall": {"toolCallId": call_id},
@@ -241,6 +253,21 @@ def prompt(request_id, params):
         outcome = permission(session_id, f"call-{session['turn']}", kind, resource)
         update(session_id, {
             "sessionUpdate": "tool_call_update", "toolCallId": f"call-{session['turn']}",
+            "status": "completed" if outcome == "yes" else "failed",
+        })
+        say(session_id, f"permission: {outcome}")
+    elif word in ("permission-tool", "permission-mcp"):
+        first, _, second = rest.partition(" ")
+        call_id = f"call-{session['turn']}"
+        if word == "permission-tool":
+            outcome = permission(session_id, call_id, first, "", title=second)
+        else:
+            outcome = permission(
+                session_id, call_id, "other", "", title=f"Tool: {first}/{second}",
+                raw={"server": first, "tool": second, "arguments": {}},
+            )
+        update(session_id, {
+            "sessionUpdate": "tool_call_update", "toolCallId": call_id,
             "status": "completed" if outcome == "yes" else "failed",
         })
         say(session_id, f"permission: {outcome}")

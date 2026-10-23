@@ -20,6 +20,14 @@
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         },
+        "diagnostics": {
+          "description": "What the applied configuration names that does not exist yet, such\nas a delegation target no agent has (an ACP agent whose runtime has\nnot reported it, or a typo); the configuration still applies, and a\ndiagnostic clears once the agent appears (client protocol 1.18.0).",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
         "error": {
           "description": "Why the last reload failed, until one succeeds; the daemon keeps\nrunning on the applied configuration meanwhile.",
           "type": [

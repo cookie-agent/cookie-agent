@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 pub(in crate::ui) use cookie_agent_client_state::config::{ConfigApplyOutcome, ConfigRow};
 use cookie_agent_client_state::config::{
-    config_rows, document_text, new_agent_refusal, reload_status, restart_note,
+    config_rows, diagnostic_lines, document_text, new_agent_refusal, reload_status, restart_note,
 };
 use cookie_agent_protocol::{
     ConfigApplyParams, ConfigChange, ConfigGetResult, ConfigRevision, ConfigStatus,
@@ -397,6 +397,7 @@ impl App {
         if !restart.is_empty() {
             lines.push(restart.trim().to_owned());
         }
+        lines.extend(diagnostic_lines(&config.status));
         if let Some(error) = &panel.error {
             lines.push(String::new());
             lines.push(error.clone());

@@ -435,6 +435,22 @@ impl Engine {
         let depth = session_depth(&session.meta.origin);
         Ok(active.policy.delegate_targets(depth))
     }
+
+    /// Why the run in progress of session `id` may not delegate to
+    /// `target`, which is not one of its targets.
+    pub fn delegate_refusal(&self, id: SessionId, target: &AgentId) -> String {
+        self.inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .find(|active| active.session == id)
+            .map_or_else(
+                || "delegate target is not allowed".to_owned(),
+                |active| active.policy.delegate_refusal(target),
+            )
+    }
     pub fn children(
         &self,
         id: SessionId,

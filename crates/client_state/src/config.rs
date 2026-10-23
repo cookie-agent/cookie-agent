@@ -93,6 +93,17 @@ pub fn reload_status(status: &ConfigStatus) -> String {
     }
 }
 
+/// The applied configuration's diagnostics, one line each: what it names
+/// that does not exist yet, such as a delegation target no runtime has
+/// reported.
+pub fn diagnostic_lines(status: &ConfigStatus) -> Vec<String> {
+    status
+        .diagnostics
+        .iter()
+        .map(|diagnostic| format!("Note: {diagnostic}"))
+        .collect()
+}
+
 /// What a change needs the daemon restarted for, as a sentence.
 pub fn restart_note(status: &ConfigStatus) -> String {
     if status.restart_required.is_empty() {

@@ -606,7 +606,7 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn permission_requests_are_decided_by_the_mapped_rules() {
-    let document = "---\ndescription: Fixture with rules\nmode: all\nacp: {}\npermissions:\n  bash: { \"git *\": allow, \"*\": deny }\n  read: { \"${workspace_dir}/*\": allow, \"*\": deny }\n  webfetch: deny\n  acp: { \"switch_mode *\": allow }\n---\n";
+    let document = "---\ndescription: Fixture with rules\nmode: all\nacp: {}\npermissions:\n  bash: { \"git *\": allow, \"*\": deny }\n  read: { \"${workspace_dir}/*\": allow, \"*\": deny }\n  webfetch: deny\n  mcp: { \"exa_*\": allow, \"*\": deny }\n---\n";
     let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -630,7 +630,35 @@ async fn permission_requests_are_decided_by_the_mapped_rules() {
             "permission fetch https://example.com".to_owned(),
             "permission: no",
         ),
-        ("permission switch_mode plan".to_owned(), "permission: yes"),
+        // Its own MCP servers' tools, by cookie's MCP naming.
+        (
+            "permission-tool other mcp__exa__web_search".to_owned(),
+            "permission: yes",
+        ),
+        ("permission-mcp exa search".to_owned(), "permission: yes"),
+        (
+            "permission-tool other mcp__github__create_issue".to_owned(),
+            "permission: no",
+        ),
+        (
+            "permission-tool other create_issue (github MCP Server)".to_owned(),
+            "permission: no",
+        ),
+        // Cookie's own tools: the bridge decides the call itself.
+        (
+            "permission-tool other mcp__cookie__memory_search".to_owned(),
+            "permission: yes",
+        ),
+        (
+            "permission-mcp cookie cron_list".to_owned(),
+            "permission: yes",
+        ),
+        // A command that merely names one of cookie's tools is a command.
+        (
+            "permission-tool execute mcp__cookie__memory_search".to_owned(),
+            "permission: no",
+        ),
+        ("permission think deeply".to_owned(), "permission: yes"),
     ]
     .into_iter()
     .enumerate()
@@ -657,14 +685,32 @@ async fn permission_requests_are_decided_by_the_mapped_rules() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unmapped_kind_asks_and_the_approval_answers_it() {
-    let acp = acp_fixture(&[], &[]).await;
+    // Even rules that allow everything leave these to the approval flow.
+    let document = "---\ndescription: Fixture allowing all\nmode: all\nacp: {}\npermissions:\n  bash: allow\n  mcp: allow\n  other: allow\n  switch_mode: allow\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    let run = start(engine, session, "ask", "permission think deeply").await;
-    let approval = wait_for_escalated_approval(engine, session).await;
-    approve_once(engine, &approval, "approve-think").await;
-    let outcome = finished(engine, session, run).await;
-    assert_eq!(final_text(&outcome), "permission: yes");
+    for (index, command) in [
+        "permission switch_mode plan",
+        "permission-tool other Summon the build",
+        "permission-tool fly Somewhere new",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = start(engine, session, &format!("ask-{index}"), command).await;
+        let approval = wait_for_escalated_approval(engine, session).await;
+        let resources = approval.request.operation().resources();
+        assert_eq!(resources.len(), 1, "{command}");
+        assert!(
+            matches!(resources[0].capability.as_str(), "switch_mode" | "other"),
+            "{command}: {}",
+            resources[0].capability.as_str()
+        );
+        approve_once(engine, &approval, &format!("approve-{index}")).await;
+        let outcome = finished(engine, session, run).await;
+        assert_eq!(final_text(&outcome), "permission: yes", "{command}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -947,4 +993,104 @@ async fn the_bridge_serves_an_agent_that_connects_while_answering_session_new() 
     let session = engine.create_session(selection()).unwrap().session_id;
     let outcome = turn(engine, session, "eager", "mcp eager").await;
     assert_eq!(final_text(&outcome), "eager: True");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delegation_target_no_runtime_reported_yet_is_a_diagnostic_until_one_does() {
+    let document = "---\ndescription: Fixture that delegates\nmode: all\nacp: {}\npermissions:\n  delegate: { local-fixture: allow, labpc-codex: allow, \"labpc-*\": allow, lcoal-fixture: allow }\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let diagnostics = engine.configuration_status().diagnostics;
+    for name in [
+        "`labpc-codex`, which is not known yet",
+        "`labpc-*`, which matches no agent yet",
+        "`lcoal-fixture`, which is not known yet",
+    ] {
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains(name)),
+            "{name}: {diagnostics:?}"
+        );
+    }
+    let targets = |engine: &Engine| {
+        engine
+            .current_runtime()
+            .result
+            .snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.id == agent_id())
+            .map(|agent| agent.delegation_targets.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(targets(engine), [agent_id()]);
+
+    // Delegating to it before its runtime reports it is refused.
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let call = format!(
+        "mcp call delegate_subagent {}",
+        serde_json::json!({
+            "description": "Child turn",
+            "prompt": "say from the child",
+            "agent_type": "labpc-codex",
+        })
+    );
+    let outcome = turn(engine, session, "early", &call).await;
+    let answer = final_text(&outcome);
+    assert!(
+        answer.contains("no agent `labpc-codex` (its runtime is not connected)"),
+        "{answer}"
+    );
+
+    // Once the runtime dials in and reports it, it is a target.
+    let template = engine
+        .inner
+        .runtimes
+        .dial_in_template("labpc")
+        .expect("dial-in template");
+    let (daemon, runtime) = cookie_agent_protocol::in_process_pair(64);
+    let stop = tokio_util::sync::CancellationToken::new();
+    let served = tokio::spawn(cookie_agent_coding_runtime::server::serve(
+        Box::new(runtime),
+        cookie_agent_coding_runtime::server::ServeOptions {
+            acp_agents: vec![cookie_agent_runtime_api::protocol::AcpAgentSettings {
+                id: "codex".to_owned(),
+                command: vec![
+                    python_command().to_owned(),
+                    fixture_script().to_string_lossy().into_owned(),
+                ],
+                env: BTreeMap::new(),
+                description: "Dial-in fixture".to_owned(),
+                enabled: true,
+            }],
+            stop: stop.clone(),
+            ..Default::default()
+        },
+    ));
+    let settings = crate::runtimes::runtime_settings(&acp.fixture.config, "labpc");
+    template
+        .connect(
+            cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
+            &settings,
+            Some(Arc::clone(&engine.inner.mcp_hub)),
+        )
+        .await
+        .expect("dial-in runtime connected");
+    let codex = cookie_agent_protocol::AgentId::new("labpc-codex").unwrap();
+    with_watchdog("the dial-in agent to become a target", async {
+        while !targets(engine).contains(&codex) {
+            engine.refresh_runtime_agents();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let diagnostics = engine.configuration_status().diagnostics;
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].contains("`lcoal-fixture`"),
+        "{diagnostics:?}"
+    );
+    stop.cancel();
+    let _ = served.await;
 }

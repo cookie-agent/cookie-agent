@@ -100,16 +100,31 @@ fn an_edited_tree_is_validated_whole() {
     let root = user_root();
     let mut tree = ConfigTree::read(Some(root.path())).unwrap();
 
-    // Removing a delegation target breaks its delegator.
+    // Making a delegation target ineligible breaks its delegator.
+    let mut primary_worker = tree.clone();
+    primary_worker
+        .put(
+            path("agents/worker.md"),
+            agent("primary", "{}").into_bytes(),
+        )
+        .unwrap();
+    assert!(matches!(
+        load_from_tree(&primary_worker),
+        Err(ConfigError::IneligibleDelegationTarget { .. })
+    ));
+    // Changing both together is valid.
+    primary_worker
+        .put(
+            path("agents/primary.md"),
+            agent("primary", "{}").into_bytes(),
+        )
+        .unwrap();
+    load_from_tree(&primary_worker).expect("valid with both changed");
+    // Removing a delegation target leaves a name a runtime may report
+    // later: the engine reports it as a diagnostic, the load succeeds.
     let mut without_worker = tree.clone();
     assert!(without_worker.delete(&path("agents/worker.md")));
-    assert!(matches!(
-        load_from_tree(&without_worker),
-        Err(ConfigError::UnknownDelegationTarget { .. })
-    ));
-    // Removing both together is valid.
-    assert!(without_worker.delete(&path("agents/primary.md")));
-    load_from_tree(&without_worker).expect("valid without both");
+    load_from_tree(&without_worker).expect("valid without the target");
 
     // A bad document anywhere, even in an unselected preset, fails the tree.
     tree.put(path("agents/python/broken.md"), b"no front matter".to_vec())

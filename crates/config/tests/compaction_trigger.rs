@@ -280,7 +280,7 @@ fn agent_internal_mode_and_parent_model_are_strict() {
 }
 
 #[test]
-fn wildcard_delegation_patterns_validate_against_known_subagents() {
+fn wildcard_delegation_patterns_load_whatever_they_match() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("wildcard-delegation");
     write_config(&root, "");
@@ -302,7 +302,8 @@ fn wildcard_delegation_patterns_validate_against_known_subagents() {
     // The pattern matches at least one known eligible subagent.
     assert!(load_from_user_root(Some(&root)).is_ok());
 
-    // A pattern matching only disabled/ineligible agents is dead.
+    // A pattern matching only disabled/ineligible agents loads; the engine
+    // reports it as a diagnostic until an agent it matches appears.
     let dead = temp.path().join("wildcard-delegation-dead");
     write_config(&dead, "");
     write_agent(
@@ -315,12 +316,9 @@ fn wildcard_delegation_patterns_validate_against_known_subagents() {
         "primary.md",
         "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    sub-*: allow\n---\nPrimary.\n",
     );
-    assert!(matches!(
-        load_from_user_root(Some(&dead)),
-        Err(ConfigError::UnmatchedDelegationPattern { .. })
-    ));
+    assert!(load_from_user_root(Some(&dead)).is_ok());
 
-    // A pattern matching no agents at all is dead too.
+    // So does a pattern matching no agents at all.
     let unknown = temp.path().join("wildcard-delegation-unknown");
     write_config(&unknown, "");
     write_agent(
@@ -328,10 +326,7 @@ fn wildcard_delegation_patterns_validate_against_known_subagents() {
         "primary.md",
         "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    ghost-*: allow\n---\nPrimary.\n",
     );
-    assert!(matches!(
-        load_from_user_root(Some(&unknown)),
-        Err(ConfigError::UnmatchedDelegationPattern { .. })
-    ));
+    assert!(load_from_user_root(Some(&unknown)).is_ok());
 }
 
 #[test]

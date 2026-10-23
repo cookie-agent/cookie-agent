@@ -132,7 +132,7 @@ You review changes for this project before they are committed.
 
 - **Optional.** Without it, `<runtime_id>-<agent_id>` is an agent of mode
   `all` with the runtime's description, the defaults every agent gets for
-  actions it names no key for, `acp: ask`, and the default `hide_tools`.
+  actions it names no key for, and the default `hide_tools`.
 - **No `models`, no `acp.command`:** the runtime launches the agent and the
   agent chooses its own model (set through `acp.config` when it offers a
   model option).
@@ -221,20 +221,32 @@ You review changes for this project before they are committed.
 
 ## 8. The agent's own permission requests
 
-Each `session/request_permission` is decided by the agent's merged rules,
-its ACP tool kind mapped onto cookie's actions:
+Each `session/request_permission` is decided by its ACP tool kind, mapped
+onto cookie's actions and the agent's merged rules *(revised 2026-10-23:
+no `acp` action)*:
 
-| ACP kind | Action | Resource |
+| ACP request | Decided as | Resource |
 |---|---|---|
 | `read`, `search` | `read` | the location's path |
 | `edit`, `delete`, `move` | `write` | the location's path |
 | `execute` | `bash` | the command (from the call's raw input, else its title) |
 | `fetch` | `webfetch` | the URL |
-| `think`, `switch_mode`, `other`, unknown | `acp` | the kind, then the title |
+| a tool of cookie's own MCP server (`mcp__cookie__<tool>`) | allowed at once | none: the call reaches cookie's MCP server, where the rules decide it |
+| a tool of an MCP server the agent connects itself (`mcp__<server>__<tool>`) | `mcp` | `<server>_<tool>`, cookie's own name for the tool |
+| `think` | allowed | none |
+| `switch_mode`, `other`, unknown | the approval flow | the title |
 
 - `bash: {"git *": allow}` allows the agent's own `git` commands exactly as it
-  allows cookie's `bash` tool. A request with several locations needs every
-  one allowed. Without an `acp` key, `acp` defaults to `ask`.
+  allows cookie's `bash` tool, and `mcp: {"exa_*": allow}` covers cookie's
+  and the agent's `exa` tools alike. A request with several locations needs
+  every one allowed.
+- Cookie's own tools are asked about at most once: the agent's request is
+  allowed, and the call that reaches the bridge meets the rules (section 9).
+- An MCP tool is recognized only by a title or raw input of one of the
+  adapters' whole forms (`mcp__<server>__<tool>`, `Tool: <server>/<tool>`
+  with `{server, tool}`, `<tool> (<server> MCP Server)`), and only for kind
+  `other` or a kind ACP does not know, so a command or a path that merely
+  contains such a name is still decided as a command or a path.
 - **Answers:** `allow` picks the agent's allow-once option; `deny` its
   reject-once option; `ask` goes through the approval flow (the reviewer in
   auto modes), and the answer picks allow-once or reject-once. Cookie never
@@ -344,9 +356,14 @@ Where the spec left a detail open, or where the code differs:
   {}` is enough); such a document is an agent only while a runtime declares
   the id. It names no `models`, `agent_md`, `limits`, or mode `internal`,
   and its body may be empty. `models` and `enabled` became optional for
-  every document (`enabled` defaults to `true`). Naming an ACP agent as a
-  delegation target needs its document, since targets are checked when the
-  configuration loads; wildcard targets reach runtime agents.
+  every document (`enabled` defaults to `true`). A delegation target
+  needs no document *(user decision of 2026-10-23)*: a named target no agent
+  has, and a pattern that matches none, load as configuration diagnostics
+  (`ConfigStatus.diagnostics`, client protocol 1.18.0, recomputed from the
+  published agents, so a diagnostic clears once a runtime reports the
+  agent), the name is not a target meanwhile, and delegating to it is
+  refused with "no agent `<id>` (its runtime is not connected)". A target
+  whose document exists but is disabled or `primary` still fails the load.
 - **Synthetic model.** Runs record the model `acp/<agent id>` (a model key
   needs a `/`, so not `acp:<agent>`), adapter `acp`, through a persisted
   binding no build can run as a model; the frozen policy has no model
@@ -379,7 +396,13 @@ Where the spec left a detail open, or where the code differs:
   as it shuts down.
 - **Permissions.** Requests go through the tool permission pipeline (grants
   included) with the agent's runtime as the scope and the session's cwd as
-  `${workspace_dir}`; `acp` defaults to `ask`. A request whose resources
+  `${workspace_dir}`. The `acp` action of phase 2 is gone *(user decision of
+  2026-10-23)*: a request for one of cookie's own tools is allowed at once
+  (the bridge decides the call), the agent's own MCP tools are `mcp` rules,
+  `think` is allowed, and `switch_mode` and the rest go to the approval flow
+  as an approval of the kind's label (`switch_mode` or `other`) with no
+  tree grant offered. `PermissionAction` is an open label and `acp` was
+  never in `BUILT_IN`, so dropping the constant changes no wire. A request whose resources
   cannot be read is rejected; an agent that offers no allow-once or
   reject-once option is answered `cancelled`. Approvals name the cookie
   tool call the agent's call is shown as. The approval reviewer of the auto
@@ -444,7 +467,5 @@ the spec did not anticipate:
   presentation carries none; its result has it.
 - Outside its auto mode it asks permission for the calls it makes of
   cookie's own tools, as kind `other` titled `mcp__cookie__<tool>`. These
-  map to `acp` (default `ask`) before cookie's rules decide the call itself
-  through the bridge, so such a call is decided twice; an `acp` rule such as
-  `{ "other mcp__cookie__*": allow }` lets the bridge's own rules decide
-  alone.
+  are now allowed at once, so the bridge's rules decide such a call alone
+  (section 8).
