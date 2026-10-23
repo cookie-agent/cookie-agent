@@ -1,8 +1,9 @@
 # Cron jobs
 
-Status: **phase 1 implemented** (2026-10-23): the engine and the protocol;
-the clients (phase 2) and the docs (phase 3) follow. See
-[Implementation notes](#16-implementation-notes). Builds on [background tool calls](background-tools.md)
+Status: **implemented** (2026-10-23): the engine and the protocol (phase
+1), the TUI, web, and CLI (phase 2), and the docs (phase 3). See
+[Implementation notes](#16-implementation-notes) and the user guide,
+[Scheduling prompts](../sessions/scheduling.md). Builds on [background tool calls](background-tools.md)
 (sections 12 and 13: what keeps a parent waiting, and producer waits that
 let a session page out), [projects](projects.md), and the
 [memory spec](memory.md) (its permission defaults).
@@ -645,3 +646,67 @@ labels for `scheduled_job` (the shared `waiting_label` already names it),
 and the scheduling guide and the permissions page. The protocol reference,
 changelog, tools reference, error reference, and the `[cron]` configuration
 page are up to date.
+
+### 16.2 Phase 2: clients (2026-10-23)
+
+Landed: the `/cron` panel in the TUI, the Scheduled prompts view in the web
+client, and `cookie cron`, each on a daemon of client protocol 1.15 or later
+only, and each refetching `crons.list` on `crons.changed`. No wire change.
+
+- **Shared rules** live in `crates/client_state/src/cron.rs`:
+  `daemon_has_crons` (minor 15), a job's title (its name or the first 48
+  characters of its prompt's first line), `schedule_reading` and
+  `cron_reading` (the plain reading, section 12), target, state, and outcome
+  labels, `detail_lines`, and `CronDraft`, the job form as `crons.create` and
+  `crons.update` take it. A form's schedule is a cron expression, `in
+  <delay>`, or `at <RFC 3339 time>`; an edit sends only the members it
+  changed, and one that changes nothing sends nothing.
+- **Plain readings** cover the shapes people write: one minute with a list
+  of hours, `*/n` minutes, `*/n` hours, single days of the month, weekday
+  lists and ranges, and named months, such as `every Monday to Friday at
+  09:00` or `on the 1st of every month at 08:00`. Anything else (`0 9-17 * *
+  *`) reads as `cron <expression>`. A cron schedule's reading adds its run
+  limit (`, once`, `, 4 runs`); a one-shot reads `once at <local time>`.
+  Cron times are not converted: they are the host's, which the forms say.
+- **TUI** (`crates/tui/src/ui/app/cron_panel.rs`): `Modal::Cron` lists the
+  jobs with the selected job's details and history beneath; `e`/Enter, `n`,
+  `t`, `r`, and `d` (with a `y` confirmation) edit, create, enable or
+  disable, run now, and delete, each also a button
+  (`PointerTarget::CronRow`, `PointerTarget::CronAction`). The TUI takes
+  slash commands only from the command palette, so section 12's "`/cron` in
+  the command panel creates a job" is the palette entry `/cron new`, listed
+  while a session is on screen (not a read-only one); `/cron` opens the
+  panel. The form is a `key: value` text with the prompt after `---`, edited
+  in `$VISUAL` or `$EDITOR` through the `/memory` handoff; a form the daemon
+  refuses is kept to edit again. Run sessions show 🕒 in the session picker,
+  since ⏰ already marks waiting sessions.
+- **Web** (`crates/web/src/views/cron.rs`, `workspace/cron.rs`, `cron.rs`):
+  the rail's clock icon opens **Scheduled prompts**, one column with a job's
+  details, history, and actions expanding under its row, so it serves phones
+  without another layer (every target at least 44 px). The ⋮ menu's
+  "Schedule a prompt" opens the form for the open session, as a subagent
+  target in a delegated one. The form reads the schedule live under its
+  field. Times are the browser's, from `Date.getTimezoneOffset` at each
+  instant, since jiff's system zone is unavailable in the page. A run
+  session's clock mark before its title says which job started it and opens
+  it.
+- **New-session template from a client:** the agent and preset of the
+  current session's selection (else the preset's first root agent), its
+  project (a delegated session's root's), and no `runtimes`, so a fire
+  attaches what `session.create` would; the TUI also sets `cwd` to its own
+  directory. A model pin and a permission mode are the user's to add.
+- **`cookie cron`** (`crates/cookie_agent/src/cron_command.rs`): `create`
+  takes `--session` (root or delegated, read from `session.get`) or
+  `--agent` for a new session per fire, with `--model`, `--permission-mode`,
+  and `--project` for the latter; `edit` takes the same options and applies
+  them to the job's form, so it is scriptable rather than an editor session.
+  `list` prints two lines per job, `show` the details, prompt, and history.
+
+### 16.3 Phase 3: docs (2026-10-23)
+
+[Scheduling prompts](../sessions/scheduling.md) is the user guide, under
+Working with sessions. The `cron` action, its resources, defaults, hard
+limits, and `list_agents` are in
+[Cron permissions](../extend/agents.md#cron-permissions) and on the
+[Permissions](../concepts/permissions.md) concept page; the clients'
+pages have a Scheduled prompts section each and `cookie cron` its reference.

@@ -106,8 +106,11 @@ A new-session job carries a **template**: the agent each run session starts
 with (and its preset), the permission rules added to it as a
 [session overlay](../extend/agents.md#session-permission-overlays), its
 runtime attachments and working directory, and its project. When you create
-the job from a client, the agent, attachments, and project default to the
-current session's; an agent's job defaults to the creating session's. The
+the job from the TUI or the web, the agent, its preset, and the project start
+as the current session's, and the attachments are what a new session gets
+(`global` and the daemon's default runtimes); a model pin and a permission
+mode are yours to add. An agent's job takes the creating run's agent and the
+creating session's attachments and project. The
 template is checked when the job is saved, as `session.create` would check
 it, and again at each fire.
 
@@ -203,13 +206,15 @@ run sessions.
 `/cron` opens the cron panel: each job with its name, schedule and its plain
 reading, next fire, target, state, and the outcome of its last fire; under
 it, the selected job's details and history. Its actions, create, edit,
-enable or disable, run now, and delete, are keys and buttons. `/cron` from
-the command panel in a session creates a job that fires into that session.
+enable or disable, run now, and delete, are keys and buttons. `/cron new`
+from the command panel creates a job that fires into the session on screen.
+A job is written as a short form in your editor. Run sessions have a 🕒
+mark in the session picker.
 See [Terminal UI](../clients/tui.md#scheduled-prompts).
 
 ### Web
 
-The clock icon in the left rail opens the Cron view, with the same list,
+The clock icon in the left rail opens **Scheduled prompts**, with the same list,
 details, history, and actions. In a session, **Schedule a prompt** in the ⋮
 menu creates a job that fires into it. A run session's clock mark in the
 session list opens its job. See [Web](../clients/web.md#scheduled-prompts).
