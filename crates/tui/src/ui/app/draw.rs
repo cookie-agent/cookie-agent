@@ -960,11 +960,18 @@ impl App {
         let agents = self.filtered_agent_picker_candidates();
         let match_count = agents.len();
         let row_width = usize::from(inner_rect(picker).width.saturating_sub(2));
+        let attached = self.agent_runtimes();
         let entries = agents
             .iter()
             .enumerate()
             .map(|(index, agent)| {
-                agent_picker_row(agent, row_width, selected == Some(index), &self.theme)
+                agent_picker_row(
+                    agent,
+                    &attached,
+                    row_width,
+                    selected == Some(index),
+                    &self.theme,
+                )
             })
             .collect();
         let context = if self.new_session_draft.is_some() {

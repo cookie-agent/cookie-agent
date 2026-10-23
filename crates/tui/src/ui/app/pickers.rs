@@ -16,6 +16,7 @@ pub(super) fn draft_title(draft: &RunSelection) -> String {
 
 pub(super) fn agent_picker_row(
     agent: &AgentDescriptor,
+    attached: &[cookie_agent_protocol::RuntimeId],
     width: usize,
     selected: bool,
     theme: &Theme,
@@ -29,11 +30,11 @@ pub(super) fn agent_picker_row(
         id_style
     };
     // An ACP agent that cannot be picked now is dimmed.
-    let pickable = cookie_agent_client_state::acp::pickable(agent);
+    let pickable = cookie_agent_client_state::acp::pickable(agent, attached);
     let id_style = if pickable { id_style } else { theme.muted() };
     let mut spans = vec![Span::styled(id, id_style)];
     let mut used = id_width;
-    if let Some(note) = cookie_agent_client_state::acp::runtime_note(agent)
+    if let Some(note) = cookie_agent_client_state::acp::runtime_note(agent, attached)
         && used < width
     {
         let note = truncate_with_ellipsis(&format!(" [{note}]"), width - used);
@@ -910,13 +911,16 @@ impl App {
                         .unwrap_or_else(|| "agent switching requires a root session".into());
                     return;
                 }
+                let attached = self.agent_runtimes();
                 let agent = self
                     .filtered_agent_picker_candidates()
                     .get(index)
                     .map(|agent| {
-                        (cookie_agent_client_state::acp::pickable(agent))
+                        (cookie_agent_client_state::acp::pickable(agent, &attached))
                             .then(|| agent.id.clone())
-                            .ok_or_else(|| cookie_agent_client_state::acp::unpickable_reason(agent))
+                            .ok_or_else(|| {
+                                cookie_agent_client_state::acp::unpickable_reason(agent, &attached)
+                            })
                     });
                 if let Some(Err(reason)) = agent {
                     self.status = reason;

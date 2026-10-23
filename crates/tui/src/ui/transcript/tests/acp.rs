@@ -24,9 +24,10 @@ fn acp_descriptor(
     agent.resolved_fallback = vec![cookie_agent_protocol::acp_model_selection(&agent.id)];
     agent.runtime = Some(AgentRuntime {
         runtime_id: RuntimeId::new(runtime).unwrap(),
-        agent: AgentId::new("claude").unwrap(),
+        agent: agent.id.clone(),
         available,
     });
+    agent.runtimes = agent.runtime.iter().cloned().collect();
     agent
 }
 
@@ -36,8 +37,8 @@ async fn acp_session_app() -> (App, SessionId) {
     let mut app = test_app().await;
     app.agents = vec![
         descriptor("primary", true),
-        acp_descriptor("local-claude", "local", true),
-        acp_descriptor("lab-codex", "lab", false),
+        acp_descriptor("claude", "local", true),
+        acp_descriptor("codex", "lab", false),
     ];
     app.models = vec![model_descriptor()];
     let session = SessionId::new_v7();
@@ -48,7 +49,8 @@ async fn acp_session_app() -> (App, SessionId) {
         children: Vec::new(),
     });
     let state = app.store.sessions.entry(session).or_default();
-    state.acp.agent = Some(AgentId::new("local-claude").unwrap());
+    state.runtime_attachments = local_workspace_attachments();
+    state.acp.agent = Some(AgentId::new("claude").unwrap());
     state.acp.runtime_id = Some(RuntimeId::new("local").unwrap());
     state.acp.commands = vec![
         AcpCommand {
@@ -81,15 +83,16 @@ async fn acp_session_app() -> (App, SessionId) {
 }
 
 #[tokio::test]
-async fn runtime_agents_show_their_runtime_and_unavailable_ones_cannot_be_picked() {
+async fn acp_agents_show_where_they_run_and_ones_that_cannot_run_cannot_be_picked() {
     let (mut app, _) = acp_session_app().await;
     app.draft = app.default_draft_selection();
     app.open_selection_modal(Modal::Agents);
     assert_eq!(app.modal, Modal::Agents);
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("local-claude [on local]"), "{rendered}");
+    assert!(rendered.contains("claude [on local]"), "{rendered}");
+    // No runtime this session attaches offers it.
     assert!(
-        rendered.contains("lab-codex [on lab · unavailable]"),
+        rendered.contains("codex [needs lab attached]"),
         "{rendered}"
     );
     let ids = app
@@ -97,27 +100,26 @@ async fn runtime_agents_show_their_runtime_and_unavailable_ones_cannot_be_picked
         .iter()
         .map(|agent| agent.id.to_string())
         .collect::<Vec<_>>();
-    let away = ids.iter().position(|id| id == "lab-codex").unwrap();
+    let away = ids.iter().position(|id| id == "codex").unwrap();
     app.choose_picker_entry(away).await;
-    assert!(
-        app.status.contains("runtime `lab` is not connected"),
-        "{}",
-        app.status
+    assert_eq!(
+        app.status,
+        "`codex` needs a runtime that offers it attached: lab"
     );
     assert_eq!(app.modal, Modal::Agents);
     assert_eq!(app.draft.as_ref().unwrap().agent.as_str(), "primary");
 
     // An available one runs its synthetic model, which no model picker
     // lists: its model is one of its options.
-    let local = ids.iter().position(|id| id == "local-claude").unwrap();
+    let local = ids.iter().position(|id| id == "claude").unwrap();
     app.choose_picker_entry(local).await;
     let draft = app.draft.clone().expect("draft");
-    assert_eq!(draft.agent.as_str(), "local-claude");
-    assert_eq!(draft.model.model.as_str(), "acp/local-claude");
+    assert_eq!(draft.agent.as_str(), "claude");
+    assert_eq!(draft.model.model.as_str(), "acp/claude");
     app.revalidate_draft();
     assert_eq!(
         app.draft.as_ref().unwrap().model.model.as_str(),
-        "acp/local-claude"
+        "acp/claude"
     );
     app.open_selection_modal(Modal::Models);
     assert_eq!(app.modal, Modal::AgentOptions);
@@ -174,10 +176,7 @@ async fn options_lists_the_agents_options_and_sets_one() {
     run_palette_command(&mut app, "options").await;
     assert_eq!(app.modal, Modal::AgentOptions);
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(
-        rendered.contains("Agent options — local-claude"),
-        "{rendered}"
-    );
+    assert!(rendered.contains("Agent options — claude"), "{rendered}");
     assert!(rendered.contains("Mode: AUTO"), "{rendered}");
     app.choose_picker_entry(0).await;
     let rendered = rendered_frame(&mut app, 100, 30);
@@ -254,17 +253,14 @@ fn a_plan_renders_as_a_checklist_with_statuses() {
 fn an_acp_agents_tool_call_names_the_agent() {
     let mut presentation = hinted_presentation("Read notes.txt", ToolHint::FILE_READ, None);
     presentation.tool.source = Some(Open::Known(ToolSource::Acp {
-        agent: AgentId::new("local-claude").unwrap(),
+        agent: AgentId::new("claude").unwrap(),
         runtime_id: RuntimeId::new("local").unwrap(),
     }));
     let state = display_tool_state(presentation, ToolStatus::Completed, Vec::new());
     let text = snapshot_lines(
         &transcript_layout_with(&state, None, 80, &Theme::default(), &PlainHighlighter).lines,
     );
-    assert!(
-        text.contains("Read notes.txt · local-claude on local"),
-        "{text}"
-    );
+    assert!(text.contains("Read notes.txt · claude on local"), "{text}");
 }
 
 #[test]

@@ -247,6 +247,7 @@ mod tests {
                     resolved_fallback: vec![selection],
                     delegation_targets: Vec::new(),
                     runtime: None,
+                    runtimes: Vec::new(),
                 }]
             } else {
                 Vec::new()

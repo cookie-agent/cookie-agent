@@ -175,6 +175,38 @@ impl Workspace {
         runtimes
     }
 
+    /// The runtimes an agent picked now would run with: the draft's (as
+    /// its cards stand) for a new session, else the viewed session's. An
+    /// ACP agent runs on the one of them that offers it.
+    pub fn agent_runtimes(self) -> Vec<RuntimeId> {
+        let mut runtimes = Vec::<RuntimeId>::new();
+        let mut add = |runtime_id: &RuntimeId| {
+            if !runtimes.contains(runtime_id) {
+                runtimes.push(runtime_id.clone());
+            }
+        };
+        if self.new_session.get() {
+            for (runtime_id, _) in self.draft_places() {
+                add(&runtime_id);
+            }
+            return runtimes;
+        }
+        let Some(session_id) = self.selected.get() else {
+            return runtimes;
+        };
+        self.sessions.with(|sessions| {
+            if let Some(session) = sessions
+                .iter()
+                .find(|session| session.session_id == session_id)
+            {
+                for attachment in &session.attachments {
+                    add(&attachment.runtime_id);
+                }
+            }
+        });
+        runtimes
+    }
+
     /// What the bottom bar says of where the viewed session (or the draft)
     /// works: its workspaces under their runtimes' homes; `None` before it
     /// has any runtimes.

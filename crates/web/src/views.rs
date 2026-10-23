@@ -2523,8 +2523,11 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
             let chosen = current.as_ref() == Some(&agent.id);
             // An ACP agent shows its runtime; one that is unavailable now is
             // dimmed and cannot be picked.
-            let pickable = cookie_agent_client_state::acp::pickable(&agent);
-            let note = cookie_agent_client_state::acp::runtime_note(&agent);
+            let attached = workspace.agent_runtimes();
+            let pickable = cookie_agent_client_state::acp::pickable(&agent, &attached);
+            let note = cookie_agent_client_state::acp::runtime_note(&agent, &attached);
+            let reason = (!pickable)
+                .then(|| cookie_agent_client_state::acp::unpickable_reason(&agent, &attached));
             view! {
                 <button
                     type="button"
@@ -2535,9 +2538,9 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
                     class:cursor-not-allowed=!pickable
                     data-agent=agent.id.to_string()
                     aria-disabled=(!pickable).to_string()
-                    title=(!pickable).then(|| cookie_agent_client_state::acp::unpickable_reason(&agent))
+                    title=reason
                     on:click=move |_| {
-                        if cookie_agent_client_state::acp::pickable(&picked) {
+                        if pickable {
                             workspace.pick_agent(&picked);
                             workspace.panel.set(None);
                         }

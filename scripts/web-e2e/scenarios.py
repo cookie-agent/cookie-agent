@@ -4620,8 +4620,8 @@ def acp_agents(browser):
     agent."""
     new_session(browser)
     browser.click("#agent-chip")
-    fixture = '#sheet [data-agent="local-fixture"]'
-    off = '#sheet [data-agent="local-off"]'
+    fixture = '#sheet [data-agent="fixture"]'
+    off = '#sheet [data-agent="off"]'
     browser.wait("the runtime agents", lambda: count(browser, fixture) == 1 and count(browser, off) == 1, timeout=40)
     assert "on local" in browser.text(fixture + " [data-agent-runtime]"), browser.text(fixture)
     assert "unavailable" in browser.text(off), browser.text(off)
@@ -4631,7 +4631,7 @@ def acp_agents(browser):
     settle(browser)
     browser.shot("acp-agent-picker")
     browser.click(fixture)
-    browser.wait("the picked agent", lambda: "local-fixture" in browser.text("#agent-chip"))
+    browser.wait("the picked agent", lambda: "fixture" in browser.text("#agent-chip"))
     send(browser, "work")
     browser.wait("the agent's turn", lambda: "Done." in browser.text("#transcript"), timeout=60)
     statuses = browser.script(
@@ -4641,7 +4641,7 @@ def acp_agents(browser):
     assert statuses == ["completed", "in_progress"], statuses
     browser.wait(
         "the agent's tool call",
-        lambda: "local-fixture on local" in browser.text("#transcript [data-tool-source]"),
+        lambda: "fixture on local" in browser.text("#transcript [data-tool-source]"),
     )
     print("the agent's turn shows its plan and names it on its tool call")
 

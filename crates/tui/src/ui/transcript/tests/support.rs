@@ -1064,6 +1064,7 @@ pub(crate) fn descriptor(agent: &str, runnable: bool) -> cookie_agent_protocol::
         }],
         delegation_targets: Vec::new(),
         runtime: None,
+        runtimes: Vec::new(),
     }
 }
 

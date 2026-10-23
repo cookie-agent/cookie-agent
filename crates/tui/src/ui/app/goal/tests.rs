@@ -111,6 +111,7 @@ fn install_draft_catalog(app: &mut App) {
             resolved_fallback: vec![selection.model.clone()],
             delegation_targets: Vec::new(),
             runtime: None,
+            runtimes: Vec::new(),
         })
         .collect();
     app.models = ["test/model", "test/model-b"]

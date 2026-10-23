@@ -192,6 +192,46 @@ impl App {
     /// sessions are pinned to their frozen child agent. This gate is
     /// independent of the active run: draft changes affect the next run
     /// only, and active-run attribution stays frozen.
+    /// The runtimes the agent picker's choice would run with: the new
+    /// session draft's (what `session.create` attaches by default until
+    /// `/runtime` edits them: `global` and `local`), else the viewed
+    /// session's. An ACP agent runs on the one of them that offers it.
+    pub(in crate::ui) fn agent_runtimes(&self) -> Vec<cookie_agent_protocol::RuntimeId> {
+        let mut runtimes = Vec::new();
+        let mut add = |runtime: &cookie_agent_protocol::RuntimeId| {
+            if !runtimes.contains(runtime) {
+                runtimes.push(runtime.clone());
+            }
+        };
+        let viewed = self
+            .selected
+            .filter(|_| self.new_session_draft.is_none())
+            .and_then(|session| self.store.sessions.get(&session));
+        match (viewed, &self.draft_runtimes) {
+            (Some(state), _) => {
+                for attachment in state.runtime_attachments.attachments() {
+                    add(&attachment.runtime_id);
+                }
+            }
+            (None, Some(entries)) => {
+                for entry in entries {
+                    add(&entry.request.runtime_id);
+                }
+            }
+            (None, None) => {
+                for id in [
+                    cookie_agent_protocol::RuntimeId::GLOBAL,
+                    cookie_agent_protocol::RuntimeId::LOCAL,
+                ] {
+                    if let Ok(id) = cookie_agent_protocol::RuntimeId::new(id) {
+                        add(&id);
+                    }
+                }
+            }
+        }
+        runtimes
+    }
+
     pub(in crate::ui) fn agent_switching_allowed(&self) -> bool {
         self.watching_root_session()
     }

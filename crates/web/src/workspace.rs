@@ -967,9 +967,12 @@ impl Workspace {
     /// Picks `agent` (and its preferred model) for the draft. An ACP agent
     /// runs its synthetic model; one that is unavailable is refused.
     pub fn pick_agent(self, agent: &AgentDescriptor) {
-        if !cookie_agent_client_state::acp::pickable(agent) {
+        let attached = untrack(|| self.agent_runtimes());
+        if !cookie_agent_client_state::acp::pickable(agent, &attached) {
             self.status
-                .set(cookie_agent_client_state::acp::unpickable_reason(agent));
+                .set(cookie_agent_client_state::acp::unpickable_reason(
+                    agent, &attached,
+                ));
             return;
         }
         let model = self
