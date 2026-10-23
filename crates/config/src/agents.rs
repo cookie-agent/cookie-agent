@@ -261,6 +261,44 @@ pub struct AgentFrontmatter {
     /// a value overrides it for root runs of this agent.
     #[serde(default)]
     pub agent_md: Option<bool>,
+    /// Present on the document of a runtime-hosted ACP agent
+    /// (`docs/site/specs/acp-agents.md` section 4), which names no models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp: Option<AcpDocumentSettings>,
+}
+
+/// The `acp` block of an ACP agent's document.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcpDocumentSettings {
+    /// The mode the agent starts its sessions in, by mode ID; the agent's
+    /// `auto` mode, else its default, when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Initial values of the agent's config options, by option ID.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, String>,
+    /// Patterns (`*`, `?`) over cookie's tool names the agent does not get;
+    /// cookie's coding runtime tools when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hide_tools: Option<Vec<String>>,
+}
+
+impl AcpDocumentSettings {
+    /// The tools an ACP agent does not get when its document names none:
+    /// the coding runtime's, which the agent has its own of.
+    pub const DEFAULT_HIDE_TOOLS: [&'static str; 5] = ["read", "write", "edit", "bash", "webfetch"];
+
+    /// The patterns of the tools the agent does not get.
+    #[must_use]
+    pub fn hidden_tools(&self) -> Vec<String> {
+        self.hide_tools.clone().unwrap_or_else(|| {
+            Self::DEFAULT_HIDE_TOOLS
+                .iter()
+                .map(|tool| (*tool).to_owned())
+                .collect()
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for AgentFrontmatter {
@@ -280,7 +318,9 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
         struct RawFrontmatter {
             description: String,
             mode: AgentMode,
+            #[serde(default = "enabled_by_default")]
             enabled: bool,
+            #[serde(default)]
             models: Vec<AgentModelFallback>,
             #[serde(default)]
             limits: RawLimits,
@@ -288,6 +328,12 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
             permissions: IndexMap<PermissionKey, PermissionValue>,
             #[serde(default)]
             agent_md: Option<bool>,
+            #[serde(default)]
+            acp: Option<AcpDocumentSettings>,
+        }
+
+        const fn enabled_by_default() -> bool {
+            true
         }
 
         let raw = RawFrontmatter::deserialize(deserializer)?;
@@ -309,6 +355,7 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
             },
             permissions: raw.permissions,
             agent_md: raw.agent_md,
+            acp: raw.acp,
         })
     }
 }
@@ -375,12 +422,61 @@ impl AgentRegistry {
 }
 
 fn authored_root_eligible(document: &AgentDocument) -> bool {
-    document.frontmatter.enabled
+    document.frontmatter.acp.is_none()
+        && document.frontmatter.enabled
         && matches!(
             document.frontmatter.mode,
             AgentMode::Primary | AgentMode::All
         )
         && !document.frontmatter.models.is_empty()
+}
+
+/// An ACP agent's document: the runtime launches the agent and the agent
+/// picks its model, so it names no models, and it reads its own context
+/// files.
+fn validate_acp_settings(
+    document: &AgentDocument,
+    acp: &AcpDocumentSettings,
+) -> Result<(), ConfigError> {
+    let frontmatter = &document.frontmatter;
+    let field = if !frontmatter.models.is_empty() {
+        Some("models")
+    } else if frontmatter.agent_md.is_some() {
+        Some("agent_md")
+    } else if frontmatter.mode == AgentMode::Internal {
+        Some("mode")
+    } else if frontmatter.limits != AgentLimits::default() {
+        Some("limits")
+    } else if acp.mode.as_ref().is_some_and(|mode| !valid_acp_label(mode))
+        || acp
+            .config
+            .iter()
+            .any(|(id, value)| !valid_acp_label(id) || !valid_acp_label(value))
+    {
+        Some("acp")
+    } else if acp.hide_tools.as_ref().is_some_and(|patterns| {
+        patterns.len() > MAX_LIST
+            || patterns.iter().any(|pattern| {
+                pattern.is_empty() || pattern.len() > 128 || pattern.chars().any(char::is_control)
+            })
+    }) {
+        Some("acp.hide_tools")
+    } else {
+        None
+    };
+    match field {
+        Some(field) => Err(ConfigError::AgentField {
+            agent: document.id.clone(),
+            field,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// An ACP mode, option, or value ID as a document names it: a nonempty
+/// label of at most 256 bytes without control characters.
+fn valid_acp_label(label: &str) -> bool {
+    !label.is_empty() && label.len() <= 256 && !label.chars().any(char::is_control)
 }
 
 fn validate_agent_document(
@@ -420,6 +516,9 @@ fn validate_agent_document(
             field: "description",
         });
     }
+    if let Some(acp) = &frontmatter.acp {
+        validate_acp_settings(document, acp)?;
+    }
     // Only root runs load AGENTS.md, so the override is meaningless on agents
     // that can never run as a root.
     if frontmatter.agent_md.is_some()
@@ -430,7 +529,10 @@ fn validate_agent_document(
             field: "agent_md",
         });
     }
-    if matches!(frontmatter.mode, AgentMode::Primary) && frontmatter.models.is_empty() {
+    if matches!(frontmatter.mode, AgentMode::Primary)
+        && frontmatter.models.is_empty()
+        && frontmatter.acp.is_none()
+    {
         return Err(ConfigError::PrimaryFallback(document.id.clone()));
     }
     if frontmatter.models.len() > MAX_LIST {

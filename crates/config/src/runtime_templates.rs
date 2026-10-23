@@ -3,7 +3,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use cookie_agent_identity::RuntimeId;
+use cookie_agent_identity::{AgentId, RuntimeId};
 use serde::Deserialize;
 
 use crate::{ConfigError, McpConfig, McpOAuthConfig, McpServerConfig};
@@ -25,6 +25,39 @@ pub(crate) struct RawRuntimeTemplate {
     startup_timeout_ms: Option<u64>,
     shutdown_grace_ms: Option<u64>,
     mcp: Option<McpConfig>,
+    acp: Option<RawAcpRuntime>,
+}
+
+/// `[runtimes.<id>.acp]` as authored.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAcpRuntime {
+    #[serde(default)]
+    agents: BTreeMap<String, RawAcpAgent>,
+}
+
+/// `[runtimes.<id>.acp.agents.<agent>]` as authored.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAcpAgent {
+    command: Option<Vec<String>>,
+    env: Option<BTreeMap<String, String>>,
+    description: Option<String>,
+    enabled: Option<bool>,
+}
+
+/// One ACP agent a runtime hosts (`docs/site/specs/acp-agents.md`
+/// section 3).
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct AcpAgentConfig {
+    /// The program and its arguments, run without a shell on the runtime's
+    /// machine.
+    pub command: Vec<String>,
+    /// Variables merged over the runtime's environment.
+    pub env: BTreeMap<String, String>,
+    /// Shown where the agent is listed; empty when not authored.
+    pub description: String,
+    pub enabled: bool,
 }
 
 /// A validated runtime template. `[runtimes.local]` configures the built-in
@@ -43,6 +76,9 @@ pub struct RuntimeTemplateConfig {
     pub shutdown_grace_ms: u64,
     /// MCP servers the runtime hosts on its own machine.
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
+    /// ACP agents the runtime starts on its own machine, by their table
+    /// key.
+    pub acp_agents: BTreeMap<AgentId, AcpAgentConfig>,
 }
 
 impl RuntimeTemplateConfig {
@@ -109,6 +145,7 @@ fn validate_template(
             ));
         }
     }
+    let acp_agents = validate_acp_agents(id, template.acp)?;
     if id == RuntimeId::LOCAL {
         if template.command.is_some()
             || template.env.is_some()
@@ -117,7 +154,7 @@ fn validate_template(
         {
             return Err(invalid(
                 id,
-                "the built-in `local` runtime accepts only an `mcp` table",
+                "the built-in `local` runtime accepts only `mcp` and `acp` tables",
             ));
         }
         return Ok(RuntimeTemplateConfig {
@@ -126,21 +163,10 @@ fn validate_template(
             startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
             shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
             mcp_servers,
+            acp_agents,
         });
     }
-    let command = template
-        .command
-        .filter(|command| !command.is_empty())
-        .ok_or_else(|| invalid(id, "`command` must be a nonempty array"))?;
-    if command[0].is_empty() {
-        return Err(invalid(
-            id,
-            "the first element of `command` must name a program",
-        ));
-    }
-    if command.iter().any(|argument| argument.contains('\0')) {
-        return Err(invalid(id, "`command` elements must not contain NUL"));
-    }
+    let command = validate_command(id, "", template.command)?;
     if command
         .iter()
         .any(|argument| argument.contains(REMOVED_WORKSPACE_PLACEHOLDER))
@@ -151,17 +177,7 @@ fn validate_template(
              workspace, which sessions name when they attach",
         ));
     }
-    let env = template.env.unwrap_or_default();
-    if let Some(name) = env.iter().find_map(|(name, value)| {
-        (name.is_empty() || name.contains(['=', '\0']) || value.contains('\0')).then_some(name)
-    }) {
-        return Err(invalid(
-            id,
-            format!(
-                "environment variable `{name}` is invalid: names must be nonempty without `=` or NUL, and values without NUL"
-            ),
-        ));
-    }
+    let env = validate_env(id, "", template.env)?;
     let startup_timeout_ms = template
         .startup_timeout_ms
         .unwrap_or(DEFAULT_STARTUP_TIMEOUT_MS);
@@ -180,5 +196,97 @@ fn validate_template(
         startup_timeout_ms,
         shutdown_grace_ms,
         mcp_servers,
+        acp_agents,
     })
+}
+
+/// The longest description an ACP agent may carry, as for agent documents.
+const MAX_ACP_DESCRIPTION: usize = 512;
+
+fn validate_command(
+    id: &str,
+    what: &str,
+    command: Option<Vec<String>>,
+) -> Result<Vec<String>, ConfigError> {
+    let command = command
+        .filter(|command| !command.is_empty())
+        .ok_or_else(|| invalid(id, format!("{what}`command` must be a nonempty array")))?;
+    if command[0].is_empty() {
+        return Err(invalid(
+            id,
+            format!("{what}the first element of `command` must name a program"),
+        ));
+    }
+    if command.iter().any(|argument| argument.contains('\0')) {
+        return Err(invalid(
+            id,
+            format!("{what}`command` elements must not contain NUL"),
+        ));
+    }
+    Ok(command)
+}
+
+fn validate_env(
+    id: &str,
+    what: &str,
+    env: Option<BTreeMap<String, String>>,
+) -> Result<BTreeMap<String, String>, ConfigError> {
+    let env = env.unwrap_or_default();
+    if let Some(name) = env.iter().find_map(|(name, value)| {
+        (name.is_empty() || name.contains(['=', '\0']) || value.contains('\0')).then_some(name)
+    }) {
+        return Err(invalid(
+            id,
+            format!(
+                "{what}environment variable `{name}` is invalid: names must be nonempty without `=` or NUL, and values without NUL"
+            ),
+        ));
+    }
+    Ok(env)
+}
+
+fn validate_acp_agents(
+    id: &str,
+    acp: Option<RawAcpRuntime>,
+) -> Result<BTreeMap<AgentId, AcpAgentConfig>, ConfigError> {
+    let Some(acp) = acp else {
+        return Ok(BTreeMap::new());
+    };
+    acp.agents
+        .into_iter()
+        .map(|(key, agent)| {
+            let agent_id = AgentId::new(key.as_str()).map_err(|_| {
+                invalid(
+                    id,
+                    format!(
+                        "ACP agent `{key}`: agent IDs are lowercase letters, digits, and single \
+                         inner hyphens, at most 64 bytes"
+                    ),
+                )
+            })?;
+            let what = format!("ACP agent `{key}`: ");
+            let command = validate_command(id, &what, agent.command)?;
+            let env = validate_env(id, &what, agent.env)?;
+            let description = agent.description.unwrap_or_default();
+            if description.len() > MAX_ACP_DESCRIPTION
+                || description.chars().any(char::is_control)
+            {
+                return Err(invalid(
+                    id,
+                    format!(
+                        "{what}`description` must be at most {MAX_ACP_DESCRIPTION} bytes without control characters"
+                    ),
+                ));
+            }
+            Ok((
+                agent_id,
+                AcpAgentConfig {
+                    command,
+                    env,
+                    description,
+                    enabled: agent.enabled.unwrap_or(true),
+                },
+            ))
+        })
+        .collect()
 }

@@ -157,7 +157,7 @@ fn runtime_ids_follow_the_tool_prefix_rule() {
 }
 
 #[test]
-fn global_is_reserved_and_local_takes_only_mcp_servers() {
+fn global_is_reserved_and_local_takes_only_mcp_servers_and_acp_agents() {
     let error = rejected("[runtimes.global]\ncommand = [\"runtime\"]\n");
     assert!(error.contains("`global`"), "{error}");
     let error = rejected("[runtimes.global.mcp.servers.x]\ncommand = \"x\"\n");
@@ -170,7 +170,10 @@ fn global_is_reserved_and_local_takes_only_mcp_servers() {
         "shutdown_grace_ms = 10",
     ] {
         let error = rejected(&format!("[runtimes.local]\n{field}\n"));
-        assert!(error.contains("only an `mcp` table"), "{field}: {error}");
+        assert!(
+            error.contains("only `mcp` and `acp` tables"),
+            "{field}: {error}"
+        );
     }
     let loaded =
         load("[runtimes.local.mcp.servers.docs]\ncommand = \"docs-mcp\"\n").expect("local MCP");

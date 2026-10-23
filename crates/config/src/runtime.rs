@@ -376,6 +376,8 @@ pub struct EngineConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub cron: CronConfig,
+    #[serde(default)]
+    pub acp: AcpConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -401,6 +403,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) producers: Option<ProducersConfig>,
     pub(crate) memory: Option<MemoryConfig>,
     pub(crate) cron: Option<CronConfig>,
+    pub(crate) acp: Option<AcpConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -828,6 +831,37 @@ impl CronConfig {
         None
     }
 }
+/// `[acp]`: how the daemon runs ACP agents
+/// (`docs/site/specs/acp-agents.md` section 7).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AcpConfig {
+    /// How long an agent's process stays up with no live session before it
+    /// is stopped.
+    #[serde(default = "default_acp_idle_shutdown_ms")]
+    pub idle_shutdown_ms: u64,
+}
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            idle_shutdown_ms: default_acp_idle_shutdown_ms(),
+        }
+    }
+}
+impl AcpConfig {
+    /// [`Self::idle_shutdown_ms`] as a duration.
+    #[must_use]
+    pub const fn idle_shutdown(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.idle_shutdown_ms)
+    }
+
+    fn invalid_reason(&self) -> Option<&'static str> {
+        (self.idle_shutdown_ms == 0).then_some("acp.idle_shutdown_ms must be positive")
+    }
+}
+const fn default_acp_idle_shutdown_ms() -> u64 {
+    5 * 60 * 1000
+}
 const fn default_cron_enabled() -> bool {
     true
 }
@@ -1131,6 +1165,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.cron {
         runtime.cron = value.clone();
     }
+    if let Some(value) = &layer.acp {
+        runtime.acp = value.clone();
+    }
     if let Some(values) = &layer.headers {
         for (name, value) in values {
             if value.as_str().is_empty() {
@@ -1261,6 +1298,9 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.cron.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
+    }
+    if let Some(reason) = runtime.acp.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {

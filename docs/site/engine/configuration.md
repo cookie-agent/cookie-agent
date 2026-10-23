@@ -50,6 +50,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `producers` | [External Producers](producers.md) |
 | `memory` | [Memory](memory.md) |
 | `cron` | [Cron Jobs](cron.md) |
+| `acp` | [ACP Agents](acp.md) |
 | `headers` | [Request Header](headers.md) |
 | `providers` | [Providers](../extend/providers.md) |
 | `mcp` | [MCP](../extend/mcp.md) |

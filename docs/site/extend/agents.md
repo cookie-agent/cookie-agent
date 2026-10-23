@@ -53,11 +53,12 @@ Review the requested change and report concrete findings.
 |---|---|---|---|
 | `description` | string | *(required)* | 1–512 bytes, no control characters. Shown in the TUI and snapshots. |
 | `mode` | string | *(required)* | `primary`, `subagent`, `all`, or `internal`. |
-| `enabled` | boolean | *(required)* | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
-| `models` | array | *(required)* | Ordered model chain; must be nonempty for `primary`. Other modes may declare `[]`. |
+| `enabled` | boolean | `true` | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
+| `models` | array | `[]` | Ordered model chain; must be nonempty for `primary` (unless the document has an `acp` block). Other modes may omit it. |
 | `limits` | table | defaults below | Timeouts and token bounds. |
 | `permissions` | table | `{}` | Ordered action permission map; see [Permissions](#permissions). At most 256 rules. |
 | `agent_md` | boolean | *(unset)* | Load [AGENTS.md context](#agentsmd-context) for this agent's root runs. Unset follows `[agent_md] enabled`; a value overrides it. Rejected on `subagent` and `internal` agents, which never load AGENTS.md. |
+| `acp` | table | *(unset)* | Makes the document an ACP agent's; see [ACP agent documents](#acp-agent-documents). |
 
 `max_output_tokens` applies in every mode and defaults to `0` in all of them. A
 nonzero value caps each request at the smaller of the document value and the
@@ -138,6 +139,48 @@ Azure still send the unconditional session-ID cache key.
 
 See [System Prompt Composition](../reference/system-prompt.md) for the exact
 prompt, skill-listing, plugin, cache, and history assembly order.
+
+### ACP agent documents
+
+An ACP agent a runtime hosts (see [ACP agents](../daemon/runtimes.md#acp-agents))
+is listed as `<runtime>-<agent>`, and takes its cookie settings from the
+document of that name. Its `acp` block, even `acp: {}`, marks the document as
+the agent's: it is an agent only while a runtime declares it, and a document
+of that name without the block names a daemon agent, which refuses the
+declaration.
+
+```yaml
+# ~/.cookie-agent/agents/labpc-codex.md
+---
+description: Codex on labpc, for refactors
+mode: all
+acp:
+  mode: auto
+  config: { model: "gpt-5" }
+  hide_tools: [read, write, edit, bash, webfetch]
+permissions:
+  read: allow
+  bash: { "git *": allow, "*": ask }
+---
+You review changes for this project before they are committed.
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `acp.mode` | string | the agent's `auto`, else its default | The mode the agent starts its sessions in, by mode ID. |
+| `acp.config` | table of strings | `{}` | Initial values of the agent's config options, by option ID; an unknown option or value is reported in the session and skipped. |
+| `acp.hide_tools` | array of patterns | `[read, write, edit, bash, webfetch]` | Cookie's tools the agent does not get through the MCP bridge, with `*` and `?`; `[]` offers every tool the rules offer. |
+
+- The agent chooses its own model, so the document names no `models`; nor
+  `agent_md` (the agent reads its own context files), nor `limits`, nor mode
+  `internal`. Its body may be empty; a nonempty body is sent with the
+  session's first prompt to the agent.
+- `permissions` decide the calls the agent makes of cookie's tools, as for a
+  model, and the agent's own permission requests: its ACP tool kind maps to
+  an action (`read` and `search` to `read`, `edit`, `delete`, and `move` to
+  `write`, `execute` to `bash`, `fetch` to `webfetch`, every other kind to
+  `acp` with the resource `<kind> <title>`), and each resource must be
+  allowed. Without an `acp` key, `acp` defaults to `ask`.
 
 ## AGENTS.md context
 

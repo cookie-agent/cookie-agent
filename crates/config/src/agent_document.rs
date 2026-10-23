@@ -62,9 +62,15 @@ pub(crate) fn parse_agent(
     validate_permission_expressions(&yaml_value, &id)?;
     let frontmatter: AgentFrontmatter =
         serde_yaml::from_str(yaml).map_err(|error| yaml_error(path, &error))?;
-    let body = format!("{}\n", raw_body.trim_end_matches('\n'));
+    let mut body = format!("{}\n", raw_body.trim_end_matches('\n'));
     if !body.chars().any(|character| !character.is_whitespace()) {
-        return Err(ConfigError::EmptyPrompt(id));
+        // An ACP agent's body is sent with its session's first prompt, and
+        // an empty one sends nothing (`docs/site/specs/acp-agents.md`
+        // section 4).
+        if frontmatter.acp.is_none() {
+            return Err(ConfigError::EmptyPrompt(id));
+        }
+        body.clear();
     }
     let document_fingerprint = hash(
         "cookie-agent/agent-document/v1",

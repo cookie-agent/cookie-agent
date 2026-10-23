@@ -69,10 +69,11 @@ name and tools.
 | `startup_timeout_ms` | positive integer | `10000` | Bound on starting the process and its answer to `runtime/initialize`, and on each capability opening, which follows its MCP servers' first connection attempts. |
 | `shutdown_grace_ms` | positive integer | `3000` | How long a stopping runtime gets before its process group is killed. |
 | `mcp.servers.<name>` | MCP server table | none | MCP servers the runtime hosts on its machine, one per workspace instance or, with `scope = "runtime"`, one for the runtime; see below. Their `include_tools` and `exclude_tools` filter tools on the runtime's machine ([choosing a server's tools](../extend/mcp.md#choosing-a-servers-tools)). |
+| `acp.agents.<agent>` | ACP agent table | none | ACP agents the runtime starts on its machine; see [ACP agents](#acp-agents). |
 
 - **Runtime IDs** match `[a-z][a-z0-9_]{0,31}` because they become tool name
   prefixes. `global` is reserved. `[runtimes.local]` configures the built-in
-  local runtime and accepts only an `mcp` table.
+  local runtime and accepts only `mcp` and `acp` tables.
 - **`command`** must be nonempty and its first element must name a program.
   One process serves every workspace, so the command names none. An element
   containing `{workspace}`, which older templates used, is rejected.
@@ -102,6 +103,60 @@ name and tools.
 
 Unknown keys and invalid values fail the configuration load, as everywhere in
 `config.toml`. Changes take effect when the daemon next starts.
+
+## ACP agents
+
+A runtime hosts ACP agents, external coding agents that take a session's or
+a subagent's turns over the Agent Client Protocol (see the
+[ACP agents spec](../specs/acp-agents.md)). Declare them exactly where MCP
+servers go: `[runtimes.local.acp.agents.<agent>]` on the daemon's machine and
+on a machine whose runtime dials in, and `[runtimes.<id>.acp.agents.<agent>]`
+for a template.
+
+```toml
+[runtimes.local.acp.agents.claude]
+command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+description = "Claude Code"
+
+[runtimes.labpc.acp.agents.codex]
+command = ["npx", "-y", "@agentclientprotocol/codex-acp"]
+env = { CODEX_HOME = "/home/ada/.codex" }
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `command` | array of strings | required | The program and its arguments, run without a shell on the runtime's machine, in its home directory. |
+| `env` | table of strings | `{}` | Variables merged over the runtime's environment. |
+| `description` | string | `""` | Shown where the agent is listed when its daemon document gives none; at most 512 bytes without control characters. |
+| `enabled` | boolean | `true` | A disabled agent is listed as unavailable. |
+
+- **IDs.** The table key is an agent ID: lowercase letters, digits, and
+  single inner hyphens. The daemon lists the agent as
+  `<runtime>-<agent>`, the runtime ID's `_` spelled `-`: `local-claude`,
+  `labpc-codex`, `client-myhost-codex`. A combination that is not an agent
+  ID (a runtime ID with `__` or a trailing `_`), longer than 64 bytes, or
+  that another runtime's agent or a daemon agent document already names is
+  refused with an error naming both; for a runtime that dials in, the
+  daemon skips the agent and says why in its log.
+- **Availability.** An agent of `local` or of a template is available
+  whenever the daemon runs, since the daemon starts its runtime on demand;
+  an agent of a runtime that dials in is available while that runtime is
+  connected, and listed as unavailable while it is away. A session or
+  delegation with an unavailable agent is refused at once.
+- **The daemon-side document.** Cookie settings come from an agent document
+  of the daemon's ID, `~/.cookie-agent/agents/<runtime>-<agent>.md`, whose
+  `acp` block marks it as the agent's (see
+  [ACP agent documents](../extend/agents.md#acp-agent-documents)). Without
+  one the agent has mode `all`, the runtime's description, and the default
+  rules.
+- **Changes.** The daemon's templates and `[runtimes.local]` apply when the
+  daemon next starts, like the rest of `runtimes`. A runtime that dials in
+  reads its machine's configuration again every few seconds and reports
+  changed agents.
+- **Processes.** Each agent runs one process per runtime, shared by its
+  sessions, started on its first turn and stopped after
+  [`[acp] idle_shutdown_ms`](../engine/acp.md) with no turn in progress, with
+  its runtime, and with the daemon.
 
 ## Template MCP servers
 
