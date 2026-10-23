@@ -27,7 +27,7 @@ fn fixture_script() -> PathBuf {
 }
 
 /// An engine whose `local` runtime hosts the scripted ACP agent as
-/// `fixture` (`local-fixture`), started with `env`, and whose user layer
+/// `fixture` (`fixture`), started with `env`, and whose user layer
 /// has the agent `documents` (file name, text).
 struct AcpFixture {
     fixture: Fixture,
@@ -156,7 +156,7 @@ async fn acp_fixture_with(
 }
 
 fn agent_id() -> cookie_agent_protocol::AgentId {
-    cookie_agent_protocol::AgentId::new("local-fixture").unwrap()
+    cookie_agent_protocol::AgentId::new("fixture").unwrap()
 }
 
 fn selection() -> RunSelection {
@@ -254,6 +254,7 @@ async fn a_local_agent_is_registered_under_its_runtime() {
     assert_eq!(place.runtime_id.as_str(), "local");
     assert_eq!(place.agent.as_str(), "fixture");
     assert!(place.available);
+    assert_eq!(descriptor.runtimes, std::slice::from_ref(place));
     assert_eq!(
         descriptor.resolved_fallback,
         [cookie_agent_protocol::acp_model_selection(&agent_id())]
@@ -288,7 +289,7 @@ async fn a_turn_renders_chunks_thoughts_tool_calls_a_plan_and_usage() {
                 resolved_model,
                 ..
             } => {
-                assert_eq!(resolved_model.selection.model.as_str(), "acp/local-fixture");
+                assert_eq!(resolved_model.selection.model.as_str(), "acp/fixture");
                 Some(turn.content.clone())
             }
             _ => None,
@@ -368,7 +369,7 @@ async fn a_turn_renders_chunks_thoughts_tool_calls_a_plan_and_usage() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_session_starts_in_auto_mode_with_the_documents_config_and_commands() {
     let document = "---\ndescription: Fixture with settings\nmode: all\nacp:\n  config: { model: large, effort: high }\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say hello").await;
@@ -574,7 +575,7 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
     let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";
     let acp = acp_fixture(
         &[("ACP_FIXTURE_RESUME", "1"), ("ACP_FIXTURE_LOST", "1")],
-        &[("local-fixture.md", document)],
+        &[("fixture.md", document)],
     )
     .await;
     let engine = acp.engine();
@@ -606,7 +607,7 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
 #[tokio::test(flavor = "multi_thread")]
 async fn permission_requests_are_decided_by_the_mapped_rules() {
     let document = "---\ndescription: Fixture with rules\nmode: all\nacp: {}\npermissions:\n  bash: { \"git *\": allow, \"*\": deny }\n  read: { \"${workspace_dir}/*\": allow, \"*\": deny }\n  webfetch: deny\n  mcp: { \"exa_*\": allow, \"*\": deny }\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let workspace = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
@@ -686,7 +687,7 @@ async fn permission_requests_are_decided_by_the_mapped_rules() {
 async fn an_unmapped_kind_asks_and_the_approval_answers_it() {
     // Even rules that allow everything leave these to the approval flow.
     let document = "---\ndescription: Fixture allowing all\nmode: all\nacp: {}\npermissions:\n  bash: allow\n  mcp: allow\n  other: allow\n  switch_mode: allow\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     for (index, command) in [
@@ -716,7 +717,7 @@ async fn an_unmapped_kind_asks_and_the_approval_answers_it() {
 async fn cancel_answers_a_pending_permission_request_cancelled() {
     let document =
         "---\ndescription: Fixture that asks\nmode: all\nacp: {}\npermissions:\n  bash: ask\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let run = start(engine, session, "ask", "ask-wait execute make deploy").await;
@@ -762,20 +763,52 @@ async fn the_agents_title_names_the_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_workspace_on_its_runtime_the_agent_works_in_the_runtimes_home() {
+async fn without_its_runtime_attached_a_session_or_run_is_refused() {
     let acp = acp_fixture(&[], &[]).await;
     let engine = acp.engine();
-    let session = engine
+    let refused = engine
         .create_session_attached(selection(), &[])
+        .expect_err("no runtime that offers it");
+    assert_eq!(
+        refused.to_string(),
+        "`fixture` needs a runtime that offers it attached: local"
+    );
+    // A session that detached it cannot start a run with it.
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let local = engine
+        .session_runtimes(session)
         .unwrap()
-        .session_id;
-    turn(engine, session, "home", "say hi").await;
-    let record = session_starts(engine, session).pop().unwrap();
-    let home = cookie_agent_protocol::paths::canonicalize(
-        &cookie_agent_protocol::paths::home_dir().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(Path::new(&record.cwd), home);
+        .into_iter()
+        .find(|attachment| attachment.runtime_id.as_str() == "local")
+        .unwrap();
+    engine
+        .detach_runtime(session, local.name, origin())
+        .await
+        .unwrap();
+    let refused = engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: ClientRunId::new("detached").unwrap(),
+                selection: selection(),
+                content: "say hi".into(),
+            },
+            origin(),
+        )
+        .await
+        .expect_err("refused before the run starts");
+    assert!(
+        refused
+            .to_string()
+            .contains("needs a runtime that offers it attached: local"),
+        "{refused}"
+    );
+    assert!(
+        !events(engine, session)
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -792,7 +825,7 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     }
 
     let document = "---\ndescription: Fixture that sees all\nmode: all\nacp:\n  hide_tools: [\"web*\"]\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n  bash: deny\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let outcome = turn(engine, session, "list", "mcp list").await;
@@ -823,8 +856,8 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_acp_agent_takes_a_delegated_subagent_run() {
-    let document = "---\ndescription: Fixture that delegates\nmode: all\nacp: {}\npermissions:\n  delegate: { local-fixture: allow }\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let document = "---\ndescription: Fixture that delegates\nmode: all\nacp: {}\npermissions:\n  delegate: { fixture: allow }\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let call = format!(
@@ -832,7 +865,7 @@ async fn an_acp_agent_takes_a_delegated_subagent_run() {
         serde_json::json!({
             "description": "Child turn",
             "prompt": "say from the child",
-            "agent_type": "local-fixture",
+            "agent_type": "fixture",
         })
     );
     let outcome = turn(engine, session, "delegate", &call).await;
@@ -888,7 +921,7 @@ async fn a_session_with_an_acp_agent_is_refused_while_its_runtime_is_away() {
         )
         .await
         .expect("dial-in runtime connected");
-    let id = cookie_agent_protocol::AgentId::new("labpc-codex").unwrap();
+    let id = cookie_agent_protocol::AgentId::new("codex").unwrap();
     let available = |engine: &Engine| {
         engine
             .current_runtime()
@@ -923,7 +956,7 @@ async fn a_session_with_an_acp_agent_is_refused_while_its_runtime_is_away() {
             preset: None,
         })
         .expect_err("refused while the runtime is away");
-    assert!(refused.to_string().contains("not connected"), "{refused}");
+    assert!(refused.to_string().contains("is unavailable"), "{refused}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -996,14 +1029,14 @@ async fn the_bridge_serves_an_agent_that_connects_while_answering_session_new() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_delegation_target_no_runtime_reported_yet_is_a_diagnostic_until_one_does() {
-    let document = "---\ndescription: Fixture that delegates\nmode: all\nacp: {}\npermissions:\n  delegate: { local-fixture: allow, labpc-codex: allow, \"labpc-*\": allow, lcoal-fixture: allow }\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let document = "---\ndescription: Fixture that delegates\nmode: all\nacp: {}\npermissions:\n  delegate: { fixture: allow, codex: allow, \"cod*\": allow, fxture: allow }\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let diagnostics = engine.configuration_status().diagnostics;
     for name in [
-        "`labpc-codex`, which is not known yet",
-        "`labpc-*`, which matches no agent yet",
-        "`lcoal-fixture`, which is not known yet",
+        "`codex`, which is not known yet",
+        "`cod*`, which matches no agent yet",
+        "`fxture`, which is not known yet",
     ] {
         assert!(
             diagnostics
@@ -1032,13 +1065,13 @@ async fn a_delegation_target_no_runtime_reported_yet_is_a_diagnostic_until_one_d
         serde_json::json!({
             "description": "Child turn",
             "prompt": "say from the child",
-            "agent_type": "labpc-codex",
+            "agent_type": "codex",
         })
     );
     let outcome = turn(engine, session, "early", &call).await;
     let answer = final_text(&outcome);
     assert!(
-        answer.contains("no agent `labpc-codex` (its runtime is not connected)"),
+        answer.contains("no agent `codex` (no connected runtime offers it)"),
         "{answer}"
     );
 
@@ -1076,7 +1109,7 @@ async fn a_delegation_target_no_runtime_reported_yet_is_a_diagnostic_until_one_d
         )
         .await
         .expect("dial-in runtime connected");
-    let codex = cookie_agent_protocol::AgentId::new("labpc-codex").unwrap();
+    let codex = cookie_agent_protocol::AgentId::new("codex").unwrap();
     with_watchdog("the dial-in agent to become a target", async {
         while !targets(engine).contains(&codex) {
             engine.refresh_runtime_agents();
@@ -1086,10 +1119,7 @@ async fn a_delegation_target_no_runtime_reported_yet_is_a_diagnostic_until_one_d
     .await;
     let diagnostics = engine.configuration_status().diagnostics;
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert!(
-        diagnostics[0].contains("`lcoal-fixture`"),
-        "{diagnostics:?}"
-    );
+    assert!(diagnostics[0].contains("`fxture`"), "{diagnostics:?}");
     stop.cancel();
     let _ = served.await;
 }
@@ -1115,7 +1145,7 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_
     // The memory write tools are hidden: part A of the memory section, not
     // its rubric.
     let document = "---\ndescription: Fixture with context\nmode: all\nacp:\n  hide_tools: [read, write, edit, bash, webfetch, memory_write, memory_edit, memory_delete]\n---\nYou review changes.\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let profile = crate::memory::url::MemoryUrl::parse("user://profile").unwrap();
     let current = engine
@@ -1168,7 +1198,7 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_
     // With the write tools offered, the rubric comes too; with no memory
     // tool offered, no memory section.
     let document = "---\ndescription: Fixture with context\nmode: all\nacp: {}\n---\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say one").await;
@@ -1185,7 +1215,7 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_
         first[1]
     );
     let document = "---\ndescription: Fixture with context\nmode: all\nacp: { hide_tools: [\"memory_*\"] }\n---\nBody.\n";
-    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say one").await;
@@ -1424,5 +1454,270 @@ async fn a_turn_after_a_steered_one_still_cancels() {
         acp.received()
             .iter()
             .any(|message| message["method"] == "session/cancel")
+    );
+}
+
+/// Dials runtime `runtime_id` in, declaring the scripted agent as `agent`,
+/// and waits until the engine registers it. Cancel the token to hang up.
+async fn dial_in(
+    acp: &AcpFixture,
+    runtime_id: &str,
+    agent: &str,
+) -> (
+    tokio_util::sync::CancellationToken,
+    tokio::task::JoinHandle<String>,
+) {
+    let engine = acp.engine();
+    let template = engine
+        .inner
+        .runtimes
+        .dial_in_template(runtime_id)
+        .expect("dial-in template");
+    let (daemon, runtime) = cookie_agent_protocol::in_process_pair(64);
+    let stop = tokio_util::sync::CancellationToken::new();
+    let served = tokio::spawn(cookie_agent_coding_runtime::server::serve(
+        Box::new(runtime),
+        cookie_agent_coding_runtime::server::ServeOptions {
+            acp_agents: vec![cookie_agent_runtime_api::protocol::AcpAgentSettings {
+                id: agent.to_owned(),
+                command: vec![
+                    python_command().to_owned(),
+                    fixture_script().to_string_lossy().into_owned(),
+                ],
+                env: BTreeMap::from([(
+                    "ACP_FIXTURE_LOG".to_owned(),
+                    acp.log.to_string_lossy().into_owned(),
+                )]),
+                description: "Dial-in fixture".to_owned(),
+                enabled: true,
+            }],
+            stop: stop.clone(),
+            ..Default::default()
+        },
+    ));
+    let settings = crate::runtimes::runtime_settings(&acp.fixture.config, runtime_id);
+    template
+        .connect(
+            cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
+            &settings,
+            Some(Arc::clone(&engine.inner.mcp_hub)),
+        )
+        .await
+        .expect("dial-in runtime connected");
+    let id = cookie_agent_protocol::AgentId::new(agent).unwrap();
+    let runtime = cookie_agent_protocol::RuntimeId::new(runtime_id).unwrap();
+    with_watchdog("the dial-in agent to register", async {
+        while !engine
+            .current_runtime()
+            .result
+            .snapshot
+            .agents
+            .iter()
+            .any(|descriptor| {
+                descriptor.id == id
+                    && descriptor
+                        .runtimes
+                        .iter()
+                        .any(|offer| offer.runtime_id == runtime && offer.available)
+            })
+        {
+            engine.refresh_runtime_agents();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    (stop, served)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_two_runtimes_offer_runs_on_the_one_the_session_attaches() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let (stop, served) = dial_in(&acp, "labpc", "fixture").await;
+    let descriptor = engine
+        .current_runtime()
+        .result
+        .snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id == agent_id())
+        .cloned()
+        .unwrap();
+    assert_eq!(descriptor.runtime, None, "two runtimes offer it");
+    assert_eq!(
+        descriptor
+            .runtimes
+            .iter()
+            .map(|offer| offer.runtime_id.as_str())
+            .collect::<Vec<_>>(),
+        ["labpc", "local"]
+    );
+
+    // The default session attaches `local`: it runs there, and
+    // `list_agents` says so.
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let listed = final_text(&turn(engine, session, "list", "mcp call list_agents {}").await);
+    // The first offering runtime with a description gives it.
+    assert!(
+        listed.contains("fixture (all, acp) — Dial-in fixture"),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("offered by runtimes: labpc, local"),
+        "{listed}"
+    );
+    assert!(
+        listed.contains("runs here: yes, on runtime local"),
+        "{listed}"
+    );
+    assert_eq!(
+        session_starts(engine, session)
+            .pop()
+            .unwrap()
+            .runtime_id
+            .as_str(),
+        "local"
+    );
+    // `list_runtimes` names the ACP agents each runtime offers.
+    let runtimes = engine.list_runtimes_text(session).unwrap();
+    for id in ["local", "labpc"] {
+        let line = runtimes
+            .lines()
+            .find(|line| {
+                line.trim_start()
+                    .starts_with(&format!("<runtime id=\"{id}\""))
+            })
+            .unwrap_or_else(|| panic!("{id}: {runtimes}"));
+        assert!(line.ends_with(" acp_agents=\"fixture\">"), "{line}");
+    }
+
+    // A second runtime that offers it cannot be attached.
+    let elsewhere = private_tempdir();
+    let refused = engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(elsewhere.path().to_owned()),
+            origin(),
+        )
+        .await
+        .expect_err("a second offering runtime is refused");
+    assert!(
+        refused.to_string().contains(
+            "runtime `labpc` offers ACP agent `fixture`, which this session runs on runtime `local`"
+        ),
+        "{refused}"
+    );
+
+    // Moved to `labpc`, the next turn starts a new ACP session there.
+    let local = engine
+        .session_runtimes(session)
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.runtime_id.as_str() == "local")
+        .unwrap();
+    engine
+        .detach_runtime(session, local.name, origin())
+        .await
+        .unwrap();
+    engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(elsewhere.path().to_owned()),
+            origin(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        final_text(&turn(engine, session, "moved", "say two").await),
+        "two"
+    );
+    let record = session_starts(engine, session).pop().unwrap();
+    assert_eq!(record.runtime_id.as_str(), "labpc");
+    assert_eq!(record.how, AcpSessionStart::New);
+    assert!(events(engine, session).iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Diagnostic { message, .. }
+            if message.contains("earlier session is on runtime `local`")
+    )));
+
+    // With none of them attached, or with both, it cannot run.
+    let none = engine
+        .create_session_with_permissions(
+            selection(),
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                runtimes: Some(Vec::new()),
+                global: true,
+                cwd: None,
+            },
+        )
+        .await
+        .expect_err("no offering runtime attached");
+    assert!(
+        none.to_string()
+            .contains("`fixture` needs a runtime that offers it attached: labpc, local"),
+        "{none}"
+    );
+    let both = engine
+        .create_session_with_permissions(
+            selection(),
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                runtimes: Some(vec![
+                    crate::SessionRuntimeRequest {
+                        runtime_id: "local".to_owned(),
+                        capability: Some("coding".to_owned()),
+                        workspace: Some(acp.workspace()),
+                    },
+                    crate::SessionRuntimeRequest {
+                        runtime_id: "labpc".to_owned(),
+                        capability: None,
+                        workspace: Some(elsewhere.path().to_owned()),
+                    },
+                ]),
+                global: true,
+                cwd: None,
+            },
+        )
+        .await
+        .expect_err("two offering runtimes attached");
+    assert!(
+        both.to_string()
+            .contains("`fixture` is offered by more than one attached runtime (labpc, local)"),
+        "{both}"
+    );
+    stop.cancel();
+    let _ = served.await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_document_without_an_acp_block_shadows_a_declaration() {
+    let document = "---\ndescription: The daemon's own fixture\nmode: primary\nmodels: [{ model: \"custom.test/a-model\" }]\n---\nHello.\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let descriptor = engine
+        .current_runtime()
+        .result
+        .snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id == agent_id())
+        .cloned()
+        .expect("the daemon agent");
+    assert_eq!(descriptor.description, "The daemon's own fixture");
+    assert!(descriptor.runtimes.is_empty());
+    assert_eq!(
+        engine.configuration_status().diagnostics,
+        [
+            "ACP agent `fixture` of runtime `local` is ignored: the agent document `fixture` has \
+          no `acp` block, so `fixture` is a daemon agent; give the document an `acp: {}` block \
+          to make it the ACP agent's"
+        ]
     );
 }

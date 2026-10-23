@@ -416,6 +416,29 @@ impl Engine {
         if self.inner.store.get(session)?.status == SessionStatus::Running {
             return Err(EngineError::SessionRunning(session));
         }
+        // A session runs its ACP agent on the one attached runtime that
+        // offers it, so a second such runtime is refused.
+        if let Some(offers) = self.session_acp_offers(session)? {
+            let attached = self.session_runtime_ids(session)?;
+            let offering = offers
+                .runtimes()
+                .into_iter()
+                .filter(|offering| attached.contains(offering))
+                .collect::<Vec<_>>();
+            if offers
+                .runtimes()
+                .iter()
+                .any(|offering| offering.as_str() == runtime_id)
+                && let Some(other) = offering.iter().find(|other| other.as_str() != runtime_id)
+            {
+                return Err(EngineError::Runtime(format!(
+                    "runtime `{runtime_id}` offers ACP agent `{}`, which this session runs on \
+                     runtime `{other}`; a session runs it on one runtime, so detach `{other}` \
+                     first",
+                    offers.id
+                )));
+            }
+        }
         let instance = self
             .ensure_runtime(runtime_id, capability, workspace.as_deref())
             .await?;

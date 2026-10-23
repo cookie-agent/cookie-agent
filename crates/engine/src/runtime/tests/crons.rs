@@ -875,7 +875,7 @@ async fn list_agents_shows_declared_rules_and_collapses_the_defaults() {
     let runtime = fixture.engine.current_runtime();
     let overlay = cookie_agent_protocol::SessionPermissionOverlay::default();
     let list =
-        |filter| crate::agents_tool::render_agent_list(&policy, &overlay, 0, filter, &runtime);
+        |filter| crate::agents_tool::render_agent_list(&policy, &overlay, 0, filter, &runtime, &[]);
     assert_eq!(
         list(None),
         "\

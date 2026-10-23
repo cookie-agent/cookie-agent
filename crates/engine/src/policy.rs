@@ -143,7 +143,7 @@ impl FrozenRunPolicy {
     /// targets, is refused.
     pub(crate) fn delegate_refusal(&self, target: &protocol::AgentId) -> String {
         if self.names_unknown_target(target) {
-            format!("no agent `{target}` (its runtime is not connected)")
+            format!("no agent `{target}` (no connected runtime offers it)")
         } else {
             "delegate target is not allowed".to_owned()
         }
@@ -1162,11 +1162,10 @@ pub(crate) fn adapter_family(value: &str) -> cookie_agent_models::adapters::Oven
 /// adapter `acp`, whose complete binding no build can run as a model.
 pub(crate) fn acp_binding(
     agent: &protocol::AgentId,
-    runtime: &protocol::RuntimeId,
 ) -> Result<protocol::PersistedModelBinding, EngineError> {
     let selection = protocol::acp_model_selection(agent);
     let fingerprint = protocol::Sha256Digest::of_bytes(
-        format!("cookie-agent/acp-binding/v1\0{agent}\0{runtime}").as_bytes(),
+        format!("cookie-agent/acp-binding/v2\0{agent}").as_bytes(),
     );
     let binding = protocol::PersistedModelBinding {
         selection: selection.clone(),
@@ -1183,7 +1182,7 @@ pub(crate) fn acp_binding(
         },
         selection_fingerprint: fingerprint.clone(),
         blueprint_fingerprint: fingerprint,
-        frozen: serde_json::json!({"acp": {"agent": agent, "runtime": runtime}}),
+        frozen: serde_json::json!({"acp": {"agent": agent}}),
     };
     binding
         .validate()
@@ -1213,18 +1212,15 @@ pub(crate) fn freeze_acp_agent_policy(
         .acp
         .as_ref()
         .ok_or_else(|| EngineError::InvalidRuntimeAgent(agent.document.id.clone()))?;
-    if !acp.available() {
-        return Err(EngineError::Acp(if acp.enabled {
-            format!(
-                "ACP agent `{}` is unavailable: runtime `{}` is not connected",
-                acp.id, acp.runtime
-            )
-        } else {
-            format!(
-                "ACP agent `{}` is disabled on runtime `{}`",
-                acp.id, acp.runtime
-            )
-        }));
+    // Which runtime runs it is the session's to say (section 15, naming
+    // of 2026-10-23); here it only needs one that could.
+    if !acp.any_available() {
+        return Err(EngineError::Acp(format!(
+            "ACP agent `{}` is unavailable: no runtime that offers it ({}) is connected with it \
+             enabled",
+            acp.id,
+            crate::runtime_snapshot::join_runtimes(&acp.runtimes())
+        )));
     }
     let document = &agent.document;
     let permissions = crate::permissions::agent_permission_rules(document, delegated, memory);
@@ -1234,11 +1230,11 @@ pub(crate) fn freeze_acp_agent_policy(
         effective_depth_ceiling: depth_ceiling,
     });
     let composed_prompt = if document.body.trim().is_empty() {
-        format!("ACP agent `{}` on runtime `{}`.\n", acp.agent, acp.runtime)
+        format!("ACP agent `{}`.\n", acp.id)
     } else {
         document.body.clone()
     };
-    let binding = acp_binding(&document.id, &acp.runtime)?;
+    let binding = acp_binding(&document.id)?;
     let snapshot = protocol::AgentSnapshot {
         agent: document.id.clone(),
         mode: document.frontmatter.mode,
@@ -1301,7 +1297,7 @@ impl FrozenRunPolicy {
     }
 
     /// The ACP agent the run is frozen for, when it is one.
-    pub(crate) fn acp_agent(&self) -> Option<&crate::runtime_snapshot::RuntimeAgent> {
+    pub(crate) fn acp_agent(&self) -> Option<&crate::runtime_snapshot::AcpOffers> {
         self.registry
             .get(&self.agent.agent)
             .and_then(|agent| agent.acp.as_ref())

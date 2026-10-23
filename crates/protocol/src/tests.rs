@@ -3601,28 +3601,11 @@ fn meta_fixture() -> SessionMeta {
 }
 
 #[test]
-fn a_runtime_agent_id_joins_runtime_and_agent_with_a_hyphen() {
-    let id = |runtime: &str, agent: &str| {
-        crate::runtime_agent_id(
-            &RuntimeId::new(runtime).unwrap(),
-            &AgentId::new(agent).unwrap(),
-        )
-    };
-    assert_eq!(id("local", "claude").unwrap().as_str(), "local-claude");
+fn an_acp_agents_synthetic_model_names_it() {
     assert_eq!(
-        id("client_myhost", "codex").unwrap().as_str(),
-        "client-myhost-codex"
-    );
-    let doubled = id("lab__pc", "codex").unwrap_err();
-    assert!(doubled.contains("`lab--pc-codex`"), "{doubled}");
-    let trailing = id("labpc_", "codex").unwrap_err();
-    assert!(trailing.contains("not an agent ID"), "{trailing}");
-    let long = id("a", &"b".repeat(63)).unwrap_err();
-    assert!(long.contains("longer than the 64 bytes"), "{long}");
-    assert_eq!(
-        crate::acp_model_selection(&AgentId::new("local-claude").unwrap())
+        crate::acp_model_selection(&AgentId::new("claude").unwrap())
             .model
             .as_str(),
-        "acp/local-claude"
+        "acp/claude"
     );
 }

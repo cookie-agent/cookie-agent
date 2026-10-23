@@ -34,7 +34,7 @@ use crate::{Engine, runtime::Inner};
 pub(crate) const PROVIDER_ID: &str = "builtin.agents";
 pub(crate) const LIST_AGENTS: &str = "list_agents";
 
-const DESCRIPTION: &str = "List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. Leave `for` out to list both.";
+const DESCRIPTION: &str = "List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external coding agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here: it runs on the one attached runtime that offers it, and not with none or several. Leave `for` out to list both.";
 
 /// What an agent is listed for.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -266,6 +266,43 @@ fn variables_line(text: &str) -> Option<String> {
     (!meanings.is_empty()).then(|| format!("  Variables: {}.", meanings.join("; ")))
 }
 
+/// Whether an ACP agent runs with the runtimes `attached`: on the one
+/// that offers it, or why not.
+fn acp_placement_line(
+    offers: &crate::runtime_snapshot::AcpOffers,
+    attached: &[RuntimeId],
+) -> String {
+    let offering = offers
+        .offers
+        .iter()
+        .filter(|offer| attached.contains(&offer.runtime))
+        .collect::<Vec<_>>();
+    match offering[..] {
+        [] => format!(
+            "no — needs one of: {} attached",
+            crate::runtime_snapshot::join_runtimes(&offers.runtimes())
+        ),
+        [offer] if !offer.enabled => format!("no — disabled on runtime {}", offer.runtime),
+        [offer] if !offer.connected => {
+            format!("no — runtime {} is not connected", offer.runtime)
+        }
+        [offer] => format!("yes, on runtime {}", offer.runtime),
+        _ => format!(
+            "no — {} attached runtimes offer it: {}",
+            if offering.len() == 2 {
+                "two"
+            } else {
+                "several"
+            },
+            offering
+                .iter()
+                .map(|offer| offer.runtime.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn mode_name(mode: cookie_agent_config::AgentMode) -> String {
     serde_json::to_value(mode)
         .ok()
@@ -293,12 +330,16 @@ impl Engine {
             cookie_agent_protocol::SessionOrigin::Delegated { depth, .. } => depth,
             cookie_agent_protocol::SessionOrigin::Root => 0,
         };
+        let attached = self
+            .session_runtime_ids(session)
+            .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok(render_agent_list(
             &policy,
             &projection.permission_overlay,
             depth,
             filter,
             &self.current_runtime(),
+            &attached,
         ))
     }
 }
@@ -307,13 +348,16 @@ impl Engine {
 /// as its session's overlay: every enabled non-internal agent of the run's
 /// registry it can use, for delegation (its delegation targets at that
 /// depth) and for a new-session cron job (any, when the run is offered the
-/// cron tools), as `filter` narrows it.
+/// cron tools), as `filter` narrows it. An ACP agent says which runtimes
+/// offer it and whether it can run with `attached`, the session's runtimes
+/// (a delegated child inherits them).
 pub(crate) fn render_agent_list(
     policy: &crate::policy::FrozenRunPolicy,
     overlay: &cookie_agent_protocol::SessionPermissionOverlay,
     depth: u32,
     filter: Option<Use>,
     runtime: &crate::runtime_snapshot::PublishedRuntime,
+    attached: &[RuntimeId],
 ) -> String {
     let delegate_targets = policy.delegate_targets(depth);
     let cron_offered = crate::permissions::tool_visible(
@@ -355,7 +399,17 @@ pub(crate) fn render_agent_list(
             continue;
         }
         let mode = mode_name(frontmatter.mode);
-        let _ = writeln!(output, "{id} ({mode}) — {}", frontmatter.description);
+        let tag = if agent.acp.is_some() { ", acp" } else { "" };
+        let _ = writeln!(output, "{id} ({mode}{tag}) — {}", frontmatter.description);
+        if let Some(offers) = &agent.acp {
+            let runtimes = crate::runtime_snapshot::join_runtimes(&offers.runtimes());
+            let _ = writeln!(output, "  offered by runtimes: {runtimes}");
+            let _ = writeln!(
+                output,
+                "  runs here: {}",
+                acp_placement_line(offers, attached)
+            );
+        }
         let presets = presets_of(id);
         if !presets.is_empty() {
             let _ = writeln!(output, "  presets: {}", presets.join(", "));
@@ -375,7 +429,8 @@ pub(crate) fn render_agent_list(
                 }
             })
             .collect::<Vec<_>>();
-        if !models.is_empty() {
+        // An ACP agent chooses its own model.
+        if !models.is_empty() && agent.acp.is_none() {
             let _ = writeln!(output, "  models: {}", models.join(", "));
         }
         let _ = writeln!(output, "  usable for: {}", uses.join(", "));
@@ -533,5 +588,62 @@ impl PreparedExecutor for AgentsExecutor {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_protocol::{AgentId, RuntimeId};
+
+    use super::acp_placement_line;
+    use crate::runtime_snapshot::{AcpOffers, RuntimeAgent};
+
+    fn offers(runtimes: &[(&str, bool, bool)]) -> AcpOffers {
+        let id = AgentId::new("claude").unwrap();
+        AcpOffers {
+            offers: runtimes
+                .iter()
+                .map(|(runtime, enabled, connected)| RuntimeAgent {
+                    id: id.clone(),
+                    runtime: RuntimeId::new(*runtime).unwrap(),
+                    agent: id.clone(),
+                    description: String::new(),
+                    enabled: *enabled,
+                    connected: *connected,
+                })
+                .collect(),
+            id,
+        }
+    }
+
+    #[test]
+    fn an_acp_agent_says_whether_it_runs_with_the_sessions_runtimes() {
+        let attached = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| RuntimeId::new(*id).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let both = offers(&[("labpc", true, true), ("local", true, true)]);
+        assert_eq!(
+            acp_placement_line(&both, &attached(&["global", "local"])),
+            "yes, on runtime local"
+        );
+        assert_eq!(
+            acp_placement_line(&both, &attached(&["global"])),
+            "no — needs one of: labpc, local attached"
+        );
+        assert_eq!(
+            acp_placement_line(&both, &attached(&["labpc", "local"])),
+            "no — two attached runtimes offer it: labpc, local"
+        );
+        let away = offers(&[("labpc", true, false), ("local", false, true)]);
+        assert_eq!(
+            acp_placement_line(&away, &attached(&["labpc"])),
+            "no — runtime labpc is not connected"
+        );
+        assert_eq!(
+            acp_placement_line(&away, &attached(&["local"])),
+            "no — disabled on runtime local"
+        );
     }
 }

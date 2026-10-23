@@ -89,7 +89,7 @@ expression: schema_for!(RuntimeSnapshotResult)
           "type": "boolean"
         },
         "runtime": {
-          "description": "For an ACP agent a runtime hosts (client protocol 1.17.0): the\nruntime, its own ID for the agent, and whether a session can use it\nnow. Absent for the daemon's own agents.",
+          "description": "For an ACP agent exactly one runtime offers (client protocol\n1.17.0): that runtime. Absent for the daemon's own agents and for an\nACP agent several runtimes offer; [`Self::runtimes`] lists them all.",
           "anyOf": [
             {
               "$ref": "#/$defs/AgentRuntime"
@@ -98,6 +98,14 @@ expression: schema_for!(RuntimeSnapshotResult)
               "type": "null"
             }
           ]
+        },
+        "runtimes": {
+          "description": "For an ACP agent (client protocol 1.21.0): every runtime that offers\nit, by runtime ID. A session runs it on the one of its attached\nruntimes that offers it, and cannot run it with none or with two.\nEmpty for the daemon's own agents.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentRuntime"
+          },
+          "maxItems": 256
         }
       },
       "required": [
@@ -122,22 +130,22 @@ expression: schema_for!(RuntimeSnapshotResult)
       "x-open": true
     },
     "AgentRuntime": {
-      "description": "Where an ACP agent runs (`docs/site/specs/acp-agents.md` section 3).",
+      "description": "A runtime that offers an ACP agent (`docs/site/specs/acp-agents.md`\nsection 3).",
       "type": "object",
       "properties": {
         "agent": {
-          "description": "The agent's ID on the runtime, the key of its declaration.",
+          "description": "The agent's ID on the runtime, the key of its declaration: the\nagent's own ID.",
           "type": "string",
           "maxLength": 64,
           "minLength": 1,
           "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
         },
         "available": {
-          "description": "Whether a session or a delegation can use it now: its runtime is\nconnected, or the daemon starts it on demand, and it is enabled.",
+          "description": "Whether a session that attaches the runtime can use it now: the\nruntime is connected, or the daemon starts it on demand, and the\ndeclaration is enabled.",
           "type": "boolean"
         },
         "runtime_id": {
-          "description": "The runtime that hosts the agent.",
+          "description": "The runtime that offers the agent.",
           "type": "string",
           "maxLength": 32,
           "minLength": 1,

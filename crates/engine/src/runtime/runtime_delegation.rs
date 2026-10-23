@@ -286,6 +286,8 @@ struct ListedRuntime {
     home: Option<String>,
     message: Option<String>,
     capabilities: Vec<cookie_agent_protocol::RuntimeCapabilityInfo>,
+    /// The ACP agents it offers, by ID.
+    acp_agents: Vec<String>,
     attachments: Vec<(RuntimeAttachment, &'static str)>,
 }
 
@@ -336,6 +338,12 @@ fn write_runtime(text: &mut String, indent: &str, runtime: &ListedRuntime, platf
             ("platform", runtime.platform.as_deref().filter(|_| platform),),
             ("home", runtime.home.as_deref()),
             ("message", runtime.message.as_deref()),
+            (
+                "acp_agents",
+                Some(runtime.acp_agents.join(", "))
+                    .filter(|agents| !agents.is_empty())
+                    .as_deref(),
+            ),
         ])
     );
     if runtime.capabilities.is_empty() && runtime.attachments.is_empty() {
@@ -389,6 +397,7 @@ impl Engine {
 
         let own = self.session_runtimes(session)?;
         let instances = self.runtime_instances();
+        let acp_agents = self.inner.acp.runtime_agents();
         let status_of = |attachment: &RuntimeAttachment| -> &'static str {
             let status = instances.iter().find(|instance| {
                 instance.runtime_id == attachment.runtime_id.as_str()
@@ -428,6 +437,11 @@ impl Engine {
                 home,
                 message: listing.message.filter(|_| !listing.connected),
                 capabilities: listing.capabilities,
+                acp_agents: acp_agents
+                    .iter()
+                    .filter(|agent| agent.runtime.as_str() == template.runtime_id)
+                    .map(|agent| agent.id.to_string())
+                    .collect(),
                 attachments: own
                     .iter()
                     .filter(|attachment| attachment.runtime_id.as_str() == template.runtime_id)

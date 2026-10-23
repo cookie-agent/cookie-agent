@@ -1742,7 +1742,7 @@ list_runtimes()
 Description sent to the model:
 
 ```text
-List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, and this session's own attachments on it. Name a runtime capability from here in delegate_subagent's `capabilities`, as `<runtime id>/<capability name>`. A runtime that connects later shows up on the next call.
+List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external coding agents such as Claude Code; a session runs one on the attached runtime that offers it), and this session's own attachments on it. Name a runtime capability from here in delegate_subagent's `capabilities`, as `<runtime id>/<capability name>`. A runtime that connects later shows up on the next call.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `list_runtimes`, which `primary` and `all` agents have by default.
@@ -1799,7 +1799,7 @@ list_agents(for?: "delegate" | "cron")
 Description sent to the model:
 
 ```text
-List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. Leave `for` out to list both.
+List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external coding agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here: it runs on the one attached runtime that offers it, and not with none or several. Leave `for` out to list both.
 ```
 
 Only when the session has the `global` runtime attached and the run is offered `delegate_subagent` or a cron tool. It has no permission of its own.

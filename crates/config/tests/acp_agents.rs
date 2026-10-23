@@ -106,25 +106,9 @@ fn agent_keys_follow_the_agent_id_grammar() {
 }
 
 #[test]
-fn a_daemon_id_that_is_not_an_agent_id_or_too_long_is_refused() {
-    let error = rejected(
-        "[runtimes.lab__pc]\ncommand = [\"x\"]\n[runtimes.lab__pc.acp.agents.codex]\ncommand = [\"x\"]\n",
-        &[],
-    );
-    assert!(error.contains("`lab--pc-codex`"), "{error}");
-    let long = "a".repeat(60);
-    let error = rejected(
-        &format!(
-            "[runtimes.labpc]\ncommand = [\"x\"]\n[runtimes.labpc.acp.agents.{long}]\ncommand = [\"x\"]\n"
-        ),
-        &[],
-    );
-    assert!(error.contains("longer than the 64 bytes"), "{error}");
-}
-
-#[test]
-fn colliding_daemon_ids_are_refused_naming_both() {
-    let error = rejected(
+fn runtimes_may_declare_the_same_agent_and_a_daemon_document_may_share_its_id() {
+    // Every runtime that declares `codex` offers the one agent `codex`.
+    let loaded = load(
         r#"
 [runtimes.lab_pc]
 command = ["x"]
@@ -133,26 +117,21 @@ command = ["x"]
 
 [runtimes.lab]
 command = ["x"]
-[runtimes.lab.acp.agents.pc-codex]
-command = ["x"]
+[runtimes.lab.acp.agents.codex]
+command = ["y"]
 "#,
         &[],
-    );
-    assert!(error.contains("`lab-pc-codex`"), "{error}");
-    assert!(
-        error.contains("`pc-codex`") && error.contains("`codex`"),
-        "{error}"
-    );
-
+    )
+    .expect("two runtimes declaring one agent");
+    assert_eq!(loaded.runtimes.len(), 2);
+    // A daemon document without an `acp` block keeps its ID; the engine
+    // ignores the declaration and says so in the configuration status.
     let daemon = "---\ndescription: A daemon agent\nmode: primary\nmodels: [{ model: \"openai/gpt\" }]\n---\nHello.\n";
-    let error = rejected(
+    load(
         "[runtimes.local.acp.agents.claude]\ncommand = [\"x\"]\n",
-        &[("local-claude.md", daemon)],
-    );
-    assert!(
-        error.contains("names the daemon agent `local-claude`"),
-        "{error}"
-    );
+        &[("claude.md", daemon)],
+    )
+    .expect("a declaration that a daemon document shadows");
 }
 
 #[test]

@@ -65,7 +65,7 @@ impl Engine {
         }
         let agent = resolve_agent(&agents, &selection.agent)?.clone();
         // An ACP agent names no model (`docs/site/specs/acp-agents.md`
-        // section 4); one whose runtime is away is refused at once.
+        // section 4); one no runtime can run now is refused at once.
         if agent.acp.is_some() {
             if !agent.document.frontmatter.enabled
                 || !matches!(
@@ -234,6 +234,16 @@ impl Engine {
         )>,
     ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
+        // An ACP agent runs on the one attached runtime that offers it.
+        if let Some(offers) = policy.acp_agent() {
+            let mut attached = Vec::new();
+            for attachment in attachments {
+                if !attached.contains(&attachment.runtime_id) {
+                    attached.push(attachment.runtime_id.clone());
+                }
+            }
+            offers.place(&attached).map_err(EngineError::Acp)?;
+        }
         let (cron, title) = cron.unzip();
         let id = SessionId::new_v7();
         let cwd_identity = session_cwd_identity(attachments, cwd)?;

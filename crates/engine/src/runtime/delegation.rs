@@ -583,8 +583,27 @@ impl Engine {
         // the parent's machines and project, and each of its runs freezes
         // its own.
         let child_policy = if acp_child {
-            // An ACP subagent names no model; one whose runtime is away is
-            // refused at once.
+            // An ACP subagent names no model; it runs on the one runtime of
+            // the child's attachments (the parent's, or the delegated
+            // capabilities) that offers it, and is refused at once without
+            // one.
+            if let Some(offers) = child_agent.acp.as_ref()
+                && invocation.resume_session_id.is_none()
+            {
+                let attachments = match &delegated_attachments {
+                    Some(attachments) => attachments.clone(),
+                    None => self.inherited_attachments(
+                        &*self.inner.store.get(invocation.parent_session_id)?,
+                    )?,
+                };
+                let mut attached = Vec::new();
+                for attachment in &attachments {
+                    if !attached.contains(&attachment.runtime_id) {
+                        attached.push(attachment.runtime_id.clone());
+                    }
+                }
+                offers.place(&attached).map_err(EngineError::Acp)?;
+            }
             policy::freeze_acp_agent_policy(
                 child_agent,
                 Arc::clone(&parent_policy.registry),

@@ -2,9 +2,10 @@
 //! runtime hosts, which take a session's or a subagent's turns.
 //!
 //! Runtimes declare their agents and report them; the engine registers
-//! each as `<runtime>-<agent>` ([`cookie_agent_protocol::runtime_agent_id`])
-//! next to the daemon's own agents, available while its runtime is
-//! connected (or started on demand). A run of such an agent goes to the
+//! each declared ID as one agent next to the daemon's own, offered by
+//! every runtime that declares it. A session runs it on the one of its
+//! attached runtimes that offers it ([`crate::runtime_snapshot::AcpOffers`]).
+//! A run of such an agent goes to the
 //! ACP runner ([`runner`]) instead of the model loop: the engine speaks
 //! ACP to the agent's process, which the runtime starts and relays
 //! ([`process`]), renders what the agent reports as model turns and tool
@@ -94,14 +95,14 @@ fn report_once(reported: &Mutex<HashSet<String>>, message: String) {
     }
 }
 
-/// The agents of every runtime, each under its daemon ID. A declaration
-/// whose ID is not an agent ID, or whose daemon ID another runtime's agent
-/// has, is refused and reported: the first runtime in ID order keeps it.
+/// The agents of every runtime, one entry per runtime and agent, in
+/// agent and runtime order. A declaration whose ID is not an agent ID is
+/// refused and reported.
 fn runtime_agents(
     by_runtime: BTreeMap<String, crate::runtimes::RuntimeAcpAgents>,
     reported: &Mutex<HashSet<String>>,
 ) -> Vec<RuntimeAgent> {
-    let mut agents = BTreeMap::<AgentId, RuntimeAgent>::new();
+    let mut agents = BTreeMap::<(AgentId, RuntimeId), RuntimeAgent>::new();
     for (runtime, declared) in by_runtime {
         let Ok(runtime_id) = RuntimeId::new(runtime.as_str()) else {
             continue;
@@ -117,28 +118,10 @@ fn runtime_agents(
                 );
                 continue;
             };
-            let id = match cookie_agent_protocol::runtime_agent_id(&runtime_id, &agent) {
-                Ok(id) => id,
-                Err(reason) => {
-                    report_once(reported, reason);
-                    continue;
-                }
-            };
-            if let Some(other) = agents.get(&id) {
-                report_once(
-                    reported,
-                    format!(
-                        "ACP agent `{agent}` of runtime `{runtime}` would be agent `{id}`, as ACP \
-                         agent `{}` of runtime `{}` is; it is not registered",
-                        other.agent, other.runtime
-                    ),
-                );
-                continue;
-            }
             agents.insert(
-                id.clone(),
+                (agent.clone(), runtime_id.clone()),
                 RuntimeAgent {
-                    id,
+                    id: agent.clone(),
                     runtime: runtime_id.clone(),
                     agent,
                     description: report.description,
@@ -188,24 +171,9 @@ impl Engine {
     /// Re-registers the runtimes' ACP agents, and publishes the agent
     /// registry again when they changed.
     pub(crate) fn refresh_runtime_agents(&self) {
+        // A daemon document without an `acp` block keeps its ID; the
+        // configuration status names the declarations it shadows.
         let agents = runtime_agents(self.inner.runtimes.acp_agents(), &self.inner.acp.reported);
-        let config = self.inner.config.load();
-        for agent in &agents {
-            if config
-                .agents
-                .get(&agent.id)
-                .is_some_and(|document| document.frontmatter.acp.is_none())
-            {
-                report_once(
-                    &self.inner.acp.reported,
-                    format!(
-                        "ACP agent `{}` of runtime `{}` would be agent `{}`, which names a daemon \
-                         agent; it is not registered",
-                        agent.agent, agent.runtime, agent.id
-                    ),
-                );
-            }
-        }
         {
             let mut current = lock(&self.inner.acp.agents);
             if *current == agents {
@@ -264,13 +232,12 @@ mod tests {
     }
 
     #[test]
-    fn colliding_and_malformed_declarations_are_refused_once_each() {
+    fn runtimes_declaring_one_id_offer_one_agent_and_malformed_ids_are_refused_once() {
         let reported = Mutex::default();
         let agents = runtime_agents(
             BTreeMap::from([
-                ("lab".to_owned(), declared(&["pc-codex", "off"], true)),
+                ("lab".to_owned(), declared(&["codex", "off"], true)),
                 ("lab_pc".to_owned(), declared(&["codex", "Bad"], false)),
-                ("lab__x".to_owned(), declared(&["codex"], true)),
             ]),
             &reported,
         );
@@ -280,18 +247,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             listed,
-            [("lab-off", "lab", false), ("lab-pc-codex", "lab", true)]
+            [
+                ("codex", "lab", true),
+                ("codex", "lab_pc", false),
+                ("off", "lab", false)
+            ]
         );
         let reported = lock(&reported);
-        assert_eq!(reported.len(), 3, "{reported:?}");
-        assert!(reported.iter().any(|message| {
-            message.contains("`lab-pc-codex`, as ACP agent `pc-codex` of runtime `lab`")
-        }));
+        assert_eq!(reported.len(), 1, "{reported:?}");
         assert!(reported.iter().any(|message| message.contains("`Bad`")));
-        assert!(
-            reported
-                .iter()
-                .any(|message| message.contains("`lab--x-codex`"))
-        );
     }
 }

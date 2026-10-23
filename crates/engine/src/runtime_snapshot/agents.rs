@@ -20,15 +20,17 @@ pub(crate) struct ResolvedAgent {
     pub document: AgentDocument,
     pub resolved_fallback: Vec<ResolvedAgentFallback>,
     pub runnable_as_root: bool,
-    /// Where an ACP agent runs; `None` for the daemon's own agents.
-    pub acp: Option<RuntimeAgent>,
+    /// The runtimes that offer an ACP agent; `None` for the daemon's own
+    /// agents.
+    pub acp: Option<AcpOffers>,
 }
 
-/// An ACP agent a runtime hosts, as the engine registers it
-/// (`docs/site/specs/acp-agents.md` section 3).
+/// An ACP agent on one runtime that declares it
+/// (`docs/site/specs/acp-agents.md` section 3): what a session that
+/// attaches that runtime runs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RuntimeAgent {
-    /// The daemon's ID: [`cookie_agent_protocol::runtime_agent_id`].
+    /// The agent's ID: the key of the runtime's declaration.
     pub id: AgentId,
     pub runtime: cookie_agent_protocol::RuntimeId,
     /// The agent's ID on the runtime.
@@ -45,6 +47,79 @@ impl RuntimeAgent {
     pub(crate) fn available(&self) -> bool {
         self.enabled && self.connected
     }
+}
+
+/// The runtimes that offer one ACP agent, in runtime ID order
+/// (`docs/site/specs/acp-agents.md` section 15, naming of 2026-10-23).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AcpOffers {
+    pub id: AgentId,
+    pub offers: Vec<RuntimeAgent>,
+}
+
+impl AcpOffers {
+    /// The IDs of the runtimes that offer it.
+    pub(crate) fn runtimes(&self) -> Vec<cookie_agent_protocol::RuntimeId> {
+        self.offers
+            .iter()
+            .map(|offer| offer.runtime.clone())
+            .collect()
+    }
+
+    /// Whether some runtime that offers it could run it now.
+    pub(crate) fn any_available(&self) -> bool {
+        self.offers.iter().any(RuntimeAgent::available)
+    }
+
+    /// The agent on the one runtime of `attached` that offers it. Refused,
+    /// saying why: no attached runtime offers it, two or more do, or the
+    /// one that does is away or has it disabled.
+    pub(crate) fn place(
+        &self,
+        attached: &[cookie_agent_protocol::RuntimeId],
+    ) -> Result<RuntimeAgent, String> {
+        let offering = self
+            .offers
+            .iter()
+            .filter(|offer| attached.contains(&offer.runtime))
+            .collect::<Vec<_>>();
+        match offering[..] {
+            [] => Err(format!(
+                "`{}` needs a runtime that offers it attached: {}",
+                self.id,
+                join_runtimes(&self.runtimes())
+            )),
+            [offer] if !offer.enabled => Err(format!(
+                "ACP agent `{}` is disabled on runtime `{}`",
+                self.id, offer.runtime
+            )),
+            [offer] if !offer.connected => Err(format!(
+                "ACP agent `{}` is unavailable: runtime `{}` is not connected",
+                self.id, offer.runtime
+            )),
+            [offer] => Ok(offer.clone()),
+            _ => Err(format!(
+                "`{}` is offered by more than one attached runtime ({}); a session runs it on \
+                 one, so detach the others",
+                self.id,
+                join_runtimes(
+                    &offering
+                        .iter()
+                        .map(|offer| offer.runtime.clone())
+                        .collect::<Vec<_>>()
+                )
+            )),
+        }
+    }
+}
+
+/// `a, b, c`.
+pub(crate) fn join_runtimes(runtimes: &[cookie_agent_protocol::RuntimeId]) -> String {
+    runtimes
+        .iter()
+        .map(cookie_agent_protocol::RuntimeId::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Clone, Debug)]
@@ -87,32 +162,44 @@ impl AgentRegistry {
                 .map(|(id, document)| (id.clone(), document.clone())),
         );
         let mut agents = BTreeMap::new();
+        // Every runtime that declares an ID offers the one agent of that ID.
+        let mut offered = BTreeMap::<AgentId, Vec<RuntimeAgent>>::new();
         for runtime_agent in runtime_agents {
-            if documents.contains_key(&runtime_agent.id) {
-                // A daemon agent of the same ID wins; the engine reports the
-                // refused declaration.
+            offered
+                .entry(runtime_agent.id.clone())
+                .or_default()
+                .push(runtime_agent.clone());
+        }
+        for (id, mut offers) in offered {
+            if documents.contains_key(&id) {
+                // A daemon agent of the same ID wins; the configuration
+                // status names the ignored declarations.
                 continue;
             }
-            let document = match authored.get(&runtime_agent.id) {
+            offers.sort_by(|left, right| left.runtime.cmp(&right.runtime));
+            let offers = AcpOffers { id, offers };
+            let document = match authored.get(&offers.id) {
                 Some(document) => document.clone(),
-                None => runtime_agent_default_document(runtime_agent)?,
+                None => runtime_agent_default_document(&offers)?,
             };
-            let runnable_as_root = runtime_agent.available()
+            // Whether it can run depends on the session's runtimes: it is
+            // a root choice while some runtime could run it.
+            let runnable_as_root = offers.any_available()
                 && document.frontmatter.enabled
                 && matches!(
                     document.frontmatter.mode,
                     AgentMode::Primary | AgentMode::All
                 );
             agents.insert(
-                runtime_agent.id.clone(),
+                offers.id.clone(),
                 ResolvedAgent {
                     document,
                     resolved_fallback: vec![ResolvedAgentFallback::Selection {
-                        selection: cookie_agent_protocol::acp_model_selection(&runtime_agent.id),
+                        selection: cookie_agent_protocol::acp_model_selection(&offers.id),
                         cache: None,
                     }],
                     runnable_as_root,
-                    acp: Some(runtime_agent.clone()),
+                    acp: Some(offers),
                 },
             );
         }
@@ -211,14 +298,15 @@ impl AgentRegistry {
                     &agent.document.frontmatter.permissions,
                     &agents,
                 ),
-                runtime: agent
+                runtime: agent.acp.as_ref().and_then(|acp| match &acp.offers[..] {
+                    [offer] => Some(agent_runtime(offer)),
+                    _ => None,
+                }),
+                runtimes: agent
                     .acp
-                    .as_ref()
-                    .map(|acp| cookie_agent_protocol::AgentRuntime {
-                        runtime_id: acp.runtime.clone(),
-                        agent: acp.agent.clone(),
-                        available: acp.available(),
-                    }),
+                    .iter()
+                    .flat_map(|acp| acp.offers.iter().map(agent_runtime))
+                    .collect(),
             })
             .collect();
         Ok(Self {
@@ -374,15 +462,33 @@ fn built_in_internal_document(
     })
 }
 
+fn agent_runtime(offer: &RuntimeAgent) -> cookie_agent_protocol::AgentRuntime {
+    cookie_agent_protocol::AgentRuntime {
+        runtime_id: offer.runtime.clone(),
+        agent: offer.agent.clone(),
+        available: offer.available(),
+    }
+}
+
 /// The document of an ACP agent the daemon has none for
-/// (`docs/site/specs/acp-agents.md` section 4): mode `all`, the runtime's
-/// description, no rules of its own, and an empty body.
-fn runtime_agent_default_document(agent: &RuntimeAgent) -> Result<AgentDocument, EngineError> {
-    let description = if agent.description.trim().is_empty() {
-        format!("ACP agent `{}` on runtime `{}`", agent.agent, agent.runtime)
-    } else {
-        agent.description.clone()
-    };
+/// (`docs/site/specs/acp-agents.md` section 4): mode `all`, the first
+/// offering runtime's description, no rules of its own, and an empty body.
+fn runtime_agent_default_document(agent: &AcpOffers) -> Result<AgentDocument, EngineError> {
+    let description = agent
+        .offers
+        .iter()
+        .map(|offer| offer.description.trim())
+        .find(|description| !description.is_empty())
+        .map_or_else(
+            || {
+                format!(
+                    "ACP agent `{}` on {}",
+                    agent.id,
+                    join_runtimes(&agent.runtimes())
+                )
+            },
+            str::to_owned,
+        );
     let frontmatter = AgentFrontmatter {
         description,
         mode: AgentMode::All,

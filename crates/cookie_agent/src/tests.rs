@@ -1817,7 +1817,7 @@ async fn cookie_config_edits_and_sets_the_daemon_configuration() {
     assert!(!workspace.join(".cookie-agent/agents/reviewer.md").exists());
 
     // A delegation target no runtime has reported yet applies, with a note.
-    let lead = "---\ndescription: Lead\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\" }]\npermissions:\n  delegate: { labpc-codex: allow }\n---\nLead.\n";
+    let lead = "---\ndescription: Lead\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\" }]\npermissions:\n  delegate: { codex: allow }\n---\nLead.\n";
     io.edits.push_back(lead.to_owned());
     io.output.clear();
     run_config_with(
@@ -1831,7 +1831,7 @@ async fn cookie_config_edits_and_sets_the_daemon_configuration() {
     .expect("an unknown delegation target applies");
     assert!(
         io.output.iter().any(|line| line
-            .starts_with("Note: agent `lead` delegates to `labpc-codex`, which is not known yet")),
+            .starts_with("Note: agent `lead` delegates to `codex`, which is not known yet")),
         "{:?}",
         io.output
     );

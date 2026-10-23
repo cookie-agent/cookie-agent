@@ -136,11 +136,46 @@ impl Engine {
         }
     }
 
+    /// The ACP declarations a daemon agent document of the same ID without
+    /// an `acp` block shadows: the document's agent keeps the ID and the
+    /// declarations are ignored.
+    fn shadowed_acp_declarations(&self) -> Vec<String> {
+        let config = self.inner.config.load();
+        let mut by_agent = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for agent in self.inner.acp.runtime_agents() {
+            if config
+                .agents
+                .get(&agent.id)
+                .is_some_and(|document| document.frontmatter.acp.is_none())
+            {
+                by_agent
+                    .entry(agent.id.to_string())
+                    .or_default()
+                    .push(agent.runtime.to_string());
+            }
+        }
+        by_agent
+            .into_iter()
+            .map(|(agent, runtimes)| {
+                format!(
+                    "ACP agent `{agent}` of {} is ignored: the agent document `{agent}` has no \
+                     `acp` block, so `{agent}` is a daemon agent; give the document an `acp: {{}}` \
+                     block to make it the ACP agent's",
+                    match &runtimes[..] {
+                        [runtime] => format!("runtime `{runtime}`"),
+                        _ => format!("runtimes {}", runtimes.join(", ")),
+                    }
+                )
+            })
+            .collect()
+    }
+
     /// The diagnostics of the published agents: those of the shared agents,
     /// then each preset's own.
     fn configuration_diagnostics(&self) -> Vec<String> {
         let published = self.current_runtime();
-        let mut diagnostics = published.agents.delegation_diagnostics();
+        let mut diagnostics = self.shadowed_acp_declarations();
+        diagnostics.extend(published.agents.delegation_diagnostics());
         for (preset, registry) in &published.agent_presets {
             for diagnostic in registry.delegation_diagnostics() {
                 if !diagnostics.contains(&diagnostic) {

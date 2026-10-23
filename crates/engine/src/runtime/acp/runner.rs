@@ -1480,10 +1480,11 @@ impl Engine {
         run_id: RunId,
         active: Arc<ActiveRun>,
     ) -> Result<(), EngineError> {
-        let agent =
+        let offers =
             active.policy.acp_agent().cloned().ok_or_else(|| {
                 EngineError::Acp("the run's agent is not an ACP agent".to_owned())
             })?;
+        let agent = self.place_acp_agent(active.session, &offers)?;
         let document = active
             .policy
             .registry
@@ -2002,7 +2003,26 @@ impl Engine {
                 Vec::new()
             }
         };
-        let prior = self.recorded_acp_session(session, agent)?;
+        // The agent keeps its sessions on the machine that runs it: one
+        // recorded on another runtime cannot be resumed here.
+        let mut prior = self.recorded_acp_session(session, agent)?;
+        if let Some(elsewhere) = prior
+            .as_ref()
+            .filter(|record| record.runtime_id != agent.runtime)
+        {
+            self.acp_notice(
+                session,
+                run,
+                format!(
+                    "The agent's earlier session is on runtime `{}`, which does not run it for \
+                     this session now; this turn starts a new session on runtime `{}`, which does \
+                     not remember the conversation so far.",
+                    elsewhere.runtime_id, agent.runtime
+                ),
+            )
+            .await;
+            prior = None;
+        }
         let caps = &process.init().agent_capabilities;
         let mut opened = None;
         let mut lost = false;
@@ -2337,6 +2357,54 @@ impl Engine {
             .await
     }
 
+    /// The IDs of the runtimes `session` attaches, each once.
+    pub(crate) fn session_runtime_ids(
+        &self,
+        session: SessionId,
+    ) -> Result<Vec<cookie_agent_protocol::RuntimeId>, EngineError> {
+        let projection = self.inner.store.get(session)?;
+        let mut ids = Vec::new();
+        for attachment in &projection.meta.attachments {
+            if !ids.contains(&attachment.runtime_id) {
+                ids.push(attachment.runtime_id.clone());
+            }
+        }
+        Ok(ids)
+    }
+
+    /// The runtimes that offer the ACP agent `session` runs now, when it
+    /// runs one.
+    pub(crate) fn session_acp_offers(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<crate::runtime_snapshot::AcpOffers>, EngineError> {
+        let projection = self.inner.store.get(session)?;
+        let selection =
+            cookie_agent_protocol::SessionModelState::from_events(&projection.log.event_snapshot())
+                .selection
+                .unwrap_or_else(|| projection.meta.creation_selection.clone());
+        let runtime = self.current_runtime();
+        let Ok(agents) = runtime.agents_for_preset(selection.preset.as_deref()) else {
+            return Ok(None);
+        };
+        Ok(agents
+            .get(&selection.agent)
+            .and_then(|agent| agent.acp.clone()))
+    }
+
+    /// The ACP agent of `offers` on the one runtime `session` attaches
+    /// that offers it; refused, saying why, when there is none or more
+    /// than one, or it is away or disabled there.
+    pub(crate) fn place_acp_agent(
+        &self,
+        session: SessionId,
+        offers: &crate::runtime_snapshot::AcpOffers,
+    ) -> Result<RuntimeAgent, EngineError> {
+        offers
+            .place(&self.session_runtime_ids(session)?)
+            .map_err(EngineError::Acp)
+    }
+
     /// The ACP session the log of `session` records last for `agent`.
     fn recorded_acp_session(
         &self,
@@ -2515,13 +2583,8 @@ impl Engine {
                     params.session_id
                 ))
             })?;
-        let agent = resolved.acp.clone().expect("filtered to ACP agents");
-        if !agent.available() {
-            return Err(EngineError::Acp(format!(
-                "ACP agent `{}` is unavailable: runtime `{}` is not connected",
-                agent.id, agent.runtime
-            )));
-        }
+        let offers = resolved.acp.clone().expect("filtered to ACP agents");
+        let agent = self.place_acp_agent(params.session_id, &offers)?;
         let (process, _use) = self
             .inner
             .acp

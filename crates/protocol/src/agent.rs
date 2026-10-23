@@ -536,22 +536,32 @@ pub struct AgentDescriptor {
     pub resolved_fallback: Vec<ModelSelection>,
     #[schemars(length(max = 256))]
     pub delegation_targets: Vec<AgentId>,
-    /// For an ACP agent a runtime hosts (client protocol 1.17.0): the
-    /// runtime, its own ID for the agent, and whether a session can use it
-    /// now. Absent for the daemon's own agents.
+    /// For an ACP agent exactly one runtime offers (client protocol
+    /// 1.17.0): that runtime. Absent for the daemon's own agents and for an
+    /// ACP agent several runtimes offer; [`Self::runtimes`] lists them all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<AgentRuntime>,
+    /// For an ACP agent (client protocol 1.21.0): every runtime that offers
+    /// it, by runtime ID. A session runs it on the one of its attached
+    /// runtimes that offers it, and cannot run it with none or with two.
+    /// Empty for the daemon's own agents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub runtimes: Vec<AgentRuntime>,
 }
 
-/// Where an ACP agent runs (`docs/site/specs/acp-agents.md` section 3).
+/// A runtime that offers an ACP agent (`docs/site/specs/acp-agents.md`
+/// section 3).
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AgentRuntime {
-    /// The runtime that hosts the agent.
+    /// The runtime that offers the agent.
     pub runtime_id: RuntimeId,
-    /// The agent's ID on the runtime, the key of its declaration.
+    /// The agent's ID on the runtime, the key of its declaration: the
+    /// agent's own ID.
     pub agent: AgentId,
-    /// Whether a session or a delegation can use it now: its runtime is
-    /// connected, or the daemon starts it on demand, and it is enabled.
+    /// Whether a session that attaches the runtime can use it now: the
+    /// runtime is connected, or the daemon starts it on demand, and the
+    /// declaration is enabled.
     pub available: bool,
 }
 
@@ -606,7 +616,10 @@ impl AgentDescriptor {
         {
             return Err(AgentSchemaError::InvalidDescription);
         }
-        if self.resolved_fallback.len() > 256 || self.delegation_targets.len() > 256 {
+        if self.resolved_fallback.len() > 256
+            || self.delegation_targets.len() > 256
+            || self.runtimes.len() > 256
+        {
             return Err(AgentSchemaError::InvalidListBounds);
         }
         let mut models = BTreeSet::new();
@@ -680,6 +693,8 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             delegation_targets: Vec<AgentId>,
             #[serde(default)]
             runtime: Option<AgentRuntime>,
+            #[serde(default)]
+            runtimes: Vec<AgentRuntime>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -692,6 +707,7 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             resolved_fallback: w.resolved_fallback,
             delegation_targets: w.delegation_targets,
             runtime: w.runtime,
+            runtimes: w.runtimes,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -733,29 +749,4 @@ pub fn acp_model_selection(agent: &AgentId) -> ModelSelection {
             .expect("an agent ID is a model ID"),
         variant: None,
     }
-}
-
-/// The daemon's ID of ACP agent `agent` hosted by runtime `runtime`
-/// (`docs/site/specs/acp-agents.md` section 3): `<runtime>-<agent>`, the
-/// runtime ID's `_` spelled `-`, so `local` and `claude` make
-/// `local-claude` and `client_host` and `codex` make `client-host-codex`.
-/// The runtime travels next to the ID wherever it matters; it is never
-/// parsed back out. Fails, saying why, when the combination is not an
-/// agent ID: longer than 64 bytes, or with a doubled hyphen (a runtime ID
-/// with `__` or a trailing `_`).
-pub fn runtime_agent_id(runtime: &RuntimeId, agent: &AgentId) -> Result<AgentId, String> {
-    let combined = format!("{}-{agent}", runtime.as_str().replace('_', "-"));
-    AgentId::new(combined.as_str()).map_err(|_| {
-        if combined.len() > 64 {
-            format!(
-                "ACP agent `{agent}` of runtime `{runtime}` would be agent `{combined}`, longer \
-                 than the 64 bytes an agent ID may have"
-            )
-        } else {
-            format!(
-                "ACP agent `{agent}` of runtime `{runtime}` would be agent `{combined}`, which is \
-                 not an agent ID (lowercase letters, digits, and single inner hyphens)"
-            )
-        }
-    })
 }

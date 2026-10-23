@@ -81,53 +81,6 @@ impl LoadedConfiguration {
     }
 }
 
-/// Refuses an ACP agent of a configured runtime whose daemon ID
-/// ([`cookie_agent_protocol::runtime_agent_id`]) is not an agent ID, is
-/// another configured runtime agent's, or names a daemon agent: a
-/// document without an `acp` block, at the top level or in a preset.
-fn validate_runtime_agent_ids(
-    runtimes: &BTreeMap<cookie_agent_identity::RuntimeId, crate::RuntimeTemplateConfig>,
-    agents: &BTreeMap<AgentId, AgentDocument>,
-    preset_agents: &BTreeMap<String, BTreeMap<AgentId, AgentDocument>>,
-) -> Result<(), ConfigError> {
-    let mut seen = BTreeMap::<AgentId, (String, String)>::new();
-    for (runtime, template) in runtimes {
-        for agent in template.acp_agents.keys() {
-            let invalid = |reason: String| ConfigError::RuntimeTemplate {
-                runtime: runtime.to_string(),
-                reason,
-            };
-            let id = cookie_agent_protocol::runtime_agent_id(runtime, agent).map_err(invalid)?;
-            if let Some((other_runtime, other_agent)) = seen.get(&id) {
-                return Err(invalid(format!(
-                    "ACP agent `{agent}` would be agent `{id}`, as ACP agent `{other_agent}` of \
-                     runtime `{other_runtime}` is"
-                )));
-            }
-            let daemon_agent =
-                agents
-                    .get(&id)
-                    .map(|document| (document, None))
-                    .into_iter()
-                    .chain(preset_agents.iter().filter_map(|(preset, documents)| {
-                        Some((documents.get(&id)?, Some(preset)))
-                    }))
-                    .find(|(document, _)| document.frontmatter.acp.is_none());
-            if let Some((_, preset)) = daemon_agent {
-                let place =
-                    preset.map_or_else(String::new, |preset| format!(" of preset `{preset}`"));
-                return Err(invalid(format!(
-                    "ACP agent `{agent}` would be agent `{id}`, which names the daemon agent \
-                     `{id}`{place}; rename one, or give the document an `acp` block to make it \
-                     this agent's"
-                )));
-            }
-            seen.insert(id, (runtime.to_string(), agent.to_string()));
-        }
-    }
-    Ok(())
-}
-
 /// Loads the built-in defaults and the user layer, and discovers user skills.
 /// Configuration has no workspace layer: `<cwd>/.cookie-agent/config.toml` and
 /// `<cwd>/.cookie-agent/agents/` are never opened. Project skills are found by
@@ -253,7 +206,6 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         }
     }
     AgentRegistry::validate_ref(&agents)?;
-    validate_runtime_agent_ids(&runtimes, &agents, &preset_agents)?;
     let agent_presets = preset_agents
         .into_iter()
         .map(|(preset, documents)| {
