@@ -522,10 +522,12 @@ impl Engine {
         let Some(job) = self.inner.crons.job(&id) else {
             return;
         };
-        let skip = if self.inner.config.load().runtime.cron.enabled {
-            self.skip_reason(&job)
-        } else {
+        let skip = if !self.inner.config.load().runtime.cron.enabled {
             Some(StoredSkip::FiringDisabled)
+        } else if self.restart_pending() {
+            Some(StoredSkip::DaemonRestarting)
+        } else {
+            self.skip_reason(&job)
         };
         let history = self.inner.config.load().runtime.cron.history;
         let claimed = self

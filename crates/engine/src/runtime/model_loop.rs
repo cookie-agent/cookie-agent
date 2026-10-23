@@ -245,6 +245,9 @@ impl Engine {
         admission: Option<(InvocationId, u64)>,
         producer_start: bool,
     ) -> Result<RunStartResult, EngineError> {
+        // A scheduled restart refuses new runs, and waits for this one
+        // while it starts.
+        let _starting = self.begin_run_start(admission.is_none())?;
         // Before anything is read from the session: waiting for a runtime
         // change in progress suspends the start.
         self.reconcile_provider_store_off_worker().await?;

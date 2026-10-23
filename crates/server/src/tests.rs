@@ -2435,3 +2435,80 @@ async fn cron_jobs_are_created_listed_changed_and_deleted_through_rpc() {
     harness.server.shutdown();
     harness.engine.shutdown().await;
 }
+
+/// An embedded engine has no restart hook, so `daemon.restart` is refused;
+/// with one, every connection hears the restart and, once the daemon shuts
+/// down to restart, why its connection closed.
+#[tokio::test]
+async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
+    let harness = harness();
+    let token = crate::generate_token().expect("token");
+    let running = Arc::clone(&harness.server)
+        .serve_on(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            token.clone(),
+            None,
+        )
+        .await
+        .expect("serve");
+    let url = format!("ws://{}/ws", running.address());
+    let client = cookie_agent_protocol::Client::connect_websocket_with_token(&url, &token)
+        .await
+        .expect("connect");
+    let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
+    client.handshake().await.expect("handshake");
+
+    let refused = client
+        .restart_daemon(cookie_agent_protocol::RestartWhen::Idle)
+        .await
+        .expect_err("no hook");
+    assert_eq!(
+        refused.error_code(),
+        Some("restart_unsupported"),
+        "{refused}"
+    );
+
+    let (due, restart) = tokio::sync::oneshot::channel();
+    harness.engine.set_restart_hook(Box::new(move || {
+        let _ = due.send(());
+    }));
+    let scheduled = client
+        .restart_daemon(cookie_agent_protocol::RestartWhen::Idle)
+        .await
+        .expect("scheduled");
+    assert!(scheduled.scheduled);
+    assert_eq!(scheduled.active_runs, 0);
+    tokio::time::timeout(std::time::Duration::from_secs(5), restart)
+        .await
+        .expect("due in time")
+        .expect("the hook ran");
+    let restarting = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(ClientDelivery::DaemonRestarting(restarting)) = deliveries.recv().await {
+                break restarting;
+            }
+        }
+    })
+    .await
+    .expect("daemon.restarting in time");
+    assert_eq!(restarting.when, cookie_agent_protocol::RestartWhen::Idle);
+    assert_eq!(restarting.active_runs, 0);
+    assert_eq!(restarting.reason.as_deref(), Some("restarting now"));
+
+    harness.engine.shutdown().await;
+    harness.server.shutdown_for_restart();
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match deliveries.recv().await {
+                Some(ClientDelivery::Disconnected { error }) => break Some(error),
+                Some(_) => {}
+                None => break None,
+            }
+        }
+    })
+    .await
+    .expect("closed in time");
+    let closed = closed.expect("the connection ends saying why");
+    assert!(closed.ends_with("the daemon is restarting"), "{closed}");
+    running.wait().await;
+}

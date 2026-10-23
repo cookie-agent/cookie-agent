@@ -318,6 +318,8 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             .error()
             .field("session_id", session_id),
         EngineError::MissingRun(run_id) => errors::RUN_NOT_FOUND.error().field("run_id", run_id),
+        EngineError::Restarting => errors::DAEMON_RESTARTING.error(),
+        EngineError::RestartUnsupported => errors::RESTART_UNSUPPORTED.error(),
         EngineError::StaleRevert {
             session_id,
             current_last_seq,

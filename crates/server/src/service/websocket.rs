@@ -28,6 +28,9 @@ struct WebSocketStream {
     /// The close frame this end closes with, once its handler has chosen
     /// it; a normal closure when there is none.
     closing: Option<tokio::sync::watch::Receiver<Option<axum::extract::ws::CloseFrame>>>,
+    /// Set when the daemon shuts down to restart, which the closing frame
+    /// says.
+    restarting: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// How long a closing stream waits for its handler to choose the close
@@ -35,11 +38,16 @@ struct WebSocketStream {
 const CLOSE_CHOICE_WAIT: Duration = Duration::from_secs(1);
 
 impl WebSocketStream {
-    /// A stream that closes with a normal closure.
-    fn new(socket: axum::extract::ws::WebSocket) -> Self {
+    /// A client's stream: it closes with a normal closure, or saying the
+    /// daemon is restarting once `restarting` is set.
+    fn client(
+        socket: axum::extract::ws::WebSocket,
+        restarting: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             socket,
             closing: None,
+            restarting: Some(restarting),
         }
     }
 
@@ -57,6 +65,7 @@ impl WebSocketStream {
             Self {
                 socket,
                 closing: Some(closing),
+                restarting: None,
             },
             choice,
         )
@@ -68,6 +77,16 @@ impl WebSocketStream {
             code: axum::extract::ws::close_code::NORMAL,
             reason: "".into(),
         };
+        if self
+            .restarting
+            .as_ref()
+            .is_some_and(|restarting| restarting.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return axum::extract::ws::CloseFrame {
+                code: cookie_agent_protocol::RESTART_CLOSE_CODE,
+                reason: cookie_agent_protocol::RESTART_CLOSE_REASON.into(),
+            };
+        }
         let Some(closing) = &mut self.closing else {
             return normal;
         };
@@ -363,9 +382,8 @@ async fn websocket_upgrade(
         .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
-            let _ = server
-                .serve_stream(WebSocketStream::new(socket), authentication)
-                .await;
+            let stream = WebSocketStream::client(socket, Arc::clone(&server.restarting));
+            let _ = server.serve_stream(stream, authentication).await;
         })
 }
 

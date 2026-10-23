@@ -5,7 +5,14 @@ mod websocket;
 pub use page::page_url;
 pub use websocket::{TlsConfig, load_tls};
 
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use cookie_agent_engine::Engine;
 use cookie_agent_protocol::{
@@ -20,6 +27,9 @@ use tokio_util::sync::CancellationToken;
 pub struct Server {
     pub(crate) engine: Engine,
     pub(crate) shutdown: CancellationToken,
+    /// Set when the daemon shuts down to restart: client connections then
+    /// close with code 1012 and the reason `restarting`.
+    pub(crate) restarting: Arc<AtomicBool>,
 }
 
 impl Server {
@@ -28,10 +38,19 @@ impl Server {
         Self {
             engine,
             shutdown: CancellationToken::new(),
+            restarting: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn shutdown(&self) {
+        self.shutdown.cancel();
+    }
+
+    /// Shuts down to restart: as [`Self::shutdown`], but client connections
+    /// close saying the daemon is restarting
+    /// ([`cookie_agent_protocol::RESTART_CLOSE_CODE`]).
+    pub fn shutdown_for_restart(&self) {
+        self.restarting.store(true, Ordering::Release);
         self.shutdown.cancel();
     }
 

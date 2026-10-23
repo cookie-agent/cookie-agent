@@ -211,6 +211,39 @@ async fn a_fire_is_skipped_while_the_previous_one_still_waits() {
     assert_eq!(fire_messages(engine, session, &job.id), 1);
 }
 
+/// While a scheduled restart waits, a due fire is recorded as skipped for
+/// it and `crons.run` is refused.
+#[tokio::test]
+async fn fires_are_skipped_while_the_daemon_waits_to_restart() {
+    let (endpoint, _responses, _captured) = scripted_channel_server(1).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection).unwrap().session_id;
+    let job = engine
+        .create_cron(params("Poll.", daily(), CronTarget::Session(session)))
+        .await
+        .expect("created");
+    engine.set_restart_hook(Box::new(|| {}));
+    engine
+        .schedule_restart(cookie_agent_protocol::RestartWhen::Idle)
+        .expect("scheduled");
+    fire_now(engine, &job.id).await;
+    let skipped = await_job(engine, &job.id, "the skip", |job| job.history.len() == 1).await;
+    assert_eq!(
+        last_outcome(&skipped),
+        StoredOutcome::Skipped {
+            reason: StoredSkip::DaemonRestarting
+        }
+    );
+    assert_eq!(fire_messages(engine, session, &job.id), 0);
+    let refused = engine.run_cron(job.id.clone()).await.expect_err("refused");
+    assert!(
+        matches!(refused, crate::EngineError::Restarting),
+        "{refused}"
+    );
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_fire_recorded_before_a_restart_is_delivered_exactly_once() {
     let (endpoint, responses, _captured) = scripted_channel_server(1).await;

@@ -235,6 +235,38 @@ impl Server {
         });
     }
 
+    /// Tells this connection about a scheduled restart: at once when one is
+    /// already scheduled, then whenever its `when` or the active runs
+    /// change.
+    pub(super) fn start_restart_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_restart();
+        receiver.mark_changed();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                let Some(status) = *receiver.borrow_and_update() else {
+                    continue;
+                };
+                if context
+                    .notify(
+                        cookie_agent_protocol::DAEMON_RESTARTING_METHOD,
+                        &restarting_notification(status),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Signals memory files this daemon changed to this connection;
     /// bursts coalesce.
     pub(super) fn start_memory_notifications(&self, context: ServerContext) {
@@ -513,4 +545,28 @@ fn runtime_failure(
         reason: failure.reason,
         session_ids,
     })
+}
+
+/// A restart's status as clients are told it, with what it waits for.
+fn restarting_notification(
+    status: cookie_agent_engine::RestartStatus,
+) -> cookie_agent_protocol::DaemonRestartingNotification {
+    let reason = if status.due {
+        "restarting now".to_owned()
+    } else {
+        let turns = if status.active_runs == 1 {
+            "turn"
+        } else {
+            "turns"
+        };
+        format!(
+            "waiting for {} running {turns} to finish",
+            status.active_runs
+        )
+    };
+    cookie_agent_protocol::DaemonRestartingNotification {
+        when: status.when,
+        active_runs: status.active_runs,
+        reason: Some(reason),
+    }
 }

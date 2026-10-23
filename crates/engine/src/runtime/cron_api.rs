@@ -385,6 +385,9 @@ impl Engine {
         &self,
         id: CronJobId,
     ) -> Result<cookie_agent_protocol::CronRunResult, EngineError> {
+        if self.restart_pending() {
+            return Err(EngineError::Restarting);
+        }
         self.run_cron_now(id).await
     }
 

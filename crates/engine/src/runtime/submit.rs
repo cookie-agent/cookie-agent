@@ -231,6 +231,9 @@ impl Engine {
                 // The started run consumed the entry; a client's run that
                 // won the race keeps the queue waiting for its completion.
                 Ok(_) | Err(EngineError::SessionRunning(_)) => return,
+                // A scheduled restart: the queue waits for the restarted
+                // daemon, which drains it when the session resumes.
+                Err(EngineError::Restarting) => return,
                 // A plugin took the input: drop it and try the next one.
                 Err(EngineError::InputHandled(_)) => {
                     self.append(

@@ -43,6 +43,7 @@ impl ServerProtocol for Server {
         self.start_memory_notifications(context.clone());
         self.start_project_notifications(context.clone());
         self.start_cron_notifications(context.clone());
+        self.start_restart_notifications(context.clone());
         self.start_background_notifications(context.clone());
         self.start_upload_cleanup(&context);
         self.start_engine_event_notifications(context);
@@ -930,6 +931,20 @@ impl ServerProtocol for Server {
         }
         Ok(cookie_agent_protocol::ConfigReloadResult {
             status: crate::config::status_to_wire(self.engine.configuration_status()),
+        })
+    }
+
+    async fn restart_daemon(
+        &self,
+        params: cookie_agent_protocol::DaemonRestartParams,
+    ) -> Result<cookie_agent_protocol::DaemonRestartResult> {
+        let scheduled = self
+            .engine
+            .schedule_restart(params.when)
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::DaemonRestartResult {
+            scheduled: scheduled.scheduled,
+            active_runs: scheduled.active_runs,
         })
     }
 

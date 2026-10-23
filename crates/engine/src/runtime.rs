@@ -85,6 +85,7 @@ pub(crate) mod producers;
 mod prompt_blocks;
 mod recovery;
 mod residency;
+pub(crate) mod restart;
 mod runs;
 mod runtime_notes;
 mod session_delete;
@@ -210,6 +211,12 @@ pub enum EngineError {
     MissingRun(RunId),
     #[error("session {0} is already running")]
     SessionRunning(SessionId),
+    /// A new run while a scheduled restart waits for the active ones.
+    #[error("the daemon is restarting")]
+    Restarting,
+    /// A restart asked of an engine whose program cannot restart it.
+    #[error("this daemon can't restart itself")]
+    RestartUnsupported,
     #[error("session {session_id} changed since it was viewed (now at seq {current_last_seq})")]
     StaleRevert {
         session_id: SessionId,
@@ -939,6 +946,8 @@ pub(crate) struct Inner {
     /// The cron jobs.
     pub(crate) crons: Arc<crate::crons::CronStore>,
     pub(crate) cron_scheduler: cron_fire::CronSchedulerState,
+    /// A restart a client scheduled, and the hook that does it.
+    pub(crate) restart: restart::RestartState,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     /// MCP changes and failures of every runtime.
@@ -1207,6 +1216,7 @@ impl Engine {
                 projects,
                 crons,
                 cron_scheduler: cron_fire::CronSchedulerState::default(),
+                restart: restart::RestartState::default(),
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 mcp_hub,

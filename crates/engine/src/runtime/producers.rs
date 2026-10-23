@@ -585,7 +585,7 @@ impl Engine {
             let _ = engine.finish_compaction(session).await;
             let successful = result.is_ok();
             if let Err(error) = result
-                && !matches!(error, EngineError::Producer(_))
+                && !matches!(error, EngineError::Producer(_) | EngineError::Restarting)
             {
                 eprintln!("session {session} producer wake failed: {error}");
             }

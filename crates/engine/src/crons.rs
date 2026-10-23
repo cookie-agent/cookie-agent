@@ -251,6 +251,7 @@ pub(crate) enum StoredSkip {
     DaemonWasDown,
     Interrupted,
     FiringDisabled,
+    DaemonRestarting,
 }
 
 impl StoredSkip {
@@ -261,6 +262,7 @@ impl StoredSkip {
             Self::DaemonWasDown => CronSkipReason::DaemonWasDown,
             Self::Interrupted => CronSkipReason::Interrupted,
             Self::FiringDisabled => CronSkipReason::FiringDisabled,
+            Self::DaemonRestarting => CronSkipReason::DaemonRestarting,
         }
     }
 }
