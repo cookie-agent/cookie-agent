@@ -582,6 +582,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::SessionProjectSetParams,
     ) -> Result<crate::SessionProjectSetResult, ServerFault>;
+    /// Sets one of the config options of a session's ACP agent.
+    async fn set_session_agent_option(
+        &self,
+        params: crate::SessionAgentOptionSetParams,
+    ) -> Result<crate::SessionAgentOptionSetResult, ServerFault>;
     /// Lists the cron jobs with their state and history.
     async fn list_crons(
         &self,
@@ -1128,6 +1133,9 @@ async fn dispatch<S: ServerProtocol>(
         crate::PROJECT_DELETE_METHOD => value(server.delete_project(decode(params)?).await?),
         crate::SESSION_PROJECT_SET_METHOD => {
             value(server.set_session_project(decode(params)?).await?)
+        }
+        crate::SESSION_AGENT_OPTION_SET_METHOD => {
+            value(server.set_session_agent_option(decode(params)?).await?)
         }
         crate::CRONS_LIST_METHOD => value(server.list_crons(decode_default(params)?).await?),
         crate::CRONS_CREATE_METHOD => value(server.create_cron(decode(params)?).await?),

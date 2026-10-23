@@ -1115,6 +1115,25 @@ impl Client {
         .await
     }
 
+    /// Sets option `option_id` of the ACP agent of session `session_id` to
+    /// `value`; returns the agent's options after the change.
+    pub async fn set_session_agent_option(
+        &self,
+        session_id: SessionId,
+        option_id: String,
+        value: String,
+    ) -> Result<crate::SessionAgentOptionSetResult, ClientError> {
+        self.call(
+            crate::SESSION_AGENT_OPTION_SET_METHOD,
+            &crate::SessionAgentOptionSetParams {
+                session_id,
+                option_id,
+                value,
+            },
+        )
+        .await
+    }
+
     /// Every cron job with its state and history.
     pub async fn list_crons(&self) -> Result<crate::CronsListResult, ClientError> {
         self.call(crate::CRONS_LIST_METHOD, &crate::CronsListParams {})

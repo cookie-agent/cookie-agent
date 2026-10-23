@@ -1,5 +1,112 @@
 {
   "$defs": {
+    "AcpCommand": {
+      "description": "One slash command an ACP agent offers in a session.",
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "input_hint": {
+          "description": "What to type after the name, when the command takes input.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The command's name, without the `/`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "AcpConfigOption": {
+      "description": "One config option an ACP agent offers in a session, such as its model,\nmode, or reasoning effort. An agent that offers modes but no mode option\nis shown as an option `mode` of category `mode`.",
+      "properties": {
+        "category": {
+          "description": "The agent's label for what the option is, such as `model`, `mode`,\nor `thought_level`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_value": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "values": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AcpConfigValue"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "current_value"
+      ],
+      "type": "object"
+    },
+    "AcpConfigValue": {
+      "description": "One value an [`AcpConfigOption`] can take.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "name"
+      ],
+      "type": "object"
+    },
+    "AcpSessionStart": {
+      "description": "How the daemon got the ACP session a turn runs in. An unknown way\nreads as `new`.",
+      "oneOf": [
+        {
+          "const": "new",
+          "description": "`session/new`: the session's first, or the agent could not\nresume or load the one it had.",
+          "type": "string"
+        },
+        {
+          "const": "resumed",
+          "description": "`session/resume` of the session recorded before.",
+          "type": "string"
+        },
+        {
+          "const": "loaded",
+          "description": "`session/load` of the session recorded before; its replay is\nignored.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "AgentDocumentSource": {
       "enum": [
         "built_in",
@@ -1656,6 +1763,26 @@
           "required": [
             "type",
             "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A checklist of planned steps, such as an ACP agent's plan (client\nprotocol 1.17.0). Each update replaces the whole list.",
+          "properties": {
+            "entries": {
+              "items": {
+                "$ref": "#/$defs/PlanEntry"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "plan",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entries"
           ],
           "type": "object"
         }
@@ -3797,6 +3924,109 @@
             "omitted_type"
           ],
           "type": "object"
+        },
+        {
+          "description": "The ACP agent of this session talks to it in ACP session\n`acp_session_id` from now on (client protocol 1.17.0;\n`docs/site/specs/acp-agents.md` section 7).",
+          "properties": {
+            "acp_session_id": {
+              "description": "The agent's session ID.",
+              "type": "string"
+            },
+            "agent": {
+              "description": "The ACP agent, as the daemon registers it.",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+              "type": "string"
+            },
+            "agent_info": {
+              "description": "`agentInfo` as the agent sent it, when it did."
+            },
+            "cwd": {
+              "description": "The session's working directory on the runtime's machine.",
+              "type": "string"
+            },
+            "how": {
+              "$ref": "#/$defs/AcpSessionStart"
+            },
+            "protocol_version": {
+              "description": "The ACP protocol version the agent answered `initialize` with.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "runtime_agent": {
+              "description": "The agent's ID on the runtime.",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+              "type": "string"
+            },
+            "runtime_id": {
+              "description": "The runtime that hosts it.",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "acp_session_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "runtime_id",
+            "runtime_agent",
+            "acp_session_id",
+            "cwd",
+            "protocol_version",
+            "how"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "What the ACP agent reported about its session changed: its\ncommands, its config options, or its plan (client protocol 1.17.0).",
+          "properties": {
+            "commands": {
+              "items": {
+                "$ref": "#/$defs/AcpCommand"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "options": {
+              "items": {
+                "$ref": "#/$defs/AcpConfigOption"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "plan": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DisplayBlock"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The agent's plan, a `plan` display block."
+            },
+            "type": {
+              "const": "acp_session_updated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
         }
       ],
       "x-open": true
@@ -5727,6 +5957,60 @@
       ],
       "type": "object"
     },
+    "PlanEntry": {
+      "description": "One step of a [`DisplayBlock::Plan`].",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanEntryPriority"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/PlanEntryStatus"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ],
+      "type": "object"
+    },
+    "PlanEntryPriority": {
+      "description": "How much a plan step matters. An unknown priority reads as `medium`.",
+      "oneOf": [
+        {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "PlanEntryStatus": {
+      "description": "Where a plan step stands. An unknown status reads as `pending`.",
+      "oneOf": [
+        {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "PreparedApprovalResource": {
       "properties": {
         "binding_digest": {
@@ -7419,6 +7703,33 @@
           "required": [
             "type",
             "server"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An ACP agent's own tool, which the agent runs and reports (client\nprotocol 1.17.0; `docs/site/specs/acp-agents.md` section 6).",
+          "properties": {
+            "agent": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+              "type": "string"
+            },
+            "runtime_id": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "acp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "runtime_id"
           ],
           "type": "object"
         }

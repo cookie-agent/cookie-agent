@@ -142,6 +142,12 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             rows,
             omitted_rows,
         } => table_html(columns, rows, *omitted_rows),
+        // Its canonical text, a checklist, until the plan gets its own view.
+        DisplayBlock::Plan { .. } => format!(
+            "<pre class=\"{}\">{}</pre>",
+            PRE.replace("whitespace-pre ", "whitespace-pre-wrap "),
+            escape(&block.to_text()),
+        ),
         DisplayBlock::Json { value } => format!(
             "<pre class=\"{PRE}\"><code class=\"language-json\">{}</code></pre>",
             escape(&serde_json::to_string_pretty(value).unwrap_or_default())

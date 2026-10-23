@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`agent/mcp_close`: one bridge.",
+  "properties": {
+    "bridge": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bridge"
+  ],
+  "title": "AgentMcpBridgeRef",
+  "type": "object"
+}

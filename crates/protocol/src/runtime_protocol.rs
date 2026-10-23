@@ -141,6 +141,30 @@ pub mod method {
     pub const PRODUCER_RECOVERY_START: &str = "producer/recovery/start";
     /// runtime → daemon: the runtime's recovery outcome.
     pub const PRODUCER_RECOVERY_COMPLETE: &str = "producer/recovery/complete";
+    /// runtime → daemon (notification): the ACP agents the runtime hosts
+    /// changed (since 1.7.0).
+    pub const AGENTS_CHANGED: &str = "runtime/agents_changed";
+    /// daemon → runtime: start an ACP agent's process (since 1.7.0).
+    pub const AGENT_START: &str = "agent/start";
+    /// daemon → runtime: stop an ACP agent's process (since 1.7.0).
+    pub const AGENT_STOP: &str = "agent/stop";
+    /// Either direction (notification): one ACP JSON-RPC message to or from
+    /// an agent's process, unchanged (since 1.7.0).
+    pub const AGENT_MESSAGE: &str = "agent/message";
+    /// runtime → daemon (notification): an agent's process exited (since
+    /// 1.7.0).
+    pub const AGENT_EXITED: &str = "agent/exited";
+    /// daemon → runtime: open an MCP bridge socket for an agent's session
+    /// (since 1.7.0).
+    pub const AGENT_MCP_OPEN: &str = "agent/mcp_open";
+    /// daemon → runtime (notification): close an MCP bridge (since 1.7.0).
+    pub const AGENT_MCP_CLOSE: &str = "agent/mcp_close";
+    /// Either direction (notification): one MCP JSON-RPC message of a
+    /// bridge connection (since 1.7.0).
+    pub const AGENT_MCP: &str = "agent/mcp";
+    /// runtime → daemon (notification): a bridge connection ended (since
+    /// 1.7.0).
+    pub const AGENT_MCP_CLOSED: &str = "agent/mcp_closed";
 }
 
 /// An empty params or result object.
@@ -178,6 +202,124 @@ pub struct RuntimeSettings {
     /// machine. A runtime that hosts no MCP servers rejects a nonempty list.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerSettings>,
+    /// The template's ACP agents, which the runtime starts on its own
+    /// machine (runtime protocol 1.7.0). A runtime that hosts no agents
+    /// rejects a nonempty list; one that gets none hosts its own machine's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acp_agents: Vec<AcpAgentSettings>,
+}
+
+/// One ACP agent a runtime hosts, as configured
+/// (`[runtimes.<id>.acp.agents.<agent>]`; runtime protocol 1.7.0).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AcpAgentSettings {
+    /// The table key: an agent ID (lowercase letters, digits, and single
+    /// inner hyphens).
+    pub id: String,
+    /// The program and its arguments, run without a shell.
+    pub command: Vec<String>,
+    /// Variables merged over the runtime's environment.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+/// One ACP agent as a runtime reports it (runtime protocol 1.7.0).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AcpAgentReport {
+    /// The agent's ID on the runtime, its table key.
+    pub id: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl From<&AcpAgentSettings> for AcpAgentReport {
+    fn from(agent: &AcpAgentSettings) -> Self {
+        Self {
+            id: agent.id.clone(),
+            description: agent.description.clone(),
+            enabled: agent.enabled,
+        }
+    }
+}
+
+/// `runtime/agents_changed`: every ACP agent the runtime hosts now.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentsChangedParams {
+    pub agents: Vec<AcpAgentReport>,
+}
+
+/// `agent/start` and `agent/stop`: one of the runtime's agents. Starting an
+/// agent that runs already succeeds; so does stopping one that does not.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentRef {
+    pub agent: String,
+}
+
+/// `agent/message`: one ACP JSON-RPC message of `agent`'s process, as one
+/// line of its standard input or output carried it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentMessageParams {
+    pub agent: String,
+    pub message: Value,
+}
+
+/// `agent/exited`: `agent`'s process ended.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentExitedParams {
+    pub agent: String,
+    /// Its exit code; absent when a signal ended it or it failed to start.
+    #[serde(default)]
+    pub status: Option<i32>,
+    /// Why it ended, when it did not exit on its own, such as a failed
+    /// start.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// The tail of its standard error (the last 32 lines, at most 4 KiB).
+    #[serde(default)]
+    pub stderr: String,
+}
+
+/// `agent/mcp_open`'s result: a bridge the agent's MCP client reaches by
+/// running `command`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentMcpOpenResult {
+    /// The runtime-chosen handle of the bridge, unique on the connection.
+    pub bridge: String,
+    /// `cookie runtime mcp-bridge --socket <path>` on the runtime's
+    /// machine: the stdio MCP server to hand the agent.
+    pub command: Vec<String>,
+}
+
+/// `agent/mcp_close`: one bridge.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentMcpBridgeRef {
+    pub bridge: String,
+}
+
+/// `agent/mcp`: one MCP JSON-RPC message of a bridge connection.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentMcpParams {
+    pub bridge: String,
+    /// Which connection to the bridge's socket, numbered by the runtime.
+    pub connection: u64,
+    pub message: Value,
+}
+
+/// `agent/mcp_closed`: a bridge connection ended.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct AgentMcpClosedParams {
+    pub bridge: String,
+    pub connection: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
@@ -358,6 +500,10 @@ pub struct InitializeResult {
     /// their status now, and the workspace-scoped ones as configured.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<McpServerReport>,
+    /// The ACP agents the runtime hosts (runtime protocol 1.7.0), as
+    /// `runtime/agents_changed` reports them later.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acp_agents: Vec<AcpAgentReport>,
 }
 
 /// The machine a runtime runs on, as `runtime/initialize` reports it.

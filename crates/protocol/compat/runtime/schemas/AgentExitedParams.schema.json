@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`agent/exited`: `agent`'s process ended.",
+  "properties": {
+    "agent": {
+      "type": "string"
+    },
+    "message": {
+      "default": null,
+      "description": "Why it ended, when it did not exit on its own, such as a failed\nstart.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "default": null,
+      "description": "Its exit code; absent when a signal ended it or it failed to start.",
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "stderr": {
+      "default": "",
+      "description": "The tail of its standard error (the last 32 lines, at most 4 KiB).",
+      "type": "string"
+    }
+  },
+  "required": [
+    "agent"
+  ],
+  "title": "AgentExitedParams",
+  "type": "object"
+}

@@ -1,0 +1,40 @@
+{
+  "$defs": {
+    "AcpAgentReport": {
+      "description": "One ACP agent as a runtime reports it (runtime protocol 1.7.0).",
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The agent's ID on the runtime, its table key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`runtime/agents_changed`: every ACP agent the runtime hosts now.",
+  "properties": {
+    "agents": {
+      "items": {
+        "$ref": "#/$defs/AcpAgentReport"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "agents"
+  ],
+  "title": "AgentsChangedParams",
+  "type": "object"
+}

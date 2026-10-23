@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.16, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.17, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
@@ -174,6 +174,7 @@ macro_rules! snake_label {
 }
 pub(crate) use snake_label;
 
+mod acp;
 mod agent;
 mod approval;
 mod attachment;
@@ -220,6 +221,7 @@ mod stored_display;
 pub mod strict;
 mod uploads;
 
+pub use acp::*;
 pub use agent::*;
 pub use approval::*;
 pub use attachment::*;

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`agent/mcp`: one MCP JSON-RPC message of a bridge connection.",
+  "properties": {
+    "bridge": {
+      "type": "string"
+    },
+    "connection": {
+      "description": "Which connection to the bridge's socket, numbered by the runtime.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "message": true
+  },
+  "required": [
+    "bridge",
+    "connection",
+    "message"
+  ],
+  "title": "AgentMcpParams",
+  "type": "object"
+}

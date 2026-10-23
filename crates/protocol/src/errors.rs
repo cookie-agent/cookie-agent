@@ -1053,6 +1053,14 @@ error_codes! {
         hint: Some("See the details, then check the attachment's workspace."),
         description: "`capability/open` for a capability the runtime does not offer or a workspace it cannot open.",
     }
+    AGENT_FAILED {
+        code: "agent_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [optional("agent", "The ACP agent the daemon named.")],
+        message: "The runtime could not do what the daemon asked of its ACP agent.",
+        hint: Some("See the details, then check the agent's declaration on the runtime."),
+        description: "`agent/start` or `agent/mcp_open` for an agent the runtime does not host, one it could not start, or a bridge it could not open.",
+    }
     NOT_INITIALIZED {
         code: "not_initialized",
         rpc: APPLICATION_ERROR,

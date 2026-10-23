@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`agent/start` and `agent/stop`: one of the runtime's agents. Starting an\nagent that runs already succeeds; so does stopping one that does not.",
+  "properties": {
+    "agent": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "agent"
+  ],
+  "title": "AgentRef",
+  "type": "object"
+}

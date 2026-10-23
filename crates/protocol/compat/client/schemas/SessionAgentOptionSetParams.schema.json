@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`session.agent_option.set`: sets one of the config options of a\nsession's ACP agent (`session/set_config_option`, or `session/set_mode`\nfor an agent that offers modes but no mode option).",
+  "properties": {
+    "option_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "value": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "option_id",
+    "value"
+  ],
+  "title": "SessionAgentOptionSetParams",
+  "type": "object"
+}

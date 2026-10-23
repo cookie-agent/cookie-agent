@@ -87,6 +87,17 @@ expression: schema_for!(RuntimeSnapshotResult)
         },
         "runnable_as_root": {
           "type": "boolean"
+        },
+        "runtime": {
+          "description": "For an ACP agent a runtime hosts (client protocol 1.17.0): the\nruntime, its own ID for the agent, and whether a session can use it\nnow. Absent for the daemon's own agents.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRuntime"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -109,6 +120,35 @@ expression: schema_for!(RuntimeSnapshotResult)
         "internal"
       ],
       "x-open": true
+    },
+    "AgentRuntime": {
+      "description": "Where an ACP agent runs (`docs/site/specs/acp-agents.md` section 3).",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "description": "The agent's ID on the runtime, the key of its declaration.",
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "available": {
+          "description": "Whether a session or a delegation can use it now: its runtime is\nconnected, or the daemon starts it on demand, and it is enabled.",
+          "type": "boolean"
+        },
+        "runtime_id": {
+          "description": "The runtime that hosts the agent.",
+          "type": "string",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$"
+        }
+      },
+      "required": [
+        "runtime_id",
+        "agent",
+        "available"
+      ]
     },
     "AuthCredentialDescriptor": {
       "type": "object",

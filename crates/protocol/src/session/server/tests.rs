@@ -424,6 +424,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SessionProjectSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn set_session_agent_option(
+        &self,
+        _: crate::SessionAgentOptionSetParams,
+    ) -> Result<crate::SessionAgentOptionSetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_crons(
         &self,
         _: crate::CronsListParams,

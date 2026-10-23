@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`agent/message`: one ACP JSON-RPC message of `agent`'s process, as one\nline of its standard input or output carried it.",
+  "properties": {
+    "agent": {
+      "type": "string"
+    },
+    "message": true
+  },
+  "required": [
+    "agent",
+    "message"
+  ],
+  "title": "AgentMessageParams",
+  "type": "object"
+}

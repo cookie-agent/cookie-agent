@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`agent/mcp_closed`: a bridge connection ended.",
+  "properties": {
+    "bridge": {
+      "type": "string"
+    },
+    "connection": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "bridge",
+    "connection"
+  ],
+  "title": "AgentMcpClosedParams",
+  "type": "object"
+}

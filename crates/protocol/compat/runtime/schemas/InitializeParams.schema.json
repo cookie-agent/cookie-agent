@@ -1,5 +1,42 @@
 {
   "$defs": {
+    "AcpAgentSettings": {
+      "description": "One ACP agent a runtime hosts, as configured\n(`[runtimes.<id>.acp.agents.<agent>]`; runtime protocol 1.7.0).",
+      "properties": {
+        "command": {
+          "description": "The program and its arguments, run without a shell.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Variables merged over the runtime's environment.",
+          "type": "object"
+        },
+        "id": {
+          "description": "The table key: an agent ID (lowercase letters, digits, and single\ninner hyphens).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "command"
+      ],
+      "type": "object"
+    },
     "AgentMdLimits": {
       "properties": {
         "max_bytes": {
@@ -33,6 +70,13 @@
     "RuntimeSettings": {
       "description": "What the daemon's configuration says about the runtime's work. A runtime\nrejects settings it does not support.",
       "properties": {
+        "acp_agents": {
+          "description": "The template's ACP agents, which the runtime starts on its own\nmachine (runtime protocol 1.7.0). A runtime that hosts no agents\nrejects a nonempty list; one that gets none hosts its own machine's.",
+          "items": {
+            "$ref": "#/$defs/AcpAgentSettings"
+          },
+          "type": "array"
+        },
         "agent_md": {
           "$ref": "#/$defs/AgentMdLimits",
           "description": "`[agent_md]`: the `AGENTS.md` size rule."

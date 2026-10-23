@@ -3151,16 +3151,30 @@ fn display_blocks_newer_than_the_client_reach_it_as_text_and_unknown_ones_not_at
         "only the unknown block goes"
     );
     assert_eq!(current.blocks(&blocks[..2]), None, "nothing to change");
-    // Every kind exists from the first minor, so no client of this build
-    // receives a downgraded block.
+    // Every kind but `plan` (1.17.0) exists from the first minor, and this
+    // build speaks every minor, so no client of this build receives a
+    // downgraded block.
     let this_build = DisplayAudience::new(CLIENT_PROTOCOL_VERSION);
     assert_eq!(this_build.blocks(&blocks[..2]), None);
+    let plan = DisplayBlock::Plan {
+        entries: vec![crate::PlanEntry {
+            content: "Edit".into(),
+            status: crate::PlanEntryStatus::Pending,
+            priority: None,
+        }],
+    };
+    assert_eq!(this_build.blocks(&[Open::Known(plan.clone())]), None);
+    assert_eq!(
+        DisplayAudience::new(crate::SemVer::new(1, 16, 0)).blocks(&[Open::Known(plan.clone())]),
+        Some(vec![Open::Known(DisplayBlock::text(plan.to_text()))])
+    );
     for kind in DISPLAY_BLOCK_SINCE.iter().map(|(kind, _)| *kind) {
-        assert_eq!(
-            DisplayBlock::since(kind),
-            Some(FIRST_STABLE_MINOR),
-            "{kind}"
-        );
+        let expected = if kind == "plan" {
+            17
+        } else {
+            FIRST_STABLE_MINOR
+        };
+        assert_eq!(DisplayBlock::since(kind), Some(expected), "{kind}");
     }
 }
 
@@ -3584,4 +3598,31 @@ fn meta_fixture() -> SessionMeta {
         waiting_on: Vec::new(),
         delegated_attachments: Vec::new(),
     }
+}
+
+#[test]
+fn a_runtime_agent_id_joins_runtime_and_agent_with_a_hyphen() {
+    let id = |runtime: &str, agent: &str| {
+        crate::runtime_agent_id(
+            &RuntimeId::new(runtime).unwrap(),
+            &AgentId::new(agent).unwrap(),
+        )
+    };
+    assert_eq!(id("local", "claude").unwrap().as_str(), "local-claude");
+    assert_eq!(
+        id("client_myhost", "codex").unwrap().as_str(),
+        "client-myhost-codex"
+    );
+    let doubled = id("lab__pc", "codex").unwrap_err();
+    assert!(doubled.contains("`lab--pc-codex`"), "{doubled}");
+    let trailing = id("labpc_", "codex").unwrap_err();
+    assert!(trailing.contains("not an agent ID"), "{trailing}");
+    let long = id("a", &"b".repeat(63)).unwrap_err();
+    assert!(long.contains("longer than the 64 bytes"), "{long}");
+    assert_eq!(
+        crate::acp_model_selection(&AgentId::new("local-claude").unwrap())
+            .model
+            .as_str(),
+        "acp/local-claude"
+    );
 }

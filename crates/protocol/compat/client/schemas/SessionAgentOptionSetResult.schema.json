@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "AcpConfigOption": {
+      "description": "One config option an ACP agent offers in a session, such as its model,\nmode, or reasoning effort. An agent that offers modes but no mode option\nis shown as an option `mode` of category `mode`.",
+      "properties": {
+        "category": {
+          "description": "The agent's label for what the option is, such as `model`, `mode`,\nor `thought_level`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_value": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "values": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AcpConfigValue"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "current_value"
+      ],
+      "type": "object"
+    },
+    "AcpConfigValue": {
+      "description": "One value an [`AcpConfigOption`] can take.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The session's options after the change.",
+  "properties": {
+    "options": {
+      "items": {
+        "$ref": "#/$defs/AcpConfigOption"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "options"
+  ],
+  "title": "SessionAgentOptionSetResult",
+  "type": "object"
+}

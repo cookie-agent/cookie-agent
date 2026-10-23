@@ -323,6 +323,14 @@ fn block_rows(
             table_rows(columns, rows, sink, theme, out);
             cut(*omitted_rows, Unit::ROW).rows(sink, theme, out);
         }
+        // Its canonical text, a checklist, until the plan gets its own view.
+        DisplayBlock::Plan { .. } => {
+            for line in source_lines(&block.to_text()) {
+                if let Some(text) = sink.line(line) {
+                    out.push(ToolBodyLine::wrapped(Line::from(text)));
+                }
+            }
+        }
         DisplayBlock::Json { value } => {
             let text = serde_json::to_string_pretty(value).unwrap_or_default();
             let rows = source_lines(&text)

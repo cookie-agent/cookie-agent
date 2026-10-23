@@ -532,6 +532,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.agent_option.set",
+      "params": "SessionAgentOptionSetParams",
+      "params_role": "command",
+      "result": "SessionAgentOptionSetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.background.list",
       "params": "SessionBackgroundListParams",
       "params_role": "command",

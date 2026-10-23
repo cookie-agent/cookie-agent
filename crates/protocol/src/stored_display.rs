@@ -116,7 +116,8 @@ fn encode_block(
         | DisplayBlock::Json { .. }
         | DisplayBlock::Media { .. }
         | DisplayBlock::Link { .. }
-        | DisplayBlock::SessionRef { .. } => {}
+        | DisplayBlock::SessionRef { .. }
+        | DisplayBlock::Plan { .. } => {}
     }
 }
 

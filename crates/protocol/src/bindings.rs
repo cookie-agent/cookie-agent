@@ -9,11 +9,13 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::runtime_protocol::{
-    CapabilityOpenParams, CapabilityOpenResult, CapabilityToolsChangedParams, ContextParams,
-    ContextResult, DetachableParams, Empty, ExecuteParams, ExecuteResult, InitializeParams,
-    InitializeResult, McpChangedParams, McpReconnectParams, Outcome, PrepareParams, PrepareResult,
-    PreparedRef, RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeTools,
-    ToolProgressParams, method as runtime_method,
+    AgentExitedParams, AgentMcpBridgeRef, AgentMcpClosedParams, AgentMcpOpenResult, AgentMcpParams,
+    AgentMessageParams, AgentRef, AgentsChangedParams, CapabilityOpenParams, CapabilityOpenResult,
+    CapabilityToolsChangedParams, ContextParams, ContextResult, DetachableParams, Empty,
+    ExecuteParams, ExecuteResult, InitializeParams, InitializeResult, McpChangedParams,
+    McpReconnectParams, Outcome, PrepareParams, PrepareResult, PreparedRef,
+    RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeTools, ToolProgressParams,
+    method as runtime_method,
 };
 use crate::*;
 
@@ -338,6 +340,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(PROJECT_UPDATE_METHOD, ToDaemon, ProjectUpdateParams => ProjectResult),
         request!(PROJECT_DELETE_METHOD, ToDaemon, ProjectDeleteParams => ProjectDeleteResult),
         request!(SESSION_PROJECT_SET_METHOD, ToDaemon, SessionProjectSetParams => SessionProjectSetResult),
+        request!(SESSION_AGENT_OPTION_SET_METHOD, ToDaemon, SessionAgentOptionSetParams => SessionAgentOptionSetResult),
         request!(CRONS_LIST_METHOD, ToDaemon, CronsListParams => CronsListResult),
         request!(CRONS_CREATE_METHOD, ToDaemon, CronCreateParams => CronJobResult),
         request!(CRONS_UPDATE_METHOD, ToDaemon, CronUpdateParams => CronJobResult),
@@ -451,6 +454,25 @@ fn runtime_methods() -> Vec<MethodSpec> {
         declaration!(runtime_method::TOOLS_CHANGED, RuntimeTools),
         declaration!(runtime_method::RUNTIME_MCP_CHANGED, RuntimeMcpChangedParams),
         request!(runtime_method::RUNTIME_MCP_RECONNECT, FromDaemon, RuntimeMcpReconnectParams => Outcome),
+        declaration!(runtime_method::AGENTS_CHANGED, AgentsChangedParams),
+        request!(runtime_method::AGENT_START, FromDaemon, AgentRef => Empty),
+        request!(runtime_method::AGENT_STOP, FromDaemon, AgentRef => Empty),
+        notification!(
+            runtime_method::AGENT_MESSAGE,
+            FromDaemon,
+            AgentMessageParams
+        ),
+        declaration!(runtime_method::AGENT_MESSAGE, AgentMessageParams),
+        declaration!(runtime_method::AGENT_EXITED, AgentExitedParams),
+        request!(runtime_method::AGENT_MCP_OPEN, FromDaemon, AgentRef => AgentMcpOpenResult),
+        notification!(
+            runtime_method::AGENT_MCP_CLOSE,
+            FromDaemon,
+            AgentMcpBridgeRef
+        ),
+        notification!(runtime_method::AGENT_MCP, FromDaemon, AgentMcpParams),
+        declaration!(runtime_method::AGENT_MCP, AgentMcpParams),
+        declaration!(runtime_method::AGENT_MCP_CLOSED, AgentMcpClosedParams),
     ]
 }
 

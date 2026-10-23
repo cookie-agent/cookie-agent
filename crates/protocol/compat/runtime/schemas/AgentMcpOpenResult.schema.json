@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`agent/mcp_open`'s result: a bridge the agent's MCP client reaches by\nrunning `command`.",
+  "properties": {
+    "bridge": {
+      "description": "The runtime-chosen handle of the bridge, unique on the connection.",
+      "type": "string"
+    },
+    "command": {
+      "description": "`cookie runtime mcp-bridge --socket <path>` on the runtime's\nmachine: the stdio MCP server to hand the agent.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "bridge",
+    "command"
+  ],
+  "title": "AgentMcpOpenResult",
+  "type": "object"
+}

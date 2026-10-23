@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.6.0**
+The protocol version is a semver string, currently **1.7.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -192,6 +192,10 @@ daemon prepares without an `instance`. A runtime keeps a daemon older than
 the tools the server lists its `include_tools` and `exclude_tools` left
 out. The runtime applies the filters itself, from the server's table, so
 no message carries them.
+1.7.0 added ACP agents (see [ACP agents](#acp-agents)): the optional
+`acp_agents` of `runtime/initialize`'s settings and result,
+`runtime/agents_changed`, the `agent/*` relay messages, and the MCP bridge
+messages; and the display block `plan`.
 
 ## Capabilities and instances
 
@@ -347,6 +351,15 @@ that dials in after its instances failed reopens them. Calls are never retried t
 | `producer/send` | runtime → daemon | request | Send a message through a registered producer |
 | `producer/unregister` | runtime → daemon | request | Close a registration; its messages stay |
 | `producer/discard` | runtime → daemon | request | Discard one of the runtime's waiting messages |
+| `runtime/agents_changed` | runtime → daemon | notification | Every ACP agent the runtime hosts now; since 1.7.0 |
+| `agent/start` | daemon → runtime | request | Start an ACP agent's process; since 1.7.0 |
+| `agent/stop` | daemon → runtime | request | Stop an ACP agent's process; since 1.7.0 |
+| `agent/message` | both | notification | One ACP message to or from an agent's process; since 1.7.0 |
+| `agent/exited` | runtime → daemon | notification | An agent's process ended; since 1.7.0 |
+| `agent/mcp_open` | daemon → runtime | request | Open an MCP bridge socket for one of an agent's sessions; since 1.7.0 |
+| `agent/mcp_close` | daemon → runtime | notification | Close a bridge; since 1.7.0 |
+| `agent/mcp` | both | notification | One MCP message of a bridge connection; since 1.7.0 |
+| `agent/mcp_closed` | runtime → daemon | notification | A bridge connection ended; since 1.7.0 |
 
 An unknown request is answered with `-32601`; an unknown notification is
 ignored.
@@ -361,6 +374,7 @@ ignored.
 | `runtime_id` | The runtime's ID, `[a-z][a-z0-9_]{0,31}`. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
+| `settings.acp_agents` | Optional, since 1.7.0: the template's ACP agents (`[runtimes.<id>.acp.agents]`, or `[runtimes.local]` for the daemon's own runtime): `id`, `command`, `env`, `description`, `enabled`. A runtime given none hosts its own machine's `[runtimes.local.acp.agents]`, as a runtime that dials in does (see [ACP agents](#acp-agents)). |
 | `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../extend/mcp.md#accepted-fields) reads it, with its `scope`. Each instance of a capability that hosts MCP servers runs the workspace-scoped ones in its workspace; the runtime runs the runtime-scoped ones once, in its home directory (see [Runtime-scoped MCP servers](#runtime-scoped-mcp-servers)). A server's `cwd`, when relative, resolves against that directory. |
 
 A runtime rejects settings it does not support with `initialize_rejected`; a runtime that
@@ -377,6 +391,7 @@ or enables OAuth, which stays with the daemon's global runtime.
 | `home` | Optional, since 1.3.0: the home directory of the user the runtime runs as, a canonical absolute path on its machine (`/home/ada`, `C:\Users\ada`), at most 4096 bytes without control characters. The coding runtime reports its user's home, canonicalized. The daemon reads one that is not an absolute path as left out. See [Home](#home). |
 | `capabilities` | What the runtime offers: `name` (`[a-z][a-z0-9_]{0,31}`, unique within the runtime); `kind`, a self-declared label such as `coding` (a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens) that the daemon shows to clients and in approval reviews and never branches on; `takes_workspace`; and an optional `description`. The coding runtime offers `coding`, which takes a workspace. |
 | `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |
+| `acp_agents` | Optional, since 1.7.0: the ACP agents the runtime hosts, `{ id, description, enabled }` each, in ID order. Absent when it hosts none. |
 | `mcp_servers` | Optional, since 1.5.0: every MCP server the runtime is configured with, in name order, as server reports (see [`capability/open`](#capabilityopen)) with a `scope`: the runtime-scoped ones with their status now (usually `connecting`), the workspace-scoped ones as configured, `disconnected` (or `disabled`) with no tools. Absent when it has none. |
 
 ### `capability/open`
@@ -677,6 +692,46 @@ The coding runtime declares producer messaging when started with
 `ServeOptions::producer_messaging`; its tools then reach these requests
 through `ToolExecutionContext::producers`.
 
+### ACP agents
+
+Since 1.7.0 a runtime hosts ACP agents, external coding agents that take a
+session's turns over the Agent Client Protocol (see the
+[ACP agents spec](../specs/acp-agents.md)). The runtime starts and relays
+them; the daemon speaks ACP to them.
+
+- **Declarations.** The runtime reports its agents in `runtime/initialize`'s
+  `acp_agents`, and again with `runtime/agents_changed` (`agents`, the whole
+  list) when they change, such as when a runtime that dials in reads its
+  configuration again. The daemon lists each as `<runtime>-<agent>`.
+- **Processes.** `agent/start` (`agent`) runs the agent's `command` without a
+  shell in the runtime's home directory, in its own process group (a job
+  object on Windows), with the runtime's environment and the agent's `env`;
+  it answers `{}` once the process runs, and at once when it runs already.
+  `agent/stop` (`agent`) kills it. The runtime answers `agent_failed` for an
+  agent it does not host, a disabled one, or one it cannot start.
+- **Relay.** Each line the agent writes to its standard output is one
+  `agent/message` (`agent`, `message`, the line's JSON) to the daemon,
+  unchanged; each `agent/message` from the daemon becomes one line of its
+  standard input. A line that is not JSON is kept with its standard error.
+  When the process ends the runtime sends `agent/exited` (`agent`, `status`
+  when it exited with one, `message` when it did not, and `stderr`, the tail
+  of its standard error: the last 32 lines, at most 4 KiB). The agents'
+  processes stop with the connection.
+- **MCP bridge.** `agent/mcp_open` (`agent`) opens a bridge socket for one of
+  the agent's sessions: a Unix socket in a directory only the runtime's user
+  may enter, or a named pipe on Windows that refuses remote clients. It
+  answers `{ bridge, command }`: a handle unique on the connection, and the
+  stdio MCP server the daemon hands the agent, `cookie runtime mcp-bridge
+  --socket <path>` on the runtime's machine. Each connection to the socket
+  is numbered; each line it sends is an `agent/mcp` (`bridge`, `connection`,
+  `message`) to the daemon, and each `agent/mcp` from the daemon becomes a
+  line to that connection. `agent/mcp_closed` reports a connection that
+  ended; `agent/mcp_close` (`bridge`) removes the socket, as does the end of
+  the agent's process.
+
+These messages are information: the daemon reads the agent's messages
+tolerantly, and an `agent/*` message from a plugin is ignored.
+
 ## Errors
 
 Errors follow the scheme of the [compatibility spec](../specs/compatibility-v1.md#6-errors),
@@ -698,6 +753,7 @@ protocol crate's registry (`cookie_agent_protocol::errors`):
 | `-32000` | `initialize_rejected` | The runtime rejects the initialize request or its settings. |
 | `-32000` | `not_initialized` | A request before `runtime/initialize`. |
 | `-32000` | `capability_open_failed` | `capability/open` for a capability the runtime does not offer or a workspace it cannot open; `data.capability` and `data.workspace` name what was asked. |
+| `-32000` | `agent_failed` | `agent/start` or `agent/mcp_open` for an ACP agent the runtime does not host, a disabled one, one it could not start, or a bridge it could not open; `data.agent` names the agent (since 1.7.0). |
 | `-32000` | `unknown_handle` | Unknown prepared call or instance. |
 | `-32000` | `context_failed` | Reading the runtime's context failed; `data.path` names the file. |
 | `-32000` | `reply_too_large` | The reply would exceed the frame bound. |

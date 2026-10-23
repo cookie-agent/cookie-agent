@@ -589,6 +589,26 @@
             "session_id"
           ],
           "type": "object"
+        },
+        {
+          "description": "A checklist of planned steps, such as an ACP agent's plan (client\nprotocol 1.17.0). Each update replaces the whole list.",
+          "properties": {
+            "entries": {
+              "items": {
+                "$ref": "#/$defs/PlanEntry"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "plan",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entries"
+          ],
+          "type": "object"
         }
       ],
       "x-open": true
@@ -658,6 +678,60 @@
         "value"
       ],
       "type": "object"
+    },
+    "PlanEntry": {
+      "description": "One step of a [`DisplayBlock::Plan`].",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanEntryPriority"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/PlanEntryStatus"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ],
+      "type": "object"
+    },
+    "PlanEntryPriority": {
+      "description": "How much a plan step matters. An unknown priority reads as `medium`.",
+      "oneOf": [
+        {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "PlanEntryStatus": {
+      "description": "Where a plan step stands. An unknown status reads as `pending`.",
+      "oneOf": [
+        {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
     },
     "TerminalSegment": {
       "properties": {

@@ -1,5 +1,26 @@
 {
   "$defs": {
+    "AcpAgentReport": {
+      "description": "One ACP agent as a runtime reports it (runtime protocol 1.7.0).",
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The agent's ID on the runtime, its table key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "CapabilityDeclaration": {
       "description": "One capability a runtime offers.",
       "properties": {
@@ -143,6 +164,13 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "acp_agents": {
+      "description": "The ACP agents the runtime hosts (runtime protocol 1.7.0), as\n`runtime/agents_changed` reports them later.",
+      "items": {
+        "$ref": "#/$defs/AcpAgentReport"
+      },
+      "type": "array"
+    },
     "capabilities": {
       "description": "What the runtime offers; sessions attach each one separately.",
       "items": {

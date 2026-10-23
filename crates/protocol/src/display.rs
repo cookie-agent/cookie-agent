@@ -40,6 +40,7 @@ pub const DISPLAY_BLOCK_SINCE: &[(&str, u32)] = &[
     ("media", FIRST_STABLE_MINOR),
     ("link", FIRST_STABLE_MINOR),
     ("session_ref", FIRST_STABLE_MINOR),
+    ("plan", 17),
 ];
 
 /// One typed unit of tool presentation.
@@ -131,6 +132,42 @@ pub enum DisplayBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
+    /// A checklist of planned steps, such as an ACP agent's plan (client
+    /// protocol 1.17.0). Each update replaces the whole list.
+    Plan {
+        entries: Vec<PlanEntry>,
+    },
+}
+
+/// One step of a [`DisplayBlock::Plan`].
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PlanEntry {
+    pub content: String,
+    pub status: PlanEntryStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<PlanEntryPriority>,
+}
+
+crate::open_enum! {
+    /// Where a plan step stands. An unknown status reads as `pending`.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PlanEntryStatus {
+        Pending,
+        InProgress,
+        Completed,
+    }
+}
+
+crate::open_enum! {
+    /// How much a plan step matters. An unknown priority reads as `medium`.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PlanEntryPriority {
+        High,
+        Medium,
+        Low,
+    }
 }
 
 crate::open_enum!(tagged DisplayBlock, tag = "type", tags = [
@@ -142,6 +179,7 @@ crate::open_enum!(tagged DisplayBlock, tag = "type", tags = [
     "link",
     "markdown",
     "media",
+    "plan",
     "session_ref",
     "table",
     "terminal",
@@ -282,6 +320,7 @@ impl DisplayBlock {
             Self::Media { .. } => "media",
             Self::Link { .. } => "link",
             Self::SessionRef { .. } => "session_ref",
+            Self::Plan { .. } => "plan",
         }
     }
 
@@ -349,7 +388,8 @@ impl DisplayBlock {
             Self::Json { .. }
             | Self::Media { .. }
             | Self::Link { .. }
-            | Self::SessionRef { .. } => false,
+            | Self::SessionRef { .. }
+            | Self::Plan { .. } => false,
         }
     }
 
@@ -508,6 +548,12 @@ impl DisplayBlock {
                 optional(short_id, "short_id")?;
                 optional(label, "label")
             }
+            Self::Plan { entries } => {
+                for entry in entries {
+                    text(&entry.content, "a plan entry")?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -584,6 +630,11 @@ impl DisplayBlock {
             } => {
                 clean_optional(short_id);
                 clean_optional(label);
+            }
+            Self::Plan { entries } => {
+                for entry in entries {
+                    clean(&mut entry.content);
+                }
             }
         }
     }
@@ -698,6 +749,19 @@ impl DisplayBlock {
                     let _ = write!(out, ": {label}");
                 }
             }
+            Self::Plan { entries } => {
+                for (index, entry) in entries.iter().enumerate() {
+                    if index > 0 {
+                        out.push('\n');
+                    }
+                    let mark = match entry.status {
+                        PlanEntryStatus::Completed => "[x]",
+                        PlanEntryStatus::InProgress => "[~]",
+                        PlanEntryStatus::Pending | PlanEntryStatus::Unknown => "[ ]",
+                    };
+                    let _ = write!(out, "{mark} {}", entry.content);
+                }
+            }
         }
         out
     }
@@ -745,7 +809,8 @@ impl DisplayBlock {
             Self::Json { .. }
             | Self::Media { .. }
             | Self::Link { .. }
-            | Self::SessionRef { .. } => None,
+            | Self::SessionRef { .. }
+            | Self::Plan { .. } => None,
         }
     }
 
@@ -836,7 +901,8 @@ impl DisplayBlock {
             Self::Json { .. }
             | Self::Media { .. }
             | Self::Link { .. }
-            | Self::SessionRef { .. } => {}
+            | Self::SessionRef { .. }
+            | Self::Plan { .. } => {}
         }
         cut
     }
@@ -1539,9 +1605,16 @@ pub enum ToolSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runtime_id: Option<RuntimeId>,
     },
+    /// An ACP agent's own tool, which the agent runs and reports (client
+    /// protocol 1.17.0; `docs/site/specs/acp-agents.md` section 6).
+    Acp {
+        agent: crate::AgentId,
+        runtime_id: RuntimeId,
+    },
 }
 
 crate::open_enum!(tagged ToolSource, tag = "type", tags = [
+    "acp",
     "base",
     "mcp",
     "plugin",

@@ -2930,11 +2930,26 @@ pub enum EventPayload {
     RecordOmitted {
         omitted_type: EventType,
     },
+    /// The ACP agent of this session talks to it in ACP session
+    /// `acp_session_id` from now on (client protocol 1.17.0;
+    /// `docs/site/specs/acp-agents.md` section 7).
+    AcpSessionStarted {
+        #[serde(flatten)]
+        record: crate::AcpSessionRecord,
+    },
+    /// What the ACP agent reported about its session changed: its
+    /// commands, its config options, or its plan (client protocol 1.17.0).
+    AcpSessionUpdated {
+        #[serde(flatten)]
+        update: crate::AcpSessionUpdate,
+    },
 }
 
 // Plugins receive events as `Open<EventPayload>`: an event type a plugin
 // does not know reaches it as `Unknown`.
 crate::open_enum!(tagged EventPayload, tag = "type", tags = [
+    "acp_session_started",
+    "acp_session_updated",
     "agent_md_loaded",
     "approval_finalized",
     "approval_requested",
@@ -3128,6 +3143,8 @@ impl EventPayload {
                 matches!(step, Open::Known(ApprovalStep::DoomLoop { .. }))
             }
             Self::SessionCreated { .. }
+            | Self::AcpSessionStarted { .. }
+            | Self::AcpSessionUpdated { .. }
             | Self::SessionPermissionOverlaySet { .. }
             | Self::RuntimeAttached { .. }
             | Self::RuntimeDetached { .. }
@@ -3239,10 +3256,26 @@ impl EventPayload {
                 | Self::DelegatedContextSeeded { .. }
                 | Self::DelegateChildTerminated { .. }
                 | Self::RecordOmitted { .. }
+                | Self::AcpSessionStarted { .. }
+                | Self::AcpSessionUpdated { .. }
         )
     }
     fn validate(&self) -> Result<(), EventSchemaError> {
         match self {
+            Self::AcpSessionStarted { record } => {
+                let label = |value: &str| {
+                    !value.is_empty()
+                        && value.len() <= crate::MAX_ACP_LABEL_BYTES
+                        && !value.chars().any(char::is_control)
+                };
+                if !label(&record.acp_session_id)
+                    || record.cwd.is_empty()
+                    || record.cwd.len() > 4096
+                    || record.cwd.chars().any(char::is_control)
+                {
+                    return Err(EventSchemaError::InvalidAcpSession);
+                }
+            }
             Self::GoalActivated { objective, .. } if objective.trim().is_empty() => {
                 return Err(EventSchemaError::InvalidGoalEvent);
             }
@@ -4655,6 +4688,7 @@ impl crate::RetainedToolOutput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventSchemaError {
+    InvalidAcpSession,
     InvalidGoalEvent,
     InvalidProducerMessage,
     InvalidOrigin,
@@ -4715,6 +4749,9 @@ pub enum EventSchemaError {
 impl fmt::Display for EventSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::InvalidAcpSession => {
+                "acp session ID and cwd must be nonempty bounded control-free text"
+            }
             Self::InvalidGoalEvent => "goal objective/items must be nonblank",
             Self::InvalidProducerMessage => {
                 "producer owner, reminder identity, or consumed run is invalid"

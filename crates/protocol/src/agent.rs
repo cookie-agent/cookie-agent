@@ -56,6 +56,9 @@ impl PermissionAction {
     /// (`cron_create`, `cron_list`, `cron_update`, `cron_delete`,
     /// `cron_run`); the resource is a job's target kind.
     pub const CRON: Self = Self(Cow::Borrowed("cron"));
+    /// An ACP agent's own permission requests of a kind that maps onto no
+    /// other action (`docs/site/specs/acp-agents.md` section 8).
+    pub const ACP: Self = Self(Cow::Borrowed("acp"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
     pub const BUILT_IN: [Self; 12] = [
@@ -536,6 +539,23 @@ pub struct AgentDescriptor {
     pub resolved_fallback: Vec<ModelSelection>,
     #[schemars(length(max = 256))]
     pub delegation_targets: Vec<AgentId>,
+    /// For an ACP agent a runtime hosts (client protocol 1.17.0): the
+    /// runtime, its own ID for the agent, and whether a session can use it
+    /// now. Absent for the daemon's own agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<AgentRuntime>,
+}
+
+/// Where an ACP agent runs (`docs/site/specs/acp-agents.md` section 3).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentRuntime {
+    /// The runtime that hosts the agent.
+    pub runtime_id: RuntimeId,
+    /// The agent's ID on the runtime, the key of its declaration.
+    pub agent: AgentId,
+    /// Whether a session or a delegation can use it now: its runtime is
+    /// connected, or the daemon starts it on demand, and it is enabled.
+    pub available: bool,
 }
 
 struct AgentDescriptionSchema;
@@ -661,6 +681,8 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             #[serde(deserialize_with = "crate::deserialize_required_model_selections")]
             resolved_fallback: Vec<ModelSelection>,
             delegation_targets: Vec<AgentId>,
+            #[serde(default)]
+            runtime: Option<AgentRuntime>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -672,6 +694,7 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             runnable_as_root: w.runnable_as_root,
             resolved_fallback: w.resolved_fallback,
             delegation_targets: w.delegation_targets,
+            runtime: w.runtime,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -698,3 +721,44 @@ impl fmt::Display for AgentSchemaError {
     }
 }
 impl std::error::Error for AgentSchemaError {}
+
+/// The provider of the synthetic model an ACP agent's runs record
+/// (`docs/site/specs/acp-agents.md` section 6): the agent chooses its own
+/// model, so its runs name `acp/<agent ID>`.
+pub const ACP_MODEL_PROVIDER: &str = "acp";
+
+/// The synthetic model selection of ACP agent `agent`: `acp/<agent ID>`.
+#[must_use]
+pub fn acp_model_selection(agent: &AgentId) -> ModelSelection {
+    ModelSelection {
+        model: format!("{ACP_MODEL_PROVIDER}/{agent}")
+            .parse()
+            .expect("an agent ID is a model ID"),
+        variant: None,
+    }
+}
+
+/// The daemon's ID of ACP agent `agent` hosted by runtime `runtime`
+/// (`docs/site/specs/acp-agents.md` section 3): `<runtime>-<agent>`, the
+/// runtime ID's `_` spelled `-`, so `local` and `claude` make
+/// `local-claude` and `client_host` and `codex` make `client-host-codex`.
+/// The runtime travels next to the ID wherever it matters; it is never
+/// parsed back out. Fails, saying why, when the combination is not an
+/// agent ID: longer than 64 bytes, or with a doubled hyphen (a runtime ID
+/// with `__` or a trailing `_`).
+pub fn runtime_agent_id(runtime: &RuntimeId, agent: &AgentId) -> Result<AgentId, String> {
+    let combined = format!("{}-{agent}", runtime.as_str().replace('_', "-"));
+    AgentId::new(combined.as_str()).map_err(|_| {
+        if combined.len() > 64 {
+            format!(
+                "ACP agent `{agent}` of runtime `{runtime}` would be agent `{combined}`, longer \
+                 than the 64 bytes an agent ID may have"
+            )
+        } else {
+            format!(
+                "ACP agent `{agent}` of runtime `{runtime}` would be agent `{combined}`, which is \
+                 not an agent ID (lowercase letters, digits, and single inner hyphens)"
+            )
+        }
+    })
+}

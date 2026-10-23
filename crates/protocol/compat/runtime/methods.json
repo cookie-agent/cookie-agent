@@ -2,6 +2,86 @@
   "information": [],
   "methods": [
     {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "agent/exited",
+      "params": "AgentExitedParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "agent/mcp",
+      "params": "AgentMcpParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "agent/mcp",
+      "params": "AgentMcpParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "agent/mcp_close",
+      "params": "AgentMcpBridgeRef",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "agent/mcp_closed",
+      "params": "AgentMcpClosedParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "agent/mcp_open",
+      "params": "AgentRef",
+      "params_role": "information",
+      "result": "AgentMcpOpenResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "agent/message",
+      "params": "AgentMessageParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "agent/message",
+      "params": "AgentMessageParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "agent/start",
+      "params": "AgentRef",
+      "params_role": "information",
+      "result": "Empty"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "agent/stop",
+      "params": "AgentRef",
+      "params_role": "information",
+      "result": "Empty"
+    },
+    {
       "direction": "from_daemon",
       "kind": "request",
       "method": "capability/open",
@@ -80,6 +160,14 @@
       "params": "ProducerUnregisterParams",
       "params_role": "command",
       "result": "ProducerUnregisterResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "runtime/agents_changed",
+      "params": "AgentsChangedParams",
+      "params_role": "information",
+      "result": null
     },
     {
       "direction": "from_daemon",

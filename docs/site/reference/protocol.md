@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.16.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.17.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.16.0",
+    "protocol_version": "1.17.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.16.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.17.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -234,6 +234,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
 | `session.project.set` | Root session ID, required nullable `project` | The session's metadata; it moved into the project, or out of any with `null` (see [Projects](#projects)) |
+| `session.agent_option.set` | `session_id`, `option_id`, `value` | The session's ACP agent options after the change; `session/set_config_option` (or `session/set_mode` for an agent that offers modes but no mode option) with the agent, resuming its ACP session when it is not live (see [ACP agents](#acp-agents)) |
 | `session.permission.get` | Session ID | Effective permissions per action and the tree's current mode |
 | `session.permission.set` | Session ID, action, optional `runtime` selector (refused on `message` and `skill`, as in agent documents), wildcard pattern, effect | Effective permissions after the overlay change |
 | `session.permission.clear` | Session ID, action, optional `runtime` selector, wildcard pattern | Effective permissions after the overlay change |
@@ -725,6 +726,41 @@ dropped for falling behind, and the tail of its standard error.
 plugin is started at once, and a `connected` one is stopped and started. An
 unknown or disabled plugin is an error (`plugin request rejected`). Status
 changes arrive as `plugins.changed`.
+
+### ACP agents
+
+Since 1.17.0 the daemon lists the external coding agents its runtimes host
+over the Agent Client Protocol (see the
+[ACP agents spec](../specs/acp-agents.md)) with its own agents:
+
+- An `AgentDescriptor` of the catalog view's `agents` has the optional
+  `runtime` (`runtime_id`, `agent`, the agent's own ID on the runtime, and
+  `available`) for an ACP agent. Its ID is `<runtime>-<agent>`, the
+  runtime ID's `_` spelled `-` (`local-claude`, `client-myhost-codex`); a
+  client reads the runtime from `runtime`, never from the ID. Its
+  `resolved_fallback` is the synthetic model `acp/<agent ID>`: a run selects
+  it like any agent, and the agent chooses its own model. An agent whose
+  runtime is away is listed with `available: false` and
+  `runnable_as_root: false`; creating a session or delegating with it is
+  refused at once.
+- The event `acp_session_started` records the ACP session the agent talks
+  to the session in (`agent`, `runtime_id`, `runtime_agent`,
+  `acp_session_id`, `cwd`, `protocol_version`, `agent_info`, and `how`:
+  `new`, `resumed`, or `loaded`). `acp_session_updated` carries what changed
+  of the agent's `commands` (its slash commands: `name`, `description`,
+  `input_hint`), `options` (its config options: `id`, `name`, `category`,
+  `current_value`, `values`), and `plan` (a `plan` display block); each
+  member is the whole new value, and clients keep the latest of each.
+  Choosing a command sends `/<name> <input>` as the prompt's text.
+- The agent's turns are model turns of `acp/<agent ID>`; the calls it
+  reports are tool calls whose `tool.source` is `acp` (`agent`,
+  `runtime_id`), and the calls it makes of cookie's tools through the MCP
+  bridge are ordinary tool calls of its turn.
+- `session.agent_option.set` changes one of the session's options and
+  answers the options after the change.
+- The display block `plan` (`entries`, each `content`, `status`
+  `pending`/`in_progress`/`completed`, optional `priority`
+  `high`/`medium`/`low`) reaches a client older than 1.17.0 as its text.
 
 ### The catalog view
 

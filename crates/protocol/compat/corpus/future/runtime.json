@@ -10,7 +10,7 @@
      "tool_output": {"max_lines": 500, "max_bytes": 12800, "head_lines": 100, "tail_lines": 100, "compression": "zstd"},
      "agent_md": {"max_bytes": 4096, "follow_links": true},
      "mcp_servers": [], "plugins": [], "sandbox": {"profile": "strict"}}}},
-   "answer": {"result": {"protocol_version": "1.6.0"}}
+   "answer": {"result": {"protocol_version": "1.7.0"}}
   },
   {
    "about": "a capability opened with members this build does not know",

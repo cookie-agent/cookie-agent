@@ -5,6 +5,30 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.17.0
+
+- ACP agents ([ACP agents spec](../specs/acp-agents.md), phases 1 to 3):
+  external coding agents a runtime hosts take a session's or a subagent's
+  turns over the Agent Client Protocol.
+  - `AgentDescriptor` has the optional `runtime` (`runtime_id`, `agent`,
+    `available`) for an agent a runtime hosts, listed as
+    `<runtime>-<agent>` with the synthetic model `acp/<agent ID>`. An older
+    client lists it as any agent.
+  - New events `acp_session_started` (the agent's ACP session: agent,
+    runtime, ACP session ID, cwd, protocol version, agent info, and whether
+    it was new, resumed, or loaded) and `acp_session_updated` (the agent's
+    `commands`, `options`, and `plan`). The plugin protocol, 1.8.0, carries
+    them too; an older reader skips them.
+  - The display block `plan` (`entries` of `content`, `status`, and an
+    optional `priority`), which an older client receives as text; it is also
+    part of runtime protocol 1.7.0 and plugin protocol 1.8.0.
+  - The tool source `acp` (`agent`, `runtime_id`) of the calls an ACP agent
+    reports. An older reader shows it as an unknown source.
+  - New method `session.agent_option.set` (`session_id`, `option_id`,
+    `value`), answering the session's agent `options`.
+- Runtime protocol 1.7.0 adds the agents' declarations, relay, and MCP
+  bridge (see the [runtime protocol](runtime-protocol.md#acp-agents)).
+
 ## 1.16.0
 
 - MCP tool filters ([MCP tool filters spec](../specs/mcp-tool-filters.md)):

@@ -1220,6 +1220,18 @@ pub(super) fn reduce_event_from(
                 url,
             });
         }
+        // The ACP session an agent talks in; its commands, options, and
+        // plan are not shown yet.
+        EventPayload::AcpSessionStarted { record } => push_event(
+            state,
+            EventLevel::Debug,
+            format!(
+                "ACP session {} of {} ({:?})",
+                record.acp_session_id, record.agent, record.how
+            ),
+            timestamp,
+        ),
+        EventPayload::AcpSessionUpdated { .. } => {}
         // What a writer left out changes nothing; the debug view names it.
         EventPayload::RecordOmitted { omitted_type } => push_event(
             state,
