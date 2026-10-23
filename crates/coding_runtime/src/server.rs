@@ -483,10 +483,13 @@ impl Server {
     ) {
         let method = request.method.clone();
         if method == method::INITIALIZE {
+            // Taken before the answer reads the agents, so a change made while
+            // it is answered still counts as a change to follow.
+            let agent_updates = self.options.acp_agent_updates.clone();
             let result = self.initialize(&request);
             let initialized = result.is_ok();
             reply(request, result).await;
-            if initialized && let Some(updates) = self.options.acp_agent_updates.clone() {
+            if initialized && let Some(updates) = agent_updates {
                 tokio::spawn(Arc::clone(&self).follow_acp_agents(updates));
             }
             // Reported from now on: the reply had their status until now.
@@ -637,7 +640,6 @@ impl Server {
         self: Arc<Self>,
         mut updates: tokio::sync::watch::Receiver<Vec<protocol::AcpAgentSettings>>,
     ) {
-        updates.mark_unchanged();
         loop {
             tokio::select! {
                 () = self.stop.cancelled() => return,
