@@ -303,7 +303,9 @@ rules from its mode (see [Listing runtimes](#listing-runtimes) and
 MCP tools and asks before each call. Memory has a default too, by whether
 the run is delegated rather than by mode, so the built-in `default` agent
 reads every memory and writes the memory related to its session (see
-[Memory permissions](#memory-permissions)).
+[Memory permissions](#memory-permissions)). `cron` defaults the same way:
+a root run may manage cron jobs and a delegated one may not (see
+[Cron permissions](#cron-permissions)).
 
 ## Agent presets
 
@@ -555,8 +557,9 @@ later declaration on an exact tie. Unmatched resources are denied by default.
 `ask` remains an explicitly writable effect and routes matching calls through
 the existing approval flow; it is never an implicit fallback for an
 unmatched resource. The only rules the daemon writes for an agent are the
-mode defaults of `list_runtimes` and `mcp`, each only while the document
-names no key for its action.
+mode defaults of `list_runtimes` and `mcp` and the run defaults of `memory`,
+`memory_write`, and `cron`, each only while the document names no key for
+its action.
 
 ### Runtime selectors
 
@@ -608,6 +611,9 @@ Tool providers publish a static permission name and an optional resource label:
 | `memory_search` | none | None: published with `memory_read`; each result is checked against the `memory` rules instead (see [Memory permissions](#memory-permissions)) |
 | `memory_read` | `memory` | Memory URL, such as `project://cookie-agent/build` |
 | `memory_write`, `memory_edit`, `memory_delete` | `memory_write` | Memory URL |
+| `cron_create`, `cron_update`, `cron_delete`, `cron_run` | `cron` | The target kind of each job the call touches: `session`, `subagent`, or `new`; a `cron_update` that changes the kind is checked for both, the strictest deciding |
+| `cron_list` | none | None: published only beside another cron tool; it lists only the jobs whose kind the `cron` rules allow or ask for |
+| `list_agents` | none | None: published exactly when the run is offered `delegate_subagent` or a cron tool other than `cron_list` |
 
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
 operations: `cat .env` is controlled by `bash`, not `read`, and a pattern such
@@ -894,6 +900,71 @@ deny or do not match is left out, not even counted. When nothing is left to
 show, the run gets no memory turn at all, while the tools stay offered. See
 [What the model sees](../sessions/memory.md#what-the-model-sees) and the
 [memory spec](../specs/memory.md#9-permissions).
+
+### Cron permissions
+
+The cron tools of the `global` runtime (`cron_create`, `cron_list`,
+`cron_update`, `cron_delete`, and `cron_run`; see
+[Scheduling prompts](../sessions/scheduling.md)) use one action, `cron`,
+whose resource is the target kind of the job a call touches:
+
+| Resource | A job that fires into |
+|---|---|
+| `session` | a root session (`"self"` from a root) |
+| `subagent` | a delegated session (`"self"` from a subagent, or a subagent's handle) |
+| `new` | a new root session per fire, from a template |
+
+One action covers listing, creating, editing, enabling and disabling,
+deleting, and running a job now. Creating checks the new job's kind;
+updating checks the job's current kind and, when it changes, the new one;
+deleting and running check the job's kind. `cron_list` has no action of its
+own and shows only the jobs whose kind the rules allow or ask for. An agent
+manages every job its rules allow, whoever created it.
+
+**Defaults.** When the agent document has no `cron` key:
+
+| Run | Default |
+|---|---|
+| Root, any agent but an internal one | `cron: allow` |
+| Delegated | none: the tools are hidden |
+| Internal agent | none |
+
+As with memory, the default follows whether the run is delegated, not the
+agent's mode. A declared key replaces the default, so `cron: deny` hides the
+tools from a root and this grants a subagent jobs into its own session and
+the sessions below it:
+
+```yaml
+permissions:
+  cron:
+    subagent: allow
+```
+
+A session overlay can grant `cron` for one session tree, as for any action.
+
+**Hard limits.** Beyond the rules:
+
+- an agent's job may target only its own session or a session below it in
+  its tree; any other session is refused in the tool result, whatever the
+  rules say (you can target any session from a client);
+- the tools have no permission-mode or model parameter: a new-session job an
+  agent creates runs in `auto-approve-n` with its agent's own models, and
+  only a client can set another mode or pin a model (an agent's update keeps
+  what you set);
+- a new-session job's agent must be one that can run as a root (`primary` or
+  `all`).
+
+A new-session job's template may add any permission rules to its run
+sessions, so `cron` on `new` lets an agent start sessions of any agent with
+more rights than its own. Grant it to a subagent deliberately.
+
+**`list_agents`.** Whenever a run is offered `delegate_subagent` or a cron
+tool other than `cron_list`, the `global` runtime also offers `list_agents`,
+which has no action of its own: for `delegate` it lists the run's delegation
+targets, for `cron` every enabled agent that is not internal, each with its
+mode, description, presets, models, and its permission rules as a run of it
+would start with them, the daemon's defaults marked `(default)`. See
+[`list_agents`](../reference/tools.md#list_agents).
 
 ### Listing runtimes
 

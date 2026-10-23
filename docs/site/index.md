@@ -81,7 +81,7 @@ command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "serve", 
   [runtimes](daemon/runtimes.md), and its [security](daemon/security.md)
   boundaries.
 - **[Working with sessions](sessions/index.md):** media, compaction, goal mode,
-  memory, and usage.
+  memory, [scheduled prompts](sessions/scheduling.md), and usage.
 - **Extend:** [agents and presets](extend/agents.md), [skills](extend/skills.md),
   [providers](extend/providers.md), [MCP servers](extend/mcp.md), and
   [plugins](extend/plugins.md).

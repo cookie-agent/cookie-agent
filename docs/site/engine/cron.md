@@ -1,7 +1,8 @@
 # Cron Jobs [cron]
 
 Control how the daemon fires cron jobs, the prompts you and agents schedule
-into sessions (see the [cron spec](../specs/cron.md)). Complete
+into sessions (see [Scheduling prompts](../sessions/scheduling.md) and the
+[cron spec](../specs/cron.md)). Complete
 `config.toml`:
 
 ```toml

@@ -16,6 +16,8 @@ Each tool declares a permission *action* and names the *resource* of each call:
   `parent`, `child`, or `sibling`;
 - `mcp`: the MCP tool's name; `skill`: the skill name;
 - `memory` and `memory_write`: the memory URL;
+- `cron`: the target kind of the cron job a call touches, `session`,
+  `subagent`, or `new`;
 - `list_runtimes`: nothing to name; any rule pattern matches.
 
 Actions are free-form labels, a lowercase letter then up to 31 lowercase
@@ -73,6 +75,14 @@ same rule that a declared key replaces it (patterns may use `${agent_id}`,
 So a root agent reads every memory and writes the memory related to its
 session, and `memory: deny` turns memory off. See
 [Memory permissions](../extend/agents.md#memory-permissions).
+
+The `cron` action, which the [cron tools](../sessions/scheduling.md#agents-and-the-cron-tools)
+use, has a default the same way: `cron: allow` for a root run of any agent
+but an internal one, and none for a delegated run or an internal agent, so a
+subagent sees the cron tools only when its document grants `cron`. Whatever
+the rules say, an agent can target only its own session or one below it, and
+only you, from a client, can set a new-session job's permission mode or pin
+its model. See [Cron permissions](../extend/agents.md#cron-permissions).
 
 Rules can also be added to one session tree without touching the agent, in
 `/permissions` or with `cookie run --allowed-tools`; these *overlay* rules are

@@ -103,6 +103,7 @@ nav:
       - Compaction: sessions/compaction.md
       - Goal mode: sessions/goals.md
       - Memory: sessions/memory.md
+      - Scheduling prompts: sessions/scheduling.md
       - Usage and cost: sessions/usage.md
   - Extend:
       - Agents and presets: extend/agents.md
