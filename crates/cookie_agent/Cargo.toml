@@ -24,6 +24,7 @@ tui = ["dep:cookie_agent_tui"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+reqwest.workspace = true
 cookie_agent_client_state = { version = "=0.4.0", path = "../client_state" }
 cookie_agent_coding_runtime = { version = "=0.4.0", path = "../coding_runtime" }
 cookie_agent_config = { version = "=0.4.0", path = "../config" }
@@ -36,6 +37,7 @@ cookie_agent_tui = { version = "=0.4.0", path = "../tui", optional = true }
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

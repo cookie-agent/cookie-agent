@@ -327,6 +327,26 @@ enum Command {
         )]
         token: Option<String>,
     },
+    /// List a daemon's skills, refresh its official skills, or check
+    /// skills before publishing them.
+    Skills {
+        #[command(subcommand)]
+        command: skills_command::SkillsCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
     /// Manage the session history this machine stores.
     Sessions {
         #[command(subcommand)]
@@ -429,6 +449,8 @@ struct Runtime {
     config_path: Option<PathBuf>,
     catalog_refresh_shutdown: CancellationToken,
     catalog_refresh_task: Option<tokio::task::JoinHandle<()>>,
+    /// The official skills' refresh loop, stopped with the catalog's.
+    official_skills_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Runtime {
@@ -436,6 +458,52 @@ impl Runtime {
         self.catalog_refresh_shutdown.cancel();
         if let Some(task) = self.catalog_refresh_task.take() {
             let _ = task.await;
+        }
+        if let Some(task) = self.official_skills_task.take() {
+            let _ = task.await;
+        }
+    }
+
+    /// Starts keeping the official skills up to date: at once, then every
+    /// [`cookie_agent_engine::OFFICIAL_SKILLS_REFRESH`]. A refresh that
+    /// changes them reloads the daemon's skills from the user roots.
+    fn start_official_skills(&mut self) {
+        let home = paths::home_dir().ok();
+        self.engine
+            .set_user_skill_roots(cookie_agent_engine::UserSkillRoots {
+                shared: home.as_ref().map(|home| home.join(".agents/skills")),
+                user: paths::user_data_root().ok().map(|root| root.join("skills")),
+            });
+        // Debug builds under test keep off the network unless a test serves
+        // its own source.
+        #[cfg(debug_assertions)]
+        {
+            if let Ok(url) = env::var("COOKIE_AGENT_TEST_OFFICIAL_SKILLS_URL") {
+                self.engine.set_official_skills_url(url);
+            } else if matches!(
+                env::var("COOKIE_AGENT_TEST_BUNDLED_CATALOG").as_deref(),
+                Ok("1")
+            ) {
+                return;
+            }
+        }
+        self.official_skills_task = Some(tokio::spawn(run_official_skills_loop(
+            self.engine.clone(),
+            self.catalog_refresh_shutdown.clone(),
+            cookie_agent_engine::OFFICIAL_SKILLS_REFRESH,
+        )));
+    }
+}
+
+async fn run_official_skills_loop(engine: Engine, shutdown: CancellationToken, cadence: Duration) {
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            _ = engine.refresh_official_skills() => {}
+        }
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            () = tokio::time::sleep(cadence) => {}
         }
     }
 }
@@ -791,6 +859,18 @@ async fn main_result(cli: Cli, launch: &mut Launch) -> anyhow::Result<()> {
             let target = daemon_target(url, token)?;
             project_command::run_project(&target.url, &target.token, command).await
         }
+        Some(Command::Skills {
+            command: skills_command::SkillsCommand::Check { dir, docs },
+            ..
+        }) => skills_command::run_check(&dir, docs.as_deref()).await,
+        Some(Command::Skills {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            skills_command::run_skills(&target.url, &target.token, command).await
+        }
         Some(Command::Cron {
             command,
             url,
@@ -853,6 +933,7 @@ fn local_workspace(
                 | Command::Mcp { .. }
                 | Command::Config { .. }
                 | Command::Onboard { .. }
+                | Command::Skills { .. }
                 | Command::Machine { .. }
                 | Command::Memory { .. }
                 | Command::Project { .. }
@@ -1006,14 +1087,16 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
 }
 
 async fn compose(workspace: &Path) -> anyhow::Result<Runtime> {
-    compose_with(
+    let mut runtime = compose_with(
         workspace,
         || HttpCatalogTransport::new().context("construct fixed catalog transport"),
         CatalogManager::standard,
         ProviderStore::standard,
         data_dir,
     )
-    .await
+    .await?;
+    runtime.start_official_skills();
+    Ok(runtime)
 }
 
 /// [`compose`] with the configuration already loaded.
@@ -1021,7 +1104,7 @@ async fn compose_loaded(
     workspace: &Path,
     configuration: cookie_agent_config::LoadedConfiguration,
 ) -> anyhow::Result<Runtime> {
-    compose_with_configuration(
+    let mut runtime = compose_with_configuration(
         workspace,
         configuration,
         || HttpCatalogTransport::new().context("construct fixed catalog transport"),
@@ -1029,7 +1112,9 @@ async fn compose_loaded(
         ProviderStore::standard,
         data_dir,
     )
-    .await
+    .await?;
+    runtime.start_official_skills();
+    Ok(runtime)
 }
 
 async fn compose_with<T: CatalogTransport + 'static>(
@@ -1116,6 +1201,7 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         config_path,
         catalog_refresh_shutdown,
         catalog_refresh_task: Some(catalog_refresh_task),
+        official_skills_task: None,
     })
 }
 
@@ -2424,6 +2510,7 @@ mod machine_command;
 mod memory_command;
 mod onboard_command;
 mod project_command;
+mod skills_command;
 
 #[cfg(test)]
 mod cli_reference;

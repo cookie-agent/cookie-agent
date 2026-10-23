@@ -26,6 +26,7 @@ attaching clients to it.
 | [`cookie memory`](#cookie-memory) | List, edit, and delete the daemon's memories |
 | [`cookie project`](#cookie-project) | List, create, rename, delete, and edit the daemon's projects |
 | [`cookie cron`](#cookie-cron) | List, create, edit, run, and delete the daemon's cron jobs |
+| [`cookie skills`](#cookie-skills) | List the daemon's skills, refresh the official ones, and check skills |
 | [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
 | [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
 
@@ -553,6 +554,46 @@ one-shot whose time has passed needs a new `--schedule` first.
 the fire's outcome and the session it went to. A run now counts toward
 neither the job's run limit nor its failures, and fires even with
 `[cron] enabled = false`.
+
+### `cookie skills`
+
+```text
+cookie skills <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Lists the daemon's skills and refreshes its official skills, the ones it
+keeps up to date in `official_skills/` of its data root; see
+[Official skills](../extend/skills.md#official-skills).
+
+#### `cookie skills list`
+
+`cookie skills list` prints the daemon's own skills, its user and official
+ones (project skills belong to a session's workspaces): each skill's name,
+where it comes from (`user`, or `official` with its version), marked
+`(shadowed)` when another skill of the same name wins, and its file.
+
+#### `cookie skills update`
+
+`cookie skills update` refreshes the official skills now, as the daemon does
+at start and daily, and prints what changed and the skills it keeps. A
+refresh that fails keeps the skills it had and fails with the reason; with
+`[skills] official = false` it does nothing.
+
+#### `cookie skills check`
+
+```text
+cookie skills check <DIR> [--docs <DIR>]
+```
+
+Checks skills before they are published, with no daemon: each
+`<DIR>/<name>/SKILL.md` (or `<DIR>/SKILL.md` alone) must parse, every
+backticked `cookie …` command it names must exist in this build, and every
+link to `https://cookie-agent.github.io/doc/latest/…` must name a page. Links
+are fetched from the published site, or checked against a `docs/site`
+checkout with `--docs`. An `index.json` in `<DIR>` must list every skill
+there, with a version, a `requires_cookie` range, and each file's SHA-256.
+Each problem is printed with its file, and any problem fails the command.
+The official skills repository runs it on every push.
 
 ### `cookie sessions upgrade`
 
