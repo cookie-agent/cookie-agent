@@ -267,6 +267,20 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                 class="flex w-full shrink-0 flex-col gap-1 overflow-y-auto p-2 sm:w-60 sm:border-r sm:border-toasted sm:dark:border-ember"
                 class:hidden=move || workspace.shown_section().is_some() && workspace.narrow.get()
             >
+                <Show when=move || workspace.onboarding.status.with(Option::is_some)>
+                    <button
+                        type="button"
+                        id="settings-onboard"
+                        class=format!("{ROW} min-h-12")
+                        on:click=move |_| workspace.open_onboarding()
+                    >
+                        <span class="flex w-full items-center gap-2">
+                            <Glyph icon=icondata::FaWandMagicSparklesSolid />
+                            <span class="min-w-0 flex-1 text-sm font-bold">"Set up Cookie"</span>
+                        </span>
+                        <span class=NOTE>"a provider, the default and small models, the starter kit"</span>
+                    </button>
+                </Show>
                 {entries}
             </nav>
             {move || {

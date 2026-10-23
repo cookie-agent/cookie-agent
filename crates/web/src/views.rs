@@ -43,6 +43,7 @@ mod install;
 mod machines;
 mod manage;
 mod memory;
+mod onboarding;
 mod projects;
 mod restart;
 mod row_menu;
@@ -178,6 +179,7 @@ pub fn WorkspaceView(
             </Show>
             <Drawer workspace=workspace connection=connection theme=theme />
             <Sheet workspace=workspace />
+            <onboarding::OnboardingSheet workspace=workspace />
         </div>
     }
 }

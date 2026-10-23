@@ -92,11 +92,13 @@ run_set() {
     done
     oauth_port="$(cat "$scratch/oauth.port")"
 
-    # Writes home $1's config.toml: a `[server]` table on port $2, then stdin.
+    # Writes home $1's config.toml: the top-level keys $3, a `[server]`
+    # table on port $2, then stdin.
     write_config() {
-        local home="$1" port="$2"
+        local home="$1" port="$2" top="${3:-}"
         mkdir -p -m 700 "$home/.cookie-agent/agents" "$home/workspace"
         {
+            [[ -n "$top" ]] && printf '%s\n\n' "$top"
             printf '[server]\nport = %s\n\n' "$port"
             cat
         } >"$home/.cookie-agent/config.toml"
@@ -229,7 +231,11 @@ command = [\"python3\", \"$root/crates/engine/tests/fixtures/acp_agent.py\"]
 description = \"Disabled fixture\"
 enabled = false"
     fi
-    write_config "$allowing" "$port" <<TOML
+    # Set up for onboarding (a provider, default_model, small_model), so no
+    # first-run sheet covers the scenarios; the other daemon has no
+    # provider and offers it.
+    write_config "$allowing" "$port" 'default_model = "custom.local/test"
+small_model = "custom.local/test"' <<TOML
 [session_title]
 generate_on_first_turn = false
 

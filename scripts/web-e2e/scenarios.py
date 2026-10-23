@@ -17,8 +17,9 @@ each in its own process against its own daemons (see SCENARIOS).
 The allowing daemon has a scripted model (mock-model.py) that takes images,
 an agent whose `bash` asks for approval, a `helper` subagent, and a `greet`
 skill. `held-session` is a session another process made before the daemon
-started, which the daemon lists but has not loaded. The other daemon is
-empty; its page is of another origin. In the environment, `COOKIE` is the
+started, which the daemon lists but has not loaded; it is set up for
+onboarding. The other daemon is empty, with no provider, so it offers the
+first-run sheet; its page is of another origin. In the environment, `COOKIE` is the
 `cookie` binary, for the machine commands the badges need, and `CHROME`
 and `CHROME_ARGS` (a JSON list) the browser and its switches.
 """
@@ -4535,6 +4536,60 @@ def foreign_origin(browser):
     connect(browser)
 
 
+def onboarding(browser):
+    """A daemon that is not set up offers the first-run sheet on connecting:
+    four steps, the connected providers, and the model lists; "Not now"
+    closes it for good in this browser, and Settings reopens it. A daemon
+    that is set up offers nothing. The kit step is left alone: it would
+    download the release's kit."""
+    browser.resize(1280, 900)
+    view(browser, "settings")
+    browser.wait("the set-up daemon's onboarding answer", lambda: count(browser, "#settings-onboard") == 1)
+    assert count(browser, "#onboarding") == 0, "a set-up daemon offered the first-run sheet"
+    browser.go(OTHER_LINK)
+    browser.wait("the other daemon", lambda: browser.text("#connected") != "")
+    browser.wait("the first-run sheet", lambda: count(browser, "#onboarding") == 1)
+    steps = browser.script(
+        "return [...document.querySelectorAll('#onboarding [data-step]')].map(s => s.dataset.step)"
+    )
+    assert steps == ["provider", "default-model", "small-model", "kit"], steps
+    assert browser.script(
+        "return document.querySelector('#onboarding [data-step=provider]').getAttribute('aria-current')"
+    ) == "step", "the sheet opens on the provider step"
+    assert "No provider is connected yet" in browser.text("#onboarding-connected")
+    assert count(browser, "#onboarding [data-provider]") > 0, "the provider step lists the connect forms"
+    browser.shot("onboarding-provider-desktop")
+    browser.click("#onboarding-next")
+    browser.wait("the default model step", lambda: count(browser, "#onboarding [data-model-search]") == 1)
+    assert "No model is available yet" in browser.text("#onboarding [data-onboarding-body]")
+    browser.click("#onboarding-back")
+    browser.wait("the provider step again", lambda: count(browser, "#onboarding-connected") == 1)
+    browser.phone(390, 844)
+    settle(browser)
+    fits(browser, "the first-run sheet")
+    browser.shot("onboarding-provider-phone")
+    browser.resize(1280, 900)
+    print("a daemon without a provider offers the first-run sheet's four steps")
+
+    # Not now: closed, and closed again after a reload.
+    browser.click("#onboarding-not-now")
+    browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
+    browser.go(OTHER_PAGE)
+    browser.wait("the other daemon again", lambda: browser.text("#connected") != "")
+    view(browser, "settings")
+    browser.wait("Settings' Set up Cookie", lambda: count(browser, "#settings-onboard") == 1)
+    assert count(browser, "#onboarding") == 0, "Not now did not stay"
+    print("Not now keeps the sheet closed in this browser")
+
+    # Settings reopens it.
+    browser.click("#settings-onboard")
+    browser.wait("the reopened sheet", lambda: count(browser, "#onboarding") == 1)
+    browser.click("#onboarding-not-now")
+    browser.wait("the closed sheet", lambda: count(browser, "#onboarding") == 0)
+    print("Settings' Set up Cookie reopens the sheet")
+    connect(browser)
+
+
 def panic_hook():
     """A panic reaches the console with its message and where it happened,
     which the build's `panic = "abort"` alone loses, and the suite's error
@@ -4745,6 +4800,7 @@ SCENARIOS = [
     ("install_prompt", install_prompt, "install", []),
     ("install_on_phones", install_on_phones, "install", []),
     ("panic_hook", panic_hook, "install", []),
+    ("onboarding", onboarding, "install", []),
     # It stops the other daemon.
     ("daemon_change", daemon_change, "install", []),
 ]

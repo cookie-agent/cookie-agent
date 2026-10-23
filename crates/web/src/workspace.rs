@@ -42,6 +42,7 @@ mod history;
 mod manage;
 mod nav;
 mod oauth;
+mod onboarding;
 mod permissions;
 mod projects;
 mod rename;
@@ -54,6 +55,7 @@ pub use cards::CardSet;
 pub use cron::CronForm;
 pub use history::UserMenu;
 pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL};
+pub use onboarding::Onboarding;
 pub use permissions::RuleRef;
 pub use projects::{EditorFields, ProjectEditor};
 
@@ -299,6 +301,8 @@ pub struct Workspace {
     /// A restart the daemon scheduled, as the page says it, until the
     /// connection closes.
     pub restarting: RwSignal<Option<String>>,
+    /// The first-run sheet and the daemon's onboarding answer.
+    pub onboarding: Onboarding,
 }
 
 impl Default for Workspace {
@@ -413,6 +417,7 @@ impl Workspace {
             config_status: RwSignal::new(None),
             restart_confirm: RwSignal::new(false),
             restarting: RwSignal::new(None),
+            onboarding: Onboarding::default(),
         }
     }
 
@@ -487,6 +492,7 @@ impl Workspace {
             .update_value(|subscriptions| subscriptions.reset());
         self.finish_waiting_sign_in();
         let selected = self.selected.get_untracked();
+        self.refresh_onboarding(!reconnected);
         spawn_local(async move {
             self.refresh_lists().await;
             if reconnected && let Some(session_id) = selected {
@@ -579,6 +585,10 @@ impl Workspace {
             }
             ClientDelivery::DaemonRestarting(restarting) => {
                 self.note_restarting(restarting);
+                return;
+            }
+            ClientDelivery::OnboardingChanged(status) => {
+                self.apply_onboarding_change(status.clone());
                 return;
             }
             ClientDelivery::PluginEvent(event) => {

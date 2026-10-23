@@ -65,6 +65,39 @@ address bar.
   the connect screen) cycles through system (a half circle), light (a sun),
   and dark (a moon). The choice stays in the browser.
 
+## Setting up a daemon
+
+A daemon that is not set up yet, with no provider connected or without a
+`default_model` and a `small_model` its providers offer (see
+[onboarding](../quickstart.md)), offers a first-run sheet when the page
+connects. It walks four steps, each starting from what is already
+configured, with **Back** and **Next** and a check on each step done:
+
+1. **Provider**: the connected providers with their count of available
+   models, then the same provider list and connect forms as Settings ›
+   Providers; errors show in the form, which can be sent again. Several may
+   be connected.
+2. **Default model**: a searchable list of the connected providers' models,
+   grouped by provider, with their context size. Choosing one shows its
+   variants as chips, the model's own default variant chosen.
+3. **Small model**: the same list, with nothing suggested; its chips start
+   on the model's first listed variant, the cheapest. It may be the default
+   model.
+4. **Starter kit**: what installing the release's kit does to each file,
+   **new**, **same as yours (skipped)**, or **differs → written as .new**,
+   with **Show the diff** on a changed file; **Install the kit** or **Skip
+   it**, and **Use a downloaded kit…** for a `cookie-agent-defaults.tar.gz`
+   saved earlier.
+
+**Finish** (`onboarding.run`) is disabled, with what is still needed beside
+it, until the daemon would be set up. It ends on a summary of the settings
+and files written and **Start your first session**, a new session drafted
+on the kit's `primary` agent. **Not now** closes the sheet; the browser
+remembers it for this daemon, and Settings › **Set up Cookie** opens the
+sheet again at any time, also on a daemon that is set up. Every page
+connected to the daemon follows `onboarding.changed`: finishing in one tab
+closes the sheet in the others. On a phone the sheet fills the screen.
+
 ## Layout
 
 - **The rail.** An icon strip on the far left switches between six views;
@@ -73,7 +106,7 @@ address bar.
   - **Chat** (the default): the sessions sidebar and the transcript;
   - **Agents**: the agent documents and their presets, in a sidebar beside
     the one open;
-  - **Settings**: `config.toml`, providers, MCP servers, plugins, and this
+  - **Settings**: **Set up Cookie** (see [Setting up a daemon](#setting-up-a-daemon)), `config.toml`, providers, MCP servers, plugins, and this
     browser's preferences;
   - **Machines & runtimes**: the daemon's machines and its runtime
     registry;
