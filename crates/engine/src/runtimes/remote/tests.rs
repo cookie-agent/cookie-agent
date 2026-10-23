@@ -3128,9 +3128,11 @@ async fn a_global_server_runs_in_the_daemon_users_home() {
     let started = std::path::PathBuf::from(std::fs::read_to_string(&cwd_file).unwrap())
         .canonicalize()
         .unwrap();
-    assert_eq!(
-        Some(started.to_string_lossy().into_owned()),
-        crate::runtimes::daemon_home()
-    );
+    let home = crate::runtimes::daemon_home().map(|home| {
+        std::path::PathBuf::from(home)
+            .canonicalize()
+            .expect("canonical home")
+    });
+    assert_eq!(Some(started), home);
     engine.shutdown().await;
 }

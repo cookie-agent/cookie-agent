@@ -791,7 +791,10 @@ async fn a_runtime_scoped_server_starts_with_the_runtime_and_every_workspace_sha
     );
     assert_eq!(
         reported_cwd(&browser_cwd),
-        crate::runtime_home().expect("a home directory")
+        crate::runtime_home()
+            .expect("a home directory")
+            .canonicalize()
+            .expect("canonical home")
     );
     let pid = std::fs::read_to_string(&pid_file).expect("the browser started");
 
