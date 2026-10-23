@@ -22,8 +22,8 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentMode, ApprovalListParams, ApprovalRespondParams, ApprovalStatus,
     ApprovalUserDecision, ArtifactReadParams, AvailableModelDescriptor, Client, ClientDelivery,
     ClientError, ClientResponseId, ClientRunId, EventPayload, InputDelivery, ModelSelection,
-    PermissionMode, RunCancelParams, RunSelection, RuntimeAttachRequest, SessionCreateParams,
-    SessionId, SessionListParams, SessionMeta, SessionOrigin, SessionPermissionGetParams,
+    PermissionMode, RunCancelParams, RunSelection, SessionCreateParams, SessionId,
+    SessionListParams, SessionMeta, SessionOrigin, SessionPermissionGetParams,
     SessionRecallInputParams, SessionRecallInputResult, SessionSelectModelParams,
     SessionSetPermissionModeParams, SessionSubmitInputParams, SessionSubmitInputResult,
     SessionUsageParams, SessionsChangedNotification, ToolCallId, UsageRollup,
@@ -82,13 +82,20 @@ pub enum Panel {
     Message,
     /// The session's attached runtimes.
     Runtimes,
-    /// The new session's runtime cards, from the bottom bar's "Runtimes…"
-    /// chip.
-    DraftRuntimes,
     /// "Move to project…" of the session in [`Workspace::moving`].
     MoveSession,
     /// The project editor ([`Workspace::project_editor`]).
     Project,
+}
+
+/// Why the daemon did not create the new session, with the runtimes it was
+/// asked for and the card fields they came from.
+struct DraftRefusal {
+    /// The error on one line, for a card.
+    line: String,
+    /// The error with its detail.
+    message: String,
+    requests: Vec<crate::cards::KeyedRequest>,
 }
 
 /// The `/usage` panel's content.
@@ -116,13 +123,17 @@ pub struct Workspace {
     /// The daemon lists sessions' attachments (client protocol 1.7), so a
     /// session listing none has none.
     pub lists_attachments: RwSignal<bool>,
-    /// The runtime cards the new session starts with: `global` alone, or
-    /// its project's defaults, until the "Runtimes…" sheet changes them.
+    /// The runtime cards the new session is created with, shown above
+    /// its composer: `global` alone, or its project's defaults, until the
+    /// user changes them.
     pub selection: RwSignal<crate::cards::Selection>,
-    /// Why opening a card's workspace failed, by card key and field.
+    /// Why a card's runtime refused the new session, by card key and field.
     pub card_errors: RwSignal<HashMap<(String, usize), String>>,
-    /// Start is opening the selected workspaces.
-    pub starting: RwSignal<bool>,
+    /// The first message is creating the new session.
+    pub creating: RwSignal<bool>,
+    /// Why the first message did not create the new session, beside the
+    /// composer.
+    pub draft_error: RwSignal<Option<String>>,
     /// The machine groups the user opened or closed now, by machine; the
     /// browser remembers them too.
     pub group_open: RwSignal<HashMap<String, bool>>,
@@ -173,15 +184,16 @@ pub struct Workspace {
     permission_request: StoredValue<u64>,
     /// The files the next message attaches.
     pub attachments: RwSignal<Vec<cookie_agent_protocol::ArtifactRef>>,
+    /// The bytes of a new session's files, uploaded once its first message
+    /// created it.
+    draft_files: StoredValue<Vec<attachments::DraftFile>>,
+    next_draft_file: StoredValue<u64>,
     pub downscale_offer: RwSignal<Option<DownscaleOffer>>,
     offer_bytes: StoredValue<Vec<u8>>,
     /// `runtimes.list`: read on connect and whenever runtimes or machines
     /// change, for the runtime cards and every runtime's home.
     pub runtimes: RwSignal<Option<cookie_agent_protocol::RuntimesListResult>>,
     pub machines: RwSignal<Option<Result<cookie_agent_protocol::MachinesListResult, String>>>,
-    /// The runtimes a new session attaches, once `/runtime` edited them.
-    pub draft_runtimes: RwSignal<Option<Vec<cookie_agent_client_state::runtimes::DraftRuntime>>>,
-    next_draft_runtime: StoredValue<u64>,
     pub mcp_servers: RwSignal<Option<Result<Vec<cookie_agent_protocol::McpServerInfo>, String>>>,
     /// The daemon takes the page's own address as the OAuth redirect
     /// (client protocol 1.11), so the MCP servers offer sign-in.
@@ -293,7 +305,8 @@ impl Workspace {
             lists_attachments: RwSignal::new(false),
             selection: RwSignal::new(crate::cards::Selection::global_only()),
             card_errors: RwSignal::new(HashMap::new()),
-            starting: RwSignal::new(false),
+            creating: RwSignal::new(false),
+            draft_error: RwSignal::new(None),
             group_open: RwSignal::new(HashMap::new()),
             directory_filter: RwSignal::new(None),
             owned: StoredValue::new(HashSet::new()),
@@ -331,12 +344,12 @@ impl Workspace {
             draft_rules: RwSignal::new(Vec::new()),
             permission_request: StoredValue::new(0),
             attachments: RwSignal::new(Vec::new()),
+            draft_files: StoredValue::new(Vec::new()),
+            next_draft_file: StoredValue::new(0),
             downscale_offer: RwSignal::new(None),
             offer_bytes: StoredValue::new(Vec::new()),
             runtimes: RwSignal::new(None),
             machines: RwSignal::new(None),
-            draft_runtimes: RwSignal::new(None),
-            next_draft_runtime: StoredValue::new(0),
             mcp_servers: RwSignal::new(None),
             can_sign_in: RwSignal::new(false),
             sign_ins: RwSignal::new(crate::oauth::waiting()),
@@ -993,24 +1006,25 @@ impl Workspace {
         );
     }
 
-    /// Starts composing a new session, on the composer with only `global`
-    /// (`docs/site/specs/runtime-delegation.md` section 5.1): the
-    /// "Runtimes…" chip opens the runtime cards, and a project's defaults
-    /// prefill them. Nothing is remembered from an earlier draft.
+    /// Starts composing a new session: its runtime cards with only
+    /// `global` selected, and the composer under them, whose first message
+    /// creates the session. A project's defaults prefill the cards.
+    /// Nothing is remembered from an earlier draft.
     pub fn start_new_session(self) {
         self.selection.set(crate::cards::Selection::global_only());
         self.new_project.set(None);
         self.card_errors.set(HashMap::new());
-        self.starting.set(false);
+        self.creating.set(false);
+        self.draft_error.set(None);
         self.poll_runtimes();
         self.new_session.set(true);
         self.selected.set(None);
         self.tree_root.set(None);
         self.tree.set(None);
         self.attachments.set(Vec::new());
+        self.drop_draft_files();
         self.downscale_offer.set(None);
         self.draft_rules.set(Vec::new());
-        self.draft_runtimes.set(None);
         self.composer.set(String::new());
         self.draft.set(self.default_draft());
         self.panel.set(None);
@@ -1023,6 +1037,7 @@ impl Workspace {
     pub fn open_session(self, session_id: SessionId) {
         if self.selected.get_untracked() != Some(session_id) {
             self.attachments.set(Vec::new());
+            self.drop_draft_files();
             self.downscale_offer.set(None);
         }
         self.new_session.set(false);
@@ -1300,6 +1315,9 @@ impl Workspace {
                 .set("This session is owned by another cookie process; input is disabled.".into());
             return;
         }
+        if self.new_session.get_untracked() && !self.may_create() {
+            return;
+        }
         let Some(content) = (ComposerInput {
             text: text.clone(),
             files: files.clone(),
@@ -1325,18 +1343,51 @@ impl Workspace {
             return;
         };
         let new_session = self.new_session.get_untracked();
+        if new_session && !self.may_create() {
+            self.bounce_draft(text, files);
+            return;
+        }
         let selection = self.draft.get_untracked();
         spawn_local(async move {
+            let mut content = content;
+            let mut files = files;
             let session_id = if new_session {
-                match self.create_session(&client, selection.clone()).await {
+                self.creating.set(true);
+                self.draft_error.set(None);
+                self.card_errors.set(HashMap::new());
+                let created = self.create_session(&client, selection.clone()).await;
+                self.creating.set(false);
+                let session_id = match created {
                     Ok(session_id) => session_id,
-                    Err(error) => {
-                        self.composer.set(text);
-                        self.attachments.set(files);
-                        self.status.set(error);
+                    Err(refusal) => {
+                        self.refuse_draft(refusal, text, files);
                         return;
                     }
+                };
+                // The draft's files go into the session now, and the
+                // message names them by their own references.
+                if self.holds_draft_files(&files) {
+                    match self.upload_draft_files(&client, session_id, files).await {
+                        Ok(uploaded) => {
+                            files = uploaded;
+                            let rebuilt = ComposerInput {
+                                text: text.clone(),
+                                files: files.clone(),
+                            }
+                            .content();
+                            if let Some(rebuilt) = rebuilt {
+                                content = rebuilt;
+                            }
+                        }
+                        Err(uploaded) => {
+                            // As a failed submit: the message goes back to
+                            // the session's composer.
+                            self.bounce_draft(text, uploaded);
+                            return;
+                        }
+                    }
                 }
+                session_id
             } else {
                 match self.selected.get_untracked() {
                     Some(session_id) => session_id,
@@ -1377,56 +1428,159 @@ impl Workspace {
         });
     }
 
+    /// Whether the first message may create the new session now: not while
+    /// it is being created, nor while a selected card cannot be used, which
+    /// the composer's notice then says.
+    fn may_create(self) -> bool {
+        if self.creating.get_untracked() {
+            self.status.set("the new session is being created…".into());
+            return false;
+        }
+        let cards = untrack(|| self.cards());
+        match self
+            .selection
+            .with_untracked(|selection| selection.blocker(&cards))
+        {
+            Some(blocker) => {
+                self.status.set(blocker.clone());
+                self.draft_error.set(Some(blocker));
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// Puts a message the new session did not take back into the composer,
+    /// ahead of anything typed meanwhile.
+    fn bounce_draft(self, text: String, files: Vec<cookie_agent_protocol::ArtifactRef>) {
+        self.composer.update(|composer| {
+            *composer = match (text.is_empty(), composer.is_empty()) {
+                (_, true) => text,
+                (true, false) => std::mem::take(composer),
+                (false, false) => format!("{text}\n\n{composer}"),
+            };
+        });
+        self.attachments.update(|attachments| {
+            let typed = std::mem::take(attachments);
+            *attachments = files;
+            attachments.extend(typed);
+        });
+    }
+
+    /// The daemon did not create the new session: the draft stays as it
+    /// was, the message goes back into the composer, and the error shows on
+    /// the card of the runtime it names, else beside the composer.
+    fn refuse_draft(
+        self,
+        refusal: DraftRefusal,
+        text: String,
+        files: Vec<cookie_agent_protocol::ArtifactRef>,
+    ) {
+        // The page left the draft meanwhile: the message has nowhere to go
+        // back to but the status line.
+        if !self.new_session.get_untracked() {
+            self.status.set(format!(
+                "the new session was not created: {}",
+                refusal.message
+            ));
+            return;
+        }
+        self.bounce_draft(text, files);
+        let card = crate::cards::failing_request(&refusal.message, &refusal.requests);
+        match card {
+            Some((key, index)) => {
+                let label = untrack(|| self.cards())
+                    .into_iter()
+                    .find(|card| card.key() == key)
+                    .map_or_else(|| key.clone(), |card| card.label());
+                let notice =
+                    format!("No session was created: {label} did not start; see its card.");
+                self.status.set(notice.clone());
+                self.draft_error.set(Some(notice));
+                self.card_errors
+                    .set(HashMap::from([((key.clone(), index), refusal.line)]));
+                crate::browser::reveal(&format!("#new-session [data-card=\"{key}\"]"));
+            }
+            None => {
+                self.status.set(format!(
+                    "the new session was not created: {}",
+                    refusal.message
+                ));
+                self.draft_error.set(Some(refusal.message));
+            }
+        }
+    }
+
+    /// What the new session is created with: whether it attaches `global`,
+    /// and its runtimes, each with the card field it came from; `None` for
+    /// a draft still on its project's defaults, which the daemon attaches.
+    fn draft_requests(self) -> (bool, Option<Vec<crate::cards::KeyedRequest>>) {
+        let selection = self.selection.get_untracked();
+        if let Some(defaults) = untrack(|| self.draft_project_defaults())
+            && selection
+                == crate::cards::Selection::of_project(&defaults, &untrack(|| self.homes()))
+        {
+            return (true, None);
+        }
+        let (global, requests) = selection.keyed_requests(&untrack(|| self.cards()));
+        (global, Some(requests))
+    }
+
     async fn create_session(
         self,
         client: &Client,
         selection: Option<RunSelection>,
-    ) -> Result<SessionId, String> {
+    ) -> Result<SessionId, DraftRefusal> {
+        let refused = |message: String| DraftRefusal {
+            line: message.clone(),
+            message,
+            requests: Vec::new(),
+        };
         let selection = selection
             .or_else(|| self.default_draft())
-            .ok_or("no agent and model to start a session with")?;
-        // The runtimes the cards opened (and `/runtime` may have edited), in
-        // card order, at the canonical workspaces they reported; the first
-        // workspace is the session's directory. Without any, the draft's
-        // project's defaults when it has some (the daemon attaches them),
-        // else `global` alone: the session works nowhere in particular.
+            .ok_or_else(|| refused("no agent and model to start a session with".into()))?;
+        // The selected cards, in card order, at the workspaces as typed: the
+        // daemon starts every runtime that is not running and resolves each
+        // workspace, or creates nothing. A draft still on its project's
+        // defaults leaves them to the daemon.
         let project = self
             .new_project
             .get_untracked()
             .filter(|_| self.has_projects.get_untracked());
-        let (global, runtimes) = match self.draft_runtimes.get_untracked() {
-            Some(entries) => (
-                entries.iter().any(|entry| entry.is_global()),
-                Some(
-                    entries
-                        .iter()
-                        .filter(|entry| !entry.is_global())
-                        .map(|entry| RuntimeAttachRequest {
-                            workspace: entry.workspace().map(str::to_owned),
-                            ..entry.request.clone()
-                        })
-                        .collect::<Vec<_>>(),
-                ),
-            ),
-            None if untrack(|| self.draft_project_defaults()).is_some() => (true, None),
-            None => (true, Some(Vec::new())),
-        };
-        let directory = runtimes
-            .iter()
-            .flatten()
-            .find_map(|request| request.workspace.clone());
+        let (global, keyed) = self.draft_requests();
+        let runtimes = keyed.as_ref().map(|keyed| {
+            keyed
+                .iter()
+                .map(|(_, _, request)| request.clone())
+                .collect::<Vec<_>>()
+        });
         let created = client
             .create_session(SessionCreateParams {
                 permission_mode: self.new_session_mode.get_untracked(),
                 permission_rules: self.draft_rules.get_untracked(),
-                cwd: directory,
                 runtimes,
                 global,
                 project,
                 ..SessionCreateParams::new(selection)
             })
             .await
-            .map_err(|error| crate::errors::describe_full(&error))?;
+            .map_err(|error| DraftRefusal {
+                line: crate::errors::describe(&error),
+                message: crate::errors::describe_full(&error),
+                requests: keyed.unwrap_or_default(),
+            })?;
+        // This browser suggests the workspaces it opened next time.
+        for attachment in &created.runtimes {
+            if let Some(workspace) = &attachment.workspace {
+                let key = crate::cards::recent_key(attachment.runtime_id.as_str());
+                let recent = crate::cards::recent_from_storage(browser::load(&key).as_deref());
+                if let Ok(stored) =
+                    serde_json::to_string(&crate::cards::remember(&recent, workspace))
+                {
+                    browser::store(&key, &stored);
+                }
+            }
+        }
         let session_id = created.session.session_id;
         if created.session.project.is_some() {
             self.refresh_projects();
@@ -1449,7 +1603,8 @@ impl Workspace {
         }
         self.new_session_mode.set(None);
         self.draft_rules.set(Vec::new());
-        self.draft_runtimes.set(None);
+        self.draft_error.set(None);
+        self.card_errors.set(HashMap::new());
         self.new_session.set(false);
         self.selected.set(Some(session_id));
         self.reroot_tree(session_id);

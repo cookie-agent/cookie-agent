@@ -17,18 +17,15 @@ use cookie_agent_client_state::{
         ProviderAction, ProviderOperation, action_name, retry_store_contention_once,
         store_contention_message,
     },
-    runtimes::{
-        DraftRuntime, MachineRequest, RuntimeRow, draft_runtime_rows, reconnect_status,
-        runtime_rows,
-    },
+    runtimes::{MachineRequest, RuntimeRow, reconnect_status, runtime_rows},
 };
 use cookie_agent_protocol::{
     AttachmentName, CapabilityName, ClientConnectId, ClientDelivery, ClientRequestId,
     ConfigApplyParams, ConfigChange, ConfigRevision, McpServerAddParams, McpServerEditParams,
     McpServerInfo, McpServerNameParams, McpServerPersistParams, McpServerReconnectParams,
     McpServerSetEnabledParams, MemoryListParams, ProviderConnectParams, ProviderDescriptor,
-    ProviderDisconnectParams, RuntimeAttachRequest, RuntimeId, RuntimesReconnectParams,
-    SessionRuntimeAttachParams, SessionRuntimeDetachParams, errors,
+    ProviderDisconnectParams, RuntimeId, RuntimesReconnectParams, SessionRuntimeAttachParams,
+    SessionRuntimeDetachParams, errors,
 };
 use leptos::{prelude::*, task::spawn_local};
 
@@ -85,7 +82,8 @@ impl Workspace {
     /// notification.
     pub(super) fn refresh_open_panel(self, delivery: &ClientDelivery) {
         let runtimes = self.panel.get_untracked() == Some(Panel::Runtimes)
-            || self.showing(View::Machines, None);
+            || self.showing(View::Machines, None)
+            || (self.new_session.get_untracked() && self.showing(View::Chat, None));
         match delivery {
             ClientDelivery::RuntimesChanged(_) if runtimes => self.poll_runtimes(),
             ClientDelivery::MachinesChanged(_) => {
@@ -116,28 +114,28 @@ impl Workspace {
 
     // ---- /runtime ---------------------------------------------------------
 
+    /// The session's runtimes sheet. A new session's runtimes are its
+    /// cards, above the composer: the page shows them instead.
     pub(super) fn open_runtimes(self) {
+        if self.new_session.get_untracked() {
+            self.panel.set(None);
+            self.status
+                .set("the new session's runtimes are the cards above the composer".into());
+            crate::browser::reveal("#new-session");
+            return;
+        }
         self.panel.set(Some(Panel::Runtimes));
         self.poll_runtimes();
     }
 
-    /// Reads `runtimes.list`, `machines.list`, and `mcp.server.list`; a new
-    /// session's draft gets its runtimes once the listing says where `local`
-    /// works.
+    /// Reads `runtimes.list`, `machines.list`, and `mcp.server.list`.
     pub fn poll_runtimes(self) {
         let Some(client) = self.client() else {
             return;
         };
         spawn_local(async move {
             match client.list_runtimes().await {
-                Ok(listing) => {
-                    self.runtimes.set(Some(listing));
-                    if self.new_session.get_untracked()
-                        && self.panel.get_untracked() == Some(Panel::Runtimes)
-                    {
-                        self.materialize_draft_runtimes();
-                    }
-                }
+                Ok(listing) => self.runtimes.set(Some(listing)),
                 Err(error) => self.status.set(format!(
                     "runtimes unavailable: {}",
                     crate::errors::describe(&error)
@@ -153,14 +151,11 @@ impl Workspace {
         self.poll_mcp();
     }
 
-    /// The attachments the panel shows: the viewed session's, or the
-    /// draft's.
+    /// The attachments the panel shows: the viewed session's.
     pub fn runtime_rows(self) -> Vec<RuntimeRow> {
         let listing = self.runtimes.get();
         if self.new_session.get() {
-            return self.draft_runtimes.with(|entries| {
-                draft_runtime_rows(entries.as_deref().unwrap_or_default(), listing.as_ref())
-            });
+            return Vec::new();
         }
         let Some(session_id) = self.selected.get() else {
             return Vec::new();
@@ -176,143 +171,14 @@ impl Workspace {
         })
     }
 
-    /// Gives the new-session draft its runtimes from the cards' selection,
-    /// once it left the cards without them; their instances open at once.
-    fn materialize_draft_runtimes(self) {
-        if self.draft_runtimes.with_untracked(Option::is_some)
-            || self.panel.get_untracked() == Some(Panel::DraftRuntimes)
-        {
-            return;
-        }
-        let cards = untrack(|| self.cards());
-        let (global, requests) = self
-            .selection
-            .with_untracked(|selection| selection.requests(&cards));
-        self.draft_runtimes.set(Some(Vec::new()));
-        let global = global.then(|| RuntimeAttachRequest {
-            runtime_id: RuntimeId::global(),
-            capability: Some(CapabilityName::global()),
-            workspace: None,
-        });
-        for request in global.into_iter().chain(requests) {
-            let entry = self.push_draft_runtime(request);
-            // `global` is always running; opening it would only retry its
-            // MCP servers.
-            if !entry.is_global() {
-                self.open_draft_runtime(&entry);
-            }
-        }
-    }
-
-    fn push_draft_runtime(self, request: RuntimeAttachRequest) -> DraftRuntime {
-        self.next_draft_runtime.update_value(|next| *next += 1);
-        let entry = DraftRuntime {
-            id: self.next_draft_runtime.get_value(),
-            request,
-            opened: None,
-        };
-        self.draft_runtimes
-            .update(|entries| entries.get_or_insert_with(Vec::new).push(entry.clone()));
-        entry
-    }
-
-    /// Opens (or retries) a draft runtime's instance, so the panel shows its
-    /// status before the session attaches it.
-    fn open_draft_runtime(self, entry: &DraftRuntime) {
-        let Some(client) = self.client() else {
-            return;
-        };
-        let (id, request) = (entry.id, entry.request.clone());
-        spawn_local(async move {
-            let result = client
-                .reconnect_runtime(RuntimesReconnectParams {
-                    runtime_id: request.runtime_id.clone(),
-                    capability: request.capability,
-                    workspace: request.workspace,
-                })
-                .await
-                .map(|result| result.instance)
-                .map_err(|error| crate::errors::describe_full(&error));
-            self.install_draft_runtime(id, result);
-        });
-    }
-
-    /// Records what opening draft runtime `id` answered. An instance the
-    /// draft already attaches under another spelling of its workspace
-    /// leaves the draft.
-    fn install_draft_runtime(
-        self,
-        id: u64,
-        result: Result<cookie_agent_protocol::RuntimeInstanceInfo, String>,
-    ) {
-        let mut status = None;
-        self.draft_runtimes.update(|entries| {
-            let Some(entries) = entries.as_mut() else {
-                return;
-            };
-            let Some(index) = entries.iter().position(|entry| entry.id == id) else {
-                return;
-            };
-            let runtime_id = entries[index].request.runtime_id.clone();
-            if let Ok(instance) = &result {
-                let request = RuntimeAttachRequest {
-                    runtime_id: instance.runtime_id.clone(),
-                    capability: Some(instance.capability.clone()),
-                    workspace: instance.workspace.clone(),
-                };
-                if entries
-                    .iter()
-                    .enumerate()
-                    .any(|(other, entry)| other != index && entry.same_instance(&request))
-                {
-                    entries.remove(index);
-                    status = Some(format!(
-                        "the new session already attaches runtime `{runtime_id}` there"
-                    ));
-                    return;
-                }
-            }
-            if let Err(error) = &result {
-                status = Some(format!("runtime `{runtime_id}` cannot start: {error}"));
-            }
-            entries[index].opened = Some(result);
-        });
-        if let Some(status) = status {
-            self.status.set(status);
-        }
-    }
-
-    /// Attaches `runtime_id`'s `capability` at `workspace`: to the viewed
-    /// session, or to the new session's draft.
+    /// Attaches `runtime_id`'s `capability` at `workspace` to the viewed
+    /// session.
     pub fn attach_runtime(
         self,
         runtime_id: RuntimeId,
         capability: Option<CapabilityName>,
         workspace: Option<String>,
     ) {
-        let request = RuntimeAttachRequest {
-            runtime_id: runtime_id.clone(),
-            capability: capability.clone(),
-            workspace: workspace.clone(),
-        };
-        if self.new_session.get_untracked() {
-            self.materialize_draft_runtimes();
-            if self.draft_runtimes.with_untracked(|entries| {
-                entries
-                    .iter()
-                    .flatten()
-                    .any(|entry| entry.same_instance(&request))
-            }) {
-                self.status.set(format!(
-                    "the new session already attaches runtime `{runtime_id}` there"
-                ));
-                return;
-            }
-            self.status.set(format!("opening runtime `{runtime_id}`…"));
-            let entry = self.push_draft_runtime(request);
-            self.open_draft_runtime(&entry);
-            return;
-        }
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {
             self.status
@@ -339,26 +205,8 @@ impl Workspace {
         });
     }
 
-    /// Detaches the viewed session's attachment `name`, or takes the
-    /// draft's entry `index` out.
-    pub fn detach_runtime(self, name: AttachmentName, index: usize) {
-        if self.new_session.get_untracked() {
-            let mut removed = None;
-            self.draft_runtimes.update(|entries| {
-                if let Some(entries) = entries.as_mut()
-                    && index < entries.len()
-                {
-                    removed = Some(entries.remove(index));
-                }
-            });
-            if let Some(entry) = removed {
-                self.status.set(format!(
-                    "the new session will not attach runtime `{}`",
-                    entry.request.runtime_id
-                ));
-            }
-            return;
-        }
+    /// Detaches the viewed session's attachment `name`.
+    pub fn detach_runtime(self, name: AttachmentName) {
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {
             return;
@@ -379,23 +227,8 @@ impl Workspace {
         });
     }
 
-    /// Retries row `index`'s instance (`runtimes.reconnect`).
-    pub fn retry_runtime(self, row: RuntimeRow, index: usize) {
-        if self.new_session.get_untracked() {
-            let mut entry = None;
-            self.draft_runtimes.update(|entries| {
-                if let Some(found) = entries.as_mut().and_then(|entries| entries.get_mut(index)) {
-                    found.opened = None;
-                    entry = Some(found.clone());
-                }
-            });
-            if let Some(entry) = entry {
-                self.status
-                    .set(format!("retrying runtime `{}`…", entry.request.runtime_id));
-                self.open_draft_runtime(&entry);
-            }
-            return;
-        }
+    /// Retries `row`'s instance (`runtimes.reconnect`).
+    pub fn retry_runtime(self, row: RuntimeRow) {
         let Some(client) = self.client() else {
             return;
         };

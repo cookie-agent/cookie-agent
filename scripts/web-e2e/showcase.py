@@ -170,10 +170,8 @@ call("POST", browser.path("/url"), {"url": LINK})
 browser.wait("the connection", lambda: browser.text("#connected") != "")
 browser.click("aside [data-new-session]")
 browser.wait("the new session", lambda: "New session" in browser.text("#session-title"))
-# The runtime cards, from the "Runtimes…" chip: `global`, and `local` at the
+# The runtime cards above the composer: `global`, and `local` at the
 # greeter.
-browser.wait("the runtimes chip", lambda: browser.count("#runtimes-chip") == 1)
-browser.click("#runtimes-chip")
 browser.wait("the cards", lambda: browser.count('#new-session [data-card="local/coding"]') > 0)
 if browser.count('#new-session [data-card="local/coding"][data-selected=true]') == 0:
     browser.click('#new-session [data-card="local/coding"] [data-card-toggle]')
@@ -182,8 +180,6 @@ browser.script(
     "const f = document.querySelector('#new-session [data-card=\"local/coding\"] [data-workspace-field]');"
     "f.value = '~/greeter'; f.dispatchEvent(new Event('input'))"
 )
-browser.click("#start-session")
-browser.wait("the draft", lambda: browser.count("#new-session") == 0)
 browser.type("#composer", PROMPT)
 browser.type("#composer", ENTER)
 browser.wait(
@@ -305,8 +301,6 @@ def badge_session(note, picks):
     """Starts a session on the runtime cards with `global` and `picks`,
     (runtime, workspace) pairs, and sends `note`, which titles it."""
     click("aside [data-new-session]")
-    browser.wait("the runtimes chip", lambda: browser.count("#runtimes-chip") == 1)
-    click("#runtimes-chip")
     browser.wait("the cards", lambda: browser.count("#new-session [data-card]") > 0)
     browser.script(
         "for (const g of document.querySelectorAll('#new-session [data-group][data-open=false] [data-group-toggle]'))"
@@ -334,8 +328,6 @@ def badge_session(note, picks):
             card + ' [data-workspace-field="%d"]' % index,
             workspace,
         )
-    click("#start-session")
-    browser.wait("the draft", lambda: browser.count("#new-session") == 0)
     browser.type("#composer", note)
     browser.type("#composer", ENTER)
     title = note[len("Note: "):].rstrip(".")

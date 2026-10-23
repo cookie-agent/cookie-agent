@@ -268,8 +268,10 @@ class Browser:
 def send(browser, text, keys=ENTER):
     # A new session with only `global` gets `local` at the daemon's
     # workspace first, where the scripted agent works.
-    if count(browser, '#runtimes-chip [data-draft-runtimes="global"]') == 1:
-        start_cards(browser)
+    if count(browser, "#new-session") == 1:
+        show_cards(browser)
+        if selected_cards(browser) == ["global/global"]:
+            select_local(browser)
     browser.type("#composer", text)
     browser.type("#composer", keys)
 
@@ -311,22 +313,18 @@ def field(key, index=0):
 
 
 def show_cards(browser):
-    """Opens the new session's runtime cards from the bottom bar's chip."""
-    if count(browser, "#new-session") == 0:
-        browser.wait("the runtimes chip", lambda: count(browser, "#runtimes-chip") == 1)
-        browser.click("#runtimes-chip")
+    """Waits for the new session's runtime cards, above its composer."""
     # A folded machine group shows no cards: its header is enough.
-    browser.wait("the runtime cards", lambda: count(browser, "#new-session [data-group]") > 0)
+    browser.wait(
+        "the runtime cards",
+        lambda: count(browser, "#new-session [data-group]") > 0 and count(browser, "#composer") == 1,
+    )
 
 
-def wait_draft(browser, timeout=40):
-    """Waits for the cards' sheet to give the draft its runtimes."""
-    browser.wait("the draft", lambda: count(browser, "#new-session") == 0 and count(browser, "#composer") == 1, timeout=timeout)
-
-
-def start_cards(browser, workspace=None):
-    """Gives the new session its runtimes on the cards' sheet: `local` at
-    `workspace` (the daemon's own workspace) when its field is empty."""
+def select_local(browser, workspace=None):
+    """Selects `local` on the new session's cards, at `workspace` (the
+    daemon's own workspace) when its field is empty: the first message
+    creates the session there."""
     show_cards(browser)
     browser.wait("the runtime cards", lambda: count(browser, card("local/coding")) == 1)
     if browser.script("return document.querySelector(arguments[0]).dataset.selected", card("local/coding")) != "true":
@@ -334,14 +332,12 @@ def start_cards(browser, workspace=None):
     browser.wait("the workspace field", lambda: count(browser, field("local/coding")) == 1)
     if browser.script("return document.querySelector(arguments[0]).value", field("local/coding")) == "" or workspace:
         set_text(browser, field("local/coding"), workspace or WORKSPACE)
-    browser.click("#start-session")
-    wait_draft(browser)
 
 
 def new_session(browser):
     browser.click("aside [data-new-session]")
     browser.wait("the new session", lambda: "New session" in browser.text("#session-title"))
-    start_cards(browser)
+    select_local(browser)
 
 
 def answers(browser):
@@ -1303,29 +1299,15 @@ def click_row_button(browser, rows, text, button):
 def management(browser):
     """The runtime, machine, MCP, provider, configuration, memory, and plugin
     panels."""
-    # A new session's draft runtimes: one that never starts fails, a retry
-    # fails again, and it can be taken out.
+    # A new session's runtimes are its cards: the runtimes command points
+    # at them instead of a sheet.
     new_session(browser)
     menu(browser, "runtime")
-    browser.wait("the draft runtimes", lambda: count(browser, "#sheet .runtime-row") >= 2)
-    browser.click("#runtime-attach")
-    browser.type("#runtime-search", "box")
-    browser.wait("the box runtime", lambda: count(browser, '#sheet [data-choice="box"]') == 1)
-    browser.click('#sheet [data-choice="box"]')
-    browser.click("#runtime-attach-confirm")
-    browser.wait(
-        "the failed draft runtime",
-        lambda: "failed" in browser.text('#sheet .runtime-row:last-of-type'),
-        timeout=40,
-    )
-    browser.shot("runtime-draft-failed")
-    click_row_button(browser, "#sheet .runtime-row", "box/", "[data-retry]")
-    browser.wait("the retry", lambda: "box" in browser.text("#status"))
-    browser.wait("the retried runtime", lambda: "cannot start" in browser.text("#status"), timeout=40)
-    click_row_button(browser, "#sheet .runtime-row", "box/", "[data-detach]")
-    browser.wait("the dropped runtime", lambda: "box/" not in browser.text("#sheet"))
-    print("a new session's runtime that cannot start fails, is retried, and is taken out")
-    close_sheet(browser)
+    browser.wait("the pointer to the cards", lambda: "cards above the composer" in browser.text("#status"))
+    assert count(browser, "#sheet") == 0 and count(browser, "#new-session") == 1
+    print("a new session's runtimes command points at its cards")
+    send(browser, "hello there")
+    browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
 
     # A session's attachment detached and attached again.
     click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
@@ -2030,23 +2012,19 @@ def selected_cards(browser):
 
 
 def runtime_cards(browser):
-    """The new session's runtime cards: a new session on the composer with
-    only `global`, the "Runtimes…" chip and its sheet, groups by machine that
-    fold and are remembered, two runtimes at their own workspaces, one
-    runtime at two, a refusal on its card, an offline card, global
-    deselected, no coding card at all, no selection remembered, and every
-    path under its runtime's home."""
-    # A new session opens on the composer with only `global`.
-    browser.click("aside [data-new-session]")
-    browser.wait("the composer", lambda: count(browser, "#composer") == 1 and count(browser, "#runtimes-chip") == 1)
-    assert count(browser, "#new-session") == 0, "the new session opened on its cards"
-    assert browser.text("#runtimes-chip") == "global only", browser.text("#runtimes-chip")
-    assert browser.text("#draft-places [data-draft-places]") == "global only: no workspace"
-    browser.shot("new-session-global-only")
-    print("a new session opens on the composer with only global:", browser.text("#runtimes-chip"))
+    """The new session's runtime cards: a new session shows them above its
+    composer with only `global` selected and no Start button, groups by
+    machine that fold and are remembered, two runtimes at their own
+    workspaces, one runtime at two, a refusal on its card, an offline card,
+    global deselected, no coding card at all, no selection remembered, and
+    every path under its runtime's home."""
+    # A new session shows its cards with only `global`, above the composer.
     open_cards(browser)
+    assert count(browser, "#start-session") == 0 and count(browser, "#runtimes-chip") == 0, "a Start button or chip"
     assert selected_cards(browser) == ["global/global"], selected_cards(browser)
-    browser.shot("cards-sheet")
+    assert browser.text("#draft-places [data-draft-places]") == "global only: no workspace"
+    browser.shot("new-session-cards")
+    print("a new session shows its cards with only global, above the composer")
     groups = browser.script(
         "return [...document.querySelectorAll('#new-session [data-group]')].map((g) => [g.dataset.group, g.dataset.open])"
     )
@@ -2091,8 +2069,15 @@ def runtime_cards(browser):
     set_text(browser, field("local/coding"), WORKSPACE)
     browser.click(card("local/coding") + " [data-add-workspace]")
     browser.wait("a second field", lambda: count(browser, field("local/coding", 1)) == 1)
-    assert browser.script("return document.querySelector('#start-session').disabled"), "Start with an empty field"
+    # An empty field holds the message back and says why.
+    browser.wait("the blocker", lambda: "enter a workspace" in browser.text("#start-blocker"))
+    browser.type("#composer", "too early")
+    browser.type("#composer", ENTER)
+    browser.wait("the held message", lambda: "enter a workspace" in browser.text("#draft-error"))
+    assert browser.script("return document.querySelector('#composer').value") == "too early"
+    clear_composer(browser)
     set_text(browser, field("local/coding", 1), "~/second")
+    browser.wait("the cleared notice", lambda: count(browser, "#draft-error") == 0)
     # `alt` has one card, `alt` until it ran and `alt/coding` after.
     alt = "alt" if count(browser, card("alt")) else "alt/coding"
     browser.click(card(alt) + " [data-card-toggle]")
@@ -2100,29 +2085,28 @@ def runtime_cards(browser):
     set_text(browser, field(alt), elsewhere)
     browser.wait("the prefix note", lambda: "local_workspace_bash" in browser.text("#prefix-note"))
     assert "3 workspaces" in browser.text("#prefix-note"), browser.text("#prefix-note")
+    places = browser.text("#draft-places [data-draft-places]")
+    assert places.startswith("~/workspace, ~/second, alt:") and places.endswith("elsewhere"), places
     browser.shot("cards-two-runtimes")
-    # A refusal shows on its card, and nothing is created.
+    # A refusal shows on its card, nothing is created, and the message comes
+    # back.
     sessions_before = count(browser, "aside [data-session-row]")
     browser.click(card("box") + " [data-card-toggle]")
     set_text(browser, field("box"), WORKSPACE)
-    browser.click("#start-session")
+    send(browser, "hello from three workspaces")
     browser.wait("the refusal", lambda: browser.text(card("box") + " [data-card-error]") != "", timeout=40)
+    browser.wait("the message back", lambda: browser.script("return document.querySelector('#composer').value") == "hello from three workspaces")
+    assert "box" in browser.text("#draft-error"), browser.text("#draft-error")
     browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'center'})", card("box"))
     browser.shot("cards-refusal")
     assert count(browser, "#new-session") == 1 and count(browser, "aside [data-session-row]") == sessions_before
+    assert browser.text("#session-title") == "New session"
     print("a refused workspace shows on its card:", browser.text(card("box") + " [data-card-error]"))
     browser.click(card("box") + " [data-card-toggle]")
-    browser.click("#start-session")
-    wait_draft(browser, timeout=60)
-    places = browser.text("#draft-places [data-draft-places]")
-    assert places == "~/workspace, ~/second, alt:~/elsewhere", places
-    # The chip shows them as the session rows will: one machine, its
-    # workspaces.
-    chip = browser.text("#runtimes-chip")
-    assert daemon_group in chip and "~/workspace" in chip, chip
-    browser.shot("draft-runtimes-chip")
-    send(browser, "hello from three workspaces")
+    browser.wait("the cleared notice", lambda: count(browser, "#draft-error") == 0)
+    browser.type("#composer", ENTER)
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
+    assert "hello from three workspaces" in browser.text("#transcript")
     row = OPEN_SESSION_ROW
     # Both runtimes are on this daemon's machine: it, then the workspaces.
     browser.wait("the row's badges", lambda: badge_kinds(browser, row) == ["machine", "workspace"])
@@ -2150,8 +2134,6 @@ def runtime_cards(browser):
     browser.click(card(alt) + " [data-card-toggle]")
     browser.wait("the alt field", lambda: count(browser, field(alt)) == 1)
     set_text(browser, field(alt), "~/elsewhere")
-    browser.click("#start-session")
-    wait_draft(browser)
     send(browser, "hello from elsewhere")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
     browser.wait("its row", lambda: badge_kinds(browser, row) == ["machine", "workspace"])
@@ -2164,9 +2146,7 @@ def runtime_cards(browser):
     for key in selected_cards(browser):
         browser.click(card(key) + " [data-card-toggle]")
     assert selected_cards(browser) == [], selected_cards(browser)
-    assert not browser.script("return document.querySelector('#start-session').disabled")
-    browser.click("#start-session")
-    wait_draft(browser)
+    assert count(browser, "#start-blocker") == 0
     assert browser.text("#draft-places [data-draft-places]") == "no workspace"
     send(browser, "hello from nowhere")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
@@ -2179,11 +2159,62 @@ def runtime_cards(browser):
     close_sheet(browser)
     print("a session without global and without a coding runtime works nowhere")
 
-    # Back to a session in the daemon's own workspace for what follows.
+    # Back to a new session in the daemon's own workspace for what follows.
     open_cards(browser)
     if "global/global" not in selected_cards(browser):
         browser.click(card("global/global") + " [data-card-toggle]")
-    start_cards(browser, WORKSPACE)
+    select_local(browser, WORKSPACE)
+
+
+def draft_first_message(browser):
+    """A new session is drafted on its composer, under its cards: a file
+    attached and a runtime that cannot start keep the draft, show the
+    error on the runtime's card and beside the composer, and give the
+    message and its file back; the next send creates the session, which
+    shows the message and the file."""
+    browser.resize(1280, 900)
+    open_cards(browser)
+    assert count(browser, "#start-session") == 0, "a Start button"
+    uploads = tempfile.mkdtemp(prefix="cookie-web-e2e-")
+    atexit.register(shutil.rmtree, uploads, True)
+    picture = png(os.path.join(uploads, "draft.png"), 64, 48)
+    browser.type("#attach-input", picture)
+    browser.wait("the draft's chip", lambda: "draft.png" in browser.text("#draft-files"))
+    sessions_before = count(browser, "aside [data-session-row]")
+    assert browser.text("#session-title") == "New session", "attaching a file created the session"
+    # `box` never starts: the daemon refuses the session.
+    for name, is_open in browser.script(
+        "return [...document.querySelectorAll('#new-session [data-group]')].map((g) => [g.dataset.group, g.dataset.open])"
+    ):
+        if is_open != "true":
+            browser.click('#new-session [data-group-toggle="%s"]' % name)
+    browser.wait("the box card", lambda: count(browser, card("box")) == 1)
+    browser.click(card("box") + " [data-card-toggle]")
+    set_text(browser, field("box"), WORKSPACE)
+    browser.type("#composer", "the first message")
+    browser.type("#composer", ENTER)
+    browser.wait("the refusal on its card", lambda: browser.text(card("box") + " [data-card-error]") != "", timeout=40)
+    browser.wait("the message back", lambda: browser.script("return document.querySelector('#composer').value") == "the first message")
+    assert "draft.png" in browser.text("#draft-files"), browser.text("#draft-files")
+    assert "box" in browser.text("#draft-error") and "see its card" in browser.text("#draft-error"), browser.text("#draft-error")
+    assert browser.text("#session-title") == "New session" and count(browser, "#new-session") == 1
+    assert count(browser, "aside [data-session-row]") == sessions_before, "a refused draft made a session"
+    assert "box" in selected_cards(browser), selected_cards(browser)
+    browser.shot("draft-refused")
+    print("a runtime that cannot start keeps the draft and gives the message back:", browser.text(card("box") + " [data-card-error]"))
+    # Without it, the same message creates the session, and shows with its
+    # file.
+    browser.click(card("box") + " [data-card-toggle]")
+    select_local(browser)
+    browser.type("#composer", ENTER)
+    browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
+    assert count(browser, "#new-session") == 0
+    browser.wait("the message", lambda: "the first message" in browser.text("#transcript .user-message"))
+    browser.wait("its picture", lambda: count(browser, "#transcript .user-message .media img") >= 1)
+    assert count(browser, "#draft-files") == 0 and count(browser, "#draft-error") == 0
+    assert count(browser, "aside [data-session-row]") == sessions_before + 1
+    browser.shot("draft-created")
+    print("the first message created the session and shows with its file")
 
 
 # The open session's row.
@@ -2672,11 +2703,9 @@ def phone_layout():
         phone.click("#page [data-sidebar-toggle]")
         phone.click("#drawer [data-new-session]")
         phone.wait("the new session", lambda: page_view(phone) == "chat" and count(phone, "#drawer") == 0)
-        # The cards' sheet stacks them in one column, Start pinned at the
-        # foot.
-        phone.wait("the runtimes chip", lambda: count(phone, "#runtimes-chip") == 1)
-        phone.click("#runtimes-chip")
-        phone.wait("the cards", lambda: count(phone, "#new-session [data-card]") > 1)
+        # The cards stack in one column above the composer, which stays at
+        # the foot.
+        phone.wait("the cards", lambda: count(phone, "#new-session [data-card]") > 1 and count(phone, "#composer") == 1)
         phone.click(card("local/coding") + " [data-card-toggle]")
         phone.wait("the workspace field", lambda: count(phone, card("local/coding") + " [data-workspace-field]") == 1)
         lefts = phone.script(
@@ -2685,16 +2714,16 @@ def phone_layout():
         )
         assert len(lefts) == 1, "the cards are not one column: %s" % lefts
         foot = phone.script(
-            "return innerHeight - document.querySelector('#new-session [data-start-bar]').getBoundingClientRect().bottom"
+            "return innerHeight - document.querySelector('#composer-box').getBoundingClientRect().bottom"
         )
-        assert 0 <= foot < 40, "Start is %s px above the foot" % foot
+        assert 0 <= foot < 120, "the composer is %s px above the foot" % foot
         heights = phone.script(
             "return [...document.querySelectorAll('#new-session [data-workspace-field]')].map((f) => f.getBoundingClientRect().height)"
         )
         assert heights and min(heights) >= 44, heights
         phone.shot("phone-cards")
-        print("phone: the cards stack in one column with Start at the foot")
-        start_cards(phone)
+        print("phone: the cards stack in one column above the composer")
+        select_local(phone)
         send(phone, "delegate the work")
         phone.wait("the delegation", lambda: "The tool ran." in phone.text("#transcript"), timeout=60)
         root_title = phone.text("#session-title")
@@ -2710,7 +2739,7 @@ def phone_layout():
         # it; a scroll cancels the press.
         phone.click("main [data-sidebar-toggle]")
         phone.click("#drawer [data-new-session]")
-        start_cards(phone)
+        select_local(phone)
         send(phone, "hello there")
         phone.wait("the answer", lambda: answers(phone) >= 1)
         doomed = phone.script(
@@ -2878,7 +2907,7 @@ SCRIPTED = [
 ] + [
     ("cron-form", ["[data-rail=primary] [data-view=cron]", "#cron-new"]),
 ] + [
-    ("new-session-cards", ["[data-new-session]", "#runtimes-chip"]),
+    ("new-session-cards", ["[data-new-session]"]),
 ] + [
     ("settings-%s" % section, ["[data-rail=primary] [data-view=settings]", "[data-section=%s]" % section])
     for section in ("configuration", "providers", "mcp", "plugins", "browser")
@@ -3103,7 +3132,7 @@ def torn_down(browser):
     browser.wait("the status", lambda: browser.text("#status") == "nothing is running")
     assert browser.script("return document.activeElement.id") == "composer"
     browser.click("aside [data-new-session]")
-    browser.wait("the new session's composer", lambda: count(browser, "#runtimes-chip") == 1)
+    browser.wait("the new session's composer", lambda: count(browser, "#new-session") == 1 and count(browser, "#composer") == 1)
     time.sleep(1)
     browser.check()
     print("the composer's blur outlives the composer quietly")
@@ -3578,17 +3607,14 @@ def projects(browser):
 
     # A new session in it from its +: the cards and the agent prefilled.
     browser.click(header(project) + " [data-header-new]")
-    # The chip shows the project's defaults; its sheet has them prefilled.
-    browser.wait("the prefilled chip", lambda: "~/workspace" in browser.text("#runtimes-chip"))
-    browser.shot("project-draft-chip")
+    # The cards have the project's defaults prefilled.
     show_cards(browser)
+    browser.wait("the prefilled places", lambda: browser.text("#draft-places [data-draft-places]") == "~/workspace")
     browser.wait("the new session", lambda: count(browser, "#new-session-project") == 1)
     assert browser.script("return document.querySelector('#new-session-project').value") == project
     browser.wait("the prefilled card", lambda: field_values(browser, "local/coding") == ["~/workspace"])
     assert "global/global" in selected_cards(browser)
     browser.shot("project-new-session")
-    browser.click("#start-session")
-    wait_draft(browser)
     browser.wait("the default agent", lambda: "builder" in browser.text("#agent-chip"))
     send(browser, "hello from the project")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
@@ -4172,6 +4198,8 @@ def runtime_mcp(browser):
     the runtime, shared by its workspaces (test-web-page.sh adds them to
     this group's daemon)."""
     new_session(browser)
+    send(browser, "hello there")
+    browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
     menu(browser, "runtime")
     local = '#sheet .runtime-row[data-attachment^="local"]'
     browser.wait("the local runtime", lambda: count(browser, local) == 1, timeout=40)
@@ -4255,6 +4283,7 @@ SCENARIOS = [
     ("foreign_session", foreign_session, "chat", []),
     ("desktop_layout", desktop_layout, "chat", ["basics"]),
     ("runtime_cards", runtime_cards, "chat", []),
+    ("draft_first_message", draft_first_message, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),
     ("cron", cron_jobs, "chat", []),

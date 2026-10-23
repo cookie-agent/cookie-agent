@@ -2,11 +2,13 @@
 //! the camera, drag and drop, or paste. Each file's content is sniffed in
 //! the page as the daemon sniffs it, checked against what the selected
 //! model accepts, and uploaded at once in chunks (the shared upload
-//! policy); the draft shows it as a chip. An image too large is offered
-//! downscaled through a canvas; video never is.
+//! policy); the draft shows it as a chip. A new session's draft keeps its
+//! files in the page until the first message created the session, then
+//! uploads them. An image too large is offered downscaled through a
+//! canvas; video never is.
 
-use cookie_agent_client_state::uploads::{AcceptedMedia, upload};
-use cookie_agent_protocol::{ArtifactRef, media_sniff::validate_upload};
+use cookie_agent_client_state::uploads::{AcceptedMedia, UploadFailure, upload};
+use cookie_agent_protocol::{ArtifactRef, Client, SessionId, media_sniff::validate_upload};
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
@@ -16,6 +18,15 @@ use crate::attach::{
 
 /// How many smaller sizes a downscale tries before it gives up.
 const DOWNSCALE_TRIES: usize = 6;
+
+/// A file a new session's draft attaches: a chip at once, under a stand-in
+/// reference, and uploaded once the first message created the session.
+#[derive(Clone)]
+pub(super) struct DraftFile {
+    artifact: ArtifactRef,
+    name: String,
+    bytes: Vec<u8>,
+}
 
 /// An image the page offers to downscale and attach.
 #[derive(Clone, Debug, PartialEq)]
@@ -179,75 +190,150 @@ impl Workspace {
         });
     }
 
-    /// Uploads `bytes` into the viewed session's store, creating the new
-    /// session first, and adds the file to the draft.
+    /// Uploads `bytes` into the viewed session's store and adds the file
+    /// to the draft; a new session's draft keeps them until its first
+    /// message.
     fn upload(self, name: String, bytes: Vec<u8>) {
+        if self.new_session.get_untracked() {
+            self.hold_draft_file(name, bytes);
+            return;
+        }
         let Some(client) = self.client() else {
+            return;
+        };
+        let Some(session_id) = self.selected.get_untracked() else {
             return;
         };
         self.status.set(format!("attaching {name}…"));
         spawn_local(async move {
-            let session_id = if self.new_session.get_untracked() {
-                match self
-                    .create_session(&client, self.draft.get_untracked())
-                    .await
-                {
-                    Ok(session_id) => session_id,
-                    Err(error) => {
-                        self.status.set(error);
-                        return;
-                    }
-                }
-            } else {
-                let Some(session_id) = self.selected.get_untracked() else {
-                    return;
-                };
-                session_id
-            };
             match upload(&client, session_id, &name, Some(name.clone()), &bytes).await {
                 Ok(artifact) if self.selected.get_untracked() == Some(session_id) => {
                     self.status.set(format!(
                         "attached {}",
                         cookie_agent_client_state::attachment_chip(&artifact)
                     ));
-                    self.attachments.update(|attachments| {
-                        if !attachments
-                            .iter()
-                            .any(|attached| attached.sha256 == artifact.sha256)
-                        {
-                            attachments.push(artifact);
-                        }
-                    });
+                    self.add_attachment(artifact);
                 }
                 Ok(_) => self.status.set(format!(
                     "{name} was uploaded for another session; attach it again"
                 )),
-                Err(failure) => {
-                    let image = validate_upload(&bytes).is_ok_and(|upload| upload.kind == "image");
-                    let limits = self
-                        .accepted_media_untracked()
-                        .as_ref()
-                        .and_then(image_limits);
-                    match (failure.too_large, limits) {
-                        (Some(refused), Some(limits)) if image => {
-                            self.offer_downscale(
-                                name,
-                                failure.message,
-                                tightened(limits, refused),
-                                bytes,
-                            );
-                        }
-                        _ => self.status.set(failure.message),
-                    }
-                }
+                Err(failure) => self.refuse_upload(name, bytes, failure),
             }
         });
+    }
+
+    fn add_attachment(self, artifact: ArtifactRef) {
+        self.attachments.update(|attachments| {
+            if !attachments
+                .iter()
+                .any(|attached| attached.sha256 == artifact.sha256)
+            {
+                attachments.push(artifact);
+            }
+        });
+    }
+
+    /// Says why `name` was not uploaded, offering a smaller copy of an
+    /// image the daemon found too large.
+    fn refuse_upload(self, name: String, bytes: Vec<u8>, failure: UploadFailure) {
+        let image = validate_upload(&bytes).is_ok_and(|upload| upload.kind == "image");
+        let limits = self
+            .accepted_media_untracked()
+            .as_ref()
+            .and_then(image_limits);
+        match (failure.too_large, limits) {
+            (Some(refused), Some(limits)) if image => {
+                self.offer_downscale(name, failure.message, tightened(limits, refused), bytes);
+            }
+            _ => self.status.set(failure.message),
+        }
+    }
+
+    /// Keeps a new session's file in the page, as a chip under a stand-in
+    /// reference, until the first message created the session.
+    fn hold_draft_file(self, name: String, bytes: Vec<u8>) {
+        self.next_draft_file.update_value(|next| *next += 1);
+        let artifact = ArtifactRef {
+            sha256: format!("{:064x}", self.next_draft_file.get_value()),
+            byte_length: bytes.len() as u64,
+            media_type: validate_upload(&bytes).map_or_else(
+                |_| "application/octet-stream".to_owned(),
+                |upload| upload.media_type.to_owned(),
+            ),
+            filename: Some(name.clone()),
+        };
+        self.status.set(format!(
+            "attached {}; it is uploaded with the first message",
+            cookie_agent_client_state::attachment_chip(&artifact)
+        ));
+        self.add_attachment(artifact.clone());
+        self.draft_files.update_value(|held| {
+            held.push(DraftFile {
+                artifact,
+                name,
+                bytes,
+            });
+        });
+    }
+
+    /// Whether `files` holds a file of the new session's draft.
+    pub(super) fn holds_draft_files(self, files: &[ArtifactRef]) -> bool {
+        self.draft_files.with_value(|held| {
+            files
+                .iter()
+                .any(|file| held.iter().any(|draft| draft.artifact == *file))
+        })
+    }
+
+    /// Uploads the draft's files among `files` into `session_id`, which the
+    /// first message just created: `files` with each one's own reference,
+    /// or, when one was not uploaded (which the status line says), the
+    /// ones that were.
+    pub(super) async fn upload_draft_files(
+        self,
+        client: &Client,
+        session_id: SessionId,
+        files: Vec<ArtifactRef>,
+    ) -> Result<Vec<ArtifactRef>, Vec<ArtifactRef>> {
+        let held = self.draft_files.with_value(Clone::clone);
+        let mut uploaded = Vec::new();
+        let mut refused = false;
+        for file in files {
+            let Some(draft) = held.iter().find(|draft| draft.artifact == file) else {
+                uploaded.push(file);
+                continue;
+            };
+            match upload(
+                client,
+                session_id,
+                &draft.name,
+                Some(draft.name.clone()),
+                &draft.bytes,
+            )
+            .await
+            {
+                Ok(artifact) => uploaded.push(artifact),
+                Err(failure) => {
+                    refused = true;
+                    self.refuse_upload(draft.name.clone(), draft.bytes.clone(), failure);
+                }
+            }
+        }
+        self.draft_files.set_value(Vec::new());
+        if refused { Err(uploaded) } else { Ok(uploaded) }
+    }
+
+    /// Forgets the files a new session's draft kept.
+    pub(super) fn drop_draft_files(self) {
+        self.draft_files.set_value(Vec::new());
     }
 
     /// Takes the file `sha256` off the draft.
     pub fn remove_attachment(self, sha256: &str) {
         self.attachments
             .update(|attachments| attachments.retain(|artifact| artifact.sha256 != sha256));
+        self.draft_files
+            .update_value(|held| held.retain(|draft| draft.artifact.sha256 != sha256));
     }
 }
 

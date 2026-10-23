@@ -1,26 +1,22 @@
-//! The new session's runtime cards, in the sheet the bottom bar's
-//! "Runtimes…" chip opens: what they offer from `runtimes.list`, the machine
-//! groups the user opened, and Start, which opens every selected workspace
-//! (`runtimes.reconnect`) at once and gives the draft those runtimes only
-//! once all of them opened. A draft starts with `global` alone, or its
-//! project's defaults; the browser remembers no selection.
+//! The new session's runtime cards, above its composer: what they offer
+//! from `runtimes.list`, the machine groups the user opened, and where the
+//! draft will work. The first message creates the session with the
+//! selected cards (`Workspace::submit`). A draft starts with `global`
+//! alone, or its project's defaults; the browser remembers no selection.
 
 use std::collections::HashMap;
 
-use cookie_agent_client_state::{paths::RuntimeHomes, runtimes::DraftRuntime};
-use cookie_agent_protocol::{
-    RuntimeAttachRequest, RuntimeAttachment, RuntimeId, RuntimesReconnectParams, SessionId,
-};
-use leptos::{prelude::*, task::spawn_local};
+use cookie_agent_client_state::paths::RuntimeHomes;
+use cookie_agent_protocol::{RuntimeAttachment, RuntimeId, SessionId};
+use leptos::prelude::*;
 
 use super::Workspace;
 use crate::{
     browser,
     cards::{
         Card, Group, Selection, cards, daemon_machine, group_key, groups, recent_from_storage,
-        recent_key, remember, suggestions,
+        recent_key, suggestions,
     },
-    workspace::Panel,
 };
 
 /// A set of runtime cards and what the user picked on them: the new
@@ -111,6 +107,9 @@ impl Workspace {
         let key = card.key();
         set.errors
             .update(|errors| errors.retain(|(failed, _), _| *failed != key));
+        if set.selection == self.selection {
+            self.draft_error.set(None);
+        }
     }
 
     /// The workspaces a field of `runtime_id` suggests, as the fields show
@@ -124,163 +123,20 @@ impl Workspace {
         })
     }
 
-    /// Start: opens every selected workspace at once. A refusal shows on
-    /// its card and nothing is created; once all of them opened, the
-    /// draft composes with them, in card order.
-    pub fn start_cards(self) {
-        let Some(client) = self.client() else {
-            return;
-        };
-        let cards = untrack(|| self.cards());
-        let selection = self.selection.get_untracked();
-        if let Some(blocker) = selection.blocker(&cards) {
-            self.status.set(blocker);
-            return;
-        }
-        let (global, requests) = selection.keyed_requests(&cards);
-        self.card_errors.set(HashMap::new());
-        self.starting.set(true);
-        spawn_local(async move {
-            let opened = futures_util::future::join_all(requests.iter().map(|(_, _, request)| {
-                client.reconnect_runtime(RuntimesReconnectParams {
-                    runtime_id: request.runtime_id.clone(),
-                    capability: request.capability.clone(),
-                    workspace: request.workspace.clone(),
+    /// What the new session will attach besides `global`, as typed on its
+    /// cards (or its project's defaults while the draft keeps them): each
+    /// runtime and workspace, in pick order, with fields left empty out.
+    fn draft_places(self) -> Vec<(RuntimeId, Option<String>)> {
+        self.selection.with(|selection| {
+            selection
+                .project_requests()
+                .1
+                .into_iter()
+                .map(|request| {
+                    let workspace = request.workspace.filter(|workspace| !workspace.is_empty());
+                    (request.runtime_id, workspace)
                 })
-            }))
-            .await;
-            // The sheet was closed, or the draft left, meanwhile.
-            if !self.new_session.get_untracked()
-                || self.panel.get_untracked() != Some(Panel::DraftRuntimes)
-            {
-                self.starting.set(false);
-                return;
-            }
-            let mut errors = HashMap::new();
-            let mut instances = Vec::new();
-            for ((key, index, request), result) in requests.into_iter().zip(opened) {
-                match result {
-                    Ok(result) => instances.push((request, result.instance)),
-                    Err(error) => {
-                        errors.insert((key, index), crate::errors::describe(&error));
-                    }
-                }
-            }
-            self.starting.set(false);
-            if !errors.is_empty() {
-                self.status.set(match errors.len() {
-                    1 => "a runtime refused its workspace; see its card".into(),
-                    count => format!("{count} workspaces did not open; see their cards"),
-                });
-                self.card_errors.set(errors);
-                return;
-            }
-            let mut entries = Vec::new();
-            if global {
-                entries.push(self.draft_entry(
-                    RuntimeAttachRequest {
-                        runtime_id: RuntimeId::global(),
-                        capability: Some(cookie_agent_protocol::CapabilityName::global()),
-                        workspace: None,
-                    },
-                    None,
-                ));
-            }
-            for (request, instance) in instances {
-                if let Some(workspace) = &instance.workspace {
-                    let key = recent_key(request.runtime_id.as_str());
-                    let recent = recent_from_storage(browser::load(&key).as_deref());
-                    if let Ok(stored) = serde_json::to_string(&remember(&recent, workspace)) {
-                        browser::store(&key, &stored);
-                    }
-                }
-                let request = RuntimeAttachRequest {
-                    capability: Some(instance.capability.clone()),
-                    workspace: instance.workspace.clone(),
-                    ..request
-                };
-                // The same instance twice (two spellings of one workspace)
-                // attaches once.
-                if !entries
-                    .iter()
-                    .any(|entry: &DraftRuntime| entry.same_instance(&request))
-                {
-                    entries.push(self.draft_entry(request, Some(instance)));
-                }
-            }
-            self.draft_runtimes.set(Some(entries));
-            self.panel.set(None);
-            self.status.set(if selection.picks.is_empty() {
-                "the first message starts the session".into()
-            } else {
-                "the workspaces opened; the first message starts the session".into()
-            });
-        });
-    }
-
-    fn draft_entry(
-        self,
-        request: RuntimeAttachRequest,
-        instance: Option<cookie_agent_protocol::RuntimeInstanceInfo>,
-    ) -> DraftRuntime {
-        self.next_draft_runtime.update_value(|next| *next += 1);
-        DraftRuntime {
-            id: self.next_draft_runtime.get_value(),
-            request,
-            opened: instance.map(Ok),
-        }
-    }
-
-    /// Opens the draft's runtime cards as a sheet, keeping the selection.
-    pub fn edit_cards(self) {
-        self.card_errors.set(HashMap::new());
-        self.starting.set(false);
-        self.poll_runtimes();
-        self.panel.set(Some(Panel::DraftRuntimes));
-    }
-
-    /// Whether the draft attaches `global`: unless the sheet deselected it,
-    /// or its project's defaults leave it out.
-    pub fn draft_has_global(self) -> bool {
-        match self.draft_runtimes.get() {
-            Some(entries) => entries.iter().any(DraftRuntime::is_global),
-            None => self
-                .draft_project_defaults()
-                .is_none_or(|defaults| defaults.global),
-        }
-    }
-
-    /// What the draft's "Runtimes…" chip shows: the badges of the runtimes
-    /// it attaches besides `global`, by the session rows' rules; none when
-    /// it has only `global`.
-    pub fn draft_badges(self) -> Vec<cookie_agent_client_state::badges::SessionBadge> {
-        let homes = self.homes();
-        let defaults = match self.draft_runtimes.get() {
-            Some(entries) => cookie_agent_protocol::ProjectDefaults {
-                preset: None,
-                agent: None,
-                global: entries.iter().any(DraftRuntime::is_global),
-                runtimes: entries
-                    .iter()
-                    .filter(|entry| !entry.is_global())
-                    .map(|entry| cookie_agent_protocol::ProjectRuntime {
-                        runtime_id: entry.request.runtime_id.clone(),
-                        capability: entry.request.capability.clone(),
-                        workspace: entry.workspace().map(str::to_owned),
-                    })
-                    .collect(),
-            },
-            None => match self.draft_project_defaults() {
-                Some(defaults) => defaults,
-                None => return Vec::new(),
-            },
-        };
-        self.runtimes.with(|listing| {
-            cookie_agent_client_state::badges::project_badges(
-                Some(&defaults),
-                listing.as_ref(),
-                &homes,
-            )
+                .collect()
         })
     }
 
@@ -294,13 +150,11 @@ impl Workspace {
             }
         };
         if self.new_session.get() {
-            self.draft_runtimes.with(|entries| {
-                for entry in entries.iter().flatten() {
-                    if entry.workspace().is_some() {
-                        add(&entry.request.runtime_id);
-                    }
+            for (runtime_id, workspace) in self.draft_places() {
+                if workspace.is_some() {
+                    add(&runtime_id);
                 }
-            });
+            }
             return runtimes;
         }
         let Some(session_id) = self.tree_root.get().or(self.selected.get()) else {
@@ -327,55 +181,24 @@ impl Workspace {
     pub fn places_label(self) -> Option<String> {
         let homes = self.homes();
         if self.new_session.get() {
-            if self.draft_runtimes.with(Option::is_none) {
-                // The project's defaults, as the daemon will attach them.
-                let shown = self
-                    .draft_project_defaults()
-                    .map(|defaults| {
-                        defaults
-                            .runtimes
-                            .iter()
-                            .filter_map(|runtime| {
-                                let path = homes
-                                    .display(&runtime.runtime_id, runtime.workspace.as_deref()?);
-                                Some(if runtime.runtime_id.as_str() == RuntimeId::LOCAL {
-                                    path
-                                } else {
-                                    format!("{}:{path}", runtime.runtime_id)
-                                })
-                            })
-                            .collect::<Vec<_>>()
+            let shown = self
+                .draft_places()
+                .into_iter()
+                .filter_map(|(runtime_id, workspace)| {
+                    let path = homes.display(&runtime_id, &workspace?);
+                    Some(if runtime_id.as_str() == RuntimeId::LOCAL {
+                        path
+                    } else {
+                        format!("{runtime_id}:{path}")
                     })
-                    .unwrap_or_default();
-                return Some(if !shown.is_empty() {
-                    shown.join(", ")
-                } else if self.draft_has_global() {
-                    "global only: no workspace".to_owned()
-                } else {
-                    "no workspace".to_owned()
-                });
-            }
-            return self.draft_runtimes.with(|entries| {
-                let entries = entries.as_ref()?;
-                let shown = entries
-                    .iter()
-                    .filter_map(|entry| {
-                        let workspace = entry.workspace()?;
-                        let path = homes.display(&entry.request.runtime_id, workspace);
-                        Some(if entry.request.runtime_id.as_str() == RuntimeId::LOCAL {
-                            path
-                        } else {
-                            format!("{}:{path}", entry.request.runtime_id)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                Some(if !shown.is_empty() {
-                    shown.join(", ")
-                } else if entries.iter().any(DraftRuntime::is_global) {
-                    "global only: no workspace".to_owned()
-                } else {
-                    "no workspace".to_owned()
                 })
+                .collect::<Vec<_>>();
+            return Some(if !shown.is_empty() {
+                shown.join(", ")
+            } else if self.selection.with(|selection| selection.global) {
+                "global only: no workspace".to_owned()
+            } else {
+                "no workspace".to_owned()
             });
         }
         let session_id = self.tree_root.get().or(self.selected.get())?;

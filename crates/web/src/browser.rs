@@ -339,6 +339,22 @@ pub async fn copy_text(text: &str) -> bool {
     wasm_bindgen_futures::JsFuture::from(promise).await.is_ok()
 }
 
+/// Scrolls the element `selector` finds into view on the next frame, as
+/// little as it takes.
+pub fn reveal(selector: &str) {
+    let selector = selector.to_owned();
+    leptos::prelude::request_animation_frame(move || {
+        if let Some(element) = window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.query_selector(&selector).ok().flatten())
+        {
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Nearest);
+            element.scroll_into_view_with_scroll_into_view_options(&options);
+        }
+    });
+}
+
 /// Selects the text of the text field `id`, for the user to copy.
 pub fn select_text(id: &str) {
     if let Some(field) = window()

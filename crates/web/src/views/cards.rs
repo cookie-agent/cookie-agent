@@ -1,13 +1,13 @@
-//! The new session's runtime cards, in the sheet of the bottom bar's
-//! "Runtimes…" chip: grouped by machine, each group folding to a one-line
-//! summary; a click anywhere on a card selects it; a selected card that
-//! takes a workspace has its fields; the button pinned at the foot opens
-//! them all and gives them to the draft, which shows where it will work.
+//! The new session's runtime cards, above its composer: grouped by
+//! machine, each group folding to a one-line summary; a click anywhere on a
+//! card selects it; a selected card that takes a workspace has its fields;
+//! below them, where the session will work. The first message creates the
+//! session with them, and a runtime that refuses says why on its card.
 
 use leptos::{ev, prelude::*};
 use wasm_bindgen::JsCast as _;
 
-use super::{BUTTON, ICON_BUTTON, NOTE, PRIMARY};
+use super::{BUTTON, ICON_BUTTON, NOTE};
 use crate::{
     cards::{Card, CardState, Group},
     icons::Glyph,
@@ -41,7 +41,8 @@ fn state_class(state: CardState) -> &'static str {
     }
 }
 
-/// The new session's runtime cards, and Start.
+/// The new session's runtime cards, above the composer whose first message
+/// creates the session with them.
 #[component]
 pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
     let groups = Memo::new(move |_| workspace.card_groups());
@@ -56,79 +57,81 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
             .selection
             .with(|selection| cards.with(|cards| selection.prefix_note(cards)))
     };
-    // The first empty workspace field takes the focus, once the cards show.
-    let focused = StoredValue::new(false);
-    Effect::new(move |_| {
-        if groups.with(Vec::is_empty) || focused.get_value() {
-            return;
+    // Changing the cards answers why the last message did not create the
+    // session.
+    Effect::new(move |previous: Option<()>| {
+        workspace.selection.track();
+        if previous.is_some() {
+            workspace.draft_error.set(None);
         }
-        focused.set_value(true);
-        request_animation_frame(|| {
-            if let Some(field) = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| {
-                    document
-                        .query_selector("#new-session [data-workspace-field]:placeholder-shown")
-                        .ok()
-                        .flatten()
-                })
-                .and_then(|field| field.dyn_into::<web_sys::HtmlInputElement>().ok())
-            {
-                let _ = field.focus();
-            }
-        });
     });
     view! {
-        <section id="new-session" aria-label="New session" class="flex min-h-0 flex-1 flex-col">
-            <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-                <div class="mx-auto flex w-full max-w-3xl flex-col gap-3">
-                    // The title bar names the view: no heading here.
-                    <super::projects::NewSessionProject workspace=workspace />
-                    <p class=NOTE>
-                        "Pick where the new session works: click a card to select it, and give a coding runtime its workspace. With only global, the session has no workspace: it hands work that needs files or commands to subagents on the runtimes it names."
+        <section
+            id="new-session"
+            aria-label="New session"
+            aria-busy=move || workspace.creating.get().to_string()
+            class="mx-auto flex w-full max-w-3xl flex-col gap-3 py-3"
+            class:opacity-60=move || workspace.creating.get()
+            class:pointer-events-none=move || workspace.creating.get()
+        >
+            // The title bar names the view: no heading here.
+            <super::projects::NewSessionProject workspace=workspace />
+            <p class=NOTE>
+                "Pick where the new session works: click a card to select it, and give a coding runtime its workspace. With only global, the session has no workspace: it hands work that needs files or commands to subagents on the runtimes it names. The first message creates the session, starting the runtimes that are not running."
+            </p>
+            {move || {
+                if workspace.runtimes.with(Option::is_none) {
+                    return super::loading("Reading the runtimes…").into_any();
+                }
+                groups
+                    .get()
+                    .into_iter()
+                    .map(|group| group_view(workspace, group, workspace.new_cards()))
+                    .collect_view()
+                    .into_any()
+            }}
+            <div class="flex flex-col gap-1">
+                {move || note().map(|note| view! {
+                    <p id="prefix-note" class="flex items-start gap-1.5 text-xs">
+                        <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5 text-caramel dark:text-maple" />
+                        <span>{note}</span>
                     </p>
-                    {move || {
-                        if workspace.runtimes.with(Option::is_none) {
-                            return super::loading("Reading the runtimes…").into_any();
-                        }
-                        groups
-                            .get()
-                            .into_iter()
-                            .map(|group| group_view(workspace, group, workspace.new_cards()))
-                            .collect_view()
-                            .into_any()
-                    }}
-                </div>
-            </div>
-            <div class="shrink-0 border-t border-toasted bg-parchment px-3 py-2 dark:border-ember dark:bg-char" data-start-bar>
-                <div class="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-x-3 gap-y-1">
-                    <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-                        {move || note().map(|note| view! {
-                            <p id="prefix-note" class="flex items-start gap-1.5 text-xs">
-                                <Glyph icon=icondata::FaCircleInfoSolid class="mt-0.5 text-caramel dark:text-maple" />
-                                <span>{note}</span>
-                            </p>
-                        })}
-                        {move || blocker().map(|blocker| view! {
-                            <p id="start-blocker" class=NOTE>{blocker}</p>
-                        })}
-                    </div>
-                    <button
-                        type="button"
-                        id="start-session"
-                        class=PRIMARY
-                        disabled=move || blocker().is_some() || workspace.starting.get()
-                        on:click=move |_| workspace.start_cards()
-                    >
-                        {move || if workspace.starting.get() {
-                            view! { <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" /> "Opening…" }.into_any()
-                        } else {
-                            view! { <Glyph icon=icondata::FaCheckSolid /> "Use these runtimes" }.into_any()
-                        }}
-                    </button>
-                </div>
+                })}
+                {move || blocker().map(|blocker| view! {
+                    <p id="start-blocker" class=NOTE>{blocker}</p>
+                })}
+                <p class="flex items-start gap-2 text-sm" id="draft-places">
+                    <Glyph icon=icondata::FaFolderOpenSolid class="mt-0.5 text-caramel dark:text-maple" />
+                    <span class="min-w-0 break-words font-mono" data-draft-places>
+                        {move || workspace.places_label().unwrap_or_default()}
+                    </span>
+                </p>
             </div>
         </section>
+    }
+}
+
+/// Above the composer of a new session: that the first message is creating
+/// it, or why it did not.
+#[component]
+pub fn DraftNotice(workspace: Workspace) -> impl IntoView {
+    view! {
+        <Show when=move || workspace.new_session.get()>
+            {move || {
+                if workspace.creating.get() {
+                    Some(view! {
+                        <p id="draft-creating" role="status" class="mx-3 mt-2 flex items-center gap-2 text-sm text-caramel dark:text-maple">
+                            <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
+                            "Creating the session…"
+                        </p>
+                    }.into_any())
+                } else {
+                    workspace.draft_error.get().map(|error| view! {
+                        <p id="draft-error" role="alert" class=format!("{} mx-3 mt-2", super::ERROR)>{error}</p>
+                    }.into_any())
+                }
+            }}
+        </Show>
     }
 }
 
@@ -343,39 +346,6 @@ fn workspace_fields(workspace: Workspace, card: Card, set: CardSet) -> impl Into
             >
                 <Glyph icon=icondata::FaPlusSolid />
                 "another workspace"
-            </button>
-        </div>
-    }
-}
-
-/// The draft's line above the transcript: where the new session works,
-/// and the way back to its cards.
-#[component]
-pub fn DraftPlaces(workspace: Workspace) -> impl IntoView {
-    view! {
-        <div class="mx-auto my-4 flex max-w-xl flex-col gap-2 rounded-lg border border-toasted bg-parchment p-4 dark:border-ember dark:bg-char" id="draft-places">
-            <h2 class="flex items-center gap-2 text-lg font-bold">
-                <Glyph icon=icondata::FaPlusSolid class="text-caramel dark:text-maple" />
-                "New session"
-            </h2>
-            <p class="flex items-start gap-2 text-sm">
-                <Glyph icon=icondata::FaFolderOpenSolid class="mt-0.5 text-caramel dark:text-maple" />
-                <span class="min-w-0 break-words font-mono" data-draft-places>
-                    {move || workspace.places_label().unwrap_or_default()}
-                </span>
-            </p>
-            <p class=NOTE>
-                {move || if !workspace.draft_badges().is_empty() {
-                    "The first message creates the session with these runtimes and the agent and model below."
-                } else if workspace.draft_has_global() {
-                    "The first message creates the session with only global and the agent and model below. It has no workspace: work that needs files or commands goes to subagents on the runtimes it names, and list_runtimes shows them."
-                } else {
-                    "The first message creates the session with no runtimes and the agent and model below."
-                }}
-            </p>
-            <button type="button" class=format!("{BUTTON} self-start") id="edit-cards" on:click=move |_| workspace.edit_cards()>
-                <Glyph icon=icondata::FaPenToSquareSolid />
-                "Change runtimes"
             </button>
         </div>
     }

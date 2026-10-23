@@ -198,14 +198,15 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 }
             >
                 <TitleBar workspace=workspace />
-                // A new session starts on the composer with only `global`;
-                // its runtime cards are a sheet, from the bottom bar.
+                // A new session shows its runtime cards where the
+                // transcript will be, above the composer.
                 <Transcript workspace=workspace />
                 <GoalBar workspace=workspace />
                 <BackgroundBar workspace=workspace />
                 <QueueStrip workspace=workspace />
                 <DraftFiles workspace=workspace />
                 <StatusLine workspace=workspace />
+                <cards::DraftNotice workspace=workspace />
                 // A short window (a phone on its side) puts the
                 // bottom bar beside the composer.
                 <div class="flex flex-col short:flex-row short:items-end">
@@ -1436,7 +1437,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
         >
             <Show when=move || workspace.new_session.get()>
-                <cards::DraftPlaces workspace=workspace />
+                <cards::NewSessionCards workspace=workspace />
             </Show>
             <div class="mx-auto flex max-w-4xl flex-col gap-2">
                 <For
@@ -1669,7 +1670,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     });
     // The box follows its text: typed, pasted, recalled, or sent away; and
     // its buttons, whose number changes the room the text has. On the
-    // next frame the composer may be gone, for a new session's cards.
+    // next frame the composer may be gone, with the view it was in.
     let fit = move || {
         if let Some(textarea) = textarea.try_get_untracked().flatten() {
             fit_composer(&textarea);
@@ -1939,37 +1940,6 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 <span class="min-w-0 truncate compact:sr-only">{move || mode_name(mode())}</span>
                 <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
             </button>
-            // The draft's runtimes: its badges, or `global` alone; a click
-            // opens the runtime cards.
-            <Show when=move || workspace.new_session.get()>
-                <button
-                    type="button"
-                    id="runtimes-chip"
-                    class=format!("{CHIP} max-w-[16rem]")
-                    aria-haspopup="dialog"
-                    aria-label=move || format!("Runtimes…: {}", draft_runtimes_text(workspace))
-                    title=move || format!("Runtimes…: {} (click to choose where the new session works)", draft_runtimes_text(workspace))
-                    on:click=move |_| workspace.edit_cards()
-                >
-                    <Glyph icon=icondata::FaServerSolid class="text-caramel dark:text-maple" />
-                    {move || {
-                        let badges = workspace.draft_badges();
-                        if badges.is_empty() && workspace.draft_has_global() {
-                            view! { <span class="min-w-0 truncate" data-draft-runtimes="global">"global only"</span> }.into_any()
-                        } else if badges.is_empty() {
-                            view! { <span class="min-w-0 truncate" data-draft-runtimes="none">"no runtimes"</span> }.into_any()
-                        } else {
-                            view! {
-                                <span class="flex min-w-0 items-center gap-1 overflow-hidden text-[0.6875rem]" data-draft-runtimes="badges">
-                                    {badges.into_iter().map(crate::badges::badge_view).collect_view()}
-                                </span>
-                            }
-                            .into_any()
-                        }
-                    }}
-                    <Glyph icon=icondata::FaChevronDownSolid class="text-[0.625rem] opacity-60 compact:hidden" />
-                </button>
-            </Show>
             // Where the session works.
             {move || workspace.places_label().filter(|_| !workspace.new_session.get()).map(|places| view! {
                 <button
@@ -2056,22 +2026,6 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     }
 }
 
-/// What the draft's "Runtimes…" chip says, for its label and title.
-fn draft_runtimes_text(workspace: Workspace) -> String {
-    let badges = workspace.draft_badges();
-    if badges.is_empty() && workspace.draft_has_global() {
-        "global only".to_owned()
-    } else if badges.is_empty() {
-        "no runtimes".to_owned()
-    } else {
-        badges
-            .iter()
-            .map(cookie_agent_client_state::badges::SessionBadge::label)
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
 /// A phone's line above the composer: the approvals waiting, the working
 /// spinner, and a new status message for a few seconds; it shows only
 /// while one of them does. Wider windows have these in the bottom bar.
@@ -2141,14 +2095,8 @@ fn cost_label(cost: f64) -> String {
 #[component]
 fn Sheet(workspace: Workspace) -> impl IntoView {
     let close = move |_| workspace.close_panel();
-    // The project editor and the new session's cards fill a phone's screen.
-    let tall = move || {
-        matches!(
-            workspace.panel.get(),
-            Some(Panel::Project | Panel::DraftRuntimes)
-        )
-    };
-    let cards = move || workspace.panel.get() == Some(Panel::DraftRuntimes);
+    // The project editor fills a phone's screen.
+    let tall = move || workspace.panel.get() == Some(Panel::Project);
     let title = move || match workspace.panel.get() {
         Some(Panel::Agents) => "Agent",
         Some(Panel::Models) => "Model",
@@ -2165,7 +2113,6 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Permissions) => "Permissions",
         Some(Panel::Message) => "Message",
         Some(Panel::Runtimes) => "Runtimes",
-        Some(Panel::DraftRuntimes) => "New session's runtimes",
         Some(Panel::MoveSession) => "Move to project",
         Some(Panel::Project) => {
             if workspace.project_editor.with(|editor| {
@@ -2194,10 +2141,8 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                     role="dialog"
                     aria-label=title
                     class=move || format!(
-                        "pointer-events-auto flex max-h-full flex-col border-toasted bg-cream shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l dark:border-ember dark:bg-night {} {}",
+                        "pointer-events-auto flex max-h-full flex-col overflow-y-auto border-toasted bg-cream shadow-xl sm:h-full sm:rounded-none sm:border-t-0 sm:border-l dark:border-ember dark:bg-night {}",
                         if tall() { "h-full" } else { "rounded-t-2xl border-t" },
-                        // The cards scroll on their own, above their button.
-                        if cards() { "overflow-hidden" } else { "overflow-y-auto" },
                     )
                 >
                     <div class="sticky top-0 z-10 flex flex-col border-b border-toasted bg-parchment dark:border-ember dark:bg-char">
@@ -2209,7 +2154,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             </button>
                         </div>
                     </div>
-                    <div class=move || if cards() { "flex min-h-0 flex-1 flex-col" } else { "flex flex-col gap-2 p-3" }>
+                    <div class="flex flex-col gap-2 p-3">
                         {move || match workspace.panel.get() {
                             Some(Panel::Agents) => agents_sheet(workspace).into_any(),
                             Some(Panel::Models) => models_sheet(workspace).into_any(),
@@ -2226,7 +2171,6 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
                             Some(Panel::Message) => message_sheet(workspace).into_any(),
                             Some(Panel::Runtimes) => runtimes_sheet(workspace).into_any(),
-                            Some(Panel::DraftRuntimes) => view! { <cards::NewSessionCards workspace=workspace /> }.into_any(),
                             Some(Panel::MoveSession) => projects::move_sheet(workspace).into_any(),
                             Some(Panel::Project) => projects::editor_sheet(workspace).into_any(),
                             None => ().into_any(),

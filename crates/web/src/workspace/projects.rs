@@ -222,6 +222,13 @@ impl Workspace {
     /// and preset become the draft's, with the agent's own model, unless
     /// the agent cannot start a session here, which the status line says.
     pub fn choose_new_project(self, project: Option<ProjectId>) {
+        // Cards still as the previous project's defaults left them follow
+        // the project; cards the user picked stay.
+        let homes = untrack(|| self.homes());
+        let kept_defaults = untrack(|| self.draft_project_defaults()).is_some_and(|defaults| {
+            self.selection
+                .with_untracked(|selection| *selection == Selection::of_project(&defaults, &homes))
+        });
         self.new_project.set(project.clone());
         let info = untrack(|| self.project(project.as_ref()));
         match info
@@ -229,16 +236,11 @@ impl Workspace {
             .and_then(|info| info.defaults.as_ref())
             .filter(|defaults| defaults_attach(defaults))
         {
-            // The draft takes the project's defaults until the sheet's
-            // Start gives it runtimes of its own.
             Some(defaults) => {
-                self.selection
-                    .set(Selection::of_project(defaults, &untrack(|| self.homes())));
+                self.selection.set(Selection::of_project(defaults, &homes));
                 self.card_errors.set(Default::default());
-                self.draft_runtimes.set(None);
             }
-            // A draft that had a project's defaults goes back to `global`.
-            None if self.draft_runtimes.with_untracked(Option::is_none) => {
+            None if kept_defaults => {
                 self.selection.set(Selection::global_only());
                 self.card_errors.set(Default::default());
             }

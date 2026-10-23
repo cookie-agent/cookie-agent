@@ -101,8 +101,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
         workspace
             .runtime_rows()
             .into_iter()
-            .enumerate()
-            .map(|(index, row)| {
+            .map(|row| {
                 let status = row.instance.as_ref().map(|instance| instance.status);
                 let message = row
                     .instance
@@ -144,11 +143,11 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         {message.map(|message| view! { <span class=ERROR>{message}</span> })}
                         {(!servers.is_empty()).then(|| runtime_mcp_servers(servers, None))}
                         <div class="flex gap-2">
-                            <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone(), index)>
+                            <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone())>
                                 <Glyph icon=icondata::FaArrowsRotateSolid />
                                 "Retry"
                             </button>
-                            <button type="button" class=BUTTON data-detach on:click=move |_| workspace.detach_runtime(detach_name.clone(), index)>
+                            <button type="button" class=BUTTON data-detach on:click=move |_| workspace.detach_runtime(detach_name.clone())>
                                 <Glyph icon=icondata::FaLinkSlashSolid />
                                 "Detach"
                             </button>
@@ -177,9 +176,6 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
         Err(error) => workspace.status.set(error),
     };
     view! {
-        <Show when=move || workspace.new_session.get()>
-            <p class=NOTE>"The runtimes the new session will attach; each starts now so its status shows."</p>
-        </Show>
         {rows}
         <Show
             when=move || attaching.get()

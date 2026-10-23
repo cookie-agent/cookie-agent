@@ -4,9 +4,8 @@
 //! which workspaces; the defaults, the workspace suggestions, the note
 //! about tool-name prefixes, and what the browser remembers.
 //!
-//! The selection keeps the text the user typed: the daemon and the runtime
-//! resolve it (`~/…` included). Opening a workspace answers its canonical
-//! path, which the session is created with.
+//! The selection keeps the text the user typed: the session is created
+//! with it, and the daemon and the runtime resolve it (`~/…` included).
 
 use std::collections::BTreeMap;
 
@@ -268,6 +267,10 @@ pub fn groups(cards: &[Card], daemon: Option<&MachineName>) -> Vec<Group> {
     groups
 }
 
+/// A runtime the new session is created with, with its card's key and its
+/// workspace field's index, where a refusal shows.
+pub type KeyedRequest = (String, usize, RuntimeAttachRequest);
+
 /// One selected card and the workspaces it opens, in field order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Pick {
@@ -493,8 +496,8 @@ impl Selection {
         }
     }
 
-    /// Why Start is not offered, else `None`: a selected card with an empty
-    /// workspace field, or one gone offline.
+    /// Why the first message cannot create the session yet, else `None`: a
+    /// selected card with an empty workspace field, or one gone offline.
     pub fn blocker(&self, cards: &[Card]) -> Option<String> {
         for card in cards
             .iter()
@@ -530,10 +533,7 @@ impl Selection {
 
     /// [`Self::requests`], each with its card's key and its field's index,
     /// where a refusal shows.
-    pub fn keyed_requests(
-        &self,
-        cards: &[Card],
-    ) -> (bool, Vec<(String, usize, RuntimeAttachRequest)>) {
+    pub fn keyed_requests(&self, cards: &[Card]) -> (bool, Vec<KeyedRequest>) {
         let mut requests = Vec::new();
         for card in cards
             .iter()
@@ -581,6 +581,28 @@ impl Selection {
             attachment_name(runtime_id, workspace)
         ))
     }
+}
+
+/// The card field a refusal of a new session's runtimes names, among the
+/// `requests` it was created with ([`Selection::keyed_requests`]): the
+/// first request whose runtime the message quotes as `` `id` ``, as the
+/// daemon names runtimes, preferring one whose workspace it names too.
+/// `None` when it names none of them: the error is the session's.
+pub fn failing_request(message: &str, requests: &[KeyedRequest]) -> Option<(String, usize)> {
+    let named = requests
+        .iter()
+        .filter(|(_, _, request)| message.contains(&format!("`{}`", request.runtime_id)))
+        .collect::<Vec<_>>();
+    named
+        .iter()
+        .find(|(_, _, request)| {
+            request
+                .workspace
+                .as_deref()
+                .is_some_and(|workspace| !workspace.is_empty() && message.contains(workspace))
+        })
+        .or_else(|| named.first())
+        .map(|(key, index, _)| (key.clone(), *index))
 }
 
 /// The attachment name a coding runtime gives a workspace, as
@@ -739,6 +761,50 @@ mod tests {
         cards.iter().find(|card| card.key() == key).unwrap()
     }
 
+    fn keyed(key: &str, index: usize, runtime: &str, workspace: Option<&str>) -> KeyedRequest {
+        (
+            key.to_owned(),
+            index,
+            RuntimeAttachRequest {
+                runtime_id: RuntimeId::new(runtime).unwrap(),
+                capability: None,
+                workspace: workspace.map(str::to_owned),
+            },
+        )
+    }
+
+    #[test]
+    fn a_refusal_lands_on_the_card_of_the_runtime_it_quotes() {
+        let requests = [
+            keyed("local/coding", 0, "local", Some("~/web")),
+            keyed("local/coding", 1, "local", Some("~/api")),
+            keyed("box", 0, "box", Some("~/web")),
+        ];
+        // The runtime it quotes, not one whose name is only part of a word.
+        assert_eq!(
+            failing_request(
+                "runtime `box` exited before it said what it offers",
+                &requests
+            ),
+            Some(("box".to_owned(), 0))
+        );
+        assert_eq!(failing_request("the local daemon is busy", &requests), None);
+        // The workspace it names, among the runtime's fields.
+        assert_eq!(
+            failing_request(
+                "runtime `local` cannot open ~/api: no such directory",
+                &requests
+            ),
+            Some(("local/coding".to_owned(), 1))
+        );
+        // Without a workspace, the runtime's first field.
+        assert_eq!(
+            failing_request("unknown runtime `local`", &requests),
+            Some(("local/coding".to_owned(), 0))
+        );
+        assert_eq!(failing_request("unknown runtime `gpu`", &requests), None);
+    }
+
     #[test]
     fn cards_are_global_and_the_capabilities_that_take_a_workspace() {
         let cards = cards(&sample());
@@ -884,7 +950,7 @@ mod tests {
         selection.toggle(card(&cards, "local/coding"));
         assert_eq!(selection.requests(&cards), (false, Vec::new()));
         assert_eq!(selection.blocker(&cards), None);
-        // A selected card that went offline blocks Start.
+        // A selected card that went offline blocks the first message.
         let mut offline = cards.clone();
         let mut stale = Selection::default();
         stale.set_workspace(card(&cards, "local/coding"), 0, "~/web".into());
