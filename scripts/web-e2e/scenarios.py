@@ -2246,7 +2246,9 @@ def renaming(browser):
     browser.wait("the title field", lambda: count(browser, "#session-title-field") == 1)
     # It holds the title; an untitled session's is empty.
     assert browser.script("return document.querySelector('#session-title-field').value") in (before, "")
-    assert browser.script("return document.activeElement.id") == "session-title-field"
+    # The field takes focus a frame after it appears.
+    browser.wait("the title field's focus", lambda: browser.script(
+        "return document.activeElement.id") == "session-title-field")
     browser.type("#session-title-field", "Scratch" + ESCAPE)
     browser.wait("the title again", lambda: count(browser, "#session-title-field") == 0)
     assert browser.text("#session-title") == before
