@@ -90,14 +90,14 @@ impl Engine {
     /// selection carried over from the session's history) it is first repaired
     /// against the live runtime (see [`policy::best_effort_root_selection`]);
     /// an explicit request must name things that exist. Returns the selection
-    /// the policy was actually frozen for.
+    /// the policy was actually frozen for. The caller reconciles the provider
+    /// store first ([`Self::reconcile_provider_store_off_worker`]).
     pub(super) fn freeze_root_selection(
         &self,
         selection: &cookie_agent_protocol::RunSelection,
         best_effort: bool,
         memory: &crate::permissions::MemoryVariables,
     ) -> Result<(FrozenRunPolicy, cookie_agent_protocol::RunSelection), EngineError> {
-        self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
         let selection = if best_effort {
             policy::best_effort_root_selection(&runtime, selection)?
@@ -124,7 +124,8 @@ impl Engine {
     /// preset (the default agent when it is gone), and its model from the
     /// request, the agent's own chain, or, for an agent that inherits its
     /// parent's model, the first model it inherited at creation that is still
-    /// live. Returns the selection the policy was actually frozen for.
+    /// live. Returns the selection the policy was actually frozen for. The
+    /// caller reconciles the provider store first.
     pub(super) fn freeze_delegated_selection(
         &self,
         creation_agent: &cookie_agent_protocol::AgentSnapshot,
@@ -133,7 +134,6 @@ impl Engine {
         result_limits: policy::ResultLimits,
         memory: &crate::permissions::MemoryVariables,
     ) -> Result<(FrozenRunPolicy, cookie_agent_protocol::RunSelection), EngineError> {
-        self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
         let agents = runtime
             .agents_for_preset(creation_preset)
@@ -210,6 +210,9 @@ impl Engine {
         admission: Option<(InvocationId, u64)>,
         producer_start: bool,
     ) -> Result<RunStartResult, EngineError> {
+        // Before anything is read from the session: waiting for a runtime
+        // change in progress suspends the start.
+        self.reconcile_provider_store_off_worker().await?;
         self.inner.mcp.await_eager_ready().await;
         self.inner.plugins.await_eager_ready().await;
         self.ensure_session_runtimes_logged(params.session_id).await;

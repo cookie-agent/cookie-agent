@@ -419,6 +419,18 @@ impl ActiveRun {
     }
 }
 
+/// Runs `work`, which may block on the runtime mutation lock, on the
+/// blocking pool and waits for it without parking an async worker.
+pub(crate) async fn on_blocking_pool<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, EngineError> + Send + 'static,
+) -> Result<T, EngineError> {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(_) => Err(EngineError::ActorStopped),
+    }
+}
+
 /// Why a run was cancelled. The results of the tool calls the cancellation
 /// interrupts name it (`docs/site/specs/background-tools.md`, addendum of
 /// 2026-10-23).
@@ -1506,6 +1518,10 @@ impl Engine {
         })
     }
 
+    /// Reloads the provider store when it changed on disk and publishes the
+    /// runtime it compiles to. Waits for a runtime change in progress, so
+    /// what follows sees the runtime that change publishes; async callers
+    /// use [`Self::reconcile_provider_store_off_worker`].
     pub fn reconcile_provider_store(&self) -> Result<bool, EngineError> {
         let mutation = self
             .inner
@@ -1513,6 +1529,16 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.reconcile_provider_store_locked(&mutation)
+    }
+
+    /// [`Self::reconcile_provider_store`] on the blocking pool. Waiting for
+    /// a runtime change in progress, and the recompile a reload needs, take
+    /// seconds in debug builds and must not park an async worker; the caller
+    /// still waits, so a run that starts mid-change uses the runtime that
+    /// change publishes.
+    pub(crate) async fn reconcile_provider_store_off_worker(&self) -> Result<bool, EngineError> {
+        let engine = self.clone();
+        on_blocking_pool(move || engine.reconcile_provider_store()).await
     }
 
     /// [`Self::reconcile_provider_store`] under the runtime mutation lock

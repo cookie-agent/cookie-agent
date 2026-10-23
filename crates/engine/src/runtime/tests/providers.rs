@@ -1130,3 +1130,181 @@ fn configured_provider_lists_unavailable_models_with_reasons() {
     );
     assert!(listed[1].3.is_some_and(|reason| !reason.is_empty()));
 }
+
+/// Changes the provider store on disk behind the engine's back, so the
+/// next reconcile reloads it and publishes a new runtime.
+fn change_provider_store_on_disk(fixture: &Fixture) {
+    let current = fixture.manager.current();
+    let external = ModelManager::new(
+        current.authored().clone(),
+        Arc::clone(current.catalog()),
+        ProviderStore::open(fixture._directory.path().join("provider-store"))
+            .expect("second provider store"),
+    )
+    .expect("second manager");
+    let external_current = external.current();
+    external
+        .disconnect(
+            cookie_agent_models::ProviderDisconnectRequest {
+                provider_id: ProviderId::new("openai").expect("provider ID"),
+                expected_runtime_revision: external_current.runtime_revision().clone(),
+                expected_provider_state_revision: external_current.provider_state_revision(),
+                expected_connection_generation: None,
+                client_request_id: StoreClientRequestId::new("external-disconnect")
+                    .expect("request ID"),
+            },
+            |_, _| Ok(()),
+        )
+        .expect("external mutation");
+}
+
+/// A runtime change in progress on another thread: it holds the runtime
+/// mutation lock, as a catalog refresh does while it recompiles, until
+/// released, then publishes the provider store changed on disk.
+struct RuntimeChangeInProgress {
+    release: std::sync::mpsc::Sender<()>,
+    thread: std::thread::JoinHandle<(cookie_agent_protocol::RuntimeRevision, bool)>,
+}
+
+impl RuntimeChangeInProgress {
+    fn start(engine: &Engine) -> Self {
+        let (locked, lock_taken) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let engine = engine.clone();
+        let thread = std::thread::spawn(move || {
+            let held = engine
+                .inner
+                .runtime_mutation
+                .lock()
+                .expect("runtime mutation lock");
+            locked.send(()).expect("lock taken");
+            // A request that parks the only async worker keeps the test from
+            // releasing; the change then ends on its own, and says so.
+            let released_by_test = released
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .is_ok();
+            assert!(
+                engine
+                    .reconcile_provider_store_locked(&held)
+                    .expect("reload the changed store"),
+                "the change publishes a runtime"
+            );
+            (
+                engine.current_runtime().revisions.runtime_revision.clone(),
+                released_by_test,
+            )
+        });
+        lock_taken
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the change holds the lock");
+        Self { release, thread }
+    }
+
+    /// Ends the change and returns the runtime revision it published.
+    fn finish(self) -> cookie_agent_protocol::RuntimeRevision {
+        let _ = self.release.send(());
+        let (published, released_by_test) = self.thread.join().expect("runtime change");
+        assert!(
+            released_by_test,
+            "the waiting request parked the async worker"
+        );
+        published
+    }
+}
+
+/// Lets other tasks of a current-thread runtime run, and returns whether
+/// `task` is still waiting afterwards.
+async fn still_waiting_while_others_run<T>(task: &tokio::task::JoinHandle<T>) -> bool {
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    !task.is_finished()
+}
+
+/// `session.create` during a runtime change waits for it on the blocking
+/// pool: the only async worker keeps running other tasks, and the session
+/// is created against the runtime the change publishes.
+#[tokio::test(flavor = "current_thread")]
+async fn session_create_waits_for_a_runtime_change_off_the_async_worker() {
+    let (fixture, selection) = custom_fixture();
+    change_provider_store_on_disk(&fixture);
+    let before = fixture
+        .engine
+        .current_runtime()
+        .revisions
+        .runtime_revision
+        .clone();
+    let change = RuntimeChangeInProgress::start(&fixture.engine);
+    let engine = fixture.engine.clone();
+    let creating = tokio::spawn(async move {
+        engine
+            .create_session_with_permissions(selection, None, Vec::new(), Default::default())
+            .await
+    });
+    assert!(still_waiting_while_others_run(&creating).await);
+    let published = change.finish();
+    assert_ne!(published, before);
+    let session = with_watchdog("session created", creating)
+        .await
+        .expect("creation task")
+        .expect("session");
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let mut fold = cookie_agent_protocol::RevisionFold::default();
+    for event in projection.log.events().iter() {
+        fold.observe(&event.payload);
+    }
+    assert_eq!(fold.latest().unwrap().runtime_revision, published);
+    fixture.engine.shutdown().await;
+}
+
+/// A run started during a runtime change waits for it the same way and
+/// freezes its policy against the runtime the change publishes.
+#[tokio::test(flavor = "current_thread")]
+async fn run_start_waits_for_a_runtime_change_off_the_async_worker() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    change_provider_store_on_disk(&fixture);
+    let change = RuntimeChangeInProgress::start(&fixture.engine);
+    let engine = fixture.engine.clone();
+    let starting = tokio::spawn(async move {
+        engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session.session_id,
+                    client_run_id: cookie_agent_protocol::ClientRunId::new("mid-change")
+                        .expect("run ID"),
+                    selection,
+                    content: "hello".to_owned().into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+    });
+    assert!(still_waiting_while_others_run(&starting).await);
+    let published = change.finish();
+    let run = with_watchdog("run started", starting)
+        .await
+        .expect("start task")
+        .expect("run");
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let mut fold = cookie_agent_protocol::RevisionFold::default();
+    let frozen = projection
+        .log
+        .events()
+        .iter()
+        .find_map(|event| {
+            let revisions = fold.observe(&event.payload).cloned();
+            matches!(event.payload, EventPayload::RunStarted { .. })
+                .then_some(())
+                .filter(|()| event.run_id == Some(run.run_id))
+                .and(revisions)
+        })
+        .expect("run started");
+    assert_eq!(frozen.runtime_revision, published);
+    fixture.engine.shutdown().await;
+}

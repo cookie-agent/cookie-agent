@@ -276,6 +276,7 @@ impl ServerProtocol for Server {
     ) -> Result<SessionPermissionPreviewResult> {
         self.engine
             .preview_session_permissions(&params.selection, params.rules)
+            .await
             .map(|permissions| SessionPermissionPreviewResult { permissions })
             .map_err(protocol_fault)
     }

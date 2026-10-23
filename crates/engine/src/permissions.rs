@@ -1061,7 +1061,7 @@ pub(crate) fn check_rule_selectors(rules: &[PermissionRule]) -> Result<(), crate
 impl crate::Engine {
     /// The effective permissions a session created with `selection` and the
     /// overlay `rules` would have, computed exactly as for a live session.
-    pub fn preview_session_permissions(
+    pub async fn preview_session_permissions(
         &self,
         selection: &RunSelection,
         rules: Vec<PermissionRule>,
@@ -1071,6 +1071,7 @@ impl crate::Engine {
         overlay
             .validate()
             .map_err(|error| crate::EngineError::Permission(error.to_string()))?;
+        self.reconcile_provider_store_off_worker().await?;
         let (_, policy) = self.freeze_selection_policy(selection)?;
         Ok(effective_permission_view(
             &policy.agent,

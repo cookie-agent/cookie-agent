@@ -104,6 +104,7 @@ impl Engine {
     ) -> Result<bool, EngineError> {
         self.ensure_session_owned(session)?;
         let projection = self.inner.store.get(session)?;
+        self.reconcile_provider_store_off_worker().await?;
         match &projection.meta.origin {
             cookie_agent_protocol::SessionOrigin::Root => {
                 self.freeze_root_selection(

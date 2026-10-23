@@ -43,7 +43,8 @@ impl Engine {
     }
 
     /// The current runtime and the root policy a session created with
-    /// `selection` would freeze.
+    /// `selection` would freeze. The caller reconciles the provider store
+    /// first.
     pub(crate) fn freeze_selection_policy(
         &self,
         selection: &RunSelection,
@@ -54,7 +55,6 @@ impl Engine {
         ),
         EngineError,
     > {
-        self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
         if runtime.result.snapshot.models.is_empty() {
             return Err(EngineError::NoRunnableModel);
@@ -156,6 +156,7 @@ impl Engine {
             .cwd
             .as_deref()
             .unwrap_or_else(|| self.inner.store.cwd());
+        self.reconcile_provider_store_off_worker().await?;
         let meta = self.create_session_in(selection, &attachments, cwd, project, cron)?;
         let session_id = meta.session_id;
         self.connect_session(session_id).await;
@@ -187,6 +188,7 @@ impl Engine {
         selection: RunSelection,
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
     ) -> Result<SessionMeta, EngineError> {
+        self.reconcile_provider_store()?;
         self.create_session_in(selection, attachments, self.inner.store.cwd(), None, None)
     }
 

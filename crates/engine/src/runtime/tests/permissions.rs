@@ -66,6 +66,7 @@ async fn preview_matches_the_session_a_create_with_the_same_rules_produces() {
     let preview = fixture
         .engine
         .preview_session_permissions(&selection, rules.clone())
+        .await
         .expect("preview");
     let bash = preview
         .iter()
@@ -126,6 +127,7 @@ async fn invalid_initial_rules_fail_before_a_session_exists() {
         fixture
             .engine
             .preview_session_permissions(&selection, duplicate.clone())
+            .await
             .is_err()
     );
     assert!(
@@ -278,6 +280,7 @@ async fn an_overlay_rule_takes_a_runtime_selector_only_where_agent_documents_do(
     fixture
         .engine
         .preview_session_permissions(&selection, vec![rule])
+        .await
         .expect_err("preview refuses the selector");
     fixture.engine.shutdown().await;
 }

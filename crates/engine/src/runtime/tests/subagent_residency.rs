@@ -329,6 +329,24 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .await;
         children.push(child_id);
     }
+    // The last child's report wakes the parent, as each one before did.
+    // That run must be over before the eviction hook below blocks the
+    // store's synchronous readers, or it blocks the test's only worker.
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "parent producer deliveries settled before paging",
+        |parent| {
+            parent.status != SessionStatus::Running
+                && crate::goal_projection::GoalProducerProjection::from_events(
+                    &parent.log.event_snapshot(),
+                )
+                .messages
+                .iter()
+                .all(|message| message.consumed || message.discarded)
+        },
+    )
+    .await;
 
     assert_eq!(
         fixture.engine.inner.store.resident_subagent_counts()[&parent.session_id],

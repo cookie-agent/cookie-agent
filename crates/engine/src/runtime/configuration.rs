@@ -260,25 +260,33 @@ impl Engine {
             reasons.push(RuntimeChangeReason::AgentReloaded);
         }
         let candidate = Arc::new(candidate);
-        {
-            let _runtime = self
+        // The runtime mutation lock may be held through another change's
+        // recompile, and this one recompiles too: both stay off the async
+        // workers.
+        let engine = self.clone();
+        let applied = Arc::clone(&candidate);
+        super::on_blocking_pool(move || {
+            let _runtime = engine
                 .inner
                 .runtime_mutation
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let published = self.current_runtime();
-            let (_, publication) = self.inner.model_manager.reload_configuration(
-                candidate.runtime.providers.clone(),
-                candidate.runtime.headers.clone(),
+            let published = engine.current_runtime();
+            let (_, publication) = engine.inner.model_manager.reload_configuration(
+                applied.runtime.providers.clone(),
+                applied.runtime.headers.clone(),
                 Arc::clone(published.models.catalog()),
                 |models| {
-                    self.prepare_publication(&candidate, models, &published, reasons)
+                    engine
+                        .prepare_publication(&applied, models, &published, reasons)
                         .map_err(|_| cookie_agent_models::ModelManagerError::RuntimeCompileFailed)
                 },
             )?;
-            self.inner.config.store(Arc::clone(&candidate));
-            self.publish(publication);
-        }
+            engine.inner.config.store(Arc::clone(&applied));
+            engine.publish(publication);
+            Ok(())
+        })
+        .await?;
         // The publication also wakes the background sync; awaiting one here
         // makes the files current when the apply or reload answers.
         self.sync_agent_memory().await;

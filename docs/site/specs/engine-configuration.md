@@ -268,4 +268,18 @@ sections above:
   validate in memory with the agent documents.
 - **Persisting MCP servers** drops the runtime-layer entry once the file holds
   it, so the server's source becomes the user file.
-
+- **Runtime changes stay off the async workers** (2026-10-23). A runtime
+  change (a catalog refresh, a `config.apply` or reload, a provider connect
+  or disconnect, a provider-store reload) holds the engine's runtime
+  mutation lock while it recompiles, which takes seconds in a debug build.
+  The catalog refresh and provider connect/disconnect already ran on the
+  blocking pool, and `runtime.snapshot.get` answers with the published
+  runtime instead of waiting (2026-10-23, commit `42eb99ad3`). The paths that
+  must still wait for the change, so a run or session started mid-change uses
+  the runtime it publishes, now wait on the blocking pool too
+  (`Engine::reconcile_provider_store_off_worker`): `session.create`, run
+  start, `session.select_model`, `session.goal.set` and
+  `session.goal.lifecycle` with a selection, and
+  `session.permission.preview`. The configuration apply recompiles there as
+  well. Only the in-process `cookie run` session creation keeps waiting on
+  its own worker.

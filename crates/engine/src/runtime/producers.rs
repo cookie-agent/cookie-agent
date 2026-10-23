@@ -785,6 +785,9 @@ impl Engine {
         origin: EventOrigin,
     ) -> Result<SessionGoalSetResult, EngineError> {
         let session = params.session_id;
+        if params.selection.is_some() {
+            self.reconcile_provider_store_off_worker().await?;
+        }
         self.on_actor(session, move |engine| {
             engine.set_goal_direct(session, params.objective, params.selection, origin)
         })
@@ -797,6 +800,9 @@ impl Engine {
         origin: EventOrigin,
     ) -> Result<SessionGoalLifecycleResult, EngineError> {
         let session = params.session_id;
+        if params.selection.is_some() {
+            self.reconcile_provider_store_off_worker().await?;
+        }
         self.on_actor(session, move |engine| {
             engine.lifecycle_direct(session, params, origin)
         })
