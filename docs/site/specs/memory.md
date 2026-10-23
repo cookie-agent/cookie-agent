@@ -1497,8 +1497,9 @@ phase 1 of [delegating to runtimes](runtime-delegation.md#11-implementation-note
 
 ### 16.9 Addendum 2026-10-22: memory that stays worth keeping
 
-Settled 2026-10-22. Phase 1, the engine, is implemented (section
-16.9.15), and phase 3, the docs, is written; the clients phase remains. Models with write
+Settled 2026-10-22. Phases 1 and 2, the engine and the clients, are
+implemented (section 16.9.15), and phase 3, the docs, is written (section
+16.9.16). Models with write
 access saved things that are useless by the next session. For example,
 after "explore this directory", one saved the directory listing. The only
 save guidance was "save what a later session should know", and nothing
@@ -2080,6 +2081,44 @@ Deviations and details decided:
   history still compacts under the longer system prompt. The future plugin
   corpus's expected handshake answer names plugin protocol 1.6.0, as it has
   named each earlier minor.
+
+**Phase 2, the clients**, landed 2026-10-22, with no protocol change:
+
+- **Change lines.** The shared reducer turns `memory_changed` into
+  `TranscriptItem::MemoryChange { seq, change, url }` in place of an info
+  row, so no level filter hides it. Like a skill load, it splits the run's
+  block: it sits below the call that made the change, and what the run does
+  next opens a block below it. The TUI draws `🧠 Saved <url>` as a one-row
+  block (`BlockId::MemoryChange`), a `TranscriptBlock` pointer target that
+  hovers like every block; a click opens `/memory` with the memory selected
+  once the listing arrives (`MemoryPanelState::focus`), or says `<url> is
+  not in memory now.` The web client renders a button (`data-action=
+  "open-memory"`) that opens the Memory view at the memory
+  (`Workspace::memory_focus`): its project's folder shows open, its row is
+  marked and scrolled to the middle once, and a gone memory gets a note.
+- **Stamps and limits** (`cookie_agent_client_state::memory::MemoryStamps`,
+  from `memory.list` or `memory.read`). Ages are `memory_age` plus `ago`;
+  `memory_age` and `memory_size` moved to the protocol crate, which the
+  engine re-exports, so the clients word ages and sizes as the model reads
+  them. Exact times are UTC to the second, formatted by hand. The TUI's
+  details give each time with its exact time and age, the size against the
+  limit, and what an over-limit memory still accepts; its row says `over its
+  limit`. The web row shows the modified age and size (exact times on
+  hover) and an `over its limit` badge; the editor shows every age and the
+  size read-only above the text. `cookie memory list` adds a line of ages
+  and size under each memory, and the new `cookie memory show <URL>` prints
+  the times, the size, the revision, and the text.
+- **Editors leave the stamp lines out** (`without_stamps`, `editor_text`):
+  `created:` and `modified:` at the top level of the frontmatter are
+  dropped from what `/memory`, the web editor, and `cookie memory edit`
+  open, and the text is saved as left; the daemon writes its stamps on
+  save, keeping `created`. Only a daemon of client protocol 1.14 or later
+  owns them (`daemon_stamps_memory`, `MEMORY_STAMPS_MINOR`); with an older
+  one the text opens whole. Everything else reads the new fields as
+  optional, so an older daemon shows only sizes.
+- **The web `MemoryLine::Row`** boxes its row, and the
+  `clippy::large_enum_variant` allowance is gone. `revision` stays in the
+  client RPCs.
 
 #### 16.9.16 Implementation notes: phase 3
 
