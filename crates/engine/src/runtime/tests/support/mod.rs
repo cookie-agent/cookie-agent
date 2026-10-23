@@ -2321,6 +2321,8 @@ pub(crate) fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
             enabled: true,
             timeout_ms: Some(5_000),
             scope: None,
+            include_tools: None,
+            exclude_tools: Vec::new(),
         },
     }
 }

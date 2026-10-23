@@ -296,6 +296,8 @@ fn hanging_mcp_server(cancel_file: &Path) -> LoadedMcpServer {
             enabled: true,
             timeout_ms: Some(60_000),
             scope: None,
+            include_tools: None,
+            exclude_tools: Vec::new(),
         },
     }
 }

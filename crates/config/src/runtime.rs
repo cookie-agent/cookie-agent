@@ -104,6 +104,15 @@ pub struct McpServerConfig {
     /// [`McpServerScope::Workspace`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<McpServerScope>,
+    /// Patterns over the server's own tool names (`*` any characters, `?`
+    /// one character): only matching tools are published. `None` publishes
+    /// every tool; present, it may not be empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_tools: Option<Vec<String>>,
+    /// Patterns over the server's own tool names, applied after
+    /// `include_tools`: a matching tool is not published.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_tools: Vec<String>,
 }
 
 /// `scope` of a runtime template's MCP server.
@@ -248,7 +257,39 @@ impl McpServerConfig {
         Ok(())
     }
 
+    /// Whether the tool the server lists as `tool` is published: it matches
+    /// `include_tools` (every tool when that is absent) and no
+    /// `exclude_tools` pattern.
+    #[must_use]
+    pub fn publishes_tool(&self, tool: &str) -> bool {
+        let matches = |pattern: &String| crate::simple_wildcard_match(pattern, tool);
+        self.include_tools
+            .as_ref()
+            .is_none_or(|include| include.iter().any(matches))
+            && !self.exclude_tools.iter().any(matches)
+    }
+
     pub fn validate(&self, name: &str) -> Result<(), ConfigError> {
+        if self.include_tools.as_ref().is_some_and(Vec::is_empty) {
+            return Err(ConfigError::McpServer {
+                server: name.to_owned(),
+                reason: "`include_tools` is empty, so the server would publish no tool; \
+                         remove it to publish every tool"
+                    .into(),
+            });
+        }
+        if self
+            .include_tools
+            .iter()
+            .flatten()
+            .chain(&self.exclude_tools)
+            .any(String::is_empty)
+        {
+            return Err(ConfigError::McpServer {
+                server: name.to_owned(),
+                reason: "`include_tools` and `exclude_tools` patterns may not be empty".into(),
+            });
+        }
         let invalid_name =
             name.is_empty() || name.len() > 128 || name.chars().any(char::is_control);
         let transport_count = usize::from(self.command.is_some()) + usize::from(self.url.is_some());

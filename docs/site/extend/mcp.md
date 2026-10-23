@@ -117,6 +117,35 @@ its environment are resolved on the runtime's machine, and the process
 inherits the runtime's environment plus `env`. Template servers change only
 when the daemon restarts.
 
+### Choosing a server's tools
+
+A server publishes every tool it lists unless its table narrows them with
+`include_tools` and `exclude_tools`, lists of patterns over the tool names
+as the server lists them (`browser_click`, not the published
+`my_chrome_browser_click`), so a filter keeps working when the server is
+renamed. `*` matches any characters and `?` one character, as in permission
+patterns; a pattern without either is an exact name.
+
+```toml
+[mcp.servers.my_chrome]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest"]
+include_tools = ["browser_*", "tab_?"]   # default: every tool
+exclude_tools = ["browser_install"]      # applied after include_tools
+```
+
+A tool is published when it matches an `include_tools` pattern (every tool
+when the key is absent) and no `exclude_tools` pattern, so an exclusion wins.
+The runtime that hosts the server applies them to its first `tools/list` and
+to every refresh after `notifications/tools/list_changed`, so a tool the
+server adds later is filtered too; a filtered tool is never published, to
+any agent. Both keys work wherever a server is configured: `[mcp.servers]`,
+`[runtimes.<id>.mcp.servers]`, and a machine's own `[runtimes.local.mcp]`.
+An empty pattern, or an `include_tools = []` that would publish nothing, is a
+configuration error. `/mcp`, the runtime panels, and the web client's MCP
+servers show how many tools the filters left out, as `12 tools, 30
+filtered`.
+
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers
 are enabled by default. `timeout_ms` bounds connection, listing, and calls and
@@ -293,7 +322,10 @@ the runtime that hosts it), and toggle enablement and add, edit, or remove
 definitions of global-runtime servers only; a coding runtime's servers come
 from its runtime template. Add/edit forms accept either a command, JSON string array
 of arguments, JSON string object of environment variables, and optional working
-directory, or a URL plus a JSON string object of headers. Choose
+directory, or a URL plus a JSON string object of headers, and for both the
+`include_tools` and `exclude_tools` patterns, comma-separated (an empty
+include field publishes every tool). The list shows a server's tool count
+with how many its filters left out. Choose
 `runtime only` or `user config.toml` before submitting.
 Edits do not rename a server; remove the old name and add the new one instead.
 
@@ -384,6 +416,8 @@ described in [config.toml](../engine/configuration.md).
 | `oauth` | boolean or table | auto | Streamable HTTP OAuth. Omit, set `true`, or use `{}` for reactive OAuth; set `false` to disable it. A table accepts optional `client_id`, `client_secret`, `client_metadata_url`, and `scopes`. A static `Authorization` header takes precedence. |
 | `enabled` | boolean | `true` | Whether the server may connect. |
 | `timeout_ms` | integer | `30000` | Positive timeout for connect, list, and call operations. |
+| `include_tools` | array of strings | every tool | Patterns (`*`, `?`) over the server's own tool names; only matching tools are published. Present, it may not be empty. See [choosing a server's tools](#choosing-a-servers-tools). |
+| `exclude_tools` | array of strings | empty | Patterns over the server's own tool names, applied after `include_tools`: matching tools are not published. |
 
 ## Runtime layers and persistence
 

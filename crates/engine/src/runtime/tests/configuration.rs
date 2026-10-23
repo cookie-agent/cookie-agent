@@ -327,6 +327,8 @@ async fn persisting_an_mcp_server_writes_and_applies_the_configuration() {
         oauth: None,
         enabled: false,
         timeout_ms: None,
+        include_tools: None,
+        exclude_tools: Vec::new(),
     };
     fixture
         .engine

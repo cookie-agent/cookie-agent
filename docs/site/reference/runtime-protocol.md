@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.5.0**
+The protocol version is a semver string, currently **1.6.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -188,6 +188,10 @@ report's optional `scope`; the optional `mcp_servers` of
 outside any instance, which it declares with `runtime/tools_changed` and the
 daemon prepares without an `instance`. A runtime keeps a daemon older than
 1.5.0 working by hosting every server per workspace for it.
+1.6.0 added an MCP server report's optional `filtered_tools`: how many of
+the tools the server lists its `include_tools` and `exclude_tools` left
+out. The runtime applies the filters itself, from the server's table, so
+no message carries them.
 
 ## Capabilities and instances
 

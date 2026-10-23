@@ -49,6 +49,77 @@ fn stdio_mcp_form_accepts_args_environment_and_working_directory() {
 }
 
 #[test]
+fn mcp_form_edits_tool_filters_and_the_panel_shows_the_filtered_count() {
+    let mut form = super::McpForm::add();
+    form.name.set_buffer("my_chrome".into());
+    form.endpoint.set_buffer("chrome-mcp".into());
+    // Tab reaches both filter fields, for either transport.
+    for transport in [super::McpTransport::Stdio, super::McpTransport::Http] {
+        form.transport = transport;
+        form.focus = super::McpFormFocus::Name;
+        let mut seen = Vec::new();
+        for _ in 0..12 {
+            form.move_focus(false);
+            seen.push(form.focus);
+        }
+        assert!(seen.contains(&super::McpFormFocus::IncludeTools));
+        assert!(seen.contains(&super::McpFormFocus::ExcludeTools));
+    }
+    form.transport = super::McpTransport::Stdio;
+    form.focus = super::McpFormFocus::IncludeTools;
+    form.focused_input()
+        .expect("include field")
+        .set_buffer("browser_*, tab_?".into());
+    form.focus = super::McpFormFocus::ExcludeTools;
+    form.focused_input()
+        .expect("exclude field")
+        .set_buffer("browser_install".into());
+    let (_, definition) = form.definition().expect("valid form");
+    assert_eq!(
+        definition.include_tools,
+        Some(vec!["browser_*".to_owned(), "tab_?".to_owned()])
+    );
+    assert_eq!(definition.exclude_tools, ["browser_install"]);
+
+    let mut server = hosted_server(
+        "global",
+        None,
+        "my_chrome",
+        McpServerState::Connected,
+        12,
+        None,
+    );
+    server.filtered_tools = Some(30);
+    server.definition = definition;
+    let edit = super::McpForm::edit(&server);
+    assert_eq!(edit.include_tools.as_str(), "browser_*, tab_?");
+    assert_eq!(edit.exclude_tools.as_str(), "browser_install");
+
+    let mut panel = super::McpPanel::default();
+    panel.install(vec![server]);
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::render_mcp(
+                frame,
+                frame.area(),
+                &mut panel,
+                &crate::theme::Theme::default(),
+            );
+        })
+        .expect("render MCP panel");
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("connected (12, 30 filtered)"), "{text}");
+    assert!(text.contains("exclude tools: browser_install"), "{text}");
+}
+
+#[test]
 fn mcp_panel_renders_live_state_and_connection() {
     let mut panel = super::McpPanel::default();
     panel.install(vec![McpServerInfo {
@@ -67,9 +138,12 @@ fn mcp_panel_renders_live_state_and_connection() {
             oauth: Some(McpOAuthDefinition::Bool(true)),
             enabled: true,
             timeout_ms: None,
+            include_tools: None,
+            exclude_tools: Vec::new(),
         },
         state: McpServerState::Disconnected,
         tool_count: 0,
+        filtered_tools: None,
         message: None,
         auth_in_progress: Some(false),
     }]);
@@ -114,9 +188,12 @@ fn mcp_panel_renders_copyable_oauth_wait() {
             oauth: Some(McpOAuthDefinition::Bool(true)),
             enabled: true,
             timeout_ms: None,
+            include_tools: None,
+            exclude_tools: Vec::new(),
         },
         state: McpServerState::NeedsAuth,
         tool_count: 0,
+        filtered_tools: None,
         message: Some("waiting for OAuth browser callback".into()),
         auth_in_progress: Some(true),
     }]);
@@ -1054,9 +1131,12 @@ fn hosted_server(
             oauth: None,
             enabled: true,
             timeout_ms: None,
+            include_tools: None,
+            exclude_tools: Vec::new(),
         },
         state,
         tool_count,
+        filtered_tools: None,
         message: message.map(str::to_owned),
         auth_in_progress: None,
     }
@@ -1224,9 +1304,12 @@ fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
             oauth: None,
             enabled: true,
             timeout_ms: None,
+            include_tools: None,
+            exclude_tools: Vec::new(),
         },
         state: McpServerState::Failed,
         tool_count: 0,
+        filtered_tools: None,
         message: Some("exited".into()),
         auth_in_progress: None,
     };

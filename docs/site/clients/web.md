@@ -491,9 +491,13 @@ address bar.
     - **Guides:** links to the runtimes, ssh, dial-in, remote access, and
       service guides of the released documentation.
 - **MCP servers.** Settings › MCP servers lists every runtime's servers with their state,
-  tools, and last error. The global runtime's servers can be added, edited,
+  tools (with how many its `include_tools` and `exclude_tools` left out),
+  and last error. The global runtime's servers can be added, edited,
   enabled or disabled, removed, and kept in your `config.toml`; a coding
-  runtime's come from its template. **Reconnect** works for any server.
+  runtime's come from its template. The form takes the tool filters as
+  comma-separated patterns (see
+  [choosing a server's tools](../extend/mcp.md#choosing-a-servers-tools)).
+  **Reconnect** works for any server.
   - A server that needs authorization offers **Sign in** (see
     [Signing in to MCP servers](#signing-in-to-mcp-servers)).
 - **Providers.** Settings › Providers lists the catalog's providers. Pick one to

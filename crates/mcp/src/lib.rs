@@ -104,6 +104,9 @@ pub struct McpServerStatus {
     pub state: McpServerState,
     pub message: Option<String>,
     pub tools: Vec<String>,
+    /// How many of the tools the server lists its `include_tools` and
+    /// `exclude_tools` left out.
+    pub filtered_tools: usize,
     pub auth_in_progress: bool,
 }
 
@@ -121,6 +124,8 @@ struct ServerRuntime {
     loaded: LoadedMcpServer,
     status: Mutex<McpServerStatus>,
     tools: Mutex<Vec<CachedTool>>,
+    /// How many tools of the last listing the filters left out.
+    filtered_tools: AtomicUsize,
     list_generation: AtomicU64,
     publication: Mutex<()>,
     tool_refresh: Mutex<ToolRefreshDebounce>,
@@ -980,12 +985,14 @@ impl ServerRuntime {
                 state,
                 message,
                 tools: Vec::new(),
+                filtered_tools: 0,
                 auth_in_progress: false,
             }),
             name,
             sanitized_name,
             loaded,
             tools: Mutex::new(Vec::new()),
+            filtered_tools: AtomicUsize::new(0),
             list_generation: AtomicU64::new(0),
             publication: Mutex::new(()),
             tool_refresh: Mutex::new(ToolRefreshDebounce::default()),
@@ -1080,6 +1087,7 @@ impl ServerRuntime {
                 .iter()
                 .map(|tool| tool.spec.name.clone())
                 .collect();
+            status.filtered_tools = self.filtered_tools.load(Ordering::Acquire);
         }
         self.notify_changed();
     }
@@ -1100,6 +1108,7 @@ impl ServerRuntime {
         }
         self.clear_claims();
         self.tools.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.filtered_tools.store(0, Ordering::Release);
         self.set_status(McpServerState::Failed, Some(message.clone()));
         if let Some(registry) = self.registry.upgrade() {
             registry.failed(McpServerFailure {
@@ -1672,8 +1681,12 @@ impl ServerRuntime {
         tools: Vec<Tool>,
         before_commit: impl FnOnce(),
     ) {
+        // The server's `include_tools` and `exclude_tools`, over the names it
+        // lists, before any tool is published.
+        let listed = tools.len();
         let converted = tools
             .into_iter()
+            .filter(|tool| self.loaded.config.publishes_tool(tool.name.as_ref()))
             .map(|tool| convert_tool(&self.name, &self.sanitized_name, tool))
             .collect::<Result<Vec<_>, _>>();
         before_commit();
@@ -1690,6 +1703,8 @@ impl ServerRuntime {
                 return;
             }
         };
+        let filtered = listed - converted.len();
+        let filtered_changed = self.filtered_tools.swap(filtered, Ordering::AcqRel) != filtered;
         let unchanged = {
             let current = self
                 .tools
@@ -1704,6 +1719,10 @@ impl ServerRuntime {
                 })
         };
         if unchanged {
+            drop(publication);
+            if filtered_changed && self.current_state() == McpServerState::Connected {
+                self.set_status(McpServerState::Connected, None);
+            }
             return;
         }
         let Some(registry) = self.registry.upgrade() else {

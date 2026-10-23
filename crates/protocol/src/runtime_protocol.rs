@@ -218,6 +218,11 @@ pub struct McpServerReport {
     /// reads as `workspace`, which is all a runtime hosted before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<McpServerScope>,
+    /// How many of the tools the server lists its `include_tools` and
+    /// `exclude_tools` filtered out (runtime protocol 1.6.0); absent when
+    /// none were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filtered_tools: Option<u32>,
 }
 
 /// Where a runtime hosts an MCP server (runtime protocol 1.5.0; client

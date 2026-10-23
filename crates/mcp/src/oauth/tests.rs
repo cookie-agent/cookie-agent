@@ -548,6 +548,8 @@ fn remote_config(url: String) -> McpServerConfig {
         enabled: true,
         timeout_ms: Some(5_000),
         scope: None,
+        include_tools: None,
+        exclude_tools: Vec::new(),
     }
 }
 

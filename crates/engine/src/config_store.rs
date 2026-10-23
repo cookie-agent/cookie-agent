@@ -184,6 +184,9 @@ impl Engine {
                     definition: definition_to_wire(&loaded.config),
                     state,
                     tool_count: status.map_or(0, |status| status.tools.len() as u32),
+                    filtered_tools: status
+                        .map(|status| u32::try_from(status.filtered_tools).unwrap_or(u32::MAX))
+                        .filter(|filtered| *filtered > 0),
                     message: status.and_then(|status| status.message.clone()),
                     auth_in_progress: status.map(|status| status.auth_in_progress),
                 }
@@ -442,6 +445,8 @@ pub(crate) fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option
                 oauth: None,
                 enabled: server.report.state != Hosted::Disabled,
                 timeout_ms: None,
+                include_tools: None,
+                exclude_tools: Vec::new(),
             },
         ),
     };
@@ -466,6 +471,10 @@ pub(crate) fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option
             Hosted::Failed => WireMcpServerState::Failed,
         },
         tool_count: u32::try_from(server.report.tools.len()).unwrap_or(u32::MAX),
+        filtered_tools: server
+            .report
+            .filtered_tools
+            .filter(|filtered| *filtered > 0),
         message: if waiting {
             Some("starts when a workspace opens".to_owned())
         } else {
@@ -504,6 +513,8 @@ fn definition_to_wire(config: &McpServerConfig) -> McpServerDefinition {
         }),
         enabled: config.enabled,
         timeout_ms: config.timeout_ms,
+        include_tools: config.include_tools.clone(),
+        exclude_tools: config.exclude_tools.clone(),
     }
 }
 
@@ -533,6 +544,8 @@ fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
         enabled: definition.enabled,
         timeout_ms: definition.timeout_ms,
         scope: None,
+        include_tools: definition.include_tools,
+        exclude_tools: definition.exclude_tools,
     }
 }
 

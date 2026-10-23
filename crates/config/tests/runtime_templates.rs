@@ -285,3 +285,42 @@ fn a_top_level_server_takes_no_scope() {
     }
     load("[mcp.servers.browser]\ncommand = \"chrome-devtools-mcp\"\n").expect("unscoped");
 }
+
+#[test]
+fn template_and_local_servers_take_tool_filters_with_the_same_checks() {
+    let loaded = load(
+        r#"
+[runtimes.labpc]
+command = ["runtime"]
+
+[runtimes.labpc.mcp.servers.browser]
+command = "chrome-devtools-mcp"
+include_tools = ["browser_*"]
+exclude_tools = ["browser_install"]
+
+[runtimes.local.mcp.servers.my_chrome]
+command = "chrome-devtools-mcp"
+exclude_tools = ["screenshot"]
+"#,
+    )
+    .expect("filtered servers");
+    let browser = &loaded.runtimes[&RuntimeId::new("labpc").unwrap()].mcp_servers["browser"];
+    assert!(browser.publishes_tool("browser_click"));
+    assert!(!browser.publishes_tool("browser_install"));
+    let my_chrome = &loaded.runtimes[&RuntimeId::local()].mcp_servers["my_chrome"];
+    assert!(my_chrome.publishes_tool("browser_click"));
+    assert!(!my_chrome.publishes_tool("screenshot"));
+    // The filters travel to the runtime with the rest of the server's table.
+    assert_eq!(
+        serde_json::to_value(browser).unwrap()["include_tools"],
+        serde_json::json!(["browser_*"])
+    );
+
+    for table in [
+        "[runtimes.labpc]\ncommand = [\"runtime\"]\n[runtimes.labpc.mcp.servers.browser]\ncommand = \"x\"\ninclude_tools = []\n",
+        "[runtimes.local.mcp.servers.my_chrome]\ncommand = \"x\"\nexclude_tools = [\"\"]\n",
+    ] {
+        let error = rejected(table);
+        assert!(error.contains("include_tools"), "{table}: {error}");
+    }
+}

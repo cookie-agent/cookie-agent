@@ -33,6 +33,8 @@ pub(super) enum McpFormFocus {
     Extras,
     Environment,
     Cwd,
+    IncludeTools,
+    ExcludeTools,
     Enabled,
     Persist,
     Submit,
@@ -47,6 +49,8 @@ pub(super) struct McpForm {
     pub(super) extras: InputState,
     pub(super) environment: InputState,
     pub(super) cwd: InputState,
+    pub(super) include_tools: InputState,
+    pub(super) exclude_tools: InputState,
     pub(super) enabled: bool,
     pub(super) persist: PersistChoice,
     pub(super) focus: McpFormFocus,
@@ -64,6 +68,8 @@ impl McpForm {
             extras: json_input("[]"),
             environment: json_input("{}"),
             cwd: InputState::default(),
+            include_tools: InputState::default(),
+            exclude_tools: InputState::default(),
             enabled: true,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
@@ -82,6 +88,8 @@ impl McpForm {
             extras: json_input(&fields.extras),
             environment: json_input(&fields.environment),
             cwd: json_input(&fields.cwd),
+            include_tools: json_input(&fields.include_tools),
+            exclude_tools: json_input(&fields.exclude_tools),
             enabled: fields.enabled,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
@@ -90,22 +98,26 @@ impl McpForm {
     }
 
     pub(super) fn move_focus(&mut self, backward: bool) {
-        const STDIO_FIELDS: [McpFormFocus; 9] = [
+        const STDIO_FIELDS: [McpFormFocus; 11] = [
             McpFormFocus::Name,
             McpFormFocus::Transport,
             McpFormFocus::Endpoint,
             McpFormFocus::Extras,
             McpFormFocus::Environment,
             McpFormFocus::Cwd,
+            McpFormFocus::IncludeTools,
+            McpFormFocus::ExcludeTools,
             McpFormFocus::Enabled,
             McpFormFocus::Persist,
             McpFormFocus::Submit,
         ];
-        const HTTP_FIELDS: [McpFormFocus; 7] = [
+        const HTTP_FIELDS: [McpFormFocus; 9] = [
             McpFormFocus::Name,
             McpFormFocus::Transport,
             McpFormFocus::Endpoint,
             McpFormFocus::Extras,
+            McpFormFocus::IncludeTools,
+            McpFormFocus::ExcludeTools,
             McpFormFocus::Enabled,
             McpFormFocus::Persist,
             McpFormFocus::Submit,
@@ -155,6 +167,8 @@ impl McpForm {
             McpFormFocus::Extras => Some(&mut self.extras),
             McpFormFocus::Environment => Some(&mut self.environment),
             McpFormFocus::Cwd => Some(&mut self.cwd),
+            McpFormFocus::IncludeTools => Some(&mut self.include_tools),
+            McpFormFocus::ExcludeTools => Some(&mut self.exclude_tools),
             _ => None,
         }
     }
@@ -168,6 +182,8 @@ impl McpForm {
             environment: self.environment.as_str().to_owned(),
             cwd: self.cwd.as_str().to_owned(),
             enabled: self.enabled,
+            include_tools: self.include_tools.as_str().to_owned(),
+            exclude_tools: self.exclude_tools.as_str().to_owned(),
         }
         .definition(&self.base)
     }
@@ -308,7 +324,13 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
         .iter()
         .map(|server| {
             let state = mcp_state_label(server.state);
-            let tools = (server.tool_count > 0).then(|| format!(" ({})", server.tool_count));
+            let filtered = server.filtered_tools.filter(|filtered| *filtered > 0);
+            let tools = (server.tool_count > 0 || filtered.is_some()).then(|| {
+                let filtered = filtered
+                    .map(|filtered| format!(", {filtered} filtered"))
+                    .unwrap_or_default();
+                format!(" ({}{filtered})", server.tool_count)
+            });
             ListItem::new(format!(
                 "{}  {}{}  [{} · {}]",
                 server.name,
@@ -434,6 +456,16 @@ fn render_mcp_form(frame: &mut Frame, area: Rect, form: &McpForm, theme: &Theme)
         ]);
     }
     rows.extend([
+        (
+            McpFormFocus::IncludeTools,
+            "Include tools (patterns, comma-separated; empty: all)",
+            form.include_tools.as_str().to_owned(),
+        ),
+        (
+            McpFormFocus::ExcludeTools,
+            "Exclude tools (patterns, comma-separated)",
+            form.exclude_tools.as_str().to_owned(),
+        ),
         (McpFormFocus::Enabled, "Enabled", form.enabled.to_string()),
         (McpFormFocus::Persist, "Save", form.persist.label().into()),
         (McpFormFocus::Submit, "Submit", "press enter".into()),

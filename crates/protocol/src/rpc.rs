@@ -1940,6 +1940,16 @@ pub struct McpServerDefinition {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<u64>", required)]
     pub timeout_ms: Option<u64>,
+    /// Patterns over the server's own tool names (`*`, `?`): only matching
+    /// tools are published (client protocol 1.16.0). Absent publishes every
+    /// tool; present, it may not be empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_tools: Option<Vec<String>>,
+    /// Patterns over the server's own tool names, applied after
+    /// `include_tools`: matching tools are not published (client protocol
+    /// 1.16.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_tools: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1965,6 +1975,11 @@ pub struct McpServerInfo {
     pub definition: McpServerDefinition,
     pub state: McpServerState,
     pub tool_count: u32,
+    /// How many of the tools the server lists its `include_tools` and
+    /// `exclude_tools` filtered out (client protocol 1.16.0); absent when
+    /// none were, and from runtimes that do not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filtered_tools: Option<u32>,
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub message: Option<String>,

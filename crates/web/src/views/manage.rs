@@ -7,8 +7,8 @@ use cookie_agent_client_state::{
     config::config_rows,
     mcp::{
         McpFields, McpTransport, PersistChoice, StateTone, runtime_label, scope_note,
-        server_definition_display, server_message, server_state_label, server_tone, source_label,
-        state_label as mcp_state_label, tools_label, waits_for_workspace,
+        server_definition_display, server_message, server_state_label, server_tone,
+        server_tools_label, source_label, state_label as mcp_state_label, waits_for_workspace,
     },
     plugins::{plugin_detail, state_label as plugin_state_label},
     providers::{
@@ -309,7 +309,7 @@ pub(crate) fn runtime_mcp_servers(
                     <div class="flex min-w-0 items-center gap-2">
                         <Glyph icon=dot class=format!("shrink-0 text-[0.6rem] {dot_class}") />
                         <span class="min-w-16 flex-1 truncate font-mono text-sm">{server.name.clone()}</span>
-                        {(!waiting).then(|| view! { <span class=format!("shrink-0 {NOTE}")>{tools_label(server.tool_count)}</span> })}
+                        {(!waiting).then(|| view! { <span class=format!("shrink-0 {NOTE}")>{server_tools_label(&server)}</span> })}
                         <span class=STATE class:text-red-700=failed class:dark:text-red-400=failed>{server_state_label(&server)}</span>
                     </div>
                     {scope_note(&server).map(|note| view! {
@@ -377,10 +377,10 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                         </div>
                         <span class=NOTE>
                             {format!(
-                                "{} · {} · {} tools",
+                                "{} · {} · {}",
                                 runtime_label(&server),
                                 source_label(server.source),
-                                server.tool_count
+                                server_tools_label(&server)
                             )}
                         </span>
                         <span class=format!("{NOTE} font-mono whitespace-pre-wrap break-all")>{server_definition_display(&server)}</span>
@@ -644,6 +644,8 @@ fn mcp_form(
             environment: field_value("mcp-env"),
             cwd: field_value("mcp-cwd"),
             enabled: enabled.get_untracked(),
+            include_tools: field_value("mcp-include-tools"),
+            exclude_tools: field_value("mcp-exclude-tools"),
         };
         fields.transport = transport.get_untracked();
         if fields.transport == McpTransport::Http {
@@ -695,6 +697,15 @@ fn mcp_form(
                 <input type="text" id="mcp-cwd" class=FIELD value=fields.cwd.clone() />
             </label>
         </Show>
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Include tools"</span>
+            <input type="text" id="mcp-include-tools" class=FIELD placeholder="every tool" value=fields.include_tools.clone() />
+            <span class=NOTE>"Patterns over the server's tool names, comma-separated; * and ? match like permission patterns"</span>
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+            <span>"Exclude tools"</span>
+            <input type="text" id="mcp-exclude-tools" class=FIELD value=fields.exclude_tools.clone() />
+        </label>
         <label class="flex min-h-11 items-center gap-2 text-sm">
             <input type="checkbox" id="mcp-enabled" class="h-5 w-5" prop:checked=move || enabled.get() on:change=move |_| enabled.update(|on| *on = !*on) />
             <span>"Enabled"</span>

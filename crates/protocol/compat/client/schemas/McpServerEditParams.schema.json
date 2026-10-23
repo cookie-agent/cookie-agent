@@ -71,11 +71,28 @@
           },
           "type": "object"
         },
+        "exclude_tools": {
+          "description": "Patterns over the server's own tool names, applied after\n`include_tools`: matching tools are not published (client protocol\n1.16.0).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "headers": {
           "additionalProperties": {
             "type": "string"
           },
           "type": "object"
+        },
+        "include_tools": {
+          "description": "Patterns over the server's own tool names (`*`, `?`): only matching\ntools are published (client protocol 1.16.0). Absent publishes every\ntool; present, it may not be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "oauth": {
           "anyOf": [

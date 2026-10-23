@@ -1068,6 +1068,8 @@ fn local_mcp_config(
         enabled: true,
         timeout_ms: Some(30_000),
         scope: None,
+        include_tools: None,
+        exclude_tools: Vec::new(),
     };
     config.runtimes.insert(
         cookie_agent_identity::RuntimeId::new("local").unwrap(),
@@ -1243,13 +1245,19 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
 
 /// A runtime that hosts servers its own machine defines, as a dial-in
 /// runtime hosts its `[runtimes.local.mcp]`, lists them with the source
-/// `machine` and an empty definition: the daemon never sees them.
+/// `machine` and an empty definition: the daemon never sees them. The
+/// runtime applies their tool filters itself and reports what they left out.
 #[tokio::test]
 async fn servers_the_runtimes_machine_defines_are_listed_as_machine_servers() {
     let (fixture, _) = custom_fixture();
     fixture.engine.shutdown().await;
     let directory = fixture._directory.path();
-    let machine_config = local_mcp_config(&fixture.config, &directory.join("refuse"));
+    let mut machine_config = local_mcp_config(&fixture.config, &directory.join("refuse"));
+    for template in machine_config.runtimes.values_mut() {
+        for server in template.mcp_servers.values_mut() {
+            server.exclude_tools = vec!["fail".into()];
+        }
+    }
     let machine_servers = machine_config
         .runtimes
         .iter()
@@ -1296,7 +1304,8 @@ async fn servers_the_runtimes_machine_defines_are_listed_as_machine_servers() {
         listed.state,
         cookie_agent_protocol::McpServerState::Connected
     );
-    assert_eq!(listed.tool_count, 2);
+    assert_eq!(listed.tool_count, 1);
+    assert_eq!(listed.filtered_tools, Some(1));
     engine.shutdown().await;
 }
 
@@ -2770,6 +2779,8 @@ fn fixture_server(
         enabled: true,
         timeout_ms: Some(30_000),
         scope,
+        include_tools: None,
+        exclude_tools: Vec::new(),
     }
 }
 
@@ -2796,6 +2807,9 @@ async fn open_with_servers(
         },
     );
     for (name, server) in global {
+        config
+            .user_mcp_servers
+            .insert(name.to_owned(), server.clone());
         config.mcp_servers.insert(
             name.to_owned(),
             cookie_agent_config::LoadedMcpServer {
@@ -3135,5 +3149,87 @@ async fn a_global_server_runs_in_the_daemon_users_home() {
             .expect("canonical home")
     });
     assert_eq!(Some(started), home);
+    engine.shutdown().await;
+}
+
+/// A runtime template's servers, runtime- and workspace-scoped, and a
+/// top-level `[mcp]` server publish only the tools their filters keep, and
+/// each listing says how many were left out.
+#[tokio::test]
+async fn template_and_global_servers_publish_only_the_tools_their_filters_keep() {
+    let (fixture, selection) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let filtered = |scope, include: Option<&str>, exclude: &[&str]| {
+        let mut server = fixture_server(&[], scope);
+        server.include_tools = include.map(|pattern| vec![pattern.to_owned()]);
+        server.exclude_tools = exclude.iter().map(|&pattern| pattern.to_owned()).collect();
+        server
+    };
+    let engine = open_with_servers(
+        &fixture,
+        vec![
+            (
+                "browser",
+                filtered(
+                    Some(cookie_agent_config::McpServerScope::Runtime),
+                    Some("echo*"),
+                    &[],
+                ),
+            ),
+            ("docs", filtered(None, None, &["fail"])),
+        ],
+        vec![("fixture", filtered(None, None, &["echo/?ext"]))],
+    )
+    .await;
+    engine.inner.mcp.await_eager_ready().await;
+    let mut counts = engine
+        .list_mcp_servers()
+        .into_iter()
+        .map(|server| {
+            (
+                server.name,
+                server.state,
+                server.tool_count,
+                server.filtered_tools,
+            )
+        })
+        .collect::<Vec<_>>();
+    counts.sort_by(|left, right| left.0.cmp(&right.0));
+    let connected = cookie_agent_protocol::McpServerState::Connected;
+    assert_eq!(
+        counts,
+        [
+            ("browser".to_owned(), connected, 1, Some(1)),
+            ("docs".to_owned(), connected, 1, Some(1)),
+            ("fixture".to_owned(), connected, 1, Some(1)),
+        ]
+    );
+    // The global server's definition carries its filters to the editors.
+    let global = engine
+        .list_mcp_servers()
+        .into_iter()
+        .find(|server| server.name == "fixture")
+        .unwrap();
+    assert_eq!(global.definition.include_tools, None);
+    assert_eq!(global.definition.exclude_tools, ["echo/?ext"]);
+
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let policy = crate::runtime::tests::support::frozen_root_policy_for(&engine, &selection);
+    let mut names = engine
+        .tool_definitions(session, &policy)
+        .expect("composed tools")
+        .into_iter()
+        .map(|definition| definition.name)
+        .filter(|name| {
+            ["browser_", "docs_", "fixture_"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        ["browser_echo_text", "docs_echo_text", "fixture_fail"]
+    );
     engine.shutdown().await;
 }

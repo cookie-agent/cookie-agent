@@ -115,6 +115,8 @@ fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
         enabled: false,
         timeout_ms: Some(5000),
         scope: None,
+        include_tools: Some(vec!["browser_*".into()]),
+        exclude_tools: vec!["browser_install".into()],
     };
     let original = ConfigTree::read(Some(directory.path())).expect("read the tree");
     let mut candidate = original.clone();
@@ -146,6 +148,8 @@ fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
         enabled: true,
         timeout_ms: None,
         scope: None,
+        include_tools: None,
+        exclude_tools: Vec::new(),
     };
     let mut candidate = ConfigTree::read(Some(directory.path())).expect("read the tree");
     candidate
@@ -153,4 +157,67 @@ fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
         .expect("set the MCP table");
     assert!(load_from_tree(&candidate).is_err());
     assert_eq!(fs::read_to_string(path).expect("unchanged config"), before);
+}
+
+#[test]
+fn tool_filters_load_and_decide_which_listed_tools_are_published() {
+    let directory = root(
+        "[mcp.servers.my_chrome]\nurl = \"https://example.test/mcp\"\n\
+         include_tools = [\"browser_*\", \"tab_?\"]\nexclude_tools = [\"browser_install\"]\n",
+    );
+    let loaded = load_from_user_root(Some(directory.path())).expect("filters");
+    let config = &loaded.mcp_servers["my_chrome"].config;
+    assert_eq!(
+        config.include_tools.as_deref(),
+        Some(&["browser_*".to_owned(), "tab_?".to_owned()][..])
+    );
+    assert_eq!(config.exclude_tools, ["browser_install"]);
+    for (tool, published) in [
+        ("browser_click", true),
+        ("tab_1", true),
+        ("tab_12", false),
+        ("browser_install", false),
+        ("screenshot", false),
+    ] {
+        assert_eq!(config.publishes_tool(tool), published, "{tool}");
+    }
+}
+
+#[test]
+fn absent_filters_publish_every_tool_and_stay_absent_when_written() {
+    let directory = root("[mcp.servers.docs]\ncommand = \"docs-mcp\"\n");
+    let loaded = load_from_user_root(Some(directory.path())).expect("no filters");
+    let config = &loaded.mcp_servers["docs"].config;
+    assert!(config.publishes_tool("anything"));
+    let table = toml::Value::try_from(config).expect("table");
+    assert!(table.get("include_tools").is_none());
+    assert!(table.get("exclude_tools").is_none());
+}
+
+#[test]
+fn empty_tool_filter_patterns_and_an_empty_include_list_are_errors() {
+    for (filters, expected) in [
+        ("include_tools = []\n", "`include_tools` is empty"),
+        ("include_tools = [\"\"]\n", "patterns may not be empty"),
+        (
+            "exclude_tools = [\"browser_*\", \"\"]\n",
+            "patterns may not be empty",
+        ),
+    ] {
+        let directory = root(&format!(
+            "[mcp.servers.bad]\ncommand = \"server\"\n{filters}"
+        ));
+        let error = load_from_user_root(Some(directory.path())).expect_err(filters);
+        assert!(
+            matches!(&error, ConfigError::McpServer { server, reason } if server == "bad" && reason.contains(expected)),
+            "{filters}: {error:?}"
+        );
+    }
+    // An empty exclude list excludes nothing.
+    let directory = root("[mcp.servers.ok]\ncommand = \"server\"\nexclude_tools = []\n");
+    load_from_user_root(Some(directory.path())).expect("empty exclude list");
+    // The filters are lists of strings.
+    let directory =
+        root("[mcp.servers.bad]\ncommand = \"server\"\ninclude_tools = \"browser_*\"\n");
+    assert!(load_from_user_root(Some(directory.path())).is_err());
 }

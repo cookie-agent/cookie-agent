@@ -97,6 +97,8 @@ fn fixture_config() -> McpServerConfig {
         // test relies on this timeout firing; slow-list tests cancel instead.
         timeout_ms: Some(30_000),
         scope: None,
+        include_tools: None,
+        exclude_tools: Vec::new(),
     }
 }
 
@@ -1558,4 +1560,181 @@ async fn a_stdio_server_starts_in_the_working_directory_or_its_cwd_under_it() {
         started_in(&base_path, Some(elsewhere_path.to_str().unwrap())).await,
         elsewhere_path
     );
+}
+
+/// A registry with one fixture server named `name` whose tool filters are
+/// `include` and `exclude`.
+fn filtered_registry(name: &str, include: Option<&[&str]>, exclude: &[&str]) -> McpRegistry {
+    let mut config = fixture_config();
+    config.include_tools =
+        include.map(|patterns| patterns.iter().map(|&pattern| pattern.to_owned()).collect());
+    config.exclude_tools = exclude.iter().map(|&pattern| pattern.to_owned()).collect();
+    McpRegistry::new(
+        BTreeMap::from([(
+            name.to_owned(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        McpRegistryOptions::default(),
+    )
+    .expect("MCP registry")
+}
+
+/// What `registry`'s only server publishes for the listing `tools`, and how
+/// many of them its filters left out.
+fn publish_listing(registry: &McpRegistry, server: &str, tools: &[&str]) -> (Vec<String>, usize) {
+    let server = registry.server(server).expect("server");
+    let generation = server.next_list_generation();
+    server.publish_tools(
+        generation,
+        tools
+            .iter()
+            .map(|&tool| Tool::new(tool.to_owned(), tool.to_owned(), Arc::new(Map::new())))
+            .collect(),
+    );
+    (
+        tool_names(registry),
+        server.filtered_tools.load(Ordering::Acquire),
+    )
+}
+
+const BROWSER_TOOLS: [&str; 5] = [
+    "browser_click",
+    "browser_install",
+    "browser_tab1",
+    "browser_tab12",
+    "screenshot",
+];
+
+#[test]
+fn include_tools_publishes_only_matching_tools() {
+    let registry = filtered_registry("my_chrome", Some(&["browser_*"]), &[]);
+    assert_eq!(
+        publish_listing(&registry, "my_chrome", &BROWSER_TOOLS),
+        (
+            vec![
+                "my_chrome_browser_click".to_owned(),
+                "my_chrome_browser_install".to_owned(),
+                "my_chrome_browser_tab1".to_owned(),
+                "my_chrome_browser_tab12".to_owned(),
+            ],
+            1
+        )
+    );
+}
+
+#[test]
+fn exclude_tools_drops_matching_tools() {
+    let registry = filtered_registry("my_chrome", None, &["browser_install", "screen*"]);
+    assert_eq!(
+        publish_listing(&registry, "my_chrome", &BROWSER_TOOLS),
+        (
+            vec![
+                "my_chrome_browser_click".to_owned(),
+                "my_chrome_browser_tab1".to_owned(),
+                "my_chrome_browser_tab12".to_owned(),
+            ],
+            2
+        )
+    );
+}
+
+#[test]
+fn exclude_tools_wins_over_include_tools() {
+    let registry = filtered_registry("my_chrome", Some(&["browser_*"]), &["browser_install"]);
+    let (published, filtered) = publish_listing(&registry, "my_chrome", &BROWSER_TOOLS);
+    assert!(!published.contains(&"my_chrome_browser_install".to_owned()));
+    assert_eq!(published.len(), 3);
+    assert_eq!(filtered, 2);
+}
+
+#[test]
+fn a_pattern_without_wildcards_is_an_exact_name_and_question_mark_is_one_character() {
+    let registry = filtered_registry("my_chrome", Some(&["browser_tab?", "screenshot"]), &[]);
+    assert_eq!(
+        publish_listing(&registry, "my_chrome", &BROWSER_TOOLS),
+        (
+            vec![
+                "my_chrome_browser_tab1".to_owned(),
+                "my_chrome_screenshot".to_owned(),
+            ],
+            3
+        )
+    );
+    // An exact name matches neither a prefix nor a longer name.
+    let registry = filtered_registry("my_chrome", Some(&["browser"]), &[]);
+    assert_eq!(
+        publish_listing(&registry, "my_chrome", &BROWSER_TOOLS),
+        (Vec::new(), 5)
+    );
+}
+
+#[test]
+fn filters_match_the_listed_name_so_a_renamed_server_keeps_them() {
+    let registry = filtered_registry("work_browser", Some(&["browser_*"]), &["browser_tab*"]);
+    assert_eq!(
+        publish_listing(&registry, "work_browser", &BROWSER_TOOLS),
+        (
+            vec![
+                "work_browser_browser_click".to_owned(),
+                "work_browser_browser_install".to_owned(),
+            ],
+            3
+        )
+    );
+}
+
+#[test]
+fn a_refreshed_listing_is_filtered_and_its_count_reported() {
+    let registry = filtered_registry("my_chrome", None, &["browser_install"]);
+    let server = registry.server("my_chrome").expect("server");
+    server.set_status(McpServerState::Connected, None);
+    assert_eq!(
+        publish_listing(&registry, "my_chrome", &["browser_click"]),
+        (vec!["my_chrome_browser_click".to_owned()], 0)
+    );
+    assert_eq!(registry.statuses()[0].filtered_tools, 0);
+    // The relist adds only a filtered tool: the published tools stay, the
+    // count follows.
+    assert_eq!(
+        publish_listing(
+            &registry,
+            "my_chrome",
+            &["browser_click", "browser_install"]
+        ),
+        (vec!["my_chrome_browser_click".to_owned()], 1)
+    );
+    let status = &registry.statuses()[0];
+    assert_eq!(status.tools, ["my_chrome_browser_click"]);
+    assert_eq!(status.filtered_tools, 1);
+    // A failure drops the tools and the count with them.
+    server.fail("gone".into());
+    assert_eq!(registry.statuses()[0].filtered_tools, 0);
+}
+
+/// Over the stdio fixture: the first listing and the refresh after
+/// `notifications/tools/list_changed` both go through the filters.
+#[tokio::test]
+async fn stdio_listing_and_list_changed_refresh_are_filtered() {
+    let registry = filtered_registry("fixture", None, &["fail", "new tool"]);
+    let server = registry.server("fixture").expect("fixture server");
+    server.connect().await.expect("connect fixture");
+    assert_eq!(tool_names(&registry), ["fixture_echo_text"]);
+    assert_eq!(registry.statuses()[0].filtered_tools, 1);
+
+    // A call makes the fixture announce a new tool; the refresh lists it
+    // and the filter keeps it out.
+    let result = execute(&registry, "fixture_echo_text", json!({"text":"refresh"})).await;
+    assert_eq!(result.output, "refresh");
+    tokio::time::timeout(WAIT, async {
+        while registry.statuses()[0].filtered_tools != 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("filtered list_changed refresh");
+    assert_eq!(tool_names(&registry), ["fixture_echo_text"]);
+    registry.shutdown().await;
 }

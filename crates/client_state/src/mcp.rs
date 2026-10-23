@@ -71,6 +71,11 @@ pub struct McpFields {
     pub environment: String,
     pub cwd: String,
     pub enabled: bool,
+    /// The `include_tools` patterns, comma-separated; empty publishes every
+    /// tool.
+    pub include_tools: String,
+    /// The `exclude_tools` patterns, comma-separated.
+    pub exclude_tools: String,
 }
 
 impl McpFields {
@@ -84,6 +89,8 @@ impl McpFields {
             environment: "{}".into(),
             cwd: String::new(),
             enabled: true,
+            include_tools: String::new(),
+            exclude_tools: String::new(),
         }
     }
 
@@ -114,6 +121,13 @@ impl McpFields {
             environment: serde_json::to_string(&server.definition.env).unwrap_or_default(),
             cwd: server.definition.cwd.clone().unwrap_or_default(),
             enabled: server.definition.enabled,
+            include_tools: server
+                .definition
+                .include_tools
+                .as_deref()
+                .unwrap_or_default()
+                .join(", "),
+            exclude_tools: server.definition.exclude_tools.join(", "),
         }
     }
 
@@ -142,6 +156,9 @@ impl McpFields {
         }
         let mut definition = base.clone();
         definition.enabled = self.enabled;
+        let include = tool_patterns(&self.include_tools);
+        definition.include_tools = (!include.is_empty()).then_some(include);
+        definition.exclude_tools = tool_patterns(&self.exclude_tools);
         match self.transport {
             McpTransport::Stdio => {
                 definition.command = Some(endpoint);
@@ -168,6 +185,16 @@ impl McpFields {
     }
 }
 
+/// The tool patterns a comma-separated filter field lists, blanks dropped.
+fn tool_patterns(field: &str) -> Vec<String> {
+    field
+        .split(',')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// What a new server's definition starts from.
 pub fn new_definition() -> McpServerDefinition {
     McpServerDefinition {
@@ -180,6 +207,8 @@ pub fn new_definition() -> McpServerDefinition {
         oauth: None,
         enabled: true,
         timeout_ms: None,
+        include_tools: None,
+        exclude_tools: Vec::new(),
     }
 }
 
@@ -306,8 +335,22 @@ pub fn server_definition_display(server: &McpServerInfo) -> String {
     }
 }
 
-/// How a server is reached, one line per detail.
+/// How a server is reached, one line per detail, then its tool filters.
 pub fn definition_display(definition: &McpServerDefinition) -> String {
+    let mut value = transport_display(definition);
+    if let Some(include) = &definition.include_tools {
+        value.push_str(&format!("\ninclude tools: {}", include.join(", ")));
+    }
+    if !definition.exclude_tools.is_empty() {
+        value.push_str(&format!(
+            "\nexclude tools: {}",
+            definition.exclude_tools.join(", ")
+        ));
+    }
+    value
+}
+
+fn transport_display(definition: &McpServerDefinition) -> String {
     if let Some(command) = &definition.command {
         let mut parts = vec![command.clone()];
         parts.extend(definition.args.clone());
@@ -387,6 +430,16 @@ pub fn tools_label(count: u32) -> String {
     }
 }
 
+/// `server`'s published tools in words, with how many its filters left
+/// out when they left out any, as `12 tools, 30 filtered`.
+pub fn server_tools_label(server: &McpServerInfo) -> String {
+    let tools = tools_label(server.tool_count);
+    match server.filtered_tools {
+        Some(filtered) if filtered > 0 => format!("{tools}, {filtered} filtered"),
+        _ => tools,
+    }
+}
+
 /// How a server's state reads at a glance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StateTone {
@@ -425,7 +478,7 @@ pub fn server_summary(server: &McpServerInfo) -> String {
         "{}  {}  {}",
         server.name,
         state_label(server.state),
-        tools_label(server.tool_count)
+        server_tools_label(server)
     );
     if let Some(note) = scope_note(server) {
         summary.push_str("  ");
@@ -535,9 +588,12 @@ mod tests {
                 oauth: None,
                 enabled: true,
                 timeout_ms: None,
+                include_tools: None,
+                exclude_tools: Vec::new(),
             },
             state,
             tool_count: 0,
+            filtered_tools: None,
             message: message.map(str::to_owned),
             auth_in_progress: None,
         }
@@ -766,5 +822,51 @@ mod tests {
                 .unwrap_err()
                 .starts_with("headers must be a JSON string object")
         );
+    }
+
+    #[test]
+    fn a_form_edits_the_tool_filters_as_comma_separated_patterns() {
+        let mut fields = McpFields::add();
+        fields.name = "my_chrome".into();
+        fields.endpoint = "chrome-mcp".into();
+        fields.include_tools = " browser_*, ,tab_? ".into();
+        fields.exclude_tools = "browser_install".into();
+        let (_, definition) = fields.definition(&new_definition()).expect("filters");
+        assert_eq!(
+            definition.include_tools.as_deref(),
+            Some(&["browser_*".to_owned(), "tab_?".to_owned()][..])
+        );
+        assert_eq!(definition.exclude_tools, ["browser_install"]);
+        assert!(
+            super::definition_display(&definition)
+                .ends_with("\ninclude tools: browser_*, tab_?\nexclude tools: browser_install")
+        );
+
+        let mut listed = server("global", None, "my_chrome", McpServerState::Connected, None);
+        listed.definition = definition;
+        let edited = McpFields::edit(&listed);
+        assert_eq!(edited.include_tools, "browser_*, tab_?");
+        assert_eq!(edited.exclude_tools, "browser_install");
+
+        // A blank include field publishes every tool rather than none.
+        fields.include_tools = " , ".into();
+        fields.exclude_tools.clear();
+        let (_, definition) = fields.definition(&listed.definition).expect("no filters");
+        assert_eq!(definition.include_tools, None);
+        assert!(definition.exclude_tools.is_empty());
+    }
+
+    #[test]
+    fn a_server_with_filtered_tools_says_how_many() {
+        let mut browser = server("global", None, "browser", McpServerState::Connected, None);
+        browser.tool_count = 12;
+        browser.filtered_tools = Some(30);
+        assert_eq!(super::server_tools_label(&browser), "12 tools, 30 filtered");
+        assert_eq!(
+            server_summary(&browser),
+            "browser  connected  12 tools, 30 filtered"
+        );
+        browser.filtered_tools = Some(0);
+        assert_eq!(super::server_tools_label(&browser), "12 tools");
     }
 }

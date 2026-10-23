@@ -218,6 +218,8 @@ async fn mcp_management_is_reachable_through_protocol() {
         oauth: None,
         enabled: true,
         timeout_ms: Some(1000),
+        include_tools: None,
+        exclude_tools: Vec::new(),
     };
     client
         .add_mcp_server(McpServerAddParams {
@@ -1276,6 +1278,8 @@ async fn mcp_connection_failures_reach_clients_viewing_affected_sessions() {
                     enabled: true,
                     timeout_ms: Some(5_000),
                     scope: None,
+                    include_tools: None,
+                    exclude_tools: Vec::new(),
                 },
             },
         )]),

@@ -5,6 +5,20 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.16.0
+
+- MCP tool filters ([MCP tool filters spec](../specs/mcp-tool-filters.md)):
+  - `McpServerDefinition` (in `mcp.server.list`, `mcp.server.add`,
+    `mcp.server.edit`, and their results) has the optional `include_tools`
+    and `exclude_tools`, pattern lists over the server's own tool names. An
+    older client that edits a server sends a definition without them, which
+    clears them, as it would any member it does not know of a command.
+  - `McpServerInfo` has the optional `filtered_tools`: how many of the tools
+    the server lists its filters left out, absent when none were. Runtime
+    protocol 1.6.0 adds the same member to an MCP server report, so a
+    runtime's servers say it too. The plugin protocol and history format 1
+    are unchanged.
+
 ## 1.15.0
 
 - Cron jobs ([cron spec](../specs/cron.md), phase 1): the daemon keeps

@@ -19,6 +19,15 @@
     "McpServerReport": {
       "description": "The status of one MCP server a runtime hosts.",
       "properties": {
+        "filtered_tools": {
+          "description": "How many of the tools the server lists its `include_tools` and\n`exclude_tools` filtered out (runtime protocol 1.6.0); absent when\nnone were.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "message": {
           "default": null,
           "description": "Why the server failed, or what it is doing.",
