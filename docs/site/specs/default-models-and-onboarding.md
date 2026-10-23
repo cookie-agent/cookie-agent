@@ -137,24 +137,14 @@ models:
   each line with a YAML comment saying whether it equals the daemon's
   default and what the default would be without the key, and why a
   non-default line is there.
-- **The `customize-cookie-agent` skill (decided 2026-10-23):** pointers, not
-  a manual, for an agent asked to change cookie itself: where the binary,
-  `~/.cookie-agent/` (configuration, agents, skills, memory, sessions), and a
-  remote daemon's root live; the `cookie` commands to prefer over editing
-  files by hand (configuration is strict); and links to the published docs
-  of each topic. A test checks that every `cookie` command it names exists
-  in the CLI and every docs link names a page of the site. It installs like
-  the other kit files (`.new` beside a changed one).
-- **The `add-cookie-runtime` skill (decided 2026-10-23):** for an agent the
-  user wants to work on another machine, or gives ssh access to one. Short,
-  pointing at the docs: a `[runtimes.<id>]` template the daemon starts over
-  ssh (`cookie runtime serve --stdio`; needs cookie on the remote, nothing
-  left running), or a runtime that dials in (`cookie runtime serve
-  --daemon`), temporarily or as a service; installing cookie there; adding
-  the runtime with the daemon's own commands and restarting; checking it
-  with `list_runtimes`; using it through `capabilities` or `/runtime`; and
-  safety (ask before installing or leaving a service, never show the token,
-  remove temporary setups). The same test keeps it honest.
+- **Skills (decided 2026-10-23, then moved by section 13):** the kit first
+  carried two skills, `customize-cookie-agent` (pointers for an agent
+  asked to change cookie itself: where things live, the `cookie` commands
+  to prefer over editing files, and the docs of each topic) and
+  `add-cookie-runtime` (adding a machine as a runtime over ssh or by
+  dialing in, short and pointing at the docs, with what to ask the user
+  first). Both are now official skills (section 13), kept honest by
+  `cookie skills check`.
 - **Release asset:** the release workflow packs `defaults/` as
   `cookie-agent-defaults.tar.gz` and uploads it with the binaries, as it does
   `cookie-agent-web.tar.gz`. Prereleases carry it too.
@@ -304,7 +294,7 @@ None.
 
 ## 13. Addendum 2026-10-23: official skills kept up to date
 
-Status: **approved** (2026-10-23), being implemented.
+Status: **implemented** (2026-10-23); see the implementation notes.
 
 The starter kit is installed once, so skills added in later releases would
 never reach a daemon that already onboarded. Skills are cookie's own
@@ -375,8 +365,9 @@ precedence against a user skill of the same name, `official = false`,
 
 Implemented 2026-10-23 in four phases on one branch.
 
-**Versions.** Client protocol 1.20.0, plugin protocol 1.9.0 (the events
-carry the `${parent_model}` variant), runtime protocol unchanged, history
+**Versions.** Client protocol 1.22.0, plugin protocol 1.10.0 (the events
+carry the `${parent_model}` variant), runtime protocol 1.8.0 (the skill
+source `official`), history
 format unchanged: the frozen `ParentModel` fallback gained an optional
 `variant` that is omitted when absent, so earlier logs read as before.
 
@@ -406,26 +397,23 @@ format unchanged: the frozen `ParentModel` fallback gained an optional
 
 **The kit and the release.**
 
-- `defaults/` holds `config.toml`, the three agents, the
-  `customize-cookie-agent` and `add-cookie-runtime` skills, and
-  `manifest.json` (`kit_version` and
+- `defaults/` holds `config.toml`, the three agents, and `manifest.json`
+  (`kit_version` and
   each file's SHA-256; `scripts/pack-defaults.sh --update-manifest`
   refreshes the hashes). The release workflow's `build-web` job packs it
   with `scripts/pack-defaults.sh <tag>`, which checks the hashes and writes
   `cookie_version` into the archive's manifest, and uploads
   `cookie-agent-defaults.tar.gz` with the other artifacts, prereleases
   included.
-- Kit files are configuration documents (`config.toml`, `agents/…`) and
-  user skills (`skills/<name>/SKILL.md`, written below the daemon's user
-  root, loaded when the daemon restarts, which the run summary says). The
-  engine reads the archive in memory (gzip plus a small ustar/pax reader,
-  no new dependency), refuses unlisted, missing, unsafe, or mismatched
-  files, and loads the kit alone with this build's configuration, agent,
-  and skill parsers before comparing it with the user root.
+- Kit files are configuration documents only (`config.toml`,
+  `agents/…`); a skill path in a kit is refused. The engine reads the
+  archive in memory (gzip plus a small ustar/pax reader, no new
+  dependency), refuses unlisted, missing, unsafe, or mismatched files, and
+  loads the kit alone with this build's configuration and agent parsers
+  before comparing it with the user root.
 - Tests load `defaults/` with those parsers, check its manifest, load
   `config.toml` with every commented example uncommented, read a GNU tar
-  archive packed by the script, and keep the skill honest against the CLI
-  and the docs pages.
+  archive packed by the script.
 
 **Onboarding.**
 
@@ -477,3 +465,50 @@ format unchanged: the frozen `ParentModel` fallback gained an optional
   `cookie config` edit `default_model` and `small_model` as `config.toml`
   text (`cookie config set default_model …`); the model pickers are the
   onboarding panels', which run again on a set-up daemon.
+
+**Official skills (section 13).**
+
+- The skills live in `cookie-agent/skills` (`index.json`, one
+  `<name>/SKILL.md` each, `scripts/update-index.py` for the hashes, and a
+  CI workflow that installs the latest release and runs
+  `cookie skills check .` on every push and nightly, with the newest
+  release, prereleases included). Both start at version 1.0.0 with
+  `requires_cookie = ">=0.4.0-alpha.0"`: the 0.3.0 nightlies have no
+  fetcher.
+- The engine keeps them in `<data_root>/official_skills/` with its record
+  of what it keeps in `.index.json` there; entries starting with `.` are
+  skipped by discovery. A refresh downloads a skill's changed files, checks
+  every hash and that `SKILL.md` loads, and only then writes them (each
+  through a temporary file and a rename), so a refused skill keeps its
+  cached copy whole. `requires_cookie` takes comparators (`>=`, `>`, `<=`,
+  `<`, `=`, a bare version, `*`) separated by commas or spaces, compared by
+  plain semver precedence, pre-releases included (not Cargo's rule that a
+  pre-release only matches a comparator with a pre-release on the same
+  version): nightlies are tagged `0.4.0-alpha.<n>`, below `0.4.0`, so the
+  skills ask for `>=0.4.0-alpha.0`. The daemon compares its own crate
+  version, which is a plain `0.4.0` for nightlies and stable builds alike
+  (the tag's pre-release is not in it). A range that does not read refuses
+  the skill.
+- The refresh loop runs in the daemon binary beside the catalog's (at start,
+  then every 24 hours, stopped with it). The source URL is fixed in release
+  builds; tests call `Engine::set_official_skills_url`, and debug builds
+  under the binary's test switch (`COOKIE_AGENT_TEST_BUNDLED_CATALOG`) stay
+  off the network unless `COOKIE_AGENT_TEST_OFFICIAL_SKILLS_URL` names a
+  source.
+- **Beyond the spec:** a refresh that changes the official skills reloads
+  the global runtime's skills (user skills included) for new sessions, so
+  a freshly started daemon offers them without a restart. `official =
+  false` stops refreshing at once; whether the folder is offered follows at
+  the next start, when skills load.
+- **Protocol:** the skill source `official` (client 1.22.0, runtime 1.8.0),
+  an official skill's `version` on `SkillDescriptor`, `skills.update`, and
+  `skills.list` without a session for the daemon's own skills (which
+  `cookie skills list` uses; `permission_effect` is then `ask` and
+  `visible` says whether the skill wins its name).
+- **`cookie skills check` (decision):** links are fetched from the published
+  site by default, which the skills repository's CI uses; `--docs <dir>`
+  checks them against a `docs/site` checkout instead, as the tests do. It
+  also checks an `index.json` against the files beside it.
+- The TUI's skill picker labels official skills and its detail line shows
+  `official <version>`; the web page's skill list shows the same badge.
+
