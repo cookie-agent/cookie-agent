@@ -35,6 +35,7 @@ use crate::{browser, connect::EVENT_LEVEL_KEY};
 mod attachments;
 mod background;
 mod cards;
+mod cron;
 mod goal;
 mod history;
 mod manage;
@@ -48,6 +49,7 @@ mod tree;
 
 pub use attachments::DownscaleOffer;
 pub use cards::CardSet;
+pub use cron::CronForm;
 pub use history::UserMenu;
 pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL};
 pub use permissions::RuleRef;
@@ -213,6 +215,16 @@ pub struct Workspace {
     /// The memory a transcript line opened the view at: shown, and marked.
     pub memory_focus: RwSignal<Option<String>>,
     pub plugins: RwSignal<Option<Result<Vec<cookie_agent_protocol::PluginInfo>, String>>>,
+    /// Whether the daemon keeps cron jobs (client protocol 1.15).
+    pub has_crons: RwSignal<bool>,
+    /// `crons.list`: read on connect and on every `crons.changed`.
+    pub crons: RwSignal<Option<Result<cookie_agent_protocol::CronsListResult, String>>>,
+    /// The job the Scheduled prompts view shows the details of.
+    pub cron_selected: RwSignal<Option<cookie_agent_protocol::CronJobId>>,
+    /// The job form, while it is open.
+    pub cron_form: RwSignal<Option<CronForm>>,
+    /// Why the form was not sent, or a job action failed.
+    pub cron_error: RwSignal<Option<String>>,
     /// The daemon's client protocol has `session.delete`.
     pub can_delete: RwSignal<bool>,
     /// A delete the daemon refused: the root session and its message.
@@ -340,6 +352,11 @@ impl Workspace {
             memory_pending: RwSignal::new(None),
             memory_focus: RwSignal::new(None),
             plugins: RwSignal::new(None),
+            has_crons: RwSignal::new(false),
+            crons: RwSignal::new(None),
+            cron_selected: RwSignal::new(None),
+            cron_form: RwSignal::new(None),
+            cron_error: RwSignal::new(None),
             can_delete: RwSignal::new(false),
             delete_error: RwSignal::new(None),
             title_edit: RwSignal::new(None),
@@ -420,6 +437,10 @@ impl Workspace {
         self.can_sign_in.set(
             cookie_agent_client_state::mcp::daemon_accepts_page_redirects(client.daemon_version()),
         );
+        self.has_crons
+            .set(cookie_agent_client_state::cron::daemon_has_crons(
+                client.daemon_version(),
+            ));
         self.client.set_value(Some(client));
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
@@ -460,6 +481,7 @@ impl Workspace {
         }
         self.refresh_projects();
         self.poll_runtimes();
+        self.poll_crons();
         match client.runtime_snapshot().await {
             Ok(result) => {
                 self.runtime
@@ -507,6 +529,10 @@ impl Workspace {
             }
             ClientDelivery::ProjectsChanged(_) => {
                 self.refresh_projects();
+                return;
+            }
+            ClientDelivery::CronsChanged(_) => {
+                self.poll_crons();
                 return;
             }
             ClientDelivery::PluginEvent(event) => {
@@ -1869,6 +1895,7 @@ impl Workspace {
                 self.panel.set(Some(Panel::Compact));
             }
             Command::Goal => self.goal_command(crate::goal::GoalCommand::Show),
+            Command::Schedule => self.schedule_prompt(),
             Command::Skills => self.open_skills(String::new()),
             Command::Background => self.open_background(),
             Command::Runtime => self.open_runtimes(),

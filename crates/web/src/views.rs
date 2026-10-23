@@ -34,6 +34,7 @@ use crate::{
 
 mod agents;
 mod cards;
+mod cron;
 mod depth;
 mod install;
 mod machines;
@@ -418,6 +419,8 @@ fn session_row(
         _ => mark.label.to_owned(),
     };
     let last_activity = session.last_activity;
+    // A run session of a cron job: its clock opens the job.
+    let cron = session.cron.clone();
     // Where it runs, once the runtimes are known; the tooltip lists every
     // workspace with its path.
     // Fitted to the line: machines whole, the last ones left out for a
@@ -542,6 +545,9 @@ fn session_row(
                         </span>
                     })}
                     <span class="sr-only">{status_text.clone()}</span>
+                    // Before the title: the row's buttons cover its right
+                    // end on hover.
+                    {cron.clone().map(|cron| cron::clock_mark(workspace, cron))}
                     <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title>{label.clone()}</span>
                     // The time sits beside the title, so the badges have
                     // the whole second line.
@@ -2537,7 +2543,9 @@ fn events_sheet(workspace: Workspace) -> impl IntoView {
 /// The session's ⋮ menu: every command, by name, icon, and what it does,
 /// in rows a finger can hit; each opens its sheet.
 fn commands_sheet(workspace: Workspace) -> impl IntoView {
+    let has_crons = workspace.has_crons.get_untracked();
     MENU.iter()
+        .filter(|entry| crate::commands::offered(entry.command, has_crons))
         .map(|entry| {
             let command = entry.command;
             view! {

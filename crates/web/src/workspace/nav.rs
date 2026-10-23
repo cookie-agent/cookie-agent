@@ -23,6 +23,7 @@ impl Workspace {
             View::Settings => self.open_section(section),
             View::Machines => self.poll_runtimes(),
             View::Memory => self.open_memory(),
+            View::Cron => self.open_crons(),
         }
         self.view.set(view);
     }
@@ -95,6 +96,7 @@ impl Workspace {
             View::Memory => {
                 self.memory_edit.with(Option::is_some) || self.memory_pending.with(Option::is_some)
             }
+            View::Cron => self.cron_form.with(Option::is_some),
             View::Chat | View::Machines => false,
         };
         if editing {
@@ -157,6 +159,7 @@ impl Workspace {
                 self.config_error.set(None);
                 self.memory_edit.set(None);
                 self.memory_pending.set(None);
+                self.cron_form.set(None);
             }
         }
     }

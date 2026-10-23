@@ -17,16 +17,19 @@ pub enum View {
     /// The daemon's machines and its runtimes.
     Machines,
     Memory,
+    /// The daemon's cron jobs (client protocol 1.15).
+    Cron,
 }
 
 impl View {
     /// The rail's order.
     /// The rail's order: Settings comes after every other view.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Chat,
         Self::Agents,
         Self::Machines,
         Self::Memory,
+        Self::Cron,
         Self::Settings,
     ];
 
@@ -38,6 +41,7 @@ impl View {
             Self::Settings => "Settings",
             Self::Machines => "Machines & runtimes",
             Self::Memory => "Memory",
+            Self::Cron => "Scheduled prompts",
         }
     }
 
@@ -55,7 +59,7 @@ impl View {
     pub const fn phone_list(self) -> Option<PhoneList> {
         match self {
             Self::Chat => Some(PhoneList::Drawer),
-            Self::Agents | Self::Settings | Self::Memory => Some(PhoneList::Page),
+            Self::Agents | Self::Settings | Self::Memory | Self::Cron => Some(PhoneList::Page),
             Self::Machines => None,
         }
     }
@@ -75,6 +79,7 @@ impl View {
             Self::Settings => "settings",
             Self::Machines => "machines",
             Self::Memory => "memory",
+            Self::Cron => "cron",
         }
     }
 }
@@ -153,7 +158,7 @@ pub enum Layer {
     Drawer,
     /// A phone's Settings section, opened from the section list.
     Section,
-    /// A document or memory open in its editor.
+    /// A document, memory, or cron job open in its editor.
     Editor,
 }
 
@@ -318,7 +323,13 @@ mod tests {
             reconcile(&[Drawer], &after_tap(View::Chat)),
             HistoryStep::Keep
         );
-        for view in [View::Agents, View::Settings, View::Memory, View::Machines] {
+        for view in [
+            View::Agents,
+            View::Settings,
+            View::Memory,
+            View::Cron,
+            View::Machines,
+        ] {
             assert!(!view.rail_keeps_drawer(true), "{view:?}");
             assert_eq!(reconcile(&[Drawer], &after_tap(view)), HistoryStep::Back(1));
         }

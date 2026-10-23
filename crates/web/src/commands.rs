@@ -18,6 +18,9 @@ pub enum Command {
     Compact,
     /// Set the root session's goal, or pause, resume, or cancel it.
     Goal,
+    /// Schedule a prompt into the session: the cron job form, in the
+    /// Scheduled prompts view (client protocol 1.15).
+    Schedule,
     /// Search the skills and run one.
     Skills,
     /// The background calls, to stop one.
@@ -67,6 +70,13 @@ pub const MENU: &[MenuEntry] = &[
         label: "Goal",
         icon: icondata::FaBullseyeSolid,
         description: "Set an objective to work toward; pause, resume, or cancel it",
+    },
+    MenuEntry {
+        command: Command::Schedule,
+        id: "schedule",
+        label: "Schedule a prompt",
+        icon: icondata::FaClockRegular,
+        description: "Send this session a prompt later, or on a schedule",
     },
     MenuEntry {
         command: Command::Skills,
@@ -119,6 +129,12 @@ pub const MENU: &[MenuEntry] = &[
     },
 ];
 
+/// Whether the menu shows `command` to a daemon that does or does not keep
+/// cron jobs (`has_crons`, client protocol 1.15).
+pub const fn offered(command: Command, has_crons: bool) -> bool {
+    !matches!(command, Command::Schedule) || has_crons
+}
+
 /// The menu entry of `command`.
 pub fn entry(command: Command) -> &'static MenuEntry {
     MENU.iter()
@@ -128,7 +144,14 @@ pub fn entry(command: Command) -> &'static MenuEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, MENU, entry};
+    use super::{Command, MENU, entry, offered};
+
+    #[test]
+    fn only_a_daemon_that_keeps_cron_jobs_offers_scheduling() {
+        assert!(offered(Command::Schedule, true));
+        assert!(!offered(Command::Schedule, false));
+        assert!(offered(Command::Goal, false));
+    }
 
     #[test]
     fn the_menu_lists_every_command_once_by_a_readable_name() {
@@ -136,6 +159,7 @@ mod tests {
             Command::Rename,
             Command::Compact,
             Command::Goal,
+            Command::Schedule,
             Command::Skills,
             Command::Background,
             Command::Runtime,
@@ -151,7 +175,7 @@ mod tests {
             );
             assert_eq!(entry(command).command, command);
         }
-        assert_eq!(MENU.len(), 10);
+        assert_eq!(MENU.len(), 11);
         let mut ids = MENU.iter().map(|entry| entry.id).collect::<Vec<_>>();
         ids.sort_unstable();
         ids.dedup();

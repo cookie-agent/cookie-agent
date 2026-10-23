@@ -5,7 +5,7 @@ Open it in a browser on the daemon's machine, or on a laptop or phone that
 reaches that port (see [Remote access](../daemon/remote-access.md)). It does what the TUI does with the daemon's sessions and
 the daemon itself: chat, approvals, subagents, history edits, goals,
 attachments, skills, permissions, runtimes and machines, MCP servers,
-providers, the configuration, memory, and plugins. Two things stay in the
+providers, the configuration, memory, scheduled prompts, and plugins. Two things stay in the
 TUI and the CLI; see [What the page does not do](#what-the-page-does-not-do).
 
 ## Opening the page
@@ -67,7 +67,7 @@ address bar.
 
 ## Layout
 
-- **The rail.** An icon strip on the far left switches between five views;
+- **The rail.** An icon strip on the far left switches between six views;
   each icon names itself in a tooltip, and the view shown is marked by a
   bar at the rail's edge:
   - **Chat** (the default): the sessions sidebar and the transcript;
@@ -77,7 +77,10 @@ address bar.
     browser's preferences;
   - **Machines & runtimes**: the daemon's machines and its runtime
     registry;
-  - **Memory**.
+  - **Memory**;
+  - **Scheduled prompts** (the clock): the daemon's cron jobs, shown only
+    by a daemon of client protocol 1.15 or later (see
+    [Scheduled prompts](#scheduled-prompts)).
 
   The connection and the theme button are at its foot.
 - **Chat.** The title bar has the sidebar button, the session's title, and
@@ -123,6 +126,9 @@ address bar.
     such as `waiting on: goal, background call`), and one whose last run
     failed or was interrupted has a mark; the others have none. A daemon
     older than client protocol 1.9 does not say what a session waits on.
+    A session a scheduled prompt started has a filled clock before its
+    title, which names the job; click it to open the job in
+    [Scheduled prompts](#scheduled-prompts).
     The open session's row has a chevron before its badges, which turns
     with its subagent tree. Hover over a row for its status and every
     workspace with its machine, runtime, and path.
@@ -345,7 +351,8 @@ address bar.
 - **Commands.** The ⋮ menu in the title bar has the session's commands,
   each by name with an icon and a line saying what it does, and each opens
   a sheet with labelled fields and a main button: **Compact context**,
-  **Goal**, **Skills**, **Background calls**, **Runtimes**, **Permission
+  **Goal**, **Schedule a prompt** (which opens the job form in
+  [Scheduled prompts](#scheduled-prompts) instead), **Skills**, **Background calls**, **Runtimes**, **Permission
   rules**, **Usage**, **Diagnostics**, and **Agent preset**. The others
   have their place in the page: the bottom bar picks the agent, model, and
   permission mode and answers approvals; the composer attaches, sends, and
@@ -526,11 +533,56 @@ address bar.
     description and the first keywords (the agent's ID and its mode)
     belong to the daemon and show locked; the other keywords (separated
     by commas) and the memory itself are yours to edit.
+- **Scheduled prompts.** See [Scheduled prompts](#scheduled-prompts).
 - **Plugins.** Settings › Plugins lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
   bottom bar.
 - **This browser.** Settings › This browser picks the diagnostics the
   transcript shows (as **Diagnostics** does) and forgets the daemon.
+
+## Scheduled prompts
+
+The clock in the rail opens **Scheduled prompts**, the daemon's
+[cron jobs](../sessions/scheduling.md); a daemon older than client
+protocol 1.15 keeps none, and the page hides the icon and the ⋮ menu's
+**Schedule a prompt**. The view reads `crons.list` again whenever a job
+changes (`crons.changed`), from any client or agent.
+
+- **The list.** Each job shows its name (or the start of its prompt), its
+  state (`enabled`, `finished`, `failed 3 times in a row`, `disabled by
+  you`, …), its schedule with a plain reading (`0 9 * * 1-5 · every Monday
+  to Friday at 09:00`, `once at 2026-10-23 03:00`), the next fire in this
+  browser's time with how long until it, the target (`this session`,
+  `session <title>`, `subagent <title>`, or `new session · <agent>`), and
+  how its last fire went. A banner says when the daemon's firing is off
+  (`[cron] enabled = false`).
+- **A job.** Click a job for its details (schedule, runs counted against
+  its limit, delivery, a new-session job's agent, model, project, and
+  mode, failures in a row, who made it), its prompt, its history (newest
+  first: when, what the fire did, and **Open session** for the session it
+  went to), and its actions: **Edit**, **Disable** or **Enable**, **Run
+  now** (a fire now, recorded as `run now`, which counts toward neither
+  the run limit nor the failures), and **Delete**, behind a confirmation;
+  the sessions a job started stay.
+- **The form.** **New** in the view, or **Schedule a prompt** in the ⋮
+  menu (for the open session), opens it:
+  - **Name** (optional) and **Prompt**;
+  - **Schedule**: five cron fields in the daemon host's local time, or a
+    delay such as `in 20m`; **Runs**: a number or `unlimited`, 1 when
+    empty, for cron schedules. The line under them reads what you typed
+    as you type, or says why it is not a schedule;
+  - **Target**, when creating: the open session (or subagent), or **A new
+    session each run**. A job for a session has a **Delivery**: `queue`
+    (after the current turn) or `steer` (into the running turn);
+  - a new-session job's **Agent**, **Model** (the agent's own models, or
+    a pin), and **Permission mode** (`auto-n` unless you choose another).
+    Only you set the model and the mode; an agent's jobs always start in
+    `auto-n`. The template takes the open session's agent, the preset in
+    use, and the open session's project (the new session's, with none
+    open); the daemon attaches what `session.create` would.
+
+  The daemon checks the job when it is saved and says what it refused
+  under the form.
 
 ## Phones
 

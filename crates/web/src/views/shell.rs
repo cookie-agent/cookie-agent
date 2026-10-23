@@ -12,6 +12,7 @@ use leptos::prelude::*;
 use super::{
     ICON_BUTTON, NOTE, ROW, SessionList,
     agents::{AgentList, agents_page},
+    cron::cron_page,
     events_sheet,
     machines::machines_page,
     manage::{config_sheet, connect_sheet, mcp_sheet, plugins_sheet},
@@ -37,6 +38,7 @@ pub fn view_icon(view: View) -> crate::icons::Icon {
         View::Settings => icondata::FaGearSolid,
         View::Machines => icondata::FaServerSolid,
         View::Memory => icondata::FaBrainSolid,
+        View::Cron => icondata::FaClockSolid,
     }
 }
 
@@ -53,6 +55,8 @@ pub fn Rail(
         .into_iter()
         .map(|view| {
             let current = move || workspace.view.get() == view;
+            // Scheduled prompts need a daemon that keeps cron jobs.
+            let offered = move || view != View::Cron || workspace.has_crons.get();
             view! {
                 <button
                     type="button"
@@ -65,6 +69,7 @@ pub fn Rail(
                     data-tip=view.label()
                     data-view=view.id()
                     aria-current=move || current().then_some("page")
+                    class:hidden=move || !offered()
                     on:click=move |_| workspace.open_from_rail(view)
                 >
                     // The active view's mark: a bar at the rail's edge.
@@ -217,6 +222,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                             {match view {
                                 View::Machines => machines_page(workspace).into_any(),
                                 View::Memory => memory_sheet(workspace).into_any(),
+                                View::Cron => cron_page(workspace).into_any(),
                                 View::Chat | View::Settings | View::Agents => ().into_any(),
                             }}
                         </div>
