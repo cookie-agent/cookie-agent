@@ -45,6 +45,9 @@ impl Engine {
             crate::blocking::off_worker(move || engine.delete_tree_direct(root, expected_last_seq))?
         };
         self.forget_deleted_tree(root, &deleted);
+        for session in &deleted {
+            self.close_acp_session(*session).await;
+        }
         Ok(deleted)
     }
 

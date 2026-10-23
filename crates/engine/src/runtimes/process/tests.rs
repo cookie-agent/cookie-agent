@@ -21,6 +21,7 @@ fn settings() -> RuntimeSettings {
         },
         agent_md: AgentMdLimits { max_bytes: 4096 },
         mcp_servers: Vec::new(),
+        acp_agents: Vec::new(),
     }
 }
 

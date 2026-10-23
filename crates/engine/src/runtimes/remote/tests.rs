@@ -1079,6 +1079,7 @@ fn local_mcp_config(
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
             mcp_servers: std::collections::BTreeMap::from([("fixture".to_owned(), server)]),
+            acp_agents: std::collections::BTreeMap::new(),
         },
     );
     config
@@ -2804,6 +2805,7 @@ async fn open_with_servers(
                 .into_iter()
                 .map(|(name, server)| (name.to_owned(), server))
                 .collect(),
+            acp_agents: std::collections::BTreeMap::new(),
         },
     );
     for (name, server) in global {

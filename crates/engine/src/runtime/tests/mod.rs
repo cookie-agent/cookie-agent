@@ -2,6 +2,7 @@
 
 pub(crate) mod support;
 
+mod acp;
 mod agent_memory;
 mod agents;
 mod approvals;

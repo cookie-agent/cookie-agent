@@ -159,6 +159,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
     let config = LoadedConfiguration {
         runtime: EngineConfig {
             cron: Default::default(),
+            acp: Default::default(),
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),
@@ -403,6 +404,7 @@ fn harness_with_catalog_and_mcp(
     let config = LoadedConfiguration {
         runtime: EngineConfig {
             cron: Default::default(),
+            acp: Default::default(),
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),

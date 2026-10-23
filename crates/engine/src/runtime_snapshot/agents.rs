@@ -20,6 +20,31 @@ pub(crate) struct ResolvedAgent {
     pub document: AgentDocument,
     pub resolved_fallback: Vec<ResolvedAgentFallback>,
     pub runnable_as_root: bool,
+    /// Where an ACP agent runs; `None` for the daemon's own agents.
+    pub acp: Option<RuntimeAgent>,
+}
+
+/// An ACP agent a runtime hosts, as the engine registers it
+/// (`docs/site/specs/acp-agents.md` section 3).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeAgent {
+    /// The daemon's ID: [`cookie_agent_protocol::runtime_agent_id`].
+    pub id: AgentId,
+    pub runtime: cookie_agent_protocol::RuntimeId,
+    /// The agent's ID on the runtime.
+    pub agent: AgentId,
+    /// The runtime's description of it.
+    pub description: String,
+    pub enabled: bool,
+    /// Whether its runtime is connected, or started on demand.
+    pub connected: bool,
+}
+
+impl RuntimeAgent {
+    /// Whether a session or a delegation can use it now.
+    pub(crate) fn available(&self) -> bool {
+        self.enabled && self.connected
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -49,15 +74,48 @@ impl AgentRegistry {
         authored: &ConfigAgentRegistry,
         models: &CompiledModelRuntime,
         preset: Option<String>,
+        runtime_agents: &[RuntimeAgent],
     ) -> Result<Self, EngineError> {
         let mut documents = built_in_internal_documents()?;
+        // An ACP agent's document is an agent only while a runtime declares
+        // the agent.
         documents.extend(
             authored
                 .documents()
                 .iter()
+                .filter(|(_, document)| document.frontmatter.acp.is_none())
                 .map(|(id, document)| (id.clone(), document.clone())),
         );
         let mut agents = BTreeMap::new();
+        for runtime_agent in runtime_agents {
+            if documents.contains_key(&runtime_agent.id) {
+                // A daemon agent of the same ID wins; the engine reports the
+                // refused declaration.
+                continue;
+            }
+            let document = match authored.get(&runtime_agent.id) {
+                Some(document) => document.clone(),
+                None => runtime_agent_default_document(runtime_agent)?,
+            };
+            let runnable_as_root = runtime_agent.available()
+                && document.frontmatter.enabled
+                && matches!(
+                    document.frontmatter.mode,
+                    AgentMode::Primary | AgentMode::All
+                );
+            agents.insert(
+                runtime_agent.id.clone(),
+                ResolvedAgent {
+                    document,
+                    resolved_fallback: vec![ResolvedAgentFallback::Selection {
+                        selection: cookie_agent_protocol::acp_model_selection(&runtime_agent.id),
+                        cache: None,
+                    }],
+                    runnable_as_root,
+                    acp: Some(runtime_agent.clone()),
+                },
+            );
+        }
         for document in documents.into_values() {
             let id = document.id.clone();
             if id.as_str() == BUILT_IN_DEFAULT_AGENT_ID {
@@ -109,6 +167,7 @@ impl AgentRegistry {
                     document,
                     resolved_fallback,
                     runnable_as_root,
+                    acp: None,
                 },
             );
         }
@@ -125,6 +184,7 @@ impl AgentRegistry {
                         cache: None,
                     }],
                     runnable_as_root: true,
+                    acp: None,
                 },
             );
         }
@@ -151,6 +211,14 @@ impl AgentRegistry {
                     &agent.document.frontmatter.permissions,
                     &agents,
                 ),
+                runtime: agent
+                    .acp
+                    .as_ref()
+                    .map(|acp| cookie_agent_protocol::AgentRuntime {
+                        runtime_id: acp.runtime.clone(),
+                        agent: acp.agent.clone(),
+                        available: acp.available(),
+                    }),
             })
             .collect();
         Ok(Self {
@@ -244,6 +312,7 @@ fn built_in_internal_document(
         limits,
         permissions: IndexMap::new(),
         agent_md: None,
+        acp: None,
     };
     let document_fingerprint = fingerprint(
         "cookie-agent/built-in-internal-agent-document/v2",
@@ -252,6 +321,41 @@ fn built_in_internal_document(
     let prompt_fingerprint = fingerprint("cookie-agent/system-prompt/v1", &body)?;
     Ok(AgentDocument {
         id,
+        frontmatter,
+        body,
+        source: AgentDocumentSource::BuiltIn,
+        document_fingerprint,
+        prompt_fingerprint,
+    })
+}
+
+/// The document of an ACP agent the daemon has none for
+/// (`docs/site/specs/acp-agents.md` section 4): mode `all`, the runtime's
+/// description, no rules of its own, and an empty body.
+fn runtime_agent_default_document(agent: &RuntimeAgent) -> Result<AgentDocument, EngineError> {
+    let description = if agent.description.trim().is_empty() {
+        format!("ACP agent `{}` on runtime `{}`", agent.agent, agent.runtime)
+    } else {
+        agent.description.clone()
+    };
+    let frontmatter = AgentFrontmatter {
+        description,
+        mode: AgentMode::All,
+        enabled: true,
+        models: Vec::new(),
+        limits: AgentLimits::default(),
+        permissions: IndexMap::new(),
+        agent_md: None,
+        acp: Some(cookie_agent_config::AcpDocumentSettings::default()),
+    };
+    let body = String::new();
+    let document_fingerprint = fingerprint(
+        "cookie-agent/runtime-agent-document/v1",
+        &(agent.id.as_str(), &frontmatter, &body),
+    )?;
+    let prompt_fingerprint = fingerprint("cookie-agent/system-prompt/v1", &body)?;
+    Ok(AgentDocument {
+        id: agent.id.clone(),
         frontmatter,
         body,
         source: AgentDocumentSource::BuiltIn,
@@ -279,6 +383,7 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         limits: AgentLimits::default(),
         permissions: built_in_default_permissions()?,
         agent_md: None,
+        acp: None,
     };
     let document_fingerprint = fingerprint(
         "cookie-agent/built-in-default-document/v2",
@@ -574,6 +679,7 @@ mod tests {
             },
             permissions: IndexMap::new(),
             agent_md: None,
+            acp: None,
         };
         let document_fingerprint = fingerprint(
             "cookie-agent/test-agent-document/v1",
@@ -593,6 +699,7 @@ mod tests {
             },
             resolved_fallback: Vec::new(),
             runnable_as_root: false,
+            acp: None,
         }
     }
 

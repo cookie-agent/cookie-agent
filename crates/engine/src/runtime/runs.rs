@@ -60,13 +60,13 @@ impl Engine {
                 let session = active.session;
                 // A steer reaches the run's own model; a fallback it moved
                 // to gets stand-ins for what it does not accept.
-                let model = &active.policy.selected_suffix[0].selection.model;
+                let model = active.policy.run_model_selection().model;
                 let _input_artifacts = self
                     .admit_input_media(
                         session,
                         &content,
-                        model,
-                        &super::uploads::catalog_input_media(&active.policy.runtime, model),
+                        &model,
+                        &super::uploads::catalog_input_media(&active.policy.runtime, &model),
                     )
                     .await?;
                 self.on_actor(session, move |engine| {

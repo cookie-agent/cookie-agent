@@ -127,6 +127,7 @@ fn test_agent_document(id: &AgentId) -> AgentDocument {
             limits: cookie_agent_config::AgentLimits::default(),
             permissions: Default::default(),
             agent_md: None,
+            acp: None,
         },
         body: body.to_owned(),
         source: AgentDocumentSource::User,
@@ -331,6 +332,7 @@ fn build_in_process_server(
     let config = LoadedConfiguration {
         runtime: EngineConfig {
             cron: Default::default(),
+            acp: Default::default(),
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),

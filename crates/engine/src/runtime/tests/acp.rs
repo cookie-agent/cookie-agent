@@ -1,0 +1,950 @@
+//! ACP agents (`docs/site/specs/acp-agents.md`): runtime-hosted agents
+//! registered as `<runtime>-<agent>`, whose runs the ACP runner takes,
+//! against the scripted agent `tests/fixtures/acp_agent.py` on the
+//! protocol `local` runtime.
+
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use cookie_agent_protocol::{
+    AcpSessionStart, ClientRunId, DisplayBlock, EventOrigin, EventPayload, Open,
+    PersistedAssistantPart, RunId, RunOutcome, RunSelection, RunStartParams, SessionId, ToolSource,
+    ToolTerminationOutcome,
+};
+
+use super::support::*;
+use crate::{Engine, EngineOptions};
+
+fn origin() -> EventOrigin {
+    EventOrigin::new("client:test").unwrap()
+}
+
+fn fixture_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp_agent.py")
+}
+
+/// An engine whose `local` runtime hosts the scripted ACP agent as
+/// `fixture` (`local-fixture`), started with `env`, and whose user layer
+/// has the agent `documents` (file name, text).
+struct AcpFixture {
+    fixture: Fixture,
+    log: PathBuf,
+    _markers: PanicResistantTempDir,
+}
+
+impl AcpFixture {
+    fn engine(&self) -> &Engine {
+        &self.fixture.engine
+    }
+
+    fn workspace(&self) -> PathBuf {
+        self.fixture
+            .engine
+            .inner
+            .runtimes
+            .local_workspace_root()
+            .to_owned()
+    }
+
+    /// The messages the agent received, in order.
+    fn received(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("logged message"))
+            .collect()
+    }
+
+    fn received_methods(&self) -> Vec<String> {
+        self.received()
+            .iter()
+            .filter_map(|message| message.get("method").and_then(serde_json::Value::as_str))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn toml_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap()
+}
+
+async fn acp_fixture(env: &[(&str, &str)], documents: &[(&str, &str)]) -> AcpFixture {
+    acp_fixture_with(env, documents, "").await
+}
+
+async fn acp_fixture_with(
+    env: &[(&str, &str)],
+    documents: &[(&str, &str)],
+    extra_config: &str,
+) -> AcpFixture {
+    let directory = private_tempdir();
+    let markers = private_tempdir();
+    let log = markers.path().join("received.jsonl");
+    let user = directory.path().join("user");
+    create_private_test_dir(&user);
+    let agents = user.join("agents");
+    create_private_test_dir(&agents);
+    let mut variables = vec![(
+        "ACP_FIXTURE_LOG".to_owned(),
+        log.to_string_lossy().into_owned(),
+    )];
+    variables.extend(
+        env.iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+    );
+    let env_table = variables
+        .iter()
+        .map(|(name, value)| format!("{name} = {}", toml_string(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let config = format!(
+        "{extra_config}\n[runtimes.local.acp.agents.fixture]\ncommand = [{}, {}]\nenv = {{ {env_table} }}\ndescription = \"Fixture agent\"\n",
+        toml_string(python_command()),
+        toml_string(&fixture_script().to_string_lossy()),
+    );
+    write_private_test_file(&user.join("config.toml"), config);
+    for (name, text) in documents {
+        write_private_test_file(&agents.join(name), text);
+    }
+    let config = cookie_agent_config::load_from_user_root(Some(&user)).expect("configuration");
+    let provider_store = directory.path().join("provider-store");
+    create_private_test_dir(&provider_store);
+    let manager = Arc::new(
+        cookie_agent_models::ModelManager::new(
+            BTreeMap::new(),
+            empty_catalog(),
+            cookie_agent_models::provider_store::ProviderStore::open(provider_store)
+                .expect("provider store"),
+        )
+        .expect("empty manager"),
+    );
+    let workspace = directory.path().join("workspace");
+    create_private_test_dir(&workspace);
+    let engine = Engine::open_async(EngineOptions {
+        data_dir: directory.path().join("data"),
+        cwd: workspace.clone(),
+        config: config.clone(),
+        model_manager: Arc::clone(&manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions {
+            local: cookie_agent_runtime_api::LocalRuntime::Protocol(
+                cookie_agent_coding_runtime::server::in_process_connector_with_options(
+                    cookie_agent_coding_runtime::server::ServeOptions {
+                        bridge_command: vec!["cookie-test-bridge".to_owned()],
+                        ..Default::default()
+                    },
+                ),
+            ),
+            ..cookie_agent_runtime_api::RuntimeOptions::new(&workspace)
+        },
+    })
+    .await
+    .expect("engine with ACP agents");
+    engine.register_base_layer().expect("the base layer");
+    AcpFixture {
+        fixture: Fixture {
+            _directory: directory,
+            engine,
+            config,
+            manager,
+        },
+        log,
+        _markers: markers,
+    }
+}
+
+fn agent_id() -> cookie_agent_protocol::AgentId {
+    cookie_agent_protocol::AgentId::new("local-fixture").unwrap()
+}
+
+fn selection() -> RunSelection {
+    RunSelection {
+        agent: agent_id(),
+        model: cookie_agent_protocol::acp_model_selection(&agent_id()),
+        preset: None,
+    }
+}
+
+async fn start(engine: &Engine, session: SessionId, key: &str, text: &str) -> RunId {
+    engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: ClientRunId::new(key).unwrap(),
+                selection: selection(),
+                content: text.into(),
+            },
+            origin(),
+        )
+        .await
+        .expect("run started")
+        .run_id
+}
+
+/// Waits for `run` to end and returns how.
+async fn finished(engine: &Engine, session: SessionId, run: RunId) -> RunOutcome {
+    let event = await_event(engine, session, "the run's end", |event| {
+        event.run_id == Some(run) && matches!(event.payload, EventPayload::RunFinished { .. })
+    })
+    .await;
+    match event.payload {
+        EventPayload::RunFinished {
+            outcome: Open::Known(outcome),
+        } => outcome,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+/// Runs one prompt `text` in `session` and returns how it ended.
+async fn turn(engine: &Engine, session: SessionId, key: &str, text: &str) -> RunOutcome {
+    let run = start(engine, session, key, text).await;
+    let outcome = finished(engine, session, run).await;
+    wait_for_session_not_running(engine, session).await;
+    outcome
+}
+
+fn final_text(outcome: &RunOutcome) -> String {
+    match outcome {
+        RunOutcome::Completed { final_text } => final_text.clone().unwrap_or_default(),
+        other => panic!("the run did not complete: {other:?}"),
+    }
+}
+
+fn events(engine: &Engine, session: SessionId) -> Vec<cookie_agent_protocol::StoredEvent> {
+    engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .log
+        .events()
+        .to_vec()
+}
+
+fn session_starts(
+    engine: &Engine,
+    session: SessionId,
+) -> Vec<cookie_agent_protocol::AcpSessionRecord> {
+    events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::AcpSessionStarted { record } => Some(record),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_agent_is_registered_under_its_runtime() {
+    let acp = acp_fixture(&[], &[]).await;
+    let runtime = acp.engine().current_runtime();
+    let descriptor = runtime
+        .result
+        .snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id == agent_id())
+        .expect("the agent is listed");
+    assert_eq!(descriptor.description, "Fixture agent");
+    assert!(descriptor.runnable_as_root);
+    let place = descriptor.runtime.as_ref().expect("its runtime");
+    assert_eq!(place.runtime_id.as_str(), "local");
+    assert_eq!(place.agent.as_str(), "fixture");
+    assert!(place.available);
+    assert_eq!(
+        descriptor.resolved_fallback,
+        [cookie_agent_protocol::acp_model_selection(&agent_id())]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_renders_chunks_thoughts_tool_calls_a_plan_and_usage() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "work", "work").await;
+    assert_eq!(final_text(&outcome), "Done.");
+    let events = events(engine, session);
+    let record = session_starts(engine, session)
+        .pop()
+        .expect("the ACP session");
+    assert_eq!(record.how, AcpSessionStart::New);
+    assert_eq!(record.runtime_id.as_str(), "local");
+    assert_eq!(record.runtime_agent.as_str(), "fixture");
+    assert_eq!(record.protocol_version, 1);
+    assert_eq!(record.agent_info["name"], "fixture-agent");
+    assert_eq!(
+        Path::new(&record.cwd),
+        cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap()
+    );
+    let turns = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelTurnCommitted {
+                turn,
+                resolved_model,
+                ..
+            } => {
+                assert_eq!(resolved_model.selection.model.as_str(), "acp/local-fixture");
+                Some(turn.content.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    assert!(matches!(
+        &turns[0][..],
+        [
+            PersistedAssistantPart::Reasoning { text: thought, .. },
+            PersistedAssistantPart::Text { text, .. },
+            PersistedAssistantPart::ToolCall { id, .. },
+        ] if thought == "planning" && text == "Editing." && id.as_str() == "call-edit"
+    ));
+    assert!(matches!(
+        &turns[1][..],
+        [PersistedAssistantPart::Text { text, .. }] if text == "Done."
+    ));
+    let start = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } => Some(start.clone()),
+            _ => None,
+        })
+        .expect("the tool call");
+    assert_eq!(start.presentation.title.as_str(), "Edit notes.txt");
+    assert!(matches!(
+        start.presentation.tool.source.as_ref().and_then(Open::known),
+        Some(ToolSource::Acp { agent, runtime_id })
+            if *agent == agent_id() && runtime_id.as_str() == "local"
+    ));
+    let termination = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination.clone()),
+            _ => None,
+        })
+        .expect("the tool call's end");
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Completed);
+    let result = termination.result.expect("its result");
+    assert!(result.display.iter().any(|block| matches!(
+        block,
+        Open::Known(DisplayBlock::Diff(diff)) if diff.path == "/work/notes.txt" && diff.added == 1 && diff.removed == 1
+    )));
+    assert!(result.display.iter().any(|block| matches!(
+        block,
+        Open::Known(DisplayBlock::Link { label: Some(label), .. }) if label == "/work/notes.txt:2"
+    )));
+    let plan = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.plan.clone(),
+            _ => None,
+        })
+        .expect("the plan");
+    assert!(matches!(
+        plan,
+        Open::Known(DisplayBlock::Plan { entries }) if entries.len() == 2
+            && entries[1].status == cookie_agent_protocol::PlanEntryStatus::InProgress
+    ));
+    let usage = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ModelUsageRecorded {
+                usage,
+                estimated_cost_pico_usd,
+                ..
+            } => Some((usage.clone(), *estimated_cost_pico_usd)),
+            _ => None,
+        })
+        .expect("usage");
+    assert_eq!(usage.0.input_tokens, Some(10));
+    assert_eq!(usage.0.output_tokens, Some(5));
+    assert_eq!(usage.1, Some(500_000_000_000));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_starts_in_auto_mode_with_the_documents_config_and_commands() {
+    let document = "---\ndescription: Fixture with settings\nmode: all\nacp:\n  config: { model: large, effort: high }\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say hello").await;
+    let set = acp
+        .received()
+        .into_iter()
+        .filter(|message| message["method"] == "session/set_config_option")
+        .map(|message| {
+            (
+                message["params"]["configId"].as_str().unwrap().to_owned(),
+                message["params"]["value"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        set,
+        [
+            ("mode".to_owned(), "auto".to_owned()),
+            ("model".to_owned(), "large".to_owned())
+        ]
+    );
+    let events = events(engine, session);
+    let options = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.options.clone(),
+            _ => None,
+        })
+        .expect("the options");
+    let current = |id: &str| {
+        options
+            .iter()
+            .find(|option| option.id == id)
+            .map(|option| option.current_value.clone())
+    };
+    assert_eq!(current("mode").as_deref(), Some("auto"));
+    assert_eq!(current("model").as_deref(), Some("large"));
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Diagnostic { message, .. } if message.contains("option `effort`")
+    )));
+    let commands = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.commands.clone(),
+            _ => None,
+        })
+        .expect("the commands");
+    assert_eq!(commands[0].name, "review");
+    assert_eq!(commands[0].input_hint.as_deref(), Some("what to review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn modes_without_a_mode_option_start_in_auto_and_an_option_can_be_set() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_MODES", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say hello").await;
+    assert!(
+        acp.received()
+            .iter()
+            .any(|message| message["method"] == "session/set_mode"
+                && message["params"]["modeId"] == "auto")
+    );
+    let result = engine
+        .set_session_agent_option(cookie_agent_protocol::SessionAgentOptionSetParams {
+            session_id: session,
+            option_id: "mode".to_owned(),
+            value: "plan".to_owned(),
+        })
+        .await
+        .expect("option set");
+    let mode = result
+        .options
+        .iter()
+        .find(|option| option.id == "mode")
+        .unwrap();
+    assert_eq!(mode.current_value, "plan");
+    let refused = engine
+        .set_session_agent_option(cookie_agent_protocol::SessionAgentOptionSetParams {
+            session_id: session,
+            option_id: "model".to_owned(),
+            value: "huge".to_owned(),
+        })
+        .await
+        .expect_err("an unknown value is refused");
+    assert!(refused.to_string().contains("no value `huge`"), "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_an_auto_mode_the_agent_keeps_its_default() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_NO_AUTO", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say hello").await;
+    assert!(
+        !acp.received_methods()
+            .iter()
+            .any(|method| method == "session/set_config_option")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_stop_reason_ends_the_run_as_acp_specifies() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for (index, reason) in ["max_tokens", "max_turn_requests", "refusal"]
+        .iter()
+        .enumerate()
+    {
+        let outcome = turn(
+            engine,
+            session,
+            &format!("stop-{index}"),
+            &format!("stop {reason}"),
+        )
+        .await;
+        assert!(
+            matches!(&outcome, RunOutcome::Failed { error, .. } if error.as_str().contains(reason)),
+            "{outcome:?}"
+        );
+    }
+    let outcome = turn(engine, session, "stop-cancelled", "stop cancelled").await;
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
+    let outcome = turn(engine, session, "end", "say fine").await;
+    assert_eq!(final_text(&outcome), "fine");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_error_fails_the_run_with_its_message() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "error", "error").await;
+    assert!(
+        matches!(&outcome, RunOutcome::Failed { error, .. } if error.as_str().contains("Authentication required")),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_process_exit_fails_the_run_with_its_stderr_and_the_next_turn_starts_again() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "exit", "exit").await;
+    assert!(
+        matches!(&outcome, RunOutcome::Failed { error, .. }
+            if error.as_str().contains("status 3") && error.as_str().contains("fixture crashed on purpose")),
+        "{outcome:?}"
+    );
+    let outcome = turn(engine, session, "again", "say back").await;
+    assert_eq!(final_text(&outcome), "back");
+    let starts = session_starts(engine, session);
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1].how, AcpSessionStart::Resumed);
+    assert_eq!(starts[1].acp_session_id, starts[0].acp_session_id);
+}
+
+/// Stops the agent's process, as a daemon or runtime restart would.
+async fn stop_process(engine: &Engine) {
+    let key = super::super::acp::process::ProcessKey {
+        runtime: "local".to_owned(),
+        agent: "fixture".to_owned(),
+    };
+    let process = engine
+        .inner
+        .acp
+        .processes
+        .running(&key)
+        .expect("the agent runs");
+    engine.inner.acp.processes.stop(&process, "test").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_load_ignores_the_replay() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_LOAD", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say one").await;
+    stop_process(engine).await;
+    let outcome = turn(engine, session, "second", "say two").await;
+    assert_eq!(final_text(&outcome), "two");
+    let starts = session_starts(engine, session);
+    assert_eq!(starts[1].how, AcpSessionStart::Loaded);
+    assert!(!events(engine, session).iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ModelTurnCommitted { turn, .. } if turn.content.iter().any(|part| matches!(
+            part,
+            PersistedAssistantPart::Text { text, .. } if text.contains("REPLAYED")
+        ))
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_session_is_replaced_and_the_session_is_told() {
+    let document =
+        "---\ndescription: Fixture with a body\nmode: all\nacp: {}\n---\nYou review changes.\n";
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_RESUME", "1"), ("ACP_FIXTURE_LOST", "1")],
+        &[("local-fixture.md", document)],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let first = turn(engine, session, "first", "echo").await;
+    assert_eq!(final_text(&first), "You review changes.\n | echo");
+    let second = turn(engine, session, "second", "echo").await;
+    assert_eq!(
+        final_text(&second),
+        "echo",
+        "the body goes with the first prompt only"
+    );
+    stop_process(engine).await;
+    let third = turn(engine, session, "third", "echo").await;
+    assert_eq!(
+        final_text(&third),
+        "You review changes.\n | echo",
+        "a new ACP session gets the body again"
+    );
+    let starts = session_starts(engine, session);
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1].how, AcpSessionStart::New);
+    assert_ne!(starts[1].acp_session_id, starts[0].acp_session_id);
+    assert!(events(engine, session).iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Diagnostic { message, .. } if message.contains("could not resume")
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn permission_requests_are_decided_by_the_mapped_rules() {
+    let document = "---\ndescription: Fixture with rules\nmode: all\nacp: {}\npermissions:\n  bash: { \"git *\": allow, \"*\": deny }\n  read: { \"${workspace_dir}/*\": allow, \"*\": deny }\n  webfetch: deny\n  acp: { \"switch_mode *\": allow }\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let workspace = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
+    let inside = workspace.join("notes.txt");
+    for (index, (command, expected)) in [
+        (
+            "permission execute git status".to_owned(),
+            "permission: yes",
+        ),
+        (
+            "permission execute rm -rf build".to_owned(),
+            "permission: no",
+        ),
+        (
+            format!("permission read {}", inside.display()),
+            "permission: yes",
+        ),
+        ("permission read /etc/passwd".to_owned(), "permission: no"),
+        (
+            "permission fetch https://example.com".to_owned(),
+            "permission: no",
+        ),
+        ("permission switch_mode plan".to_owned(), "permission: yes"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let outcome = turn(engine, session, &format!("ask-{index}"), &command).await;
+        assert_eq!(final_text(&outcome), expected, "{command}");
+    }
+    let chosen = acp
+        .received()
+        .into_iter()
+        .filter_map(|message| {
+            message["result"]["outcome"]["optionId"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        chosen
+            .iter()
+            .all(|option| option == "yes" || option == "no"),
+        "{chosen:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unmapped_kind_asks_and_the_approval_answers_it() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "ask", "permission think deeply").await;
+    let approval = wait_for_escalated_approval(engine, session).await;
+    approve_once(engine, &approval, "approve-think").await;
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "permission: yes");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_answers_a_pending_permission_request_cancelled() {
+    let document =
+        "---\ndescription: Fixture that asks\nmode: all\nacp: {}\npermissions:\n  bash: ask\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "ask", "ask-wait execute make deploy").await;
+    wait_for_escalated_approval(engine, session).await;
+    engine.cancel_run(run, origin()).await.expect("cancel");
+    let outcome = finished(engine, session, run).await;
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
+    let received = acp.received();
+    assert!(
+        received
+            .iter()
+            .any(|message| message["method"] == "session/cancel")
+    );
+    assert!(
+        received
+            .iter()
+            .any(|message| message["outcome"] == "cancelled")
+    );
+    let terminations = events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination.outcome),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminations, [ToolTerminationOutcome::Cancelled]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_title_names_the_session() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "title", "title Refactor the parser").await;
+    let projection = engine.inner.store.get(session).unwrap();
+    assert_eq!(
+        projection.meta.title.as_ref().map(|title| title.as_str()),
+        Some("Refactor the parser")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_workspace_on_its_runtime_the_agent_works_in_the_runtimes_home() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine
+        .create_session_attached(selection(), &[])
+        .unwrap()
+        .session_id;
+    turn(engine, session, "home", "say hi").await;
+    let record = session_starts(engine, session).pop().unwrap();
+    let home = cookie_agent_protocol::paths::canonicalize(
+        &cookie_agent_protocol::paths::home_dir().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(Path::new(&record.cwd), home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "list", "mcp list").await;
+    let listed = final_text(&outcome);
+    assert!(listed.starts_with("tools: "), "{listed}");
+    let tools = listed["tools: ".len()..].split(',').collect::<Vec<_>>();
+    for hidden in ["read", "write", "edit", "bash", "webfetch"] {
+        assert!(!tools.contains(&hidden), "{hidden} in {tools:?}");
+    }
+
+    let document = "---\ndescription: Fixture that sees all\nmode: all\nacp:\n  hide_tools: [\"web*\"]\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n  bash: deny\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "list", "mcp list").await;
+    let listed = final_text(&outcome);
+    let tools = listed["tools: ".len()..].split(',').collect::<Vec<_>>();
+    assert!(tools.contains(&"read"), "{tools:?}");
+    assert!(!tools.contains(&"webfetch"), "{tools:?}");
+    assert!(!tools.contains(&"bash"), "denied by the rules: {tools:?}");
+    let file = acp.workspace().join("notes.txt");
+    std::fs::write(&file, "bridged content\n").unwrap();
+    let call = format!(
+        "mcp call read {}",
+        serde_json::json!({"filePath": file.to_string_lossy()})
+    );
+    let outcome = turn(engine, session, "call", &call).await;
+    let answer = final_text(&outcome);
+    assert!(answer.contains("bridged content"), "{answer}");
+    assert!(answer.ends_with("error: False"), "{answer}");
+    let outcome = turn(
+        engine,
+        session,
+        "hidden",
+        "mcp call webfetch {\"url\": \"https://example.com\"}",
+    )
+    .await;
+    assert!(final_text(&outcome).ends_with("error: True"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_acp_agent_takes_a_delegated_subagent_run() {
+    let document = "---\ndescription: Fixture that delegates\nmode: all\nacp: {}\npermissions:\n  delegate: { local-fixture: allow }\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let call = format!(
+        "mcp call delegate_subagent {}",
+        serde_json::json!({
+            "description": "Child turn",
+            "prompt": "say from the child",
+            "agent_type": "local-fixture",
+        })
+    );
+    let outcome = turn(engine, session, "delegate", &call).await;
+    let answer = final_text(&outcome);
+    assert!(answer.contains("from the child"), "{answer}");
+    assert!(answer.ends_with("error: False"), "{answer}");
+    let starts = acp
+        .received()
+        .into_iter()
+        .filter(|message| message["method"] == "session/new")
+        .count();
+    assert_eq!(
+        starts, 2,
+        "the parent and the child each have an ACP session"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_with_an_acp_agent_is_refused_while_its_runtime_is_away() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let template = engine
+        .inner
+        .runtimes
+        .dial_in_template("labpc")
+        .expect("dial-in template");
+    let (daemon, runtime) = cookie_agent_protocol::in_process_pair(64);
+    let stop = tokio_util::sync::CancellationToken::new();
+    let options = cookie_agent_coding_runtime::server::ServeOptions {
+        acp_agents: vec![cookie_agent_runtime_api::protocol::AcpAgentSettings {
+            id: "codex".to_owned(),
+            command: vec![
+                python_command().to_owned(),
+                fixture_script().to_string_lossy().into_owned(),
+            ],
+            env: BTreeMap::new(),
+            description: "Dial-in fixture".to_owned(),
+            enabled: true,
+        }],
+        stop: stop.clone(),
+        ..Default::default()
+    };
+    let served = tokio::spawn(cookie_agent_coding_runtime::server::serve(
+        Box::new(runtime),
+        options,
+    ));
+    let settings = crate::runtimes::runtime_settings(&acp.fixture.config, "labpc");
+    template
+        .connect(
+            cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
+            &settings,
+            Some(Arc::clone(&engine.inner.mcp_hub)),
+        )
+        .await
+        .expect("dial-in runtime connected");
+    let id = cookie_agent_protocol::AgentId::new("labpc-codex").unwrap();
+    let available = |engine: &Engine| {
+        engine
+            .current_runtime()
+            .result
+            .snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.id == id)
+            .and_then(|agent| agent.runtime.as_ref())
+            .map(|runtime| runtime.available)
+    };
+    with_watchdog("the dial-in agent to register", async {
+        while available(engine) != Some(true) {
+            engine.refresh_runtime_agents();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    stop.cancel();
+    let _ = served.await;
+    with_watchdog("the dial-in agent to become unavailable", async {
+        while available(engine) != Some(false) {
+            engine.refresh_runtime_agents();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let refused = engine
+        .create_session(RunSelection {
+            agent: id.clone(),
+            model: cookie_agent_protocol::acp_model_selection(&id),
+            preset: None,
+        })
+        .expect_err("refused while the runtime is away");
+    assert!(refused.to_string().contains("not connected"), "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cron_fire_reaches_an_acp_session_as_its_prompt() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say ready").await;
+    let job = engine
+        .create_cron(cookie_agent_protocol::CronCreateParams {
+            name: Some("Nightly".into()),
+            prompt: "echo".into(),
+            schedule: cookie_agent_protocol::CronSchedule::In("1h".into()),
+            max_runs: None,
+            target: cookie_agent_protocol::CronTarget::Session(session),
+            delivery: None,
+            permission_mode: None,
+            max_consecutive_failures: None,
+            enabled: None,
+        })
+        .await
+        .expect("created");
+    let target = job.id.clone();
+    let now = jiff::Timestamp::now();
+    engine
+        .crons_now(move |_, jobs| {
+            let job = jobs
+                .iter_mut()
+                .find(|job| job.id == target)
+                .expect("the job");
+            job.next_fire = Some(now);
+            Ok(())
+        })
+        .expect("made due");
+    engine.cron_tick(jiff::Timestamp::now()).await;
+    let run = await_event(engine, session, "the fire's run", |event| {
+        matches!(event.payload, EventPayload::RunStarted { .. })
+            && event.run_id.is_some()
+            && events(engine, session)
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+                .count()
+                == 2
+    })
+    .await
+    .run_id
+    .unwrap();
+    let run = events(engine, session)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.payload {
+            EventPayload::RunStarted { .. } => event.run_id,
+            _ => None,
+        })
+        .unwrap_or(run);
+    let outcome = finished(engine, session, run).await;
+    let echoed = final_text(&outcome);
+    assert!(echoed.contains("<scheduled_job id="), "{echoed}");
+    assert!(echoed.contains("echo"), "{echoed}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bridge_serves_an_agent_that_connects_while_answering_session_new() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_EAGER_MCP", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "eager", "mcp eager").await;
+    assert_eq!(final_text(&outcome), "eager: True");
+}

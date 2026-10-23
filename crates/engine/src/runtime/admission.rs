@@ -168,14 +168,11 @@ impl Engine {
         let delegation_events = self.inner.delegation_events.clone();
         let reserved_agent = child_policy.agent.clone();
         let reserved_suffix = child_policy.selected_suffix.clone();
-        let reserved_revisions = crate::policy::runtime_revisions(
-            &child_runtime,
-            reserved_suffix
-                .first()
-                .ok_or(EngineError::NoRunnableModel)?
-                .manifest_revision
-                .clone(),
-        );
+        if reserved_suffix.is_empty() && child_policy.acp_agent().is_none() {
+            return Err(EngineError::NoRunnableModel);
+        }
+        let reserved_revisions =
+            crate::policy::runtime_revisions(&child_runtime, child_policy.manifest_revision());
         let entry = self
             .spawn_admission_blocking(move || {
                 delegation_events.reserve(
@@ -280,7 +277,7 @@ impl Engine {
         };
         let selection = RunSelection {
             agent: agent.clone(),
-            model: child_policy.selected_suffix[0].selection.clone(),
+            model: child_policy.run_model_selection(),
             preset: child_policy.preset.clone(),
         };
         let child_session_id = entry.reservation.child_session_id;
@@ -303,7 +300,7 @@ impl Engine {
             creation_agent: Box::new(child_policy.agent.clone()),
             revisions: crate::policy::runtime_revisions(
                 &child_runtime,
-                child_policy.selected_suffix[0].manifest_revision.clone(),
+                child_policy.manifest_revision(),
             ),
         };
         // The child starts with the capabilities its root named, or inherits

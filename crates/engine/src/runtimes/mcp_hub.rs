@@ -23,10 +23,13 @@ pub struct McpServerFailure {
     pub reason: String,
 }
 
-/// Where MCP changes and failures of every runtime meet.
+/// Where MCP changes and failures of every runtime meet. It also carries
+/// the runtimes' ACP relay ([`super::AcpHub`]), which reaches every
+/// runtime connection the same way.
 pub(crate) struct McpHub {
     changes: tokio::sync::watch::Sender<u64>,
     failures: tokio::sync::broadcast::Sender<McpServerFailure>,
+    acp: Arc<super::AcpHub>,
 }
 
 impl McpHub {
@@ -34,7 +37,13 @@ impl McpHub {
         Arc::new(Self {
             changes: tokio::sync::watch::channel(0).0,
             failures: tokio::sync::broadcast::channel(64).0,
+            acp: Arc::default(),
         })
+    }
+
+    /// The runtimes' ACP relay.
+    pub(crate) fn acp(&self) -> &Arc<super::AcpHub> {
+        &self.acp
     }
 
     pub(crate) fn changed(&self) {

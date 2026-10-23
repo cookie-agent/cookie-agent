@@ -43,6 +43,7 @@ use crate::{
     session::{SessionError, SessionStore},
 };
 
+pub(crate) mod acp;
 mod admission;
 mod agent_md;
 mod agent_memory;
@@ -261,6 +262,9 @@ pub enum EngineError {
     /// self-contained and safe to surface to the model and the client.
     #[error("{0}")]
     ToolFailed(String),
+    /// An ACP agent could not take a run, with the reason.
+    #[error("{0}")]
+    Acp(String),
     #[error("tool prompt composition failed: {0}")]
     ToolPrompt(String),
     #[error("session actor for {0} is unavailable")]
@@ -939,6 +943,8 @@ pub(crate) struct Inner {
     pub(crate) mcp: Arc<crate::McpRegistry>,
     /// MCP changes and failures of every runtime.
     pub(crate) mcp_hub: Arc<crate::runtimes::McpHub>,
+    /// The ACP agents runtimes host, and their processes.
+    pub(crate) acp: acp::AcpState,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     permissions: PermissionPipeline,
@@ -984,11 +990,12 @@ impl Engine {
         };
         if options.config.runtimes.iter().any(|(id, template)| {
             id.as_str() == cookie_agent_runtime_api::LOCAL_RUNTIME_ID
-                && !template.mcp_servers.is_empty()
+                && (!template.mcp_servers.is_empty() || !template.acp_agents.is_empty())
         }) {
             return Err(EngineError::Runtime(
-                "the local runtime hosts [runtimes.local.mcp] servers only behind the runtime \
-                 protocol; open the engine with Engine::open_async"
+                "the local runtime hosts [runtimes.local.mcp] servers and \
+                 [runtimes.local.acp] agents only behind the runtime protocol; open the engine \
+                 with Engine::open_async"
                     .into(),
             ));
         }
@@ -1049,7 +1056,9 @@ impl Engine {
         }
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
-        let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
+        let acp = acp::AcpState::new(&options.config);
+        let (agents, agent_presets) =
+            resolve_agent_registries(&options.config, &current_models, &acp.runtime_agents())?;
         let current_manifest = prepare_runtime_manifest(&current_models)?;
         let (snapshot, revisions) = build_runtime_snapshot(
             &current_models,
@@ -1201,6 +1210,7 @@ impl Engine {
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 mcp_hub,
+                acp,
                 plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 permissions: PermissionPipeline::default(),
@@ -1272,6 +1282,7 @@ impl Engine {
         }
         engine.start_subagent_janitor();
         engine.start_cron_scheduler();
+        engine.install_acp();
         Ok(engine)
     }
 
@@ -1626,7 +1637,8 @@ impl Engine {
         {
             return Err(EngineError::RuntimeCompileFailed);
         }
-        let (agents, agent_presets) = resolve_agent_registries(config, models)?;
+        let (agents, agent_presets) =
+            resolve_agent_registries(config, models, &self.inner.acp.runtime_agents())?;
         let current_manifest = prepare_runtime_manifest(models)?;
         let (snapshot, revisions) =
             build_runtime_snapshot(models, &agents, &agent_presets, &config.revision)?;
@@ -1922,6 +1934,7 @@ impl Engine {
         // `RunCancelled`. Anything still running when the bound expires is
         // aborted, so shutdown stays bounded.
         self.join_run_tasks(RUN_TASK_SHUTDOWN_TIMEOUT).await;
+        self.inner.acp.processes.stop_all().await;
         self.inner.plugins.shutdown().await;
         self.inner.mcp.shutdown().await;
         self.inner
@@ -2002,17 +2015,19 @@ type ResolvedAgentRegistries = (Arc<AgentRegistry>, BTreeMap<String, Arc<AgentRe
 fn resolve_agent_registries(
     config: &LoadedConfiguration,
     models: &Arc<cookie_agent_models::CompiledModelRuntime>,
+    runtime_agents: &[crate::runtime_snapshot::RuntimeAgent],
 ) -> Result<ResolvedAgentRegistries, EngineError> {
     let shared = Arc::new(AgentRegistry::resolve(
         &config.agent_registry(),
         models,
         None,
+        runtime_agents,
     )?);
     let presets = config
         .agent_preset_registries()
         .into_iter()
         .map(|(name, authored)| {
-            AgentRegistry::resolve(&authored, models, Some(name.clone()))
+            AgentRegistry::resolve(&authored, models, Some(name.clone()), runtime_agents)
                 .map(|registry| (name, Arc::new(registry)))
         })
         .collect::<Result<_, _>>()?;

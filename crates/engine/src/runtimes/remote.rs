@@ -311,6 +311,29 @@ impl RuntimeTemplate for ProtocolTemplate {
             ))),
         }
     }
+
+    /// The daemon starts the runtime on demand, so its agents are
+    /// available whether it is connected or not; until it connects they
+    /// are the ones its configuration declares.
+    fn acp_agents(&self) -> super::registry::RuntimeAcpAgents {
+        let agents = match live(&self.connection) {
+            Some(client) => client.acp_agents(),
+            None => self
+                .settings
+                .acp_agents
+                .iter()
+                .map(protocol::AcpAgentReport::from)
+                .collect(),
+        };
+        super::registry::RuntimeAcpAgents {
+            agents,
+            available: true,
+        }
+    }
+
+    async fn agent_connection(&self) -> Result<super::registry::AgentConnection, String> {
+        self.connected().await.map(super::registry::AgentConnection)
+    }
 }
 
 /// The connection in `slot`, while it is open.
@@ -351,7 +374,34 @@ pub(crate) fn runtime_settings(
                     .collect()
             })
             .unwrap_or_default(),
+        acp_agents: acp_agent_settings(config, runtime_id),
     }
+}
+
+/// The ACP agents `[runtimes.<runtime_id>.acp.agents]` declares, as
+/// `runtime/initialize` carries them.
+pub(crate) fn acp_agent_settings(
+    config: &cookie_agent_config::LoadedConfiguration,
+    runtime_id: &str,
+) -> Vec<protocol::AcpAgentSettings> {
+    config
+        .runtimes
+        .iter()
+        .find(|(id, _)| id.as_str() == runtime_id)
+        .map(|(_, template)| {
+            template
+                .acp_agents
+                .iter()
+                .map(|(id, agent)| protocol::AcpAgentSettings {
+                    id: id.to_string(),
+                    command: agent.command.clone(),
+                    env: agent.env.clone(),
+                    description: agent.description.clone(),
+                    enabled: agent.enabled,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Registers a protocol template per configured `[runtimes.<id>]` other
@@ -644,6 +694,9 @@ struct ClientInner {
     liveness: OnceLock<super::Liveness>,
     /// Wakes the liveness watch to check a suspect connection at once.
     probe: super::liveness::Probe,
+    /// The ACP agents the runtime hosts, from its initialize reply or its
+    /// latest `runtime/agents_changed`.
+    acp_agents: Mutex<Vec<protocol::AcpAgentReport>>,
 }
 
 /// What the daemon knows about the MCP servers a runtime hosts.
@@ -789,6 +842,7 @@ impl RuntimeClient {
             mcp_settled: Notify::new(),
             liveness: OnceLock::new(),
             probe: super::liveness::Probe::default(),
+            acp_agents: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let reply: serde_json::Value = inner
@@ -856,7 +910,62 @@ impl RuntimeClient {
                 hub.changed();
             }
         }
+        *lock(&inner.acp_agents) = result.acp_agents.clone();
+        if let Some(hub) = &inner.mcp_hub {
+            hub.acp().changed();
+        }
         Ok((Self { inner }, result))
+    }
+
+    /// The runtime's ID.
+    pub(crate) fn runtime_id(&self) -> &str {
+        &self.inner.runtime_id
+    }
+
+    /// The ACP agents the runtime reported last.
+    pub(crate) fn acp_agents(&self) -> Vec<protocol::AcpAgentReport> {
+        lock(&self.inner.acp_agents).clone()
+    }
+
+    /// Sends one of the `agent/*` requests and waits up to `deadline` for
+    /// its reply.
+    pub(crate) async fn agent_request<P, R>(
+        &self,
+        method: &str,
+        params: &P,
+        deadline: Duration,
+    ) -> Result<R, String>
+    where
+        P: serde::Serialize + Sync,
+        R: serde::de::DeserializeOwned,
+    {
+        self.inner
+            .request_within(method, params, deadline)
+            .await
+            .map_err(|error| match error {
+                RpcError::Remote { message, data, .. } => {
+                    let detail = data
+                        .as_ref()
+                        .and_then(|data| data.get("detail"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                    detail.unwrap_or(message)
+                }
+                other => other.to_string(),
+            })
+    }
+
+    /// Sends one of the `agent/*` notifications.
+    pub(crate) async fn agent_notify<P: serde::Serialize + Sync>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<(), String> {
+        self.inner
+            .peer
+            .notify(method, params)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// Connects a plugin over `connection` and runs its `plugin/initialize`
@@ -897,6 +1006,7 @@ impl RuntimeClient {
             mcp_settled: Notify::new(),
             liveness: OnceLock::new(),
             probe: super::liveness::Probe::default(),
+            acp_agents: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let client = Self { inner };
@@ -1666,7 +1776,7 @@ impl ClientInner {
     /// it was one. Declarations are information and read tolerantly;
     /// `tool/detachable` is a command and read strictly. What cannot be read,
     /// or comes from the wrong kind of peer, is reported and ignored.
-    fn handle_notification(&self, notification: &IncomingNotification) -> bool {
+    fn handle_notification(self: &Arc<Self>, notification: &IncomingNotification) -> bool {
         let plugin = self.extension.get().is_some();
         let ignored = |reason: &dyn std::fmt::Display| {
             self.diagnostic(format!("ignored `{}`: {reason}", notification.method));
@@ -1693,6 +1803,32 @@ impl ClientInner {
                 if plugin =>
             {
                 ignored(&"only a runtime sends it");
+            }
+            method::AGENTS_CHANGED
+            | method::AGENT_MESSAGE
+            | method::AGENT_EXITED
+            | method::AGENT_MCP
+            | method::AGENT_MCP_CLOSED
+                if plugin =>
+            {
+                ignored(&"only a runtime sends it");
+            }
+            method::AGENTS_CHANGED => {
+                match notification.params::<protocol::AgentsChangedParams>() {
+                    Ok(params) => {
+                        *lock(&self.acp_agents) = params.agents;
+                        if let Some(hub) = &self.mcp_hub {
+                            hub.acp().changed();
+                        }
+                    }
+                    Err(error) => ignored(&error),
+                }
+            }
+            method::AGENT_MESSAGE
+            | method::AGENT_EXITED
+            | method::AGENT_MCP
+            | method::AGENT_MCP_CLOSED => {
+                self.relay(notification, &ignored);
             }
             method::RUNTIME_MCP_CHANGED => match notification.params() {
                 Ok(RuntimeMcpChangedParams { servers, failures }) => {
@@ -1842,11 +1978,50 @@ impl ClientInner {
 
     /// The connection ended: calls fail through their pending replies, and
     /// its producer registrations no longer pass for live.
-    fn connection_lost(&self) {
+    fn connection_lost(self: &Arc<Self>) {
         lock(&self.executions).clear();
         let host = lock(&self.producers).host.clone();
         if let Some(host) = host {
             (host.changed)();
+        }
+        if let Some(hub) = &self.mcp_hub {
+            if let Some(handler) = hub.acp().handler() {
+                handler.connection_lost(&RuntimeClient {
+                    inner: Arc::clone(self),
+                });
+            }
+            hub.acp().changed();
+        }
+    }
+
+    /// Hands an `agent/*` notification to the engine's ACP relay handler.
+    fn relay(
+        self: &Arc<Self>,
+        notification: &IncomingNotification,
+        ignored: &dyn Fn(&dyn std::fmt::Display),
+    ) {
+        let Some(handler) = self.mcp_hub.as_ref().and_then(|hub| hub.acp().handler()) else {
+            return;
+        };
+        let client = RuntimeClient {
+            inner: Arc::clone(self),
+        };
+        let result = match notification.method.as_str() {
+            method::AGENT_MESSAGE => notification
+                .params()
+                .map(|params| handler.message(&client, params)),
+            method::AGENT_EXITED => notification
+                .params()
+                .map(|params| handler.exited(&client, params)),
+            method::AGENT_MCP => notification
+                .params()
+                .map(|params| handler.mcp(&client, params)),
+            _ => notification
+                .params()
+                .map(|params| handler.mcp_closed(&client, params)),
+        };
+        if let Err(error) = result {
+            ignored(&error);
         }
     }
 

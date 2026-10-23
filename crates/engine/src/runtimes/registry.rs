@@ -103,7 +103,39 @@ pub trait RuntimeTemplate: Send + Sync {
             self.runtime_id()
         )))
     }
+
+    /// The ACP agents the runtime hosts and whether a session can use them
+    /// now (`docs/site/specs/acp-agents.md` section 3). A runtime that
+    /// hosts none answers an empty list.
+    fn acp_agents(&self) -> RuntimeAcpAgents {
+        RuntimeAcpAgents::default()
+    }
+
+    /// The runtime's connection, connecting it when the daemon starts the
+    /// runtime, for its ACP agents. Refused at once when the runtime dials
+    /// in and is not connected.
+    async fn agent_connection(&self) -> Result<AgentConnection, String> {
+        Err(format!(
+            "runtime `{}` hosts no ACP agents",
+            self.runtime_id()
+        ))
+    }
 }
+
+/// The ACP agents a runtime hosts.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeAcpAgents {
+    /// As the runtime last reported them, or as the daemon's configuration
+    /// declares them for a runtime it starts that is not connected yet.
+    pub agents: Vec<cookie_agent_runtime_api::protocol::AcpAgentReport>,
+    /// Whether a session can use them now: the runtime is connected, or the
+    /// daemon starts it on demand.
+    pub available: bool,
+}
+
+/// A runtime connection, as the ACP agents it hosts use it.
+#[derive(Clone)]
+pub struct AgentConnection(pub(crate) super::RuntimeClient);
 
 /// Why [`RuntimeTemplate::start`] failed, with a human-readable reason.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1533,6 +1565,33 @@ impl RuntimeRegistry {
                 listing: template.listing(),
             })
             .collect()
+    }
+
+    /// The ACP agents of every registered runtime, by runtime ID.
+    pub(crate) fn acp_agents(&self) -> BTreeMap<String, RuntimeAcpAgents> {
+        let templates = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        templates
+            .into_iter()
+            .map(|template| (template.runtime_id().to_owned(), template.acp_agents()))
+            .filter(|(_, agents)| !agents.agents.is_empty())
+            .collect()
+    }
+
+    /// Runtime `runtime_id`'s connection, for its ACP agents.
+    pub(crate) async fn agent_connection(
+        &self,
+        runtime_id: &str,
+    ) -> Result<AgentConnection, String> {
+        let template = self
+            .template(runtime_id)
+            .ok_or_else(|| format!("runtime `{runtime_id}` is not registered"))?;
+        template.agent_connection().await
     }
 
     /// How `runtimes.list` reports `instance`.

@@ -3103,6 +3103,13 @@ fn validate_record_incremental(
                 require_started_run(path, runs, record.run_id)?;
             }
         }
+        // An ACP agent's session is opened and its options are set within a
+        // run or, by a client, outside one.
+        EventPayload::AcpSessionStarted { .. } | EventPayload::AcpSessionUpdated { .. } => {
+            if record.run_id.is_some() {
+                require_started_run(path, runs, record.run_id)?;
+            }
+        }
         // The queue belongs to the session: entries outlive the run they
         // wait behind and start their own.
         EventPayload::UserInputQueued { .. }

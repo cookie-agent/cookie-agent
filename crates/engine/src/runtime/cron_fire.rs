@@ -684,6 +684,14 @@ impl Engine {
         if !agent.runnable_as_root {
             return Err(EngineError::DisabledAgent(template.agent.clone()));
         }
+        // An ACP agent chooses its own model.
+        if agent.acp.is_some() {
+            return Ok(RunSelection {
+                agent: template.agent.clone(),
+                model: cookie_agent_protocol::acp_model_selection(&template.agent),
+                preset: template.preset.clone(),
+            });
+        }
         let model = match &template.model {
             Some(model) => model.clone(),
             None => agent

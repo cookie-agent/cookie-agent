@@ -110,6 +110,7 @@ fn install_draft_catalog(app: &mut App) {
             runnable_as_root: true,
             resolved_fallback: vec![selection.model.clone()],
             delegation_targets: Vec::new(),
+            runtime: None,
         })
         .collect();
     app.models = ["test/model", "test/model-b"]

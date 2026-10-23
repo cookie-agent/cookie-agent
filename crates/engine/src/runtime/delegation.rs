@@ -541,6 +541,7 @@ impl Engine {
         }
         let fallback_index = active_parent.fallback_index.load(Ordering::Acquire) as usize;
         let inherited = parent_policy.active_suffix(fallback_index);
+        let acp_child = child_agent.acp.is_some();
         let child_selection = child_agent
             .resolved_fallback
             .iter()
@@ -568,19 +569,39 @@ impl Engine {
                     None
                 }
             })
+            .or_else(|| {
+                acp_child
+                    .then(|| cookie_agent_protocol::acp_model_selection(&child_agent.document.id))
+            })
             .ok_or_else(|| EngineError::ToolFailed("delegate child has no model suffix".into()))?;
         // The child session does not exist yet: its creation snapshot takes
         // the parent's machines and project, and each of its runs freezes
         // its own.
-        let child_policy = freeze_delegated_child_policy(
-            child_agent,
-            &parent_policy,
-            &child_selection,
-            inherited,
-            depth_ceiling,
-            policy::ResultLimits::from_config(&self.inner.config.load().runtime),
-            &self.memory_variables(invocation.parent_session_id),
-        )?;
+        let child_policy = if acp_child {
+            // An ACP subagent names no model; one whose runtime is away is
+            // refused at once.
+            policy::freeze_acp_agent_policy(
+                child_agent,
+                Arc::clone(&parent_policy.registry),
+                Arc::clone(&parent_policy.runtime),
+                depth_ceiling,
+                true,
+                policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+                parent_policy.model_retry,
+                &self.memory_variables(invocation.parent_session_id),
+            )?
+            .0
+        } else {
+            freeze_delegated_child_policy(
+                child_agent,
+                &parent_policy,
+                &child_selection,
+                inherited,
+                depth_ceiling,
+                policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+                &self.memory_variables(invocation.parent_session_id),
+            )?
+        };
         let seeded_context = if invocation.inherit_context {
             self.delegated_context_seed(invocation.parent_session_id)
                 .await?

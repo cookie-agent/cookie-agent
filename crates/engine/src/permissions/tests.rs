@@ -2130,6 +2130,7 @@ fn agent_document(
                 })
                 .collect(),
             agent_md: None,
+            acp: None,
         },
         body: "Test agent.\n".into(),
         source: AgentDocumentSource::User,

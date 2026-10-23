@@ -239,6 +239,18 @@ pub(crate) fn best_effort_root_selection(
         Ok(agents) => (agents, selection.preset.clone()),
         Err(_) => (runtime.agents_for_preset(None)?, None),
     };
+    // An ACP agent is never swapped for another: when its runtime is away,
+    // the run is refused instead (`docs/site/specs/acp-agents.md`
+    // section 3).
+    if let Some(agent) = agents.get(&selection.agent)
+        && agent.acp.is_some()
+    {
+        return Ok(protocol::RunSelection {
+            agent: selection.agent.clone(),
+            model: protocol::acp_model_selection(&selection.agent),
+            preset,
+        });
+    }
     let requested = agents
         .get(&selection.agent)
         .filter(|agent| agent.runnable_as_root);
@@ -1121,6 +1133,170 @@ pub(crate) fn media_family(
 pub(crate) fn adapter_family(value: &str) -> cookie_agent_models::adapters::OvenAdapterFamily {
     cookie_agent_models::adapters::wire_adapter_for_protocol(value)
         .expect("frozen binding contains a reviewed protocol adapter")
+}
+
+/// The synthetic model binding an ACP agent's runs record
+/// (`docs/site/specs/acp-agents.md` section 6): the model `acp/<agent>`,
+/// adapter `acp`, whose complete binding no build can run as a model.
+pub(crate) fn acp_binding(
+    agent: &protocol::AgentId,
+    runtime: &protocol::RuntimeId,
+) -> Result<protocol::PersistedModelBinding, EngineError> {
+    let selection = protocol::acp_model_selection(agent);
+    let fingerprint = protocol::Sha256Digest::of_bytes(
+        format!("cookie-agent/acp-binding/v1\0{agent}\0{runtime}").as_bytes(),
+    );
+    let binding = protocol::PersistedModelBinding {
+        selection: selection.clone(),
+        provider_id: selection.model.provider_id(),
+        provider_model_id: selection.model.model_id(),
+        adapter: ACP_ADAPTER.to_owned(),
+        resolved: protocol::ResolvedModelRef {
+            selection: selection.clone(),
+            provider_id: selection.model.provider_id(),
+            model_id: selection.model.model_id(),
+            adapter_id: protocol::AdaptorId::new(ACP_ADAPTER)
+                .map_err(|_| EngineError::RuntimeCompileFailed)?,
+            selection_fingerprint: fingerprint.clone(),
+        },
+        selection_fingerprint: fingerprint.clone(),
+        blueprint_fingerprint: fingerprint,
+        frozen: serde_json::json!({"acp": {"agent": agent, "runtime": runtime}}),
+    };
+    binding
+        .validate()
+        .map_err(|_| EngineError::RuntimeCompileFailed)?;
+    Ok(binding)
+}
+
+/// The adapter of an ACP agent's synthetic model binding.
+pub(crate) const ACP_ADAPTER: &str = "acp";
+
+/// Freezes a run of ACP agent `agent`, which names no models: its rules
+/// (`acp` defaulting to `ask`), its delegation targets, and the synthetic
+/// binding of [`acp_binding`]. The policy's model suffix is empty; the ACP
+/// runner takes the run instead of the model loop.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn freeze_acp_agent_policy(
+    agent: &ResolvedAgent,
+    registry: Arc<AgentRegistry>,
+    runtime: Arc<PublishedRuntime>,
+    depth_ceiling: u32,
+    delegated: bool,
+    result_limits: ResultLimits,
+    model_retry: cookie_agent_config::ModelRetryConfig,
+    memory: &MemoryVariables,
+) -> Result<(FrozenRunPolicy, protocol::RunSelection), EngineError> {
+    let acp = agent
+        .acp
+        .as_ref()
+        .ok_or_else(|| EngineError::InvalidRuntimeAgent(agent.document.id.clone()))?;
+    if !acp.available() {
+        return Err(EngineError::Acp(if acp.enabled {
+            format!(
+                "ACP agent `{}` is unavailable: runtime `{}` is not connected",
+                acp.id, acp.runtime
+            )
+        } else {
+            format!(
+                "ACP agent `{}` is disabled on runtime `{}`",
+                acp.id, acp.runtime
+            )
+        }));
+    }
+    let document = &agent.document;
+    let mut permissions = crate::permissions::agent_permission_rules(document, delegated, memory);
+    if !permissions
+        .iter()
+        .any(|rule| rule.action == protocol::PermissionAction::ACP)
+    {
+        permissions.push(protocol::PermissionRule {
+            action: protocol::PermissionAction::ACP,
+            runtime: None,
+            resource: protocol::WildcardPattern::new("*")
+                .map_err(|_| EngineError::RuntimeCompileFailed)?,
+            effect: protocol::PermissionEffect::Ask,
+        });
+    }
+    let targets = delegation_targets(&document.frontmatter.permissions, registry.agents());
+    let delegation = (!targets.is_empty()).then_some(protocol::FrozenDelegationPolicy {
+        targets,
+        effective_depth_ceiling: depth_ceiling,
+    });
+    let composed_prompt = if document.body.trim().is_empty() {
+        format!("ACP agent `{}` on runtime `{}`.\n", acp.agent, acp.runtime)
+    } else {
+        document.body.clone()
+    };
+    let binding = acp_binding(&document.id, &acp.runtime)?;
+    let snapshot = protocol::AgentSnapshot {
+        agent: document.id.clone(),
+        mode: document.frontmatter.mode,
+        description: document.frontmatter.description.clone(),
+        document_source: document.source,
+        document_fingerprint: wire_digest(&document.document_fingerprint)?,
+        prompt_fingerprint: protocol::Sha256Digest::of_bytes(composed_prompt.as_bytes()),
+        composed_prompt,
+        max_output_tokens: 0,
+        permissions,
+        delegation,
+        fallback_chain: vec![binding.clone()],
+        selected_suffix_start: 0,
+    };
+    let selection = protocol::RunSelection {
+        agent: document.id.clone(),
+        model: binding.selection,
+        preset: registry.preset().map(str::to_owned),
+    };
+    snapshot
+        .validate_selection(&selection)
+        .map_err(|_| EngineError::RuntimeCompileFailed)?;
+    Ok((
+        FrozenRunPolicy {
+            agent: snapshot,
+            preset: registry.preset().map(str::to_owned),
+            internal_agents: Vec::new(),
+            historical_delegation: false,
+            goal_tools_enabled: false,
+            selected_suffix: Vec::new(),
+            runtime,
+            registry,
+            result_limits,
+            model_retry,
+            // One per entry of the snapshot's suffix, as history records
+            // them: the synthetic binding has none.
+            cache_strategies: vec![None],
+        },
+        selection,
+    ))
+}
+
+impl FrozenRunPolicy {
+    /// The model selection the run starts with: its first model, or an ACP
+    /// agent's synthetic one.
+    pub(crate) fn run_model_selection(&self) -> protocol::ModelSelection {
+        self.selected_suffix.first().map_or_else(
+            || self.agent.selected_suffix()[0].selection.clone(),
+            |binding| binding.selection.clone(),
+        )
+    }
+
+    /// The model snapshot the run is frozen against: its first model's, or
+    /// the runtime's current one for an ACP agent.
+    pub(crate) fn manifest_revision(&self) -> protocol::ModelSnapshotRevision {
+        self.selected_suffix.first().map_or_else(
+            || self.runtime.current_manifest.revision.clone(),
+            |binding| binding.manifest_revision.clone(),
+        )
+    }
+
+    /// The ACP agent the run is frozen for, when it is one.
+    pub(crate) fn acp_agent(&self) -> Option<&crate::runtime_snapshot::RuntimeAgent> {
+        self.registry
+            .get(&self.agent.agent)
+            .and_then(|agent| agent.acp.as_ref())
+            .filter(|_| self.selected_suffix.is_empty())
+    }
 }
 
 #[cfg(test)]

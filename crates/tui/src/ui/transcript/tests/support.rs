@@ -112,6 +112,7 @@ pub(crate) fn production_provider_harness(
     let config = LoadedConfiguration {
         runtime: EngineConfig {
             cron: Default::default(),
+            acp: Default::default(),
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),
@@ -1062,6 +1063,7 @@ pub(crate) fn descriptor(agent: &str, runnable: bool) -> cookie_agent_protocol::
             variant: None,
         }],
         delegation_targets: Vec::new(),
+        runtime: None,
     }
 }
 

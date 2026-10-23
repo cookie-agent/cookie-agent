@@ -56,11 +56,37 @@ impl Engine {
         EngineError,
     > {
         let runtime = self.current_runtime();
-        if runtime.result.snapshot.models.is_empty() {
+        let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
+        let acp = agents
+            .get(&selection.agent)
+            .is_some_and(|agent| agent.acp.is_some());
+        if !acp && runtime.result.snapshot.models.is_empty() {
             return Err(EngineError::NoRunnableModel);
         }
-        let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
         let agent = resolve_agent(&agents, &selection.agent)?.clone();
+        // An ACP agent names no model (`docs/site/specs/acp-agents.md`
+        // section 4); one whose runtime is away is refused at once.
+        if agent.acp.is_some() {
+            if !agent.document.frontmatter.enabled
+                || !matches!(
+                    agent.document.frontmatter.mode,
+                    cookie_agent_config::AgentMode::Primary | cookie_agent_config::AgentMode::All
+                )
+            {
+                return Err(EngineError::DisabledAgent(agent.document.id.clone()));
+            }
+            let (policy, _) = policy::freeze_acp_agent_policy(
+                &agent,
+                agents,
+                Arc::clone(&runtime),
+                self.inner.config.load().runtime.delegation.max_depth,
+                false,
+                policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+                self.inner.config.load().runtime.model_retry,
+                &crate::permissions::MemoryVariables::default(),
+            )?;
+            return Ok((runtime, policy));
+        }
         let policy = freeze_root_agent_policy(
             &agent,
             agents,

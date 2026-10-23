@@ -200,7 +200,8 @@ impl DelegationEventStore {
             || !request_within_caps(&request)
             || child_agent.validate().is_err()
             || !suffix_matches_snapshot(&child_agent, &selected_suffix)
-            || !cache_strategies_match_bindings(&selected_suffix, &cache_strategies)
+            || !(cache_strategies_match_bindings(&selected_suffix, &cache_strategies)
+                || (selected_suffix.is_empty() && cache_strategies.iter().all(Option::is_none)))
             || selected_suffix
                 .iter()
                 .any(|binding| binding.manifest_revision != revisions.manifest_revision)
@@ -725,6 +726,11 @@ fn request_within_caps(request: &DelegateRequestPayload) -> bool {
 /// suffix, in order.
 fn suffix_matches_snapshot(snapshot: &AgentSnapshot, bindings: &[FrozenModelBinding]) -> bool {
     let suffix = snapshot.selected_suffix();
+    // An ACP agent runs no model: its snapshot holds only its synthetic
+    // binding (`docs/site/specs/acp-agents.md` section 6).
+    if bindings.is_empty() {
+        return matches!(suffix, [binding] if binding.adapter == crate::policy::ACP_ADAPTER);
+    }
     suffix.len() == bindings.len()
         && suffix.iter().zip(bindings).all(|(stored, binding)| {
             stored.selection == binding.selection

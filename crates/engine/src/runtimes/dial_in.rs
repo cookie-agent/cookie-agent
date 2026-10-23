@@ -88,6 +88,8 @@ pub(crate) struct DialInTemplate {
     last_seen: Mutex<Option<jiff::Timestamp>>,
     /// How its connections' liveness is checked.
     liveness: super::Liveness,
+    /// The ACP agents the runtime reported last, kept while it is away.
+    acp_agents: Mutex<Vec<cookie_agent_runtime_api::protocol::AcpAgentReport>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -105,6 +107,7 @@ impl DialInTemplate {
             offered: Mutex::default(),
             last_seen: Mutex::default(),
             liveness: super::Liveness::DEFAULT,
+            acp_agents: Mutex::default(),
         }
     }
 
@@ -197,6 +200,9 @@ impl DialInTemplate {
             return;
         }
         *lock(&self.last_seen) = Some(last_seen);
+        if let Some(client) = connection.as_ref() {
+            *lock(&self.acp_agents) = client.acp_agents();
+        }
         lock(&self.offered).message = Some(format!(
             "runtime `{}` disconnected: {reason}",
             self.runtime_id
@@ -286,5 +292,33 @@ impl RuntimeTemplate for DialInTemplate {
             Some(client) => client.reconnect_runtime_mcp(server).await,
             None => Err(crate::EngineError::Mcp(self.not_connected())),
         }
+    }
+
+    /// Its agents are available while it is connected, and listed as
+    /// unavailable, as it last reported them, while it is away.
+    fn acp_agents(&self) -> super::registry::RuntimeAcpAgents {
+        match self.current() {
+            Some(client) => super::registry::RuntimeAcpAgents {
+                agents: client.acp_agents(),
+                available: true,
+            },
+            // The connection that ended, until another takes over, else
+            // what was kept when one ended.
+            None => super::registry::RuntimeAcpAgents {
+                agents: lock(&self.connection)
+                    .as_ref()
+                    .map(RuntimeClient::acp_agents)
+                    .unwrap_or_else(|| lock(&self.acp_agents).clone()),
+                available: false,
+            },
+        }
+    }
+
+    async fn agent_connection(&self) -> Result<super::registry::AgentConnection, String> {
+        let client = self.current().ok_or_else(|| self.not_connected())?;
+        client.verify_live().await.map_err(|reason| {
+            format!("runtime `{}` is not connected: {reason}", self.runtime_id)
+        })?;
+        Ok(super::registry::AgentConnection(client))
     }
 }

@@ -106,6 +106,25 @@ impl Engine {
         };
         let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
         let agent = resolve_agent(&agents, &selection.agent)?;
+        if agent.acp.is_some() {
+            if !matches!(
+                agent.document.frontmatter.mode,
+                cookie_agent_config::AgentMode::Primary | cookie_agent_config::AgentMode::All
+            ) || !agent.document.frontmatter.enabled
+            {
+                return Err(EngineError::DisabledAgent(agent.document.id.clone()));
+            }
+            return policy::freeze_acp_agent_policy(
+                agent,
+                Arc::clone(&agents),
+                Arc::clone(&runtime),
+                self.inner.config.load().runtime.delegation.max_depth,
+                false,
+                policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+                self.inner.config.load().runtime.model_retry,
+                memory,
+            );
+        }
         let policy = freeze_root_agent_policy(
             agent,
             Arc::clone(&agents),
@@ -146,6 +165,22 @@ impl Engine {
             })
             .or_else(|| policy::default_root_agent(&agents))
             .ok_or(EngineError::NoRunnableModel)?;
+        if agent.acp.is_some() {
+            let ceiling = creation_agent.delegation.as_ref().map_or(
+                self.inner.config.load().runtime.delegation.max_depth,
+                |delegation| delegation.effective_depth_ceiling,
+            );
+            return policy::freeze_acp_agent_policy(
+                agent,
+                Arc::clone(&agents),
+                Arc::clone(&runtime),
+                ceiling,
+                true,
+                result_limits,
+                self.inner.config.load().runtime.model_retry,
+                memory,
+            );
+        }
         let inherited = creation_agent
             .fallback_chain
             .iter()
@@ -352,8 +387,13 @@ impl Engine {
             run_policy.agent.selected_suffix_start += start as u32;
             params.selection = effective;
         }
+        // An ACP agent takes the run instead of the model loop
+        // (`docs/site/specs/acp-agents.md` section 6): it has no model to
+        // admit files for, reads its own context files, and composes its
+        // own prompt.
+        let acp = run_policy.acp_agent().is_some();
         // The run's model takes the input's files, or nothing is recorded.
-        let _input_artifacts = if producer_start {
+        let _input_artifacts = if producer_start || acp {
             None
         } else {
             let model = &run_policy.selected_suffix[0].selection.model;
@@ -432,7 +472,7 @@ impl Engine {
                 }
             }
         }
-        let agent_md = if is_root {
+        let agent_md = if is_root && !acp {
             let agent_override = run_policy
                 .registry
                 .get(&run_policy.agent.agent)
@@ -446,19 +486,23 @@ impl Engine {
         } else {
             Vec::new()
         };
-        self.compose_runtimes_prompt(&mut run_policy, params.session_id);
-        self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
-        self.compose_skill_listing(
-            params.session_id,
-            &mut run_policy,
-            prospective_grants.as_ref(),
-        )?;
+        if !acp {
+            self.compose_runtimes_prompt(&mut run_policy, params.session_id);
+            self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
+            self.compose_skill_listing(
+                params.session_id,
+                &mut run_policy,
+                prospective_grants.as_ref(),
+            )?;
+        }
         let context_id = crate::plugin::plugin_context_id();
         let mut injected_messages = Vec::new();
         for hooked in self
             .inner
             .plugins
             .interception_plugins(ExtensionInterceptionHook::AgentBeforeStart)
+            .into_iter()
+            .filter(|_| !acp)
         {
             let plugin = hooked.name.clone();
             let result = self
@@ -558,7 +602,10 @@ impl Engine {
             // The log drops them again when they equal the latest it records.
             revisions: Some(policy::runtime_revisions(
                 &run_policy.runtime,
-                run_policy.selected_suffix[0].manifest_revision.clone(),
+                run_policy.selected_suffix.first().map_or_else(
+                    || run_policy.runtime.current_manifest.revision.clone(),
+                    |binding| binding.manifest_revision.clone(),
+                ),
             )),
             internal_agents: run_policy.internal_agents.clone(),
             input_through_seq,
@@ -800,7 +847,12 @@ impl Engine {
                 let _ = engine.reconcile_producers(session_id).await;
                 return;
             }
-            if let Err(error) = engine.run_loop(run_id, active.clone()).await {
+            let ended = if active.policy.acp_agent().is_some() {
+                engine.run_acp_loop(run_id, active.clone()).await
+            } else {
+                engine.run_loop(run_id, active.clone()).await
+            };
+            if let Err(error) = ended {
                 // A provider-attempt persistence error may also prevent the
                 // terminal append. Retain this active tombstone for reopen
                 // reconciliation rather than clearing a durably Running run.

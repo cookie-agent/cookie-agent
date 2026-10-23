@@ -752,6 +752,16 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn set_session_agent_option(
+        &self,
+        params: cookie_agent_protocol::SessionAgentOptionSetParams,
+    ) -> Result<cookie_agent_protocol::SessionAgentOptionSetResult> {
+        self.engine
+            .set_session_agent_option(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn list_crons(
         &self,
         _params: cookie_agent_protocol::CronsListParams,

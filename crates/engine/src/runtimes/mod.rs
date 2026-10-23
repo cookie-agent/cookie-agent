@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use cookie_agent_runtime_api::{ToolOrigin, ToolProvider};
 
+mod acp_hub;
 mod builtin;
 mod composition;
 mod dial_in;
@@ -44,6 +45,7 @@ mod process;
 mod registry;
 mod remote;
 
+pub(crate) use acp_hub::{AcpHub, AcpRelayHandler};
 #[cfg(test)]
 pub(crate) use builtin::coding_capability;
 pub(crate) use builtin::daemon_home;
@@ -57,8 +59,8 @@ pub(crate) use mcp_hub::McpHub;
 pub use mcp_hub::McpServerFailure;
 pub(crate) use process::ProcessConnector;
 pub use registry::{
-    RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeListingState,
-    RuntimeTemplate, RuntimeTemplateSummary, StartError, StartedRuntime,
+    RuntimeAcpAgents, RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary,
+    RuntimeListingState, RuntimeTemplate, RuntimeTemplateSummary, StartError, StartedRuntime,
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
 pub(crate) use remote::{
