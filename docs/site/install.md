@@ -82,7 +82,7 @@ running or reachable, each in its own page:
   the [Windows scheduled task](daemon/persistent.md#windows).
 - **A runtime service** on this or another machine: the removal steps at
   the end of each platform's section of
-  [Running a runtime as a service](daemon/runtime-service.md), including
+  [Running a runtime as a service](runtimes/service.md), including
   the token file or `COOKIE_DAEMON_TOKEN` user variable that earlier
   versions of that page set up.
 - **Tailscale Serve or a tunnel** pointing at the daemon: run

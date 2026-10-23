@@ -90,12 +90,16 @@ nav:
       - Terminal UI: clients/tui.md
       - Web: clients/web.md
       - Command line: clients/cli.md
-  - Run a daemon:
+  - Daemon:
       - Persistent daemon: daemon/persistent.md
-      - Runtime service: daemon/runtime-service.md
       - Remote access: daemon/remote-access.md
-      - Runtimes: daemon/runtimes.md
       - Security: daemon/security.md
+  - Runtimes:
+      - Runtimes: runtimes/index.md
+      - Runtime templates: runtimes/templates.md
+      - Runtimes that dial in: runtimes/dial-in.md
+      - Running as a service: runtimes/service.md
+      - MCP servers and ACP agents: runtimes/tools.md
   - Working with sessions:
       - Sessions: sessions/index.md
       - Delegating to runtimes: sessions/delegation.md

@@ -145,7 +145,7 @@ daemon's machine can bring one in for a while with the tools it has:
    connection, and the runtime shows as disconnected (and stays on its
    machine as an offline runtime until forgotten).
 
-See [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in)
+See [Runtimes that dial in](../runtimes/dial-in.md)
 for the listener and IDs.
 
 !!! warning "The subagent needs the daemon's token"

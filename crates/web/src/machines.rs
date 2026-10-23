@@ -382,12 +382,12 @@ pub const GUIDES: [Guide; 5] = [
     },
     Guide {
         title: "A repository on another machine over ssh",
-        page: "daemon/runtimes/#example-a-repository-on-another-machine-over-ssh",
+        page: "runtimes/templates/#example-a-repository-on-another-machine-over-ssh",
         note: "the template, installing cookie there, and attaching it",
     },
     Guide {
         title: "Runtimes that dial in",
-        page: "daemon/runtimes/#runtimes-that-dial-in",
+        page: "runtimes/dial-in/",
         note: "the listener, the token, IDs, and reconnecting",
     },
     Guide {
@@ -397,7 +397,7 @@ pub const GUIDES: [Guide; 5] = [
     },
     Guide {
         title: "Running as a service",
-        page: "daemon/persistent/#running-as-a-service",
+        page: "runtimes/service/",
         note: "keeping a dial-in runtime connected",
     },
 ];

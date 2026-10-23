@@ -1278,7 +1278,7 @@ Deviations and readings of the spec:
 
 Landed 2026-10-19. The [memory guide](../sessions/memory.md) describes the
 client surface (`/memory` and `cookie memory`) and links machine management
-in the [runtimes guide](../daemon/runtimes.md#machines), which in turn
+in the [runtimes guide](../runtimes/index.md#machines), which in turn
 describes each machine's memories; its capability table and the
 [architecture overview](../architecture.md) now list memory under `global`,
 which they had left out. The [protocol reference](../reference/protocol.md#memory)

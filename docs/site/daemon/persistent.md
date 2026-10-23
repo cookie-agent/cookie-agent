@@ -6,8 +6,8 @@ the machine, and running the daemon as a service on Linux, macOS, and
 Windows. Its clients
 are the [terminal UI](../clients/tui.md), the [web client](../clients/web.md),
 and the [command line](../clients/cli.md); [Remote access](remote-access.md)
-covers reaching it from other machines, [Runtimes](runtimes.md) the runtimes
-it uses, [Running a runtime as a service](runtime-service.md) keeping a
+covers reaching it from other machines, [Runtimes](../runtimes/index.md) the runtimes
+it uses, [Running a runtime as a service](../runtimes/service.md) keeping a
 runtime on another machine connected, and [Security](security.md) its trust boundaries.
 
 ## Separate server and client
@@ -89,7 +89,7 @@ of its own beside a running daemon opens the daemon's sessions as
 read-only snapshots. A daemon running as another OS user is not told apart:
 it reports the same machine, so its `local` runtime serves the directory
 with that user's file permissions. Use `--standalone` or a
-[runtime that dials in](runtimes.md#runtimes-that-dial-in) with such a
+[runtime that dials in](../runtimes/dial-in.md) with such a
 daemon.
 
 The daemon, `cookie runtime serve`, and the TUI stop cleanly on a stop
@@ -168,7 +168,7 @@ are covered in [Remote access](remote-access.md). The examples below use
     `local` runtime with the `coding` capability, and `global`. Do not run
     `cookie runtime serve` beside it. A separate runtime service is for
     *other* machines that dial in to the daemon; see
-    [Running a runtime as a service](runtime-service.md).
+    [Running a runtime as a service](../runtimes/service.md).
 
 Where the installer put the binary decides the path in each unit. The
 shell and PowerShell installers install to Cargo's home: `~/.cargo/bin` on
@@ -228,7 +228,7 @@ systemctl --user daemon-reload
 
 `loginctl enable-linger` applies to your user as a whole, not to this
 service. If no other user service of yours needs to run without a login
-session (the [runtime service](runtime-service.md#linux) is one), turn it
+session (the [runtime service](../runtimes/service.md#linux) is one), turn it
 off too:
 
 ```sh
@@ -347,7 +347,7 @@ Remove-Item "$env:LOCALAPPDATA\cookie-agent\daemon.log" -ErrorAction SilentlyCon
 ```
 
 `%LOCALAPPDATA%\cookie-agent` also holds the
-[runtime service's](runtime-service.md#windows) log; delete the folder
+[runtime service's](../runtimes/service.md#windows) log; delete the folder
 when neither task remains. A Windows service you created yourself goes with
 the tool that made it, such as `nssm remove <name> confirm` or
 `sc.exe delete <name>`.
@@ -367,7 +367,7 @@ for the directory the same way, first match first:
    ID, or either side reports none): its `local` runtime.
 2. A connected runtime of the daemon runs on this machine (the daemon
    places it on a machine whose IDs include this one's; see
-   [Machines](runtimes.md#machines)) and offers a capability that takes a
+   [Machines](../runtimes/index.md#machines)) and offers a capability that takes a
    workspace: new sessions attach that capability
    at the directory. With several, the lowest runtime ID wins. An example
    is a daemon in a container with `cookie runtime serve --daemon` running

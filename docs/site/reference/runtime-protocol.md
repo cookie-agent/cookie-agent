@@ -4,7 +4,7 @@ The runtime protocol connects the daemon to a *runtime*: a source of tools and
 workspace context that runs outside the engine (see the
 [runtimes specification](../specs/runtimes.md)). The daemon's built-in `local`
 coding runtime speaks it on a task of the daemon's own process over an
-in-memory frame pair; a configured [`[runtimes.<id>]`](../daemon/runtimes.md)
+in-memory frame pair; a configured [`[runtimes.<id>]`](../runtimes/templates.md)
 template runs a command, typically `ssh host cookie runtime serve --stdio`,
 and speaks it over the child's stdin and stdout. The
 local and remote paths are one code path. The global runtime does not speak

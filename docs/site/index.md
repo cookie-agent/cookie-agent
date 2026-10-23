@@ -58,7 +58,7 @@ cookie web --open      # the browser client, with the token
 **Use tools on another machine.** A `[runtimes.<id>]` template starts
 `cookie runtime serve --stdio` on another machine over ssh, so a session can
 read, edit, and run commands in a repository there; or that machine dials in
-with `cookie runtime serve --daemon`. See [Runtimes](daemon/runtimes.md).
+with `cookie runtime serve --daemon`. See [Runtimes](runtimes/index.md).
 
 ```toml
 [runtimes.labpc]
@@ -76,10 +76,13 @@ command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "serve", 
   sessions, agents, permissions, and memory, and how they relate.
 - **Clients:** the [terminal UI](clients/tui.md), the [web page](clients/web.md),
   and the [command line](clients/cli.md), with every command.
-- **Run a daemon:** [as its own process](daemon/persistent.md),
-  [reached from elsewhere](daemon/remote-access.md), with
-  [runtimes](daemon/runtimes.md), and its [security](daemon/security.md)
-  boundaries.
+- **Daemon:** [as its own process](daemon/persistent.md),
+  [reached from elsewhere](daemon/remote-access.md), and its
+  [security](daemon/security.md) boundaries.
+- **[Runtimes](runtimes/index.md):** [templates](runtimes/templates.md) the
+  daemon starts, such as over ssh, runtimes that
+  [dial in](runtimes/dial-in.md) and [run as a service](runtimes/service.md),
+  and the [MCP servers and ACP agents](runtimes/tools.md) they host.
 - **[Working with sessions](sessions/index.md):** media, compaction, goal mode,
   memory, [scheduled prompts](sessions/scheduling.md), and usage.
 - **Extend:** [agents and presets](extend/agents.md), [skills](extend/skills.md),

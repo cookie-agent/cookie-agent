@@ -1,9 +1,9 @@
 # Running a runtime as a service
 
-This page covers keeping a [runtime that dials in](runtimes.md#runtimes-that-dial-in)
+This page covers keeping a [runtime that dials in](dial-in.md)
 connected to its daemon: a service on Linux, macOS, or Windows that starts
 `cookie runtime serve --daemon` and restarts it. To keep the daemon itself
-running, see [Persistent daemon](persistent.md#running-as-a-service).
+running, see [Persistent daemon](../daemon/persistent.md#running-as-a-service).
 
 !!! note "Not next to the daemon"
     A daemon already carries a runtime on its own machine: the built-in
@@ -24,7 +24,7 @@ cookie runtime serve --daemon <daemon-url> --id <id> --token <token>
   `config.toml`, else the local daemon.
 - `--id <id>` names the runtime; without it, it is the host name. Only one
   runtime may be connected under an ID. See
-  [Runtimes that dial in](runtimes.md#runtimes-that-dial-in).
+  [Runtimes that dial in](dial-in.md).
 - `--token <token>` is the daemon's token: copy it from `[server] token`
   in the daemon's `config.toml`. The examples below put it in the service
   definition. An inline token is visible in that definition and in the
@@ -42,7 +42,7 @@ Four things decide how a service has to be set up:
   does not matter, and a daemon restart, a network change, or a sleeping
   laptop waking up needs no help from the service manager. Its instances go
   `reconnecting` and `failed` meanwhile, and are reopened when it is back;
-  see [Reconnecting](runtimes.md#runtimes-that-dial-in).
+  see [Reconnecting](dial-in.md).
 - **It exits on a refusal that retrying cannot fix**, a wrong token or an ID
   that is reserved or configured on the daemon, with an error. A service
   manager that restarts it will repeat that error; read the log rather than
@@ -124,7 +124,7 @@ A unit set up under earlier versions of this page read the token from
 
 Lingering is per user, not per service: run `loginctl disable-linger "$USER"`
 only when no other user service of yours, such as the
-[daemon's](persistent.md#remove-the-linux-service), needs it.
+[daemon's](../daemon/persistent.md#remove-the-linux-service), needs it.
 
 ## macOS
 
@@ -245,5 +245,5 @@ registry (`HKCU\Environment`) for processes started afterwards:
 A shell that is already open keeps its copy until you close it. Do not use
 `setx COOKIE_DAEMON_TOKEN ""`: that stores an empty value instead of
 deleting the variable. `%LOCALAPPDATA%\cookie-agent` also holds the
-[daemon task's](persistent.md#windows) log; delete the folder when neither
+[daemon task's](../daemon/persistent.md#windows) log; delete the folder when neither
 task remains.

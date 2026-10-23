@@ -67,12 +67,12 @@ they stream.
 | `description` | string | `""` | Shown where the agent is listed when its daemon document gives none. |
 | `enabled` | boolean | `true` | A disabled agent is listed as unavailable. |
 
-[Runtimes: ACP agents](../daemon/runtimes.md#acp-agents) has the rules for
+[Runtimes: ACP agents](../runtimes/tools.md#acp-agents) has the rules for
 IDs, availability, and processes.
 
 ## On a machine the daemon reaches over ssh
 
-A [runtime template](../daemon/runtimes.md#example-a-repository-on-another-machine-over-ssh)
+A [runtime template](../runtimes/templates.md#example-a-repository-on-another-machine-over-ssh)
 declares its agents in the daemon's `config.toml`, next to its command. They
 run on the remote machine, with its credentials:
 
@@ -94,7 +94,7 @@ directory.
 
 ## On a machine that dials in
 
-A [runtime that dials in](../daemon/runtimes.md#runtimes-that-dial-in)
+A [runtime that dials in](../runtimes/dial-in.md)
 declares its agents in its own machine's `config.toml`, under
 `[runtimes.local]`, exactly where its MCP servers go:
 
@@ -114,7 +114,7 @@ The agent is `lab-claude`, available while the runtime is connected and
 listed as unavailable while it is away. The runtime reads its configuration
 again every few seconds and reports changed agents, so adding one needs no
 restart. To keep it connected, run it as a
-[service](../daemon/runtime-service.md). A runtime ID's `_` becomes `-` in
+[service](../runtimes/service.md). A runtime ID's `_` becomes `-` in
 the agent's ID: runtime `lab_pc`'s `claude` is `lab-pc-claude`.
 
 ## Cookie settings: the daemon-side document

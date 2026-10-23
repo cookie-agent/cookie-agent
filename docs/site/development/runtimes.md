@@ -24,7 +24,7 @@ side sends requests. See [Connections](../reference/runtime-protocol.md#connecti
 and [Framing](../reference/runtime-protocol.md#framing).
 
 - **Standard input and output.** The daemon starts your program from a
-  [`[runtimes.<id>]` template](../daemon/runtimes.md#configuration), often
+  [`[runtimes.<id>]` template](../runtimes/templates.md#configuration), often
   through ssh, and exchanges one message per line. Standard output carries
   protocol messages only: no blank lines, no logging (log to standard error).
   The template's `startup_timeout_ms` bounds starting and initializing.
@@ -40,7 +40,7 @@ and [Framing](../reference/runtime-protocol.md#framing).
   quiet for 15 s and drops one it has heard nothing on for 45 s. Watch your
   end the same way (WebSocket pings, which the daemon answers with pongs), so
   a connection that died without a close does not keep you waiting. See
-  [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in) and
+  [Runtimes that dial in](../runtimes/dial-in.md) and
   [Liveness](../reference/runtime-protocol.md#liveness).
 
 ## Initialize

@@ -66,7 +66,7 @@ a failed tool call.
 
 ## Where to run it
 
-An MCP server runs on the machine of the [runtime](../daemon/runtimes.md) that
+An MCP server runs on the machine of the [runtime](../runtimes/index.md) that
 hosts it (see [where servers run](mcp.md#where-servers-run)), and the browser
 runs where the server runs. Put it where the browser belongs:
 
@@ -105,7 +105,7 @@ Windows desktop                                  Linux server
 
 The runtime has to run as you, inside your login session, or it cannot reach
 your Chrome: on Windows a Task Scheduler task at logon, not a Windows service
-(see [Running a runtime as a service](../daemon/runtime-service.md#windows)).
+(see [Running a runtime as a service](../runtimes/service.md#windows)).
 
 **One browser per runtime, shared by its sessions.** A runtime-scoped server
 is one MCP client of Playwright, so every session using that runtime drives
@@ -259,7 +259,7 @@ server.
 
 6. **Keep it running.** Stop the terminal runtime (Ctrl-C) and register the
    logon task from
-   [Running a runtime as a service](../daemon/runtime-service.md#windows),
+   [Running a runtime as a service](../runtimes/service.md#windows),
    with `--id winbox`. It runs in your session, so it reaches your Chrome.
    After changing the server's configuration, restart the task
    (`Stop-ScheduledTask` and `Start-ScheduledTask`).

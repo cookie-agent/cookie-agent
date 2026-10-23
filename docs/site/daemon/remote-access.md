@@ -4,8 +4,9 @@ This page covers reaching a daemon from other machines: listening on another
 address with TLS, web clients, and forwarding the daemon's port
 through SSH, a private network, or a tunnel. [Persistent daemon](persistent.md)
 covers starting the daemon and attaching clients to it,
-[Runtimes](runtimes.md) the runtimes that dial in from elsewhere,
-[Running a runtime as a service](runtime-service.md) keeping them connected, and
+[Runtimes that dial in](../runtimes/dial-in.md) the runtimes that connect from
+elsewhere,
+[Running a runtime as a service](../runtimes/service.md) keeping them connected, and
 [Security](security.md) what the token and the listener protect. The
 `[server]` keys are in [Server](../engine/server.md).
 
@@ -18,7 +19,7 @@ For clients and runtimes on other machines, `cookie daemon` takes:
 | `--listen <addr:port>` | Bind this address instead, such as `0.0.0.0:7419`. Without TLS the token crosses the network in the clear, so a plaintext listener belongs on a private network such as a VPN. Conflicts with `--port`. |
 | `--tls-cert <path>`, `--tls-key <path>` | Serve `wss` with this PEM certificate chain and private key; the ready line then shows a `wss://` URL. Both or neither. |
 
-The daemon serves clients on `/ws` and [dial-in runtimes](runtimes.md#runtimes-that-dial-in)
+The daemon serves clients on `/ws` and [dial-in runtimes](../runtimes/dial-in.md)
 on `/runtime?id=<runtime ID>`. Both present the same bearer token: a runtime
 in the `Authorization` header, a client there or in its
 [handshake](../reference/protocol.md#handshake-and-authentication). A

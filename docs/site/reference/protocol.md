@@ -455,8 +455,8 @@ an instance a session already has is an error. A capability that takes a
 workspace requires `workspace`, except `local`'s `coding`, which opens at the
 daemon's working directory without one; a capability that takes none
 refuses one. Besides `global` and `local`, the runtimes are the configured
-[`[runtimes.<id>]`](../daemon/runtimes.md) tables and the
-[dial-in runtimes](../daemon/runtimes.md#runtimes-that-dial-in) that have
+[`[runtimes.<id>]`](../runtimes/templates.md) tables and the
+[dial-in runtimes](../runtimes/dial-in.md) that have
 connected since the daemon started; attaching any other runtime ID is an
 `unknown runtime` error, and attaching a dial-in runtime that is not
 connected now fails. The daemon passes `workspace`

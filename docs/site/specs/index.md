@@ -52,7 +52,7 @@ Consult [Providers](../extend/providers.md) for the implemented model schema.
 
 ## Reference pages
 
-These implemented contracts are references, published under Reference and Run a daemon:
+These implemented contracts are references, published under Reference and Daemon:
 
 | Reference | Status |
 |---|---|

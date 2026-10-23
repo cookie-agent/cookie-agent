@@ -19,7 +19,7 @@ directory; a new web session starts with `global` alone, and its runtime
 cards, above the composer, pick others for the first message to create it
 with. The runtimes panel (`/runtime`) attaches and detaches others between
 runs, and in the TUI before the first prompt too. See
-[Runtimes](../daemon/runtimes.md) for templates, dial-in, and lifecycles.
+[Runtimes](../runtimes/index.md) for templates, dial-in, and lifecycles.
 
 Every runtime other than the built-in ones speaks the
 [runtime protocol](../reference/runtime-protocol.md), so a runtime of your own
@@ -37,7 +37,7 @@ that it overrides others of its name, or that it is only a fallback, like the
 `global` runtime's `webfetch`, which hides whenever `local` offers one. A
 runtime tool never takes the name of a built-in tool such as
 `delegate_subagent`. See
-[Example: a repository on another machine](../daemon/runtimes.md#example-a-repository-on-another-machine-over-ssh).
+[Example: a repository on another machine](../runtimes/templates.md#example-a-repository-on-another-machine-over-ssh).
 
 Permission rules can target one runtime's tools with `action@runtime`; see
 [Permissions](permissions.md#rules-for-one-runtime).
@@ -64,7 +64,7 @@ down shows an error row. The daemon notices a connection that died without
 closing within 45 s, and never creates a session, attaches a runtime, or
 delegates to one that is offline: a dial-in runtime that is not connected is
 refused at once, and one the daemon starts must come up first. See
-[Lifecycle and failures](../daemon/runtimes.md#lifecycle-and-failures).
+[Lifecycle and failures](../runtimes/index.md#lifecycle-and-failures).
 
 ## A client's machine
 

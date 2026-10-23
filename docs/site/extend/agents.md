@@ -142,7 +142,7 @@ prompt, skill-listing, plugin, cache, and history assembly order.
 
 ### ACP agent documents
 
-An ACP agent a runtime hosts (see [ACP agents](../daemon/runtimes.md#acp-agents))
+An ACP agent a runtime hosts (see [ACP agents](../runtimes/tools.md#acp-agents))
 is listed as `<runtime>-<agent>`, and takes its cookie settings from the
 document of that name. Its `acp` block, even `acp: {}`, marks the document as
 the agent's: it is an agent only while a runtime declares it, and a document

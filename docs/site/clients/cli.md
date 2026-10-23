@@ -233,14 +233,14 @@ configuration. One of `--stdio` and `--daemon` is required.
 
 | Option | Meaning |
 |---|---|
-| `--stdio` | Speak the runtime protocol on standard input and output, one JSON-RPC message per line, as a [`[runtimes.<id>]` template](../daemon/runtimes.md) starts it. Exits when the daemon sends `runtime/shutdown` or closes standard input. |
+| `--stdio` | Speak the runtime protocol on standard input and output, one JSON-RPC message per line, as a [`[runtimes.<id>]` template](../runtimes/templates.md) starts it. Exits when the daemon sends `runtime/shutdown` or closes standard input. |
 | `--daemon [<URL>]` | Dial in to a daemon and stay connected: this client URL, or, without one, the daemon [Reaching a daemon](#reaching-a-daemon) finds. After a drop it connects again, waiting 1 second, doubling up to 30 seconds. Its machine's `[runtimes.local.mcp]` servers and `[runtimes.local.acp.agents]` come along, and it reports changed agents as its configuration changes. |
 | `--id <RUNTIME_ID>` | The runtime ID to dial in as; this machine's host name, sanitized, when omitted. Not with `--stdio`. |
 | `--token <TOKEN>` | The daemon's token, for `--daemon`; also `COOKIE_DAEMON_TOKEN`. |
 | `--root <DIR>` | Limit `coding` to workspaces under this directory; repeat for several. A leading `~` is expanded; a root that is not a directory is an error. Any workspace when omitted. |
 
 It runs until a stop signal. See
-[Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in).
+[Runtimes that dial in](../runtimes/dial-in.md).
 
 ### `cookie runtime mcp-bridge`
 
@@ -312,7 +312,7 @@ cookie machine <COMMAND> [--url <URL>] [--token <TOKEN>]
 ```
 
 Manages the machines the daemon's runtimes run on. See
-[Machines](../daemon/runtimes.md#machines).
+[Machines](../runtimes/index.md#machines).
 
 #### `cookie machine list`
 

@@ -30,7 +30,7 @@ is never read, so a repository cannot add MCP servers.
 
 ## Where servers run
 
-An MCP server belongs to the [runtime](../daemon/runtimes.md) that hosts it, and runs
+An MCP server belongs to the [runtime](../runtimes/index.md) that hosts it, and runs
 on that runtime's machine:
 
 - **Top-level `[mcp.servers.<name>]`** servers belong to the daemon's global

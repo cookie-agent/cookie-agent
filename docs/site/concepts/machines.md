@@ -57,7 +57,7 @@ a runtime moves by dragging it onto another machine) change the registry:
 - **forget** an offline runtime, so the machine no longer lists it.
 
 See [`cookie machine`](../clients/cli.md#cookie-machine) and
-[Machines](../daemon/runtimes.md#machines).
+[Machines](../runtimes/index.md#machines).
 
 ## Memory per machine
 

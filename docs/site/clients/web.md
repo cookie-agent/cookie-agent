@@ -499,14 +499,14 @@ address bar.
     - **Start one over ssh:** a runtime ID, the ssh host, and optionally
       the one directory its workspaces must be under. The page shows the
       `[runtimes.<id>]` template, as in
-      [the ssh example](../daemon/runtimes.md#example-a-repository-on-another-machine-over-ssh),
+      [the ssh example](../runtimes/templates.md#example-a-repository-on-another-machine-over-ssh),
       and **Add to config.toml** writes it with `config.apply`. The daemon
       starts the runtime only after a restart, and says so. The page
       refuses an ID the daemon has, and a host or directory that ssh would
       split or take as an option.
     - **Let one dial in:** the `cookie runtime serve --daemon` command to
       run on the other machine (see
-      [Runtimes that dial in](../daemon/runtimes.md#runtimes-that-dial-in)),
+      [Runtimes that dial in](../runtimes/dial-in.md)),
       with an optional runtime ID and **Copy**. The daemon's address is
       the page's own unless the page reached it on a loopback address,
       when it is a placeholder. The command carries the token this page

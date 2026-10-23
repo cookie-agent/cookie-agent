@@ -633,7 +633,7 @@ path next (Enter attaches, Esc returns to the list). A runtime that has not
 connected yet is one entry: attaching it connects it and takes its only
 capability, its workspace is optional, and the details show why its last
 connection failed. The path is passed to the runtime as typed and resolved on its
-machine (see [Runtimes](../daemon/runtimes.md)). Press `d` to detach the selected
+machine (see [Runtimes](../runtimes/index.md)). Press `d` to detach the selected
 attachment, and `r` to retry its instance now, for example after fixing why it
 failed (`runtimes.reconnect`). The daemon refuses both
 while the session has an active run, and refuses attaching an instance the

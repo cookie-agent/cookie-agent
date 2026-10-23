@@ -47,7 +47,7 @@ plugins, and [memory](sessions/memory.md)). The `local` coding runtime, with `re
 and `webfetch` in the daemon's working directory, runs on a task of the daemon
 process and is reached over the [runtime protocol](reference/runtime-protocol.md)
 through an in-memory frame pair. A configured
-[`[runtimes.<id>]`](daemon/runtimes.md) template starts runtimes in child
+[`[runtimes.<id>]`](runtimes/templates.md) template starts runtimes in child
 processes (typically `cookie runtime serve --stdio` on another machine over
 ssh) that speak the same protocol over stdio. A runtime can also dial in to the
 daemon's `/runtime` WebSocket route, as `cookie runtime serve --daemon` does,

@@ -161,7 +161,7 @@ when it next takes one.
 The `machine` layer is keyed by machine names, the computers runtimes run on,
 which the daemon assigns on its own and you can rename, merge, and forget from
 the Machines view of `/runtime` or with `cookie machine` (see
-[Machines](../daemon/runtimes.md#machines)). A machine's memories live in
+[Machines](../runtimes/index.md#machines)). A machine's memories live in
 `memory/machines/<machine>/` and move with it when it is renamed or merged
 into another; `machines.list` and `cookie machine list` count them.
 
