@@ -19,6 +19,7 @@ pub mod mcp;
 pub mod memory;
 pub mod model_draft;
 mod model_names;
+pub mod onboarding;
 pub mod ownership;
 pub mod paths;
 pub mod permissions;
@@ -1512,6 +1513,7 @@ impl StateStore {
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
             | ClientDelivery::DaemonRestarting(_) => DeliveryOutcome::Applied,
+            ClientDelivery::OnboardingChanged(_) => DeliveryOutcome::Applied,
         }
     }
 

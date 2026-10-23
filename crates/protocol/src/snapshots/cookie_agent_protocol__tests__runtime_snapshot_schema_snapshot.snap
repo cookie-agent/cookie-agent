@@ -106,6 +106,14 @@ expression: schema_for!(RuntimeSnapshotResult)
             "$ref": "#/$defs/AgentRuntime"
           },
           "maxItems": 256
+        },
+        "unset_models": {
+          "description": "The configuration fields (`default_model`, `small_model`) the agent's\n`models` entries name but that are not set, sorted (client protocol\n1.19.0). Those entries are skipped; an agent with no other entry is\nunavailable until a field is set.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
         }
       },
       "required": [

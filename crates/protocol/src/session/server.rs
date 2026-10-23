@@ -648,6 +648,21 @@ pub trait ServerProtocol: Send + Sync + 'static {
             crate::errors::RESTART_UNSUPPORTED.error().build(),
         ))
     }
+    /// Whether the daemon is set up.
+    async fn get_onboarding(
+        &self,
+        params: crate::OnboardingGetParams,
+    ) -> Result<crate::OnboardingStatus, ServerFault>;
+    /// What installing the starter kit would do.
+    async fn preview_onboarding(
+        &self,
+        params: crate::OnboardingPreviewParams,
+    ) -> Result<crate::OnboardingPreviewResult, ServerFault>;
+    /// Sets the models and installs the starter kit.
+    async fn run_onboarding(
+        &self,
+        params: crate::OnboardingRunParams,
+    ) -> Result<crate::OnboardingRunResult, ServerFault>;
     /// Moves an executing call to the background.
     async fn background_tool(
         &self,
@@ -1182,6 +1197,13 @@ async fn dispatch<S: ServerProtocol>(
         crate::DAEMON_RESTART_METHOD => {
             value(server.restart_daemon(decode_default(params)?).await?)
         }
+        crate::ONBOARDING_GET_METHOD => {
+            value(server.get_onboarding(decode_default(params)?).await?)
+        }
+        crate::ONBOARDING_PREVIEW_METHOD => {
+            value(server.preview_onboarding(decode_default(params)?).await?)
+        }
+        crate::ONBOARDING_RUN_METHOD => value(server.run_onboarding(decode(params)?).await?),
         crate::RUN_TOOL_BACKGROUND_METHOD => {
             value(server.background_tool(decode(params)?, context).await?)
         }

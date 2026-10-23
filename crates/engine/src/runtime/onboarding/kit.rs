@@ -381,8 +381,8 @@ fn normalized(path: &str) -> Result<Option<String>, KitError> {
 
 /// Builds a `.tar.gz` of `files` as the release workflow packs the kit, for
 /// tests: one ustar entry per file, under `./`.
-#[cfg(test)]
-pub(crate) fn pack(files: &[(&str, &[u8])]) -> Vec<u8> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn pack(files: &[(&str, &[u8])]) -> Vec<u8> {
     use std::io::Write as _;
 
     let mut tar = Vec::new();

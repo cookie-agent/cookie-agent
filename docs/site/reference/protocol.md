@@ -221,6 +221,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied, and `diagnostics` (since 1.18.0): what the applied configuration names that does not exist yet, such as a delegation target no agent has |
 | `daemon.restart` | Optional `when`: `idle` (default) or `now` (since 1.19.0) | `scheduled` (whether this call scheduled the restart rather than changed one already scheduled) and `active_runs`; a daemon that cannot relaunch itself answers `restart_unsupported` (see [Restarting the daemon](#restarting-the-daemon)) |
+| `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, `small_model`), `providers_connected`, and the configured `default_model` and `small_model` as `{ model, variant? }`. Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
+| `onboarding.preview` | Optional `source`: `{"type": "release"}` (the default: the daemon's version's release, else the latest) or `{"type": "archive", "data": "<base64>"}` (since 1.22.0) | The starter kit's `kit_version`, `cookie_version`, where it came from (`origin`), and per file its `path` and `action` (`write`, `skip` as identical, `write_new` beside a changed file) with a `diff` for changed files. Writes nothing; a failed download or a kit that does not match its manifest or does not load is `onboarding_kit_unavailable` |
+| `onboarding.run` | `install_kit`, optional `source`, optional `default_model` and `small_model` (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0) | The kit files `written`, `skipped`, and `written_new` (the kit's version beside them as `<path>.new`), the configuration `settings` set, and the new `status`. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
 | `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0) | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
@@ -838,7 +841,9 @@ over the Agent Client Protocol (see the
   no frozen model bindings, recipe identities, fingerprints, compiler versions,
   or the internal revisions and counters the view's `revision` stands for.
   `models` lists only selectable models; an agent's `resolved_fallback` names
-  model selections.
+  model selections. Since 1.22.0 an agent also has `unset_models`, the
+  configuration fields (`default_model`, `small_model`) its `models` entries
+  name that are not set, omitted when empty; those entries are skipped.
 - **`input_media`** on every model says what it accepts in user input, one
   entry per kind (an open label: `image`, `pdf`, `audio`, or `video`):
 
@@ -1117,6 +1122,7 @@ subscriptions to the deleted sessions end with them: no further
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 | `daemon.restarting` | A restart is scheduled: `when` (`idle` or `now`), the `active_runs` it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
+| `onboarding.changed` | `onboarding.get`'s answer changed (since 1.22.0): the new answer, after a configuration apply or reload, a provider connected or disconnected, or a model becoming available or not |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
@@ -1129,7 +1135,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, `crons.changed`, and `daemon.restarting` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, `crons.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.

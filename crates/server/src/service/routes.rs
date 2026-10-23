@@ -35,6 +35,7 @@ type Result<T> = std::result::Result<T, ServerFault>;
 impl ServerProtocol for Server {
     async fn connected(&self, context: ServerContext) {
         self.start_runtime_notifications(context.clone());
+        self.start_onboarding_notifications(context.clone());
         self.start_session_change_notifications(context.clone());
         self.start_mcp_change_notifications(context.clone());
         self.start_runtime_instance_notifications(context.clone());
@@ -946,6 +947,50 @@ impl ServerProtocol for Server {
             scheduled: scheduled.scheduled,
             active_runs: scheduled.active_runs,
         })
+    }
+
+    async fn get_onboarding(
+        &self,
+        _params: cookie_agent_protocol::OnboardingGetParams,
+    ) -> Result<cookie_agent_protocol::OnboardingStatus> {
+        Ok(crate::onboarding::status_to_wire(
+            self.engine.onboarding_state(),
+        ))
+    }
+
+    async fn preview_onboarding(
+        &self,
+        params: cookie_agent_protocol::OnboardingPreviewParams,
+    ) -> Result<cookie_agent_protocol::OnboardingPreviewResult> {
+        let source = crate::onboarding::source_from_wire(params.source).map_err(protocol_fault)?;
+        let preview = self
+            .engine
+            .preview_kit(source)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(crate::onboarding::preview_to_wire(preview))
+    }
+
+    async fn run_onboarding(
+        &self,
+        params: cookie_agent_protocol::OnboardingRunParams,
+    ) -> Result<cookie_agent_protocol::OnboardingRunResult> {
+        let request = crate::onboarding::request_from_wire(params).map_err(protocol_fault)?;
+        let outcome = self
+            .engine
+            .run_onboarding(request)
+            .await
+            .map_err(|error| match error {
+                // A model value the configuration refuses, as `config.apply`
+                // refuses it.
+                error @ (cookie_agent_engine::EngineError::ConfigConflict(_)
+                | cookie_agent_engine::EngineError::ConfigChangeRefused(_)
+                | cookie_agent_engine::EngineError::Config(_)) => {
+                    ServerFault::from(RpcFault::config_apply(error))
+                }
+                error => protocol_fault(error),
+            })?;
+        Ok(crate::onboarding::outcome_to_wire(outcome))
     }
 
     async fn reconnect_runtime(

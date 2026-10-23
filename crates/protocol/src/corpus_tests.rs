@@ -482,6 +482,7 @@ fn delivery_kind(delivery: &ClientDelivery) -> Option<&'static str> {
         ClientDelivery::ProjectsChanged(_) => "projects_changed",
         ClientDelivery::CronsChanged(_) => "crons_changed",
         ClientDelivery::DaemonRestarting(_) => "daemon_restarting",
+        ClientDelivery::OnboardingChanged(_) => "onboarding_changed",
         ClientDelivery::Diagnostic { .. } => "diagnostic",
         ClientDelivery::RecoveryFailed { .. } => "recovery_failed",
         ClientDelivery::Disconnected { .. } => "disconnected",

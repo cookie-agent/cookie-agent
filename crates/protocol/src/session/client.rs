@@ -129,6 +129,9 @@ pub enum ClientDelivery {
     /// The daemon will restart: when, and how many runs it still waits
     /// for. The connection then closes and the client reconnects.
     DaemonRestarting(crate::DaemonRestartingNotification),
+    /// Whether the daemon is set up changed: the new `onboarding.get`
+    /// answer.
+    OnboardingChanged(crate::OnboardingStatus),
     /// A notification this build could not read was dropped. No call fails
     /// for it; the message says which notification and why.
     Diagnostic {
@@ -1228,6 +1231,34 @@ impl Client {
         .await
     }
 
+    /// Whether the daemon is set up.
+    pub async fn get_onboarding(&self) -> Result<crate::OnboardingStatus, ClientError> {
+        self.call(crate::ONBOARDING_GET_METHOD, &crate::OnboardingGetParams {})
+            .await
+    }
+
+    /// What installing the starter kit from `source` would do; writes
+    /// nothing.
+    pub async fn preview_onboarding(
+        &self,
+        source: Option<crate::OnboardingKitSource>,
+    ) -> Result<crate::OnboardingPreviewResult, ClientError> {
+        self.call(
+            crate::ONBOARDING_PREVIEW_METHOD,
+            &crate::OnboardingPreviewParams { source },
+        )
+        .await
+    }
+
+    /// Sets the models and installs the starter kit; see
+    /// [`crate::OnboardingRunParams`].
+    pub async fn run_onboarding(
+        &self,
+        params: crate::OnboardingRunParams,
+    ) -> Result<crate::OnboardingRunResult, ClientError> {
+        self.call(crate::ONBOARDING_RUN_METHOD, &params).await
+    }
+
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
         self.call("mcp.server.list", &McpServerListParams {}).await
     }
@@ -2112,6 +2143,10 @@ async fn route_notification(
         crate::DAEMON_RESTARTING_METHOD => {
             let restarting: crate::DaemonRestartingNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::DaemonRestarting(restarting));
+        }
+        crate::ONBOARDING_CHANGED_METHOD => {
+            let changed: crate::OnboardingStatus = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::OnboardingChanged(changed));
         }
         _ => {}
     }

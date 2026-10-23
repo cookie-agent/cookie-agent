@@ -1,6 +1,7 @@
 //! The cookie-agent client protocol 1.21 JSON-RPC service, transport-neutral.
 
 mod config;
+mod onboarding;
 mod providers;
 mod rpc;
 mod runtimes;
@@ -12,5 +13,7 @@ pub use token::{READY_LINE_PREFIX, TokenError, generate_token, ready_line};
 
 #[cfg(test)]
 mod corpus_tests;
+#[cfg(test)]
+mod onboarding_tests;
 #[cfg(test)]
 mod tests;

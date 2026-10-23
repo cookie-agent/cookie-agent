@@ -550,7 +550,7 @@ pub struct AgentDescriptor {
     pub runtimes: Vec<AgentRuntime>,
     /// The configuration fields (`default_model`, `small_model`) the agent's
     /// `models` entries name but that are not set, sorted (client protocol
-    /// 1.18.0). Those entries are skipped; an agent with no other entry is
+    /// 1.22.0). Those entries are skipped; an agent with no other entry is
     /// unavailable until a field is set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 8))]

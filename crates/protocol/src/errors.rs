@@ -756,6 +756,22 @@ error_codes! {
         hint: Some("On a conflict, reload the configuration and apply the change again; otherwise fix what the details name."),
         description: "`config.apply` changed nothing; `detail` says why.",
     }
+    ONBOARDING_INCOMPLETE {
+        code: "onboarding_incomplete",
+        rpc: APPLICATION_ERROR,
+        fields: [required("missing", "What the daemon would still need: `provider`, `default_model`, `small_model`.")],
+        message: "Onboarding would leave the daemon not set up; nothing was written.",
+        hint: Some("Connect a provider and choose a default and a small model that a connected provider offers."),
+        description: "`onboarding.run` refused: after its own fields, a provider, `default_model`, or `small_model` would still be missing.",
+    }
+    ONBOARDING_KIT_UNAVAILABLE {
+        code: "onboarding_kit_unavailable",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The starter kit could not be used.",
+        hint: Some("See the details; download the kit from the release page and send it as an archive instead."),
+        description: "`onboarding.preview` or `onboarding.run` could not download the starter kit, or refused it: a hash that does not match its manifest, a file this build does not load, or an archive that does not read.",
+    }
 
     // --- approvals ----------------------------------------------------------
     APPROVAL_NOT_FOUND {

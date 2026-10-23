@@ -305,6 +305,15 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             .field("plugin", &failure.plugin)
             .field("hook", failure.hook.name()),
         EngineError::NoRunnableModel => errors::NO_RUNNABLE_MODEL.error(),
+        EngineError::OnboardingIncomplete(missing) => errors::ONBOARDING_INCOMPLETE.error().field(
+            "missing",
+            missing
+                .iter()
+                .copied()
+                .map(crate::onboarding::requirement_to_wire)
+                .collect::<Vec<_>>(),
+        ),
+        EngineError::OnboardingKit(_) => errors::ONBOARDING_KIT_UNAVAILABLE.error(),
         EngineError::ProviderStoreReloadFailed => errors::PROVIDER_STORE_RELOAD_FAILED.error(),
         EngineError::RuntimeCompileFailed => errors::RUNTIME_COMPILE_FAILED.error(),
         EngineError::SessionOwnedByAnotherProcess(session_id) => errors::SESSION_OWNED_ELSEWHERE

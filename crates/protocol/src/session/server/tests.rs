@@ -487,6 +487,24 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::ConfigReloadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn get_onboarding(
+        &self,
+        _: crate::OnboardingGetParams,
+    ) -> Result<crate::OnboardingStatus, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn preview_onboarding(
+        &self,
+        _: crate::OnboardingPreviewParams,
+    ) -> Result<crate::OnboardingPreviewResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn run_onboarding(
+        &self,
+        _: crate::OnboardingRunParams,
+    ) -> Result<crate::OnboardingRunResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn background_tool(
         &self,
         _: crate::RunToolBackgroundParams,

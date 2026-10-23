@@ -201,6 +201,7 @@ mod memory;
 mod model;
 #[cfg(all(feature = "oauth-callback", not(target_arch = "wasm32")))]
 pub mod oauth_callback;
+mod onboarding;
 mod open;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod paths;
@@ -232,11 +233,12 @@ pub use content::*;
 pub use cookie_agent_identity::{
     AdapterId, AgentId, AgentRevision, AttachmentName, AuthFieldName, AuthMethodId,
     AuthParameterId, AuthRecipeId, CacheEntryId, CacheRevision, CanonicalModelId, CapabilityName,
-    CatalogRevision, ConfigRevision, IdentityError, MachineName, ManifestEntryId, ManifestRevision,
-    ModelKey, ModelRevision, ModelSelection, ModelSnapshotRevision, ProjectId, ProjectName,
-    ProtocolRecipeId, ProviderId, ProviderModelId, ProviderRecipeId, ProviderSetupRecipeId,
-    ProviderStateRevision, ProviderStoreRevision, RecipeCompilerVersion, RecipeRegistryRevision,
-    RuntimeId, RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
+    CatalogRevision, ConfigRevision, ConfiguredVariantRef, IdentityError, MachineName,
+    ManifestEntryId, ManifestRevision, ModelKey, ModelRevision, ModelSelection,
+    ModelSnapshotRevision, ProjectId, ProjectName, ProtocolRecipeId, ProviderId, ProviderModelId,
+    ProviderRecipeId, ProviderSetupRecipeId, ProviderStateRevision, ProviderStoreRevision,
+    RecipeCompilerVersion, RecipeRegistryRevision, RuntimeId, RuntimeRevision, SafeCode,
+    SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
 };
 pub use cron::*;
 pub use daemon::*;
@@ -249,6 +251,7 @@ pub use input_lanes::*;
 pub use manifest::*;
 pub use memory::*;
 pub use model::*;
+pub use onboarding::*;
 pub use open::*;
 pub use producer::*;
 pub use project::*;

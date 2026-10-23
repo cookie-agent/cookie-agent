@@ -50,6 +50,43 @@ impl Server {
         });
     }
 
+    /// Sends `onboarding.changed` whenever `onboarding.get`'s answer
+    /// changes. It changes only with the configuration or the runtime, both
+    /// of which publish a runtime change, so each publication is a moment to
+    /// compare.
+    pub(super) fn start_onboarding_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_runtime_changes();
+        let engine = self.engine.clone();
+        let mut last = engine.onboarding_state();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.recv() => match changed {
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                }
+                let state = engine.onboarding_state();
+                if state == last {
+                    continue;
+                }
+                last = state.clone();
+                if context
+                    .notify(
+                        cookie_agent_protocol::ONBOARDING_CHANGED_METHOD,
+                        &crate::onboarding::status_to_wire(state),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Forwards every session index change to this connection. A connection
     /// too slow to keep up is told to resync instead of silently missing
     /// changes.
