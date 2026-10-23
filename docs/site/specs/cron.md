@@ -632,6 +632,12 @@ Decisions taken where the spec left room, and deviations:
   naming it, then its sessions with their jobs.
 - **`crons.list`** also says whether the daemon is `firing`.
 - **Corpora.** No 1.15.0 corpus was recorded, as for 1.9.0 to 1.14.0.
+- **Tests** (`crates/engine/src/runtime/tests/crons.rs`) also cover a
+  `queue` fire into a busy session, which waits unadmitted behind the turn
+  and starts the next run, and a `steer` fire, which the running turn takes
+  and whose outcome is that run's; and the prepared resources of each cron
+  tool, `cron_update` across kinds checking both, with a rule that allows
+  `session` and denies `new` refusing the change.
 
 What phase 2 and 3 need: the TUI and web panels and the clock mark (from
 `SessionMeta::cron` and `crons.list`), `cookie cron`, the TUI's and web's

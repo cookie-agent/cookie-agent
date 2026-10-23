@@ -1097,3 +1097,315 @@ async fn a_job_does_not_keep_its_session_in_memory_and_its_fire_reloads_it() {
     let requests = captured.await.expect("model requests");
     assert!(requests[1].contains("Wake the paged-out session."));
 }
+
+/// Starts a run of `session` with `content`.
+async fn start(
+    engine: &Engine,
+    session: SessionId,
+    selection: &cookie_agent_protocol::RunSelection,
+    id: &str,
+    content: &str,
+) -> cookie_agent_protocol::RunId {
+    engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: cookie_agent_protocol::ClientRunId::new(id).unwrap(),
+                selection: selection.clone(),
+                content: content.into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run started")
+        .run_id
+}
+
+#[tokio::test]
+async fn a_queued_fire_waits_for_the_running_turn_and_starts_the_next_run() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let mut create = params(
+        "Queued behind the turn.",
+        daily(),
+        CronTarget::Session(session),
+    );
+    create.max_runs = Some(CronMaxRuns::Unlimited);
+    let job = engine.create_cron(create).await.unwrap();
+
+    // The user's turn waits for the model while the job fires.
+    let busy = start(engine, session, &selection, "busy", "the busy turn").await;
+    fire_now(engine, &job.id).await;
+    let delivered = await_job(engine, &job.id, "the queued fire", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.outcome == StoredOutcome::Delivered)
+    })
+    .await;
+    assert_eq!(delivered.runs, 1);
+    let message = delivered.history.last().unwrap().message_id.unwrap();
+    let pending = super::producers::producer_projection(engine, session);
+    let record = pending
+        .messages
+        .iter()
+        .find(|record| record.message_id == message)
+        .expect("the fire's message");
+    assert!(!record.consumed && record.admission.is_none(), "{record:?}");
+
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "the busy turn",
+            scripted_text_body("busy done"),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "Queued behind the turn.",
+            scripted_text_body("queued done"),
+        ))
+        .unwrap();
+    let settled = await_job(engine, &job.id, "the queued fire's run", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.run_end.is_some())
+    })
+    .await;
+    let fire = settled.history.last().unwrap();
+    let fire_run = fire.run_id.expect("the run that took the prompt");
+    assert_ne!(fire_run, busy, "a queued prompt starts its own run");
+    assert_eq!(
+        fire.run_end.as_ref().unwrap().status,
+        SessionStatus::Completed
+    );
+    let projection = engine.inner.store.get(session).unwrap();
+    assert_eq!(projection.runs[&busy].status, SessionStatus::Completed);
+    assert_eq!(projection.runs.len(), 2);
+    let requests = captured.await.expect("model requests");
+    assert!(!requests[0].contains("Queued behind the turn."));
+    assert!(requests[1].contains("Queued behind the turn."));
+}
+
+#[tokio::test]
+async fn a_steered_fire_joins_the_running_turn_and_follows_its_outcome() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let mut create = params(
+        "Steered into the turn.",
+        daily(),
+        CronTarget::Session(session),
+    );
+    create.max_runs = Some(CronMaxRuns::Unlimited);
+    create.delivery = Some(ProducerDeliveryMode::Steer);
+    let job = engine.create_cron(create).await.unwrap();
+
+    let busy = start(engine, session, &selection, "busy", "the busy turn").await;
+    fire_now(engine, &job.id).await;
+    await_job(engine, &job.id, "the steered fire", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.outcome == StoredOutcome::Delivered)
+    })
+    .await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "the busy turn",
+            scripted_text_body("busy done"),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "Steered into the turn.",
+            scripted_text_body("steered done"),
+        ))
+        .unwrap();
+    let settled = await_job(engine, &job.id, "the steered fire's run", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.run_end.is_some())
+    })
+    .await;
+    let fire = settled.history.last().unwrap();
+    assert_eq!(
+        fire.run_id,
+        Some(busy),
+        "a steered prompt joins the running turn"
+    );
+    assert_eq!(
+        fire.run_end.as_ref().unwrap().status,
+        SessionStatus::Completed
+    );
+    assert_eq!(settled.consecutive_failures, 0);
+    let projection = engine.inner.store.get(session).unwrap();
+    assert_eq!(projection.runs.len(), 1);
+    let requests = captured.await.expect("model requests");
+    assert!(requests[1].contains("Steered into the turn."));
+}
+
+fn turn_context(
+    policy: &crate::policy::FrozenRunPolicy,
+) -> std::sync::Arc<crate::TurnAgentContext> {
+    let binding = policy
+        .selected_suffix
+        .first()
+        .expect("frozen binding")
+        .clone();
+    std::sync::Arc::new(crate::TurnAgentContext {
+        agent: policy.agent.agent.clone(),
+        model: binding.selection.model.clone(),
+        adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
+        input_media: crate::policy::tool_input_media(
+            binding.descriptor.adapter_id.as_str(),
+            &policy
+                .model_capabilities(&binding)
+                .expect("model capabilities"),
+        ),
+    })
+}
+
+#[tokio::test]
+async fn cron_tools_check_each_target_kind_a_call_touches() {
+    let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let policy = frozen_root_policy(&fixture, &selection);
+    let job = engine
+        .create_cron(params("Labelled.", daily(), CronTarget::Session(session)))
+        .await
+        .unwrap();
+    let labels = |name: &'static str, arguments: serde_json::Value| {
+        let policy = policy.clone();
+        async move {
+            let prepared = engine
+                .prepare_tool_call(
+                    session,
+                    cookie_agent_protocol::RunId::new_v7(),
+                    crate::ToolCall {
+                        id: cookie_agent_protocol::ToolCallId::new_v7(),
+                        name: name.into(),
+                        arguments,
+                    },
+                    &policy,
+                    turn_context(&policy),
+                )
+                .await;
+            assert_eq!(prepared.permission_name.as_deref(), Some("cron"), "{name}");
+            prepared
+                .prepared
+                .unwrap_or_else(|failure| panic!("{name}: {}", failure.message))
+                .policy_labels()
+                .iter()
+                .map(|label| label.clone().expect("a label"))
+                .collect::<Vec<_>>()
+        }
+    };
+    let id = job.id.as_str();
+    assert_eq!(
+        labels(
+            "cron_update",
+            serde_json::json!({ "id": id, "target": { "new": {} } })
+        )
+        .await,
+        ["session", "new"]
+    );
+    assert_eq!(
+        labels(
+            "cron_update",
+            serde_json::json!({ "id": id, "target": "self" })
+        )
+        .await,
+        ["session"]
+    );
+    assert_eq!(
+        labels(
+            "cron_update",
+            serde_json::json!({ "id": id, "name": "Renamed" })
+        )
+        .await,
+        ["session"]
+    );
+    assert_eq!(
+        labels(
+            "cron_create",
+            serde_json::json!({
+                "prompt": "Run.", "schedule": { "in": "1h" }, "target": { "new": {} }
+            })
+        )
+        .await,
+        ["new"]
+    );
+    assert_eq!(
+        labels("cron_delete", serde_json::json!({ "id": id })).await,
+        ["session"]
+    );
+    assert_eq!(
+        labels("cron_run", serde_json::json!({ "id": id })).await,
+        ["session"]
+    );
+}
+
+#[tokio::test]
+async fn a_rule_that_denies_the_new_kind_refuses_the_change_of_kind() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Cron kinds\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: { session: allow, new: deny } }\n---\nKinds.\n",
+    );
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let job = engine
+        .create_cron(params(
+            "Stay in the session.",
+            daily(),
+            CronTarget::Session(session),
+        ))
+        .await
+        .unwrap();
+    for response in [
+        MatchedScriptedResponse::last_message_contains(
+            "move the job",
+            scripted_tool_body(
+                "cron-update",
+                "cron_update",
+                serde_json::json!({ "id": job.id.as_str(), "target": { "new": {} } }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_role("tool", scripted_text_body("refused")),
+    ] {
+        responses.send(response).unwrap();
+    }
+    start(engine, session, &selection, "move", "move the job").await;
+    wait_for_session_not_running(engine, session).await;
+    let terminated = engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination.outcome),
+            _ => None,
+        })
+        .expect("the call ended");
+    assert_ne!(
+        terminated,
+        cookie_agent_protocol::ToolTerminationOutcome::Completed
+    );
+    assert_eq!(
+        engine.cron_store().job(&job.id).unwrap().target,
+        crate::crons::StoredTarget::Session(session)
+    );
+    let requests = captured.await.expect("model requests");
+    assert!(
+        requests[1].contains("deny") || requests[1].contains("denied"),
+        "{}",
+        requests[1]
+    );
+}
