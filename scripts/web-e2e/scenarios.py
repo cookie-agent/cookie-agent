@@ -4191,6 +4191,61 @@ def audit():
 # scenario builds on, which run first when it is picked alone. The phone
 # audit stays last in its group, after every scenario that fills the
 # daemon it looks through.
+def acp_agents(browser):
+    """An ACP agent the daemon's `local` runtime hosts (test-web-page.sh
+    declares the scripted fixture, and a disabled one, for this group):
+    the agent picker lists both with their runtime, the disabled one dimmed
+    and not pickable; the agent's turn shows its plan as a checklist and its
+    tool call with the agent as its source; its commands are offered in the
+    composer; and the model chip opens its options, which change on the
+    agent."""
+    new_session(browser)
+    browser.click("#agent-chip")
+    fixture = '#sheet [data-agent="local-fixture"]'
+    off = '#sheet [data-agent="local-off"]'
+    browser.wait("the runtime agents", lambda: count(browser, fixture) == 1 and count(browser, off) == 1, timeout=40)
+    assert "on local" in browser.text(fixture + " [data-agent-runtime]"), browser.text(fixture)
+    assert "unavailable" in browser.text(off), browser.text(off)
+    assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-disabled')", off) == "true"
+    browser.click(off)
+    assert count(browser, "#sheet") == 1, "a dimmed agent was picked"
+    settle(browser)
+    browser.shot("acp-agent-picker")
+    browser.click(fixture)
+    browser.wait("the picked agent", lambda: "local-fixture" in browser.text("#agent-chip"))
+    send(browser, "work")
+    browser.wait("the agent's turn", lambda: "Done." in browser.text("#transcript"), timeout=60)
+    statuses = browser.script(
+        "return [...document.querySelectorAll('#transcript .agent-plan [data-plan-status]')]"
+        ".map(e => e.dataset.planStatus)"
+    )
+    assert statuses == ["completed", "in_progress"], statuses
+    browser.wait(
+        "the agent's tool call",
+        lambda: "local-fixture on local" in browser.text("#transcript [data-tool-source]"),
+    )
+    print("the agent's turn shows its plan and names it on its tool call")
+
+    browser.type("#composer", "/re")
+    browser.wait("the agent's commands", lambda: count(browser, '#agent-commands [data-agent-command="review"]') == 1)
+    assert count(browser, '#agent-commands [data-agent-command="compact"]') == 0
+    browser.click('#agent-commands [data-agent-command="review"]')
+    browser.wait("the command in the composer", lambda: browser.script("return document.querySelector('#composer').value") == "/review ")
+    clear_composer(browser)
+    print("the composer offers the agent's commands")
+
+    browser.wait("the agent's model", lambda: "Small" in browser.text("#model-chip"), timeout=40)
+    browser.click("#model-chip")
+    large = '#sheet [data-agent-option="model"] [data-option-value="large"]'
+    browser.wait("the agent's options", lambda: count(browser, large) == 1)
+    settle(browser)
+    browser.shot("acp-agent-options")
+    browser.click(large)
+    browser.wait("the changed option", lambda: "Large" in browser.text("#model-chip"), timeout=40)
+    close_sheet(browser)
+    print("the model chip opens the agent's options and sets one")
+
+
 def runtime_mcp(browser):
     """The runtime panels list each runtime's MCP servers: the daemon's
     `local` runtime hosts the stdio fixture server, which connects, one
@@ -4300,6 +4355,7 @@ SCENARIOS = [
     ("mcp_sign_in", mcp_sign_in, "oauth", []),
     # Its daemon's `local` runtime hosts MCP servers (test-web-page.sh).
     ("runtime_mcp", runtime_mcp, "runtime_mcp", []),
+    ("acp_agents", acp_agents, "acp", []),
     ("install_prompt", install_prompt, "install", []),
     ("install_on_phones", install_on_phones, "install", []),
     ("panic_hook", panic_hook, "install", []),

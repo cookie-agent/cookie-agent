@@ -32,6 +32,7 @@ use leptos::{prelude::*, task::spawn_local};
 
 use crate::{browser, connect::EVENT_LEVEL_KEY};
 
+mod acp;
 mod attachments;
 mod background;
 mod cards;
@@ -86,6 +87,8 @@ pub enum Panel {
     MoveSession,
     /// The project editor ([`Workspace::project_editor`]).
     Project,
+    /// The session's ACP agent options (model, mode, effort).
+    AgentOptions,
 }
 
 /// Why the daemon did not create the new session, with the runtimes it was
@@ -888,11 +891,14 @@ impl Workspace {
                     })
             })
         };
-        let model = agent
-            .resolved_fallback
-            .iter()
-            .find(|selection| live(selection))
-            .cloned()
+        let model = cookie_agent_client_state::acp::acp_model(agent)
+            .or_else(|| {
+                agent
+                    .resolved_fallback
+                    .iter()
+                    .find(|selection| live(selection))
+                    .cloned()
+            })
             .or_else(|| {
                 models.first().map(|model| ModelSelection {
                     model: model.key.clone(),
@@ -928,14 +934,25 @@ impl Workspace {
         }
     }
 
-    /// Picks `agent` (and its preferred model) for the draft.
+    /// Picks `agent` (and its preferred model) for the draft. An ACP agent
+    /// runs its synthetic model; one that is unavailable is refused.
     pub fn pick_agent(self, agent: &AgentDescriptor) {
+        if !cookie_agent_client_state::acp::pickable(agent) {
+            self.status
+                .set(cookie_agent_client_state::acp::unpickable_reason(agent));
+            return;
+        }
         let model = self
             .draft
             .get_untracked()
             .map(|draft| draft.model)
-            .or_else(|| agent.resolved_fallback.first().cloned());
-        let Some(model) = agent.resolved_fallback.first().cloned().or(model) else {
+            .filter(|model| !cookie_agent_client_state::acp::is_acp_model(model))
+            .or_else(|| self.default_draft().map(|draft| draft.model))
+            .filter(|model| !cookie_agent_client_state::acp::is_acp_model(model));
+        let Some(model) = cookie_agent_client_state::acp::acp_model(agent)
+            .or_else(|| agent.resolved_fallback.first().cloned())
+            .or(model)
+        else {
             return;
         };
         self.set_draft(RunSelection {

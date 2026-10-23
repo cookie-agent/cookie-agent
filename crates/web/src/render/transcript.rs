@@ -309,6 +309,11 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 rendered_body,
             )
         }
+        TranscriptItem::Plan { entries, .. } => format!(
+            "<div class=\"agent-plan rounded border-l-4 border-caramel px-3 py-1 dark:border-maple\"><div class=\"mb-1 flex items-center gap-2 text-sm font-bold\">{}<span>Plan</span></div>{}</div>",
+            svg(icondata::FaListCheckSolid, "text-caramel dark:text-maple"),
+            super::blocks::plan_html(entries)
+        ),
         TranscriptItem::Goal {
             goal, activation, ..
         } => {
@@ -678,6 +683,21 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
             )
         })
         .unwrap_or_default();
+    // An ACP agent's own call names the agent that ran it.
+    let progress = match tool
+        .presentation
+        .tool
+        .source
+        .as_ref()
+        .and_then(|source| source.known())
+        .and_then(cookie_agent_client_state::acp::acp_source_label)
+    {
+        Some(label) => format!(
+            "<span class=\"min-w-0 shrink-0 truncate {NOTE}\" data-tool-source>· {}</span>{progress}",
+            escape(&label)
+        ),
+        None => progress,
+    };
     // A call waiting for an approval says so on its header, and opens the
     // approvals from there.
     let approval = if view.waiting_approval(tool) {

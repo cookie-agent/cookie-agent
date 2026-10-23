@@ -1738,8 +1738,64 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             </button>
         }
     };
+    // The session's ACP agent's commands a draft starting with `/` names:
+    // choosing one that takes input puts `/<name> ` in the composer for it;
+    // one that takes none is sent.
+    let suggestions = Memo::new(move |_| {
+        workspace
+            .composer
+            .with(|draft| workspace.agent_command_suggestions(draft))
+    });
+    let agent_commands = move || {
+        let suggestions = suggestions.get();
+        (!suggestions.is_empty()).then(|| {
+            let rows = suggestions
+                .into_iter()
+                .map(|command| {
+                    let name = command.name.clone();
+                    let takes_input = command.input_hint.is_some();
+                    let hint = command.input_hint.clone().unwrap_or_default();
+                    view! {
+                        <li>
+                            <button
+                                type="button"
+                                class="flex min-h-11 w-full flex-wrap items-baseline gap-x-2 rounded px-2 py-1 text-left hover:bg-toasted focus-visible:bg-toasted dark:hover:bg-ember dark:focus-visible:bg-ember"
+                                data-agent-command=name.clone()
+                                on:click=move |_| {
+                                    if takes_input {
+                                        workspace.composer.set(format!("/{name} "));
+                                        if let Some(textarea) = textarea.get_untracked() {
+                                            let _ = textarea.focus();
+                                        }
+                                    } else {
+                                        workspace.composer.set(format!("/{name}"));
+                                        workspace.submit(InputDelivery::Steer);
+                                    }
+                                }
+                            >
+                                <span class="font-mono text-sm font-bold">{format!("/{}", command.name)}</span>
+                                <span class=format!("font-mono {NOTE}")>{hint}</span>
+                                <span class="rounded border border-caramel px-1 text-[0.625rem] uppercase dark:border-maple">"agent"</span>
+                                <span class=format!("min-w-0 {NOTE}")>{command.description.clone()}</span>
+                            </button>
+                        </li>
+                    }
+                })
+                .collect_view();
+            view! {
+                <ul
+                    id="agent-commands"
+                    class="mb-1 flex max-h-60 flex-col overflow-y-auto rounded-xl border border-crust bg-cream p-1 dark:border-smoke dark:bg-night"
+                    aria-label="The agent's commands"
+                >
+                    {rows}
+                </ul>
+            }
+        })
+    };
     view! {
         <div class="relative min-w-0 px-3 pt-2 pb-1 short:flex-1 short:pb-2">
+            {agent_commands}
             // One border, the box's: the text field inside has none, and
             // the buttons sit in its bottom corners.
             <div
@@ -1887,6 +1943,12 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             .unwrap_or_else(|| "agent".into())
     };
     let model = move || {
+        // An ACP agent chooses its own model, one of its options.
+        if workspace.draft_is_acp() {
+            return workspace
+                .acp_model_label()
+                .unwrap_or_else(|| "agent's model".into());
+        }
         let draft = workspace.draft.get();
         workspace.with_runtime(|runtime| {
             draft
@@ -1920,7 +1982,13 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 class=format!("{CHIP} compact:max-w-none compact:flex-1")
                 aria-label=move || format!("Model: {}", model())
                 title=move || format!("Model: {} (click to change)", model())
-                on:click=move |_| workspace.panel.set(Some(Panel::Models))
+                on:click=move |_| {
+                    workspace.panel.set(Some(if workspace.draft_is_acp() {
+                        Panel::AgentOptions
+                    } else {
+                        Panel::Models
+                    }))
+                }
             >
                 <Glyph icon=icondata::FaMicrochipSolid class="text-caramel dark:text-maple" />
                 <span class="min-w-0 flex-1 truncate text-left">{model}</span>
@@ -2100,6 +2168,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
     let title = move || match workspace.panel.get() {
         Some(Panel::Agents) => "Agent",
         Some(Panel::Models) => "Model",
+        Some(Panel::AgentOptions) => "Agent options",
         Some(Panel::Presets) => "Preset",
         Some(Panel::Approvals) => "Approvals",
         Some(Panel::Usage) => "Usage",
@@ -2158,6 +2227,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                         {move || match workspace.panel.get() {
                             Some(Panel::Agents) => agents_sheet(workspace).into_any(),
                             Some(Panel::Models) => models_sheet(workspace).into_any(),
+                            Some(Panel::AgentOptions) => agent_options_sheet(workspace).into_any(),
                             Some(Panel::Presets) => presets_sheet(workspace).into_any(),
                             Some(Panel::Approvals) => approvals_sheet(workspace).into_any(),
                             Some(Panel::Usage) => usage_sheet(workspace).into_any(),
@@ -2197,7 +2267,7 @@ fn choice_line(label: String, current: bool, class: &'static str) -> impl IntoVi
 
 fn agents_sheet(workspace: Workspace) -> impl IntoView {
     let current = workspace.draft.get_untracked().map(|draft| draft.agent);
-    let agents = workspace.selectable_agents();
+    let agents = workspace.picker_agents();
     if agents.is_empty() {
         return empty_state(icondata::FaRobotSolid, "No agent can start a session.").into_any();
     }
@@ -2206,24 +2276,98 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
         .map(|agent| {
             let picked = agent.clone();
             let chosen = current.as_ref() == Some(&agent.id);
+            // An ACP agent shows its runtime; one that is unavailable now is
+            // dimmed and cannot be picked.
+            let pickable = cookie_agent_client_state::acp::pickable(&agent);
+            let note = cookie_agent_client_state::acp::runtime_note(&agent);
             view! {
                 <button
                     type="button"
                     class=ROW
                     class:bg-toasted=chosen
                     class:dark:bg-ember=chosen
+                    class:opacity-50=!pickable
+                    class:cursor-not-allowed=!pickable
+                    data-agent=agent.id.to_string()
+                    aria-disabled=(!pickable).to_string()
+                    title=(!pickable).then(|| cookie_agent_client_state::acp::unpickable_reason(&agent))
                     on:click=move |_| {
-                        workspace.pick_agent(&picked);
-                        workspace.panel.set(None);
+                        if cookie_agent_client_state::acp::pickable(&picked) {
+                            workspace.pick_agent(&picked);
+                            workspace.panel.set(None);
+                        }
                     }
                 >
                     {choice_line(agent.id.to_string(), chosen, "font-mono text-sm font-bold")}
+                    {note.map(|note| view! { <span class=format!("font-mono {NOTE}") data-agent-runtime>{note}</span> })}
                     <span class=NOTE>{agent.description.clone()}</span>
                 </button>
             }
         })
         .collect_view()
         .into_any()
+}
+
+/// The session's ACP agent options: each with its values, the current one
+/// pressed; choosing a value sets it on the agent.
+fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
+    move || {
+        let Some(acp) = workspace.acp() else {
+            return empty_state(
+                icondata::FaSlidersSolid,
+                "The agent's options appear once its session has started: send a first message.",
+            )
+            .into_any();
+        };
+        if acp.options.is_empty() {
+            return empty_state(icondata::FaSlidersSolid, "The agent offers no options.")
+                .into_any();
+        }
+        acp.options
+            .into_iter()
+            .map(|option| {
+                let values = option
+                    .values
+                    .iter()
+                    .map(|value| {
+                        let chosen = value.value == option.current_value;
+                        let (option_id, value_id) = (option.id.clone(), value.value.clone());
+                        let label = format!("{}: {}", option.name, value.name);
+                        view! {
+                            <button
+                                type="button"
+                                class=BUTTON
+                                class:bg-toasted=chosen
+                                class:dark:bg-ember=chosen
+                                aria-pressed=chosen.to_string()
+                                data-option-value=value.value.clone()
+                                title=value.description.clone().unwrap_or_default()
+                                on:click=move |_| {
+                                    if !chosen {
+                                        workspace.set_agent_option(
+                                            option_id.clone(),
+                                            value_id.clone(),
+                                            label.clone(),
+                                        );
+                                    }
+                                }
+                            >
+                                {value.name.clone()}
+                            </button>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <div class="flex flex-col gap-1 border-b border-toasted pb-2 dark:border-ember" data-agent-option=option.id.clone()>
+                        <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
+                        {option.description.clone().map(|description| view! { <span class=format!("px-3 {NOTE}")>{description}</span> })}
+                        <div class="flex flex-wrap gap-2 px-3">{values}</div>
+                    </div>
+                }
+            })
+            .collect_view()
+            .into_any()
+    }
 }
 
 fn models_sheet(workspace: Workspace) -> impl IntoView {

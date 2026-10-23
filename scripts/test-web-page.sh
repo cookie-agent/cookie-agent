@@ -215,6 +215,20 @@ command = \"python3\"
 args = [\"$root/crates/mcp/tests/fixtures/mcp_server.py\"]
 scope = \"runtime\""
     fi
+    # The acp group's `local` runtime hosts the scripted ACP agent, and a
+    # disabled one the agent picker shows dimmed.
+    acp_agents=""
+    if [[ " $* " == *" acp_agents "* ]]; then
+        acp_agents="
+[runtimes.local.acp.agents.fixture]
+command = [\"python3\", \"$root/crates/engine/tests/fixtures/acp_agent.py\"]
+description = \"Fixture agent\"
+
+[runtimes.local.acp.agents.off]
+command = [\"python3\", \"$root/crates/engine/tests/fixtures/acp_agent.py\"]
+description = \"Disabled fixture\"
+enabled = false"
+    fi
     write_config "$allowing" "$port" <<TOML
 [session_title]
 generate_on_first_turn = false
@@ -251,6 +265,7 @@ url = "http://127.0.0.1:$oauth_port/mcp"
 [mcp.servers.oauth-paste]
 url = "http://127.0.0.1:$oauth_port/mcp"
 $runtime_mcp
+$acp_agents
 $memory_config
 TOML
     # A session made before the daemon starts, by another process: the daemon

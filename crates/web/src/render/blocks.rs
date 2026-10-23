@@ -51,6 +51,48 @@ pub fn media_html(sha256: &str, media_type: &str, byte_length: u64, label: Optio
     )
 }
 
+/// A plan as a checklist: each step with its status (done, in progress,
+/// pending) and a high or low priority.
+pub fn plan_html(entries: &[cookie_agent_protocol::PlanEntry]) -> String {
+    use cookie_agent_protocol::{PlanEntryPriority, PlanEntryStatus};
+    if entries.is_empty() {
+        return format!("<div class=\"plan {NOTE}\">no steps</div>");
+    }
+    let mut html = String::from("<ul class=\"plan flex flex-col gap-0.5 text-sm\">");
+    for entry in entries {
+        let (icon, state, text) = match entry.status {
+            PlanEntryStatus::Completed => (
+                icondata::FaSquareCheckRegular,
+                "completed",
+                "line-through opacity-70",
+            ),
+            PlanEntryStatus::InProgress => (
+                icondata::FaSquareCaretRightRegular,
+                "in_progress",
+                "font-semibold",
+            ),
+            PlanEntryStatus::Pending | PlanEntryStatus::Unknown => {
+                (icondata::FaSquareRegular, "pending", "")
+            }
+        };
+        let priority = match entry.priority {
+            Some(PlanEntryPriority::High) => {
+                format!(" <span class=\"{NOTE} text-caramel dark:text-maple\">high</span>")
+            }
+            Some(PlanEntryPriority::Low) => format!(" <span class=\"{NOTE}\">low</span>"),
+            Some(PlanEntryPriority::Medium | PlanEntryPriority::Unknown) | None => String::new(),
+        };
+        html.push_str(&format!(
+            "<li class=\"flex items-start gap-2\" data-plan-status=\"{state}\">{}<span class=\"sr-only\">{}:</span><span class=\"min-w-0 break-words {text}\">{}</span>{priority}</li>",
+            crate::icons::svg(icon, "mt-0.5 shrink-0"),
+            state.replace('_', " "),
+            escape(&entry.content),
+        ));
+    }
+    html.push_str("</ul>");
+    html
+}
+
 /// Every block of a display, in order.
 pub fn display_html<'a>(
     blocks: &[Open<DisplayBlock>],
@@ -142,12 +184,7 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             rows,
             omitted_rows,
         } => table_html(columns, rows, *omitted_rows),
-        // Its canonical text, a checklist, until the plan gets its own view.
-        DisplayBlock::Plan { .. } => format!(
-            "<pre class=\"{}\">{}</pre>",
-            PRE.replace("whitespace-pre ", "whitespace-pre-wrap "),
-            escape(&block.to_text()),
-        ),
+        DisplayBlock::Plan { entries } => plan_html(entries),
         DisplayBlock::Json { value } => format!(
             "<pre class=\"{PRE}\"><code class=\"language-json\">{}</code></pre>",
             escape(&serde_json::to_string_pretty(value).unwrap_or_default())
@@ -432,6 +469,53 @@ mod tests {
             "filename": "cat.png",
         }))
         .expect("artifact")
+    }
+
+    #[test]
+    fn a_plan_is_a_checklist_with_each_steps_status() {
+        use cookie_agent_protocol::{PlanEntry, PlanEntryPriority, PlanEntryStatus};
+        let plan = html(DisplayBlock::Plan {
+            entries: vec![
+                PlanEntry {
+                    content: "Read <it>".into(),
+                    status: PlanEntryStatus::Completed,
+                    priority: None,
+                },
+                PlanEntry {
+                    content: "Edit it".into(),
+                    status: PlanEntryStatus::InProgress,
+                    priority: Some(PlanEntryPriority::High),
+                },
+                PlanEntry {
+                    content: "Test it".into(),
+                    status: PlanEntryStatus::Pending,
+                    priority: None,
+                },
+            ],
+        });
+        let statuses = plan
+            .match_indices("data-plan-status=\"")
+            .map(|(at, marker)| {
+                plan[at + marker.len()..]
+                    .split('"')
+                    .next()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(statuses, ["completed", "in_progress", "pending"]);
+        assert!(plan.contains("Read &lt;it&gt;"), "{plan}");
+        assert!(plan.contains("line-through"), "{plan}");
+        assert!(plan.contains(">high</span>"), "{plan}");
+        assert!(
+            plan.contains("<span class=\"sr-only\">in progress:</span>"),
+            "{plan}"
+        );
+        assert!(
+            html(DisplayBlock::Plan {
+                entries: Vec::new()
+            })
+            .contains("no steps")
+        );
     }
 
     #[test]
