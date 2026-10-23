@@ -117,6 +117,8 @@ Esc in a step returns to the command list with the search intact.
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
 | `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, and reload hand edits; see [config.toml](../engine/configuration.md#changes-while-the-daemon-runs) |
 | `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](../sessions/memory.md#managing-memory) |
+| `/cron` (also `crons`) | List, create, edit, enable and disable, run now, and delete the daemon's cron jobs; see [Scheduled prompts](#scheduled-prompts) |
+| `/cron new` | Schedule a prompt in the session on screen: opens a new job's form for it; listed only while a session is open; see [Scheduled prompts](#scheduled-prompts) |
 | `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](../extend/plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](../extend/agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session, rename or delete one, or list every directory's; see [Session picker](#session-picker) |
@@ -134,7 +136,7 @@ Esc in a step returns to the command list with the search intact.
 
 In a read-only session owned by another cookie process, commands that write to
 the session (`/permissions`, `/runtime`, `/skills`, `/attach`, `/cancel`,
-`/goal`, `/compact`, `/rename`) are hidden.
+`/goal`, `/compact`, `/rename`, `/cron new`) are hidden.
 
 The composer only ever sends messages: text beginning with `/` is sent as a
 prompt like any other. To start a message with `/`, open the palette and type
@@ -200,6 +202,8 @@ Enter or click a row to open one.
   projects, then each project in name order, then the sessions in no
   project, then all again. The picker's title names the project shown.
   Each row names its project, with its emoji, before its agent.
+- A session a [cron job](#scheduled-prompts) started leads with a clock,
+  🕒, before its title.
 - **Ctrl+R**, or the **Rename** button, renames the highlighted session:
   a field holding its title opens over the search. See
   [Renaming](#renaming).
@@ -422,6 +426,77 @@ swaps to the call's result display; a call that ended without one keeps what it
 showed while running. Reopening a session renders only that committed
 content. Assistant text follows the same rule: streamed partials are replaced
 by the committed turn.
+
+## Scheduled prompts
+
+`/cron` opens the daemon's [cron jobs](../sessions/scheduling.md): prompts it
+fires on a schedule, into a session or into a new session per fire. Each row
+shows the job's name (or the start of its prompt), its schedule read plainly
+(`every day at 03:00`, `every Monday to Friday at 09:30, once`, `once at
+2026-10-23 03:00`), how long until its next fire, its target (`this
+session`, `session <title>`, `subagent <title>`, or `new session · <agent>`),
+whether it is enabled or why not (`finished`, `failed 3 times in a row`,
+`disabled by you`), and what its last fire did. Under the list, **Details**
+gives the selected job's schedule, run count, delivery, template, and
+prompt, and **History** its fires, newest first, each with its outcome and
+how its run ended. The title says when the daemon's firing is off (`[cron]
+enabled = false`).
+
+Up and Down select a job, or click its row. Each action is a key and a
+button below the panel:
+
+| Key | Action |
+|---|---|
+| `e` or Enter | Edit the selected job |
+| `n` | Create a job: into the session on screen, or, with none open, into a new session per fire |
+| `t` | Enable or disable the selected job |
+| `r` | Run it now; the status line says what the fire did |
+| `d` | Delete it, after `y` confirms; its run sessions stay |
+| Esc | Cancel a confirmation or a refused form, else close the panel |
+
+`/cron new` in the command palette opens a new job's form for the session on
+screen directly: a root session is targeted as a session, a subagent's as a
+subagent.
+
+A job is created and edited as a short form in `$VISUAL` or `$EDITOR`, as
+`/memory` and `/config` edit theirs: `key: value` lines, then the prompt
+after a `---` line. Lines starting with `#` explain the fields and are
+ignored.
+
+```text
+name: Nightly dependency check
+schedule: 0 3 * * *
+max_runs: unlimited
+target: new
+delivery: queue
+agent: builder
+model: deepseek/deepseek-flash[high]
+permission_mode: ask
+---
+Check for outdated dependencies and open a summary.
+```
+
+- `schedule` is five cron fields in the daemon host's local time, a delay
+  (`in 20m`), or a time (`at 2026-10-23T03:00:00Z`).
+- `max_runs` applies to cron schedules: a number from 1, or `unlimited`;
+  left empty, the job fires once.
+- `target: session` fires into the session the form was opened for (or the
+  job's own session when editing); `target: new` starts a session per fire.
+- `delivery` (`queue` or `steer`) applies to a session target; `agent`,
+  `model`, and `permission_mode` to a new-session target. `model` pins
+  `provider/model` or `provider/model[variant]`; empty, the agent's own
+  chain runs. `permission_mode` empty means `auto_approve_n`.
+
+A new-session job's template starts from the session on screen: its agent
+and preset (the agent you picked for its next run), its project, and the
+directory the TUI started in; with no session open, from the agent a new
+session would get. Saving unchanged text creates or changes nothing, and an
+edit sends only the fields it changed. A form the TUI cannot read, or that
+the daemon refuses, stays open with the reason: `e` edits it again as you
+left it, Esc drops it. The panel refreshes when any client or agent changes a
+job. A daemon older than client protocol 1.15 keeps no jobs: `/cron` says so,
+and `/cron new` is not offered. See
+[Scheduling prompts](../sessions/scheduling.md) for how jobs fire.
 
 ## Background calls
 
