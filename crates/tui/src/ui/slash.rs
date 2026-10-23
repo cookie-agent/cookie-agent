@@ -42,6 +42,8 @@ pub(crate) enum SlashCommand {
     Config,
     /// Restart the daemon, when idle or now.
     Restart,
+    /// `/onboard`: the onboarding panel.
+    Onboard,
     Memory,
     Cron,
     CronNew,
@@ -199,6 +201,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         description: "restart the daemon, once idle or now, to apply its configuration or a new build",
         action: PaletteAction::Run(SlashCommand::Restart),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "onboard",
+        aliases: &[],
+        description: "set up Cookie: a provider, the default and small models, the starter kit",
+        action: PaletteAction::Run(SlashCommand::Onboard),
         writes_session: false,
     },
     CommandSpec {

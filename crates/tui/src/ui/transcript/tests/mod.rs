@@ -22,6 +22,7 @@ mod live_stream;
 mod markdown;
 mod memory_panel;
 mod model_names;
+mod onboarding;
 mod perf;
 mod permissions;
 mod pickers;

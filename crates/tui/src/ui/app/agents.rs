@@ -514,6 +514,15 @@ impl App {
     /// Models listed for the draft: every coherent global descriptor for root
     /// sessions; the persisted frozen suffix for delegated sessions.
     pub(in crate::ui) fn draft_models(&self) -> Vec<ModelSelection> {
+        // Onboarding chooses among every available model, whatever the
+        // session on screen.
+        if self.onboarding.picking.is_some() {
+            return self
+                .models
+                .iter()
+                .map(Self::default_model_selection)
+                .collect();
+        }
         if self.new_session_draft.is_none() && !self.watching_root_session() {
             return self.persisted_chain().unwrap_or_default();
         }
@@ -540,7 +549,10 @@ impl App {
         &cookie_agent_protocol::ProviderId,
         &cookie_agent_protocol::UnavailableModelDescriptor,
     )> {
-        if self.new_session_draft.is_none() && !self.watching_root_session() {
+        if self.onboarding.picking.is_none()
+            && self.new_session_draft.is_none()
+            && !self.watching_root_session()
+        {
             return Vec::new();
         }
         let query = self.model_search.query().trim().to_lowercase();
@@ -589,7 +601,10 @@ impl App {
     /// The variant choices for `model` in the current draft context, in
     /// [`Self::draft_variants`] order.
     pub(in crate::ui) fn variants_for(&self, model: &ModelKey) -> Vec<Option<VariantId>> {
-        if self.new_session_draft.is_none() && !self.watching_root_session() {
+        if self.onboarding.picking.is_none()
+            && self.new_session_draft.is_none()
+            && !self.watching_root_session()
+        {
             return self
                 .persisted_chain_selection(model)
                 .map(|selection| vec![selection.variant])

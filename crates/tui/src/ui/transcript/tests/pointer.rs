@@ -49,6 +49,10 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::MemoryAction(_) => "memory action",
         PointerTarget::CronRow(_) => "cron row",
         PointerTarget::CronAction(_) => "cron action",
+        PointerTarget::OnboardingNotice(_) => "onboarding notice",
+        PointerTarget::OnboardingTab(_) => "onboarding tab",
+        PointerTarget::OnboardingRow(_) => "onboarding row",
+        PointerTarget::OnboardingAction(_) => "onboarding action",
         PointerTarget::ConfirmButton(_) => "confirm button",
         PointerTarget::RestartChoice(_) => "restart choice",
         PointerTarget::RestartBanner => "restart banner",
@@ -385,6 +389,30 @@ async fn every_clickable_element_hovers_visibly() {
     app.cron_panel = Default::default();
     app.modal = Modal::None;
 
+    // A daemon that is not set up: the notice, which takes the background
+    // bar's row while no call runs in the background, then the panel's
+    // steps.
+    app.store
+        .sessions
+        .get_mut(&session)
+        .expect("session")
+        .background_calls
+        .clear();
+    app.onboarding.status = Some(crate::ui::app::onboarding::sample_status(&[
+        cookie_agent_protocol::OnboardingRequirement::Provider,
+        cookie_agent_protocol::OnboardingRequirement::DefaultModel,
+        cookie_agent_protocol::OnboardingRequirement::SmallModel,
+    ]));
+    seen.extend(sweep(&mut app, "onboarding notice"));
+    app.activate_onboarding_action(crate::ui::app::onboarding::OnboardingAction::SetUp);
+    assert_eq!(app.modal, Modal::Onboarding);
+    seen.extend(sweep(&mut app, "onboarding panel"));
+    app.onboarding.step = Some(cookie_agent_client_state::onboarding::OnboardingStep::Kit);
+    app.onboarding.preview = Some(Ok(crate::ui::app::onboarding::sample_preview()));
+    seen.extend(sweep(&mut app, "onboarding kit step"));
+    app.onboarding = Default::default();
+    app.modal = Modal::None;
+
     app.begin_provider_form(multi_auth_provider());
     seen.extend(sweep(&mut app, "provider form"));
     app.provider_form = None;
@@ -432,6 +460,10 @@ async fn every_clickable_element_hovers_visibly() {
         "memory action",
         "cron row",
         "cron action",
+        "onboarding notice",
+        "onboarding tab",
+        "onboarding row",
+        "onboarding action",
         "confirm button",
         "restart choice",
         "restart banner",

@@ -1001,6 +1001,12 @@ impl App {
     }
 
     pub(in crate::ui) async fn handle_key(&mut self, key: KeyEvent) {
+        self.handle_key_inner(key).await;
+        // A panel the onboarding panel handed over to may just have closed.
+        self.resume_onboarding();
+    }
+
+    async fn handle_key_inner(&mut self, key: KeyEvent) {
         if key.code != KeyCode::Esc {
             self.last_escape = None;
         }
@@ -1060,6 +1066,7 @@ impl App {
             Modal::Background => self.handle_background_key(key),
             Modal::Plugins => self.handle_plugin_key(key),
             Modal::Config => self.handle_config_key(key),
+            Modal::Onboarding => self.handle_onboarding_key(key),
             Modal::Memory => self.handle_memory_key(key),
             Modal::Cron => self.handle_cron_key(key),
             Modal::Projects => self.handle_project_picker(key).await,
@@ -1552,6 +1559,7 @@ impl App {
                     | Modal::Usage
                     | Modal::GoalDetail
                     | Modal::Background
+                    | Modal::Onboarding
                     | Modal::Plugins
                     | Modal::Config
                     | Modal::Memory

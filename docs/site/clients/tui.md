@@ -118,6 +118,7 @@ Esc in a step returns to the command list with the search intact.
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
 | `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, reload hand edits (`r` or *Reload from disk*), and restart the daemon (`R` or *Restart daemon*, highlighted while a part waits for a restart); see [config.toml](../engine/configuration.md#changes-while-the-daemon-runs) |
 | `/restart` | Restart the daemon, when idle or now; see [Restarting the daemon](#restarting-the-daemon) |
+| `/onboard` | Set up Cookie: connect a provider, choose the default and small models, and install the starter kit; see [Setting up](#setting-up) |
 | `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](../sessions/memory.md#managing-memory) |
 | `/cron` (also `crons`) | List, create, edit, enable and disable, run now, and delete the daemon's cron jobs; see [Scheduled prompts](#scheduled-prompts) |
 | `/cron new` | Schedule a prompt in the session on screen: opens a new job's form for it; listed only while a session is open; see [Scheduled prompts](#scheduled-prompts) |
@@ -182,6 +183,40 @@ the TUI reconnects as after any dropped connection. A daemon not started by
 `cookie daemon`, including the engine of `cookie --standalone`, cannot
 restart itself and says so. See
 [Restarting the daemon](../daemon/persistent.md#restarting-the-daemon).
+
+## Setting up
+
+When the TUI connects to a daemon that is not set up (no provider connected,
+or `default_model` or `small_model` not naming an available model), a notice
+takes the bar above the composer: what is left, then **Set up** and **Not
+now**. Set up opens the onboarding panel; Not now hides the notice on this
+machine (in `~/.cookie-agent/tui-state.json`) until what the daemon misses
+changes. `/onboard` opens the panel any time, also on a daemon that is set
+up. Every client sees the same state: finishing in the web client or with
+[`cookie onboard`](cli.md#cookie-onboard) hides the notice here too.
+
+The panel shows the four steps as tabs, each done one with a check; ← and →
+(or Tab) move between them, and a tab can be clicked:
+
+1. **Provider**: the connected providers with their count of available
+   models. Enter opens the [connect panel](#command-palette) (`/connect`);
+   it returns to the panel when it closes.
+2. **Default model**: Enter opens the model list, searchable and grouped by
+   provider; choosing a model with variants opens its variants, the model's
+   default variant highlighted.
+3. **Small model**: the same list with nothing suggested; the variant list
+   highlights the model's first listed variant, its cheapest. It may be the
+   same model as the default.
+4. **Starter kit**: what installing the kit does to each file (new, same as
+   yours and skipped, or differs and written beside yours as `.new`); Up and
+   Down select a file and `d` shows its diff. `i` turns installing on or off,
+   and `o` takes the path of a downloaded `cookie-agent-defaults.tar.gz`
+   instead of the release's kit.
+
+`f` (or the **finish** button) sets everything up with `onboarding.run`; while
+something is missing the panel says what instead. The summary lists the
+settings and files written and offers a first session on `primary`. `n` is
+Not now, and Esc closes the panel.
 
 ## Steering, queueing, and the pending strip
 

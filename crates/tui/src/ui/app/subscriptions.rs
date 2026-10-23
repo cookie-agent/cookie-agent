@@ -235,6 +235,7 @@ impl App {
         self.reset_restart_after_reconnect();
         self.reset_subscriptions();
         self.status = "reconnected to the daemon".into();
+        self.poll_onboarding();
         self.request_runtime_resync();
         self.refresh_lists().await;
         if let Some(selected) = self.selected {

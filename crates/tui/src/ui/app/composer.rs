@@ -1090,6 +1090,7 @@ impl App {
             SlashCommand::Plugins => self.open_plugin_panel(),
             SlashCommand::Config => self.open_config_panel(),
             SlashCommand::Restart => self.open_restart_confirm(),
+            SlashCommand::Onboard => self.open_onboarding_panel(),
             SlashCommand::Memory => self.open_memory_panel(),
             SlashCommand::Cron => self.open_cron_panel(),
             SlashCommand::CronNew => self.schedule_in_session(),

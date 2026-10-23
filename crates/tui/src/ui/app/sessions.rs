@@ -505,6 +505,7 @@ impl App {
             | Modal::RestartConfirm
             | Modal::AttachConfirm
             | Modal::Config
+            | Modal::Onboarding
             | Modal::Memory
             | Modal::Cron
             | Modal::None => 0,
@@ -553,7 +554,10 @@ impl App {
         self.model_then_variant = false;
         self.variant_step_model = None;
         self.modal = Modal::None;
-        self.new_session_draft = None;
+        // Onboarding's choice leaves a new-session draft alone.
+        if self.onboarding.picking.take().is_none() {
+            self.new_session_draft = None;
+        }
     }
 
     pub(super) fn close_provider_picker(&mut self) {

@@ -72,7 +72,7 @@ impl App {
             tree_rows,
             self.queue_strip_height(),
             self.goal_bar_visible(),
-            self.background_bar_visible(),
+            self.background_bar_visible() || self.onboarding_notice_visible(),
             input_text_rows,
         );
         self.render_tree(frame, layout.agent, &tree_entries);
@@ -99,7 +99,16 @@ impl App {
         self.render_restart_banner(frame, banner);
         self.render_conversation(frame, conversation);
         self.render_queue_strip(frame, layout.queue);
-        self.render_background_bar(frame, layout.background);
+        if self.background_bar_visible() {
+            self.render_background_bar(frame, layout.background);
+        } else {
+            self.hit_map.background_bar = None;
+            // The notice takes the background bar's row while no call runs
+            // in the background.
+            if self.onboarding_notice_visible() {
+                self.render_onboarding_notice(frame, layout.background);
+            }
+        }
         self.render_goal_bar(frame, layout.goal);
         let title_spans = self.message_title_spans();
         let composer_focused = self.composer_focused();
@@ -214,6 +223,7 @@ impl App {
             Modal::Background => self.render_background_panel(frame),
             Modal::Plugins => self.render_plugin_panel(frame),
             Modal::Config => self.render_config_panel(frame),
+            Modal::Onboarding => self.render_onboarding_panel(frame),
             Modal::Memory => self.render_memory_panel(frame),
             Modal::Cron => self.render_cron_panel(frame),
             Modal::Projects => self.render_project_picker(frame),

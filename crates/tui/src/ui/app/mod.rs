@@ -13,6 +13,7 @@ mod emoji_backend;
 mod keys;
 mod machines;
 pub(in crate::ui) mod memory_panel;
+pub(in crate::ui) mod onboarding;
 mod pickers;
 mod plugins;
 mod pointer;
@@ -179,6 +180,8 @@ pub(super) enum Modal {
     /// `/options`: the session's ACP agent options, then the values of
     /// `App::agent_option_step`.
     AgentOptions,
+    /// `/onboard` or the notice's "Set up": the onboarding panel.
+    Onboarding,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -492,6 +495,13 @@ pub(super) enum PointerTarget {
     /// A `/cron` panel row (selects it) and an action it offers.
     CronRow(usize),
     CronAction(cron_panel::CronAction),
+    /// A button of the onboarding notice.
+    OnboardingNotice(onboarding::OnboardingAction),
+    /// An onboarding panel step tab, a starter kit file row (selects it),
+    /// and an action the panel offers.
+    OnboardingTab(cookie_agent_client_state::onboarding::OnboardingStep),
+    OnboardingRow(usize),
+    OnboardingAction(onboarding::OnboardingAction),
     ConfirmButton(ConfirmButton),
     /// A button of the restart confirmation.
     RestartChoice(restart::RestartChoice),
@@ -584,6 +594,9 @@ pub(super) struct UiHitMap {
     pub(super) memory: memory_panel::MemoryHits,
     /// The `/cron` panel's rows and actions.
     pub(super) cron: cron_panel::CronHits,
+    /// The onboarding notice's buttons and the panel's tabs, kit rows, and
+    /// actions.
+    pub(super) onboarding: onboarding::OnboardingHits,
     pub(super) title_segments: Vec<TitleSegmentHit>,
     /// One clickable row per rendered queue-strip line (entries and the
     /// overflow fold alike): any click recalls the newest pending input.
@@ -636,6 +649,7 @@ impl UiHitMap {
         self.runtimes = crate::ui::management::RuntimeHits::default();
         self.memory = memory_panel::MemoryHits::default();
         self.cron = cron_panel::CronHits::default();
+        self.onboarding = onboarding::OnboardingHits::default();
         self.title_segments.clear();
         self.queue_entries.clear();
         self.user_messages.clear();
@@ -844,6 +858,8 @@ pub struct App {
     /// A memory the event loop opens in the editor next.
     pub(super) pending_memory_editor: Option<memory_panel::MemoryEditRequest>,
     pub(super) cron_panel: cron_panel::CronPanelState,
+    /// Whether the daemon is set up, the notice, and the `/onboard` panel.
+    pub(in crate::ui) onboarding: onboarding::OnboardingState,
     /// A cron job form the event loop opens in the editor next.
     pub(super) pending_cron_editor: Option<cron_panel::CronEditRequest>,
     /// Ctrl+Z asked the event loop to suspend the TUI (Unix job control).
@@ -1156,6 +1172,16 @@ pub(in crate::ui) enum RpcUpdate {
     },
     ConfigLoaded {
         result: Result<cookie_agent_protocol::ConfigGetResult, String>,
+    },
+    /// `onboarding.get` answered; `None` from a daemon without onboarding.
+    OnboardingStatus {
+        status: Option<cookie_agent_protocol::OnboardingStatus>,
+    },
+    OnboardingPreview {
+        result: Result<cookie_agent_protocol::OnboardingPreviewResult, String>,
+    },
+    OnboardingRun {
+        result: Result<cookie_agent_protocol::OnboardingRunResult, String>,
     },
     MemoryListed {
         result: Result<cookie_agent_protocol::MemoryListResult, String>,
@@ -1550,6 +1576,7 @@ impl App {
             memory_panel: memory_panel::MemoryPanelState::default(),
             pending_memory_editor: None,
             cron_panel: cron_panel::CronPanelState::default(),
+            onboarding: onboarding::OnboardingState::default(),
             pending_cron_editor: None,
             pending_suspend: false,
             goal_focus: None,
@@ -1992,6 +2019,10 @@ async fn run_terminal(
         .context("initialize TUI")?;
     app.reconnector = reconnector;
     app.show_connection(connection);
+    if let Some(path) = onboarding::OnboardingState::default_state_file() {
+        app.onboarding = onboarding::OnboardingState::with_state_file(path);
+    }
+    app.poll_onboarding();
     // A stop signal quits like `/quit`, so the terminal is restored and an
     // in-process daemon shuts down.
     let signals = cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;

@@ -977,6 +977,40 @@ impl App {
                     };
                 }
             }
+            Modal::Models if self.onboarding.picking.is_some() => {
+                let slot = self.onboarding.picking.expect("an onboarding choice");
+                let Some(model) = self
+                    .filtered_draft_models()
+                    .get(index)
+                    .map(|selection| selection.model.clone())
+                else {
+                    return;
+                };
+                if self.variants_for(&model).len() > 1 {
+                    let preferred = self.onboarding_preferred_variant(slot, &model);
+                    let row = self
+                        .variants_for(&model)
+                        .iter()
+                        .position(|variant| *variant == preferred)
+                        .unwrap_or(0);
+                    self.variant_step_model = Some(model);
+                    self.picker_state.select(Some(row));
+                    self.modal = Modal::Variants;
+                    return;
+                }
+                let variant = self.onboarding_preferred_variant(slot, &model);
+                self.finish_onboarding_model(slot, model, variant);
+            }
+            Modal::Variants if self.onboarding.picking.is_some() => {
+                let slot = self.onboarding.picking.expect("an onboarding choice");
+                let Some(model) = self.variant_step_model.clone() else {
+                    return;
+                };
+                let Some(variant) = self.variant_step_options().get(index).cloned() else {
+                    return;
+                };
+                self.finish_onboarding_model(slot, model, variant);
+            }
             Modal::Models => {
                 if !self.model_selection_allowed() {
                     self.status = "no draft model is available for this session".into();
@@ -1036,6 +1070,7 @@ impl App {
             | Modal::Background
             | Modal::Plugins
             | Modal::Config
+            | Modal::Onboarding
             | Modal::Memory
             | Modal::Cron => {}
             Modal::Projects => self.choose_project_entry(index),

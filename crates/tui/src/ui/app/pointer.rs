@@ -47,6 +47,9 @@ impl App {
         if hits.background_bar.is_some_and(over) {
             return Some(PointerTarget::BackgroundBar);
         }
+        if let Some((_, action)) = hits.onboarding.notice.iter().find(|(rect, _)| over(*rect)) {
+            return Some(PointerTarget::OnboardingNotice(*action));
+        }
         if hits.permission_mode.is_some_and(over) {
             return Some(PointerTarget::PermissionMode);
         }
@@ -195,6 +198,20 @@ impl App {
                     .find(|(rect, _)| over(*rect))
                     .map(|(_, index)| PointerTarget::MachineRow(*index));
             }
+            Modal::Onboarding => {
+                let onboarding = &hits.onboarding;
+                if let Some((_, step)) = onboarding.tabs.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::OnboardingTab(*step));
+                }
+                if let Some((_, action)) = onboarding.actions.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::OnboardingAction(*action));
+                }
+                return onboarding
+                    .rows
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, index)| PointerTarget::OnboardingRow(*index));
+            }
             Modal::Cron => {
                 let cron = &hits.cron;
                 if let Some((_, action)) = cron.actions.iter().find(|(rect, _)| over(*rect)) {
@@ -303,6 +320,11 @@ impl App {
     }
 
     pub(in crate::ui) async fn handle_click(&mut self, column: u16, row: u16) {
+        self.handle_click_inner(column, row).await;
+        self.resume_onboarding();
+    }
+
+    async fn handle_click_inner(&mut self, column: u16, row: u16) {
         let target = self.pointer_target_at(column, row);
         if self.command_palette_visible() {
             if let Some(target) = target {
@@ -377,6 +399,11 @@ impl App {
             PointerTarget::MemoryAction(action) => self.activate_memory_action(action),
             PointerTarget::CronRow(index) => self.cron_panel.selection.select(Some(index)),
             PointerTarget::CronAction(action) => self.activate_cron_action(action),
+            PointerTarget::OnboardingNotice(action) | PointerTarget::OnboardingAction(action) => {
+                self.activate_onboarding_action(action);
+            }
+            PointerTarget::OnboardingTab(step) => self.show_onboarding_step(step),
+            PointerTarget::OnboardingRow(index) => self.select_onboarding_file(index),
             PointerTarget::BackgroundStop(index) => self.stop_background_call(index),
             PointerTarget::ConfirmButton(button) => {
                 if self.modal == Modal::RevertConfirm {
@@ -669,6 +696,36 @@ impl App {
                     .map(|(rect, _)| *rect)),
                 fill_style,
             ),
+            PointerTarget::OnboardingNotice(action) => (
+                one(hits
+                    .onboarding
+                    .notice
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
+            PointerTarget::OnboardingAction(action) => (
+                one(hits
+                    .onboarding
+                    .actions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
+            PointerTarget::OnboardingTab(step) => (
+                one(hits
+                    .onboarding
+                    .tabs
+                    .iter()
+                    .find(|(_, candidate)| *candidate == step)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
+            PointerTarget::OnboardingRow(index) => {
+                (one(indexed_rect(&hits.onboarding.rows, index)), text_style)
+            }
             PointerTarget::PickerRow(index) => (
                 one(hits
                     .picker_rows

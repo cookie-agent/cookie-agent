@@ -372,6 +372,13 @@ impl App {
     }
 
     pub(in crate::ui) fn handle_rpc_update(&mut self, update: RpcUpdate) {
+        self.apply_rpc_update(update);
+        // A provider connect the onboarding panel handed over to may just
+        // have finished and closed its panel.
+        self.resume_onboarding();
+    }
+
+    fn apply_rpc_update(&mut self, update: RpcUpdate) {
         match update {
             RpcUpdate::Status(status) => {
                 self.session_errors.record(&status);
@@ -662,6 +669,9 @@ impl App {
             }
             RpcUpdate::PluginsRefreshed { result } => self.install_plugins(result),
             RpcUpdate::ConfigLoaded { result } => self.install_config(result),
+            RpcUpdate::OnboardingStatus { status } => self.install_onboarding_status(status),
+            RpcUpdate::OnboardingPreview { result } => self.install_onboarding_preview(result),
+            RpcUpdate::OnboardingRun { result } => self.install_onboarding_run(result),
             RpcUpdate::ConfigApplied {
                 path,
                 edit,
@@ -1045,6 +1055,9 @@ impl App {
         }
         if matches!(delivery, ClientDelivery::CronsChanged(_)) {
             self.poll_crons();
+        }
+        if let ClientDelivery::OnboardingChanged(status) = &delivery {
+            self.install_onboarding_status(Some(status.clone()));
         }
         if matches!(delivery, ClientDelivery::PluginsChanged(_)) {
             self.poll_plugins();
