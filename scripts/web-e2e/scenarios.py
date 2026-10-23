@@ -1781,6 +1781,124 @@ def memory_changes(browser):
     print("memory: a line about a deleted memory says it is gone")
 
 
+def cron_reading(browser, text):
+    """Waits for the form's plain reading of the schedule to say `text`."""
+    browser.wait("the reading %r" % text, lambda: browser.text("#cron-reading").strip() == text)
+
+
+def cron_row(name):
+    """The Scheduled prompts row whose title is `name`."""
+    return '#page [data-cron-job][data-title="%s"]' % name
+
+
+def cron_jobs(browser):
+    """Scheduled prompts: the ⋮ menu's "Schedule a prompt" opens the job
+    form for the open session, its plain reading following what is typed;
+    the job lists its schedule, reading, next fire, target, state, and last
+    outcome; run now records a fire, disable and enable change its state,
+    and an edit renames it. A new-session job's run session shows a clock
+    in the session list that opens its job, and deleting the job keeps the
+    session. The in-session job stays, for the phone audit."""
+    browser.resize(1280, 900)
+    new_session(browser)
+    send(browser, "a session to schedule into")
+    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
+    session_title = browser.text("#session-title").strip()
+
+    menu(browser, "schedule")
+    browser.wait("the job form", lambda: count(browser, "#cron-form") == 1)
+    assert page_view(browser) == "cron"
+    assert browser.script(
+        "return document.querySelector('#cron-target-session').getAttribute('aria-checked')"
+    ) == "true", "the form does not target the open session"
+    assert "this session" in browser.text("#cron-target-session"), browser.text("#cron-target-session")
+    set_text(browser, "#cron-name", "E2E nightly")
+    set_text(browser, "#cron-prompt", "Check the build.")
+    set_text(browser, "#cron-schedule", "0 3 * * *")
+    cron_reading(browser, "every day at 03:00, once")
+    set_text(browser, "#cron-max-runs", "unlimited")
+    cron_reading(browser, "every day at 03:00")
+    set_text(browser, "#cron-schedule", "0 3 * *")
+    browser.wait("the refusal", lambda: "five cron fields" in browser.text("#cron-reading"))
+    assert browser.script("return document.querySelector('#cron-reading').dataset.valid") == "false"
+    set_text(browser, "#cron-schedule", "0 9 * * 1-5")
+    cron_reading(browser, "every Monday to Friday at 09:00")
+    browser.shot("cron-form")
+    browser.click("#cron-save")
+    nightly = cron_row("E2E nightly")
+    browser.wait("the job", lambda: count(browser, "#cron-form") == 0 and count(browser, nightly) == 1)
+    text = browser.text(nightly)
+    for part in ("0 9 * * 1-5", "every Monday to Friday at 09:00", "this session", "enabled", "last: never"):
+        assert part in text, (part, text)
+    assert re.search(r"next \d{4}-\d\d-\d\d 09:00 \(in \d+ (hour|day)s?\)", text), text
+    # The new job is selected: its details, actions, and empty history.
+    browser.wait("its details", lambda: count(browser, nightly + " [data-cron-details]") == 1)
+    assert browser.text(nightly + " [data-cron-detail=delivery]") == "queue"
+    assert "It has not fired yet." in browser.text(nightly + " [data-cron-history]")
+    browser.shot("cron-view")
+    print("cron: the ⋮ menu schedules a prompt into the open session, read plainly")
+
+    # Run now queues the prompt into the session, recorded as a run now.
+    browser.click(nightly + " [data-cron-action=run]")
+    browser.wait("the run now", lambda: "run now · delivered" in browser.text(nightly + " [data-cron-history]"), timeout=40)
+    assert count(browser, nightly + " [data-cron-fire-session]") == 1
+    browser.click(nightly + " [data-cron-action=disable]")
+    browser.wait("the disabled job", lambda: browser.text(nightly + " [data-cron-state]") == "disabled by you")
+    assert "no next fire" in browser.text(nightly)
+    browser.click(nightly + " [data-cron-action=enable]")
+    browser.wait("the enabled job", lambda: browser.text(nightly + " [data-cron-state]") == "enabled")
+    browser.click(nightly + " [data-cron-action=edit]")
+    browser.wait("the edit form", lambda: count(browser, "#cron-form") == 1)
+    assert browser.script("return document.querySelector('#cron-schedule').value") == "0 9 * * 1-5"
+    assert "this session" in browser.text("#cron-target") or session_title in browser.text("#cron-target")
+    set_text(browser, "#cron-name", "E2E weekdays")
+    browser.click("#cron-save")
+    weekdays = cron_row("E2E weekdays")
+    browser.wait("the renamed job", lambda: count(browser, weekdays) == 1 and count(browser, nightly) == 0)
+    print("cron: run now, disable, enable, and edit")
+
+    # A job that starts a new session each run: its run session's clock
+    # opens it.
+    browser.click("#cron-new")
+    browser.wait("the job form", lambda: count(browser, "#cron-form") == 1)
+    browser.click("#cron-target-new")
+    browser.wait("the template's fields", lambda: shown(browser, "#cron-agent") and not shown(browser, "#cron-delivery"))
+    set_text(browser, "#cron-name", "E2E fresh")
+    set_text(browser, "#cron-prompt", "Start somewhere new.")
+    set_text(browser, "#cron-schedule", "in 2h")
+    cron_reading(browser, "once in 2h")
+    browser.click("#cron-save")
+    fresh = cron_row("E2E fresh")
+    browser.wait("the new-session job", lambda: count(browser, fresh + " [data-cron-details]") == 1)
+    assert "new session · " in browser.text(fresh + " [data-cron-target]"), browser.text(fresh)
+    browser.click(fresh + " [data-cron-action=run]")
+    browser.wait("the run session", lambda: count(browser, fresh + " [data-cron-fire-session]") == 1, timeout=40)
+    run_session = browser.script(
+        "return document.querySelector(arguments[0]).dataset.cronFireSession", fresh + " [data-cron-fire-session]"
+    )
+    view(browser, "chat")
+    clock = 'aside [data-session-row="%s"] [data-session-cron]' % run_session
+    browser.wait("the clock mark", lambda: count(browser, clock) == 1, timeout=40)
+    title = browser.script("return document.querySelector(arguments[0]).title", clock)
+    assert title == "Started by the scheduled prompt E2E fresh", title
+    browser.shot("cron-clock")
+    browser.click(clock)
+    browser.wait("the job from its clock", lambda: page_view(browser) == "cron"
+                 and count(browser, fresh + " [data-cron-details]") == 1)
+    print("cron: a run session's clock opens its job")
+
+    # Deleting the job keeps its session.
+    browser.click(fresh + " [data-cron-action=delete]")
+    browser.wait("the confirmation", lambda: count(browser, "#cron-delete-confirm") == 1)
+    browser.click("#cron-delete-confirm")
+    browser.wait("the deleted job", lambda: count(browser, fresh) == 0)
+    assert count(browser, weekdays) == 1
+    view(browser, "chat")
+    browser.wait("the kept session", lambda: count(browser, 'aside [data-session-row="%s"]' % run_session) == 1)
+    print("cron: deleting a job keeps the sessions it started")
+
+
 def page_view(browser):
     return browser.script("const p = document.querySelector('#page'); return p ? p.dataset.view : 'chat'")
 
@@ -2318,7 +2436,7 @@ def desktop_layout(browser):
     """The rail's views, the session menu, the sidebar toggle, the theme
     toggle, and the bottom bar's pickers."""
     # The rail switches views and marks the one shown.
-    for name in ("agents", "settings", "machines", "memory", "chat"):
+    for name in ("agents", "settings", "machines", "memory", "cron", "chat"):
         view(browser, name)
         current = browser.script(
             "return document.querySelector('[data-rail=primary] [aria-current=page]').dataset.view"
@@ -2344,7 +2462,8 @@ def desktop_layout(browser):
     )
     names = [entry[0] for entry in entries]
     assert names == [
-        "rename", "compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset",
+        "rename", "compact", "goal", "schedule", "skills", "background", "runtime", "permissions", "usage",
+        "events", "preset",
     ], names
     for name, text, icon in entries:
         assert icon and "/" not in text and "\n" in text, (name, text, icon)
@@ -2352,8 +2471,9 @@ def desktop_layout(browser):
     close_sheet(browser)
     click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
-    # Rename edits the title in place (renaming); the others open sheets.
-    for name in names[1:]:
+    # Rename edits the title in place (renaming), and Schedule a prompt
+    # opens the job form (cron); the others open sheets.
+    for name in [name for name in names[1:] if name != "schedule"]:
         menu(browser, name)
         browser.wait("the %s sheet" % name, lambda: count(browser, "#sheet [data-command]") == 0 and count(browser, "#sheet") == 1)
         assert page_view(browser) == "chat"
@@ -2754,7 +2874,9 @@ SHEETS = [
 ]
 SCRIPTED = [
     ("view-%s" % name, ["[data-rail=primary] [data-view=%s]" % name])
-    for name in ("agents", "settings", "machines", "memory")
+    for name in ("agents", "settings", "machines", "memory", "cron")
+] + [
+    ("cron-form", ["[data-rail=primary] [data-view=cron]", "#cron-new"]),
 ] + [
     ("new-session-cards", ["[data-new-session]", "#runtimes-chip"]),
 ] + [
@@ -4135,6 +4257,7 @@ SCENARIOS = [
     ("runtime_cards", runtime_cards, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),
+    ("cron", cron_jobs, "chat", []),
     ("deleting", deleting, "chat", []),
     ("projects", projects, "chat", ["basics", "composer"]),
     ("narrow", narrow, "chat", []),
