@@ -34,6 +34,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
+| [Cron jobs](cron.md) | Draft (2026-10-22), settled with the user, awaiting the go-ahead; scheduled prompts by cron expression or `in <delay>`, into a session (`steer` or `queue`) or a new session per run, the `cron` permission by target kind, `list_agents` |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |
