@@ -3,7 +3,7 @@
 Status: **implemented** (2026-10-17; decisions in [Review](#9-review), see
 [Implementation notes](#10-implementation-notes)). Addendum of 2026-10-23
 ([section 11](#11-addendum-2026-10-23-clients-restart-the-daemon)): clients
-restart the daemon, draft awaiting the go-ahead.
+restart the daemon, approved and being implemented.
 
 ## 1. Goal and scope
 
@@ -288,8 +288,7 @@ sections above:
 
 ## 11. Addendum 2026-10-23: clients restart the daemon
 
-Status: **draft** (2026-10-23), settled with the user, awaiting the go-ahead
-to implement.
+Status: **approved** (2026-10-23), being implemented.
 
 `config.status` already reports `restart_required` parts (`server`,
 `plugins`, `runtimes`) that only a restart applies, but no client can

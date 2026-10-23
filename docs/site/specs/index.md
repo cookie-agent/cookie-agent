@@ -38,7 +38,7 @@ Drafts and preserved proposals, and records of finished refactors.
 | Specification | Status |
 |---|---|
 | [ACP agents](acp-agents.md) | Approved (2026-10-23), being implemented: phases 1 to 3 landed (client protocol 1.17.0, plugin protocol 1.8.0, runtime protocol 1.7.0); Claude Code, Codex, and Gemini CLI hosted by runtimes as `<runtime>-<agent>` cookie agents over the Agent Client Protocol, with cookie's tools offered to them over a runtime-relayed MCP bridge |
-| [Default models, the starter kit, and onboarding](default-models-and-onboarding.md) | Draft (2026-10-23), settled, awaiting the go-ahead; `default_model`/`small_model` and their variables, plain-string model entries, the starter kit as a release asset, `cookie onboard` and the onboarding RPCs |
+| [Default models, the starter kit, and onboarding](default-models-and-onboarding.md) | Approved (2026-10-23), being implemented; `default_model`/`small_model` and their variables, plain-string model entries, the starter kit as a release asset, `cookie onboard` and the onboarding RPCs |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |
