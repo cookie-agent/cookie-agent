@@ -1497,7 +1497,8 @@ phase 1 of [delegating to runtimes](runtime-delegation.md#11-implementation-note
 
 ### 16.9 Addendum 2026-10-22: memory that stays worth keeping
 
-Settled 2026-10-22, awaiting the go-ahead to implement. Models with write
+Settled 2026-10-22. Phase 1, the engine, is implemented (section
+16.9.15); the clients and docs phases remain. Models with write
 access saved things that are useless by the next session. For example,
 after "explore this directory", one saved the directory listing. The only
 save guidance was "save what a later session should know", and nothing
@@ -1925,3 +1926,157 @@ mode it rejects writes that fail the rubric.
      reference;
    - the tools reference, regenerated;
    - this addendum marked implemented.
+
+#### 16.9.15 Implementation notes: phase 1
+
+Landed 2026-10-22: the engine phase of section 16.9.14, with the protocol
+surface the clients phase renders (client protocol 1.14.0, plugin protocol
+1.6.0). The clients' rendering of change events, stamps, and limits, and the
+docs phase (the memory guide, the permissions page, the system prompt
+reference's memory turn), remain.
+
+Where things are:
+
+- **The section** (`crates/engine/src/memory_tools.rs`): `PART_A_ROOT`,
+  `PART_A_DELEGATED`, `PART_B`, and `prompt_section(access, delegated)`.
+  `Engine::compose_tool_prompt_sections`
+  (`crates/engine/src/runtime/tool_prompts.rs`) asks it in place of the
+  provider's `prompt_sections`, from the frozen policy and the session
+  overlay with `memory_access`, so the section is frozen with the prompt.
+  Its title is `Memory`.
+- **Write tools** (`crates/engine/src/runtime/memory_runs.rs`):
+  `memory_access` sets `writable` only when the pattern of an `allow` or
+  `ask` `memory` rule reaching `global` and that of an `allow` or `ask`
+  `memory_write` rule intersect (`permissions::patterns_intersect`, an exact
+  search over the two globs). Composition (`compose_for_policy`) hides the
+  three write tools otherwise.
+- **Rules** (`crates/engine/src/permissions.rs`): `agent_permission_rules(
+  document, delegated, variables)` appends `delegated_default_rules` for a
+  delegated run, then expands the variables (`expand_memory_variables`,
+  `MemoryVariables`). `policy::freeze_root_agent_policy` and
+  `freeze_delegated_agent_policy` take the variables and pass `delegated`
+  through `freeze_with_bindings`; `Engine::memory_variables(session)` gives
+  them. Variables are checked when an agent document loads
+  (`cookie_agent_config::agent_document::permission_expressions_valid`), and
+  `WildcardPattern::new` accepts them (`WildcardPattern::MEMORY_VARIABLES`).
+- **Store** (`crates/engine/src/memory/`): `limits.rs` (`MemoryLimits`, one
+  limit per kind and the snapshot's room), `format.rs` (ages and sizes),
+  `similar.rs` (`compare`), `reads.rs` (last-read times), and in `store.rs`
+  `WriteMode` (`Client` with a revision, `Model` with the seen revision and
+  `new`), the new `StoreError`s (`Unseen`, `TooLarge`, `Similar`,
+  `Identical`), `MemoryEntry::created`/`modified`, and `stamp_unstamped`.
+  `MemoryDocument` carries the stamps (`with_stamps`, `created`,
+  `modified`).
+- **Seen revisions**: `memory_runs::SeenMemories` on the engine
+  (`Inner::memory_seen`), filled by `memory_read`, the snapshot
+  (`TakenSnapshot::shown`), and the session's own writes and edits.
+- **Search and read** (`memory/search.rs`, `memory_tools.rs`):
+  `SearchHit { url, description, keywords, modified, full }`,
+  `search_output` and `read_output`, with `MemoryCaller::related`
+  (`RelatedMemory`) and `MemoryCaller::editable`.
+- **Snapshot** (`memory/snapshot.rs`, `memory/render.rs`): every memory
+  shown carries `MemoryDocumentStatus`, the snapshot `taken_at`; the render
+  functions take the time the snapshot was taken.
+- **Project line** (`crates/engine/src/runtime/runtime_notes.rs`):
+  `runtimes_prompt(attachments, project)`.
+- **Reviewer** (`crates/engine/src/runtime/approval_flow.rs`):
+  `with_memory_rubric`, for any request that checks `memory_write`.
+- **Events**: `EventPayload::MemoryChanged { change, url }` with
+  `MemoryChangeKind`, appended by `Engine::record_memory_change`.
+
+Deviations and details decided:
+
+- **Variables are expanded when a run's policy is frozen**, not at each
+  check. The frozen rules reach the wire (`run_started`, `session_created`,
+  the permission views), and the protocol's `WildcardPattern` schema has no
+  room for the variables without a major bump, so frozen rules hold none.
+  Each run freezes its policy at admission, so a session that gains an
+  attachment or moves to a project is covered from its next run, as its
+  snapshot, tools, and prompt are. `${session_machine}` makes one rule per
+  machine; a variable that stands for nothing (no project, no machine) drops
+  its rule, since it would match no memory. A delegated child's creation
+  snapshot takes its parent's machines and project; its runs freeze their
+  own. Previews and new sessions freeze with no machine or project.
+- **Variables in session rules are refused** (`check_rule_selectors`, also
+  for `set_session_permission`): the addendum names agent documents, and
+  overlays reach the wire unexpanded. `agent://self` is now a plain pattern,
+  and `self` is no longer a reserved agent ID.
+- **The write-tools check ignores `deny` rules**, as section 16.9.1 reads:
+  it intersects the `allow` and `ask` patterns only.
+- **`revision` stays in the client RPCs.** The addendum's compatibility
+  section makes the client change additive, so `memory.read`,
+  `memory.write`, and `memory.delete` keep their revisions; only the tools
+  lose them. `memory_delete` loses its revision too, since `memory_read` no
+  longer shows one, and deletes without a seen check.
+- **Seen revisions are kept in memory only.** After a restart a session
+  reads a memory again before replacing it whole. A snapshot counts as
+  seeing every memory it carries whole, an agent file with an empty body
+  included.
+- **Reads** add `description:` and `keywords:` lines (the latter only when
+  there are any) after the spec's six, so a model can replace a memory
+  faithfully; an over-limit memory's size line ends `, over its limit`. An
+  invalid file's read keeps its reason and shows its raw text.
+- **Search hits** say `editable` when the `memory_write` rules allow or ask
+  for the URL. Ages use the largest whole unit (minutes to years: 7 days a
+  week, 30 a month, 365 a year), `less than a minute` below that; sizes are
+  bytes below 1024, else KB of 1024 with one decimal.
+- **Stamps** are RFC 3339 UTC timestamps to the second. Every write, edit,
+  and the user's `memory.write` re-renders the frontmatter with the
+  daemon's stamps (YAML comments or quoting in the frontmatter do not
+  survive; the body is kept byte for byte). The daemon's own frontmatter
+  rewrites (agent descriptions, overview descriptions) keep the stamps,
+  and its new files (agent files, overviews, the first start's categories)
+  are stamped now. Migration runs once at start: `stamp_unstamped` adds
+  only the missing lines before the closing `---`; until then reads use the
+  file's modification time.
+- **Last read** is kept in `memory/.reads.json` (a URL to time map, written
+  without the lock, advisory), updated by a model's `memory_read` and by a
+  snapshot for what it shows whole; `memory.list` reports it as
+  `last_read`. Moved or deleted memories keep their entries.
+- **Limits.** The size counted is the whole file. A file larger than 57344
+  bytes (`MemoryConfig::MAX_LIMITS_SUM`, which each document limit may not
+  exceed) is invalid; anything smaller is valid whatever its kind's limit.
+  The user's `memory.write` keeps to the limits too (`memory_refused`). A
+  memory over its limit accepts a change that leaves it strictly smaller.
+  The configuration sum is `agent_max_bytes + snapshot_user_bytes +
+  snapshot_index_bytes`; the snapshot shows the agent's file while its
+  escaped text fits what the two snapshot limits leave of that sum, so an
+  agent file somewhat over its limit still shows.
+- **Over-limit marks**: a whole memory gets `status="over its limit"` after
+  `max_size`; an index line's parenthesis reads `(<age> old, over its
+  limit)`. Index entries carry the status members too.
+- **Old snapshots.** A snapshot without `taken_at` was taken by an earlier
+  daemon, so a run takes a new one. The trimmed text renders for old events
+  too (no search or save paragraphs, no status attributes), so a replay of
+  an older log does not show those paragraphs; since such a snapshot is
+  replaced at the session's next run, no model sees the mix.
+- **Similar memories** compare within the same place only, identical
+  bodies included; blank bodies are never compared. Words are split on
+  anything but letters, digits, and `-`, lowercased, with a fixed list of
+  48 filler words left out. A strong match lists up to three memories,
+  ranked by shared keywords, then shared words; a weak one (any shared
+  keyword or word) lists them in the result. `reason` must be one line of
+  1 to 200 characters and only goes with `new: true`; it is not stored.
+- **Change events** are audit events, appended during the tool call with
+  its run. A client's changes record none. The client state reducer shows
+  one as an info line, `Saved <url>`; linking to the Memory view is the
+  clients phase.
+- **Reviewer** text: a `<memory_rubric>` block between the prior decisions
+  and the tool call, opening with "The tool call changes memory. The agent
+  was told to keep memory by this rubric; deny a change that fails it.",
+  for `memory_write`, `memory_edit`, and `memory_delete` alike.
+- **Project line**: with no attachment besides `global`, the block is the
+  `Project:` line alone; with one attachment it follows `Machine:`.
+- **Versions.** Client protocol 1.14.0 and plugin protocol 1.6.0; the
+  runtime protocol and history format 1 are unchanged. No `client/1.14.0`
+  or `plugin/1.6.0` corpus directory was recorded, as for the earlier
+  memory minors.
+- **Editors see the stamps.** `memory.read` returns the file with its
+  `created` and `modified` lines, so `/memory`, the web page, and `cookie
+  memory edit` open them in the editor; whatever the user leaves there is
+  replaced by the daemon's stamps on save. Hiding them is for the clients
+  phase.
+- **Tests.** One compaction test's agent lost write access so its small
+  history still compacts under the longer system prompt. The future plugin
+  corpus's expected handshake answer names plugin protocol 1.6.0, as it has
+  named each earlier minor.
