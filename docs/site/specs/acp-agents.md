@@ -21,9 +21,13 @@ which stays the name of cookie's own protocol.
   daemon's machine. The command may itself reach another machine (for
   example `ssh labpc npx …`), since ACP is just stdin and stdout.
 - **Its own tools:** the agent runs its own file and shell tools. Cookie
-  does not advertise ACP `fs` or `terminal`. An agent document that should
-  not also get cookie's runtime tools denies them (`read: deny`,
-  `write: deny`, `bash: deny`).
+  does not advertise ACP `fs` or `terminal`. Which of cookie's tools the
+  agent should not also get is listed in the `acp` block (`hide_tools`,
+  section 3), not in `permissions`.
+- **Its permission requests are decided by `permissions`** (amended
+  2026-10-23): the agent's own requests map onto cookie's actions (`read`,
+  `write`, `bash`, `webfetch`), so one set of rules governs both the agent's
+  own tools and the cookie tools it is given (section 8).
 - **Mode:** each session starts the agent in its "auto" mode when it offers
   one, else in its default mode (which asks); the agent document can name
   another.
@@ -31,8 +35,9 @@ which stays the name of cookie's own protocol.
   API keys in `env`). Authentication errors reach the cookie session with
   what the agent said, so the user knows what to do. No login flow in cookie.
 - **Cookie's tools reach the agent as MCP**, from v1: the session's tools
-  (memory, cron, `list_agents`, delegation, MCP servers' tools, runtime tools
-  that are not denied), each following the permission rules (section 7).
+  (memory, cron, `list_agents`, delegation, MCP servers' tools, runtime tools)
+  minus those the agent document hides, each following the permission rules
+  (section 7).
 - **The agent document's body** is sent as context with the session's first
   prompt; an empty body sends nothing.
 - **Slash commands** the agent offers appear in the TUI and web composers.
@@ -67,11 +72,12 @@ acp:
   env: {}                       # merged over the daemon's environment
   config: { model: "opus" }     # the agent's config options, by id; values are labels
   mode: auto                    # optional; see section 5
+  hide_tools: [read, write, edit, bash, webfetch]   # cookie tools the agent does not get
 permissions:
-  read: deny
-  write: deny
-  bash: deny
-  acp: { "read *": allow, "*": ask }
+  read: allow
+  write: { "${workspace_dir}/*": allow, "*": ask }
+  bash: { "git *": allow, "*": ask }
+  webfetch: allow
 ---
 You review changes for this project before they are committed.
 ```
@@ -84,6 +90,12 @@ You review changes for this project before they are committed.
   are reported in the session and skipped.
 - **`acp.mode`:** see section 5.
 - **`acp.cwd`:** optional absolute path for `session/new`; see section 6.
+- **`acp.hide_tools`:** names of cookie tools not offered to the agent, as
+  patterns with `*` and `?` over the tool names cookie publishes
+  (`read`, `bash`, `memory_*`, `exa_*`). Default: cookie's coding runtime
+  tools (`read`, `write`, `edit`, `bash`, `webfetch`), since the agent has its
+  own; `[]` offers them too. Hiding is independent of `permissions`, which
+  keep deciding calls (section 8).
 - **`models` is not allowed** with `acp`: the agent chooses its own model,
   set through `acp.config` when the agent offers a model option.
 - `mode`, `description`, `enabled`, and `permissions` mean what they mean for
@@ -163,32 +175,38 @@ You review changes for this project before they are committed.
 - On `session/new` cookie passes one MCP server, **`cookie`**, that serves the
   session's tools as cookie composes them for a model request: memory, cron,
   `list_agents`, `delegate_subagent` and the subagent tools, the MCP servers'
-  tools, and runtime tools the rules do not deny.
+  tools, and runtime tools, minus `acp.hide_tools`.
 - **Permissions apply as for a model:** a tool the merged rules hide is not
   listed; a call is decided by the rules, and `ask` goes through the approval
   flow (the reviewer in auto modes).
-- **Transport:**
-  - **HTTP** when the agent declares `mcpCapabilities.http`: the daemon serves
-    the session's tools at an MCP endpoint with a bearer token that is valid
-    only for that ACP session and dies with it.
-  - **stdio** otherwise (every agent must accept it): `cookie mcp serve
-    --session <id>` with the daemon's URL and a session-scoped token, a small
-    bridge that relays MCP to the daemon.
-  - With an `ssh` command the agent runs elsewhere, so the endpoint or the
-    bridge must reach the daemon from that host; the docs explain how
-    (`--url` to a reachable daemon address).
+- **Transport: stdio only in v1.** ACP requires every agent to accept stdio
+  MCP servers in `session/new` ("All Agents MUST support connecting to MCP
+  servers via stdio"); HTTP is optional (`mcpCapabilities.http`). Cookie passes
+  `cookie mcp serve --session <id>` with the daemon's URL and a token valid
+  only for that ACP session: a small bridge that relays MCP to the daemon.
+  An HTTP endpoint can come later for agents that declare it.
+- With an `ssh` command the agent, and so the bridge, runs on the other host:
+  `cookie` must be installed there and the daemon reachable from it (`--url`
+  to an address that host can reach). The docs explain it.
 - Tool calls through the bridge appear in the session as calls of the ACP
   agent, linked to its turn.
 
 ## 8. The agent's own permission requests
 
-- Each `session/request_permission` is decided by cookie's rules under the
-  action **`acp`**, so they never collide with `read`, `write`, and `bash`,
-  which govern cookie's own tools. The resource is the ACP tool kind and its
-  target: `execute git push`, `edit /home/ada/project/src/lib.rs`,
-  `fetch https://example.com`, `read /path`, or the kind alone when there is
-  no target.
-- **Default:** an agent document with no `acp` key gets `acp: ask`.
+- Each `session/request_permission` is decided by the agent's merged rules,
+  with the ACP tool kind mapped onto cookie's actions (amended 2026-10-23):
+
+  | ACP kind | Action | Resource |
+  |---|---|---|
+  | `read`, `search` | `read` | the location's path |
+  | `edit`, `delete`, `move` | `write` | the location's path |
+  | `execute` | `bash` | the command (from the call's raw input, else its title) |
+  | `fetch` | `webfetch` | the URL |
+  | `think`, `switch_mode`, `other`, unknown | `acp` | the kind, then the title |
+
+  So `bash: {"git *": allow}` allows the agent's own `git` commands exactly as
+  it allows cookie's `bash` tool. A request with several locations needs every
+  one allowed. Without an `acp` key, the `acp` action defaults to `ask`.
 - **Answers:** `allow` picks the agent's allow-once option; `deny` its
   reject-once option; `ask` goes through the approval flow (the reviewer in
   auto modes), and the user's answer picks allow-once or reject-once. Cookie
@@ -221,29 +239,23 @@ A scripted ACP agent fixture (like the MCP fixture) that speaks ACP v1:
 handshake and capabilities, auto-mode selection and `acp.config`, a turn
 with chunks, thoughts, tool calls with diffs, a plan and usage, every stop
 reason, cancel with a pending permission request, permission requests
-decided by `acp` rules and by approvals, resume, load with an ignored
+decided by the mapped rules (each kind) and by approvals, resume, load with an ignored
 replay, a new session after a lost one, process exit, the MCP bridge
-listing and gating cookie's tools (HTTP and stdio), the body sent once,
+listing and gating cookie's tools, `hide_tools`, the body sent once,
 agent commands, delegation to an ACP subagent, a cron fire into an ACP
 session.
 
 ## 12. Phases
 
 1. **Engine:** the agent document, the ACP client and runner, rendering,
-   sessions and processes, `acp` permissions, protocol additions.
-2. **Cookie's tools over MCP:** the HTTP endpoint and the stdio bridge.
+   sessions and processes, permission requests mapped onto the rules,
+   protocol additions.
+2. **Cookie's tools over MCP:** the stdio bridge and `hide_tools`.
 3. **Clients:** agent commands and options, the plan block, ACP tool calls.
 4. **Docs:** an ACP agents guide with Claude Code, Codex, and Gemini CLI
    examples, including `ssh`.
 
 ## 13. Open questions
 
-1. **The `acp` permission action** (section 8) for the agent's own requests,
-   so that denying `read`, `write`, and `bash` to hide cookie's runtime tools
-   does not also refuse every file and shell request the agent makes. The
-   alternative, mapping the requests onto `read`/`write`/`bash`, collides with
-   that decision.
-2. **"Deny" spelling.** Decided as "`read false`"; the spec uses the
-   existing `deny`. Add `false` as an alias, or keep `deny`?
-3. **The MCP transports** (section 7): HTTP when the agent accepts it and a
-   stdio bridge otherwise, or only one of them in v1?
+1. **`hide_tools` default:** cookie's coding runtime tools (`read`, `write`,
+   `edit`, `bash`, `webfetch`), or nothing hidden unless listed?
