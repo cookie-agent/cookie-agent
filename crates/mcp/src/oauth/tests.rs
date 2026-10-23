@@ -58,6 +58,11 @@ struct OAuthFixtureState {
     exchanged_codes: Mutex<Vec<String>>,
     /// Every dynamic registration's request body, in order.
     registrations: Mutex<Vec<Value>>,
+    /// Refuse `server/discover`'s protocol version with an HTTP 400, as
+    /// servers on the TypeScript SDK do, instead of "method not found".
+    refuse_discover_version: AtomicBool,
+    /// The `protocolVersion` of every `initialize`, in order.
+    initialize_versions: Mutex<Vec<String>>,
 }
 
 struct OAuthFixture {
@@ -93,6 +98,8 @@ impl OAuthFixture {
             code_verifiers: Mutex::new(Vec::new()),
             exchanged_codes: Mutex::new(Vec::new()),
             registrations: Mutex::new(Vec::new()),
+            refuse_discover_version: AtomicBool::new(false),
+            initialize_versions: Mutex::new(Vec::new()),
         });
         let shutdown = CancellationToken::new();
         let task_state = Arc::clone(&state);
@@ -458,6 +465,14 @@ async fn handle_request(
             let message: Value = serde_json::from_slice(&request.body).unwrap_or_default();
             let id = message.get("id").cloned().unwrap_or(Value::Null);
             match message.get("method").and_then(Value::as_str) {
+                Some("server/discover") if state.refuse_discover_version.load(Ordering::SeqCst) => {
+                    json_response(
+                        &mut stream,
+                        "400 Bad Request",
+                        json!({"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Bad Request: Unsupported protocol version: 2026-07-28 (supported versions: 2025-11-25, 2025-06-18)"}}),
+                    )
+                    .await
+                }
                 Some("server/discover") => {
                     json_response(
                         &mut stream,
@@ -467,6 +482,16 @@ async fn handle_request(
                     .await
                 }
                 Some("initialize") => {
+                    if let Some(version) = message
+                        .pointer("/params/protocolVersion")
+                        .and_then(Value::as_str)
+                    {
+                        state
+                            .initialize_versions
+                            .lock()
+                            .unwrap()
+                            .push(version.to_owned());
+                    }
                     json_response(
                         &mut stream,
                         "200 OK",
@@ -1386,6 +1411,44 @@ async fn static_authorization_header_precedes_oauth_and_disabled_oauth_stays_fai
         .expect_err("disabled OAuth leaves 401 as connection failure");
     assert_eq!(disabled.statuses()[0].state, McpServerState::Failed);
     disabled.shutdown().await;
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn a_server_refusing_the_discover_version_gets_the_legacy_handshake() {
+    let fixture = OAuthFixture::start().await;
+    fixture
+        .state
+        .refuse_discover_version
+        .store(true, Ordering::SeqCst);
+    let directory = tempfile::tempdir().expect("project data");
+    let mut config = remote_config(fixture.mcp_url());
+    config
+        .headers
+        .insert("Authorization".into(), "Bearer access-1".into());
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "legacy".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        store(directory.path().join("mcp-oauth.json")),
+    )
+    .expect("registry");
+    registry
+        .server("legacy")
+        .expect("server")
+        .connect()
+        .await
+        .expect("the legacy handshake connects");
+    assert_eq!(registry.statuses()[0].state, McpServerState::Connected);
+    assert_eq!(
+        *fixture.state.initialize_versions.lock().unwrap(),
+        ["2025-11-25"]
+    );
+    registry.shutdown().await;
     fixture.stop().await;
 }
 

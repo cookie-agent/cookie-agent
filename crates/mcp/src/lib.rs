@@ -312,6 +312,23 @@ struct McpClientHandler {
     server: Weak<ServerRuntime>,
 }
 
+/// The protocol version of the legacy `initialize` handshake.
+const LEGACY_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_11_25;
+
+/// Whether a failed `server/discover` probe means the server refused its
+/// protocol version, however it phrased the refusal: a dedicated code, or a
+/// generic one whose message names the protocol version.
+fn refuses_protocol_version(error: &rmcp::service::ClientInitializeError) -> bool {
+    let rmcp::service::ClientInitializeError::JsonRpcError(error) = error else {
+        return false;
+    };
+    error.code == ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+        || error
+            .message
+            .to_ascii_lowercase()
+            .contains("protocol version")
+}
+
 struct ActiveConnect(Arc<RegistryInner>);
 
 impl ActiveConnect {
@@ -430,6 +447,14 @@ impl Drop for ReapingChildTransport {
 }
 
 impl ClientHandler for McpClientHandler {
+    /// The legacy handshake's `initialize` names this version; the
+    /// `server/discover` probe names its own.
+    fn get_info(&self) -> rmcp::model::ClientInfo {
+        let mut info = rmcp::model::ClientInfo::default();
+        info.protocol_version = LEGACY_PROTOCOL_VERSION;
+        info
+    }
+
     fn create_message(
         &self,
         _params: CreateMessageRequestParams,
@@ -1287,7 +1312,7 @@ impl ServerRuntime {
         };
         let lifecycle = ClientLifecycleMode::Auto {
             preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-            legacy_version: Some(ProtocolVersion::V_2025_11_25),
+            legacy_version: Some(LEGACY_PROTOCOL_VERSION),
         };
         let timeout = self.timeout();
         let mut service = if let Some(command) = &self.loaded.config.command {
@@ -1363,9 +1388,9 @@ impl ServerRuntime {
             let config = rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url.clone())
                 .custom_headers(headers);
             macro_rules! serve {
-                ($transport:expr) => {
+                ($transport:expr, $lifecycle:expr) => {
                     tokio::select! {
-                        result = tokio::time::timeout(timeout, handler.serve_with_lifecycle($transport, lifecycle)) => result,
+                        result = tokio::time::timeout(timeout, handler.clone().serve_with_lifecycle($transport, $lifecycle)) => result,
                         () = registry.shutdown.cancelled() => {
                             return Err(ToolError::execution("MCP registry is shutting down"));
                         }
@@ -1375,23 +1400,45 @@ impl ServerRuntime {
                     }
                 };
             }
-            #[cfg(feature = "oauth")]
-            let result = if self.oauth_enabled() {
-                serve!(WatchedTransport {
-                    inner: self.oauth_transport(config).await?,
-                    lost: lost.clone(),
-                })
-            } else {
-                serve!(WatchedTransport {
-                    inner: StreamableHttpClientTransport::from_config(config),
-                    lost: lost.clone(),
-                })
-            };
-            #[cfg(not(feature = "oauth"))]
-            let result = serve!(WatchedTransport {
-                inner: StreamableHttpClientTransport::from_config(config),
-                lost: lost.clone(),
-            });
+            macro_rules! serve_http {
+                ($lifecycle:expr) => {{
+                    #[cfg(feature = "oauth")]
+                    let result = if self.oauth_enabled() {
+                        serve!(
+                            WatchedTransport {
+                                inner: self.oauth_transport(config.clone()).await?,
+                                lost: lost.clone(),
+                            },
+                            $lifecycle
+                        )
+                    } else {
+                        serve!(
+                            WatchedTransport {
+                                inner: StreamableHttpClientTransport::from_config(config.clone()),
+                                lost: lost.clone(),
+                            },
+                            $lifecycle
+                        )
+                    };
+                    #[cfg(not(feature = "oauth"))]
+                    let result = serve!(
+                        WatchedTransport {
+                            inner: StreamableHttpClientTransport::from_config(config.clone()),
+                            lost: lost.clone(),
+                        },
+                        $lifecycle
+                    );
+                    result
+                }};
+            }
+            let mut result = serve_http!(lifecycle);
+            // A server that predates `server/discover` may refuse the probe's
+            // protocol version outright (HTTP 400, as the TypeScript SDK
+            // does) rather than answer "method not found", the only refusal
+            // rmcp falls back on. Such a server gets the legacy handshake.
+            if matches!(&result, Ok(Err(error)) if refuses_protocol_version(error)) {
+                result = serve_http!(ClientLifecycleMode::Initialize);
+            }
             match result {
                 Err(_) => {
                     return Err(ToolError::execution(format!(
