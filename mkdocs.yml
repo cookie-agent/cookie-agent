@@ -125,6 +125,7 @@ nav:
       - 'Agent Messaging [messaging]': engine/messaging.md
       - 'External Producers [producers]': engine/producers.md
       - 'Memory [memory]': engine/memory.md
+      - 'Cron Jobs [cron]': engine/cron.md
       - 'Request Header [headers]': engine/headers.md
       - tui.toml:
           - tui.toml: tui/configuration.md

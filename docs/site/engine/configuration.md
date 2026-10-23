@@ -49,6 +49,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `messaging` | [Agent Messaging](messaging.md) |
 | `producers` | [External Producers](producers.md) |
 | `memory` | [Memory](memory.md) |
+| `cron` | [Cron Jobs](cron.md) |
 | `headers` | [Request Header](headers.md) |
 | `providers` | [Providers](../extend/providers.md) |
 | `mcp` | [MCP](../extend/mcp.md) |
@@ -74,7 +75,7 @@ error. Applying a configuration does this:
 
 | Part | When it takes effect |
 |---|---|
-| `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers`, `memory` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
+| `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers`, `memory`, `cron` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
 | Agent documents and presets | At once for new runs; a run in progress keeps its agent, and its delegated children resolve against the agents it started with |
 | `providers`, `headers` | At once: models are recompiled |
 | `mcp` | At once: changed servers restart, removed ones stop; servers added or changed at runtime (`/mcp`) stay on top |

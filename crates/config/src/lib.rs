@@ -35,7 +35,7 @@ pub use prompt_template::{
     DEFAULT_PROMPT_PLACEHOLDER, FOCUS_PLACEHOLDER, InternalPromptValues, render_internal_prompt,
 };
 pub use runtime::{
-    AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
+    AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger, CronConfig,
     DelegationConfig, EngineConfig, LoopWarningConfig, McpConfig, McpOAuthConfig, McpOAuthSettings,
     McpServerConfig, McpServerScope, MemoryConfig, MessagingConfig, ModelPricing, ModelRetryConfig,
     PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion, PluginConfig, PluginsConfig, PricingConfig,

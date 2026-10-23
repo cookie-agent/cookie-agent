@@ -333,6 +333,8 @@ pub struct EngineConfig {
     pub producers: ProducersConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub cron: CronConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -357,6 +359,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) messaging: Option<MessagingConfig>,
     pub(crate) producers: Option<ProducersConfig>,
     pub(crate) memory: Option<MemoryConfig>,
+    pub(crate) cron: Option<CronConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -746,6 +749,54 @@ const fn default_producer_max_body_bytes() -> usize {
 /// message travels in.
 pub const PRODUCER_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// `[cron]`: the daemon's cron jobs (`docs/site/specs/cron.md` section 10).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CronConfig {
+    /// Whether the daemon fires jobs; `false` keeps the jobs, the requests,
+    /// and the tools working and records each due fire as skipped.
+    #[serde(default = "default_cron_enabled")]
+    pub enabled: bool,
+    /// Failures in a row that disable a job, unless the job sets its own.
+    #[serde(default = "default_cron_max_consecutive_failures")]
+    pub max_consecutive_failures: u32,
+    /// Fires each job's history keeps, oldest dropped first.
+    #[serde(default = "default_cron_history")]
+    pub history: usize,
+}
+impl Default for CronConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_cron_enabled(),
+            max_consecutive_failures: default_cron_max_consecutive_failures(),
+            history: default_cron_history(),
+        }
+    }
+}
+impl CronConfig {
+    /// The most fires a job's history may keep.
+    pub const MAX_HISTORY: usize = 1000;
+
+    fn invalid_reason(&self) -> Option<&'static str> {
+        if self.max_consecutive_failures == 0 {
+            return Some("cron.max_consecutive_failures must be positive");
+        }
+        if self.history == 0 || self.history > Self::MAX_HISTORY {
+            return Some("cron.history must be 1..1000");
+        }
+        None
+    }
+}
+const fn default_cron_enabled() -> bool {
+    true
+}
+const fn default_cron_max_consecutive_failures() -> u32 {
+    3
+}
+const fn default_cron_history() -> usize {
+    20
+}
+
 /// `[memory]`: size limits of memory documents and of the memory snapshot
 /// (`docs/site/specs/memory.md` sections 11 and 16.9.7).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -1036,6 +1087,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.memory {
         runtime.memory = value.clone();
     }
+    if let Some(value) = &layer.cron {
+        runtime.cron = value.clone();
+    }
     if let Some(values) = &layer.headers {
         for (name, value) in values {
             if value.as_str().is_empty() {
@@ -1163,6 +1217,9 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         ));
     }
     if let Some(reason) = runtime.memory.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
+    }
+    if let Some(reason) = runtime.cron.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {

@@ -158,6 +158,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         .collect();
     let config = LoadedConfiguration {
         runtime: EngineConfig {
+            cron: Default::default(),
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),
@@ -399,6 +400,7 @@ fn harness_with_catalog_and_mcp(
         Arc::new(ModelManager::new(BTreeMap::new(), catalog, store).expect("model manager"));
     let config = LoadedConfiguration {
         runtime: EngineConfig {
+            cron: Default::default(),
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),
