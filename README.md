@@ -4,42 +4,13 @@
 
 Simple and mighty coding agent.
 
-[![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io-blue)](https://cookie-agent.github.io/doc/)
+[![Website](https://img.shields.io/badge/website-cookie--agent.github.io-orange)](https://cookie-agent.github.io/)
+[![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io%2Fdoc-blue)](https://cookie-agent.github.io/doc/)
 
 Cookie Agent is a Rust-powered terminal coding agent. The surface stays
 minimalistic — a daemon, a TUI, a web client, a headless runner — while the batteries are
 included underneath: providers, permissions, delegation, sessions, plugins,
 and observability are all built in.
-
-## Highlights
-
-- **Subagent delegation** — agents delegate to other agents, with background
-  tasks that keep running while you keep working.
-- **Runtimes** — a session's tools run in attachable runtimes: the local
-  workspace, a repository on another machine over ssh, or several at once,
-  with colliding tool names prefixed by runtime.
-- **MCP servers** — attach local or remote MCP tool servers, including
-  streamable HTTP servers with OAuth, on the daemon or inside a runtime.
-- **Plugins** — run out-of-process JSON-RPC extensions that add tools, observe
-  events, and intercept decisions across the run lifecycle: user input, model
-  requests, tool calls, agent starts, compaction, forks, and more. An official
-  Rust SDK (`cookie_agent_plugin_sdk`) handles the protocol for you.
-- **Permissions** — every capability is opt-in, and unmatched checks deny by
-  default. Agents see only the tools their permission map allows or asks for,
-  with resource-pattern rules and allow/ask/deny effects.
-- **Agent documents** — Markdown files with YAML frontmatter define personas,
-  models, and permissions. Author your own or use the built-in `default`.
-- **Skill loading** — strict user/project `SKILL.md` discovery, permission-aware
-  model and user invocation, turn-scoped tool grants, and forked skill context.
-- **Observability** — per-session token usage, prompt-cache hit rates, and
-  estimated cost rollups.
-- **Web client** — the daemon serves a browser client on its own port that
-  does what the TUI does, phones included; `cookie web` prints its address
-  with the token.
-- **Headless runs** — `cookie run` executes a prompt without the TUI, suitable
-  for CI and scripting.
-- **Durable sessions** — versionless persisted history with best-effort reading
-  and automatic context compaction.
 
 ## Quick start
 
@@ -73,16 +44,8 @@ cookie run "Review this workspace"
 
 ## Documentation
 
-Setup, configuration, and task-oriented guides are at
-[cookie-agent.github.io/doc](https://cookie-agent.github.io/doc/),
-including the development version's [Installation](https://cookie-agent.github.io/doc/dev/install/),
-[Terminal UI](https://cookie-agent.github.io/doc/dev/clients/tui/),
-[Command line](https://cookie-agent.github.io/doc/dev/clients/cli/),
-[Persistent daemon](https://cookie-agent.github.io/doc/dev/daemon/persistent/),
-[Development](https://cookie-agent.github.io/doc/dev/development/building/),
-[Providers](https://cookie-agent.github.io/doc/dev/extend/providers/),
-[Plugins](https://cookie-agent.github.io/doc/dev/extend/plugins/), and
-[Agent permissions](https://cookie-agent.github.io/doc/dev/extend/agents/#permissions).
+Setup, configuration, and guides are at
+[cookie-agent.github.io/doc](https://cookie-agent.github.io/doc/).
 
 ## License
 
