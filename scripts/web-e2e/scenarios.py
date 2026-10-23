@@ -344,6 +344,59 @@ def answers(browser):
     return len(re.findall(r"\bok\b", browser.text("#transcript")))
 
 
+# The open session's row marked running in the sessions list, which follows
+# the daemon's own session status.
+RUNNING_ROW = "aside [data-session-row]:has([aria-current=true]) [data-session-activity=running]"
+# What the daemon says to a command that needs the session idle.
+RUN_ACTIVE = "Another run is already active"
+
+
+def idle(browser, what="the run's end", text=None, timeout=90):
+    """Waits until the open session's run is over, `text` (when given)
+    showing in its transcript: the status line is not working, and the
+    session's row in the list (the daemon's status) is not running. A reply
+    on the page comes before its run ends, so a command that needs the
+    session idle waits for this, not for the reply's text."""
+    browser.wait(
+        what,
+        lambda: (text is None or text in browser.text("#transcript"))
+        and "working" not in browser.text("#status-bar")
+        and count(browser, RUNNING_ROW) == 0,
+        timeout=timeout,
+    )
+
+
+def poll(check, timeout):
+    """Whether `check` holds within `timeout` seconds."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if check():
+                return True
+        except RuntimeError:
+            pass
+        time.sleep(0.2)
+    return False
+
+
+def until_accepted(browser, what, act, done, timeout=30):
+    """Runs `act`, a command that needs the session idle, and waits until
+    `done` holds. The daemon lets a run go a moment after its end reaches
+    the page (and the sessions list), so a command [`idle`] let through may
+    still meet the run: refused naming it, it runs once more."""
+    stale = RUN_ACTIVE in browser.text("#status")
+    act()
+    if (
+        not stale
+        and poll(lambda: done() or RUN_ACTIVE in browser.text("#status"), timeout)
+        and not done()
+    ):
+        print("%s: refused while the run let go; again" % what)
+        time.sleep(1)
+        act()
+    browser.wait(what, done, timeout=timeout)
+
+
 def clear_composer(browser):
     browser.script(
         "const c = document.querySelector('#composer'); c.value = '';"
@@ -444,6 +497,7 @@ def composer(browser):
         and "queued by the button" in browser.script("return document.querySelector('#composer').value"),
         timeout=40,
     )
+    idle(browser, "the stopped run's end")
     browser.wait("send again", lambda: buttons(browser) == [["send", True]])
     clear_composer(browser)
     print("the composer's buttons follow the run: Send, Stop, Queue and Steer")
@@ -484,7 +538,7 @@ def tool_rows(browser):
     browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
     browser.click("#sheet [data-decision=approve_once]")
     close_sheet(browser)
-    browser.wait("the tool's answer", lambda: "The tool ran." in browser.text("#transcript"), timeout=40)
+    idle(browser, "the tool's answer", text="The tool ran.")
     assert bubble_aligned(browser), "the user's bubble is not at the right: %s" % browser.script(BUBBLE)
     row = "#transcript [data-tool]"
     assert expanded(browser, row) == "false", "the row starts open"
@@ -530,7 +584,7 @@ def tool_rows(browser):
     browser.shot("tool-progress")
     print("a running call shows its progress collapsed:", browser.script(
         "const p = document.querySelectorAll('#transcript [data-progress]'); return p[p.length - 1].innerText"))
-    browser.wait("the chatty run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser, "the chatty run's end")
     # A long message of several lines: its bubble still ends at the right.
     long = "\n".join(["A long message about the greeting, " * 4] * 3)
     set_text(browser, "#composer", long)
@@ -538,7 +592,7 @@ def tool_rows(browser):
     browser.wait("the long message", lambda: "about the greeting" in browser.text("#transcript"))
     assert bubble_aligned(browser), "a long bubble is not at the right: %s" % browser.script(BUBBLE)
     print("user bubbles end at the content column's right edge:", browser.script(BUBBLE))
-    browser.wait("its answer", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser, "its answer")
 
 
 # The transcript's scroll position: how far its end is below the box,
@@ -634,21 +688,6 @@ def follows(browser, what, seconds=1.0):
     assert after["gap"] <= 2 and not after["jump"], "%s: not at the end: %s" % (what, after)
 
 
-def idle(browser, what, text):
-    """Waits until the open session's run is over: `text` shows, the
-    status line is not working, and its row in the list says so too, so
-    what follows starts from an idle session."""
-    row = "aside [data-session-row]:has([aria-current=true])"
-    browser.wait(
-        what,
-        lambda: text in browser.text("#transcript")
-        and "working" not in browser.text("#status-bar")
-        and count(browser, row) == 1
-        and "running" not in browser.text(row),
-        timeout=90,
-    )
-
-
 def streaming_scroll(browser):
     """While a reply streams, the transcript follows its end only when the
     content grows, any scroll up stops that at once until the user comes
@@ -679,7 +718,7 @@ def streaming_scroll(browser):
     send(browser, "noted, thanks")
     follows(browser, "the message sent")
     print("a message sent while scrolled up follows the end again")
-    idle(browser, "the long reply's end", "alpha 599 ")
+    idle(browser, "the long reply's end", text="alpha 599 ")
 
     # A folded call at the end gets progress: nothing grows, nothing pins.
     send(browser, "stream long, label beta")
@@ -724,7 +763,7 @@ def streaming_scroll(browser):
     assert max(latencies) < 250, "a toggle took %.0f ms" % max(latencies)
     browser.click("[data-jump-latest]")
     follows(browser, "the jump after the toggles")
-    idle(browser, "the reply's end", "beta 599 ")
+    idle(browser, "the reply's end", text="beta 599 ")
 
     # A phone: a finger dragging the page down stops following.
     session = browser.script(
@@ -757,7 +796,7 @@ def streaming_scroll(browser):
         print("phone: a finger dragging the page down stays put; the jump follows again")
     finally:
         phone.close()
-    idle(browser, "the last reply's end", "gamma 599 ")
+    idle(browser, "the last reply's end", text="gamma 599 ")
 
 
 def pinned_rows(browser):
@@ -927,8 +966,10 @@ def session_depth(browser):
     new_session(browser)
     send(browser, "hello there")
     browser.wait("the first answer", lambda: answers(browser) >= 1)
+    idle(browser, "the first run's end")
     send(browser, "second message")
     browser.wait("the second answer", lambda: answers(browser) >= 2)
+    idle(browser, "the second run's end")
     first = browser.text("#session-title")
     browser.click("#transcript [data-action=user-menu]")
     browser.wait("the message menu", lambda: "Fork" in browser.text("#sheet"))
@@ -944,16 +985,23 @@ def session_depth(browser):
     browser.shot("fork")
     send(browser, "third message")
     browser.wait("the third answer", lambda: answers(browser) >= 1)
-    browser.script(
-        "const menus = document.querySelectorAll('#transcript [data-action=user-menu]');"
-        "menus[menus.length - 1].click()"
-    )
-    browser.wait("the message menu", lambda: "Revert" in browser.text("#sheet"))
-    browser.click("#message-revert")
-    browser.wait("the revert guard", lambda: "Revert to before" in browser.text("#sheet"))
-    browser.click("#revert-confirm")
-    browser.wait(
+    idle(browser, "the third run's end")
+
+    def revert():
+        close_sheet(browser)
+        browser.script(
+            "const menus = document.querySelectorAll('#transcript [data-action=user-menu]');"
+            "menus[menus.length - 1].click()"
+        )
+        browser.wait("the message menu", lambda: "Revert" in browser.text("#sheet"))
+        browser.click("#message-revert")
+        browser.wait("the revert guard", lambda: "Revert to before" in browser.text("#sheet"))
+        browser.click("#revert-confirm")
+
+    until_accepted(
+        browser,
         "the revert",
+        revert,
         lambda: "third message" not in browser.text("#transcript")
         and browser.script("return document.querySelector('#composer').value") == "third message",
     )
@@ -970,6 +1018,7 @@ def session_depth(browser):
     sent = answers(browser)
     send(browser, "/compact")
     browser.wait("the slash message's answer", lambda: answers(browser) > sent)
+    idle(browser, "the slash message's run's end")
     assert browser.script(
         "return [...document.querySelectorAll('#transcript .user-message')].some((m) => m.innerText.includes('/compact'))"
     ), "the text was not sent as a message"
@@ -1014,7 +1063,7 @@ def session_depth(browser):
     browser.wait("the paused goal", lambda: count(browser, "#goal-bar [data-goal-action=resume]") == 1)
     print("set a goal and paused it")
     browser.shot("goal-paused")
-    browser.wait("the goal run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+    idle(browser, "the goal run's end")
     # The pause's control message rode along with the goal's run.
     browser.wait("the goal control row", lambda: "Goal paused" in browser.text("#transcript"))
     assert "[engine goal control]" not in browser.text("#transcript"), "a producer message shows unfolded"
@@ -1071,7 +1120,7 @@ def session_depth(browser):
     )
     assert "<background_result" not in browser.text("#transcript"), "a background report shows unfolded"
     browser.shot("background-report")
-    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+    idle(browser)
 
     # Attach an image; one too large is offered downscaled.
     uploads = tempfile.mkdtemp(prefix="cookie-web-e2e-")
@@ -1096,11 +1145,7 @@ def session_depth(browser):
 
     # A tool's media block shows inline.
     send(browser, "show the picture")
-    browser.wait(
-        "the read",
-        lambda: "Read dot.png" in browser.text("#transcript")
-        and "working" not in browser.text("#status-bar"),
-    )
+    idle(browser, "the read", text="Read dot.png")
     browser.script(
         "const tools = document.querySelectorAll('#transcript [data-action=toggle-tool]');"
         "tools[tools.length - 1].click()"
@@ -1123,7 +1168,7 @@ def session_depth(browser):
     browser.click("#skill-run")
     browser.wait("the skill", lambda: "greet" in browser.text("#transcript").lower() and "skill" in browser.text("#transcript").lower())
     print("ran the greet skill")
-    browser.wait("the skill run's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+    idle(browser, "the skill run's end")
 
     # A permission override, then its removal.
     menu(browser, "permissions")
@@ -1184,7 +1229,8 @@ def permission_rules(browser):
     A rule on `local` alone outranks the same rule everywhere."""
     new_session(browser)
     send(browser, "hello")
-    browser.wait("the answer", lambda: answers(browser) >= 1 and "working" not in browser.text("#status-bar"))
+    browser.wait("the answer", lambda: answers(browser) >= 1)
+    idle(browser)
     menu(browser, "permissions")
     browser.wait("the permissions", lambda: count(browser, "#sheet .permission-row") > 0)
     options = browser.script(
@@ -1222,7 +1268,7 @@ def permission_rules(browser):
     browser.click("#sheet h2 ~ button")
     send(browser, "use a tool")
     browser.wait("the unasked tool", lambda: browser.text("#transcript").count("The tool ran.") == 1, timeout=40)
-    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser)
     assert browser.text("#approvals-badge") == "", "an allowed call asked"
 
     # Then asked on `local` alone.
@@ -1271,7 +1317,7 @@ def permission_rules(browser):
     browser.click("#sheet [data-decision=approve_once]")
     close_sheet(browser)
     browser.wait("the tool's answer", lambda: browser.text("#transcript").count("The tool ran.") == 2, timeout=40)
-    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser)
     print("bash@local: ask outranks bash: allow")
 
     # An edited rule keeps its runtime; the custom one goes.
@@ -1527,14 +1573,20 @@ def management(browser):
     print("a new session's runtimes command points at its cards")
     send(browser, "hello there")
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
+    idle(browser)
 
     # A session's attachment detached and attached again.
     click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
+    idle(browser)
     menu(browser, "runtime")
     browser.wait("the attachments", lambda: "local/coding" in browser.text("#sheet"))
-    click_row_button(browser, "#sheet .runtime-row", "local/coding", "[data-detach]")
-    browser.wait("the detached runtime", lambda: "local/coding" not in browser.text("#sheet .runtime-row:last-of-type") and "detached" in browser.text("#status"))
+    until_accepted(
+        browser,
+        "the detached runtime",
+        lambda: click_row_button(browser, "#sheet .runtime-row", "local/coding", "[data-detach]"),
+        lambda: "local/coding" not in browser.text("#sheet .runtime-row:last-of-type") and "detached" in browser.text("#status"),
+    )
     browser.click("#runtime-attach")
     browser.type("#runtime-search", "coding")
     browser.wait("the coding choice", lambda: count(browser, '#sheet [data-choice="local/coding"]') == 1)
@@ -1907,7 +1959,7 @@ def memory_changes(browser):
     new_session(browser)
     send(browser, "remember how the build works")
     browser.wait("the change line", lambda: count(browser, "#transcript [data-memory-change]") == 1, timeout=40)
-    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser)
     line = browser.text("#transcript [data-memory-change]")
     assert re.fullmatch(r"\s*Saved\s+user://e2e-build\s*", line), line
     # The line sits between the call that made the change and the answer
@@ -1974,7 +2026,7 @@ def memory_changes(browser):
     view(browser, "chat")
     send(browser, "forget how the build works")
     browser.wait("the delete line", lambda: count(browser, "#transcript [data-memory-change]") == 2, timeout=40)
-    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser)
     assert not os.path.exists(path)
     browser.script("const l = document.querySelectorAll('#transcript [data-memory-change] button'); l[l.length - 1].click()")
     browser.wait("the gone note", lambda: page_view(browser) == "memory"
@@ -2003,7 +2055,7 @@ def cron_jobs(browser):
     browser.resize(1280, 900)
     new_session(browser)
     send(browser, "a session to schedule into")
-    browser.wait("the run's end", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser)
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
     session_title = browser.text("#session-title").strip()
 
@@ -2203,7 +2255,7 @@ def deleting(browser):
     browser.shot("delete-refused")
     assert count(browser, row) == 1
     browser.type("#composer", ESCAPE)
-    browser.wait("the cancelled run", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser, "the cancelled run")
     hover(browser, row)
     browser.click(row + " [data-delete]")
     browser.click('aside [data-delete-confirm="%s"]' % current)
@@ -2961,6 +3013,7 @@ def phone_layout():
         select_local(phone)
         send(phone, "hello there")
         phone.wait("the answer", lambda: answers(phone) >= 1)
+        idle(phone)
         doomed = phone.script(
             "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
         )
@@ -3406,7 +3459,7 @@ def long_lived(browser):
     browser.wait("the streaming session", lambda: open_session_id(browser) == streaming)
     browser.check()
     browser.type("#composer", ESCAPE)
-    browser.wait("the cancelled run", lambda: "working" not in browser.text("#status-bar"), timeout=40)
+    idle(browser, "the cancelled run")
     print("a reply streamed through every view, a sheet, and switched sessions")
 
 
@@ -4089,8 +4142,7 @@ def projects(browser):
     browser.wait("the refusal", lambda: "running" in browser.text("aside [data-project-error]"))
     print("a project with a running session is not deleted:", browser.text("aside [data-project-error]"))
     browser.type("#composer", ESCAPE)
-    browser.wait("the cancelled run", lambda: "working" not in browser.text("#status-bar"), timeout=40)
-    time.sleep(1)
+    idle(browser, "the cancelled run")
     hover(browser, header(project))
     browser.wait("the trash", lambda: count(browser, header(project) + " [data-header-delete]") == 1)
     browser.click(header(project) + " [data-header-delete]")
@@ -4446,7 +4498,7 @@ def basics(browser):
     browser.wait("the approval sheet", lambda: "bash" in browser.text("#sheet").lower() or "printf" in browser.text("#sheet"))
     browser.shot("approval")
     browser.click("#sheet [data-decision=approve_once]")
-    browser.wait("the tool's answer", lambda: "The tool ran." in browser.text("#transcript"))
+    idle(browser, "the tool's answer", text="The tool ran.")
     if "hello from the tool" not in browser.text("#transcript"):
         browser.click("#transcript [data-action=toggle-tool]")
     browser.wait("the tool output", lambda: "hello from the tool" in browser.text("#transcript"))
@@ -4475,6 +4527,7 @@ def basics(browser):
         and browser.script("return document.querySelector('#composer').value").find("queued one") >= 0,
         timeout=40,
     )
+    idle(browser, "the cancelled run's end")
     print("cancelled the run; the queued message came back to the composer")
     browser.shot("cancelled")
     clear_composer(browser)
