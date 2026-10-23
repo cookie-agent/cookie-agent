@@ -144,8 +144,10 @@ In a session of an [ACP agent](../extend/acp-agents.md), the palette also
 lists the slash commands the agent offers, after cookie's own and marked
 `(agent)`. Choosing one that takes input asks for it; choosing one sends
 `/<name> <input>` to the agent. The agent picker lists the agents runtimes
-host with their runtime (`local-claude [on local]`); one that is
-unavailable is dimmed (`[on lab · unavailable]`) and cannot be picked. The
+offer with where the session would run them (`claude [on local]`); one that
+cannot run there is dimmed with why (`[needs lab attached]`,
+`[offered by lab, local: attach one]`, `[on lab · unavailable]`) and cannot
+be picked. The
 agent's plan shows in the transcript as a checklist (`[x]` done, `[~]` in
 progress, `[ ]` pending), its own tool calls name it after their title and
 fill in their arguments as the agent sends them, and its notices show as

@@ -702,7 +702,8 @@ them; the daemon speaks ACP to them.
 - **Declarations.** The runtime reports its agents in `runtime/initialize`'s
   `acp_agents`, and again with `runtime/agents_changed` (`agents`, the whole
   list) when they change, such as when a runtime that dials in reads its
-  configuration again. The daemon lists each as `<runtime>-<agent>`.
+  configuration again. The daemon lists each under its own ID; runtimes
+  that report the same ID offer the same agent.
 - **Processes.** `agent/start` (`agent`) runs the agent's `command` without a
   shell in the runtime's home directory, in its own process group (a job
   object on Windows), with the runtime's environment and the agent's `env`;

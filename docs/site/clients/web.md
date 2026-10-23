@@ -450,8 +450,10 @@ address bar.
     Deny rules and the loop guard hold in every mode.
 
     The agent picker lists the [ACP agents](../extend/acp-agents.md)
-    runtimes host with their runtime; one that is unavailable is dimmed
-    and cannot be picked. For an ACP agent the model chip shows the agent's
+    runtimes offer with the runtime the draft (or the viewed session)
+    would run them on; one that cannot run there (no attached runtime
+    offers it, two do, or its runtime is away) is dimmed with why and
+    cannot be picked. For an ACP agent the model chip shows the agent's
     own model and opens **Agent options**: each option the agent offers
     (model, mode, effort) with its values, the current one pressed; a click
     changes it on the agent;

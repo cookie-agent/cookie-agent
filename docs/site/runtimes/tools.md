@@ -104,25 +104,28 @@ env = { CODEX_HOME = "/home/ada/.codex" }
 | `description` | string | `""` | Shown where the agent is listed when its daemon document gives none; at most 512 bytes without control characters. |
 | `enabled` | boolean | `true` | A disabled agent is listed as unavailable. |
 
-- **IDs.** The table key is an agent ID: lowercase letters, digits, and
-  single inner hyphens. The daemon lists the agent as
-  `<runtime>-<agent>`, the runtime ID's `_` spelled `-`: `local-claude`,
-  `labpc-codex`, `client-myhost-codex`. A combination that is not an agent
-  ID (a runtime ID with `__` or a trailing `_`), longer than 64 bytes, or
-  that another runtime's agent or a daemon agent document already names is
-  refused with an error naming both; for a runtime that dials in, the
-  daemon skips the agent and says why in its log.
+- **IDs.** The table key is an agent ID (lowercase letters, digits, and
+  single inner hyphens) and the agent's ID: `[runtimes.local.acp.agents.claude]`
+  is the agent `claude`. Runtimes that declare the same key offer the same
+  agent. A daemon agent document of that ID without an `acp` block keeps
+  the ID; the declarations are ignored and the configuration status says
+  so.
+- **Which runtime runs it.** A session runs the agent on the one runtime it
+  attaches that offers it. With none, or with two, the agent cannot run in
+  that session: creating the session, starting a run, or delegating is
+  refused, saying which runtimes offer it, and a session that runs an ACP
+  agent cannot attach a second runtime that offers it. See
+  [Which runtime runs it](../extend/acp-agents.md#which-runtime-runs-it).
 - **Availability.** An agent of `local` or of a template is available
   whenever the daemon runs, since the daemon starts its runtime on demand;
   an agent of a runtime that dials in is available while that runtime is
-  connected, and listed as unavailable while it is away. A session or
-  delegation with an unavailable agent is refused at once.
-- **The daemon-side document.** Cookie settings come from an agent document
-  of the daemon's ID, `~/.cookie-agent/agents/<runtime>-<agent>.md`, whose
-  `acp` block marks it as the agent's (see
+  connected, and listed as unavailable while it is away.
+- **The daemon-side document.** Cookie settings come from the agent
+  document of its ID, `~/.cookie-agent/agents/<agent>.md`, shared by every
+  runtime that offers it, whose `acp` block marks it as the agent's (see
   [ACP agent documents](../extend/agents.md#acp-agent-documents)). Without
-  one the agent has mode `all`, the runtime's description, and the default
-  rules.
+  one the agent has mode `all`, the first offering runtime's description,
+  and the default rules.
 - **Changes.** The daemon's templates and `[runtimes.local]` apply when the
   daemon next starts, like the rest of `runtimes`. A runtime that dials in
   reads its machine's configuration again every few seconds and reports

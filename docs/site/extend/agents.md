@@ -142,15 +142,17 @@ prompt, skill-listing, plugin, cache, and history assembly order.
 
 ### ACP agent documents
 
-An ACP agent a runtime hosts (see [ACP agents](../runtimes/tools.md#acp-agents))
-is listed as `<runtime>-<agent>`, and takes its cookie settings from the
-document of that name. Its `acp` block, even `acp: {}`, marks the document as
-the agent's: it is an agent only while a runtime declares it, and a document
-of that name without the block names a daemon agent, which refuses the
-declaration.
+An ACP agent runtimes offer (see [ACP agents](../runtimes/tools.md#acp-agents))
+is listed under the key of its declarations, `claude` for
+`[runtimes.local.acp.agents.claude]`, and takes its cookie settings from the
+document of that name, which every runtime that offers it shares. Its `acp`
+block, even `acp: {}`, marks the document as the agent's: it is an agent
+only while a runtime declares it, and a document of that name without the
+block is a daemon agent, whose ID wins over the declarations (the
+configuration status says so).
 
 ```yaml
-# ~/.cookie-agent/agents/labpc-codex.md
+# ~/.cookie-agent/agents/codex.md
 ---
 description: Codex on labpc, for refactors
 mode: all

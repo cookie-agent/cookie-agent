@@ -52,9 +52,9 @@ command = ["gemini", "--acp"]
 description = "Gemini CLI"
 ```
 
-The daemon lists them as `local-claude`, `local-codex`, and `local-gemini`
-once it restarts (`[runtimes.local]` changes with the rest of `runtimes`, at
-the next start). Pick one in the agent picker of the TUI (`/agent`) or the
+The daemon lists them as `claude`, `codex`, and `gemini`, the keys of their
+declarations, once it restarts (`[runtimes.local]` changes with the rest of
+`runtimes`, at the next start). Pick one in the agent picker of the TUI (`/agent`) or the
 web client (the agent chip) for a new session, and send a message: the daemon starts the
 agent's process on the first turn, opens an ACP session in the session's
 workspace, and shows the agent's reply, thoughts, tool calls, and plan as
@@ -87,10 +87,9 @@ env = { CODEX_HOME = "/home/ada/.codex" }
 description = "Codex on labpc"
 ```
 
-The agent is `labpc-codex`. The daemon starts the `labpc` runtime when a
-session first uses the agent. A session that attaches a `labpc` workspace
-runs the agent there; without one, the agent works in the runtime's home
-directory.
+The agent is `codex`, run on `labpc` by a session that attaches `labpc` (a
+`labpc` workspace); the daemon starts the runtime when the session first
+uses it. See [Which runtime runs it](#which-runtime-runs-it).
 
 ## On a machine that dials in
 
@@ -110,21 +109,46 @@ description = "Claude Code on the lab machine"
 cookie runtime serve --daemon ws://laptop:7419/ws --id lab --token <token>
 ```
 
-The agent is `lab-claude`, available while the runtime is connected and
-listed as unavailable while it is away. The runtime reads its configuration
+The agent is `claude`, which a session that attaches `lab` runs on the lab
+machine while the runtime is connected. The runtime reads its configuration
 again every few seconds and reports changed agents, so adding one needs no
 restart. To keep it connected, run it as a
-[service](../runtimes/service.md). A runtime ID's `_` becomes `-` in
-the agent's ID: runtime `lab_pc`'s `claude` is `lab-pc-claude`.
+[service](../runtimes/service.md).
+
+## Which runtime runs it
+
+An agent's ID is the key of its declaration, whichever runtime declares it:
+`[runtimes.local.acp.agents.claude]` and a lab machine's own
+`[runtimes.local.acp.agents.claude]` both offer the one agent `claude`. A
+session runs it on the runtime it attaches that offers it:
+
+- A session that attaches `local` (the default for a new session) runs
+  `claude` on the daemon's machine; one that attaches only the lab
+  machine's runtime runs it there.
+- A session with no attached runtime that offers it cannot run it: creating
+  the session, starting a run, or delegating to it is refused with, for
+  example, ``\`claude\` needs a runtime that offers it attached: lab, local``,
+  and the agent pickers show it dimmed with what it needs.
+- A session that runs it may not attach two runtimes that offer it:
+  attaching the second is refused, naming both. Sessions of other agents
+  attach any runtimes.
+- Moved to another runtime (detach one, attach the other), the agent starts
+  a new ACP session there, and the transcript says so: the old one stays on
+  the machine that ran it.
+- A subagent runs it on the runtimes it has: its parent's, or the
+  capabilities its delegation names, by the same rule.
+
+`list_agents` shows an agent's runtimes and whether it runs in the calling
+session, and `list_runtimes` names the ACP agents each runtime offers.
 
 ## Cookie settings: the daemon-side document
 
 Cookie settings come from an agent document of the agent's ID in the
 daemon's agents directory, never from the runtime, so a runtime cannot grant
-itself permissions:
+itself permissions. Every runtime that offers the agent shares it:
 
 ```yaml
-# ~/.cookie-agent/agents/labpc-codex.md
+# ~/.cookie-agent/agents/codex.md
 ---
 description: Codex on labpc, for refactors
 mode: all
@@ -143,9 +167,9 @@ permissions:
 You review changes for this project before they are committed.
 ```
 
-- **Optional.** Without it, the agent has mode `all`, the runtime's
-  description, the rules every agent gets for actions it names no key for,
-  and the default `hide_tools`.
+- **Optional.** Without it, the agent has mode `all`, the first offering
+  runtime's description, the rules every agent gets for actions it names no
+  key for, and the default `hide_tools`.
 - **`acp`** marks the document as the agent's; `acp: {}` is enough. `mode`
   picks the mode its sessions start in (else the agent's `auto` mode, else
   its default), and `config` sets its config options by ID, such as its
@@ -153,6 +177,10 @@ You review changes for this project before they are committed.
   the session and skipped.
 - **No `models`.** The agent chooses its own model; set it through
   `acp.config` when the agent offers a model option.
+- **A document without an `acp` block** of the same ID is the daemon's own
+  agent: it keeps the ID, the runtimes' declarations are ignored, and the
+  configuration status (`cookie config status`, the TUI's `/config`, the
+  web's configuration page) says so.
 - **The body** goes with the first prompt of each of the agent's ACP
   sessions (see [What the first prompt carries](#what-the-first-prompt-carries));
   an empty body sends nothing. Cookie adds no preamble of its own: tell the
@@ -207,8 +235,8 @@ Guidelines:
   customize-cookie-agent skill explains how).
 ```
 
-Save it as `~/.cookie-agent/agents/local-claude.md` for the `claude` agent
-of `local`, or under the ID of the agent it is for.
+Save it as `~/.cookie-agent/agents/claude.md`: every runtime that offers
+`claude` shares it.
 
 ## What the first prompt carries
 
@@ -274,9 +302,11 @@ each call decided by the rules as a model's would be.
 ## In the clients
 
 - **Agent pickers.** The TUI's `/agent` and the web client's agent chip list
-  the agents runtimes host with their runtime (`local-claude [on local]`).
-  An agent whose runtime is away, or that is disabled, is shown dimmed with
-  why (`on lab · unavailable`) and cannot be picked. No model picker lists
+  the agents runtimes offer with where the new session (or the viewed
+  one) would run them (`claude [on local]`). One that cannot run there is
+  shown dimmed with why and cannot be picked: no attached runtime offers it
+  (`needs lab attached`), two do (`offered by lab, local: attach one`), or
+  its runtime is away or has it disabled (`on lab · unavailable`). No model picker lists
   an ACP agent's synthetic model `acp/<agent>`: the agent chooses its own.
 - **Agent commands.** Once the agent has announced its slash commands, the
   TUI's command palette (`/` on an empty composer, or ctrl+p) lists them
@@ -294,7 +324,7 @@ each call decided by the rules as a model's would be.
   (`[ ]`), updated in place as the agent works; each turn's plan stays where
   it was.
 - **Tool calls** the agent reports name it after their title
-  (`Read notes.txt · local-claude on local`).
+  (`Read notes.txt · claude on local`).
 - **Tool calls** show what the agent reports as it reports it: the title,
   the kind's icon, and the arguments, updated in place when the agent
   sends them after the call started (Claude Code does); its status; its
@@ -324,7 +354,7 @@ session whose turns the agent takes.
 
 ```yaml
 permissions:
-  delegate: { reviewer: allow, labpc-codex: allow }
+  delegate: { reviewer: allow, codex: allow }
 ```
 
 The name may be one no agent has yet: an agent of a runtime that dials in is
@@ -333,12 +363,12 @@ diagnostic: `cookie config status`, the TUI's `/config`, and the web's
 configuration page show
 
 ```text
-Note: agent `lead` delegates to `labpc-codex`, which is not known yet: no agent document has that ID and no connected runtime reports it
+Note: agent `lead` delegates to `codex`, which is not known yet: no agent document has that ID and no connected runtime reports it
 ```
 
 until the runtime connects and reports the agent; then the note clears and
 the agent is a target. Delegating to it before then is refused with
-``no agent `labpc-codex` (its runtime is not connected)``. A typo stays a
+``no agent `codex` (no connected runtime offers it)``. A typo stays a
 note.
 
 ## Troubleshooting

@@ -24,7 +24,10 @@ which stays the name of cookie's own protocol.
   `client-myhost-codex`), available while that runtime is connected. The
   runtime travels next to the ID wherever agents are described; it is never
   parsed from the ID. *(Decided 2026-10-23, replacing the dotted form, which
-  the agent ID grammar does not allow and could not gain within a minor.)*
+  the agent ID grammar does not allow and could not gain within a minor.
+  Superseded the same day: the ID is the declaration's key, and the
+  session's attachments decide which runtime runs it; section 15,
+  naming.)*
 - **The runtime spawns the agent** on its own machine and relays its ACP
   messages to the daemon over the runtime protocol. **The daemon speaks
   ACP**: sessions, rendering, permissions, cancel, resume.
@@ -34,7 +37,8 @@ which stays the name of cookie's own protocol.
   the daemon. (MCP-over-ACP, which would carry MCP on the ACP connection
   itself, is a draft RFD; not used.)
 - **Cookie settings come from a daemon-side agent document with the same id**
-  (`~/.cookie-agent/agents/labpc-codex.md`): mode, permissions, body,
+  (`~/.cookie-agent/agents/labpc-codex.md`; since the naming of section 15,
+  `agents/codex.md`, shared by every runtime that offers `codex`): mode, permissions, body,
   `hide_tools`, starting mode and config options. Without one, the agent gets
   the defaults (section 4).
 - **cwd:** the session's workspace on that runtime, else the runtime's home.
@@ -621,3 +625,79 @@ a steered turn; a call whose raw input arrives later (the recorded
 presentation, Markdown, media, and link content, the tool name); notices
 and a compaction; the client reducer, the TUI, and the web rendering of
 notices, steered messages, and presentations.
+
+**Naming** (2026-10-23, user decision; client protocol 1.21.0, no runtime
+or plugin protocol change):
+
+- **IDs come straight from the declaration.** `[runtimes.local.acp.agents.claude]`
+  is the agent `claude`; the `<runtime>-<agent>` ID, the `_`-to-`-`
+  spelling, and the refusals of combined IDs that are malformed, too long,
+  or shared are gone (`cookie_agent_protocol::runtime_agent_id` is
+  removed). Every runtime that declares an ID offers the one agent of that
+  ID (the engine's `AcpOffers`), sorted by runtime ID.
+- **The session's attachments decide where it runs.** A turn of `claude`
+  runs on the attached runtime that offers it. With none attached, or with
+  two or more, it cannot run in that session: `session.create`, a run's
+  admission (before `run_started`), and a delegation (against the child's
+  attachments: the parent's inherited ones, or the delegated capabilities;
+  a resumed child is checked when its run starts) are refused with
+  `` `claude` needs a runtime that offers it attached: labpc, local `` or
+  `` `claude` is offered by more than one attached runtime (labpc, local);
+  a session runs it on one, so detach the others ``; an offering runtime that is
+  away or has the agent disabled refuses with that reason. A session whose
+  current agent is an ACP agent cannot attach a second runtime that offers
+  it (`runtime.attach` is refused, naming both); sessions of other agents
+  attach any runtimes.
+- **One document per ID.** `~/.cookie-agent/agents/claude.md` serves every
+  runtime that offers `claude`. Without one, the default document takes the
+  first offering runtime's description (in runtime ID order).
+- **Assumptions** (recorded for the user to adjust):
+  - A daemon document *without* an `acp` block whose ID a runtime declares
+    wins as the daemon's own agent; the declaration is ignored and
+    `ConfigStatus.diagnostics` says so (`ACP agent \`claude\` of runtime
+    \`local\` is ignored: ...`). This used to fail the configuration load.
+  - When the hosting runtime is detached and another attached runtime
+    offers the agent, the next turn starts a new ACP session there, with a
+    diagnostic in the transcript: the old ACP session lives on the old
+    machine.
+  - A delegated child resolves its ACP agent against its own attachments
+    with the same one-provider rule.
+  - The ACP session record keeps the hosting runtime (`runtime_id`), and
+    resume and load require it: the latest record for the agent is resumed
+    only when its runtime is the one that runs the agent now.
+- **Synthetic binding.** `acp/<agent>`'s binding no longer names a runtime
+  (`cookie-agent/acp-binding/v2`, `frozen: {"acp": {"agent"}}`); a run's
+  policy names the agent, and the runner places it on a runtime.
+- **Protocol.** `AgentDescriptor.runtimes` lists every offering runtime
+  (`runtime_id`, `agent`, `available`); `runtime` stays populated when
+  exactly one runtime offers the agent, so a client older than 1.21.0
+  lists an agent several runtimes offer as a daemon agent.
+  `runnable_as_root` is true while some offering runtime could run it; the
+  clients compute where it runs from the draft's or session's attachments
+  (`cookie_agent_client_state::acp::placement`): the TUI's and web's agent
+  pickers show `[on local]`, `[needs labpc, local attached]`,
+  `[offered by labpc, local: attach one]`, or `[on lab · unavailable]`, and
+  refuse the ones that cannot run with the reason.
+- **Model-facing tools.** `list_agents` marks an ACP agent `(<mode>, acp)`,
+  drops its synthetic model line, and adds `offered by runtimes: labpc,
+  local` and `runs here: yes, on runtime local` (or `no — needs one of:
+  labpc, local attached`, `no — two attached runtimes offer it: labpc,
+  local`, `no — runtime lab is not connected`, `no — disabled on runtime
+  local`), judged against the calling session's attachments (a child
+  inherits them). `list_runtimes` gives each runtime an `acp_agents`
+  attribute (`acp_agents="claude, codex"`). Both tool descriptions say so.
+- **cwd.** With the agent's runtime always attached, the runtime's home is
+  the working directory only when that attachment has no workspace.
+- **Delegation diagnostics** resolve unknown names against the plain IDs:
+  a target clears once any runtime declares it. A refused delegation to a
+  name no runtime offers yet says `no agent \`codex\` (no connected runtime
+  offers it)`.
+
+**Tests** (naming): two runtimes offering one ID (the descriptor's
+`runtimes`, a turn placed on `local`, `list_agents` and `list_runtimes`,
+attaching the second refused, a move to `labpc` starting a new ACP
+session with the notice, none or both attached refused at creation); a
+session and a run without the agent's runtime refused before the run
+starts; a daemon document without an `acp` block shadowing a declaration
+(the configuration diagnostic); the client placement and picker notes; the
+`list_agents` placement lines.
