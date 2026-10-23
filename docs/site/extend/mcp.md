@@ -4,6 +4,10 @@ Cookie Agent supports MCP tools through `tools/list` and `tools/call`. It does
 not expose MCP resources or prompts. Server requests for sampling, elicitation,
 roots, or other interactive input are rejected.
 
+To give agents a web browser, see
+[Giving agents a browser](browser.md), a guide to Playwright MCP that builds
+on this page.
+
 ## Configuration
 
 `mcp` accepts one optional `servers` map, empty by default. Define entries in

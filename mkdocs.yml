@@ -111,6 +111,7 @@ nav:
       - Providers: extend/providers.md
       - MCP servers: extend/mcp.md
       - ACP agents: extend/acp-agents.md
+      - Giving agents a browser: extend/browser.md
       - Plugins: extend/plugins.md
   - Configuration:
       - config.toml: engine/configuration.md
