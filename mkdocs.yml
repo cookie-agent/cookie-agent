@@ -110,6 +110,7 @@ nav:
       - Skills: extend/skills.md
       - Providers: extend/providers.md
       - MCP servers: extend/mcp.md
+      - ACP agents: extend/acp-agents.md
       - Plugins: extend/plugins.md
   - Configuration:
       - config.toml: engine/configuration.md

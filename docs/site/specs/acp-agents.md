@@ -1,8 +1,8 @@
 # ACP agents
 
-Status: **approved** (2026-10-23), being implemented: phases 1 to 3 landed
-(2026-10-23; see [Implementation notes](#15-implementation-notes)); phases 4
-(clients) and 5 (docs) remain.
+Status: **implemented** (2026-10-23); see
+[Implementation notes](#15-implementation-notes). The user guide is
+[ACP agents](../extend/acp-agents.md).
 
 ## 1. Goal and scope
 
@@ -431,6 +431,52 @@ Where the spec left a detail open, or where the code differs:
   advertises no `fs` and no `terminal`. A runtime that cannot start an
   agent answers the new error `agent_failed`.
 
+**Revisions of 2026-10-23** (user decisions; client protocol 1.18.0):
+the `acp` permission action is gone (section 8), and a delegation target
+no agent has yet is a configuration diagnostic rather than a load error
+(see **The agent document** above). `ConfigStatus.diagnostics` carries the
+diagnostics in `config.get`, `config.apply`, and `config.reload`; `cookie
+config status`, the TUI's `/config`, and the web's configuration page show
+them.
+
+**Phase 4, the clients** (2026-10-23; no wire change beyond 1.17.0):
+
+- **Pickers.** The agent pickers list the root-runnable agents and the ACP
+  agents that would be but are unavailable (runtime away, or disabled),
+  with their runtime (`[on lab · unavailable]`), dimmed and refused with
+  the reason. A draft of an ACP agent runs its `acp/<agent>` model, which
+  the clients treat as live though no catalog lists it; the model pickers
+  list only the catalog's models, and choosing the model of an ACP draft
+  opens its options instead (`/options` in the TUI, **Agent options** from
+  the web's model chip, which shows the agent's `model` option).
+- **Commands.** The reducer folds `acp_session_updated` into the session's
+  `acp` view (commands and options, each the latest whole value). The TUI
+  lists the agent's commands in the command palette after cookie's own,
+  marked `(agent)`; one with an input hint asks for its input in a text
+  step. The web client, whose composer has no command palette, lists them
+  above the composer while the draft is `/` and a prefix of a name; one
+  that takes input puts `/<name> ` in the composer, one that takes none is
+  sent. Both send `/<name> <input>` as an ordinary prompt.
+- **Options** are set with `session.agent_option.set`, and its answer
+  replaces the session's options at once (the daemon's
+  `acp_session_updated` follows).
+- **Plan.** A `plan` in `acp_session_updated` is a transcript row per run,
+  replaced in place by the run's later plans, after the run's reply: a
+  checklist with `[x]`, `[~]`, and `[ ]` (an icon and a screen-reader
+  label in the web) and a high or low priority. A `plan` block inside a
+  tool's display renders the same way.
+- **Tool source.** A call of source `acp` names `<agent> on <runtime>` after
+  its title (in the web, a `data-tool-source` span).
+- No new pointer target: the TUI's `/options` is a picker modal on the
+  existing `PickerRow` targets, and palette rows are `PaletteRow`s.
+
+**Phase 5, the docs** (2026-10-23): the [ACP agents
+guide](../extend/acp-agents.md) (Claude Code, Codex, and Gemini CLI on
+`local`, an ssh template, and a dial-in runtime; the daemon-side document;
+permissions; `hide_tools`; the bridge; the clients; delegation;
+troubleshooting), with the TUI, web, agents, runtimes, and `[acp]` pages
+pointing to it.
+
 **§12 coverage** (`crates/engine/src/runtime/tests/acp.rs` against the
 scripted agent `crates/engine/tests/fixtures/acp_agent.py`,
 `crates/coding_runtime/src/server/acp_tests.rs`,
@@ -446,8 +492,16 @@ session after a lost one; process exit; the bridge listing and gating
 cookie's tools with `hide_tools` and calling one; the body sent once; agent
 commands; delegation to an ACP subagent through the bridge; a cron fire
 into an ACP session; cwd with and without a workspace on the runtime; an
-agent that connects its MCP servers while it answers `session/new`. Not
-covered: steering into a running ACP turn, which queues for the next round.
+agent that connects its MCP servers while it answers `session/new`; the
+revised mapping (cookie's bridged tools by each adapter's naming, the
+agent's own MCP tools as `mcp`, `think`, and `switch_mode` and unknown kinds
+through approvals); a delegation target no runtime has reported, refused and
+a diagnostic until a dial-in runtime reports it. Clients:
+`crates/client_state/src/acp.rs` and the reducer test,
+`crates/tui/src/ui/transcript/tests/acp.rs`, the web plan block test, and
+the `acp_agents` browser scenario (`scripts/web-e2e`, the fixture on the
+`acp` group daemon's `local`). Not covered: steering into a running ACP
+turn, which queues for the next round.
 
 **Checked by hand against Claude Code** (2026-10-23; `claude` 2.1.309,
 `@agentclientprotocol/claude-agent-acp` 0.94.0, on `local` of a scratch

@@ -110,7 +110,8 @@ Esc in a step returns to the command list with the search intact.
 | `/new` | Choose the next root-run agent |
 | `/preset` | Select the preset for the next root run and future new sessions; see [Agent presets](../extend/agents.md#agent-presets) |
 | `/agent` | Choose the agent for the next run |
-| `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models |
+| `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models; for an [ACP agent](../extend/acp-agents.md), which chooses its own model, it opens `/options` |
+| `/options` | Change the options of the session's ACP agent, such as its model, mode, and effort: pick an option, then a value; listed while the agent offers options |
 | `/connect` | Connect or update a managed provider |
 | `/mcp` | Manage MCP servers; see [MCP servers](../extend/mcp.md) |
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes, or choose a new session's before its first prompt; see [Runtimes panel](#runtimes-panel) |
@@ -136,7 +137,16 @@ Esc in a step returns to the command list with the search intact.
 
 In a read-only session owned by another cookie process, commands that write to
 the session (`/permissions`, `/runtime`, `/skills`, `/attach`, `/cancel`,
-`/goal`, `/compact`, `/rename`, `/cron new`) are hidden.
+`/goal`, `/compact`, `/rename`, `/cron new`, `/options`) are hidden.
+
+In a session of an [ACP agent](../extend/acp-agents.md), the palette also
+lists the slash commands the agent offers, after cookie's own and marked
+`(agent)`. Choosing one that takes input asks for it; choosing one sends
+`/<name> <input>` to the agent. The agent picker lists the agents runtimes
+host with their runtime (`local-claude [on local]`); one that is
+unavailable is dimmed (`[on lab · unavailable]`) and cannot be picked. The
+agent's plan shows in the transcript as a checklist (`[x]` done, `[~]` in
+progress, `[ ]` pending), and its own tool calls name it after their title.
 
 The composer only ever sends messages: text beginning with `/` is sent as a
 prompt like any other. To start a message with `/`, open the palette and type

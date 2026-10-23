@@ -3,7 +3,7 @@
 Control how the daemon runs ACP agents, the external coding agents such as
 Claude Code, Codex, and Gemini CLI that runtimes host and that take a
 session's turns over the Agent Client Protocol (see the
-[ACP agents spec](../specs/acp-agents.md)). The agents themselves are
+[ACP agents guide](../extend/acp-agents.md)). The agents themselves are
 declared on their runtime, under
 [`[runtimes.<id>.acp.agents.<agent>]`](../daemon/runtimes.md#acp-agents).
 Complete `config.toml`:

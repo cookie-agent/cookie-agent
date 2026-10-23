@@ -335,6 +335,12 @@ address bar.
     removed, and its text comes back into the composer), or **forks** a new
     session with the conversation up to it. A revert is refused when another
     client added to the session since the menu opened.
+- **An ACP agent's commands.** In a session of an
+  [ACP agent](../extend/acp-agents.md), typing `/` in the composer lists the
+  slash commands the agent offers above it, marked **agent**, narrowed as
+  you type the name. Choosing one that takes input puts `/<name> ` in the
+  composer for it; one that takes none is sent. The agent's plan shows in
+  the transcript as a checklist, and its own tool calls name it.
 - **Composer.** One line to start; it grows with what you write up to
   five lines, then scrolls, and shrinks back when you send. The paperclip
   (and on a phone the camera) is inside it at the bottom left, and round
@@ -427,7 +433,14 @@ address bar.
     - **ask**: every ask comes to you;
     - **yolo**: every ask is approved at once.
 
-    Deny rules and the loop guard hold in every mode;
+    Deny rules and the loop guard hold in every mode.
+
+    The agent picker lists the [ACP agents](../extend/acp-agents.md)
+    runtimes host with their runtime; one that is unavailable is dimmed
+    and cannot be picked. For an ACP agent the model chip shows the agent's
+    own model and opens **Agent options**: each option the agent offers
+    (model, mode, effort) with its values, the current one pressed; a click
+    changes it on the agent;
   - the approvals waiting, when there are any (click to answer them);
   - **working…** while the session runs;
   - the last status message;
@@ -518,7 +531,9 @@ address bar.
 - **Configuration.** Settings › Configuration has `config.toml`. Open it
   to edit it in the page and **Apply** it. A change the daemon refuses
   stays open with the reason, to be fixed and applied again; a document
-  that changed meanwhile is reloaded instead.
+  that changed meanwhile is reloaded instead. Notes about what the configuration names
+  that does not exist yet, such as a delegation target no runtime has
+  reported, are listed above it.
 - **Agents.** The **Agents** view lists the agent documents in a sidebar,
   like the sessions in Chat: the shared agents, then each preset with its
   agents. Each row has an icon for the agent's mode (a robot for a primary

@@ -821,7 +821,7 @@ that permits it. Review them and work only in repositories you trust.
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. A named target no agent has
 yet, and a pattern that matches none, do not fail the configuration: the
-name may be an [ACP agent](../daemon/runtimes.md#acp-agents) whose runtime has not
+name may be an [ACP agent](acp-agents.md) whose runtime has not
 reported it, such as a dial-in runtime that has not connected since the
 daemon started. Until one does, the configuration status carries a
 diagnostic (`cookie config status`, `/config`, and the web's configuration
