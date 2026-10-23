@@ -8,6 +8,7 @@ configuration reference.
 
 | Specification | Status |
 |---|---|
+| [MCP tool filters](mcp-tool-filters.md) | Implemented (2026-10-23); per-server `include_tools`/`exclude_tools` with `*`/`?` patterns over the server's own tool names, a `filtered_tools` count (client protocol 1.16.0, runtime protocol 1.6.0), the TUI and web editor fields, and MCP tools offered by the merged `mcp` rules for their names |
 | [Permission consolidation](permission-consolidation.md) | Implemented (2026-10-23); defaults, the agent document, and session overrides merged into one rule list per run (session rules replace by action, runtime, and pattern), used for offered tools, every call, memory, and `/permissions`; a broad session rule no longer beats a narrower document rule, and a session `deny` can hide a default-allowed tool |
 | [Cron jobs](cron.md) | Implemented (2026-10-23); scheduled prompts by cron expression or `in <delay>`, into a session (`steer` or `queue`) or a new session per run, the `cron` permission by target kind, `list_agents`, `crons.*` (client protocol 1.15.0), TUI `/cron`, the web's Scheduled prompts, and `cookie cron` |
 | [Web client and local daemon use](web-client.md) | Implemented (2026-10-20); Leptos/WebAssembly client styled with Tailwind, sharing the protocol client, reducer, and panel rules with the TUI, served by `cookie daemon` or any static host, full TUI parity except MCP OAuth (closed 2026-10-21 by web MCP OAuth) and offering this machine as a runtime, phone layout and home-screen manifest (installable as an app with a network-only service worker since 2026-10-21, reversing "no service worker"), headless-Firefox suites in CI; plain `cookie` connects to a running local daemon (phase L). Addendum of 2026-10-21 implemented: web layout v2 (rail, drawer, nested subagents, the approved phone layout) and session deletion (`session.delete`, client protocol 1.5.0) from the TUI and the web client; web commands moved from `/` to the ⋮ menu, subagent tree collapsed to running agents, and a permission mode picker (2026-10-21). Addendum of 2026-10-21 on paths: canonical paths shown as `~/…` under the runtime's reported home, `cwd_identity` from the first workspace attachment, `~/` permission rules (runtime protocol 1.3.0, client protocol 1.7.0); protocol, daemon, and TUI implemented, web display next |
@@ -36,7 +37,6 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
-| [MCP tool filters](mcp-tool-filters.md) | Approved (2026-10-23), being implemented; per-server `include_tools`/`exclude_tools` with `*` patterns, and MCP tools offered by the merged `mcp` rules for their names |
 | [ACP agents](acp-agents.md) | Draft (2026-10-23), awaiting review; Claude Code, Codex, and Gemini CLI as cookie agents over the Agent Client Protocol, with cookie's tools offered to them as MCP |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |

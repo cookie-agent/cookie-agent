@@ -1,6 +1,7 @@
 # MCP tool filters
 
-Status: **approved** (2026-10-23), being implemented. Builds on
+Status: **implemented** (2026-10-23); see
+[Implementation notes](#9-implementation-notes). Builds on
 [permission consolidation](permission-consolidation.md) and the MCP scope
 work in the [runtimes spec](runtimes.md).
 
@@ -110,3 +111,54 @@ per-tool offering in the engine, the clients' editor fields, docs.
 ## 8. Open questions
 
 None.
+
+## 9. Implementation notes
+
+Landed 2026-10-23 in one phase, as section 7 planned. Client protocol
+1.16.0, runtime protocol 1.6.0; the plugin protocol and history format 1
+are unchanged.
+
+- **Configuration.** `McpServerConfig` (`crates/config/src/runtime.rs`)
+  gains `include_tools: Option<Vec<String>>` and `exclude_tools:
+  Vec<String>`, both omitted when written back unset, and
+  `publishes_tool(name)`, which matches with the permission patterns'
+  `simple_wildcard_match`. `validate` refuses an empty pattern and a present
+  but empty `include_tools`; every place a server is configured already
+  runs it (top-level servers, runtime templates including
+  `[runtimes.local]`, `/mcp` add and edit, and the coding runtime parsing
+  the tables the daemon or a dial-in runtime's own configuration hands it),
+  so no protocol carries the filters.
+- **Filtering.** `ServerRuntime::publish_tools_before_commit`
+  (`crates/mcp/src/lib.rs`), the one path both the first listing and every
+  `list_changed` refresh go through, drops the tools the filters reject
+  before converting and claiming names, so a filtered tool cannot collide
+  either. The count is kept per server, reset when the server fails, and a
+  relist that changes only the filtered tools updates the status without
+  republishing.
+- **Status.** The registry's `McpServerStatus.filtered_tools`; on the wire
+  it is `McpServerInfo.filtered_tools` (the client protocol's status type,
+  which section 2 calls `McpServerStatus`) and `McpServerReport.filtered_tools`
+  in the runtime protocol, which carries runtimes' server statuses. Both are
+  optional and absent when nothing was filtered.
+- **Editors.** `McpServerDefinition` gains the two optional fields, so the
+  TUI and web forms (sharing `McpFields` in `cookie_agent_client_state`) edit
+  them as comma-separated pattern lists, a blank include field meaning every
+  tool. `definition_display` shows them, and the lists show `12 tools, 30
+  filtered` (the TUI's compact row: `(12, 30 filtered)`). An older client
+  editing a server sends a definition without them and clears them, which
+  the changelog notes.
+- **Per-tool offering.** Rather than branch on the string `mcp` in tool
+  composition, the action carries the semantics, as `is_path` and
+  `is_command` do: `PermissionAction::is_tool_name()` (true for `mcp`) says a
+  tool's resource is its own name. `PermissionPipeline::tool_offered` decides
+  such a tool by `MergedRules::decide` on the name the provider knows it by
+  (`<server>_<tool>`, before any attachment prefix, the resource its calls
+  are checked against) and every other tool by `tool_visible_with_grants`
+  as before. A provider hook was considered, but runtime-hosted MCP tools
+  reach the daemon through the runtime protocol's provider, which cannot
+  answer a resource without a call, so it would have needed a wire field.
+  Both composition (`compose_for_policy`) and preparation use it, so a call
+  to a hidden tool fails as not enabled before its provider sees it.
+- **Grants.** A grant only turns `ask` into `allow`, and `ask` already
+  offers, so for these tools grants change nothing: a name the merged rules
+  deny, or match no rule for, stays hidden.
