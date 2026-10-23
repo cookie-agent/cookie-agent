@@ -15,12 +15,12 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use cookie_agent_protocol::{
-    AcpConfigOption, AcpConfigValue, AcpSessionRecord, AcpSessionStart, AcpSessionUpdate,
-    AssistantToolCallRef, AttemptId, DisplayBlock, ModelCallId, ModelFinishReason, Open,
-    PersistedAssistantPart, PersistedModelTurn, PersistedToolResult, PlanEntry, PlanEntryPriority,
-    PlanEntryStatus, PreparedPresentation, RunId, SafeCode, SafeDisplayText, SessionId,
-    StreamedOutputKind, ToolCallId, ToolCallStart, ToolIdentity, ToolOutputDeclaration,
-    ToolPresentation, ToolSource, Usage, UserContentPart,
+    AcpConfigOption, AcpConfigValue, AcpNotice, AcpNoticeSeverity, AcpSessionRecord,
+    AcpSessionStart, AcpSessionUpdate, AssistantToolCallRef, AttemptId, DisplayBlock, ModelCallId,
+    ModelFinishReason, Open, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
+    PlanEntry, PlanEntryPriority, PlanEntryStatus, PreparedPresentation, RunId, SafeCode,
+    SafeDisplayText, SessionId, StreamedOutputKind, ToolCallId, ToolCallStart, ToolIdentity,
+    ToolOutputDeclaration, ToolPresentation, ToolSource, Usage, UserContentPart,
 };
 use cookie_agent_runtime_api::protocol::{AgentMcpOpenResult, AgentRef, method};
 use serde_json::Value;
@@ -323,62 +323,192 @@ fn diff_block(path: &str, old: Option<&str>, new: &str) -> DisplayBlock {
     block
 }
 
-/// The display blocks and text of a tool call's content.
-fn call_content(call: &ToolCallFields) -> (Vec<DisplayBlock>, String) {
-    let mut blocks = Vec::new();
-    let mut text = String::new();
-    for content in call.content.iter().flatten() {
-        match content.get("type").and_then(Value::as_str) {
-            Some("diff") => {
-                let path = content
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let new = content
-                    .get("newText")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let old = content.get("oldText").and_then(Value::as_str);
-                blocks.push(diff_block(path, old, new));
+impl Engine {
+    /// The display blocks and text of a tool call's content: text as
+    /// Markdown, images as media, resource links as links, embedded
+    /// resources as code, diffs as diff blocks, and locations as file links.
+    fn call_content(
+        &self,
+        session: SessionId,
+        call: &ToolCallFields,
+    ) -> (Vec<DisplayBlock>, String) {
+        let mut blocks = Vec::new();
+        let mut text = String::new();
+        let say = |text: &mut String, line: &str| {
+            if !line.is_empty() {
                 if !text.is_empty() {
                     text.push('\n');
                 }
-                text.push_str(&format!("edited {path}"));
+                text.push_str(line);
             }
-            Some("content") => {
-                let block = content.get("content").cloned().unwrap_or(Value::Null);
-                let shown = wire::content_text(&block);
-                if !shown.is_empty() {
-                    if !text.is_empty() {
-                        text.push('\n');
+        };
+        for content in call.content.iter().flatten() {
+            match content.get("type").and_then(Value::as_str) {
+                Some("diff") => {
+                    let path = content
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let new = content
+                        .get("newText")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let old = content.get("oldText").and_then(Value::as_str);
+                    blocks.push(diff_block(path, old, new));
+                    say(&mut text, &format!("edited {path}"));
+                }
+                Some("content") => {
+                    let block = content.get("content").cloned().unwrap_or(Value::Null);
+                    if let Some(shown) = self.content_block(session, &block) {
+                        blocks.push(shown);
                     }
-                    text.push_str(&shown);
-                    blocks.push(DisplayBlock::text(shown));
+                    say(&mut text, &wire::content_text(&block));
+                }
+                Some("terminal") => {
+                    let id = content
+                        .get("terminalId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    blocks.push(DisplayBlock::text(format!("[terminal {id}]")));
+                }
+                _ => {}
+            }
+        }
+        for location in call.locations.iter().flatten() {
+            blocks.push(DisplayBlock::Link {
+                url: match location.line {
+                    Some(line) => format!("file://{}#L{line}", location.path),
+                    None => format!("file://{}", location.path),
+                },
+                label: Some(match location.line {
+                    Some(line) => format!("{}:{line}", location.path),
+                    None => location.path.clone(),
+                }),
+            });
+        }
+        for block in &mut blocks {
+            block.sanitize();
+        }
+        (blocks, text)
+    }
+
+    /// One ACP content block as a display block.
+    fn content_block(&self, session: SessionId, block: &Value) -> Option<DisplayBlock> {
+        let text = |name: &str| block.get(name).and_then(Value::as_str);
+        match text("type")? {
+            "text" => text("text")
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| DisplayBlock::Markdown {
+                    text: text.to_owned(),
+                    omitted_lines: None,
+                }),
+            "image" => {
+                use base64::Engine as _;
+                let media_type = text("mimeType").unwrap_or("image/png");
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(text("data")?)
+                    .ok()?;
+                let (_, sha256) = self.inner.artifacts.retain(session, &bytes).ok()?;
+                Some(DisplayBlock::Media {
+                    artifact: cookie_agent_protocol::ArtifactRef {
+                        sha256,
+                        byte_length: bytes.len() as u64,
+                        media_type: media_type.to_owned(),
+                        filename: None,
+                    },
+                    alt: None,
+                })
+            }
+            "resource_link" => Some(DisplayBlock::Link {
+                url: text("uri")?.to_owned(),
+                label: text("title").or_else(|| text("name")).map(str::to_owned),
+            }),
+            "resource" => {
+                let resource = block.get("resource")?;
+                let field = |name: &str| resource.get(name).and_then(Value::as_str);
+                match field("text") {
+                    Some(body) => Some(DisplayBlock::Code {
+                        text: body.to_owned(),
+                        language: None,
+                        start_line: None,
+                        omitted_lines: None,
+                    }),
+                    None => Some(DisplayBlock::Link {
+                        url: field("uri")?.to_owned(),
+                        label: None,
+                    }),
                 }
             }
-            Some("terminal") => {
-                let id = content
-                    .get("terminalId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                blocks.push(DisplayBlock::text(format!("[terminal {id}]")));
-            }
-            _ => {}
+            _ => None,
         }
     }
-    for location in call.locations.iter().flatten() {
-        blocks.push(DisplayBlock::Link {
-            url: match location.line {
-                Some(line) => format!("file://{}#L{line}", location.path),
-                None => format!("file://{}", location.path),
-            },
-            label: Some(match location.line {
-                Some(line) => format!("{}:{line}", location.path),
-                None => location.path.clone(),
-            }),
-        });
+}
+
+/// The block that shows a call's raw output, when its content shows none.
+fn raw_output_block(output: &Value) -> Option<DisplayBlock> {
+    let mut block = match output {
+        Value::Null => return None,
+        Value::String(text) if text.trim().is_empty() => return None,
+        Value::String(text) => DisplayBlock::Code {
+            text: text.clone(),
+            language: None,
+            start_line: None,
+            omitted_lines: None,
+        },
+        other => DisplayBlock::Json {
+            value: other.clone(),
+        },
+    };
+    block.sanitize();
+    Some(block)
+}
+
+/// What a call's header shows after its title: the command, path, URL,
+/// pattern, or query its raw input names.
+fn primary_argument(input: Option<&Value>) -> Option<cookie_agent_protocol::BoundedDisplayText> {
+    let input = input?.as_object()?;
+    [
+        "command",
+        "file_path",
+        "filePath",
+        "path",
+        "notebook_path",
+        "url",
+        "pattern",
+        "query",
+    ]
+    .iter()
+    .find_map(|key| input.get(*key).and_then(Value::as_str))
+    .map(|text| {
+        text.lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(200)
+            .collect::<String>()
+    })
+    .filter(|text| !text.trim().is_empty())
+    .and_then(|text| cookie_agent_protocol::BoundedDisplayText::new(text).ok())
+}
+
+/// How a call is presented from what the agent reported of it so far:
+/// its title, its kind's hint, what its raw input names, and the raw input
+/// as its arguments.
+fn presentation_of(fields: &ToolCallFields) -> PreparedPresentation {
+    let title = display_text(fields.title.as_deref().unwrap_or("ACP tool call"));
+    let mut presentation =
+        PreparedPresentation::new(title, primary_argument(fields.raw_input.as_ref()))
+            .with_hint(kind_hint(fields.kind.as_deref()));
+    if let Some(input) = fields
+        .raw_input
+        .clone()
+        .filter(|input| input.as_object().is_none_or(|input| !input.is_empty()))
+    {
+        presentation = presentation.with_arguments([DisplayBlock::Json { value: input }]);
     }
-    (blocks, text)
+    presentation.fit();
+    presentation
 }
 
 /// The tool name a call's ACP kind records.
@@ -428,6 +558,8 @@ fn display_text(text: &str) -> SafeDisplayText {
 struct ShownCall {
     tool_call_id: ToolCallId,
     fields: ToolCallFields,
+    /// The presentation the session last recorded for it.
+    presented: PreparedPresentation,
     terminated: bool,
 }
 
@@ -463,6 +595,24 @@ struct Turn<'a> {
     home: Option<String>,
     /// Calls through the bridge still running.
     bridged: Vec<tokio::task::JoinHandle<()>>,
+    /// The agent takes input into its running turn (`_session/steering`).
+    steering: bool,
+    /// Claims on input steered into the turn, released at its next commit.
+    steer_claims: Vec<super::super::producer_claims::ClaimedPrompt>,
+    /// Input was taken to steer that the agent did not take: the next round
+    /// sends it.
+    unsteered: bool,
+    /// The summary text of each compaction in progress, by its ID.
+    compactions: HashMap<String, String>,
+}
+
+/// A `_session/steering` request on its way.
+struct PendingSteer {
+    answer: tokio::sync::oneshot::Receiver<Result<String, String>>,
+    claim: super::super::producer_claims::ClaimedPrompt,
+    /// The input's end, which the turns after an accepted steer cover.
+    through: u64,
+    steered: cookie_agent_protocol::AcpSteered,
 }
 
 impl Turn<'_> {
@@ -586,7 +736,117 @@ impl Turn<'_> {
         if let Some(mut claim) = self.claim.take() {
             claim.release().await?;
         }
+        for mut claim in std::mem::take(&mut self.steer_claims) {
+            claim.release().await?;
+        }
         Ok(model_turn_seq)
+    }
+
+    /// Takes the session's input to steer and sends it into the agent's
+    /// running turn: the turn so far commits, so the input stands after it,
+    /// then the input is promoted and claimed like a round's, and
+    /// `_session/steering` carries it. `None` when there was none.
+    async fn begin_steer(&mut self) -> Result<Option<PendingSteer>, EngineError> {
+        if self
+            .step
+            .as_ref()
+            .is_some_and(|step| !step.parts.is_empty())
+        {
+            self.commit(ModelFinishReason::Stop).await?;
+        }
+        let (session, run, engine) = (self.session(), self.run, self.engine);
+        engine
+            .request(session, |reply| SessionCommand::PromotePendingOrComplete {
+                run,
+                final_text: None,
+                complete_if_empty: false,
+                reply,
+            })
+            .await?;
+        let claim = engine.prompt_events(session, run).await?;
+        let images = self
+            .live
+            .process
+            .init()
+            .agent_capabilities
+            .prompt_capabilities
+            .image;
+        let (prompt, steered) = engine.input_since(&claim.events, self.input_through_seq, images);
+        if prompt.is_empty() {
+            return Ok(None);
+        }
+        let through = claim
+            .events
+            .last()
+            .map_or(self.input_through_seq, |event| event.seq);
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let process = Arc::clone(&self.live.process);
+        let session_id = self.live.acp_session_id.clone();
+        tokio::spawn(async move {
+            let answer = process
+                .peer
+                .request::<_, wire::SteeringResponse>(
+                    wire::method::SESSION_STEERING,
+                    &wire::SteeringRequest {
+                        session_id: &session_id,
+                        prompt: &prompt,
+                        meta: serde_json::json!({"steering": {"idleBehavior": "promptRequired"}}),
+                    },
+                )
+                .await
+                .map(|response| response.outcome)
+                .map_err(|error| agent_error_message(&error));
+            let _ = reply.send(answer);
+        });
+        Ok(Some(PendingSteer {
+            answer,
+            claim,
+            through,
+            steered,
+        }))
+    }
+
+    /// What the agent answered a steer: taken (`injected`, or a turn it
+    /// started for it), the turns after cover the input and the session
+    /// records that it was steered; otherwise the next round sends it.
+    async fn end_steer(
+        &mut self,
+        pending: PendingSteer,
+        answer: Result<String, String>,
+    ) -> Result<(), EngineError> {
+        match answer.as_deref() {
+            Ok("injected" | "startedNewTurn") => {
+                self.input_through_seq = self.input_through_seq.max(pending.through);
+                self.steer_claims.push(pending.claim);
+                self.record_update(AcpSessionUpdate {
+                    steered: Some(pending.steered),
+                    ..AcpSessionUpdate::default()
+                })
+                .await
+            }
+            Ok("promptRequired") => {
+                self.unsteered = true;
+                Ok(())
+            }
+            other => {
+                self.unsteered = true;
+                let reason = match other {
+                    Ok(outcome) => format!("it answered `{outcome}`"),
+                    Err(error) => error.clone(),
+                };
+                self.engine
+                    .acp_notice(
+                        self.session(),
+                        Some(self.run),
+                        format!(
+                            "The agent did not take the message into its running turn ({reason}); \
+                             it goes with the agent's next turn."
+                        ),
+                    )
+                    .await;
+                Ok(())
+            }
+        }
     }
 
     async fn record_update(&self, update: AcpSessionUpdate) -> Result<(), EngineError> {
@@ -691,8 +951,106 @@ impl Turn<'_> {
                 self.usage_update = Some(update.clone());
                 Ok(())
             }
+            // The session notices RFD: an advisory line for the user.
+            "notice" => {
+                let text = |name: &str| update.get(name).and_then(Value::as_str);
+                let severity = match text("severity") {
+                    Some("error") => AcpNoticeSeverity::Error,
+                    Some("warning") => AcpNoticeSeverity::Warning,
+                    _ => AcpNoticeSeverity::Info,
+                };
+                let Some(title) = text("title").filter(|title| !title.trim().is_empty()) else {
+                    return Ok(());
+                };
+                self.notice(severity, title, text("description")).await
+            }
+            // The session compaction RFD: a compaction's summary streams,
+            // then its terminal status says how it went.
+            "compaction_summary_chunk" => {
+                if let (Some(id), Some(content)) = (
+                    update.get("compactionId").and_then(Value::as_str),
+                    update.get("content"),
+                ) {
+                    self.compactions
+                        .entry(id.to_owned())
+                        .or_default()
+                        .push_str(&wire::content_text(content));
+                }
+                Ok(())
+            }
+            "compaction_update" => {
+                let id = update
+                    .get("compactionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                match update.get("status").and_then(Value::as_str) {
+                    Some("completed") => {
+                        let streamed = self.compactions.remove(&id).unwrap_or_default();
+                        let summary = update
+                            .get("summary")
+                            .and_then(Value::as_array)
+                            .map(|blocks| {
+                                blocks
+                                    .iter()
+                                    .map(wire::content_text)
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .filter(|summary| !summary.trim().is_empty())
+                            .unwrap_or(streamed);
+                        self.notice(
+                            AcpNoticeSeverity::Info,
+                            "The agent compacted its conversation",
+                            Some(summary.trim()).filter(|summary| !summary.is_empty()),
+                        )
+                        .await
+                    }
+                    Some("failed") => {
+                        self.compactions.remove(&id);
+                        let error = update.get("error").map(|error| match error {
+                            Value::String(error) => error.clone(),
+                            other => other
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .map_or_else(|| other.to_string(), str::to_owned),
+                        });
+                        self.notice(
+                            AcpNoticeSeverity::Warning,
+                            "The agent could not compact its conversation",
+                            error.as_deref(),
+                        )
+                        .await
+                    }
+                    Some("cancelled") => {
+                        self.compactions.remove(&id);
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            }
             _ => Ok(()),
         }
+    }
+
+    /// Records a notice of the agent's.
+    async fn notice(
+        &self,
+        severity: AcpNoticeSeverity,
+        title: &str,
+        description: Option<&str>,
+    ) -> Result<(), EngineError> {
+        self.record_update(AcpSessionUpdate {
+            notice: Some(AcpNotice {
+                severity,
+                title: truncate(title.trim(), 1024),
+                description: description
+                    .map(|description| truncate(description.trim(), 16 * 1024))
+                    .filter(|description| !description.is_empty()),
+            }),
+            ..AcpSessionUpdate::default()
+        })
+        .await
     }
 
     async fn tool_call(&mut self, update: ToolCallFields) -> Result<(), EngineError> {
@@ -706,6 +1064,20 @@ impl Turn<'_> {
             shown.fields = permissions::merge(Some(&shown.fields), &update);
             let fields = shown.fields.clone();
             let tool_call_id = shown.tool_call_id;
+            // Its title, kind, or raw input can arrive after it started
+            // (Claude Code's adapter sends the raw input in an update).
+            let presentation = presentation_of(&fields);
+            if presentation != shown.presented {
+                shown.presented = presentation.clone();
+                self.record_update(AcpSessionUpdate {
+                    tool_presentation: Some(cookie_agent_protocol::AcpToolPresentation {
+                        tool_call_id,
+                        presentation,
+                    }),
+                    ..AcpSessionUpdate::default()
+                })
+                .await?;
+            }
             return self.progress_or_end(tool_call_id, &fields).await;
         }
         let fields = permissions::merge(None, &update);
@@ -738,23 +1110,16 @@ impl Turn<'_> {
             provider_item_id: None,
         };
         let tool_call_id = ToolCallId::new_v7();
-        let title = display_text(fields.title.as_deref().unwrap_or("ACP tool call"));
         let name = kind_name(fields.kind.as_deref()).as_str().to_owned();
-        let mut presentation =
-            PreparedPresentation::new(title, None).with_hint(kind_hint(fields.kind.as_deref()));
-        if let Some(input) = fields
-            .raw_input
-            .clone()
-            .filter(|input| input.as_object().is_none_or(|input| !input.is_empty()))
-        {
-            presentation = presentation.with_arguments([DisplayBlock::Json { value: input }]);
-        }
-        presentation.fit();
+        let presented = presentation_of(&fields);
         let presentation = ToolPresentation::new(
-            presentation,
+            presented.clone(),
             ToolIdentity {
-                name: name.clone(),
-                published_name: name,
+                published_name: fields
+                    .tool_name()
+                    .map(|name| name.chars().take(128).collect())
+                    .unwrap_or_else(|| name.clone()),
+                name,
                 source: Some(Open::Known(ToolSource::Acp {
                     agent: self.live.agent.id.clone(),
                     runtime_id: self.live.agent.runtime.clone(),
@@ -791,6 +1156,7 @@ impl Turn<'_> {
             ShownCall {
                 tool_call_id,
                 fields: fields.clone(),
+                presented,
                 terminated: false,
             },
         );
@@ -807,7 +1173,7 @@ impl Turn<'_> {
             Some("completed") => self.end_call(&fields.tool_call_id, true).await,
             Some("failed") => self.end_call(&fields.tool_call_id, false).await,
             _ => {
-                let (blocks, _) = call_content(fields);
+                let (blocks, _) = self.engine.call_content(self.session(), fields);
                 let message = display_text(fields.title.as_deref().unwrap_or("ACP tool call"));
                 self.engine.publish_transient(
                     self.session(),
@@ -837,14 +1203,18 @@ impl Turn<'_> {
             return Ok(());
         }
         shown.terminated = true;
-        let (blocks, mut text) = call_content(&shown.fields);
-        if text.is_empty()
-            && let Some(output) = &shown.fields.raw_output
-        {
-            text = match output {
-                Value::String(output) => output.clone(),
-                other => other.to_string(),
-            };
+        let session = self.active.session;
+        let (mut blocks, mut text) = self.engine.call_content(session, &shown.fields);
+        if let Some(output) = &shown.fields.raw_output {
+            if text.is_empty() {
+                text = match output {
+                    Value::String(output) => output.clone(),
+                    other => other.to_string(),
+                };
+            }
+            if shown.fields.content.as_ref().is_none_or(Vec::is_empty) {
+                blocks.extend(raw_output_block(output));
+            }
         }
         let title = display_text(shown.fields.title.as_deref().unwrap_or("ACP tool call"));
         let tool_call_id = shown.tool_call_id;
@@ -861,6 +1231,7 @@ impl Turn<'_> {
                     "kind": shown.fields.kind,
                     "raw_input": shown.fields.raw_input,
                     "raw_output": shown.fields.raw_output,
+                    "tool_name": shown.fields.tool_name(),
                 }
             }),
             attachments: Vec::new(),
@@ -1147,6 +1518,10 @@ impl Engine {
             usage_update: None,
             home,
             bridged: Vec::new(),
+            steering: process.init().steering(),
+            steer_claims: Vec::new(),
+            unsteered: false,
+            compactions: HashMap::new(),
         };
         loop {
             if active.cancellation.is_cancelled() {
@@ -1154,7 +1529,17 @@ impl Engine {
                 return Ok(());
             }
             let claim = self.prompt_events(active.session, run_id).await?;
-            let prompt = self.acp_prompt(&claim.events, &mut turn.live, &document, &process);
+            let context = if turn.live.first_prompt {
+                self.acp_first_prompt_context(
+                    active.session,
+                    &active.policy,
+                    &claim.events,
+                    &document,
+                )?
+            } else {
+                Vec::new()
+            };
+            let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, &process);
             turn.input_through_seq = claim.events.last().map_or(0, |event| event.seq);
             turn.claim = Some(claim);
             turn.last_text.clear();
@@ -1163,17 +1548,20 @@ impl Engine {
             let end = self.acp_round(&mut turn, prompt).await?;
             match end {
                 RoundEnd::Completed(final_text) => {
+                    // Input the agent did not take into its turn goes with
+                    // the next round.
+                    let unsteered = std::mem::take(&mut turn.unsteered);
                     let promoted = self
                         .request(active.session, |reply| {
                             SessionCommand::PromotePendingOrComplete {
                                 run: run_id,
                                 final_text,
-                                complete_if_empty: true,
+                                complete_if_empty: !unsteered,
                                 reply,
                             }
                         })
                         .await?;
-                    if !promoted {
+                    if !promoted && !unsteered {
                         return Ok(());
                     }
                 }
@@ -1227,9 +1615,34 @@ impl Engine {
             .request::<_, wire::PromptResponse>(wire::method::SESSION_PROMPT, &prompt_request);
         tokio::pin!(request);
         let mut cancel_deadline: Option<tokio::time::Instant> = None;
+        // Input to steer wakes the round while the agent can take it.
+        let steer_wake = turn
+            .steering
+            .then(|| self.inner.acp.processes.watch_steering(turn.session()));
+        let mut pending_steer: Option<PendingSteer> = None;
         let answer = loop {
             tokio::select! {
                 answer = &mut request => break Some(answer),
+                () = async {
+                    match &steer_wake {
+                        Some(wake) => wake.notified().await,
+                        None => std::future::pending().await,
+                    }
+                }, if cancel_deadline.is_none() && pending_steer.is_none() => {
+                    pending_steer = turn.begin_steer().await?;
+                }
+                answer = async {
+                    match pending_steer.as_mut() {
+                        Some(pending) => (&mut pending.answer).await,
+                        None => std::future::pending().await,
+                    }
+                }, if pending_steer.is_some() => {
+                    let pending = pending_steer.take().expect("a steer is pending");
+                    let answer = answer.unwrap_or_else(|_| {
+                        Err("the agent's process ended".to_owned())
+                    });
+                    turn.end_steer(pending, answer).await?;
+                }
                 event = events.recv() => match event {
                     Some(SessionEvent::Update(update)) => turn.update(update).await?,
                     Some(SessionEvent::Permission(request, incoming)) => {
@@ -1274,6 +1687,17 @@ impl Engine {
             }
         }
         drop(events);
+        if steer_wake.is_some() {
+            self.inner.acp.processes.unwatch_steering(turn.session());
+        }
+        if let Some(mut pending) = pending_steer.take() {
+            let answer = tokio::time::timeout(CANCEL_GRACE * 5, &mut pending.answer)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_else(|| Err("the agent did not answer the steering request".to_owned()));
+            turn.end_steer(pending, answer).await?;
+        }
         // A call through the bridge ends before the turn does.
         for call in std::mem::take(&mut turn.bridged) {
             let _ = call.await;
@@ -1367,34 +1791,101 @@ impl Engine {
         .await
     }
 
-    /// The prompt of a round: the input the session took since the agent's
-    /// last turn, after the agent document's body on the session's first
-    /// prompt.
+    /// What the first prompt of an ACP session carries before the input
+    /// (`docs/site/specs/acp-agents.md` section 15, 2026-10-23), each part
+    /// left out when empty: the tool instruction sections cookie would
+    /// compose for a model run, for exactly the tools the agent is offered
+    /// over the bridge; the session's memory snapshot as a model run sees
+    /// it; and the agent document's body.
+    fn acp_first_prompt_context(
+        &self,
+        session: SessionId,
+        policy: &crate::policy::FrozenRunPolicy,
+        events: &crate::events::EventSnapshot,
+        document: &cookie_agent_config::AgentDocument,
+    ) -> Result<Vec<String>, EngineError> {
+        let hide = document
+            .frontmatter
+            .acp
+            .clone()
+            .unwrap_or_default()
+            .hidden_tools();
+        let offered = self.offered_tools(session, policy, &hide)?;
+        let mut context = Vec::new();
+        context.extend(self.tool_prompt_block(policy, session, Some(&offered))?);
+        context.extend(
+            events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    Event::MemoryLoaded { snapshot } => Some(snapshot),
+                    _ => None,
+                })
+                .and_then(crate::memory::render::snapshot_turn),
+        );
+        if !document.body.trim().is_empty() {
+            context.push(document.body.clone());
+        }
+        Ok(context)
+    }
+
+    /// The prompt of a round: the input the session took that no committed
+    /// turn covers yet (`input_through_seq` of the last one), after the
+    /// first prompt's `context` on the session's first prompt.
     fn acp_prompt(
         &self,
         events: &crate::events::EventSnapshot,
         live: &mut LiveSession,
-        document: &cookie_agent_config::AgentDocument,
+        context: Vec<String>,
         process: &AgentProcess,
     ) -> Vec<Value> {
         let boundary = events
             .iter()
             .rev()
-            .find(|event| matches!(event.payload, Event::ModelTurnCommitted { .. }))
-            .map_or(0, |event| event.seq);
+            .find_map(|event| match &event.payload {
+                Event::ModelTurnCommitted {
+                    input_through_seq, ..
+                } => Some(*input_through_seq),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let mut prompt = Vec::new();
+        if live.first_prompt {
+            prompt.extend(context.iter().map(|part| wire::text_block(part)));
+        }
+        let images = process.init().agent_capabilities.prompt_capabilities.image;
+        prompt.extend(self.input_since(events, boundary, images).0);
+        if prompt.is_empty() {
+            prompt.push(wire::text_block("Continue."));
+        }
+        live.first_prompt = false;
+        self.remember_live(live);
+        prompt
+    }
+
+    /// The prompt blocks of the input the session took after `boundary`
+    /// (user input applied, producer messages admitted), and which input
+    /// that was.
+    fn input_since(
+        &self,
+        events: &crate::events::EventSnapshot,
+        boundary: u64,
+        images: bool,
+    ) -> (Vec<Value>, cookie_agent_protocol::AcpSteered) {
         let producers = crate::goal_projection::GoalProducerProjection::from_events(events);
         let admitted = producers
             .messages
             .iter()
             .filter(|message| !message.discarded)
-            .filter_map(|message| message.admission.map(|(_, seq)| (seq, &message.body)))
+            .filter_map(|message| {
+                message
+                    .admission
+                    .map(|(_, seq)| (seq, (message.message_id, &message.body)))
+            })
             .collect::<HashMap<_, _>>();
         let mut submitted = HashMap::new();
         let mut prompt = Vec::new();
-        if live.first_prompt && !document.body.trim().is_empty() {
-            prompt.push(wire::text_block(&document.body));
-        }
-        let images = process.init().agent_capabilities.prompt_capabilities.image;
+        let mut taken = cookie_agent_protocol::AcpSteered::default();
         for event in events.iter() {
             match &event.payload {
                 Event::UserInputSubmitted { content } => {
@@ -1403,22 +1894,19 @@ impl Engine {
                 Event::UserInputApplied { user_input_seq } if event.seq > boundary => {
                     if let Some(content) = submitted.get(user_input_seq) {
                         self.push_content(&mut prompt, event.session_id, content, images);
+                        taken.user_inputs.push(*user_input_seq);
                     }
                 }
                 Event::ProducerMessageAdmitted { .. } if event.seq > boundary => {
-                    if let Some(body) = admitted.get(&event.seq) {
+                    if let Some((message_id, body)) = admitted.get(&event.seq) {
                         self.push_content(&mut prompt, event.session_id, body, images);
+                        taken.producer_messages.push(*message_id);
                     }
                 }
                 _ => {}
             }
         }
-        if prompt.is_empty() {
-            prompt.push(wire::text_block("Continue."));
-        }
-        live.first_prompt = false;
-        self.remember_live(live);
-        prompt
+        (prompt, taken)
     }
 
     /// Adds the blocks of `content` to `prompt`: text, and images when the
@@ -1621,6 +2109,7 @@ impl Engine {
                     protocol_version: process.init().protocol_version,
                     agent_info: process.init().agent_info.clone(),
                     how,
+                    steering: process.init().steering(),
                 },
             },
         )

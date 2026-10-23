@@ -189,6 +189,38 @@ impl Engine {
             .map(|(run, active)| (*run, Arc::clone(active)))
     }
 
+    /// The tools of `session` a run of `policy` offers its ACP agent over
+    /// the bridge, `hide` left out, by the provider that publishes them.
+    pub(crate) fn offered_tools(
+        &self,
+        session: SessionId,
+        policy: &super::super::FrozenRunPolicy,
+        hide: &[String],
+    ) -> Result<super::super::tool_prompts::OfferedTools, crate::EngineError> {
+        let composition = self.compose_for_policy(session, policy)?;
+        let mut offered = super::super::tool_prompts::OfferedTools::default();
+        for tool in composition
+            .tools
+            .iter()
+            .filter(|tool| !hidden(&tool.name, hide))
+        {
+            let provider = tool.source.provider.provider_id();
+            if provider == crate::memory_tools::PROVIDER_ID {
+                offered.memory = true;
+                offered.memory_write |=
+                    tool.spec.permission_name.as_deref() == Some("memory_write");
+            }
+            offered.providers.insert((
+                provider.to_owned(),
+                tool.source
+                    .attachment
+                    .as_ref()
+                    .map(|name| name.as_str().to_owned()),
+            ));
+        }
+        Ok(offered)
+    }
+
     /// The session's tools as the agent gets them.
     fn bridge_tools(&self, binding: &BridgeBinding) -> Result<Vec<Value>, crate::EngineError> {
         let policy = match self.bridge_run(binding) {

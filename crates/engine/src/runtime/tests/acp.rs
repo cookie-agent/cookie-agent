@@ -570,8 +570,8 @@ async fn a_load_ignores_the_replay() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lost_session_is_replaced_and_the_session_is_told() {
-    let document =
-        "---\ndescription: Fixture with a body\nmode: all\nacp: {}\n---\nYou review changes.\n";
+    // Every tool hidden: the first prompt carries no tool instructions.
+    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";
     let acp = acp_fixture(
         &[("ACP_FIXTURE_RESUME", "1"), ("ACP_FIXTURE_LOST", "1")],
         &[("local-fixture.md", document)],
@@ -580,7 +580,7 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let first = turn(engine, session, "first", "echo").await;
-    assert_eq!(final_text(&first), "You review changes.\n | echo");
+    assert!(final_text(&first).ends_with(" | You review changes.\n | echo"));
     let second = turn(engine, session, "second", "echo").await;
     assert_eq!(
         final_text(&second),
@@ -589,9 +589,8 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
     );
     stop_process(engine).await;
     let third = turn(engine, session, "third", "echo").await;
-    assert_eq!(
-        final_text(&third),
-        "You review changes.\n | echo",
+    assert!(
+        final_text(&third).ends_with(" | You review changes.\n | echo"),
         "a new ACP session gets the body again"
     );
     let starts = session_starts(engine, session);
@@ -1093,4 +1092,337 @@ async fn a_delegation_target_no_runtime_reported_yet_is_a_diagnostic_until_one_d
     );
     stop.cancel();
     let _ = served.await;
+}
+
+/// The text blocks of each `session/prompt` the agent received.
+fn prompts(acp: &AcpFixture) -> Vec<Vec<String>> {
+    acp.received()
+        .iter()
+        .filter(|message| message["method"] == "session/prompt")
+        .map(|message| {
+            message["params"]["prompt"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|block| block["text"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_the_body() {
+    // The memory write tools are hidden: part A of the memory section, not
+    // its rubric.
+    let document = "---\ndescription: Fixture with context\nmode: all\nacp:\n  hide_tools: [read, write, edit, bash, webfetch, memory_write, memory_edit, memory_delete]\n---\nYou review changes.\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let profile = crate::memory::url::MemoryUrl::parse("user://profile").unwrap();
+    let current = engine
+        .memory_root()
+        .read(&profile)
+        .ok()
+        .map(|read| read.entry.revision);
+    engine
+        .memory_root()
+        .write(
+            &profile,
+            &crate::memory::file::MemoryDocument::new(
+                "Profile",
+                vec!["tea".into()],
+                "Ada drinks tea.\n",
+            )
+            .unwrap()
+            .render(),
+            crate::memory::store::WriteMode::Client(current.as_ref()),
+            |_: &cookie_agent_protocol::AgentId| crate::memory::agents::AgentMemory::Registered,
+            &crate::memory::limits::MemoryLimits::all(4096),
+            jiff::Timestamp::now(),
+        )
+        .unwrap();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say one").await;
+    turn(engine, session, "second", "say two").await;
+    let received = prompts(&acp);
+    assert_eq!(received.len(), 2);
+    let first = &received[0];
+    assert_eq!(first.len(), 4, "{first:#?}");
+    assert_eq!(
+        first[0],
+        "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
+    );
+    assert!(
+        first[1].starts_with("<system-reminder>\n# Memory\n"),
+        "{}",
+        first[1]
+    );
+    assert!(first[1].contains("Ada drinks tea."), "{}", first[1]);
+    assert_eq!(first[2], "You review changes.\n");
+    assert_eq!(first[3], "say one");
+    assert_eq!(
+        received[1],
+        ["say two"],
+        "later prompts carry the input only"
+    );
+
+    // With the write tools offered, the rubric comes too; with no memory
+    // tool offered, no memory section.
+    let document = "---\ndescription: Fixture with context\nmode: all\nacp: {}\n---\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say one").await;
+    let first = &prompts(&acp)[0];
+    assert_eq!(first.len(), 3, "no body: {first:#?}");
+    assert!(
+        first[0].contains("You manage your own memory."),
+        "{}",
+        first[0]
+    );
+    assert!(
+        first[1].starts_with("<system-reminder>\n# Memory\n"),
+        "{}",
+        first[1]
+    );
+    let document = "---\ndescription: Fixture with context\nmode: all\nacp: { hide_tools: [\"memory_*\"] }\n---\nBody.\n";
+    let acp = acp_fixture(&[], &[("local-fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say one").await;
+    let first = &prompts(&acp)[0];
+    assert_eq!(first.len(), 3, "{first:#?}");
+    assert!(
+        first[0].starts_with("<system-reminder>\n# Memory\n"),
+        "{}",
+        first[0]
+    );
+    assert_eq!(first[1..], ["Body.\n", "say one"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steer_reaches_the_running_turn_through_the_agents_extension() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "wait", "steer-wait").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    let steered = engine
+        .steer(run, "look at notes.txt".into(), origin())
+        .await
+        .unwrap();
+    assert!(steered.accepted);
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "steered: look at notes.txt");
+    let record = session_starts(engine, session).pop().unwrap();
+    assert!(record.steering);
+    let events = events(engine, session);
+    let submitted = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::UserInputSubmitted { content }
+                if matches!(
+                    content.parts().first(),
+                    Some(Open::Known(cookie_agent_protocol::UserContentPart::Text { text }))
+                        if text == "look at notes.txt"
+                ) =>
+            {
+                Some(event.seq)
+            }
+            _ => None,
+        })
+        .expect("the steered input");
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::AcpSessionUpdated { update } if update.steered.as_ref()
+            .is_some_and(|steered| steered.user_inputs == [submitted])
+    )));
+    let steers = acp
+        .received()
+        .into_iter()
+        .filter(|message| message["method"] == "_session/steering")
+        .collect::<Vec<_>>();
+    assert_eq!(steers.len(), 1);
+    assert_eq!(
+        steers[0]["params"]["prompt"][0]["text"],
+        "look at notes.txt"
+    );
+    assert_eq!(
+        steers[0]["params"]["_meta"]["steering"]["idleBehavior"],
+        "promptRequired"
+    );
+    // One round: the steer did not wait for a second prompt.
+    assert_eq!(prompts(&acp).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_the_extension_a_steer_waits_for_the_agents_next_turn() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "wait", "steer-wait 1").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    engine
+        .steer(run, "say later".into(), origin())
+        .await
+        .unwrap();
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "later");
+    assert!(!session_starts(engine, session).pop().unwrap().steering);
+    let received = prompts(&acp);
+    assert_eq!(received.len(), 2);
+    assert_eq!(received[0].last().unwrap(), "steer-wait 1");
+    assert_eq!(received[1], ["say later"]);
+    assert!(
+        !acp.received()
+            .iter()
+            .any(|message| message["method"] == "_session/steering")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_calls_late_input_updates_its_presentation_and_its_content_renders() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "late", "late-input").await;
+    assert_eq!(final_text(&outcome), "read");
+    let events = events(engine, session);
+    let start = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } => Some(start.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(start.presentation.title.as_str(), "Tool");
+    assert!(start.presentation.arguments.is_empty());
+    assert_eq!(start.presentation.tool.published_name, "Read");
+    let presented = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.tool_presentation.clone(),
+            _ => None,
+        })
+        .expect("the new presentation");
+    assert_eq!(presented.tool_call_id, start.tool_call_id);
+    assert_eq!(presented.presentation.title.as_str(), "Read notes.txt");
+    assert_eq!(
+        presented
+            .presentation
+            .primary_argument
+            .as_ref()
+            .map(|text| text.as_str()),
+        Some("/work/notes.txt")
+    );
+    assert_eq!(
+        presented
+            .presentation
+            .hint
+            .as_ref()
+            .map(|hint| hint.rendered()),
+        Some(cookie_agent_protocol::ToolHint::FILE_READ)
+    );
+    assert_eq!(
+        presented.presentation.arguments,
+        [Open::Known(DisplayBlock::Json {
+            value: serde_json::json!({"file_path": "/work/notes.txt"})
+        })]
+    );
+    let result = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => termination.result.clone(),
+            _ => None,
+        })
+        .unwrap();
+    let display = result
+        .display
+        .iter()
+        .filter_map(Open::known)
+        .collect::<Vec<_>>();
+    assert!(matches!(display[0], DisplayBlock::Markdown { text, .. } if text == "```\none\n```"));
+    assert!(matches!(display[1], DisplayBlock::Media { artifact, .. }
+        if artifact.media_type == "image/png" && artifact.byte_length == 8));
+    assert!(
+        matches!(display[2], DisplayBlock::Link { url, label: Some(label) }
+        if url == "file:///work/notes.txt" && label == "notes.txt")
+    );
+    assert_eq!(result.metadata["acp"]["tool_name"], "Read");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notices_and_compactions_are_recorded_as_the_agents_notices() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "notices", "notices").await;
+    let notices = events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.notice,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        notices,
+        [
+            cookie_agent_protocol::AcpNotice {
+                severity: cookie_agent_protocol::AcpNoticeSeverity::Warning,
+                title: "Rate limited".into(),
+                description: Some("Retrying in 1 s.".into()),
+            },
+            cookie_agent_protocol::AcpNotice {
+                severity: cookie_agent_protocol::AcpNoticeSeverity::Info,
+                title: "The agent compacted its conversation".into(),
+                description: Some("We read notes.txt.".into()),
+            },
+        ]
+    );
+    let initialize = acp
+        .received()
+        .into_iter()
+        .find(|message| message["method"] == "initialize")
+        .unwrap();
+    assert_eq!(
+        initialize["params"]["clientCapabilities"]["session"],
+        serde_json::json!({"notices": {}, "compaction": {}})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_after_a_steered_one_still_cancels() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "wait", "steer-wait").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    engine.steer(run, "go on".into(), origin()).await.unwrap();
+    finished(engine, session, run).await;
+    wait_for_session_not_running(engine, session).await;
+    let run = start(engine, session, "cancel", "wait").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        event.run_id == Some(run)
+            && matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    engine.cancel_run(run, origin()).await.expect("cancel");
+    let outcome = finished(engine, session, run).await;
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        acp.received()
+            .iter()
+            .any(|message| message["method"] == "session/cancel")
+    );
 }

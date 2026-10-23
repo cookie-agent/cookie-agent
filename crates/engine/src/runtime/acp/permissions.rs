@@ -247,6 +247,15 @@ pub(crate) fn merge(known: Option<&ToolCallFields>, update: &ToolCallFields) -> 
     if update.raw_output.is_some() {
         merged.raw_output.clone_from(&update.raw_output);
     }
+    match (&mut merged.meta, &update.meta) {
+        (Some(Value::Object(known)), Some(Value::Object(new))) => {
+            for (key, value) in new {
+                known.insert(key.clone(), value.clone());
+            }
+        }
+        (_, Some(new)) => merged.meta = Some(new.clone()),
+        _ => {}
+    }
     merged
 }
 

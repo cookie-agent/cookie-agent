@@ -23,6 +23,8 @@ pub(crate) mod method {
     pub(crate) const SESSION_SET_CONFIG_OPTION: &str = "session/set_config_option";
     pub(crate) const SESSION_UPDATE: &str = "session/update";
     pub(crate) const SESSION_REQUEST_PERMISSION: &str = "session/request_permission";
+    /// The steering extension: a message into the running turn.
+    pub(crate) const SESSION_STEERING: &str = "_session/steering";
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +41,22 @@ pub(crate) struct InitializeResponse {
     pub protocol_version: u32,
     pub agent_capabilities: AgentCapabilities,
     pub agent_info: Value,
+    /// The response's own `_meta`, where agents advertise extensions such
+    /// as `steering`.
+    #[serde(rename = "_meta")]
+    pub meta: Value,
+}
+
+impl InitializeResponse {
+    /// Whether the agent accepts [`method::SESSION_STEERING`] for a running
+    /// turn: `_meta.steering.supported` is `true` (the steering extension of
+    /// Claude Code's and Codex's adapters).
+    pub(crate) fn steering(&self) -> bool {
+        self.meta
+            .pointer("/steering/supported")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -154,6 +172,27 @@ pub(crate) struct SetConfigOptionResponse {
     pub config_options: Option<Vec<Value>>,
 }
 
+/// `_session/steering`: `prompt` into the running turn. `idleBehavior:
+/// promptRequired` asks an agent with no turn running to answer
+/// `promptRequired` rather than start a turn of its own; an agent that does
+/// not know it starts one (`startedNewTurn`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SteeringRequest<'a> {
+    pub session_id: &'a str,
+    pub prompt: &'a [Value],
+    #[serde(rename = "_meta")]
+    pub meta: Value,
+}
+
+/// What `_session/steering` answers: `injected`, `promptRequired`,
+/// `startedNewTurn`, or (Codex) `failed`.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SteeringResponse {
+    pub outcome: String,
+}
+
 /// `session/update`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -205,6 +244,22 @@ pub(crate) struct ToolCallFields {
     pub locations: Option<Vec<ToolCallLocation>>,
     pub raw_input: Option<Value>,
     pub raw_output: Option<Value>,
+    /// The agent's own detail, such as Claude Code's
+    /// `claudeCode.toolName`; read only to enrich what is shown.
+    #[serde(rename = "_meta")]
+    pub meta: Option<Value>,
+}
+
+impl ToolCallFields {
+    /// The tool's own name, when the agent's `_meta` gives one (Claude
+    /// Code's adapter: `claudeCode.toolName`).
+    pub(crate) fn tool_name(&self) -> Option<&str> {
+        self.meta
+            .as_ref()?
+            .pointer("/claudeCode/toolName")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]

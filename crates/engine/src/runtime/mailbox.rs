@@ -481,6 +481,16 @@ impl Engine {
             )),
             _ => None,
         };
+        // Input to steer reaches a running ACP turn through its agent's
+        // steering extension (`docs/site/specs/acp-agents.md` section 15).
+        let steers = !recovery
+            && match &event {
+                Event::UserInputAdmitted { .. } => run.is_some(),
+                Event::ProducerMessageAccepted { mode, .. } => {
+                    *mode == cookie_agent_protocol::ProducerDeliveryMode::Steer
+                }
+                _ => false,
+            };
         let was_persisted = self.inner.store.is_persisted(session)?;
         let envelope = if recovery {
             self.inner
@@ -493,6 +503,9 @@ impl Engine {
             self.settle_background_job(tool_call_id, completed && envelope.is_ok());
         }
         let envelope = envelope?;
+        if steers {
+            self.inner.acp.processes.steering_input(session);
+        }
         if let Some((run, ended)) = run_edge {
             self.observe_subagent_run(session, run, ended);
             if ended {

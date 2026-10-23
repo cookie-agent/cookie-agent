@@ -11,12 +11,73 @@ const MAX_SECTION_BODY_BYTES: usize = 8 * 1024;
 const MAX_PROVIDER_BODY_BYTES: usize = 16 * 1024;
 const MAX_TOTAL_BODY_BYTES: usize = 32 * 1024;
 
+/// The tools an ACP agent is offered over the MCP bridge, by the provider
+/// that publishes them: which providers' instruction sections its first
+/// prompt carries (`docs/site/specs/acp-agents.md` section 15, 2026-10-23).
+#[derive(Debug, Default)]
+pub(crate) struct OfferedTools {
+    /// `(provider ID, attachment)` of each provider with an offered tool.
+    pub(crate) providers: std::collections::HashSet<(String, Option<String>)>,
+    /// A memory tool is offered, and one that writes.
+    pub(crate) memory: bool,
+    pub(crate) memory_write: bool,
+}
+
+impl OfferedTools {
+    fn offers(&self, provider: &str, attachment: Option<&str>) -> bool {
+        self.providers
+            .contains(&(provider.to_owned(), attachment.map(str::to_owned)))
+    }
+}
+
 impl Engine {
     pub(crate) fn compose_tool_prompt_sections(
         &self,
         policy: &mut FrozenRunPolicy,
         session: SessionId,
     ) -> Result<(), EngineError> {
+        let Some(block) = self.tool_prompt_block(policy, session, None)? else {
+            return Ok(());
+        };
+        let composed_bytes = policy
+            .agent
+            .composed_prompt
+            .len()
+            .checked_add(block.len() + PROMPT_BLOCK_SEPARATOR.len())
+            .ok_or_else(|| {
+                EngineError::ToolPrompt("composed prompt byte count overflowed".into())
+            })?;
+        if composed_bytes > AgentSnapshot::MAX_PROMPT_BYTES {
+            return Err(EngineError::ToolPrompt(format!(
+                "composed prompt exceeds {} bytes",
+                AgentSnapshot::MAX_PROMPT_BYTES
+            )));
+        }
+
+        push_prompt_block(&mut policy.agent.composed_prompt, &block);
+        policy.agent.prompt_fingerprint =
+            Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
+        let mut document_fingerprint = policy
+            .agent
+            .document_fingerprint
+            .as_str()
+            .as_bytes()
+            .to_vec();
+        document_fingerprint.extend_from_slice(block.as_bytes());
+        policy.agent.document_fingerprint = Sha256Digest::of_bytes(&document_fingerprint);
+        Ok(())
+    }
+
+    /// The `<tool_instructions>` sections of `session`'s tool providers
+    /// for a run of `policy`, joined; `None` when there are none. With
+    /// `offered`, only the providers that publish an offered tool give
+    /// sections, and the memory section follows the offered memory tools.
+    pub(crate) fn tool_prompt_block(
+        &self,
+        policy: &FrozenRunPolicy,
+        session: SessionId,
+        offered: Option<&OfferedTools>,
+    ) -> Result<Option<String>, EngineError> {
         let projection = self.inner.store.get(session)?;
         let depth = session_depth(&projection.meta.origin);
         let delegate_targets = policy
@@ -35,11 +96,15 @@ impl Engine {
         let providers = self.session_tool_sources(session)?;
         // The memory provider decides from the run's frozen policy, with the
         // visibility test the tool list uses (memory spec section 16.9.1).
-        let memory_access = super::memory_runs::memory_access(
+        let mut memory_access = super::memory_runs::memory_access(
             true,
             &policy.agent,
             Some(&projection.permission_overlay),
         );
+        if let Some(offered) = offered {
+            memory_access.available &= offered.memory;
+            memory_access.writable &= offered.memory_write;
+        }
         let delegated = matches!(
             projection.meta.origin,
             cookie_agent_protocol::SessionOrigin::Delegated { .. }
@@ -47,9 +112,20 @@ impl Engine {
         let mut rendered = Vec::new();
         let mut total_body_bytes = 0usize;
 
-        for crate::runtimes::SourcedProvider { provider, .. } in providers {
+        for crate::runtimes::SourcedProvider {
+            provider,
+            attachment,
+            ..
+        } in providers
+        {
             let provider_id = provider.provider_id();
             validate_provider_id(provider_id)?;
+            if let Some(offered) = offered
+                && provider_id != crate::memory_tools::PROVIDER_ID
+                && !offered.offers(provider_id, attachment.as_ref().map(|name| name.as_str()))
+            {
+                continue;
+            }
             let sections = if provider_id == crate::memory_tools::PROVIDER_ID {
                 crate::memory_tools::prompt_section(memory_access, delegated)
                     .map(|body| PromptSection {
@@ -103,37 +179,7 @@ impl Engine {
             }
         }
 
-        if rendered.is_empty() {
-            return Ok(());
-        }
-        let block = rendered.join("\n\n");
-        let composed_bytes = policy
-            .agent
-            .composed_prompt
-            .len()
-            .checked_add(block.len() + PROMPT_BLOCK_SEPARATOR.len())
-            .ok_or_else(|| {
-                EngineError::ToolPrompt("composed prompt byte count overflowed".into())
-            })?;
-        if composed_bytes > AgentSnapshot::MAX_PROMPT_BYTES {
-            return Err(EngineError::ToolPrompt(format!(
-                "composed prompt exceeds {} bytes",
-                AgentSnapshot::MAX_PROMPT_BYTES
-            )));
-        }
-
-        push_prompt_block(&mut policy.agent.composed_prompt, &block);
-        policy.agent.prompt_fingerprint =
-            Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
-        let mut document_fingerprint = policy
-            .agent
-            .document_fingerprint
-            .as_str()
-            .as_bytes()
-            .to_vec();
-        document_fingerprint.extend_from_slice(block.as_bytes());
-        policy.agent.document_fingerprint = Sha256Digest::of_bytes(&document_fingerprint);
-        Ok(())
+        Ok((!rendered.is_empty()).then(|| rendered.join("\n\n")))
     }
 }
 

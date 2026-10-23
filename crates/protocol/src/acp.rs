@@ -1,6 +1,6 @@
 //! What the client protocol and session history say about ACP agents
 //! (`docs/site/specs/acp-agents.md` sections 5, 10, and 11; client protocol
-//! 1.17.0).
+//! 1.17.0, notices, steering, and tool presentations 1.19.0).
 //!
 //! The daemon records the ACP session a cookie session talks to
 //! (`acp_session_started`) and what the agent reports about it
@@ -12,7 +12,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{AgentId, DisplayBlock, Open, RuntimeId, SessionId};
+use crate::{
+    AgentId, DisplayBlock, Open, PreparedPresentation, ProducerMessageId, RuntimeId, SessionId,
+    ToolCallId,
+};
 
 /// The longest ACP session ID, command name, option ID, or value the
 /// daemon records, in bytes.
@@ -93,6 +96,57 @@ pub struct AcpSessionRecord {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub agent_info: Value,
     pub how: AcpSessionStart,
+    /// Whether the agent takes messages into its running turn (it
+    /// advertises the steering extension, `_session/steering`): input sent
+    /// to steer reaches the turn, else it waits for the agent's next turn
+    /// (client protocol 1.19.0).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steering: bool,
+}
+
+crate::open_enum! {
+    /// How much an [`AcpNotice`] matters. An unknown severity reads as
+    /// `info`.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum AcpNoticeSeverity {
+        Info,
+        Warning,
+        Error,
+    }
+}
+
+/// An advisory line an ACP agent sent (its `notice` update, or what the
+/// daemon makes of a compaction update), shown where it arrives (client
+/// protocol 1.19.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpNotice {
+    pub severity: AcpNoticeSeverity,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Input the daemon delivered into the agent's running turn through its
+/// steering extension, by the events that took it: the
+/// `user_input_submitted` events' sequence numbers and the producer
+/// messages (client protocol 1.19.0).
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpSteered {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_inputs: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub producer_messages: Vec<ProducerMessageId>,
+}
+
+/// A new presentation of one of the agent's own tool calls, whose title,
+/// kind, or arguments arrived after the call started (client protocol
+/// 1.19.0). It replaces the call's title, hint, primary argument,
+/// arguments, and preview; its tool identity stays.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct AcpToolPresentation {
+    pub tool_call_id: ToolCallId,
+    pub presentation: PreparedPresentation,
 }
 
 /// The payload of `acp_session_updated`: what changed, each member the
@@ -106,13 +160,27 @@ pub struct AcpSessionUpdate {
     /// The agent's plan, a `plan` display block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Open<DisplayBlock>>,
+    /// A notice of the agent's, shown once where it arrives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<AcpNotice>,
+    /// Input delivered into the running turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steered: Option<AcpSteered>,
+    /// A tool call's new presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_presentation: Option<AcpToolPresentation>,
 }
 
 impl AcpSessionUpdate {
     /// Whether it carries nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.commands.is_none() && self.options.is_none() && self.plan.is_none()
+        self.commands.is_none()
+            && self.options.is_none()
+            && self.plan.is_none()
+            && self.notice.is_none()
+            && self.steered.is_none()
+            && self.tool_presentation.is_none()
     }
 }
 

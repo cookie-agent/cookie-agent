@@ -230,9 +230,29 @@ pub(crate) struct Processes {
     pub(crate) sessions: Mutex<HashMap<SessionId, super::runner::LiveSession>>,
     /// Which cookie session each MCP bridge serves, by runtime and bridge.
     pub(crate) bridges: Mutex<HashMap<(String, String), super::mcp::BridgeBinding>>,
+    /// What wakes the runner of a session's turn when the session takes
+    /// input to steer, while that turn can steer its agent.
+    steering: Mutex<HashMap<SessionId, Arc<tokio::sync::Notify>>>,
 }
 
 impl Processes {
+    /// Registers `session`'s turn for steering wake-ups; the returned
+    /// notify fires when the session takes input to steer.
+    pub(crate) fn watch_steering(&self, session: SessionId) -> Arc<tokio::sync::Notify> {
+        Arc::clone(lock(&self.steering).entry(session).or_default())
+    }
+
+    pub(crate) fn unwatch_steering(&self, session: SessionId) {
+        lock(&self.steering).remove(&session);
+    }
+
+    /// Wakes the turn of `session` that steers its agent, if one runs.
+    pub(crate) fn steering_input(&self, session: SessionId) {
+        if let Some(notify) = lock(&self.steering).get(&session) {
+            notify.notify_one();
+        }
+    }
+
     /// The running process of `key`, if any.
     pub(crate) fn running(&self, key: &ProcessKey) -> Option<Arc<AgentProcess>> {
         lock(&self.running)
@@ -338,6 +358,12 @@ impl Processes {
                     client_capabilities: serde_json::json!({
                         "fs": {"readTextFile": false, "writeTextFile": false},
                         "terminal": false,
+                        // Notices and compaction updates as their own
+                        // updates rather than message text or a synthetic
+                        // tool call (the session notices and compaction
+                        // RFDs, which Claude Code's and Codex's adapters
+                        // follow).
+                        "session": {"notices": {}, "compaction": {}},
                     }),
                     client_info: serde_json::json!({
                         "name": "cookie-agent",

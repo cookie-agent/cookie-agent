@@ -23,6 +23,14 @@ Each prompt's last text block is a command:
   exit                   exits with status 3 after writing to stderr
   error                  fails the prompt with an authentication error
   title <text>           reports session title <text>
+  late-input             a tool call whose title, kind, and raw input arrive in a
+                         later update (as Claude Code's adapter sends them), with
+                         text, image, and resource-link content and raw output
+  notices                a warning notice, then a compaction with a streamed
+                         summary
+  steer-wait [<s>]       says "waiting", then waits (up to <s>, else 10 s) for a message
+                         steered into the turn and answers "steered: <texts>",
+                         or "no steer"
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
 
@@ -37,6 +45,9 @@ Environment:
   ACP_FIXTURE_PID_FILE   a file the process ID is written to
   ACP_FIXTURE_EAGER_MCP  "1": connects cookie's MCP server and lists its tools
                          before answering session/new, as Claude Code does
+  ACP_FIXTURE_STEERING   "1": advertises the steering extension
+                         (`_meta.steering.supported`) and serves
+                         `_session/steering` as Claude Code's adapter does
 """
 
 import json
@@ -51,6 +62,8 @@ replies = {}
 next_id = [1000]
 sessions = {}
 cancelled = {}
+running = {}
+steered = {}
 
 
 def log(message):
@@ -218,6 +231,16 @@ def prompt(request_id, params):
     word, _, rest = command.partition(" ")
     with state_lock:
         cancelled[session_id] = False
+        running[session_id] = True
+        steered[session_id] = []
+    try:
+        run_command(request_id, session_id, session, word, rest, texts, kinds)
+    finally:
+        with state_lock:
+            running[session_id] = False
+
+
+def run_command(request_id, session_id, session, word, rest, texts, kinds):
     if word == "say":
         say(session_id, rest)
     elif word == "think":
@@ -244,6 +267,38 @@ def prompt(request_id, params):
         })
         update(session_id, {"sessionUpdate": "usage_update", "used": 1234, "size": 200000, "cost": {"amount": 0.5, "currency": "USD"}})
         say(session_id, "Done.")
+    elif word == "late-input":
+        update(session_id, {
+            "sessionUpdate": "tool_call", "toolCallId": "call-late", "title": "Tool",
+            "kind": "other", "status": "pending", "_meta": {"claudeCode": {"toolName": "Read"}},
+        })
+        update(session_id, {
+            "sessionUpdate": "tool_call_update", "toolCallId": "call-late", "title": "Read notes.txt",
+            "kind": "read", "rawInput": {"file_path": "/work/notes.txt"},
+            "_meta": {"claudeCode": {"toolName": "Read"}},
+        })
+        update(session_id, {
+            "sessionUpdate": "tool_call_update", "toolCallId": "call-late", "status": "completed",
+            "content": [
+                {"type": "content", "content": {"type": "text", "text": "```\none\n```"}},
+                {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}},
+                {"type": "content", "content": {"type": "resource_link", "uri": "file:///work/notes.txt", "name": "notes.txt"}},
+            ],
+            "rawOutput": "one",
+        })
+        say(session_id, "read")
+    elif word == "notices":
+        update(session_id, {"sessionUpdate": "notice", "severity": "warning", "title": "Rate limited", "description": "Retrying in 1 s."})
+        update(session_id, {"sessionUpdate": "compaction_update", "compactionId": "c1", "status": "in_progress"})
+        update(session_id, {"sessionUpdate": "compaction_summary_chunk", "compactionId": "c1", "content": {"type": "text", "text": "We read notes.txt."}})
+        update(session_id, {"sessionUpdate": "compaction_update", "compactionId": "c1", "status": "completed"})
+        say(session_id, "noticed")
+    elif word == "steer-wait":
+        say(session_id, "waiting")
+        with state_lock:
+            state_lock.wait_for(lambda: steered[session_id], timeout=float(rest or "10"))
+            got = list(steered[session_id])
+        say(session_id, "steered: " + " | ".join(got) if got else "no steer")
     elif word == "stop":
         say(session_id, "stopping")
         respond(request_id, {"stopReason": rest})
@@ -330,12 +385,15 @@ def handle(message):
         }
         if env("ACP_FIXTURE_RESUME"):
             capabilities["sessionCapabilities"]["resume"] = {}
-        respond(request_id, {
+        result = {
             "protocolVersion": 1,
             "agentCapabilities": capabilities,
             "authMethods": [],
             "agentInfo": {"name": "fixture-agent", "title": "Fixture Agent", "version": "1.0.0"},
-        })
+        }
+        if env("ACP_FIXTURE_STEERING"):
+            result["_meta"] = {"steering": {"supported": True}}
+        respond(request_id, result)
     elif method == "session/new":
         session_id = f"sess-{os.getpid()}-{len(sessions) + 1}"
         sessions[session_id] = {"mode": "default", "model": "small", "mcpServers": params.get("mcpServers"), "cwd": params.get("cwd")}
@@ -365,6 +423,19 @@ def handle(message):
         respond(request_id, {})
     elif method == "session/prompt":
         threading.Thread(target=prompt, args=(request_id, params), daemon=True).start()
+    elif method == "_session/steering" and env("ACP_FIXTURE_STEERING"):
+        session_id = params["sessionId"]
+        texts = [block.get("text", "") for block in params.get("prompt", []) if block.get("type") == "text"]
+        with state_lock:
+            if running.get(session_id):
+                steered[session_id].extend(texts)
+                state_lock.notify_all()
+                outcome = {"outcome": "injected"}
+            elif (params.get("_meta") or {}).get("steering", {}).get("idleBehavior") == "promptRequired":
+                outcome = {"outcome": "promptRequired", "reason": "noRunningTurn"}
+            else:
+                outcome = {"outcome": "startedNewTurn"}
+        respond(request_id, outcome)
     elif method == "session/cancel":
         with state_lock:
             cancelled[params["sessionId"]] = True
