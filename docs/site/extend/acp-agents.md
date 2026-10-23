@@ -153,10 +153,81 @@ You review changes for this project before they are committed.
   the session and skipped.
 - **No `models`.** The agent chooses its own model; set it through
   `acp.config` when the agent offers a model option.
-- **The body** is sent with the first prompt of each of the agent's ACP
-  sessions; an empty body sends nothing.
+- **The body** goes with the first prompt of each of the agent's ACP
+  sessions (see [What the first prompt carries](#what-the-first-prompt-carries));
+  an empty body sends nothing. Cookie adds no preamble of its own: tell the
+  agent what it is and how to work with cookie here, as the
+  [reference document for Claude Code](#a-reference-document-for-claude-code)
+  does.
 
 [ACP agent documents](agents.md#acp-agent-documents) lists every key.
+
+### A reference document for Claude Code
+
+The agent learns from the document's body that it runs inside cookie and
+which of cookie's tools to prefer over its harness's own. Adapt this one to
+your setup; it names Claude Code as the harness, so change that line for
+another agent:
+
+```markdown
+---
+description: Claude Code
+mode: all
+acp: {}
+permissions:
+  read: allow
+  write: { "${workspace_dir}/*": allow, "*": ask }
+  bash: { "git status*": allow, "git diff*": allow, "*": ask }
+  memory: allow
+---
+You are an agent in cookie agent, running in ACP mode: cookie drives you
+over the Agent Client Protocol, and your actual harness is Claude Code. The
+user talks to you through cookie (its terminal UI, web client, or CLI,
+possibly from another machine), and cookie records this conversation.
+
+Guidelines:
+
+- Cookie's tools come from the MCP server named `cookie`. Your harness's
+  own tools stay available, but when a cookie tool covers the same job, use
+  the cookie tool: cookie applies the user's permission rules, shows the
+  call in its transcript, and other cookie agents can see the result.
+- Keep durable notes in cookie memory (memory_search, memory_read,
+  memory_write), not in your harness's own memory or notes files.
+- Delegate with cookie's delegate_subagent (list_agents shows who), not
+  with your harness's own subagents; schedule follow-ups with cookie's cron
+  tools.
+- Your built-in file and shell tools work in this session's workspace.
+- Some calls need the user's approval through cookie; if one is refused,
+  do not retry the same call.
+- Messages wrapped in <scheduled_job> or <subagent_report> come from
+  cookie, not from the user typing.
+- When you finish a delegated task, make your last message a
+  self-contained summary: cookie returns it as your report.
+- Change cookie's own configuration only when the user asks (the
+  customize-cookie-agent skill explains how).
+```
+
+Save it as `~/.cookie-agent/agents/local-claude.md` for the `claude` agent
+of `local`, or under the ID of the agent it is for.
+
+## What the first prompt carries
+
+The first prompt of each of the agent's ACP sessions carries, before your
+message and in this order, each part left out when it is empty:
+
+1. the tool instructions cookie would give a model for the tools the agent
+   is offered over the [bridge](#cookies-tools-for-the-agent-the-mcp-bridge),
+   after `hide_tools` and the rules (`<tool_instructions provider=...>`
+   sections, such as memory's: how memory is included, and the rubric for
+   writing it when a write tool is offered);
+2. the session's memory as a model would see it at the start of a session
+   (the `# Memory` reminder);
+3. the agent document's body.
+
+`AGENTS.md` is not sent: the agents read it themselves. The prompt carries
+these again when cookie has to start a new ACP session because the agent
+lost the one it had, and not when it resumes or loads one, since the agent
+remembers them there. Later prompts carry only the input.
 
 ## Permissions
 
@@ -224,8 +295,26 @@ each call decided by the rules as a model's would be.
   it was.
 - **Tool calls** the agent reports name it after their title
   (`Read notes.txt · local-claude on local`).
-- **Interrupting** a turn cancels it on the agent; a message sent during a
-  turn waits for the next one.
+- **Tool calls** show what the agent reports as it reports it: the title,
+  the kind's icon, and the arguments, updated in place when the agent
+  sends them after the call started (Claude Code does); its status; its
+  content as text, images, and links; edits as diffs; the files it touched
+  as links; and its raw output when it sends no content. With Claude Code,
+  the call's tool name (`Read`, `Bash`) is the name it was called by.
+- **Notices.** What the agent flags for you (a rate limit, a retry, a
+  compaction of its conversation with its summary) shows as a notice in the
+  transcript, colored by how much it matters. Cookie asks agents for
+  notices and compaction updates (`session.notices` and
+  `session.compaction`), so they do not arrive as message text.
+- **Steering.** A message you send while the agent works goes into its
+  running turn when the agent supports steering (it advertises the
+  steering extension, as Claude Code's adapter and Codex's do): the agent
+  reads it at its next step, the transcript marks the message *steered into
+  the agent's running turn*; a scheduled job set to `steer` and a
+  subagent's report arrive the same way. An agent without it takes the message with its next turn: the
+  web client's Steer button then reads "Queue (this agent can't be
+  steered)", and the TUI's pending strip says the agent can't be steered.
+- **Interrupting** a turn cancels it on the agent.
 
 ## Delegating to an ACP agent
 
@@ -277,6 +366,9 @@ note.
 - **"which is not known yet" in the configuration status.** A `delegate`
   rule names an agent no runtime has reported; see
   [Delegating to an ACP agent](#delegating-to-an-acp-agent).
+- **A steered message arrives after the turn.** The agent took it with its
+  next turn: either it cannot be steered, or its turn had already ended
+  when the message reached it.
 - **The agent does not see cookie's tools.** `cookie runtime mcp-bridge`
   must run on the runtime's machine; the session says when the bridge could
   not be opened.

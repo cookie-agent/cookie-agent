@@ -783,6 +783,18 @@ over the Agent Client Protocol (see the
   `current_value`, `values`), and `plan` (a `plan` display block); each
   member is the whole new value, and clients keep the latest of each.
   Choosing a command sends `/<name> <input>` as the prompt's text.
+- Since 1.20.0, `acp_session_started` has `steering` when the agent takes
+  messages into its running turn; without it, a message sent to steer waits
+  for the agent's next turn, and clients label the Steer action as
+  queueing. `acp_session_updated` may carry, each shown once where it
+  arrives, a `notice` (`severity` `info`/`warning`/`error`, `title`,
+  optional `description`), which is also how a compaction the agent
+  reports reaches clients; `steered` (`user_inputs`, the sequence numbers
+  of the `user_input_submitted` events, and `producer_messages`): input
+  delivered into the running turn, which clients mark on the message; and
+  `tool_presentation` (`tool_call_id`, `presentation`): a new title, hint,
+  primary argument, arguments, and preview for one of the agent's tool
+  calls, which replace the call's own (its tool identity stays).
 - The agent's turns are model turns of `acp/<agent ID>`; the calls it
   reports are tool calls whose `tool.source` is `acp` (`agent`,
   `runtime_id`), and the calls it makes of cookie's tools through the MCP

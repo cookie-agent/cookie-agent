@@ -47,13 +47,16 @@ which stays the name of cookie's own protocol.
 - **Login:** credentials already on the runtime's machine; authentication
   errors reach the session with what the agent said. No login flow in cookie.
 - **The agent document's body** is sent with the session's first prompt; an
-  empty body sends nothing.
+  empty body sends nothing. *(Extended 2026-10-23: the first prompt also
+  carries the tool instructions and the memory snapshot; section 15,
+  round 3.)*
 - **Slash commands** the agent offers appear in the TUI and web composers.
 - **`deny`** stays the spelling for turning a permission off.
 
 **Out of scope for v1:** ACP `fs` and `terminal`, logins run from cookie,
-ACP v2, MCP-over-ACP, the agents' vendor extensions (`_meta`, AIR,
-steering, goal).
+ACP v2, MCP-over-ACP, the agents' vendor extensions (`_meta`, AIR, goal).
+*(Revised 2026-10-23: the steering extension is used when advertised, and
+`_meta` enriches tool calls where it helps; section 15, round 3.)*
 
 ## 2. ACP in brief
 
@@ -187,7 +190,9 @@ You review changes for this project before they are committed.
 - **The end.** `end_turn` completes the run with the last message as its
   final text; `cancelled` cancels it; `max_tokens`, `max_turn_requests`, and
   `refusal` fail it with that reason.
-- **Steering** falls back to queueing: ACP has no standard steer.
+- **Steering** falls back to queueing: ACP has no standard steer. *(Revised
+  2026-10-23: through the agent's steering extension when it advertises
+  one; section 15, round 3.)*
 - **Interrupt** sends `session/cancel`, answers every pending permission
   request `cancelled`, and waits for the `cancelled` stop reason within the
   existing cleanup grace.
@@ -523,3 +528,96 @@ the spec did not anticipate:
   cookie's own tools, as kind `other` titled `mcp__cookie__<tool>`. These
   are now allowed at once, so the bridge's rules decide such a call alone
   (section 8).
+
+**Round 3** (2026-10-23; user decisions of the same day; client protocol
+1.20.0, plugin protocol 1.9.0; history format unchanged):
+
+- **First-prompt context.** The first `session/prompt` of an ACP session
+  carries, as separate text blocks before the input and each left out when
+  empty: the `<tool_instructions provider=...>` sections cookie would
+  compose for a model run, for exactly the tools the agent is offered over
+  the bridge (after `hide_tools` and the merged rules: a provider gives its
+  sections only when one of its tools is offered, and memory's section has
+  part A when a memory tool is offered and part B when a write tool is);
+  the session's memory snapshot as a model run sees it (the latest
+  `memory_loaded`, which ACP runs record at admission like model runs, so
+  it is there even when no memory tool is offered); and the agent
+  document's body. No cookie-written preamble or guidelines: those belong in
+  the agent document, and the [guide](../extend/acp-agents.md#a-reference-document-for-claude-code)
+  has a reference document for Claude Code. `AGENTS.md` is not sent. The
+  context goes with the first prompt of every new ACP session, so a lost
+  session's replacement gets it again; a resumed or loaded one does not.
+- **Prompt boundary.** A round's prompt is now the input after the
+  `input_through_seq` of the session's last committed turn (was: after that
+  turn's own sequence number). The two agree for every round so far; the
+  new one also covers input taken to steer that the agent did not take.
+- **Steering.** An agent advertises the steering extension with
+  `_meta.steering.supported: true` in its `initialize` answer (top-level
+  `_meta`, not `agentCapabilities`; Claude Code's adapter 0.95.0 and
+  Codex's do). The client declares nothing to enable it. While a round runs,
+  input admitted to steer (a user's steer, a producer message of mode
+  `steer`: a cron `steer` fire, a subagent report) wakes the runner, which
+  commits the turn so far, promotes and claims the input as a round does,
+  and sends `_session/steering` `{sessionId, prompt, _meta: {steering:
+  {idleBehavior: "promptRequired"}}}`. `injected` (and `startedNewTurn`, an
+  agent that does not know `idleBehavior`) means the agent took it: the
+  turns after cover the input, and `acp_session_updated.steered` records
+  which (`user_inputs`, the `user_input_submitted` sequence numbers, and
+  `producer_messages`). `promptRequired` (no turn running), `failed`, or an
+  error leave the input for the next round, which the run then takes even
+  when nothing else is pending; an error is reported in the session as a
+  diagnostic. A steer still waiting when the round ends is awaited for up
+  to 10 s. Claude Code's adapter also advertises
+  `agentCapabilities._meta.claudeCode.promptQueueing` (a second
+  `session/prompt` while one runs is queued by the agent); cookie does not
+  use it, since it queues input itself. `acp_session_started.steering`
+  records whether the agent steers; clients derive the Steer button from it
+  (the web client's reads "Queue (this agent can't be steered)", the TUI's
+  pending strip says so) when the session's running agent is that ACP
+  agent.
+- **Tool calls.** A call's presentation is rebuilt from what the agent
+  reported so far (title, the kind's hint, a primary argument from the raw
+  input's `command`, `file_path`, `path`, `url`, `pattern`, or `query`, and
+  the raw input as arguments) and recorded as
+  `acp_session_updated.tool_presentation` whenever it changes, since Claude
+  Code's adapter sends the raw input in a later `tool_call_update` (and
+  then once more per streamed field). Clients replace the call's title,
+  hint, primary argument, arguments, and preview with it. Content renders
+  as Markdown (text), media (images, stored as artifacts), links (resource
+  links), code (embedded text resources), and diff blocks; locations as
+  file links; raw output as code or JSON when the call has no content.
+  `_meta` is optional enrichment only: Claude Code's
+  `claudeCode.toolName` becomes the call's published name and
+  `metadata.acp.tool_name`; its `claudeCode.toolResponse` (the whole tool
+  response, including written files) is not kept.
+- **Notices and compaction.** `initialize` declares
+  `clientCapabilities.session: {notices: {}, compaction: {}}`. A `notice`
+  update (`severity`, `title`, `description`) and a completed or failed
+  `compaction_update` (its `summary`, else the streamed
+  `compaction_summary_chunk`s; its `error`) are recorded as
+  `acp_session_updated.notice`; clients show it where it arrived, with no
+  level filter. In progress and cancelled compactions show nothing.
+- **Usage and session info** were already handled (`usage_update`,
+  `session_info_update`); Claude Code's `PromptResponse._meta.quota` is not
+  read.
+- **Checked by hand against Claude Code** (`claude` 2.1.309, adapter
+  0.95.0, scratch daemon): the first prompt's context; a `Read` (its raw
+  input arrived after the call started and the header updated; content as
+  Markdown and a file link); an `Edit` (presentation updated three times as
+  `old_string`, `new_string`, and `replace_all` streamed in; a diff); a
+  `Bash` call; a steer during a running `sleep` (`injected`, and Claude
+  moved the foreground command to the background so the message could
+  reach it); and a cancel. The adapter sent no `notice` or
+  `compaction_update` in these short turns; it did send
+  `current_mode_update`, three `session_info_update`s, and a background
+  task's follow-up text after a turn ended, which cookie drops as output
+  between rounds.
+
+**Tests** (round 3): the first prompt's parts and their order, with and
+without memory write tools and with every memory tool hidden; a steer
+through the fixture's extension (one round, the `steered` record, the
+request's `idleBehavior`) and without it (the next round); a cancel after
+a steered turn; a call whose raw input arrives later (the recorded
+presentation, Markdown, media, and link content, the tool name); notices
+and a compaction; the client reducer, the TUI, and the web rendering of
+notices, steered messages, and presentations.

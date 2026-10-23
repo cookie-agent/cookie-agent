@@ -350,7 +350,11 @@ address bar.
   slash commands the agent offers above it, marked **agent**, narrowed as
   you type the name. Choosing one that takes input puts `/<name> ` in the
   composer for it; one that takes none is sent. The agent's plan shows in
-  the transcript as a checklist, and its own tool calls name it.
+  the transcript as a checklist, its own tool calls name it and fill in
+  their arguments as the agent sends them, and its notices show where they
+  arrive. A message steered into the agent's running turn is marked so; for
+  an agent that cannot be steered, the Steer button reads "Queue (this
+  agent can't be steered)" and the message waits for the agent's next turn.
 - **Composer.** One line to start; it grows with what you write up to
   five lines, then scrolls, and shrinks back when you send. The paperclip
   (and on a phone the camera) is inside it at the bottom left, and round

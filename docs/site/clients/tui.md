@@ -147,7 +147,12 @@ lists the slash commands the agent offers, after cookie's own and marked
 host with their runtime (`local-claude [on local]`); one that is
 unavailable is dimmed (`[on lab · unavailable]`) and cannot be picked. The
 agent's plan shows in the transcript as a checklist (`[x]` done, `[~]` in
-progress, `[ ]` pending), and its own tool calls name it after their title.
+progress, `[ ]` pending), its own tool calls name it after their title and
+fill in their arguments as the agent sends them, and its notices show as
+`Notice` blocks. A message steered into the agent's running turn is marked
+`↪ steered into the agent's running turn`; for an agent that cannot be
+steered, the pending strip says `queued: this agent can't be steered`, and
+the message waits for the agent's next turn.
 
 The composer only ever sends messages: text beginning with `/` is sent as a
 prompt like any other. To start a message with `/`, open the palette and type
