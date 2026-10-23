@@ -175,6 +175,7 @@ nav:
           - Cron jobs: specs/cron.md
           - Permission consolidation: specs/permission-consolidation.md
           - MCP tool filters: specs/mcp-tool-filters.md
+          - ACP agents: specs/acp-agents.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md
           - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
