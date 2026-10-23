@@ -40,7 +40,10 @@ async fn compose_isolated<T: CatalogTransport + 'static>(
 /// Startup serves the cached or bundled catalog and refreshes from the
 /// transport in the background; waits until that first refresh is published.
 async fn await_initial_catalog_refresh(runtime: &Runtime) {
-    for _ in 0..10_000 {
+    // The recompile runs on the blocking pool, so a wall-clock deadline (the
+    // test's clock may be paused) rather than a count of yields bounds it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
         if runtime.engine.current_runtime().models.catalog().source
             == cookie_agent_models::catalog::CatalogSource::Network
         {
