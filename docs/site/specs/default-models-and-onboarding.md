@@ -31,6 +31,10 @@ to implement.
 - `cookie onboard` installs it and writes a persistent `onboarded` marker;
   the daemon answers whether it is onboarded, so the TUI and the web client
   offer onboarding only until then.
+- **Any client can onboard** (decided 2026-10-23): everything onboarding does
+  is a daemon RPC (section 8), so the TUI, the web client, `cookie onboard`,
+  and any third-party client do it the same way, with no client-side file
+  access and nothing that depends on the kind of client.
 - The kit's agents: `primary`, and the subagents `explore` and `worker`.
 
 **Out of scope:** more model slots than these two, per-project default
@@ -125,7 +129,7 @@ models:
   configuration and agent parsers (strict), so a release cannot ship defaults
   its binary rejects.
 
-## 7. `cookie onboard`
+## 7. `cookie onboard` (one client of the onboarding API)
 
 ```text
 cookie onboard [--from <file>] [--diff] [--yes]
@@ -137,8 +141,9 @@ cookie onboard [--from <file>] [--diff] [--yes]
   version; when the binary is not a release build, or its release has no
   kit, the latest release's. `--from` takes a local archive instead.
   The manifest's hashes are checked before anything is written.
-- **Installing:** files are written under `~/.cookie-agent` (the daemon's
-  data root when it is remote, through the daemon). A file that does not
+- **Installing:** `cookie onboard` itself writes nothing: it calls the
+  daemon's onboarding API (section 8), which writes under the daemon's
+  `~/.cookie-agent`, local or remote. A file that does not
   exist is written; one that exists and differs is left alone and the kit's
   version is written beside it as `<name>.new`; an identical one is skipped.
   `--diff` prints what would change and writes nothing.
@@ -151,25 +156,37 @@ cookie onboard [--from <file>] [--diff] [--yes]
 
 ## 8. The daemon's onboarding API
 
-Client protocol minor, additive:
+Client protocol minor, additive. These calls are the only way onboarding
+happens: every client uses them, the daemon does the work (downloading,
+checking hashes, writing files and configuration, the marker), and it never
+branches on the kind of client asking.
 
-- `onboarding.get` → `{ onboarded, kit_version? , at? }`.
-- `onboarding.run { install_kit, default_model?, small_model?, from? }` → the
-  files written, skipped, and written as `.new`, then the marker. The daemon
-  downloads the kit only when asked through this call, which is how the web
-  client onboards (it cannot write files itself).
+- `onboarding.get` → `{ onboarded, at?, cookie_version?, kit_version? }`.
+- `onboarding.preview { source? }` → the kit's version and, per file, what
+  installing would do (`write`, `skip` as identical, `write_new` beside a
+  changed file) with a diff for changed files. `source` is `release`
+  (default: the binary's version, else the latest release) or an uploaded
+  archive (an upload lease, as attachments use). It downloads and checks the
+  kit but writes nothing; the daemon keeps it briefly for the run that
+  follows.
+- `onboarding.run { install_kit, source?, default_model?, small_model? }` →
+  the files written, skipped, and written as `.new`, the configuration fields
+  set, then the marker. Model values use the configuration's shapes and are
+  checked like `config.apply`.
 - `onboarding.dismiss` writes the marker without installing anything.
-- `onboarding.changed` notification.
-
-`cookie onboard` uses these calls, so it works against a remote daemon too.
+- `onboarding.changed` notification, so every connected client updates.
+- The models to choose from come from the existing model listing, so a
+  client needs nothing onboarding-specific for the pickers.
 
 ## 9. Clients
 
 - **TUI:** on connecting to a daemon that is not onboarded, a notice offers
-  onboarding (install the kit, pick the two models) or dismissing it; `/onboard`
-  opens it later.
+  onboarding (preview the kit, install it, pick the two models) or dismissing
+  it; `/onboard` opens it later.
 - **Web:** the same as a first-run sheet, and an entry in Settings.
-- Neither asks again once `onboarding.get` says onboarded.
+- **`cookie onboard`:** the same steps in a terminal (section 7).
+- All three use only the RPCs of section 8, and none asks again once
+  `onboarding.get` says onboarded.
 
 ## 10. Tests
 
@@ -182,7 +199,9 @@ Client protocol minor, additive:
 - Kit: every file loads with the build's parsers; the manifest's hashes.
 - Onboarding: install into an empty root, `.new` beside a changed file,
   identical files skipped, `--diff`, hash mismatch refused, the marker,
-  `onboarding.get/run/dismiss`, the TUI notice, the web sheet.
+  `onboarding.get/preview/run/dismiss` from a plain protocol client (no TUI
+  or web code), an uploaded archive as the source, the TUI notice, the web
+  sheet.
 
 ## 11. Phases
 
