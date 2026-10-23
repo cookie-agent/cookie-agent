@@ -1,6 +1,6 @@
 # MCP tool filters
 
-Status: **draft** (2026-10-23), awaiting the go-ahead to implement. Builds on
+Status: **approved** (2026-10-23), being implemented. Builds on
 [permission consolidation](permission-consolidation.md) and the MCP scope
 work in the [runtimes spec](runtimes.md).
 
@@ -22,8 +22,8 @@ things are missing:
 - Each MCP server takes `include_tools` and `exclude_tools`, patterns over
   the server's own tool names with `*` and `?`, applied before its tools are
   published (section 2).
-- Proposed with this spec: an MCP tool is offered only when the merged rules
-  do not deny its published name (section 3).
+- An MCP tool is offered only when the merged rules do not deny its
+  published name (section 3, confirmed 2026-10-23).
 
 **Out of scope:** filtering prompts or resources, renaming tools, per-agent
 server lists (permissions cover that, section 3).
@@ -59,7 +59,7 @@ exclude_tools = ["browser_install"]    # applied after include_tools
 - **Clients:** the TUI and web MCP server editors gain both fields; the MCP
   sheet shows the filtered count.
 
-## 3. MCP tools offered by their permission (proposed)
+## 3. MCP tools offered by their permission
 
 - **The rule:** an MCP tool is offered only when the run's merged rules
   (permission consolidation section 3) do not deny `mcp` for its published
@@ -109,4 +109,4 @@ per-tool offering in the engine, the clients' editor fields, docs.
 
 ## 8. Open questions
 
-- Confirm section 3 (proposed with this spec).
+None.
