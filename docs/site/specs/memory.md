@@ -56,8 +56,9 @@ changes a session's attachments, runtimes, or workspaces.
 - Agents that declare no memory rules get defaults by mode: `primary` and
   `all` agents may read and write all memory, `subagent` agents may read all
   memory and write only their own agent file
-  ([section 9.2](#92-default-rules)). (Removed 2026-10-22: memory is now
-  opt-in; see the note in section 9.2.)
+  ([section 9.2](#92-default-rules)). (Replaced 2026-10-22: the defaults
+  now depend on whether the run is delegated; see the note in section 9.2
+  and section 16.9.11.)
 - A snapshot changes only at the points in [section 7.2](#72-when-a-snapshot-is-taken);
   the user's own edits from a client do not refresh open sessions.
 - Machine memory folders and URLs use machine names; renaming a machine
@@ -765,6 +766,11 @@ table above records the defaults as they were from 2026-10-19 to
 2026-10-22. Delegated runs regain one default, their own agent file
 ([section 16.9.11](#16911-related-memory-and-no-hard-limits-on-what-an-agent-touches)). `list_runtimes` keeps its default, and `mcp` gained one
 ([runtimes spec section 7.1](runtimes.md#71-addendum-2026-10-22-the-mcp-default)).
+Later the same day root runs regained a default too, chosen by delegation
+rather than by mode: read everything, write what is related to the session
+([section 16.9.11](#16911-related-memory-and-no-hard-limits-on-what-an-agent-touches),
+decided 2026-10-22). Memory is opt-in no longer; `memory: deny` turns it
+off, as under the table above.
 
 ### 9.3 Search results
 
@@ -1499,7 +1505,8 @@ phase 1 of [delegating to runtimes](runtime-delegation.md#11-implementation-note
 
 Settled 2026-10-22. Phases 1 and 2, the engine and the clients, are
 implemented (section 16.9.15), and phase 3, the docs, is written (section
-16.9.16). Models with write
+16.9.16). The root default of section 16.9.11 landed after (section
+16.9.17). Models with write
 access saved things that are useless by the next session. For example,
 after "explore this directory", one saved the directory listing. The only
 save guidance was "save what a later session should know", and nothing
@@ -1510,9 +1517,11 @@ Hermes Agent, OpenClaw, mem0 and Letta.
 **Decided:**
 - No background curator, no content-shape guard, and no extraction of
   memories from transcripts.
-- Memory stays opt-in per agent for root runs (section 9.2, as amended
-  2026-10-22). Delegated runs get one default: their own agent file
-  (section 16.9.11, decided 2026-10-22).
+- Every run of an agent that is not internal has a memory default chosen
+  by delegation, not mode (section 16.9.11, decided 2026-10-22): a root
+  run reads everything and writes what is related to the session, and a
+  delegated run reads and writes its own agent file. This replaces the
+  opt-in of section 9.2's first note of 2026-10-22.
 - The snapshot already follows the read rules, and an empty snapshot
   renders no memory turn. Both were implemented 2026-10-22.
 
@@ -1852,8 +1861,8 @@ Decided 2026-10-22.
     file (section 6), so the default and the snapshot agree.
   - **Chosen by depth, not mode.** Permission defaults so far depend on
     the agent's mode. This one depends on whether the run is delegated,
-    so an `all`-mode agent gets it when delegated and not when it runs as
-    the root. Root runs keep no memory default.
+    so an `all`-mode agent gets it when delegated and the root default
+    below when it runs as the root.
   - **How a run is known to be delegated.** Its session's origin is
     `SessionOrigin::Delegated`, set when `delegate_subagent` creates the
     session and never changed. The two policy freezes already differ
@@ -1868,13 +1877,15 @@ Decided 2026-10-22.
     included if it grants it. That is the explicit opt-in; there is no
     hard limit behind it.
   - **Session overlays** apply on top as for any action.
-- **A possible later default for root runs.** Once this is in, the defaults (section 9.2,
-  none since 2026-10-22) could become "read everything, write what is
-  related". The relative names already express that, with no new
-  variable:
+- **Default for root runs** (decided 2026-10-22, the user's decision). A
+  root run (its session's origin is `SessionOrigin::Root`) of an agent
+  that is not internal, the built-in `default` agent included, whose agent
+  document has no key for `memory` or for `memory_write` gets these rules
+  for that action: read everything, write what is related. The relative
+  names express it with no new variable:
 
   ```yaml
-  memory: allow
+  memory: allow            # "*": allow
   memory_write:
     "user://*": allow
     "agent://${agent_id}": allow
@@ -1882,9 +1893,20 @@ Decided 2026-10-22.
     "project://${session_project}/*": allow
   ```
 
-  This is not decided; it is recorded here so the change can be made
-  later without new mechanism. Delegated runs would keep their own default
-  above.
+  - **What it means.** A root run sees its related memory in its snapshot,
+    can find and read any other memory with `memory_search` and
+    `memory_read`, and maintains its related memory (the write tools are
+    offered, section 16.9.1). Another project's or machine's memory stays
+    read-only to it. A session without a project, or with no machine,
+    drops the rule that names it (section 16.9.9), so such a run writes
+    `user://` and its own agent file only.
+  - **A document's own rules replace it**, per action, as with every
+    default: `memory_write: deny` leaves a run that reads, and
+    `memory: deny` turns memory off, since the write tools need some memory
+    the run can read.
+  - **Internal agents** get no memory default, root or delegated; they have
+    no memory (section 6).
+  - Delegated runs keep their own default above.
 
 #### 16.9.12 The approval reviewer knows the rubric
 
@@ -2123,3 +2145,21 @@ Deviations and details decided:
 #### 16.9.16 Implementation notes: phase 3
 
 Written 2026-10-22: the memory guide, the permissions pages (`extend/agents.md`, `concepts/permissions.md`), the system prompt reference's `Project:` line, memory section, and trimmed memory turn, and the concept page; the configuration reference and the tools reference were already current from phase 1.
+
+#### 16.9.17 Implementation notes: the root default
+
+Landed 2026-10-22 (section 16.9.11, default for root runs). No wire change.
+
+- **The rules** (`crates/engine/src/permissions.rs`):
+  `memory_default_rules(mode, delegated)` replaces
+  `delegated_default_rules` and gives the root, delegated, or no default;
+  `agent_permission_rules` appends them after the mode defaults, for an
+  action the document names no key for, before the variables are expanded.
+- **The permission view** (`effective_permission_view`) now takes whether
+  the session is delegated and reports an action whose rules are its memory
+  default with the source `default`, matching each `${session_machine}` or
+  `${session_project}` default against the rules it expanded to (none or
+  more). The delegated default was reported as `agent_document` before.
+- **Tests** that are not about memory and size small contexts, or check
+  the prompt's blocks, give their agent `memory: deny`; the tool lists the
+  agent tests pin include the memory tools again.

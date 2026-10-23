@@ -295,8 +295,9 @@ Two actions are the exception: an agent document, the built-in `default`
 included, that names no key for `list_runtimes` or `mcp` gets that action's
 rules from its mode (see [Listing runtimes](#listing-runtimes) and
 [MCP default](#mcp-default)), so every agent that is not internal is offered
-MCP tools and asks before each call. Memory has no default, so the built-in
-`default` agent has no memory tools (see
+MCP tools and asks before each call. Memory has a default too, by whether
+the run is delegated rather than by mode, so the built-in `default` agent
+reads every memory and writes the memory related to its session (see
 [Memory permissions](#memory-permissions)).
 
 ## Agent presets
@@ -783,13 +784,30 @@ The memory tools of the `global` runtime use two actions, `memory` for
 searching and reading and `memory_write` for writing, editing, and deleting,
 both with the memory URL as resource (`user://<category>`,
 `agent://<agent>`, `machine://<machine>/<name>`,
-`project://<project>/<name>`). Unlike `list_runtimes` and `mcp`, they have
-no default for a root run: an agent document, the built-in `default`
-included, that names no `memory` key gets no memory tools, no
-`memory_search`, and no memory snapshot. Memory is opt-in: `memory: allow`
-lets an agent read every memory, per-URL rules narrow it, and `memory_write`
-rules let it write. A session overlay can grant either for one session tree,
-as for any action.
+`project://<project>/<name>`). `memory: allow` lets an agent read every
+memory, per-URL rules narrow it, and `memory_write` rules let it write. A
+session overlay can grant either for one session tree, as for any action.
+
+**Root runs.** A root run of an agent that is not internal, the built-in
+`default` included, gets these rules for each of `memory` and
+`memory_write` its document names no key for:
+
+```yaml
+memory: allow
+memory_write:
+  "user://*": allow
+  "agent://${agent_id}": allow
+  "machine://${session_machine}/*": allow
+  "project://${session_project}/*": allow
+```
+
+It reads every memory, with the memory related to the session in its
+snapshot, and writes that related memory: the user's, its own agent file,
+and its session's machines and project. Another project's or machine's
+memory it can find with `memory_search` and read, but not change. A declared
+key replaces the default for its action only, so `memory_write: deny` leaves
+a run that reads, and `memory: deny` turns memory off. Internal agents get
+no default.
 
 **Variables.** A `memory` or `memory_write` pattern may name the run's agent,
 machines, and project, so one document works wherever it runs:
@@ -815,8 +833,8 @@ agent, is gone: it is now an ordinary pattern, and `${agent_id}` replaces it.
 `delegate_subagent`) whose agent document has no key for `memory`, or none for
 `memory_write`, gets `agent://${agent_id}: allow` for that action: it sees and
 maintains its own agent file and nothing else. The default depends on whether
-the run is delegated, not on the agent's mode, so an `all` agent has it when
-delegated and not as a root. A document that declares either action gets
+the run is delegated, not on the agent's mode, so an `all` agent has the root
+default as a root and this one when delegated. A document that declares either action gets
 exactly its own rules for it, delegated or not; there is no hard limit
 behind the default, so a subagent granted `user://*` may write it.
 
@@ -855,8 +873,9 @@ You review a diff for bugs and missing tests.
 
 Run as a root, this agent's snapshot shows its own file and the session's
 project and machine memories, it can write its own file freely, and the
-others after approval. Delegated, it has these same rules rather than the
-default, since it declares both keys. A subagent that should only keep its own
+others after approval. Root or delegated, it has these same rules rather
+than a default, since it declares both keys; without them it would read and
+write the user's memory as a root. A subagent that should only keep its own
 file needs no rules at all: the delegated default covers it.
 
 Memory needs both the `global` runtime and a visible `memory` action: an

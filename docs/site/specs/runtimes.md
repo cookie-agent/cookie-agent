@@ -386,7 +386,10 @@ synthesized built-in `default` included, has no `mcp` key in any form
 - The same day the memory actions lost their mode defaults
   ([memory spec section 9.2](memory.md#92-default-rules), note of
   2026-10-22): `memory` and `memory_write` are denied unless the agent
-  document or the session overlay names them.
+  document or the session overlay names them. Later that day they gained
+  defaults chosen by whether the run is delegated, not by mode
+  ([memory spec section 16.9.11](memory.md#16911-related-memory-and-no-hard-limits-on-what-an-agent-touches)),
+  which the view reports with the source `default` as well.
 
 ## 8. Workspace context
 

@@ -49,10 +49,13 @@ is a line in the transcript. See
 [Tools](../reference/tools.md#memory-tools).
 
 The `memory` and `memory_write` permission actions govern the tools, with the
-memory URL as the resource. Memory is opt-in: an agent without `memory` rules
-of its own (or from the session overlay) gets no memory tools and no
-snapshot, and the snapshot shows each memory only as far as those rules
-allow. A delegated run without memory rules gets its own agent memory. See [Memory permissions](../extend/agents.md#memory-permissions).
+memory URL as the resource. A root run whose agent names no memory rules
+reads every memory and writes the memory related to its session (the
+user's, its own agent file, and its session's machines and project); a
+delegated run without them reads and writes only its own agent memory, and
+internal agents get none. A declared rule replaces the default for its
+action, so `memory: deny` turns memory off. The snapshot shows each memory
+only as far as the `memory` rules allow. See [Memory permissions](../extend/agents.md#memory-permissions).
 
 ## Where it lives
 

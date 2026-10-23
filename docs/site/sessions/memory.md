@@ -274,8 +274,8 @@ When an agent's `memory_write` rule is `ask`, the approval reviewer is given
 the same rubric and the write's content; in auto-approve mode it rejects
 writes that fail it.
 
-Memory is still opt-in for root runs: an agent that names no `memory` rule
-has no memory tools, no snapshot, and no section.
+An agent whose document turns memory off with `memory: deny` has no memory
+tools, no snapshot, and no section.
 
 ## Tools
 
@@ -300,10 +300,14 @@ in this check.
 
 The tools use two permission actions with the memory URL as resource:
 `memory` for searching and reading, `memory_write` for writing, editing, and
-deleting. Memory is opt-in for root runs: an agent document that names
-neither, the built-in `default` agent included, has no memory tools and no
-snapshot. `memory: allow` lets an agent read every memory, and `memory_write`
-rules let it write; a session overlay rule grants them for one session tree.
+deleting. A root run of an agent document that names neither, the built-in
+`default` agent included, gets a default: it reads every memory and writes
+the memory related to its session, `user://`, its own `agent://` file, and
+its session's machines and project. A key replaces the default for its
+action: `memory_write: deny` leaves an agent that only reads, and
+`memory: deny` turns memory off. `memory: allow` lets an agent read every
+memory, and `memory_write` rules let it write; a session overlay rule grants
+them for one session tree.
 Rules may name the agent, machine, and project of the run with variables
 such as `${agent_id}`. See
 [Memory permissions](../extend/agents.md#memory-permissions) for the

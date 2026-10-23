@@ -199,7 +199,7 @@ changes, which is the intended invalidation.
 
 A run that has memory (the session has the `global` runtime attached and the
 agent or the session overlay has an `allow` or `ask` rule for `memory`; a root
-run has no default, a delegated one defaults to its own agent's file) sees a snapshot of it as one user turn right after
+run defaults to every memory, a delegated one to its own agent's file) sees a snapshot of it as one user turn right after
 the AGENTS.md turn. The snapshot is taken at run admission and recorded as a
 `memory_loaded` event only when something it depends on changed: the session
 has none yet, a compaction finished since the latest one, the session's
