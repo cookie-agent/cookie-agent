@@ -204,15 +204,45 @@ branches on the kind of client asking.
 
 ## 9. Clients
 
-- **TUI:** on connecting to a daemon that is not ready, a notice offers
-  onboarding (connect a provider, pick `default_model` and `small_model`,
-  preview and install the kit) or "Not now", which the TUI remembers for the
-  machine; `/onboard` opens it any time. Finishing is disabled until
-  `missing` is empty.
-- **Web:** the same as a first-run sheet, and an entry in Settings.
-- **`cookie onboard`:** the same steps in a terminal (section 7).
-- All three use only the RPCs of section 8, and none offers it once
-  `onboarding.get` says ready.
+Every client walks the same four steps, using only the RPCs of section 8 and
+`provider.connect`; each step starts from what is already configured.
+
+1. **Provider** (required while none is connected): the known providers, the
+   connected ones marked with their count of available models; choosing one
+   offers its auth methods (API key, browser login) and connects it, errors
+   shown in place with a retry. Several may be connected.
+2. **Default model** (required): a searchable list of the connected
+   providers' available models, grouped by provider, with context size and
+   price where the catalog has them; choosing one offers its variants,
+   preselecting the model's own default variant.
+3. **Small model** (required): the same list, with **no suggestion** (decided
+   2026-10-23). Its variant picker preselects the lowest effort the model
+   offers, in the order `off`, `low`, `medium`, `high`, then any others as the
+   model lists them. The same model as the default is allowed.
+4. **Starter kit** (optional): `onboarding.preview` per file, **new**,
+   **same as yours (skipped)**, or **differs → written as `.new`** with a diff
+   on request; install, skip, or use a downloaded archive.
+
+**Finish** calls `onboarding.run`; it is disabled, with the reason, while
+`missing` is not empty. The summary lists the files and settings written and
+offers a first session on `primary`.
+
+- **`cookie onboard`:** the steps as numbered questions in the terminal
+  (section 7), with `/` to search lists and hidden key entry.
+- **TUI:** on connecting to a daemon that is not ready, a notice line offers
+  "Set up" or "Not now" (remembered for the machine); `/onboard` opens it any
+  time. The panel shows the four steps as tabs with a check on each done
+  step, reusing the provider connect panel and the model picker; every
+  clickable has its hover (AGENTS.md).
+- **Web:** a first-run sheet with a four-step stepper, Back and Next, and
+  "Not now" (remembered in the browser); Settings has "Set up Cookie" to
+  reopen it. Provider cards reuse the Settings connect forms (browser logins
+  use the page as the redirect), model steps a searchable list with variant
+  chips, the kit step status badges with expandable diffs and "Use a
+  downloaded kit…". Full screen with touch-sized controls on a phone. Finish
+  ends on "Start your first session", a new-session draft.
+- Every connected client follows `onboarding.changed`: finishing in one tab
+  closes the sheet in the others.
 
 ## 10. Tests
 
