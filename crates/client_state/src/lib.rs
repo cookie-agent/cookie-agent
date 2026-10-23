@@ -12,6 +12,7 @@
 pub mod activity;
 pub mod badges;
 pub mod config;
+pub mod cron;
 pub mod markdown;
 pub mod mcp;
 pub mod memory;
