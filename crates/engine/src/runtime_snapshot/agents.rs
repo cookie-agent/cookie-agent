@@ -452,6 +452,37 @@ impl AgentRegistry {
     /// Either may be an ACP agent a runtime has not reported (or a typo);
     /// the configuration loads, and the diagnostic clears once a runtime
     /// reports a matching agent.
+    /// The diagnostics of the agents and of their `models` entries: the
+    /// delegation ones, then an authored agent's entries naming a field that
+    /// is not set.
+    pub(crate) fn diagnostics(&self) -> Vec<String> {
+        let mut diagnostics = self.delegation_diagnostics();
+        for (id, agent) in &self.agents {
+            if agent.unset_models.is_empty()
+                || agent.document.source == AgentDocumentSource::BuiltIn
+            {
+                continue;
+            }
+            let fields = agent
+                .unset_models
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            let verb = if agent.unset_models.len() == 1 {
+                "is"
+            } else {
+                "are"
+            };
+            diagnostics.push(if agent.resolved_fallback.is_empty() {
+                format!("agent `{id}` has no model: {fields} {verb} not set")
+            } else {
+                format!("agent `{id}` skips a `models` entry: {fields} {verb} not set")
+            });
+        }
+        diagnostics
+    }
+
     pub(crate) fn delegation_diagnostics(&self) -> Vec<String> {
         let mut diagnostics = Vec::new();
         for (id, agent) in &self.agents {

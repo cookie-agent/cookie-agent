@@ -103,6 +103,13 @@ async fn variables_resolve_with_their_variants_and_entry_overrides() {
     );
     assert_eq!(primary.unset_models, ["small_model"]);
     assert!(primary.runnable_as_root);
+    assert!(
+        fixture
+            .engine
+            .configuration_status()
+            .diagnostics
+            .contains(&"agent `primary` skips a `models` entry: `small_model` is not set".into())
+    );
 
     // A bare key means the model's default variant; the entry's variant
     // overrides the one the variable carries.
@@ -155,6 +162,13 @@ async fn an_agent_left_with_no_entry_is_unavailable_and_names_the_field() {
     assert!(primary.resolved_fallback.is_empty());
     assert!(!primary.runnable_as_root);
     assert_eq!(primary.unset_models, ["default_model"]);
+    assert!(
+        fixture
+            .engine
+            .configuration_status()
+            .diagnostics
+            .contains(&"agent `primary` has no model: `default_model` is not set".into())
+    );
 
     set(
         &fixture,

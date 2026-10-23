@@ -175,9 +175,9 @@ impl Engine {
     fn configuration_diagnostics(&self) -> Vec<String> {
         let published = self.current_runtime();
         let mut diagnostics = self.shadowed_acp_declarations();
-        diagnostics.extend(published.agents.delegation_diagnostics());
+        diagnostics.extend(published.agents.diagnostics());
         for (preset, registry) in &published.agent_presets {
-            for diagnostic in registry.delegation_diagnostics() {
+            for diagnostic in registry.diagnostics() {
                 if !diagnostics.contains(&diagnostic) {
                     diagnostics.push(format!("preset `{preset}`: {diagnostic}"));
                 }
