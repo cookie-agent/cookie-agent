@@ -1105,7 +1105,41 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                         <Glyph icon=icondata::FaArrowsRotateSolid />
                         "Reload from disk"
                     </button>
+                    // Beside the reload, so the parts it cannot apply are
+                    // applied where the configuration was changed; it
+                    // stands out while some wait for a restart.
+                    {move || workspace.can_restart.get().then(|| {
+                        let needed = move || workspace.config_status.with(|status| {
+                            status.as_ref().is_some_and(|status| !status.restart_required.is_empty())
+                        });
+                        view! {
+                            <button
+                                type="button"
+                                id="restart-daemon"
+                                class=move || if needed() { PRIMARY } else { BUTTON }
+                                data-restart-needed=move || needed().then_some("")
+                                on:click=move |_| workspace.ask_restart()
+                            >
+                                <Glyph icon=icondata::FaPowerOffSolid />
+                                "Restart daemon"
+                            </button>
+                        }
+                    })}
                 </div>
+                {move || workspace.can_restart.get().then(|| view! {
+                    <p class=NOTE>
+                        {move || {
+                            let parts = workspace.config_status.with(|status| {
+                                status.as_ref().map(cookie_agent_client_state::restart::restart_parts).unwrap_or_default()
+                            });
+                            if parts.is_empty() {
+                                "Restarting relaunches the daemon with the same arguments; clients reconnect on their own.".to_owned()
+                            } else {
+                                format!("Waiting for a restart: {parts}.")
+                            }
+                        }}
+                    </p>
+                })}
             </div>
         }
         .into_any()

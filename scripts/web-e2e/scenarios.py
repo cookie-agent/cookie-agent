@@ -3315,6 +3315,81 @@ def changed_daemon(browser):
     print("a reload after the daemon changed shows the new build at once")
 
 
+def restart_daemon(browser):
+    """A change that needs a restart shows the banner; its button and
+    Settings → Configuration's both open the confirmation, which offers a
+    restart when idle or now; when idle restarts the daemon, the page
+    reconnects, and the banner is gone."""
+    config = os.path.join(HOME, ".cookie-agent", "config.toml")
+    with open(config, "a") as file:
+        file.write('\n[runtimes.later]\ncommand = ["false"]\n')
+    open_section(browser, "settings", "configuration")
+    browser.click("#config-reload")
+    browser.wait("the restart banner", lambda: "runtimes" in browser.text("#restart-needed"))
+    # Only `runtimes`: the token the daemon wrote to `[server]` at its first
+    # start is the one it serves with.
+    needed = browser.text("#restart-needed")
+    assert needed == "Restart needed to apply: runtimes", needed
+    browser.shot("restart-banner")
+    browser.click("#restart-banner-button")
+    browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
+    assert browser.text("#restart-idle") == "Restart when idle", browser.text("#restart-idle")
+    assert browser.text("#restart-now").startswith("Restart now"), browser.text("#restart-now")
+    browser.click("#restart-cancel")
+    browser.wait("the confirmation closed", lambda: not shown(browser, "#restart-dialog"))
+    print("the banner names what waits for a restart and its button asks first")
+
+    # A phone: the confirmation is a sheet with thumb-sized buttons.
+    browser.resize(390, 844)
+    browser.click("#restart-banner-button")
+    browser.wait("the phone confirmation", lambda: shown(browser, "#restart-dialog"))
+    heights = browser.script(
+        "return ['#restart-idle', '#restart-now', '#restart-cancel']"
+        ".map((s) => document.querySelector(s).getBoundingClientRect().height)"
+    )
+    assert all(height >= 44 for height in heights), heights
+    fits = browser.script(
+        "const r = document.querySelector('#restart-dialog').getBoundingClientRect();"
+        "return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight + 1"
+    )
+    assert fits, "the confirmation does not fit a phone"
+    browser.shot("restart-confirm-phone")
+    browser.click("#restart-cancel")
+    browser.resize(1280, 900)
+    print("on a phone the confirmation fits and its buttons are 44 px tall")
+
+    # Settings → Configuration: Restart daemon beside Reload from disk,
+    # highlighted while a change waits for it; when idle.
+    open_section(browser, "settings", "configuration")
+    assert count(browser, "#restart-daemon[data-restart-needed]") == 1, "the restart button is not highlighted"
+    beside = browser.script(
+        "const r = document.querySelector('#config-reload'), b = document.querySelector('#restart-daemon');"
+        "return r.parentElement === b.parentElement && r.nextElementSibling === b"
+    )
+    assert beside, "Restart daemon is not next to Reload from disk"
+    browser.click("#restart-daemon")
+    browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
+    with open(os.path.join(HOME, "daemon.pid")) as file:
+        pid = int(file.read())
+    browser.click("#restart-idle")
+    browser.wait(
+        "the daemon restarting",
+        lambda: count(browser, "#reconnecting") == 1 or count(browser, "#restart-banner[data-restarting]") == 1,
+    )
+    browser.wait("the reconnected page", lambda: count(browser, "#reconnecting") == 0 and browser.text("#connected") != "", timeout=60)
+    browser.wait("the banner gone", lambda: count(browser, "#restart-banner") == 0)
+    open_section(browser, "settings", "configuration")
+    browser.wait(
+        "the plain restart button",
+        lambda: count(browser, "#restart-daemon") == 1 and count(browser, "#restart-daemon[data-restart-needed]") == 0,
+    )
+    os.kill(pid, 0)
+    with open(os.path.join(HOME, "daemon.out")) as file:
+        readies = sum(1 for line in file if line.startswith("daemon-ready "))
+    assert readies == 2, "the daemon did not restart in place: %d ready lines" % readies
+    print("Settings restarts the daemon when idle; the page reconnects to the same process")
+
+
 class QuietFiles(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -4356,6 +4431,8 @@ SCENARIOS = [
     # Its daemon's `local` runtime hosts MCP servers (test-web-page.sh).
     ("runtime_mcp", runtime_mcp, "runtime_mcp", []),
     ("acp_agents", acp_agents, "acp", []),
+    # It restarts its daemon.
+    ("restart_daemon", restart_daemon, "restart", []),
     ("install_prompt", install_prompt, "install", []),
     ("install_on_phones", install_on_phones, "install", []),
     ("panic_hook", panic_hook, "install", []),

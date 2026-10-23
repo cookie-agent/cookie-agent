@@ -17,7 +17,7 @@ use crate::{
     icons::{self, Glyph},
     oauth::{self, Lookup},
     theme::ThemePreference,
-    views::{Install, InstallAction, InstallBanner, WorkspaceView},
+    views::{Install, InstallAction, InstallBanner, RestartBanner, RestartDialog, WorkspaceView},
     workspace::Workspace,
 };
 
@@ -323,6 +323,8 @@ pub fn App() -> impl IntoView {
                 match phase {
                     Phase::Connected { .. } => {
                         view! {
+                            <RestartBanner workspace=connection.workspace />
+                            <RestartDialog workspace=connection.workspace />
                             <InstallBanner />
                             <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
                         }

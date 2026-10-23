@@ -41,9 +41,11 @@ mod machines;
 mod manage;
 mod memory;
 mod projects;
+mod restart;
 mod shell;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
+pub(crate) use restart::{RestartBanner, RestartDialog};
 
 use depth::{
     AttachButtons, BackgroundBar, DraftFiles, GoalBar, background_sheet, compact_sheet, goal_sheet,

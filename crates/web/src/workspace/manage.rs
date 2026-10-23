@@ -680,9 +680,11 @@ impl Workspace {
                 .get_config()
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
-            if let Err(error) = &result {
-                self.status
-                    .set(format!("configuration unavailable: {error}"));
+            match &result {
+                Ok(config) => self.note_config_status(&config.status),
+                Err(error) => self
+                    .status
+                    .set(format!("configuration unavailable: {error}")),
             }
             self.config.set(Some(result));
         });
@@ -828,7 +830,10 @@ impl Workspace {
         self.status.set("reloading the configuration…".into());
         spawn_local(async move {
             match client.reload_config().await {
-                Ok(result) => self.status.set(reload_status(&result.status)),
+                Ok(result) => {
+                    self.note_config_status(&result.status);
+                    self.status.set(reload_status(&result.status));
+                }
                 Err(error) => self.status.set(crate::errors::describe(&error)),
             }
             self.poll_config();

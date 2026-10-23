@@ -533,7 +533,24 @@ address bar.
   stays open with the reason, to be fixed and applied again; a document
   that changed meanwhile is reloaded instead. Notes about what the configuration names
   that does not exist yet, such as a delegation target no runtime has
-  reported, are listed above it.
+  reported, are listed above it. **Reload from disk** applies edits made
+  by hand, and **Restart daemon** beside it applies what only a restart
+  does (see [Restarting the daemon](#restarting-the-daemon)); it is
+  highlighted while a change waits for a restart.
+- **Restarting the daemon.** <a id="restarting-the-daemon"></a>While the
+  daemon's configuration lists parts that only a restart applies, a banner
+  across the top says so, such as *Restart needed to apply: plugins,
+  runtimes*, with **Restart daemon**. That button and the one in Settings ›
+  Configuration ask first: **Restart when idle** (the default) waits until
+  no turn runs and refuses new ones meanwhile, and **Restart now
+  (interrupts 2 running turns)** stops the running turns, counting the
+  sessions the page sees running. Cancel or Escape closes the question; on
+  a phone it is a sheet at the bottom. Once the daemon accepts, the banner
+  says *Restarting when idle… (1 running turn)* until the connection
+  closes, then the page shows its reconnecting bar (*the daemon is
+  restarting*) and reconnects on its own. A daemon older than client
+  protocol 1.19 shows neither the banner nor the button. See
+  [Restarting the daemon](../daemon/persistent.md#restarting-the-daemon).
 - **Agents.** The **Agents** view lists the agent documents in a sidebar,
   like the sessions in Chat: the shared agents, then each preset with its
   agents. Each row has an icon for the agent's mode (a robot for a primary

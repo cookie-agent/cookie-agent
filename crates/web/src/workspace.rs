@@ -45,6 +45,7 @@ mod oauth;
 mod permissions;
 mod projects;
 mod rename;
+mod restart;
 mod skills;
 mod tree;
 
@@ -286,6 +287,15 @@ pub struct Workspace {
     /// Bumped by every connection the page adopts, so work for an older one
     /// stops.
     connection: StoredValue<u64>,
+    /// The daemon restarts from a client (client protocol 1.19).
+    pub can_restart: RwSignal<bool>,
+    /// The daemon's configuration status, for the restart banner.
+    pub config_status: RwSignal<Option<cookie_agent_protocol::ConfigStatus>>,
+    /// The restart confirmation is open.
+    pub restart_confirm: RwSignal<bool>,
+    /// A restart the daemon scheduled, as the page says it, until the
+    /// connection closes.
+    pub restarting: RwSignal<Option<String>>,
 }
 
 impl Default for Workspace {
@@ -395,6 +405,10 @@ impl Workspace {
             history: StoredValue::new(Vec::new()),
             traversing: StoredValue::new(false),
             connection: StoredValue::new(0),
+            can_restart: RwSignal::new(false),
+            config_status: RwSignal::new(None),
+            restart_confirm: RwSignal::new(false),
+            restarting: RwSignal::new(None),
         }
     }
 
@@ -457,7 +471,14 @@ impl Workspace {
             .set(cookie_agent_client_state::cron::daemon_has_crons(
                 client.daemon_version(),
             ));
+        self.can_restart
+            .set(cookie_agent_client_state::restart::daemon_can_restart(
+                client.daemon_version(),
+            ));
+        self.restarting.set(None);
+        self.restart_confirm.set(false);
         self.client.set_value(Some(client));
+        self.refresh_config_status();
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
         self.finish_waiting_sign_in();
@@ -534,6 +555,7 @@ impl Workspace {
                     // Outside the predecessor chain: fetch the current one.
                     self.resync_runtime();
                 }
+                self.config_may_have_changed(&changed.reasons);
                 return;
             }
             ClientDelivery::RecoveryFailed { session_id, error } => {
@@ -549,6 +571,10 @@ impl Workspace {
             }
             ClientDelivery::CronsChanged(_) => {
                 self.poll_crons();
+                return;
+            }
+            ClientDelivery::DaemonRestarting(restarting) => {
+                self.note_restarting(restarting);
                 return;
             }
             ClientDelivery::PluginEvent(event) => {
