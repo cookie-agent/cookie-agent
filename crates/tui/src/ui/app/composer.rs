@@ -406,6 +406,9 @@ impl App {
             input.take();
         });
         self.attachments.clear();
+        // What the user sends shows at the end, followed again however far
+        // up they had scrolled.
+        self.conversation_scroll.bottom();
         let submitted_id = client_run_id();
         let draft_generation = self.draft_generation;
         if active_run.is_none() {

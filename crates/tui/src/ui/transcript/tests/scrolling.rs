@@ -687,3 +687,37 @@ async fn toggling_an_earlier_block_during_a_stream_applies_on_the_next_frame() {
         assert_eq!(app.layout_cache.assistant_part_layout_passes, parts);
     }
 }
+
+#[tokio::test]
+async fn sending_while_scrolled_up_jumps_to_the_latest_and_follows_again() {
+    for (modifiers, delivery) in [(KeyModifiers::NONE, "steer"), (KeyModifiers::ALT, "queue")] {
+        let (mut app, session, run, attempt) = streaming_reply_app().await;
+        app.store.sessions.get_mut(&session).unwrap().active_run = Some(run);
+        conversation_rows(&mut app, 60, 24);
+        let viewport = app.hit_map.conversation.unwrap();
+        app.handle_wheel(viewport.x + 2, viewport.y + 2, true);
+        app.handle_wheel(viewport.x + 2, viewport.y + 2, true);
+        conversation_rows(&mut app, 60, 24);
+        assert!(!app.conversation_scroll.following, "{delivery}");
+        app.input.set_buffer("look at this".into());
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            modifiers,
+        ))
+        .await;
+        assert_eq!(app.input.as_str(), "", "{delivery}: the input was not sent");
+        assert!(app.conversation_scroll.following, "{delivery}");
+        app.store
+            .apply_event(text_delta(session, 5, run, attempt, "\n\nnew tail\n\n"));
+        let rows = conversation_rows(&mut app, 60, 24);
+        assert!(
+            rows.iter().any(|row| row.contains("new tail")),
+            "{delivery}"
+        );
+        assert_eq!(
+            app.conversation_scroll.offset,
+            app.scrollbar_geometry.unwrap().max_offset,
+            "{delivery}"
+        );
+    }
+}
