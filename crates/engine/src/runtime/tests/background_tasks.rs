@@ -218,7 +218,7 @@ impl PreparedExecutor for JobExecutor {
     }
 }
 
-pub(super) const JOB_AGENT: &str = "---\ndescription: Background call test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest background calls.\n";
+const JOB_AGENT: &str = "---\ndescription: Background call test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest background calls.\n";
 
 pub(super) struct JobRun {
     pub(super) fixture: Fixture,

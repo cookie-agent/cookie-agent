@@ -9,9 +9,7 @@ use cookie_agent_protocol::{
     WaitingOn,
 };
 
-use super::background_tasks::{
-    JOB_AGENT, JobControl, JobProvider, background_result, start_job_run,
-};
+use super::background_tasks::{JobControl, JobProvider, background_result, start_job_run};
 use super::support::*;
 use crate::runtime::producers::ProducerAuthority;
 
@@ -41,6 +39,11 @@ fn listed_waiting(engine: &crate::Engine, session: SessionId) -> Vec<WaitingOn> 
         .with_live_waiting(engine.inner.store.summary(session).expect("summary").meta)
         .waiting_on
 }
+
+/// The parent's agent, which its buffered child shares. Memory stays off:
+/// a root run's memory snapshot would follow the system prompt, and the
+/// parent's first report request has to end in that prompt for the script.
+const CHILD_JOB_AGENT: &str = "---\ndescription: Background call test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n  memory: deny\n---\nTest background calls.\n";
 
 /// A parent whose delegated child ran one turn that left a background
 /// `job` call running, after the parent's run for that turn's report ended.
@@ -81,7 +84,8 @@ async fn start_child_job() -> ChildJob {
     ] {
         sender.send(response).expect("scripted response");
     }
-    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(&endpoint, JOB_AGENT);
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, CHILD_JOB_AGENT);
     fixture
         .engine
         .register_base_layer()
