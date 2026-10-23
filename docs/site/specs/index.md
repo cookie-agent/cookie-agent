@@ -37,7 +37,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
-| [ACP agents](acp-agents.md) | Draft (2026-10-23), awaiting review; Claude Code, Codex, and Gemini CLI as cookie agents over the Agent Client Protocol, with cookie's tools offered to them as MCP |
+| [ACP agents](acp-agents.md) | Draft (2026-10-23), settled, awaiting the go-ahead; Claude Code, Codex, and Gemini CLI hosted by runtimes as `<runtime>.<agent>` cookie agents over the Agent Client Protocol, with cookie's tools offered to them over a runtime-relayed MCP bridge |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |

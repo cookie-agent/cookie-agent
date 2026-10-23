@@ -1,7 +1,7 @@
 # ACP agents
 
-Status: **draft** (2026-10-23), awaiting review and the go-ahead. Section 13
-lists what is still open.
+Status: **draft** (2026-10-23), settled with the user, awaiting the go-ahead
+to implement.
 
 ## 1. Goal and scope
 
@@ -15,41 +15,45 @@ which stays the name of cookie's own protocol.
 
 **Decided 2026-10-23:**
 
-- An ACP agent is an agent document with an `acp` block instead of
-  `models` (section 3).
-- **Where it runs:** the daemon launches the agent's command on the
-  daemon's machine. The command may itself reach another machine (for
-  example `ssh labpc npx …`), since ACP is just stdin and stdout.
-- **Its own tools:** the agent runs its own file and shell tools. Cookie
-  does not advertise ACP `fs` or `terminal`. Which of cookie's tools the
-  agent should not also get is listed in the `acp` block (`hide_tools`,
-  section 3), not in `permissions`.
-- **Its permission requests are decided by `permissions`** (amended
-  2026-10-23): the agent's own requests map onto cookie's actions (`read`,
-  `write`, `bash`, `webfetch`), so one set of rules governs both the agent's
-  own tools and the cookie tools it is given (section 8).
-- **Mode:** each session starts the agent in its "auto" mode when it offers
-  one, else in its default mode (which asks); the agent document can name
-  another.
-- **Login:** credentials already on the machine (an existing `claude` login,
-  API keys in `env`). Authentication errors reach the cookie session with
-  what the agent said, so the user knows what to do. No login flow in cookie.
-- **Cookie's tools reach the agent as MCP**, from v1: the session's tools
-  (memory, cron, `list_agents`, delegation, MCP servers' tools, runtime tools)
-  minus those the agent document hides, each following the permission rules
-  (section 7).
-- **The agent document's body** is sent as context with the session's first
-  prompt; an empty body sends nothing.
+- **Runtimes host ACP agents.** A runtime (the daemon's own `local`, a
+  template runtime the daemon starts, or a dial-in runtime, including one a
+  TUI or web client offers) declares agents in its configuration, next to its
+  MCP servers. The daemon registers each as **`<runtime_id>.<agent_id>`**
+  (`local.claude`, `labpc.codex`), available while that runtime is connected.
+- **The runtime spawns the agent** on its own machine and relays its ACP
+  messages to the daemon over the runtime protocol. **The daemon speaks
+  ACP**: sessions, rendering, permissions, cancel, resume.
+- **Cookie's tools reach the agent as an MCP server over stdio**, through a
+  bridge the runtime spawns: the agent's MCP traffic reaches the daemon over
+  the runtime's existing connection, so the agent's host needs no route to
+  the daemon. (MCP-over-ACP, which would carry MCP on the ACP connection
+  itself, is a draft RFD; not used.)
+- **Cookie settings come from a daemon-side agent document with the same id**
+  (`~/.cookie-agent/agents/labpc.codex.md`): mode, permissions, body,
+  `hide_tools`, starting mode and config options. Without one, the agent gets
+  the defaults (section 4).
+- **cwd:** the session's workspace on that runtime, else the runtime's home.
+- **The agent runs its own file and shell tools.** Cookie does not advertise
+  ACP `fs` or `terminal`. `hide_tools` lists the cookie tools it does not get;
+  by default cookie's coding runtime tools.
+- **Its permission requests are decided by `permissions`**, its ACP tool
+  kinds mapped onto cookie's actions (section 8).
+- **Mode:** the agent's "auto" mode when it offers one, else its default.
+- **Login:** credentials already on the runtime's machine; authentication
+  errors reach the session with what the agent said. No login flow in cookie.
+- **The agent document's body** is sent with the session's first prompt; an
+  empty body sends nothing.
 - **Slash commands** the agent offers appear in the TUI and web composers.
+- **`deny`** stays the spelling for turning a permission off.
 
-**Out of scope for v1:** ACP `fs` and `terminal` (cookie's runtime executing
-the agent's file and shell operations), logins run from cookie, ACP v2,
-the agents' vendor extensions (`_meta`, AIR, steering, goal).
+**Out of scope for v1:** ACP `fs` and `terminal`, logins run from cookie,
+ACP v2, MCP-over-ACP, the agents' vendor extensions (`_meta`, AIR,
+steering, goal).
 
 ## 2. ACP in brief
 
-JSON-RPC 2.0 over the agent's stdin and stdout, one message per line;
-the agent's stderr is diagnostics. Version 1 (schema 1.26, Oct 2026).
+JSON-RPC 2.0 over the agent's stdin and stdout, one message per line; the
+agent's stderr is diagnostics. Version 1 (schema 1.26, Oct 2026).
 
 - **Client to agent:** `initialize`, `authenticate`, `session/new`
   (`cwd`, `mcpServers`), `session/prompt` (content blocks, returns a stop
@@ -58,21 +62,55 @@ the agent's stderr is diagnostics. Version 1 (schema 1.26, Oct 2026).
 - **Agent to client:** `session/update` notifications (message and thought
   chunks, tool calls and their updates, plans, available commands, config
   options, usage, session info) and `session/request_permission`.
+- Every agent MUST accept stdio MCP servers in `session/new`; HTTP is
+  optional.
 - Adapters: Claude Code `@agentclientprotocol/claude-agent-acp`, Codex
   `@agentclientprotocol/codex-acp`, Gemini CLI `gemini --acp`.
 
-## 3. The agent document
+## 3. Declaring agents on a runtime
+
+```toml
+# The daemon's own machine, and any machine that dials in: its `local` table
+[runtimes.local.acp.agents.claude]
+command = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+env = {}
+description = "Claude Code"
+
+# A runtime template the daemon starts (for example over ssh)
+[runtimes.labpc.acp.agents.codex]
+command = ["npx", "-y", "@agentclientprotocol/codex-acp"]
+env = { CODEX_HOME = "/home/ada/.codex" }
+description = "Codex"
+```
+
+- **Where:** exactly where MCP servers can be declared: `[runtimes.local]` on
+  the daemon's machine and on a dial-in runtime's machine, and
+  `[runtimes.<id>]` templates in the daemon's config.
+- **Fields:** `command` (argument vector, run without a shell, on the
+  runtime's machine), `env` (merged over the runtime's environment),
+  `description`, `enabled`.
+- **Agent ids:** the table key, following the agent id grammar (lowercase
+  letters, digits, `_`). The daemon's id is `<runtime_id>.<agent_id>`; the
+  agent id grammar gains this one dotted form, reserved for runtime-hosted
+  agents. A dotted id that would also name a daemon agent is refused.
+- **Reporting:** the runtime reports its agents when it connects and when its
+  configuration changes; the daemon adds or removes them and announces the
+  change like any agent registry change.
+- **Offline:** an agent whose runtime is not connected is listed as
+  unavailable; starting a session or a delegation with it is refused at once,
+  as for offline runtimes.
+
+## 4. The daemon-side agent document
 
 ```yaml
+# ~/.cookie-agent/agents/labpc.codex.md
 ---
-description: Claude Code, driven over ACP
+description: Codex on labpc, for refactors        # overrides the runtime's
 mode: all
 acp:
-  command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
-  env: {}                       # merged over the daemon's environment
-  config: { model: "opus" }     # the agent's config options, by id; values are labels
-  mode: auto                    # optional; see section 5
-  hide_tools: [read, write, edit, bash, webfetch]   # cookie tools the agent does not get
+  mode: auto                         # optional; section 5
+  config: { model: "gpt-5" }         # the agent's config options, by id; labels
+  hide_tools: [read, write, edit, bash, webfetch]
 permissions:
   read: allow
   write: { "${workspace_dir}/*": allow, "*": ask }
@@ -82,180 +120,187 @@ permissions:
 You review changes for this project before they are committed.
 ```
 
-- **`acp.command`:** the argument vector, run without a shell. It may start
-  with `ssh host`; cookie does not interpret it.
-- **`acp.env`:** extra environment variables.
-- **`acp.config`:** initial values for the agent's config options
-  (`session/set_config_option`), matched by option id. Unknown ids or values
-  are reported in the session and skipped.
-- **`acp.mode`:** see section 5.
-- **`acp.cwd`:** optional absolute path for `session/new`; see section 6.
-- **`acp.hide_tools`:** names of cookie tools not offered to the agent, as
-  patterns with `*` and `?` over the tool names cookie publishes
-  (`read`, `bash`, `memory_*`, `exa_*`). Default: cookie's coding runtime
-  tools (`read`, `write`, `edit`, `bash`, `webfetch`), since the agent has its
-  own; `[]` offers them too. Hiding is independent of `permissions`, which
-  keep deciding calls (section 8).
-- **`models` is not allowed** with `acp`: the agent chooses its own model,
-  set through `acp.config` when the agent offers a model option.
-- `mode`, `description`, `enabled`, and `permissions` mean what they mean for
-  any agent. The agent appears in the agent pickers, presets, `list_agents`,
-  and `delegate_subagent` like any other.
-
-## 4. Running a turn
-
-- **The runner.** `start_run_direct` keeps everything it does today (run
-  start, idempotency, `RunStarted`, the end of the run) and, for an ACP agent,
-  calls the ACP runner instead of the model loop.
-- **The prompt.** The user's message (or a producer's: a cron fire, a
-  subagent report) becomes `session/prompt` content: text, images when the
-  agent accepts them, and the agent document's body before the first prompt
-  of the session (section 1).
-- **Rendering**, from `session/update`:
-  - `agent_message_chunk` → assistant text, streamed as text deltas;
-  - `agent_thought_chunk` → thinking;
-  - `tool_call` / `tool_call_update` → a cookie tool call from a new tool
-    source, `acp:<agent>`, upserted by its ACP id: its title and kind, its
-    status as the call's state, `diff` content as a diff block, `content`
-    as text or media blocks, locations as file links; raw input and output
-    kept in the call's metadata;
-  - `plan` → a checklist block, replaced on each update;
-  - `usage_update` → recorded usage, without a cost when cookie cannot
-    price the agent's model;
-  - `session_info_update` → the session title, unless the user set one;
-  - `available_commands_update` → the session's agent commands (section 9);
-  - `config_option_update` → the session's agent options (section 5);
-  - unknown kinds are ignored.
-- **Durability.** Each turn is recorded as model turns and tool calls with
-  a synthetic model reference (`acp:<agent>`), so history, reports, and
-  clients work unchanged. The ACP agent keeps its own conversation; cookie
-  never replays history to it.
-- **The end.** The `session/prompt` stop reason ends the run: `end_turn`
-  completes it with the last message as its final text; `cancelled` cancels
-  it; `max_tokens`, `max_turn_requests`, and `refusal` fail it with that
-  reason.
-- **Steering** falls back to queueing: ACP has no standard steer.
-- **Interrupt** sends `session/cancel`, answers every pending permission
-  request `cancelled`, and waits for the `cancelled` stop reason (with the
-  existing cleanup grace).
+- **Optional.** Without it, `<runtime_id>.<agent_id>` is an agent of mode
+  `all` with the runtime's description, the defaults every agent gets for
+  actions it names no key for, `acp: ask`, and the default `hide_tools`.
+- **No `models`, no `acp.command`:** the runtime launches the agent and the
+  agent chooses its own model (set through `acp.config` when it offers a
+  model option).
+- **`acp.hide_tools`:** patterns with `*` and `?` over the tool names cookie
+  publishes (`read`, `bash`, `memory_*`, `exa_*`). Default: cookie's coding
+  runtime tools (`read`, `write`, `edit`, `bash`, `webfetch`), since the agent
+  has its own; `[]` offers them too. Independent of `permissions`, which keep
+  deciding calls.
+- **`acp.config`:** initial values for the agent's config options, matched by
+  option id; unknown ids or values are reported in the session and skipped.
+- The document lives with the daemon's other agents, so a runtime cannot
+  grant itself permissions. The agent appears in the agent pickers, presets,
+  `list_agents`, and `delegate_subagent` like any other.
 
 ## 5. Modes and config options
 
 - Cookie reads the agent's `configOptions` from `session/new`, and its
   `modes` when it offers no mode option.
 - **Starting mode:** `acp.mode` when set; otherwise the mode option or mode
-  whose id is `auto`; otherwise the agent's default. Mode ids are labels:
-  cookie never interprets them beyond looking for `auto`.
+  whose id is `auto`; otherwise the agent's default. Mode ids are labels.
 - Then `acp.config` is applied.
 - Clients show the session's agent options (model, mode, effort) in the
   session's details; changing one calls `session/set_config_option`.
 
-## 6. Sessions and processes
+## 6. Running a turn
 
-- **One ACP session per cookie session**, created on the session's first
-  turn. Its ACP session id and cwd are recorded in the session log.
-- **cwd:** `acp.cwd` when set; otherwise the session's first workspace
-  attachment's path; otherwise the daemon user's home. With an `ssh`
-  command, the path must exist on that host; cookie cannot check it, and the
-  agent's error reaches the session.
-- **After a daemon restart** or a process exit, the next turn reconnects with
-  `session/resume` when the agent offers it, else `session/load` (its replay
-  is ignored, since cookie has the transcript), else a new ACP session, which
-  the session is told about.
-- **Processes:** one per ACP agent document, shared by its sessions; started
-  on first use, stopped after an idle period with no live session
-  (`[acp] idle_shutdown_ms`), and stopped with the daemon. `session/close`
-  when the agent offers it, as a cookie session is deleted or unloaded. A
-  process exit fails the runs it was serving with its stderr tail.
+- **The runner.** `start_run_direct` keeps everything it does today (run
+  start, idempotency, `RunStarted`, the end of the run) and, for an ACP agent,
+  calls the ACP runner instead of the model loop.
+- **The prompt.** The user's message (or a producer's: a cron fire, a
+  subagent report) becomes `session/prompt` content: text, images when the
+  agent accepts them, and the document's body before the session's first
+  prompt.
+- **Rendering**, from `session/update`:
+  - `agent_message_chunk` → assistant text, streamed as text deltas;
+  - `agent_thought_chunk` → thinking;
+  - `tool_call` / `tool_call_update` → a cookie tool call from a new tool
+    source, `acp:<agent>`, upserted by its ACP id: title and kind, status as
+    the call's state, `diff` content as a diff block, `content` as text or
+    media blocks, locations as file links, raw input and output in metadata;
+  - `plan` → a checklist block, replaced on each update;
+  - `usage_update` → recorded usage, without a cost when cookie cannot price
+    the agent's model;
+  - `session_info_update` → the session title, unless the user set one;
+  - `available_commands_update` → the session's agent commands (section 10);
+  - `config_option_update` → the session's agent options (section 5);
+  - unknown kinds are ignored.
+- **Durability.** Each turn is recorded as model turns and tool calls with a
+  synthetic model reference (`acp:<agent>`), so history, reports, and clients
+  work unchanged. The agent keeps its own conversation; cookie never replays
+  history to it.
+- **The end.** `end_turn` completes the run with the last message as its
+  final text; `cancelled` cancels it; `max_tokens`, `max_turn_requests`, and
+  `refusal` fail it with that reason.
+- **Steering** falls back to queueing: ACP has no standard steer.
+- **Interrupt** sends `session/cancel`, answers every pending permission
+  request `cancelled`, and waits for the `cancelled` stop reason within the
+  existing cleanup grace.
+
+## 7. Sessions, processes, and the runtime relay
+
+- **One ACP session per cookie session**, created on its first turn; its ACP
+  session id and cwd are recorded in the session log.
+- **cwd:** the session's workspace attachment on the agent's runtime; without
+  one, the runtime's home directory.
+- **After a daemon or runtime restart**, or a process exit, the next turn
+  reconnects with `session/resume` when the agent offers it, else
+  `session/load` (its replay is ignored), else a new ACP session, which the
+  session is told about.
+- **Processes:** one per agent per runtime, shared by its sessions, started on
+  first use, stopped after an idle period with no live session
+  (`[acp] idle_shutdown_ms`), with the runtime, and with the daemon.
+  `session/close` when the agent offers it, as a cookie session is deleted or
+  unloaded. A process exit fails the runs it served, with its stderr tail.
 - **Errors**, including `auth_required`, end the run as failed with the
   agent's message.
-
-## 7. Cookie's tools for the agent (MCP)
-
-- On `session/new` cookie passes one MCP server, **`cookie`**, that serves the
-  session's tools as cookie composes them for a model request: memory, cron,
-  `list_agents`, `delegate_subagent` and the subagent tools, the MCP servers'
-  tools, and runtime tools, minus `acp.hide_tools`.
-- **Permissions apply as for a model:** a tool the merged rules hide is not
-  listed; a call is decided by the rules, and `ask` goes through the approval
-  flow (the reviewer in auto modes).
-- **Transport: stdio only in v1.** ACP requires every agent to accept stdio
-  MCP servers in `session/new` ("All Agents MUST support connecting to MCP
-  servers via stdio"); HTTP is optional (`mcpCapabilities.http`). Cookie passes
-  `cookie mcp serve --session <id>` with the daemon's URL and a token valid
-  only for that ACP session: a small bridge that relays MCP to the daemon.
-  An HTTP endpoint can come later for agents that declare it.
-- With an `ssh` command the agent, and so the bridge, runs on the other host:
-  `cookie` must be installed there and the daemon reachable from it (`--url`
-  to an address that host can reach). The docs explain it.
-- Tool calls through the bridge appear in the session as calls of the ACP
-  agent, linked to its turn.
+- **The relay (runtime protocol, additive):**
+  - the runtime's hello and `runtime/agents_changed` carry its agents (id,
+    description, enabled);
+  - `agent/start` and `agent/stop` (daemon → runtime) start and stop an
+    agent's process;
+  - `agent/message` carries one ACP JSON-RPC line in either direction,
+    unchanged; `agent/exited` reports an exit with its status and stderr
+    tail;
+  - the daemon's `local` runtime does the same in process.
 
 ## 8. The agent's own permission requests
 
-- Each `session/request_permission` is decided by the agent's merged rules,
-  with the ACP tool kind mapped onto cookie's actions (amended 2026-10-23):
+Each `session/request_permission` is decided by the agent's merged rules,
+its ACP tool kind mapped onto cookie's actions:
 
-  | ACP kind | Action | Resource |
-  |---|---|---|
-  | `read`, `search` | `read` | the location's path |
-  | `edit`, `delete`, `move` | `write` | the location's path |
-  | `execute` | `bash` | the command (from the call's raw input, else its title) |
-  | `fetch` | `webfetch` | the URL |
-  | `think`, `switch_mode`, `other`, unknown | `acp` | the kind, then the title |
+| ACP kind | Action | Resource |
+|---|---|---|
+| `read`, `search` | `read` | the location's path |
+| `edit`, `delete`, `move` | `write` | the location's path |
+| `execute` | `bash` | the command (from the call's raw input, else its title) |
+| `fetch` | `webfetch` | the URL |
+| `think`, `switch_mode`, `other`, unknown | `acp` | the kind, then the title |
 
-  So `bash: {"git *": allow}` allows the agent's own `git` commands exactly as
-  it allows cookie's `bash` tool. A request with several locations needs every
-  one allowed. Without an `acp` key, the `acp` action defaults to `ask`.
+- `bash: {"git *": allow}` allows the agent's own `git` commands exactly as it
+  allows cookie's `bash` tool. A request with several locations needs every
+  one allowed. Without an `acp` key, `acp` defaults to `ask`.
 - **Answers:** `allow` picks the agent's allow-once option; `deny` its
   reject-once option; `ask` goes through the approval flow (the reviewer in
-  auto modes), and the user's answer picks allow-once or reject-once. Cookie
-  never picks an "always" option: repeats come back to cookie's rules and
-  grants.
-- In the agent's auto mode most calls never ask; those that do still meet
-  the rules.
+  auto modes), and the answer picks allow-once or reject-once. Cookie never
+  picks an "always" option: repeats come back to cookie's rules and grants.
+- In the agent's auto mode most calls never ask; those that do still meet the
+  rules.
 
-## 9. Agent commands
+## 9. Cookie's tools for the agent (MCP over the runtime)
+
+- On `session/new` cookie passes one stdio MCP server, **`cookie`**, whose
+  command is a bridge on the runtime's machine:
+  `cookie runtime mcp-bridge --socket <path>`.
+- **The bridge** connects to the runtime process over a local socket (a Unix
+  socket, a named pipe on Windows) created for that ACP session, readable
+  only by the runtime's user, removed with the session. The runtime relays
+  its MCP messages to the daemon (`agent/mcp` frames), and the daemon serves
+  them.
+- **The tools:** the session's tools as cookie composes them for a model
+  request (memory, cron, `list_agents`, `delegate_subagent` and the subagent
+  tools, MCP servers' tools, runtime tools), minus `acp.hide_tools`.
+- **Permissions apply as for a model:** a tool the merged rules hide is not
+  listed; a call is decided by the rules, `ask` goes through the approval
+  flow.
+- Calls through the bridge appear in the session as calls of the ACP agent,
+  linked to its turn.
+- The bridge needs `cookie` on the runtime's machine, which a runtime always
+  has: it is `cookie runtime`.
+
+## 10. Agent commands
 
 - `available_commands_update` gives the session's agent commands (name,
-  description, input hint). The TUI and web composers list them with
-  cookie's own commands, marked as the agent's.
+  description, input hint). The TUI and web composers list them with cookie's
+  own commands, marked as the agent's.
 - Choosing one sends `/<name> <input>` as the prompt text, as ACP specifies.
 
-## 10. Protocol and storage
+## 11. Protocols and storage
 
-- **Session log:** a new event records the ACP session (agent, ACP session
-  id, cwd, protocol version, agent info). Tool calls from `acp:<agent>` use
-  the existing events with a new tool source.
-- **Client protocol minor:** the session's agent commands and agent options
-  in the session state, an RPC to set an option, the plan block, the
-  `acp:<agent>` tool source. Plugin protocol minor for the events.
-- **Config:** `[acp] idle_shutdown_ms`, and the agent document's `acp` block.
-- **Runtime protocol:** unchanged in v1.
+- **Session log:** a new event records the ACP session (agent, runtime, ACP
+  session id, cwd, protocol version, agent info). Tool calls from
+  `acp:<agent>` use the existing events with a new tool source.
+- **Client protocol minor:** runtime-hosted agents in the agent list (with
+  their runtime and availability), the session's agent commands and options,
+  an RPC to set an option, the plan block, the `acp:<agent>` tool source.
+- **Runtime protocol minor:** agent declarations and the relay (section 7),
+  the MCP bridge frames (section 9).
+- **Plugin protocol minor:** the new events.
+- **Config:** `[runtimes.*.acp.agents.*]`, `[acp] idle_shutdown_ms`, and the
+  agent document's `acp` block.
 
-## 11. Tests
+## 12. Tests
 
 A scripted ACP agent fixture (like the MCP fixture) that speaks ACP v1:
-handshake and capabilities, auto-mode selection and `acp.config`, a turn
-with chunks, thoughts, tool calls with diffs, a plan and usage, every stop
-reason, cancel with a pending permission request, permission requests
-decided by the mapped rules (each kind) and by approvals, resume, load with an ignored
-replay, a new session after a lost one, process exit, the MCP bridge
-listing and gating cookie's tools, `hide_tools`, the body sent once,
-agent commands, delegation to an ACP subagent, a cron fire into an ACP
-session.
+declarations on `local`, a template runtime, and a dial-in runtime, with
+dotted ids and collisions; offline refusal; handshake and capabilities;
+auto-mode selection and `acp.config`; a turn with chunks, thoughts, tool calls
+with diffs, a plan and usage; every stop reason; cancel with a pending
+permission request; permission requests decided by the mapped rules and by
+approvals; resume, load with an ignored replay, and a new session after a lost
+one; process exit; the MCP bridge listing and gating cookie's tools with
+`hide_tools`; the body sent once; agent commands; delegation to an ACP
+subagent; a cron fire into an ACP session; cwd with and without a workspace on
+the runtime.
 
-## 12. Phases
+## 13. Phases
 
-1. **Engine:** the agent document, the ACP client and runner, rendering,
-   sessions and processes, permission requests mapped onto the rules,
-   protocol additions.
-2. **Cookie's tools over MCP:** the stdio bridge and `hide_tools`.
-3. **Clients:** agent commands and options, the plan block, ACP tool calls.
-4. **Docs:** an ACP agents guide with Claude Code, Codex, and Gemini CLI
-   examples, including `ssh`.
+1. **Runtime relay:** declarations, agent ids, `agent/*` frames, the local
+   in-process runtime, dial-in and template runtimes.
+2. **Engine:** the ACP client and runner, rendering, sessions and processes,
+   permission mapping, the daemon-side document, protocol additions.
+3. **MCP bridge:** `cookie runtime mcp-bridge`, the runtime's socket, the
+   daemon's MCP service with `hide_tools`.
+4. **Clients:** runtime agents in pickers, agent commands and options, the
+   plan block, ACP tool calls.
+5. **Docs:** an ACP agents guide with Claude Code, Codex, and Gemini CLI
+   examples on `local`, a template runtime, and a dial-in runtime.
 
-## 13. Open questions
+## 14. Open questions
 
-1. **`hide_tools` default:** cookie's coding runtime tools (`read`, `write`,
-   `edit`, `bash`, `webfetch`), or nothing hidden unless listed?
+None.
