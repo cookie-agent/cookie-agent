@@ -178,6 +178,17 @@ impl App {
                     .find(|(rect, _)| over(*rect))
                     .map(|(_, index)| PointerTarget::MachineRow(*index));
             }
+            Modal::Cron => {
+                let cron = &hits.cron;
+                if let Some((_, action)) = cron.actions.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::CronAction(*action));
+                }
+                return cron
+                    .rows
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, index)| PointerTarget::CronRow(*index));
+            }
             Modal::Memory => {
                 let memory = &hits.memory;
                 if let Some((_, action)) = memory.actions.iter().find(|(rect, _)| over(*rect)) {
@@ -347,6 +358,8 @@ impl App {
                 self.memory_panel.selection.select(Some(index));
             }
             PointerTarget::MemoryAction(action) => self.activate_memory_action(action),
+            PointerTarget::CronRow(index) => self.cron_panel.selection.select(Some(index)),
+            PointerTarget::CronAction(action) => self.activate_cron_action(action),
             PointerTarget::BackgroundStop(index) => self.stop_background_call(index),
             PointerTarget::ConfirmButton(button) => {
                 if self.modal == Modal::RevertConfirm {
@@ -618,6 +631,18 @@ impl App {
             PointerTarget::MemoryAction(action) => (
                 one(hits
                     .memory
+                    .actions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
+            PointerTarget::CronRow(index) => {
+                (one(indexed_rect(&hits.cron.rows, index)), text_style)
+            }
+            PointerTarget::CronAction(action) => (
+                one(hits
+                    .cron
                     .actions
                     .iter()
                     .find(|(_, candidate)| *candidate == action)

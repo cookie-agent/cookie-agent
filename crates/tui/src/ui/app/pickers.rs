@@ -977,7 +977,8 @@ impl App {
             | Modal::Background
             | Modal::Plugins
             | Modal::Config
-            | Modal::Memory => {}
+            | Modal::Memory
+            | Modal::Cron => {}
             Modal::Projects => self.choose_project_entry(index),
             Modal::None => {}
         }

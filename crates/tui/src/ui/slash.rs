@@ -41,6 +41,8 @@ pub(crate) enum SlashCommand {
     Plugins,
     Config,
     Memory,
+    Cron,
+    CronNew,
     Permissions,
     Usage,
     Sessions,
@@ -187,6 +189,20 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "browse, edit, create, and delete the daemon's memories",
         action: PaletteAction::Run(SlashCommand::Memory),
         writes_session: false,
+    },
+    CommandSpec {
+        name: "cron",
+        aliases: &["crons"],
+        description: "list, create, edit, run, and delete the daemon's scheduled prompts",
+        action: PaletteAction::Run(SlashCommand::Cron),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "cron new",
+        aliases: &[],
+        description: "schedule a prompt in this session",
+        action: PaletteAction::Run(SlashCommand::CronNew),
+        writes_session: true,
     },
     CommandSpec {
         name: "background",
@@ -574,7 +590,9 @@ mod tests {
     #[test]
     fn search_ranks_exact_then_prefix_then_substring() {
         assert_eq!(names("").len(), COMMANDS.len());
-        assert_eq!(names("new"), ["new"]);
+        // The exact name first; `/cron new` only contains it.
+        assert_eq!(names("new"), ["new", "cron new"]);
+        assert_eq!(names("cron"), ["cron", "cron new"]);
         assert_eq!(names("model"), ["model"]);
         // The exact name outranks the panel modes it merely prefixes.
         assert_eq!(

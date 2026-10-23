@@ -213,10 +213,16 @@ pub(crate) fn session_search_rows<'a>(
                     )
                 })
                 .unwrap_or_default();
+        // A session a cron job started leads with a clock.
+        let cron = if session.cron.is_some() {
+            format!("{} ", crate::ui::app::cron_panel::CRON_RUN_MARK)
+        } else {
+            String::new()
+        };
         rows.push(SessionSearchRow::Session {
             session_id: session.session_id,
             label: format!(
-                "{title}{degraded}{}  ({project}{} · {}{directory})",
+                "{cron}{title}{degraded}{}  ({project}{} · {}{directory})",
                 activity_marker(session),
                 session.creation_selection.agent,
                 short_id(session)

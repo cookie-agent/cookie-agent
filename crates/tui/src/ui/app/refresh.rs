@@ -673,6 +673,11 @@ impl App {
                 self.install_memory_write(request, outcome);
             }
             RpcUpdate::MemoryDeleted { result } => self.install_memory_delete(result),
+            RpcUpdate::CronsListed { result } => self.install_cron_listing(result),
+            RpcUpdate::CronSaved { request, result } => {
+                self.install_cron_save(*request, *result);
+            }
+            RpcUpdate::CronChanged { result } => self.install_cron_change(result),
             RpcUpdate::MachinesRefreshed { result } => self.runtime_panel.install_machines(result),
             RpcUpdate::MachineChanged { result } => self.install_machine_change(result),
             RpcUpdate::RuntimesRefreshed { result } => {
@@ -1030,6 +1035,9 @@ impl App {
             ClientDelivery::MemoryChanged(_) | ClientDelivery::MachinesChanged(_)
         ) {
             self.poll_memory();
+        }
+        if matches!(delivery, ClientDelivery::CronsChanged(_)) {
+            self.poll_crons();
         }
         if matches!(delivery, ClientDelivery::PluginsChanged(_)) {
             self.poll_plugins();

@@ -504,6 +504,7 @@ impl App {
             | Modal::AttachConfirm
             | Modal::Config
             | Modal::Memory
+            | Modal::Cron
             | Modal::None => 0,
         }
     }

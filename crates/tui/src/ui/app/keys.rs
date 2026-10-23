@@ -1061,6 +1061,7 @@ impl App {
             Modal::Plugins => self.handle_plugin_key(key),
             Modal::Config => self.handle_config_key(key),
             Modal::Memory => self.handle_memory_key(key),
+            Modal::Cron => self.handle_cron_key(key),
             Modal::Projects => self.handle_project_picker(key).await,
             Modal::Sessions => self.handle_session_picker(key).await,
             Modal::Presets => self.handle_selection_picker(key).await,
@@ -1550,6 +1551,7 @@ impl App {
                     | Modal::Plugins
                     | Modal::Config
                     | Modal::Memory
+                    | Modal::Cron
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);

@@ -12,6 +12,7 @@ use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect};
 
 use crate::state::ToolStatus;
 use crate::theme::{ColorLevel, Theme, ThemeKind};
+use crate::ui::app::cron_panel::sample_crons;
 use crate::ui::app::memory_panel::sample_memory;
 use crate::ui::app::*;
 use crate::ui::management::{RuntimeView, sample_machines, sample_permissions};
@@ -46,6 +47,8 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::MachineAction(_) => "machine action",
         PointerTarget::MemoryRow(_) => "memory row",
         PointerTarget::MemoryAction(_) => "memory action",
+        PointerTarget::CronRow(_) => "cron row",
+        PointerTarget::CronAction(_) => "cron action",
         PointerTarget::ConfirmButton(_) => "confirm button",
         PointerTarget::PickerInput => "picker input",
         PointerTarget::PickerRow(_) => "picker row",
@@ -348,6 +351,18 @@ async fn every_clickable_element_hovers_visibly() {
     app.memory_panel = Default::default();
     app.modal = Modal::None;
 
+    // The panel opens on a daemon that keeps cron jobs; set it up as one.
+    app.modal = Modal::Cron;
+    app.cron_panel.listing = Some(Ok(sample_crons()));
+    app.cron_panel.selection.select(Some(0));
+    seen.extend(sweep(&mut app, "cron panel"));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await;
+    assert!(app.cron_panel.confirm_delete.is_some());
+    seen.extend(sweep(&mut app, "cron delete confirmation"));
+    app.cron_panel = Default::default();
+    app.modal = Modal::None;
+
     app.begin_provider_form(multi_auth_provider());
     seen.extend(sweep(&mut app, "provider form"));
     app.provider_form = None;
@@ -393,6 +408,8 @@ async fn every_clickable_element_hovers_visibly() {
         "machine action",
         "memory row",
         "memory action",
+        "cron row",
+        "cron action",
         "confirm button",
         "picker input",
         "picker row",

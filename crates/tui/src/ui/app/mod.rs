@@ -6,6 +6,7 @@ mod attachments;
 mod background;
 mod composer;
 mod config_panel;
+pub(in crate::ui) mod cron_panel;
 mod draw;
 mod emoji_backend;
 mod keys;
@@ -165,6 +166,8 @@ pub(super) enum Modal {
     Config,
     /// `/memory`: the daemon's memories.
     Memory,
+    /// `/cron`: the daemon's cron jobs.
+    Cron,
     /// `/project` or the bottom bar's project: the project picker.
     Projects,
 }
@@ -477,6 +480,9 @@ pub(super) enum PointerTarget {
     /// A `/memory` panel row (selects it) and an action it offers.
     MemoryRow(usize),
     MemoryAction(memory_panel::MemoryAction),
+    /// A `/cron` panel row (selects it) and an action it offers.
+    CronRow(usize),
+    CronAction(cron_panel::CronAction),
     ConfirmButton(ConfirmButton),
     /// A picker's search input: a click places its caret.
     PickerInput,
@@ -561,6 +567,8 @@ pub(super) struct UiHitMap {
     pub(super) runtimes: crate::ui::management::RuntimeHits,
     /// The `/memory` panel's rows and actions.
     pub(super) memory: memory_panel::MemoryHits,
+    /// The `/cron` panel's rows and actions.
+    pub(super) cron: cron_panel::CronHits,
     pub(super) title_segments: Vec<TitleSegmentHit>,
     /// One clickable row per rendered queue-strip line (entries and the
     /// overflow fold alike): any click recalls the newest pending input.
@@ -606,6 +614,7 @@ impl UiHitMap {
         self.permissions = PermissionHits::default();
         self.runtimes = crate::ui::management::RuntimeHits::default();
         self.memory = memory_panel::MemoryHits::default();
+        self.cron = cron_panel::CronHits::default();
         self.title_segments.clear();
         self.queue_entries.clear();
         self.user_messages.clear();
@@ -808,6 +817,9 @@ pub struct App {
     pub(super) memory_panel: memory_panel::MemoryPanelState,
     /// A memory the event loop opens in the editor next.
     pub(super) pending_memory_editor: Option<memory_panel::MemoryEditRequest>,
+    pub(super) cron_panel: cron_panel::CronPanelState,
+    /// A cron job form the event loop opens in the editor next.
+    pub(super) pending_cron_editor: Option<cron_panel::CronEditRequest>,
     /// Ctrl+Z asked the event loop to suspend the TUI (Unix job control).
     pub(super) pending_suspend: bool,
     pub(super) goal_focus: Option<GoalBarAction>,
@@ -1121,6 +1133,19 @@ pub(in crate::ui) enum RpcUpdate {
     },
     /// A delete finished: what to tell the user either way.
     MemoryDeleted {
+        result: Result<String, String>,
+    },
+    CronsListed {
+        result: Result<cookie_agent_protocol::CronsListResult, String>,
+    },
+    /// A job form was created or saved, or why the daemon refused it.
+    CronSaved {
+        request: Box<cron_panel::CronEditRequest>,
+        result: Box<Result<cookie_agent_protocol::CronJob, String>>,
+    },
+    /// Enabling, disabling, running now, or deleting a job finished: what
+    /// to tell the user either way.
+    CronChanged {
         result: Result<String, String>,
     },
     /// `config.apply` answered for `path`; `edit` is the edit it carried.
@@ -1483,6 +1508,8 @@ impl App {
             pending_editor: None,
             memory_panel: memory_panel::MemoryPanelState::default(),
             pending_memory_editor: None,
+            cron_panel: cron_panel::CronPanelState::default(),
+            pending_cron_editor: None,
             pending_suspend: false,
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
@@ -1991,12 +2018,17 @@ async fn event_loop(
         if let Some(reconnected) = app.deliveries.take() {
             deliveries = reconnected;
         }
-        // `/config` and `/memory` edit a document in an external editor: the
+        // `/config`, `/memory`, and `/cron` edit a document in an external editor: the
         // terminal and its input belong to the editor until it exits.
-        let editing = match (app.pending_editor.take(), app.pending_memory_editor.take()) {
-            (Some(request), _) => Some(EditorJob::Config(request)),
-            (None, Some(request)) => Some(EditorJob::Memory(request)),
-            (None, None) => None,
+        let editing = match (
+            app.pending_editor.take(),
+            app.pending_memory_editor.take(),
+            app.pending_cron_editor.take(),
+        ) {
+            (Some(request), _, _) => Some(EditorJob::Config(request)),
+            (None, Some(request), _) => Some(EditorJob::Memory(request)),
+            (None, None, Some(request)) => Some(EditorJob::Cron(Box::new(request))),
+            (None, None, None) => None,
         };
         if let Some(job) = editing {
             drop(events);
@@ -2007,6 +2039,9 @@ async fn event_loop(
                 }
                 EditorJob::Memory(request) => {
                     edit_blocking(|| config_panel::run_editor("memory.md", &request.text))
+                }
+                EditorJob::Cron(request) => {
+                    edit_blocking(|| config_panel::run_editor("cron-job.md", &request.text))
                 }
             };
             let resumed = resume_terminal().context("resume the terminal");
@@ -2019,6 +2054,7 @@ async fn event_loop(
             match job {
                 EditorJob::Config(request) => app.finish_config_edit(request, edited),
                 EditorJob::Memory(request) => app.finish_memory_edit(request, edited),
+                EditorJob::Cron(request) => app.finish_cron_edit(*request, edited),
             }
             render.mark_immediate();
         }
@@ -2167,6 +2203,7 @@ async fn event_loop(
 enum EditorJob {
     Config(config_panel::EditorRequest),
     Memory(memory_panel::MemoryEditRequest),
+    Cron(Box<cron_panel::CronEditRequest>),
 }
 
 /// Runs the editor, letting the runtime's other work go on meanwhile when it

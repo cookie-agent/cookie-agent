@@ -7,6 +7,7 @@ mod attempts;
 mod chrome;
 mod commands;
 mod config_panel;
+mod cron_panel;
 mod diagnostics;
 mod diffs;
 mod display_blocks;

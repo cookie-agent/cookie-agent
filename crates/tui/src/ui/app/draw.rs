@@ -194,6 +194,7 @@ impl App {
             Modal::Plugins => self.render_plugin_panel(frame),
             Modal::Config => self.render_config_panel(frame),
             Modal::Memory => self.render_memory_panel(frame),
+            Modal::Cron => self.render_cron_panel(frame),
             Modal::Projects => self.render_project_picker(frame),
             Modal::Sessions => {
                 let area = centered(frame.area(), 72, 60);
@@ -854,6 +855,11 @@ impl App {
             PaletteAction::Attach => self.attachments_offered(),
             // Projects are offered by a daemon that keeps them.
             PaletteAction::Run(SlashCommand::Project) => self.daemon_has_projects(),
+            // A job for this session needs one on screen and a daemon that
+            // keeps jobs.
+            PaletteAction::Run(SlashCommand::CronNew) => {
+                self.daemon_has_crons() && self.viewed_session().is_some()
+            }
             _ => true,
         }
     }
