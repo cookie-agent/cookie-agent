@@ -20,8 +20,8 @@ pub use agents::{
     AcpDocumentSettings, AgentFrontmatter, AgentLimits, AgentMaterializationInput, AgentMode,
     AgentModelFallback, AgentModelRef, AgentRegistry, BUILT_IN_APPROVAL_AGENT_ID,
     BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID, BUILT_IN_TITLE_AGENT_ID,
-    PARENT_MODEL_EXPRESSION, PermissionAction, PermissionEffect, PermissionKey, PermissionRule,
-    PermissionValue,
+    DEFAULT_MODEL_EXPRESSION, PARENT_MODEL_EXPRESSION, PermissionAction, PermissionEffect,
+    PermissionKey, PermissionRule, PermissionValue, SMALL_MODEL_EXPRESSION,
 };
 pub use cache::{
     AnthropicCacheConfig, BedrockCacheConfig, CacheConfig, CacheTtl, OpenAiCacheConfig,
@@ -36,12 +36,13 @@ pub use prompt_template::{
     DEFAULT_PROMPT_PLACEHOLDER, FOCUS_PLACEHOLDER, InternalPromptValues, render_internal_prompt,
 };
 pub use runtime::{
-    AcpConfig, AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
-    CronConfig, DelegationConfig, EngineConfig, LoopWarningConfig, McpConfig, McpOAuthConfig,
-    McpOAuthSettings, McpServerConfig, McpServerScope, MemoryConfig, MessagingConfig, ModelPricing,
-    ModelRetryConfig, PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion, PluginConfig, PluginsConfig,
-    PricingConfig, ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig, SessionTitleConfig,
-    SubagentOutputConfig, ToolOutputConfig, valid_daemon_token, valid_daemon_url,
+    AcpConfig, AgentMdConfig, ApprovalConfig, ConfiguredModel, ContextCompactionConfig,
+    ContextCompactionTrigger, CronConfig, DelegationConfig, EngineConfig, LoopWarningConfig,
+    McpConfig, McpOAuthConfig, McpOAuthSettings, McpServerConfig, McpServerScope, MemoryConfig,
+    MessagingConfig, ModelPricing, ModelRetryConfig, PRODUCER_MAX_BODY_BYTES, PicoUsdPerMillion,
+    PluginConfig, PluginsConfig, PricingConfig, ProducersConfig, SUBAGENT_OUTPUT_MAX_BYTES,
+    ServerConfig, SessionTitleConfig, SubagentOutputConfig, ToolOutputConfig, valid_daemon_token,
+    valid_daemon_url,
 };
 pub use runtime_templates::{AcpAgentConfig, RuntimeTemplateConfig};
 pub use skills::{

@@ -548,6 +548,13 @@ pub struct AgentDescriptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 256))]
     pub runtimes: Vec<AgentRuntime>,
+    /// The configuration fields (`default_model`, `small_model`) the agent's
+    /// `models` entries name but that are not set, sorted (client protocol
+    /// 1.18.0). Those entries are skipped; an agent with no other entry is
+    /// unavailable until a field is set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 8))]
+    pub unset_models: Vec<String>,
 }
 
 /// A runtime that offers an ACP agent (`docs/site/specs/acp-agents.md`
@@ -619,6 +626,7 @@ impl AgentDescriptor {
         if self.resolved_fallback.len() > 256
             || self.delegation_targets.len() > 256
             || self.runtimes.len() > 256
+            || self.unset_models.len() > 8
         {
             return Err(AgentSchemaError::InvalidListBounds);
         }
@@ -695,6 +703,8 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             runtime: Option<AgentRuntime>,
             #[serde(default)]
             runtimes: Vec<AgentRuntime>,
+            #[serde(default)]
+            unset_models: Vec<String>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -708,6 +718,7 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             delegation_targets: w.delegation_targets,
             runtime: w.runtime,
             runtimes: w.runtimes,
+            unset_models: w.unset_models,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

@@ -248,6 +248,7 @@ mod tests {
                     delegation_targets: Vec::new(),
                     runtime: None,
                     runtimes: Vec::new(),
+                    unset_models: Vec::new(),
                 }]
             } else {
                 Vec::new()

@@ -437,9 +437,11 @@ impl Engine {
                 .resolved_fallback
                 .iter()
                 .filter_map(|fallback| match fallback {
-                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => {
-                        Some(Ok(FrozenInternalAgentFallback::ParentModel))
-                    }
+                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel {
+                        variant, ..
+                    } => Some(Ok(FrozenInternalAgentFallback::ParentModel {
+                        variant: variant.clone(),
+                    })),
                     crate::runtime_snapshot::ResolvedAgentFallback::Selection {
                         selection, ..
                     } => owner
@@ -518,9 +520,11 @@ impl Engine {
         };
         for fallback in fallbacks {
             match fallback {
-                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => {
-                    if let Some(binding) = parent_binding {
-                        models.push(binding.clone());
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { variant, .. } => {
+                    if let Some(binding) = parent_binding
+                        .and_then(|parent| parent_model(owner, parent, variant.as_ref()))
+                    {
+                        models.push(binding);
                     }
                 }
                 crate::runtime_snapshot::ResolvedAgentFallback::Selection { selection, .. } => {
@@ -566,7 +570,7 @@ impl Engine {
         let inherit_parent_cache = resolved.resolved_fallback.iter().any(|fallback| {
             matches!(
                 fallback,
-                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { cache: None }
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { cache: None, .. }
             )
         });
         let cache_strategies = internal_cache_strategies(
@@ -591,6 +595,38 @@ impl Engine {
     }
 }
 
+/// `${parent_model}` for an owner run on `parent`: its binding, or with
+/// `variant` set, the binding of the same model in that variant; `None` when
+/// that variant is not available.
+fn parent_model(
+    owner: &FrozenRunPolicy,
+    parent: &cookie_agent_protocol::FrozenModelBinding,
+    variant: Option<&cookie_agent_identity::ConfiguredVariantRef>,
+) -> Option<cookie_agent_protocol::FrozenModelBinding> {
+    let Some(variant) = variant else {
+        return Some(parent.clone());
+    };
+    let selection = cookie_agent_protocol::ModelSelection {
+        model: parent.selection.model.clone(),
+        variant: match variant {
+            cookie_agent_identity::ConfiguredVariantRef::Base => None,
+            cookie_agent_identity::ConfiguredVariantRef::Named(id) => Some(id.clone()),
+        },
+    };
+    if selection == parent.selection {
+        return Some(parent.clone());
+    }
+    if !crate::runtime_snapshot::selection_available(&owner.runtime.models, &selection) {
+        return None;
+    }
+    crate::model_snapshots::binding_for_selection(
+        &owner.runtime.current_manifest,
+        &owner.runtime.models,
+        &selection,
+    )
+    .ok()
+}
+
 fn internal_agent_id(kind: InternalAgentKind) -> Result<AgentId, EngineError> {
     AgentId::new(match kind {
         InternalAgentKind::Approval => cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID,
@@ -612,7 +648,9 @@ fn frozen_internal_policy_from_definition(
             .fallbacks
             .iter()
             .filter_map(|fallback| match fallback {
-                FrozenInternalAgentFallback::ParentModel => parent_binding.cloned().map(Ok),
+                FrozenInternalAgentFallback::ParentModel { variant } => parent_binding
+                    .and_then(|parent| parent_model(owner, parent, variant.as_ref()))
+                    .map(Ok),
                 FrozenInternalAgentFallback::Model { binding } => {
                     Some(policy::decode_binding(binding))
                 }
@@ -644,13 +682,13 @@ fn frozen_internal_policy_from_definition(
             definition
                 .fallbacks
                 .iter()
-                .any(|fallback| matches!(fallback, FrozenInternalAgentFallback::ParentModel))
+                .any(|fallback| matches!(fallback, FrozenInternalAgentFallback::ParentModel { .. }))
         },
         |resolved| {
             resolved.resolved_fallback.iter().any(|fallback| {
                 matches!(
                     fallback,
-                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { cache: None }
+                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { cache: None, .. }
                 )
             })
         },

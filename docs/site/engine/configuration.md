@@ -36,6 +36,8 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 
 | Key | Canonical settings page |
 |---|---|
+| `default_model` | [Default models](#default-models): the model agents reach as `${default_model}` |
+| `small_model` | [Default models](#default-models): the model agents reach as `${small_model}` |
 | `server` | [Server](server.md): where the daemon listens, its token, and the daemon clients on this machine use |
 | `tool_output` | [Tool Output](tool_output.md) |
 | `subagent_output` | [Subagent Output](subagent_output.md) |
@@ -57,10 +59,33 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `plugins` | [Plugins](../extend/plugins.md) |
 | `runtimes` | [Runtimes](../runtimes/templates.md) |
 
-Every key above is a **top-level** table: write `[messaging]`, `[delegation]`,
+Every key above except `default_model` and `small_model`, which are values,
+is a **top-level** table: write `[messaging]`, `[delegation]`,
 and so on, never `[runtime.messaging]` or another nested spelling. Older docs
 used the `[runtime.messaging]` form; a nested table such as that is an unknown
 top-level field and fails strict validation.
+
+## Default models
+
+`default_model` and `small_model` name the models agent documents reach as
+`${default_model}` and `${small_model}`, so one edit retargets every agent
+that uses them. Each is a model key, which means the model's default
+variant, or a table `{ model, variant }`; both are optional, and unknown keys
+in the table fail. Being top-level values, they go before the first table:
+
+```toml
+default_model = { model = "anthropic/claude-opus-5-5", variant = "high" }
+small_model   = "deepseek/deepseek-flash"
+
+[model_retry]
+standard_retries = 1
+```
+
+Only the key's grammar is checked when the file loads. Whether the model is
+available is a runtime matter: a model whose provider is disconnected loads
+fine, and the agent entries naming it are skipped until it is available
+again. See [agents](../extend/agents.md#models) for how documents use them
+and [onboarding](../quickstart.md) for setting both from a client.
 
 ## Changes while the daemon runs
 
@@ -76,6 +101,7 @@ error. Applying a configuration does this:
 
 | Part | When it takes effect |
 |---|---|
+| `default_model`, `small_model` | At once for new runs: the agents are recompiled, and every entry naming them follows |
 | `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers`, `memory`, `cron` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
 | Agent documents and presets | At once for new runs; a run in progress keeps its agent, and its delegated children resolve against the agents it started with |
 | `providers`, `headers` | At once: models are recompiled |

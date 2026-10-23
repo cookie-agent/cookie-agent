@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use cookie_agent_identity::{ModelKey, ProviderId};
+use cookie_agent_identity::{ConfiguredVariantRef, ModelKey, ProviderId};
 pub use cookie_agent_models::catalog::PicoUsdPerMillion;
 use cookie_agent_models::{
     HeaderName, ProviderDefinition, SafeStaticHeaderValue, deserialize_headers,
@@ -341,6 +341,67 @@ impl McpServerConfig {
     }
 }
 
+/// A model and an optional variant, as `default_model` and `small_model`
+/// take them: a model key string (`"provider/model"`, its default variant),
+/// or a table `{ model, variant }`. Whether the model is available is a
+/// runtime matter; only the key's grammar is checked here.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ConfiguredModel {
+    pub model: ModelKey,
+    /// `None` means the model's default variant; `base` its base variant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<ConfiguredVariantRef>,
+}
+
+impl<'de> Deserialize<'de> for ConfiguredModel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Table {
+            model: ModelKey,
+            #[serde(default)]
+            variant: Option<ConfiguredVariantRef>,
+        }
+
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ConfiguredModel;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a model key or a table { model, variant }")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                value
+                    .parse::<ModelKey>()
+                    .map(|model| ConfiguredModel {
+                        model,
+                        variant: None,
+                    })
+                    .map_err(E::custom)
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let table = Table::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(ConfiguredModel {
+                    model: table.model,
+                    variant: table.variant,
+                })
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 /// The decoded settings tables of `config.toml`: one field per settings table
 /// (for example `[messaging]` → [`EngineConfig::messaging`]). `[mcp]` and
 /// `[plugins]` decode separately onto [`crate::LoadedConfiguration`]. Exposed
@@ -348,6 +409,14 @@ impl McpServerConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
+    /// `default_model`: the model and variant agent documents reach as
+    /// `${default_model}`.
+    #[serde(default)]
+    pub default_model: Option<ConfiguredModel>,
+    /// `small_model`: the model and variant agent documents reach as
+    /// `${small_model}`.
+    #[serde(default)]
+    pub small_model: Option<ConfiguredModel>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -389,6 +458,8 @@ pub struct EngineConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawRuntimeLayer {
+    pub(crate) default_model: Option<ConfiguredModel>,
+    pub(crate) small_model: Option<ConfiguredModel>,
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) subagent_output: Option<SubagentOutputConfig>,
@@ -1123,6 +1194,12 @@ const fn yes() -> bool {
 }
 
 pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer) {
+    if let Some(value) = &layer.default_model {
+        runtime.default_model = Some(value.clone());
+    }
+    if let Some(value) = &layer.small_model {
+        runtime.small_model = Some(value.clone());
+    }
     if let Some(value) = &layer.server {
         runtime.server = value.clone();
     }

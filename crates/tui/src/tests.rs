@@ -331,6 +331,8 @@ fn build_in_process_server(
     }
     let config = LoadedConfiguration {
         runtime: EngineConfig {
+            default_model: None,
+            small_model: None,
             cron: Default::default(),
             acp: Default::default(),
             server: ServerConfig::default(),

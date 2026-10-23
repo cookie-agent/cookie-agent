@@ -210,6 +210,7 @@ mod tests {
             enabled: true,
             runnable_as_root: runnable,
             delegation_targets: Vec::new(),
+            unset_models: Vec::new(),
         }
     }
 

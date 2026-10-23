@@ -108,13 +108,49 @@ The durable protocol event for advancing through a model chain remains named
 `model_fallback` for wire-schema compatibility. This event name is independent
 of the agent-frontmatter `models` key.
 
-`models` entries contain `model`, optional `variant`, and optional `cache`.
-The `variant` field is optional: omitted (`null`) selects the model's configured
-default variant, the string `"base"` selects the base variant explicitly, and any
-other string selects that named variant. A primary agent must
-declare at least one fallback. The chain may contain up to 256 entries with no
-duplicate model keys. Only internal agents may use the `${parent_model}` model
-expression, and only without a variant.
+### Models
+
+`models` is the ordered model chain. Each entry is a mapping with `model`,
+optional `variant`, and optional `cache`, or a plain string, which is the
+entry's `model` with nothing overridden; the two forms mix freely:
+
+```yaml
+models:
+  - ${default_model}                               # model and variant from config.toml
+  - { model: "${small_model}", variant: "max" }    # the variant overridden
+  - deepseek/deepseek-flash                        # a plain model key
+```
+
+YAML reads `- ${default_model}` as a string without quotes; only an entry
+starting with `{` or `[` needs them. Any other entry shape, such as a number
+or a mapping with unknown keys, is an error.
+
+`model` is a model key or one of three variables, which carry a model and its
+variant together:
+
+| Variable | Names | Allowed in |
+|---|---|---|
+| `${default_model}` | [`default_model`](../engine/configuration.md#default-models) in `config.toml` | any agent |
+| `${small_model}` | [`small_model`](../engine/configuration.md#default-models) in `config.toml` | any agent |
+| `${parent_model}` | the model the owner run is using | internal agents only |
+
+The `variant` field is optional. For a model key, omitted selects the model's
+configured default variant, the string `"base"` selects the base variant
+explicitly, and any other string selects that named variant. Beside a
+variable, a `variant` overrides the variant the variable carries; without one
+the variable's variant applies, and a variable that carries none means the
+model's default variant.
+
+The variables resolve when the agents compile: at start and on every
+configuration reload, so changing `default_model` retargets every agent that
+uses it without touching documents. An entry naming a field that is not set
+is skipped, and the agent reports the field (`unset_models` in the agent
+listing, "`small_model` is not set"); later entries still apply. An agent left
+with no entry is unavailable until the field is set.
+
+A primary agent must declare at least one entry. The chain may contain up to
+256 entries with no duplicates, compared as written: `${default_model}` and
+the key it currently names may both appear.
 
 `cache` uses the provider-specific shapes documented under
 [`[providers.<id>.cache]`](providers.md#prompt-caching). The
@@ -354,7 +390,8 @@ replaces the built-in document completely. The ID `default` is reserved for
 the engine-supplied fallback agent and cannot be authored at all.
 
 If no authored agent is runnable as a root, the engine synthesizes the built-in
-`default` coding agent bound to the first available model selection. Its prompt
+`default` coding agent on `${default_model}`, then the first available model
+selection. Its prompt
 and explicit permission map are fixed by the engine: read is allowed with
 additional asks and secret-file denies, while write, bash, and delegate ask by
 default. `webfetch`, every runtime's own actions, and every other
@@ -449,14 +486,18 @@ family (`internal_agent_started`, `internal_agent_finished`, ...).
 
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
-| `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
+| `approval` | Stateless approval classifier for `auto_approve` mode | `${small_model}`, then `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 | `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 3 min timeout; model-derived input budget; max output tokens inherit the parent run's cap |
-| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
+| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${small_model}`, then `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 
-All three default to `${parent_model}`, so they run on the model the parent run
-is currently using — including its position in the fallback chain: if the run
-has fallen back to its second model, internal agents resolve to that second
-model too. An internal agent's input budget is derived from each
+`approval` and `title` run on `small_model` when it is set and available,
+else on the parent run's model. `compaction` stays on `${parent_model}`, which
+keeps the session's prompt cache warm. `${parent_model}` is the model the
+parent run is currently using — including its position in the fallback chain:
+if the run has fallen back to its second model, internal agents resolve to
+that second model too. An ACP agent's session has no model of its own, so its
+approval reviewer runs on `small_model` alone; without it, `ask` requests go
+to the user. An internal agent's input budget is derived from each
 resolved model's input limit when it declares one, otherwise from its context
 limit after reserving its effective maximum output (at most 32,000 tokens or half
 the context), with a minimum of one token. A model with an unknown context limit uses a

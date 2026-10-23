@@ -2031,18 +2031,26 @@ fn resolve_agent_registries(
     models: &Arc<cookie_agent_models::CompiledModelRuntime>,
     runtime_agents: &[crate::runtime_snapshot::RuntimeAgent],
 ) -> Result<ResolvedAgentRegistries, EngineError> {
+    let variables = crate::runtime_snapshot::ModelVariables::of(&config.runtime);
     let shared = Arc::new(AgentRegistry::resolve(
         &config.agent_registry(),
         models,
         None,
         runtime_agents,
+        variables,
     )?);
     let presets = config
         .agent_preset_registries()
         .into_iter()
         .map(|(name, authored)| {
-            AgentRegistry::resolve(&authored, models, Some(name.clone()), runtime_agents)
-                .map(|registry| (name, Arc::new(registry)))
+            AgentRegistry::resolve(
+                &authored,
+                models,
+                Some(name.clone()),
+                runtime_agents,
+                variables,
+            )
+            .map(|registry| (name, Arc::new(registry)))
         })
         .collect::<Result<_, _>>()?;
     Ok((shared, presets))

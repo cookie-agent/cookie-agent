@@ -198,7 +198,9 @@ pub(crate) fn internal_agent_definitions()
             enabled: true,
             max_output_tokens: 0,
             timeout_ms: 0,
-            fallbacks: vec![cookie_agent_protocol::FrozenInternalAgentFallback::ParentModel],
+            fallbacks: vec![
+                cookie_agent_protocol::FrozenInternalAgentFallback::ParentModel { variant: None },
+            ],
         },
     )
     .collect()

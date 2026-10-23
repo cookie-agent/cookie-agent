@@ -9,7 +9,7 @@ use cookie_agent_models::CompiledModelRuntime;
 use cookie_agent_protocol::{RuntimeChangedNotification, RuntimeSnapshotResult};
 
 pub(crate) use agents::{
-    AcpOffers, AgentRegistry, ResolvedAgent, ResolvedAgentFallback, RuntimeAgent,
+    AcpOffers, AgentRegistry, ModelVariables, ResolvedAgent, ResolvedAgentFallback, RuntimeAgent,
     delegation_targets, join_runtimes, selection_available,
 };
 pub(crate) use projection::build_runtime_snapshot;

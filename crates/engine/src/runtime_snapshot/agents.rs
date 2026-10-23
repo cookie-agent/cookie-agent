@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 
+use cookie_agent_config::ConfiguredModel;
 use cookie_agent_config::{
     AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
     AgentModelFallback, AgentModelRef, AgentRegistry as ConfigAgentRegistry,
     BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID,
     BUILT_IN_TITLE_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
 };
-use cookie_agent_identity::{AgentId as IdentityAgentId, WildcardPattern};
+use cookie_agent_identity::{
+    AgentId as IdentityAgentId, ConfiguredVariantRef, ModelKey, WildcardPattern,
+};
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
 use cookie_agent_protocol::{AgentDescriptor, AgentId, ModelSelection};
 use indexmap::IndexMap;
@@ -19,6 +22,10 @@ use crate::EngineError;
 pub(crate) struct ResolvedAgent {
     pub document: AgentDocument,
     pub resolved_fallback: Vec<ResolvedAgentFallback>,
+    /// The configuration fields (`default_model`, `small_model`) that
+    /// entries of `models` name but that are not set; those entries are
+    /// skipped. Sorted, without repeats.
+    pub unset_models: Vec<&'static str>,
     pub runnable_as_root: bool,
     /// The runtimes that offer an ACP agent; `None` for the daemon's own
     /// agents.
@@ -129,8 +136,68 @@ pub(crate) enum ResolvedAgentFallback {
         cache: Option<cookie_agent_config::CacheConfig>,
     },
     ParentModel {
+        /// Replaces the variant of the owner run's model when set.
+        variant: Option<cookie_agent_identity::ConfiguredVariantRef>,
         cache: Option<cookie_agent_config::CacheConfig>,
     },
+}
+
+/// The values of `${default_model}` and `${small_model}`: the
+/// configuration's `default_model` and `small_model`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ModelVariables<'a> {
+    pub default_model: Option<&'a ConfiguredModel>,
+    pub small_model: Option<&'a ConfiguredModel>,
+}
+
+impl<'a> ModelVariables<'a> {
+    pub(crate) fn of(config: &'a cookie_agent_config::EngineConfig) -> Self {
+        Self {
+            default_model: config.default_model.as_ref(),
+            small_model: config.small_model.as_ref(),
+        }
+    }
+
+    fn get(&self, model: &AgentModelRef) -> Option<&'a ConfiguredModel> {
+        match model {
+            AgentModelRef::DefaultModel => self.default_model,
+            AgentModelRef::SmallModel => self.small_model,
+            AgentModelRef::Model(_) | AgentModelRef::ParentModel => None,
+        }
+    }
+}
+
+/// The variant `variant` selects of `model`: its default variant when
+/// absent.
+fn resolve_variant(
+    models: &CompiledModelRuntime,
+    model: &ModelKey,
+    variant: Option<&ConfiguredVariantRef>,
+) -> Option<cookie_agent_identity::VariantId> {
+    match variant {
+        None => models
+            .model(model)
+            .and_then(|model| model.model.default_variant.clone()),
+        Some(ConfiguredVariantRef::Base) => None,
+        Some(ConfiguredVariantRef::Named(id)) => Some(id.clone()),
+    }
+}
+
+/// The selection `${default_model}` or `${small_model}` resolves to, with
+/// `variant` (an entry's override) in place of the configured one.
+pub(crate) fn configured_selection(
+    models: &CompiledModelRuntime,
+    configured: &ConfiguredModel,
+    variant: Option<&ConfiguredVariantRef>,
+) -> ModelSelection {
+    ModelSelection {
+        model: configured.model.clone(),
+        variant: resolve_variant(
+            models,
+            &configured.model,
+            variant.or(configured.variant.as_ref()),
+        ),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -150,6 +217,7 @@ impl AgentRegistry {
         models: &CompiledModelRuntime,
         preset: Option<String>,
         runtime_agents: &[RuntimeAgent],
+        variables: ModelVariables<'_>,
     ) -> Result<Self, EngineError> {
         let mut documents = built_in_internal_documents()?;
         // An ACP agent's document is an agent only while a runtime declares
@@ -198,6 +266,7 @@ impl AgentRegistry {
                         selection: cookie_agent_protocol::acp_model_selection(&offers.id),
                         cache: None,
                     }],
+                    unset_models: Vec::new(),
                     runnable_as_root,
                     acp: Some(offers),
                 },
@@ -209,32 +278,59 @@ impl AgentRegistry {
                 return Err(EngineError::RuntimeCompileFailed);
             }
             let mut resolved_fallback = Vec::new();
+            let mut unset_models = Vec::new();
             for fallback in &document.frontmatter.models {
                 match &fallback.model {
                     AgentModelRef::ParentModel => {
                         resolved_fallback.push(ResolvedAgentFallback::ParentModel {
+                            variant: fallback.variant.clone(),
                             cache: fallback.cache.clone(),
                         });
                     }
                     AgentModelRef::Model(model_key) => {
-                        let variant = match (&fallback.variant, models.model(model_key)) {
-                            (None, Some(model)) => model.model.default_variant.clone(),
-                            (Some(cookie_agent_identity::ConfiguredVariantRef::Base), _) => None,
-                            (Some(cookie_agent_identity::ConfiguredVariantRef::Named(id)), _) => {
-                                Some(id.clone())
-                            }
-                            (None, None) => None,
-                        };
                         resolved_fallback.push(ResolvedAgentFallback::Selection {
                             selection: ModelSelection {
                                 model: model_key.clone(),
-                                variant,
+                                variant: resolve_variant(
+                                    models,
+                                    model_key,
+                                    fallback.variant.as_ref(),
+                                ),
                             },
                             cache: fallback.cache.clone(),
                         });
                     }
+                    variable @ (AgentModelRef::DefaultModel | AgentModelRef::SmallModel) => {
+                        match variables.get(variable) {
+                            Some(configured) => {
+                                resolved_fallback.push(ResolvedAgentFallback::Selection {
+                                    selection: configured_selection(
+                                        models,
+                                        configured,
+                                        fallback.variant.as_ref(),
+                                    ),
+                                    cache: fallback.cache.clone(),
+                                });
+                            }
+                            // The entry is skipped; the agent reports the
+                            // field to set.
+                            None => unset_models.extend(variable.config_field()),
+                        }
+                    }
                 }
             }
+            unset_models.sort_unstable();
+            unset_models.dedup();
+            // A chain names each model once: an entry resolving to a model an
+            // earlier one already did (`${default_model}` and the key it
+            // names) adds nothing.
+            let mut seen = std::collections::BTreeSet::new();
+            resolved_fallback.retain(|fallback| match fallback {
+                ResolvedAgentFallback::Selection { selection, .. } => {
+                    seen.insert(selection.model.clone())
+                }
+                ResolvedAgentFallback::ParentModel { .. } => true,
+            });
             let available = resolved_fallback
                 .iter()
                 .filter_map(|fallback| match fallback {
@@ -253,27 +349,45 @@ impl AgentRegistry {
                 ResolvedAgent {
                     document,
                     resolved_fallback,
+                    unset_models,
                     runnable_as_root,
                     acp: None,
                 },
             );
         }
-        if !agents.values().any(|agent| agent.runnable_as_root)
-            && let Some(selection) = first_available_selection(models)
-        {
-            let document = built_in_default_document(&selection)?;
-            agents.insert(
-                document.id.clone(),
-                ResolvedAgent {
-                    document,
-                    resolved_fallback: vec![ResolvedAgentFallback::Selection {
-                        selection,
-                        cache: None,
-                    }],
-                    runnable_as_root: true,
-                    acp: None,
-                },
-            );
+        if !agents.values().any(|agent| agent.runnable_as_root) {
+            // `${default_model}` first, then the first available model.
+            let configured = variables
+                .default_model
+                .map(|configured| configured_selection(models, configured, None))
+                .filter(|selection| selection_available(models, selection));
+            let first = first_available_selection(models)
+                .filter(|first| configured.as_ref().is_none_or(|c| c.model != first.model));
+            let resolved_fallback = configured
+                .iter()
+                .chain(first.iter())
+                .map(|selection| ResolvedAgentFallback::Selection {
+                    selection: selection.clone(),
+                    cache: None,
+                })
+                .collect::<Vec<_>>();
+            if !resolved_fallback.is_empty() {
+                let document = built_in_default_document(first.as_ref())?;
+                agents.insert(
+                    document.id.clone(),
+                    ResolvedAgent {
+                        document,
+                        resolved_fallback,
+                        unset_models: if variables.default_model.is_none() {
+                            vec!["default_model"]
+                        } else {
+                            Vec::new()
+                        },
+                        runnable_as_root: true,
+                        acp: None,
+                    },
+                );
+            }
         }
         let descriptors = agents
             .iter()
@@ -298,6 +412,11 @@ impl AgentRegistry {
                     &agent.document.frontmatter.permissions,
                     &agents,
                 ),
+                unset_models: agent
+                    .unset_models
+                    .iter()
+                    .map(|field| (*field).to_owned())
+                    .collect(),
                 runtime: agent.acp.as_ref().and_then(|acp| match &acp.offers[..] {
                     [offer] => Some(agent_runtime(offer)),
                     _ => None,
@@ -388,11 +507,15 @@ fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelec
 /// Each declares `max_output_tokens: 0`, so every built-in internal agent
 /// inherits the owner run's document cap at execution time.
 fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, EngineError> {
+    // Approval and titles run on the small model when one is set, then on
+    // the run's own; compaction stays on the run's model, whose prompt
+    // cache the session keeps warm.
+    let small_then_parent = [AgentModelRef::SmallModel, AgentModelRef::ParentModel];
     [
         (
             BUILT_IN_APPROVAL_AGENT_ID,
             "Built-in approval evaluator",
-            "{{default_prompt}}\n",
+            &small_then_parent[..],
             AgentLimits {
                 timeout_ms: 30_000,
                 max_output_tokens: 0,
@@ -401,7 +524,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
         (
             BUILT_IN_COMPACTION_AGENT_ID,
             "Built-in context compaction agent",
-            "{{default_prompt}}\n",
+            &[AgentModelRef::ParentModel][..],
             AgentLimits {
                 timeout_ms: 180_000,
                 max_output_tokens: 0,
@@ -410,7 +533,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
         (
             BUILT_IN_TITLE_AGENT_ID,
             "Built-in session title agent",
-            "{{default_prompt}}\n",
+            &small_then_parent[..],
             AgentLimits {
                 timeout_ms: 30_000,
                 max_output_tokens: 0,
@@ -418,8 +541,9 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
         ),
     ]
     .into_iter()
-    .map(|(id, description, body, limits)| {
-        let document = built_in_internal_document(id, description, body, limits)?;
+    .map(|(id, description, models, limits)| {
+        let document =
+            built_in_internal_document(id, description, "{{default_prompt}}\n", models, limits)?;
         Ok((document.id.clone(), document))
     })
     .collect()
@@ -429,6 +553,7 @@ fn built_in_internal_document(
     id: &str,
     description: &str,
     body: &str,
+    models: &[AgentModelRef],
     limits: AgentLimits,
 ) -> Result<AgentDocument, EngineError> {
     let id = IdentityAgentId::new(id).map_err(|_| EngineError::RuntimeCompileFailed)?;
@@ -437,11 +562,14 @@ fn built_in_internal_document(
         description: description.to_owned(),
         mode: AgentMode::Internal,
         enabled: true,
-        models: vec![AgentModelFallback {
-            model: AgentModelRef::ParentModel,
-            variant: None,
-            cache: None,
-        }],
+        models: models
+            .iter()
+            .map(|model| AgentModelFallback {
+                model: model.clone(),
+                variant: None,
+                cache: None,
+            })
+            .collect(),
         limits,
         permissions: IndexMap::new(),
         agent_md: None,
@@ -515,29 +643,35 @@ fn runtime_agent_default_document(agent: &AcpOffers) -> Result<AgentDocument, En
     })
 }
 
-fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument, EngineError> {
+/// The built-in `default` agent: `${default_model}`, then `first`, the
+/// first available model, when it is another model.
+fn built_in_default_document(first: Option<&ModelSelection>) -> Result<AgentDocument, EngineError> {
     let id = IdentityAgentId::new(BUILT_IN_DEFAULT_AGENT_ID)
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
     let body = "You are Cookie Agent's built-in default coding agent. Help the user inspect, understand, and modify software safely and precisely.\n".to_owned();
+    let models = std::iter::once(AgentModelFallback {
+        model: AgentModelRef::DefaultModel,
+        variant: None,
+        cache: None,
+    })
+    .chain(first.map(|selection| AgentModelFallback {
+        model: AgentModelRef::Model(selection.model.clone()),
+        variant: selection.variant.clone().map(ConfiguredVariantRef::Named),
+        cache: None,
+    }))
+    .collect();
     let frontmatter = AgentFrontmatter {
         description: "Built-in default coding agent".to_owned(),
         mode: AgentMode::Primary,
         enabled: true,
-        models: vec![AgentModelFallback {
-            model: AgentModelRef::Model(selection.model.clone()),
-            variant: selection
-                .variant
-                .clone()
-                .map(cookie_agent_identity::ConfiguredVariantRef::Named),
-            cache: None,
-        }],
+        models,
         limits: AgentLimits::default(),
         permissions: built_in_default_permissions()?,
         agent_md: None,
         acp: None,
     };
     let document_fingerprint = fingerprint(
-        "cookie-agent/built-in-default-document/v2",
+        "cookie-agent/built-in-default-document/v3",
         &(id.as_str(), &frontmatter, &body),
     )?;
     let prompt_fingerprint = fingerprint("cookie-agent/system-prompt/v1", &body)?;
@@ -747,6 +881,7 @@ mod tests {
                     .next()
                     .expect("a document"),
                 resolved_fallback: Vec::new(),
+                unset_models: Vec::new(),
                 runnable_as_root: false,
                 acp: None,
             },
@@ -867,6 +1002,7 @@ mod tests {
                 prompt_fingerprint,
             },
             resolved_fallback: Vec::new(),
+            unset_models: Vec::new(),
             runnable_as_root: false,
             acp: None,
         }

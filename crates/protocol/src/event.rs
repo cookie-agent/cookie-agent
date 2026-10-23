@@ -1807,8 +1807,15 @@ pub enum InternalAgentKind {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrozenInternalAgentFallback {
-    ParentModel,
-    Model { binding: Box<PersistedModelBinding> },
+    /// The owner run's model, with `variant` in place of its own when set
+    /// (client protocol 1.18.0; `base` is the base variant).
+    ParentModel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variant: Option<cookie_agent_identity::ConfiguredVariantRef>,
+    },
+    Model {
+        binding: Box<PersistedModelBinding>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]

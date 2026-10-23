@@ -568,6 +568,8 @@ pub(crate) fn empty_catalog() -> Arc<CatalogSnapshot> {
 pub(crate) fn empty_configuration() -> LoadedConfiguration {
     LoadedConfiguration {
         runtime: EngineConfig {
+            default_model: None,
+            small_model: None,
             cron: Default::default(),
             acp: Default::default(),
             server: ServerConfig::default(),

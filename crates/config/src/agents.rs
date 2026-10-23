@@ -13,6 +13,8 @@ pub const BUILT_IN_APPROVAL_AGENT_ID: &str = "approval";
 pub const BUILT_IN_COMPACTION_AGENT_ID: &str = "compaction";
 pub const BUILT_IN_TITLE_AGENT_ID: &str = "title";
 pub const PARENT_MODEL_EXPRESSION: &str = "${parent_model}";
+pub const DEFAULT_MODEL_EXPRESSION: &str = "${default_model}";
+pub const SMALL_MODEL_EXPRESSION: &str = "${small_model}";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -208,10 +210,46 @@ impl PermissionValue {
     }
 }
 
+/// The model of a `models` entry: a model key, or one of the variables
+/// `${parent_model}` (internal agents only), `${default_model}`, and
+/// `${small_model}`, which carry a model and its variant.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum AgentModelRef {
     Model(ModelKey),
     ParentModel,
+    /// `${default_model}`: the configuration's `default_model`.
+    DefaultModel,
+    /// `${small_model}`: the configuration's `small_model`.
+    SmallModel,
+}
+
+impl AgentModelRef {
+    /// The configuration field a variable names: `default_model` or
+    /// `small_model`; `None` for a model key and `${parent_model}`.
+    #[must_use]
+    pub const fn config_field(&self) -> Option<&'static str> {
+        match self {
+            Self::DefaultModel => Some("default_model"),
+            Self::SmallModel => Some("small_model"),
+            Self::Model(_) | Self::ParentModel => None,
+        }
+    }
+}
+
+impl std::str::FromStr for AgentModelRef {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            PARENT_MODEL_EXPRESSION => Ok(Self::ParentModel),
+            DEFAULT_MODEL_EXPRESSION => Ok(Self::DefaultModel),
+            SMALL_MODEL_EXPRESSION => Ok(Self::SmallModel),
+            _ => value
+                .parse::<ModelKey>()
+                .map(Self::Model)
+                .map_err(|error| error.to_string()),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for AgentModelRef {
@@ -219,24 +257,71 @@ impl<'de> Deserialize<'de> for AgentModelRef {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        if value == PARENT_MODEL_EXPRESSION {
-            Ok(Self::ParentModel)
-        } else {
-            value
-                .parse::<ModelKey>()
-                .map(Self::Model)
-                .map_err(serde::de::Error::custom)
-        }
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+/// One `models` entry: a mapping `{ model, variant, cache }`, or a plain
+/// string, which is the entry's `model` with nothing overridden.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AgentModelFallback {
     pub model: AgentModelRef,
+    /// Overrides the variant a variable carries; for a model key, the
+    /// model's default variant when absent.
     pub variant: Option<ConfiguredVariantRef>,
     pub cache: Option<crate::CacheConfig>,
+}
+
+impl<'de> Deserialize<'de> for AgentModelFallback {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Entry {
+            model: AgentModelRef,
+            #[serde(default)]
+            variant: Option<ConfiguredVariantRef>,
+            #[serde(default)]
+            cache: Option<crate::CacheConfig>,
+        }
+
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = AgentModelFallback;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a model string or a mapping { model, variant, cache }")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(AgentModelFallback {
+                    model: value.parse().map_err(E::custom)?,
+                    variant: None,
+                    cache: None,
+                })
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let entry = Entry::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(AgentModelFallback {
+                    model: entry.model,
+                    variant: entry.variant,
+                    cache: entry.cache,
+                })
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -540,8 +625,10 @@ fn validate_agent_document(
     }
     let mut fallback_models = BTreeSet::new();
     for fallback in &frontmatter.models {
+        // `${parent_model}` names the model of the run that owns an
+        // internal agent's run; other agents have none.
         if matches!(fallback.model, AgentModelRef::ParentModel)
-            && (frontmatter.mode != AgentMode::Internal || fallback.variant.is_some())
+            && frontmatter.mode != AgentMode::Internal
         {
             return Err(ConfigError::AgentField {
                 agent: document.id.clone(),

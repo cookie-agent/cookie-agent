@@ -103,6 +103,8 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
 /// touching the disk. Skills are not discovered.
 pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigError> {
     let mut runtime = EngineConfig {
+        default_model: None,
+        small_model: None,
         server: ServerConfig::default(),
         tool_output: ToolOutputConfig::default(),
         subagent_output: SubagentOutputConfig::default(),
@@ -321,6 +323,8 @@ fn decode_runtime_layer(
     path: &Path,
 ) -> Result<RawRuntimeLayer, ConfigError> {
     const ALLOWED: &[&str] = &[
+        "default_model",
+        "small_model",
         "server",
         "tool_output",
         "subagent_output",

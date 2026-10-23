@@ -685,7 +685,7 @@ pub(crate) fn resolve_cache_strategy(
                 .resolved_fallback
                 .iter()
                 .find_map(|fallback| match fallback {
-                    ResolvedAgentFallback::ParentModel { cache } => Some(cache),
+                    ResolvedAgentFallback::ParentModel { cache, .. } => Some(cache),
                     ResolvedAgentFallback::Selection { .. } => None,
                 })
         };

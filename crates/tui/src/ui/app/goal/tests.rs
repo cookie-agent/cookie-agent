@@ -112,6 +112,7 @@ fn install_draft_catalog(app: &mut App) {
             delegation_targets: Vec::new(),
             runtime: None,
             runtimes: Vec::new(),
+            unset_models: Vec::new(),
         })
         .collect();
     app.models = ["test/model", "test/model-b"]
