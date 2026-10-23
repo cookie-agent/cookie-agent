@@ -1217,8 +1217,20 @@ impl Engine {
         self.inner.published_runtime.load_full()
     }
 
+    /// The published runtime, after reloading a provider store another
+    /// process changed. It never waits for a runtime change in progress,
+    /// such as a catalog refresh recompiling every model, which can take
+    /// seconds: it answers with the runtime published now, and the change
+    /// announces its own on `runtime.changed`.
     pub fn runtime_snapshot(&self) -> Result<RuntimeSnapshotResult, EngineError> {
-        self.reconcile_provider_store()?;
+        let mutation = match self.inner.runtime_mutation.try_lock() {
+            Ok(mutation) => Some(mutation),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(mutation) = mutation {
+            self.reconcile_provider_store_locked(&mutation)?;
+        }
         Ok(self.current_runtime().result.clone())
     }
 
@@ -1444,11 +1456,20 @@ impl Engine {
     }
 
     pub fn reconcile_provider_store(&self) -> Result<bool, EngineError> {
-        let _mutation = self
+        let mutation = self
             .inner
             .runtime_mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.reconcile_provider_store_locked(&mutation)
+    }
+
+    /// [`Self::reconcile_provider_store`] under the runtime mutation lock
+    /// the caller holds.
+    fn reconcile_provider_store_locked(
+        &self,
+        _mutation: &std::sync::MutexGuard<'_, ()>,
+    ) -> Result<bool, EngineError> {
         let previous = self.current_runtime();
         let reloaded = self
             .inner

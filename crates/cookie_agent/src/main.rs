@@ -1017,9 +1017,11 @@ async fn run_catalog_refresh_loop<T: CatalogTransport + 'static>(
         if !catalog_publication_changed(&engine, &catalog) {
             continue;
         }
-        if engine.refresh_catalog(Arc::new(catalog)).is_err() {
-            continue;
-        }
+        // Recompiling every model takes seconds in a debug build; on an
+        // async worker it would hold up every request that worker serves.
+        let refreshing = engine.clone();
+        let _ = tokio::task::spawn_blocking(move || refreshing.refresh_catalog(Arc::new(catalog)))
+            .await;
     }
 }
 

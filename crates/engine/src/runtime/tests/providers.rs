@@ -821,6 +821,73 @@ fn external_store_generation_is_reloaded_before_discovery() {
     assert_eq!(changed.snapshot.revision, after.revision);
 }
 
+/// A snapshot asked for while a runtime change holds the mutation lock, as a
+/// catalog refresh does for the seconds it recompiles every model, answers
+/// at once with the published runtime; the next one reloads the store.
+#[test]
+fn runtime_snapshot_does_not_wait_for_a_runtime_change_in_progress() {
+    let fixture = fixture();
+    let current = fixture.manager.current();
+    let external = ModelManager::new(
+        current.authored().clone(),
+        Arc::clone(current.catalog()),
+        ProviderStore::open(fixture._directory.path().join("provider-store"))
+            .expect("second provider store"),
+    )
+    .expect("second manager");
+    let external_current = external.current();
+    external
+        .disconnect(
+            cookie_agent_models::ProviderDisconnectRequest {
+                provider_id: ProviderId::new("openai").expect("provider ID"),
+                expected_runtime_revision: external_current.runtime_revision().clone(),
+                expected_provider_state_revision: external_current.provider_state_revision(),
+                expected_connection_generation: None,
+                client_request_id: StoreClientRequestId::new("external-disconnect")
+                    .expect("request ID"),
+            },
+            |_, _| Ok(()),
+        )
+        .expect("external mutation");
+    let before = fixture
+        .engine
+        .current_runtime()
+        .result
+        .snapshot
+        .revision
+        .clone();
+
+    let held = fixture
+        .engine
+        .inner
+        .runtime_mutation
+        .lock()
+        .expect("runtime mutation lock");
+    let (answered, answer) = std::sync::mpsc::channel();
+    let engine = fixture.engine.clone();
+    let asking = std::thread::spawn(move || {
+        let _ = answered.send(
+            engine
+                .runtime_snapshot()
+                .map(|result| result.snapshot.revision),
+        );
+    });
+    let during = answer
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the snapshot waited for the change in progress")
+        .expect("snapshot");
+    assert_eq!(during, before);
+    drop(held);
+    asking.join().expect("snapshot thread");
+
+    let after = fixture
+        .engine
+        .runtime_snapshot()
+        .expect("reloaded snapshot")
+        .snapshot;
+    assert_ne!(after.revision, before);
+}
+
 #[test]
 fn engine_attempt_resolution_uses_the_published_executable_handle() {
     let (fixture, selection) = custom_fixture();

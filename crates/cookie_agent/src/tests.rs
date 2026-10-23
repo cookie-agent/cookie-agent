@@ -51,6 +51,14 @@ async fn await_initial_catalog_refresh(runtime: &Runtime) {
     panic!("initial catalog refresh was not published");
 }
 
+/// Waits, on a paused clock, until the catalog refresh loop sleeps again
+/// after a publication: the recompile runs on the blocking pool, which keeps
+/// the clock from advancing until it is done, so a timer of the test's own
+/// fires only once the loop's sleep is set.
+async fn catalog_refresh_settled() {
+    tokio::time::sleep(Duration::from_millis(1)).await;
+}
+
 use std::{
     collections::VecDeque,
     future::Future,
@@ -1523,6 +1531,7 @@ async fn hourly_catalog_refresh_skips_noops_publishes_fallback_once_and_cancels(
     let mut changes = runtime.engine.subscribe_runtime_changes();
     // The first refresh runs right after startup, replacing the bundled catalog.
     await_initial_catalog_refresh(&runtime).await;
+    catalog_refresh_settled().await;
     assert_eq!(fetches.load(Ordering::SeqCst), 1);
     let changed = changes.recv().await.unwrap();
     assert_eq!(
@@ -1545,6 +1554,7 @@ async fn hourly_catalog_refresh_skips_noops_publishes_fallback_once_and_cancels(
         changed.reasons,
         vec![cookie_agent_protocol::RuntimeChangeReason::CatalogFallback]
     );
+    catalog_refresh_settled().await;
 
     tokio::time::advance(CATALOG_REFRESH_INTERVAL).await;
     tokio::task::yield_now().await;
@@ -1553,6 +1563,7 @@ async fn hourly_catalog_refresh_skips_noops_publishes_fallback_once_and_cancels(
         changed.reasons,
         vec![cookie_agent_protocol::RuntimeChangeReason::CatalogRefreshed]
     );
+    catalog_refresh_settled().await;
 
     tokio::time::advance(CATALOG_REFRESH_INTERVAL).await;
     tokio::task::yield_now().await;
