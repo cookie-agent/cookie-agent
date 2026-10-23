@@ -229,6 +229,9 @@ only where `global` is attached, and only when the run's agent may use it.
 
 ### 5.1 Web
 
+Superseded on 2026-10-23: the draft shows its cards above the composer
+and has no chip (see the [addendum](#addendum-2026-10-23-the-web-draft-shows-its-cards-and-the-first-message-creates-the-session)).
+
 - **New session** opens on the composer with only `global` attached. The
   first message creates the session with `runtimes: []` and
   `global: true`.
@@ -475,3 +478,29 @@ implemented:
   after 30 s and mark the connection suspect (checked within 10 s);
   `tool/execute` is bounded by liveness. A dial-in runtime pings its end
   over WebSocket and dials in again after 45 s of silence.
+
+### Addendum 2026-10-23: the web draft shows its cards, and the first message creates the session
+
+Requested by the user and implemented the same day; it replaces the chip
+and sheet of section 5.1 and the **Use these runtimes** button of
+section 11.
+
+- **No Start button.** A new session shows its runtime cards where its
+  transcript will be, with the composer under them, so the first message
+  is drafted right away with everything the composer offers (files,
+  agent, model, preset, permission mode, and rules). The "Runtimes…" chip
+  and the cards' sheet are gone, and **Runtimes** in the ⋮ menu points at
+  the cards while a session is drafted.
+- **The first message creates the session.** It calls `session.create`
+  with the selected cards, at the workspaces as typed, plus `global` when
+  selected; the daemon starts every runtime that is not running (templates
+  included) and creates nothing if one fails. A draft still on its
+  project's defaults omits `runtimes`, so the daemon attaches them. The
+  message is submitted to the new session; files attached to the draft
+  wait in the page and are uploaded into the session first.
+- **A refusal keeps the draft.** No session is made, the cards stay, and
+  the message and its files go back into the composer. The error shows on
+  the card of the runtime it quotes (`` `id` ``, as the daemon names
+  runtimes), with a line above the composer; an error that names no
+  runtime shows in that line. A message the created session refuses comes
+  back to that session's composer, as any refused submit does.

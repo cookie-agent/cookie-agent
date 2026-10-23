@@ -160,10 +160,10 @@ address bar.
     workspace with its machine, runtime, and path. A daemon older than
     client protocol 1.7 lists no attachments: the row shows the session's
     directory instead.
-  - **New session** opens on the composer with only `global` attached
-    (below); the first message creates the session with the runtimes the
-    bottom bar's **Runtimes…** chip shows and the agent, model, and
-    permission mode beside it.
+  - **New session** opens its runtime cards with only `global` selected,
+    and the composer under them (below); the first message creates the
+    session with the selected cards and the agent, model, and permission
+    mode in the bottom bar.
   - **Owned elsewhere.** A session another cookie process owns opens as a
     read-only snapshot.
   - **Renaming.** Click the title in the title bar, or choose ⋮ ›
@@ -216,25 +216,29 @@ address bar.
     your system's emoji keyboard too, and says at once when what you typed
     is not one. **No emoji** clears it. On a phone the picker rises from
     the bottom.
-- **New session.** The composer opens at once, with only `global`
-  attached: such a session has no workspace, and hands work that needs
-  files or commands to subagents on the runtimes it names (see
-  [Delegating to runtimes](../sessions/delegation.md)). The bottom bar's
-  **Runtimes…** chip shows the draft's runtimes as badges, or **global
-  only**, and opens the runtime cards as a sheet (filling a phone's screen);
-  **Change runtimes** above the transcript does the same. The browser
+- **New session.** The new session's runtime cards fill the page where
+  its transcript will be, with the composer under them, so you draft the
+  first message right away: text, files, and the agent, model, preset,
+  permission mode, and permission rules, as in any session. There is no
+  Start button: **sending the first message creates the session** with the
+  selected cards, starting every runtime that is not running (a template,
+  such as an ssh runtime, is started then), and the message goes to it.
+  Only `global` is selected to start with: such a session has no
+  workspace, and hands work that needs files or commands to subagents on
+  the runtimes it names (see
+  [Delegating to runtimes](../sessions/delegation.md)). The browser
   remembers no selection: each new session starts with `global` alone, or
-  with its project's defaults.
-  - **Project.** The sheet's **Project** picker comes first: the section
-    whose **+** you used, else **No project**, and **New project…**, which
-    opens the editor and picks the project it makes. A project whose
-    defaults attach runtimes prefills the cards with them, and the chip
-    shows them; the session is created with them unless the sheet gives the
-    draft others. Picking a project also gives the bottom bar its default
-    agent and preset, with the agent's own model; an agent that is gone, or
-    cannot start a session, leaves the usual one, and the status line says
-    so. Everything stays editable, and choosing a project never changes a
-    running session.
+  with its project's defaults. On a phone the cards scroll above the
+  composer, which stays at the foot.
+  - **Project.** The **Project** picker comes first: the section whose
+    **+** you used, else **No project**, and **New project…**, which opens
+    the editor and picks the project it makes. A project whose defaults
+    attach runtimes prefills the cards with them; left as they are, the
+    session is created with the project's defaults. Picking a project also
+    gives the bottom bar its default agent and preset, with the agent's own
+    model; an agent that is gone, or cannot start a session, leaves the
+    usual one, and the status line says so. Everything stays editable, and
+    choosing a project never changes a running session.
 
   The runtimes a session can use show as cards, grouped by the machine each
   runs on, this daemon's machine first.
@@ -245,24 +249,33 @@ address bar.
   - **Cards.** One for `global` (the daemon's own tools, MCP servers, and
     memory; selected to start with, and you can deselect it), and one for
     each runtime capability that takes a workspace. Each says whether its
-    runtime is **ready**, **starts on use** (the daemon starts it), or
-    **offline** (a runtime that dials in and is not connected), which
-    cannot be selected. Click anywhere on a card to select or deselect it.
-    Only `global` is selected to start with.
+    runtime is **ready**, **starts on use** (the daemon starts it when the
+    session is created), or **offline** (a runtime that dials in and is not
+    connected), which cannot be selected. Click anywhere on a card to
+    select or deselect it.
   - **Workspaces.** A selected card asks for its workspace, suggesting
     the directories this browser opened on that runtime and the ones
     sessions use there, as `~/…`; any path works. **another workspace**
-    adds a field for the same runtime at a second directory. **Use these
-    runtimes** waits until every field is filled in. With no coding card
-    selected, the session works in no workspace. With two workspaces or
-    more, a note says their tools get prefixes, with an example name.
+    adds a field for the same runtime at a second directory. While a field
+    is empty, the cards say so and the first message waits, staying in the
+    composer. With no coding card selected, the session works in no
+    workspace. With two workspaces or more, a note says their tools get
+    prefixes, with an example name. Under the cards, a line shows where the
+    session will work.
   - **Colours.** Each card has a dot in its machine's colour, the colour
     of that machine's badge in the session rows.
-  - **Use these runtimes** opens every workspace at once. A runtime that
-    refuses says why on its card, and the sheet stays; once all of them
-    open, the sheet closes, the page shows where the new session will work,
-    and the chip shows them. The page never falls back to the daemon's own
-    directory.
+  - **When the session cannot be created.** A runtime that fails to start,
+    refuses its workspace, or is offline stops the whole creation: no
+    session is made, the cards stay as they were, and the message, with its
+    files, goes back into the composer. The daemon's reason shows on the
+    card of the runtime it names, which scrolls into view, and a line above
+    the composer says so; an error that names no runtime shows in that line
+    whole. Change the cards and send again. If the session is created but
+    the message is not taken, the session stays and the message comes back
+    to its composer, as any refused message does. The page never falls
+    back to the daemon's own directory.
+  - **Runtimes** in the ⋮ menu points at the cards while a new session is
+    composed.
 - **Subagents.** Only the open session's row has its subagents nested
   under it, each with its status (a turning circle while it runs, a check,
   failed, or cancelled), its agent, its short handle, and its task. Click
@@ -375,7 +388,8 @@ address bar.
   still reports to the model.
 - **Files.** Attach files with the paperclip (the file picker), by dropping them on the page, or by pasting them; on a phone,
   the camera button takes a photo. They upload at once and wait on the
-  draft as chips; the × on a chip removes it.
+  draft as chips; the × on a chip removes it. A new session's files wait
+  in the page and upload once the first message has created the session.
   - Only the kinds of file the selected model takes are offered: the picker
     lists their types, and a model that takes none offers no attaching.
   - The page reads each file's type from its content, as the daemon does,
@@ -417,7 +431,7 @@ address bar.
   - the approvals waiting, when there are any (click to answer them);
   - **working…** while the session runs;
   - the last status message;
-  - where the session (or the new session) works, its workspaces under
+  - where the session works, its workspaces under
     their runtimes' homes, after a dot in each runtime's machine's colour (click for
     **Runtimes**; not on a phone);
   - the context size, in tokens, of the last request (also in **Usage**);
@@ -440,9 +454,6 @@ address bar.
     (`connected`, `connecting`, `needs_auth`, `failed`, …), tool count, and
     why it failed or what it waits for; a server its runtime shares across
     workspaces (`scope = "runtime"`) is marked `runtime-wide`.
-  - While a new session is composed, the list is the runtimes its cards
-  opened. One added here starts at once, so a runtime that cannot start
-  says why before the session exists.
   - The open panel reads the runtimes again every second, and links to
     the Machines & runtimes view.
 - **Machines.** The **Machines & runtimes** view shows each machine as a

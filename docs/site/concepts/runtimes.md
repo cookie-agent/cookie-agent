@@ -15,9 +15,10 @@ the capabilities it uses; each attachment brings its tools into the session.
 | dial-in | a process that connects to the daemon's `/runtime` route, such as `cookie runtime serve --daemon` | the same | the same |
 
 A new TUI session attaches `global` and `local`'s `coding` at the client's
-directory; a new web session starts with `global` alone, and its
-**Runtimes…** chip picks others. The runtimes panel (`/runtime`) attaches and
-detaches others, before the first prompt or between runs. See
+directory; a new web session starts with `global` alone, and its runtime
+cards, above the composer, pick others for the first message to create it
+with. The runtimes panel (`/runtime`) attaches and detaches others between
+runs, and in the TUI before the first prompt too. See
 [Runtimes](../daemon/runtimes.md) for templates, dial-in, and lifecycles.
 
 Every runtime other than the built-in ones speaks the
