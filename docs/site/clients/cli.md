@@ -17,6 +17,7 @@ attaching clients to it.
 | [`cookie daemon restart`](#cookie-daemon-restart) | Restart a running daemon, once idle or at once |
 | [`cookie attach`](#cookie-attach) | The terminal UI on a running daemon, here or elsewhere |
 | [`cookie web`](#cookie-web) | Print the daemon's web page address with its token |
+| [`cookie onboard`](#cookie-onboard) | Set up a daemon: a provider, the default and small models, the starter kit |
 | [`cookie connect`](#cookie-connect), [`cookie disconnect`](#cookie-disconnect) | Store or remove a managed provider connection |
 | [`cookie runtime serve`](#cookie-runtime-serve) | Serve this machine's `coding` runtime over stdio or by dialing in |
 | [`cookie runtime mcp-bridge`](#cookie-runtime-mcp-bridge) | Connect an ACP agent's MCP client to cookie's tools (run by a runtime) |
@@ -197,6 +198,42 @@ Prints the daemon's web page with the token in its fragment,
 `http` (`wss` into `https`) and the final `ws` dropped. It does not contact
 the daemon. `--open` also opens the page in the system browser (`open` on
 macOS, `start` on Windows, `xdg-open` elsewhere). See [Web](web.md).
+
+### `cookie onboard`
+
+```text
+cookie onboard [--from <FILE>] [--diff] [--yes]
+               [--default-model <KEY[:VARIANT]>] [--small-model <KEY[:VARIANT]>]
+               [--url <URL>] [--token <TOKEN>]
+```
+
+Sets up the daemon that `--url` and `--token` name, here or on another
+machine, through its onboarding API; `cookie onboard` writes nothing itself.
+The steps, as numbered questions:
+
+1. **Provider**: connects one, as [`cookie connect`](#cookie-connect) does,
+   when none is connected; otherwise offers to connect another.
+2. **Default model** (`default_model`): a numbered list of the connected
+   providers' available models, grouped by provider; `/text` searches it.
+   Its variant question preselects the model's default variant.
+3. **Small model** (`small_model`): the same list with nothing suggested; its
+   variant question preselects the model's first listed variant, the
+   cheapest. It may be the same model.
+4. **Starter kit**: shows what installing it would do to each file (new,
+   same as yours and skipped, or differs and written beside yours as
+   `<name>.new`) and asks whether to install it.
+
+The kit comes from the release of this daemon's version, else the latest
+release; `--from` takes a downloaded `cookie-agent-defaults.tar.gz` instead.
+Its manifest's hashes are checked before anything is written. `--diff`
+prints what installing the kit would change, with a diff of each changed
+file, and changes nothing. `--default-model` and `--small-model` answer
+those questions (`provider/model`, or `provider/model:variant`); `--yes`
+answers the rest with their defaults (keep what is set, install the kit) and
+refuses rather than guess a model or connect a provider. Without `--yes` or
+`--diff` it needs an interactive terminal. Running it again on a set-up
+daemon shows the current provider and models and offers the kit again. See
+[Getting started](../quickstart.md).
 
 ### `cookie connect`
 

@@ -3396,3 +3396,239 @@ fn the_daemon_names_its_page() {
     // The line carries no token.
     assert!(!line.contains("token="), "{line}");
 }
+
+const ONBOARD_PROVIDER: &str = r#"
+[providers."custom.test"]
+source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "no-auth-v1", values = {} }
+
+[providers."custom.test".models."a-model"]
+display_name = "A Model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", media = {} }
+variants = { low = { }, high = { } }
+default_variant = "high"
+
+[providers."custom.test".models."z-model"]
+display_name = "Z Model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", media = {} }
+"#;
+
+/// A daemon with the provider `custom.test` and its two models, served in
+/// process, and a kit archive in the temporary directory.
+async fn onboard_daemon(
+    temporary: &std::path::Path,
+) -> (Client, std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let workspace = temporary.join("workspace");
+    let cache_anchor = temporary.join("cache-anchor");
+    private_directory(&workspace);
+    private_directory(&workspace.join(".cookie-agent"));
+    private_directory(&cache_anchor);
+    let config = workspace.join(".cookie-agent/config.toml");
+    std::fs::write(&config, ONBOARD_PROVIDER).unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let runtime = compose_isolated(
+        &workspace,
+        || {
+            Ok(OfflineTransport {
+                fetches: Arc::new(AtomicUsize::new(0)),
+                body: openai_catalog(),
+            })
+        },
+        |transport| CatalogManager::in_directory(transport, &cache_anchor, "catalog"),
+        || ProviderStore::open(temporary.join("providers")),
+        || Ok(temporary.join("data")),
+    )
+    .await
+    .unwrap();
+    let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
+    tokio::spawn(runtime.server.clone().serve_stream(
+        server_stream,
+        cookie_agent_protocol::Authentication::Authenticated,
+    ));
+    let client = Client::connect_stream(client_stream);
+    client.handshake().await.unwrap();
+    let agent =
+        b"---\ndescription: Primary\nmode: primary\nmodels: [\"${default_model}\"]\n---\nWork.\n";
+    let kit = temporary.join("cookie-agent-defaults.tar.gz");
+    std::fs::write(
+        &kit,
+        cookie_agent_engine::testing::pack_kit(&[("agents/primary.md", agent)]),
+    )
+    .unwrap();
+    // Keep the runtime's engine alive with the server task.
+    std::mem::forget(runtime);
+    (client, workspace.join(".cookie-agent"), kit)
+}
+
+/// `cookie onboard` asks for the models, preselects their variants, shows
+/// the kit, and installs it through the daemon.
+#[tokio::test]
+async fn cookie_onboard_sets_the_models_and_installs_the_kit() {
+    use onboard_command::{OnboardArgs, run_onboard_with};
+    let temporary = tempfile::tempdir().unwrap();
+    private_directory(temporary.path());
+    let (client, root, kit) = onboard_daemon(temporary.path()).await;
+
+    // --diff shows the kit and writes nothing.
+    let mut io = ScriptedConnectIo::default();
+    run_onboard_with(
+        &client,
+        OnboardArgs {
+            from: Some(kit.clone()),
+            diff: true,
+            ..OnboardArgs::default()
+        },
+        &mut io,
+    )
+    .await
+    .expect("diff");
+    assert!(
+        io.output
+            .iter()
+            .any(|line| line.contains("agents/primary.md: new")),
+        "{:?}",
+        io.output
+    );
+    assert!(!root.join("agents").exists());
+
+    // --yes without the models refuses rather than guess.
+    let refused = run_onboard_with(
+        &client,
+        OnboardArgs {
+            from: Some(kit.clone()),
+            yes: true,
+            ..OnboardArgs::default()
+        },
+        &mut ScriptedConnectIo::default(),
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        format!("{refused:#}").contains("--default-model"),
+        "{refused:#}"
+    );
+
+    // Interactively: keep the provider, pick A Model (its default variant
+    // preselected), search for Z Model, then install the kit.
+    let mut io = ScriptedConnectIo {
+        public: VecDeque::from(
+            ["n", "1", "", "/z-model", "1", "y"]
+                .map(str::to_owned)
+                .to_vec(),
+        ),
+        ..ScriptedConnectIo::default()
+    };
+    run_onboard_with(
+        &client,
+        OnboardArgs {
+            from: Some(kit.clone()),
+            ..OnboardArgs::default()
+        },
+        &mut io,
+    )
+    .await
+    .expect("onboard");
+    assert!(
+        io.output
+            .iter()
+            .any(|line| line.contains("1. high (Enter)")),
+        "the default model preselects its default variant: {:?}",
+        io.output
+    );
+    assert!(
+        io.output
+            .iter()
+            .any(|line| line == "Wrote agents/primary.md"),
+        "{:?}",
+        io.output
+    );
+    let config = std::fs::read_to_string(root.join("config.toml")).unwrap();
+    assert!(
+        config.contains("default_model = \"custom.test/a-model\""),
+        "{config}"
+    );
+    assert!(
+        config.contains("small_model = \"custom.test/z-model\""),
+        "{config}"
+    );
+    assert!(root.join("agents/primary.md").exists());
+
+    // Flags answer the questions; the small model's variant is given.
+    let mut io = ScriptedConnectIo::default();
+    run_onboard_with(
+        &client,
+        OnboardArgs {
+            from: Some(kit),
+            yes: true,
+            small_model: Some("custom.test/a-model:low".into()),
+            ..OnboardArgs::default()
+        },
+        &mut io,
+    )
+    .await
+    .expect("flags");
+    assert!(
+        io.output
+            .iter()
+            .any(|line| line == "Set small_model to custom.test/a-model (low)"),
+        "{:?}",
+        io.output
+    );
+}
+
+/// The kit's `customize-cookie-agent` skill stays honest: every `cookie`
+/// command it names exists, and every docs link names a page of the site.
+#[test]
+fn the_kit_skill_names_real_commands_and_pages() {
+    use clap::CommandFactory as _;
+    let skill = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../defaults/skills/customize-cookie-agent/SKILL.md"
+    ))
+    .unwrap();
+    let root = Cli::command();
+    let mut commands = 0;
+    for span in skill.split('`').skip(1).step_by(2) {
+        let Some(rest) = span.strip_prefix("cookie ") else {
+            continue;
+        };
+        commands += 1;
+        let mut command = &root;
+        for word in rest.split_whitespace() {
+            if word.starts_with('-') || word.starts_with('<') || word.starts_with('[') {
+                break;
+            }
+            match command.find_subcommand(word) {
+                Some(subcommand) => command = subcommand,
+                None => {
+                    assert!(
+                        command.get_subcommands().next().is_none(),
+                        "`cookie {rest}`: `{word}` is not a subcommand of `{}`",
+                        command.get_name()
+                    );
+                    break;
+                }
+            }
+        }
+    }
+    assert!(commands > 5, "the skill names the commands it relies on");
+    let site = "https://cookie-agent.github.io/doc/latest/";
+    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/site");
+    let mut links = 0;
+    for (index, _) in skill.match_indices(site) {
+        let page = skill[index + site.len()..]
+            .split(|c: char| c.is_whitespace() || c == ')')
+            .next()
+            .unwrap()
+            .trim_end_matches('/');
+        links += 1;
+        assert!(
+            docs.join(format!("{page}.md")).exists() || docs.join(page).join("index.md").exists(),
+            "{site}{page}/ names no page under docs/site"
+        );
+    }
+    assert!(links > 5, "the skill links the docs of each topic");
+}

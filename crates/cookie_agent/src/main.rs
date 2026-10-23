@@ -207,6 +207,26 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    /// Set up a daemon: connect a provider, choose the default and small
+    /// models, and install the starter kit. The daemon writes everything,
+    /// on its own machine.
+    Onboard {
+        #[command(flatten)]
+        args: onboard_command::OnboardArgs,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
     /// Read and change a daemon's configuration: `config.toml` and the
     /// agent documents.
     Config {
@@ -735,6 +755,10 @@ async fn main_result(cli: Cli, launch: &mut Launch) -> anyhow::Result<()> {
         Some(Command::Sessions { command }) => {
             run_sessions(command, workspace.as_deref().expect("sessions workspace"))
         }
+        Some(Command::Onboard { args, url, token }) => {
+            let target = daemon_target(url, token)?;
+            onboard_command::run_onboard(&target.url, &target.token, args).await
+        }
         Some(Command::Config {
             command,
             url,
@@ -828,6 +852,7 @@ fn local_workspace(
                 | Command::Disconnect { .. }
                 | Command::Mcp { .. }
                 | Command::Config { .. }
+                | Command::Onboard { .. }
                 | Command::Machine { .. }
                 | Command::Memory { .. }
                 | Command::Project { .. }
@@ -1428,6 +1453,17 @@ async fn run_connect_with<I: ConnectIo>(
         .handshake_as(client_identity("cli"))
         .await
         .context("handshake with daemon")?;
+    connect_provider_flow(client, provider_id, io).await
+}
+
+/// Chooses a provider (`provider_id`, else asks), its auth method, setup
+/// values, and credentials, and connects it over `client`, which has made
+/// its handshake.
+async fn connect_provider_flow<I: ConnectIo>(
+    client: &Client,
+    provider_id: Option<String>,
+    io: &mut I,
+) -> anyhow::Result<()> {
     let runtime = runtime_snapshot(client).await?;
     let provider = choose_provider(&runtime.snapshot.providers, provider_id, io)?;
     print_provider_details(provider, runtime.snapshot.revision.as_str(), io)?;
@@ -2386,6 +2422,7 @@ mod daemon_restart;
 mod local_daemon;
 mod machine_command;
 mod memory_command;
+mod onboard_command;
 mod project_command;
 
 #[cfg(test)]
