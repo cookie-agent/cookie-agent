@@ -316,6 +316,11 @@ open the message menu.
 
 ## Transcript details
 
+The conversation follows new output while it rests at the bottom. Scrolling up
+(the wheel, Page Up, the scrollbar) stops following at once, and the title says
+`↑ scrolled · PgDn: bottom` until you scroll back to the bottom: output that
+streams in, or a block that folds below, never moves a scrolled-up view.
+
 System prompts, AGENTS.md context, loaded skills, context compaction
 checkpoints, plugin-injected messages, and committed media parts appear
 collapsed by default. An AGENTS.md row appears at a run whose loaded context
