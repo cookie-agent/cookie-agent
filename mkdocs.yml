@@ -177,6 +177,7 @@ nav:
           - Permission consolidation: specs/permission-consolidation.md
           - MCP tool filters: specs/mcp-tool-filters.md
           - ACP agents: specs/acp-agents.md
+          - Default models and onboarding: specs/default-models-and-onboarding.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md
           - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
