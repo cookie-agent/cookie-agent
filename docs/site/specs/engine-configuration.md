@@ -1,7 +1,9 @@
 # Live Engine Configuration
 
 Status: **implemented** (2026-10-17; decisions in [Review](#9-review), see
-[Implementation notes](#10-implementation-notes)).
+[Implementation notes](#10-implementation-notes)). Addendum of 2026-10-23
+([section 11](#11-addendum-2026-10-23-clients-restart-the-daemon)): clients
+restart the daemon, draft awaiting the go-ahead.
 
 ## 1. Goal and scope
 
@@ -283,3 +285,81 @@ sections above:
   `session.permission.preview`. The configuration apply recompiles there as
   well. Only the in-process `cookie run` session creation keeps waiting on
   its own worker.
+
+## 11. Addendum 2026-10-23: clients restart the daemon
+
+Status: **draft** (2026-10-23), settled with the user, awaiting the go-ahead
+to implement.
+
+`config.status` already reports `restart_required` parts (`server`,
+`plugins`, `runtimes`) that only a restart applies, but no client can
+restart the daemon. This addendum adds that, so a change made outside a
+client (an edited `config.toml`, a new binary on disk) can be applied from
+the TUI, the web client, or the CLI.
+
+**Decided 2026-10-23:**
+
+- A plain "Restart daemon" waits until no run is active; restarting now,
+  interrupting running turns, is an explicit choice.
+- A daemon that cannot relaunch itself refuses the call.
+
+### 11.1 Protocol
+
+Client protocol minor, additive:
+
+- `daemon.restart { when: "idle" | "now" }` → `{ scheduled, active_runs }`.
+  `when` defaults to `idle`. A second call while one is scheduled updates its
+  `when` (`now` wins).
+- `daemon.restarting` notification `{ when, active_runs, reason? }`, sent to
+  every client when a restart is scheduled and as the wait progresses.
+- New error `restart_unsupported` ("this daemon can't restart itself") for a
+  daemon not started by `cookie daemon`, such as one embedded in a test
+  harness or another program.
+- Any client holding the daemon's token may call it; the token already
+  grants full control.
+
+### 11.2 Behaviour
+
+- **`idle`:** the restart waits until no run is active in any session.
+  Meanwhile new runs are refused with "the daemon is restarting" (cron fires
+  are recorded as skipped for that reason), producers' messages queue as
+  usual, and clients show why.
+- **`now`:** running turns end as interrupted, as after any stop; recovery
+  closes them out when the daemon comes back.
+- **The restart:** the daemon finishes in-flight replies, flushes session
+  logs and its stores, stops its runtimes and plugins as on shutdown, closes
+  client connections with a `restarting` close reason, and relaunches its
+  own executable with the same arguments and environment:
+  - **Unix:** an in-place `exec`, keeping the process ID, so systemd and
+    launchd see no change.
+  - **Windows:** it starts a new process with the same command line and
+    exits; the new process waits for the listening port to free before
+    binding.
+  - The executable is re-read from disk, so a restart after an upgrade runs
+    the new build; clients already notice a changed daemon build when they
+    reconnect.
+- **Afterwards:** clients reconnect as after any dropped connection; dial-in
+  runtimes reconnect as they already do. Sessions are on disk; nothing is
+  lost.
+
+### 11.3 Clients
+
+- **Banner:** while `config.status` lists `restart_required` parts, the TUI
+  and the web client show "Restart needed to apply: plugins, runtimes ·
+  Restart daemon".
+- **Always available:** TUI `/restart`; web Settings → "Restart daemon";
+  `cookie daemon restart [--now] [--url <url>] [--token <token>]`.
+- **Confirmation:** "Restart when idle" (the default) or "Restart now
+  (interrupts N running turns)".
+- **While waiting:** "Restarting when idle…" until the connection closes,
+  then the client's ordinary reconnecting state.
+
+### 11.4 Tests
+
+- `idle` waits for an active run and refuses new runs meanwhile; `now`
+  interrupts and the next start recovers the runs; a second call switching to
+  `now`; `restarting` notifications; `restart_unsupported` from an embedded
+  engine.
+- The relaunch itself, in an integration test that starts `cookie daemon`,
+  restarts it through the RPC, and reconnects (Unix; Windows in CI).
+- The TUI and web banner, buttons, and confirmation.
