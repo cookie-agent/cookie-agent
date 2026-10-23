@@ -668,9 +668,8 @@ pub(crate) fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> C
 /// `docs/site/specs/runtimes.md` section 7.1), each applying only to an
 /// action its document names no key for. `primary` and `all` agents may list
 /// runtimes, and they and `subagent` agents call MCP tools after asking;
-/// internal agents get nothing. Memory has no default
-/// (`docs/site/specs/memory.md` section 9.2, note of 2026-10-22): an agent
-/// without `memory` or `memory_write` rules gets no memory tools.
+/// internal agents get nothing. Memory's defaults depend on whether the run
+/// is delegated, so they are [separate](memory_default_rules).
 pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
     let defaults: &[(PermissionAction, PermissionEffect)] = match mode {
         AgentMode::Primary | AgentMode::All => &[
@@ -692,16 +691,38 @@ pub(crate) fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
         .collect()
 }
 
-/// The rules a delegated run gets for each memory action its agent document
-/// names no key for (`docs/site/specs/memory.md` section 16.9.11): its own
-/// agent file, to read and to maintain. Root runs get no memory default.
-fn delegated_default_rules() -> Vec<PermissionRule> {
-    [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE]
-        .into_iter()
-        .map(|action| {
+/// The rules a run of an agent of `mode` gets for each memory action its
+/// agent document names no key for (`docs/site/specs/memory.md` section
+/// 16.9.11): a root run reads every memory and writes the memory related to
+/// it, and a `delegated` run reads and maintains only its own agent file.
+/// Internal agents get nothing.
+fn memory_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    let defaults: &[(PermissionAction, &str)] = match (mode, delegated) {
+        (AgentMode::Internal, _) => &[],
+        (_, true) => &[
+            (PermissionAction::MEMORY, "agent://${agent_id}"),
+            (PermissionAction::MEMORY_WRITE, "agent://${agent_id}"),
+        ],
+        (_, false) => &[
+            (PermissionAction::MEMORY, "*"),
+            (PermissionAction::MEMORY_WRITE, "user://*"),
+            (PermissionAction::MEMORY_WRITE, "agent://${agent_id}"),
+            (
+                PermissionAction::MEMORY_WRITE,
+                "machine://${session_machine}/*",
+            ),
+            (
+                PermissionAction::MEMORY_WRITE,
+                "project://${session_project}/*",
+            ),
+        ],
+    };
+    defaults
+        .iter()
+        .map(|(action, pattern)| {
             PermissionRule::new(
-                action,
-                WildcardPattern::new("agent://${agent_id}").expect("static default pattern"),
+                action.clone(),
+                WildcardPattern::new(*pattern).expect("static default pattern"),
                 PermissionEffect::Allow,
             )
         })
@@ -763,8 +784,8 @@ fn expand_memory_variables(
 
 /// The rules an agent document gives its runs: the document's own, then
 /// the [mode defaults](mode_default_rules) of each action the document
-/// names no key for, with or without a runtime selector, and, for a
-/// `delegated` run, the [delegated memory default](delegated_default_rules)
+/// names no key for, with or without a runtime selector, and the
+/// [memory defaults](memory_default_rules) for a root or `delegated` run
 /// likewise. A declared key replaces its action's default entirely. The
 /// memory rule variables are expanded with `variables` as the run's policy
 /// is frozen, so frozen rules, which the wire carries, never hold one.
@@ -778,15 +799,10 @@ pub(crate) fn agent_permission_rules(
         .iter()
         .flat_map(|(key, value)| value.rules(key))
         .collect::<Vec<_>>();
-    let delegated_defaults = if delegated {
-        delegated_default_rules()
-    } else {
-        Vec::new()
-    };
     rules.extend(
         mode_default_rules(document.frontmatter.mode)
             .into_iter()
-            .chain(delegated_defaults)
+            .chain(memory_default_rules(document.frontmatter.mode, delegated))
             .filter(|rule| !permissions.keys().any(|key| key.action == rule.action)),
     );
     rules
@@ -962,7 +978,12 @@ impl crate::Engine {
             .validate()
             .map_err(|error| crate::EngineError::Permission(error.to_string()))?;
         let (_, policy) = self.freeze_selection_policy(selection)?;
-        Ok(effective_permission_view(&policy.agent, &overlay, &[]))
+        Ok(effective_permission_view(
+            &policy.agent,
+            false,
+            &overlay,
+            &[],
+        ))
     }
 
     pub fn get_session_permissions(
@@ -972,8 +993,14 @@ impl crate::Engine {
         let session = self.inner.store.get(session_id)?;
         let policy = governing_agent(&session);
         let declared = self.declared_permission_actions(session_id)?;
+        let delegated = matches!(session.meta.origin, SessionOrigin::Delegated { .. });
         Ok(SessionPermissionGetResult {
-            permissions: effective_permission_view(&policy, &session.permission_overlay, &declared),
+            permissions: effective_permission_view(
+                &policy,
+                delegated,
+                &session.permission_overlay,
+                &declared,
+            ),
             current_mode: Some(self.permission_mode(session_id)),
         })
     }
@@ -1306,21 +1333,80 @@ fn rule_effects(
         .collect()
 }
 
+/// Whether `rules`, one action's frozen rules, are what that action's
+/// `defaults` expand to in a run of `agent` (see [`expand_memory_variables`]):
+/// `${agent_id}` is the agent, and a default naming `${session_machine}` or
+/// `${session_project}` stands for any number of rules, one per machine or
+/// project name, none when the session has none.
+fn expanded_from_defaults(
+    defaults: &[&PermissionRule],
+    rules: &[&PermissionRule],
+    agent: &AgentId,
+) -> bool {
+    let [agent_id, session_machine, session_project] = WildcardPattern::MEMORY_VARIABLES;
+    let mut rules = rules.iter().peekable();
+    for default in defaults {
+        let pattern = default.resource.as_str().replace(agent_id, agent.as_str());
+        let session_variable = [session_machine, session_project]
+            .into_iter()
+            .find_map(|variable| pattern.split_once(variable));
+        let same_rule = |rule: &PermissionRule| {
+            rule.action == default.action
+                && rule.runtime == default.runtime
+                && rule.effect == default.effect
+        };
+        match session_variable {
+            None => {
+                let Some(rule) = rules.next() else {
+                    return false;
+                };
+                if !same_rule(rule) || rule.resource.as_str() != pattern {
+                    return false;
+                }
+            }
+            Some((prefix, suffix)) => {
+                let names_one = |rule: &PermissionRule| {
+                    rule.resource
+                        .as_str()
+                        .strip_prefix(prefix)
+                        .and_then(|rest| rest.strip_suffix(suffix))
+                        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+                };
+                while rules
+                    .next_if(|rule| same_rule(rule) && names_one(rule))
+                    .is_some()
+                {}
+            }
+        }
+    }
+    rules.next().is_none()
+}
+
 /// The effective permission of every action: the built-in actions, then the
 /// other actions the session's tools `declared`, then any other action a rule
 /// names, each group in first-seen order. An action whose agent rules are
-/// exactly its [mode default](mode_default_rules) reports them with the
-/// source `default`.
+/// exactly its [mode default](mode_default_rules), or its [memory
+/// default](memory_default_rules) for a root or `delegated` run, reports them
+/// with the source `default`.
 fn effective_permission_view(
     policy: &AgentSnapshot,
+    delegated: bool,
     overlay: &SessionPermissionOverlay,
     declared: &[PermissionAction],
 ) -> Vec<EffectivePermissionAction> {
-    let defaults = mode_default_rules(policy.mode);
+    let defaults = mode_default_rules(policy.mode)
+        .into_iter()
+        .chain(memory_default_rules(policy.mode, delegated))
+        .collect::<Vec<_>>();
     let agent_source = |action: &PermissionAction| {
         let of_action = |rule: &&PermissionRule| rule.action == *action;
         let default = defaults.iter().filter(of_action).collect::<Vec<_>>();
-        if !default.is_empty() && policy.permissions.iter().filter(of_action).eq(default) {
+        let rules = policy
+            .permissions
+            .iter()
+            .filter(of_action)
+            .collect::<Vec<_>>();
+        if !default.is_empty() && expanded_from_defaults(&default, &rules, &policy.agent) {
             PermissionRuleSource::Default
         } else {
             PermissionRuleSource::AgentDocument

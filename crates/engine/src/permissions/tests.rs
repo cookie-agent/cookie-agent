@@ -29,6 +29,7 @@ fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
 fn effective_permission_view_reports_message_with_default_deny() {
     let view = super::effective_permission_view(
         &policy(Vec::new()),
+        false,
         &SessionPermissionOverlay::empty(),
         &[],
     );
@@ -1925,7 +1926,7 @@ fn overlay_rules_are_unique_per_runtime_selector() {
         ],
     };
     overlay.validate().expect("distinct selectors");
-    let view = super::effective_permission_view(&policy(Vec::new()), &overlay, &[]);
+    let view = super::effective_permission_view(&policy(Vec::new()), false, &overlay, &[]);
     let bash = view
         .iter()
         .find(|entry| entry.action == PermissionAction::BASH)
@@ -2051,6 +2052,7 @@ fn the_permission_view_lists_declared_and_named_actions_after_the_built_ins() {
     };
     let view = super::effective_permission_view(
         &policy(Vec::new()),
+        false,
         &overlay,
         &[PermissionAction::READ, browse.clone()],
     );
@@ -2132,51 +2134,119 @@ fn mode_defaults_follow_the_agent_mode() {
         |action: &str, resource: &str, effect| (action.to_owned(), resource.to_owned(), effect);
     let allow = PermissionEffect::Allow;
     let ask = PermissionEffect::Ask;
+    // Memory's defaults depend on delegation too; they have their own tests.
+    let mode_rules = |mode| {
+        let mut rules = root_rules(&agent_document("worker", mode, &[]));
+        rules.retain(|rule| {
+            rule.action != PermissionAction::MEMORY && rule.action != PermissionAction::MEMORY_WRITE
+        });
+        rule_triples(&rules)
+    };
     for mode in [AgentMode::Primary, AgentMode::All] {
-        let rules = root_rules(&agent_document("worker", mode, &[]));
         assert_eq!(
-            rule_triples(&rules),
+            mode_rules(mode),
             [triple("list_runtimes", "*", allow), triple("mcp", "*", ask)],
             "{mode:?}"
         );
     }
-    let rules = root_rules(&agent_document("worker", AgentMode::Subagent, &[]));
-    assert_eq!(rule_triples(&rules), [triple("mcp", "*", ask)]);
+    assert_eq!(mode_rules(AgentMode::Subagent), [triple("mcp", "*", ask)]);
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
     assert!(rules.is_empty());
 }
 
-/// Memory is opt-in (memory spec section 9.2, note of 2026-10-22): no mode
-/// supplies `memory` or `memory_write` rules, so an agent without them sees
-/// no memory tools.
+/// The memory rules of `rules`, as `(action, resource, effect)`.
+fn memory_triples(rules: &[PermissionRule]) -> Vec<(String, String, PermissionEffect)> {
+    rule_triples(rules)
+        .into_iter()
+        .filter(|(action, _, _)| action == "memory" || action == "memory_write")
+        .collect()
+}
+
+/// A root run of a non-internal agent without memory keys reads every
+/// memory and writes the user layer, its own agent file, and its session's
+/// machines and project (memory spec section 16.9.11, decision of
+/// 2026-10-22); an internal agent gets no memory default.
 #[test]
-fn memory_has_no_default_in_any_mode() {
-    for mode in [
-        AgentMode::Primary,
-        AgentMode::All,
-        AgentMode::Subagent,
-        AgentMode::Internal,
-    ] {
-        let rules = root_rules(&agent_document("worker", mode, &[]));
-        for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
-            assert!(
-                action_rules(&rules, &action).is_empty(),
-                "{mode:?} {action:?}"
-            );
-            assert!(
-                !super::tool_visible(&rules, None, &action, Some("global")),
-                "{mode:?} {action:?}"
+fn root_runs_default_to_reading_every_memory_and_writing_their_own() {
+    let triple =
+        |action: &str, resource: &str, effect| (action.to_owned(), resource.to_owned(), effect);
+    let allow = PermissionEffect::Allow;
+    let variables = super::MemoryVariables {
+        machines: vec!["laptop".to_owned(), "labpc".to_owned()],
+        project: Some("web".to_owned()),
+    };
+    for mode in [AgentMode::Primary, AgentMode::All, AgentMode::Subagent] {
+        let document = agent_document("worker", mode, &[]);
+        let rules = super::agent_permission_rules(&document, false, &variables);
+        assert_eq!(
+            memory_triples(&rules),
+            [
+                triple("memory", "*", allow),
+                triple("memory_write", "user://*", allow),
+                triple("memory_write", "agent://worker", allow),
+                triple("memory_write", "machine://laptop/*", allow),
+                triple("memory_write", "machine://labpc/*", allow),
+                triple("memory_write", "project://web/*", allow),
+            ],
+            "{mode:?}"
+        );
+        let snapshot = policy(rules);
+        for (action, resource, effect) in [
+            (PermissionAction::MEMORY, "project://other/notes", allow),
+            (PermissionAction::MEMORY_WRITE, "user://style", allow),
+            (PermissionAction::MEMORY_WRITE, "project://web/build", allow),
+            (
+                PermissionAction::MEMORY_WRITE,
+                "agent://reviewer",
+                PermissionEffect::Deny,
+            ),
+            (
+                PermissionAction::MEMORY_WRITE,
+                "project://other/notes",
+                PermissionEffect::Deny,
+            ),
+            (
+                PermissionAction::MEMORY_WRITE,
+                "machine://desktop/setup",
+                PermissionEffect::Deny,
+            ),
+        ] {
+            assert_eq!(
+                effect_in_scope(&snapshot, &action, resource),
+                effect,
+                "{mode:?} {action:?} {resource}"
             );
         }
     }
-    // Declaring them grants exactly what they say.
+    // Without a project or a machine those defaults match nothing, so they go.
+    let rules = root_rules(&agent_document("worker", AgentMode::Primary, &[]));
+    assert_eq!(
+        memory_triples(&rules),
+        [
+            triple("memory", "*", allow),
+            triple("memory_write", "user://*", allow),
+            triple("memory_write", "agent://worker", allow),
+        ]
+    );
+    // An internal agent gets none, root or delegated.
+    for delegated in [false, true] {
+        let document = agent_document("worker", AgentMode::Internal, &[]);
+        let rules = super::agent_permission_rules(&document, delegated, &variables);
+        assert!(memory_triples(&rules).is_empty(), "{delegated}");
+        for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
+            assert!(!super::tool_visible(&rules, None, &action, Some("global")));
+        }
+    }
+}
+
+/// A declared memory key replaces its action's root default entirely and
+/// leaves the other action's default in place.
+#[test]
+fn a_declared_memory_key_replaces_the_root_default_for_its_action() {
     let document = agent_document(
         "worker",
         AgentMode::Subagent,
-        &[
-            ("memory", effect_value(PermissionEffect::Allow)),
-            ("memory_write@global", effect_value(PermissionEffect::Ask)),
-        ],
+        &[("memory_write@global", effect_value(PermissionEffect::Ask))],
     );
     let rules = root_rules(&document);
     assert_eq!(
@@ -2191,6 +2261,19 @@ fn memory_has_no_default_in_any_mode() {
             PermissionEffect::Ask
         )]
     );
+    // Denying both hides every memory tool.
+    let document = agent_document(
+        "worker",
+        AgentMode::Primary,
+        &[
+            ("memory", effect_value(PermissionEffect::Deny)),
+            ("memory_write", effect_value(PermissionEffect::Deny)),
+        ],
+    );
+    let rules = root_rules(&document);
+    for action in [PermissionAction::MEMORY, PermissionAction::MEMORY_WRITE] {
+        assert!(!super::tool_visible(&rules, None, &action, Some("global")));
+    }
 }
 
 #[test]
@@ -2341,12 +2424,18 @@ fn a_declared_mcp_key_replaces_the_mcp_default_entirely() {
 
 #[test]
 fn the_permission_view_reports_mode_defaults_as_defaults() {
-    let entry = |rules, action: &PermissionAction| {
-        super::effective_permission_view(&policy(rules), &SessionPermissionOverlay::empty(), &[])
-            .into_iter()
-            .find(|entry| entry.action == *action)
-            .expect("listed action")
+    let view_entry = |rules, delegated, action: &PermissionAction| {
+        super::effective_permission_view(
+            &policy(rules),
+            delegated,
+            &SessionPermissionOverlay::empty(),
+            &[],
+        )
+        .into_iter()
+        .find(|entry| entry.action == *action)
+        .expect("listed action")
     };
+    let entry = |rules, action: &PermissionAction| view_entry(rules, false, action);
     let defaulted = root_rules(&agent_document("worker", AgentMode::Primary, &[]));
     let mcp = entry(defaulted.clone(), &PermissionAction::MCP);
     assert_eq!(
@@ -2358,11 +2447,44 @@ fn the_permission_view_reports_mode_defaults_as_defaults() {
         (list.effect, list.source),
         (PermissionEffect::Allow, PermissionRuleSource::Default)
     );
-    // Memory has no default: denied, its tools hidden.
     let memory = entry(defaulted, &PermissionAction::MEMORY);
     assert_eq!(
         (memory.effect, memory.source),
-        (PermissionEffect::Deny, PermissionRuleSource::Default)
+        (PermissionEffect::Allow, PermissionRuleSource::Default)
+    );
+    // The memory defaults are defaults with their variables expanded, for
+    // any number of machines, and for a delegated run its own default.
+    let memory_write_sources = |delegated, variables: &super::MemoryVariables| {
+        let document = agent_document("test", AgentMode::Primary, &[]);
+        let rules = super::agent_permission_rules(&document, delegated, variables);
+        view_entry(rules, delegated, &PermissionAction::MEMORY_WRITE)
+            .patterns
+            .into_iter()
+            .map(|rule| rule.source)
+            .collect::<Vec<_>>()
+    };
+    let session = super::MemoryVariables {
+        machines: vec!["laptop".to_owned(), "labpc".to_owned()],
+        project: Some("web".to_owned()),
+    };
+    assert_eq!(
+        memory_write_sources(false, &session),
+        [PermissionRuleSource::Default; 5]
+    );
+    assert_eq!(
+        memory_write_sources(true, &session),
+        [PermissionRuleSource::Default]
+    );
+    // The delegated default in a root run is not the root default.
+    let delegated = super::agent_permission_rules(
+        &agent_document("test", AgentMode::Primary, &[]),
+        true,
+        &session,
+    );
+    let rules = view_entry(delegated, false, &PermissionAction::MEMORY_WRITE).patterns;
+    assert_eq!(
+        rules.iter().map(|rule| rule.source).collect::<Vec<_>>(),
+        [PermissionRuleSource::AgentDocument]
     );
     // A document's own rule is the agent's, even beside a default.
     let declared = root_rules(&agent_document(
@@ -2378,8 +2500,8 @@ fn the_permission_view_reports_mode_defaults_as_defaults() {
 }
 
 /// A delegated run gets its own agent file for each memory action its
-/// document names no key for (memory spec section 16.9.11); a root run gets
-/// nothing, whatever its mode.
+/// document names no key for (memory spec section 16.9.11), not the wider
+/// root default, whatever its mode.
 #[test]
 fn delegated_runs_default_to_their_own_agent_memory() {
     let none = super::MemoryVariables::default();
@@ -2394,7 +2516,11 @@ fn delegated_runs_default_to_their_own_agent_memory() {
             );
         }
         let rules = super::agent_permission_rules(&document, false, &none);
-        assert!(action_rules(&rules, &PermissionAction::MEMORY).is_empty());
+        assert_eq!(
+            action_rules(&rules, &PermissionAction::MEMORY),
+            [(None, "*".to_owned(), PermissionEffect::Allow)],
+            "{mode:?}"
+        );
     }
     // A declared key replaces the default for its action only.
     let document = agent_document(

@@ -19,8 +19,9 @@ fn origin() -> EventOrigin {
     EventOrigin::new("client:memory-test").unwrap()
 }
 
-/// The rules that give a test agent memory, which has no default
-/// (memory spec section 9.2, note of 2026-10-22).
+/// The rules that give a test agent all memory, to read and to write,
+/// declared rather than left to the root default (memory spec section
+/// 16.9.11).
 const MEMORY: &str = "{ memory: allow, memory_write: allow }";
 
 fn agent(permissions: &str) -> String {
@@ -727,7 +728,9 @@ async fn search_results_follow_the_memory_rules_and_the_limit_counts_what_is_sho
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        &agent("{ memory: { \"project://*\": allow, \"user://*\": ask, \"machine://*\": deny } }"),
+        &agent(
+            "{ memory: { \"project://*\": allow, \"user://*\": ask, \"machine://*\": deny }, memory_write: deny }",
+        ),
     );
     let root = fixture.engine.memory_root().path().to_owned();
     for (index, target) in [
@@ -895,8 +898,10 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     let (endpoint, responses, captured) = scripted_channel_server(3).await;
     // Without write access the memory section stays short, so this small
     // history still has something to compact.
-    let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{ memory: allow }"));
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        &agent("{ memory: allow, memory_write: deny }"),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -961,14 +966,19 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     fixture.engine.shutdown().await;
 }
 
-/// Memory is opt-in (section 9.2, note of 2026-10-22): an agent document
-/// with no `memory` key gets no memory tools and no snapshot.
-#[tokio::test]
-async fn an_agent_without_a_memory_key_gets_no_memory_tools_or_snapshot() {
+/// Runs a root run of an agent with `permissions` on a fresh fixture whose
+/// user memory holds one feedback line, and returns its snapshots, the
+/// memory tools of its request, and the request.
+async fn root_run_memory(permissions: &str) -> (Vec<MemorySnapshot>, Vec<String>, String) {
     let (endpoint, responses, captured) = scripted_channel_server(1).await;
     let (fixture, selection) =
-        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent("{ read: allow }"));
-    user_write(&fixture, "user://feedback", "Feedback", "- never shown\n");
+        custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(permissions));
+    user_write(
+        &fixture,
+        "user://feedback",
+        "Feedback",
+        "- prefers short answers\n",
+    );
     responses
         .send(MatchedScriptedResponse::last_message_contains(
             "hello",
@@ -981,12 +991,49 @@ async fn an_agent_without_a_memory_key_gets_no_memory_tools_or_snapshot() {
         .unwrap()
         .session_id;
     run(&fixture, session, &selection, "hello", "hello").await;
-    assert!(snapshots(&fixture, session).is_empty());
+    let taken = snapshots(&fixture, session);
     let requests = captured.await.unwrap();
-    assert!(memory_tool_names(&requests[0]).is_empty());
-    assert!(!requests[0].contains("# Memory"));
-    assert!(!requests[0].contains("never shown"));
     fixture.engine.shutdown().await;
+    (taken, memory_tool_names(&requests[0]), requests[0].clone())
+}
+
+/// A root run of an agent with no memory key takes the root default
+/// (section 16.9.11, decision of 2026-10-22): it reads every memory, so it
+/// gets a snapshot, and writes the memory related to it, so it gets the
+/// write tools too. A declared key replaces the default for its action.
+#[tokio::test]
+async fn a_root_run_without_memory_keys_reads_and_writes_by_default() {
+    let (taken, tools, request) = root_run_memory("{ read: allow }").await;
+    assert_eq!(taken.len(), 1);
+    assert!(taken[0].writable);
+    assert!(!taken[0].delegated);
+    assert_eq!(
+        tools,
+        [
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write"
+        ]
+    );
+    assert!(request.contains("# Memory"));
+    assert!(request.contains("prefers short answers"));
+
+    // Denying writes keeps the read default: a read-only snapshot and the
+    // read tools.
+    let (taken, tools, request) = root_run_memory("{ memory_write: deny }").await;
+    assert_eq!(taken.len(), 1);
+    assert!(!taken[0].writable);
+    assert_eq!(tools, ["memory_read", "memory_search"]);
+    assert!(request.contains("prefers short answers"));
+
+    // Denying reads turns memory off, whatever the write default says.
+    let (taken, tools, request) = root_run_memory("{ memory: deny }").await;
+    assert!(taken.is_empty());
+    assert!(tools.is_empty());
+    assert!(!request.contains("# Memory"));
+    assert!(!request.contains("prefers short answers"));
 }
 
 /// The snapshot follows the `memory` rules per URL (section 7.5): a denied

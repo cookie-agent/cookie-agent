@@ -134,7 +134,8 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
 #[tokio::test]
 async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
     let (endpoint, captured) = scripted_model_server().await;
-    let primary = "---\ndescription: Prompt order agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  skill: allow\n---\nTest prompt.\n";
+    // Memory stays off, so the provider's section opens the tool block.
+    let primary = "---\ndescription: Prompt order agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  skill: allow\n  memory: deny\n---\nTest prompt.\n";
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             &endpoint,
@@ -293,15 +294,22 @@ async fn one_runtime_gives_the_prompt_its_working_directory() {
         .engine
         .runtime_machine("local")
         .expect("the daemon's machine");
+    // The default agent's memory instructions, which mention runtimes
+    // themselves, are the block after it.
+    let (before_memory, _) = run
+        .agent
+        .composed_prompt
+        .split_once("\n\n---\n\n<tool_instructions provider=\"builtin.memory\">")
+        .expect("the default agent's memory section");
     assert!(
-        run.agent.composed_prompt.ends_with(&format!(
+        before_memory.ends_with(&format!(
             "---\n\nWorking directory: {cwd}\nMachine: {machine} ({})",
             std::env::consts::OS
         )),
         "{}",
         run.agent.composed_prompt
     );
-    assert!(!run.agent.composed_prompt.contains("runtime"));
+    assert!(!before_memory.contains("runtime"));
     assert_eq!(
         Sha256Digest::of_bytes(run.agent.composed_prompt.as_bytes()),
         run.agent.prompt_fingerprint

@@ -17,10 +17,11 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     ];
     let (endpoint, captured, compaction_reached, release_compaction) =
         scripted_server_with_delayed_response(bodies, 2).await;
-    // A small summary cap leaves recent-history room for the steering inputs.
+    // A small summary cap leaves recent-history room for the steering
+    // inputs, and memory stays off for the same reason.
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
-        "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
+        "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n  memory: deny\n---\nTest steering compaction.\n",
         Some((
             "compaction.md",
             "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 64 }\npermissions: {}\n---\nSummarize.\n",

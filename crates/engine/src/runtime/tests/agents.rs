@@ -101,9 +101,9 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    // `list_runtimes` and `mcp` have defaults by mode (runtimes spec 7.1);
-    // memory has none, and the built-in agent's own rules name none
-    // (memory spec 9.2, note of 2026-10-22).
+    // `list_runtimes` and `mcp` have defaults by mode (runtimes spec 7.1),
+    // and the built-in agent's own rules name no memory action, so its root
+    // run takes the memory default (memory spec 16.9.11).
     assert_eq!(
         tool_names,
         [
@@ -111,6 +111,11 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             "edit",
             "fixture_mcp",
             "list_runtimes",
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
             "read",
             "write"
         ]
@@ -240,9 +245,18 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        // A primary agent that names no MCP or `list_runtimes` rule gets
-        // them by default; memory has no default.
-        ["fixture_mcp", "list_runtimes", "read"]
+        // A primary agent that names no MCP, `list_runtimes` or memory rule
+        // gets them by default in a root run.
+        [
+            "fixture_mcp",
+            "list_runtimes",
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
+            "read"
+        ]
     );
     assert!(
         !serde_json::to_string(&definitions)
@@ -292,6 +306,11 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "edit",
             "fixture_mcp",
             "list_runtimes",
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
             "read",
             "write"
         ]
@@ -392,7 +411,17 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["alpha", "list_runtimes", "middle", "zeta"]
+        [
+            "alpha",
+            "list_runtimes",
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
+            "middle",
+            "zeta"
+        ]
     );
     assert_eq!(
         serde_json::to_value(forward).unwrap(),
@@ -571,6 +600,14 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     let (endpoint, server) = scripted_preset_switch_delegation_server().await;
     let (mut fixture, shared_selection) = custom_fixture_with_endpoint(&endpoint);
     fixture.engine.shutdown().await;
+    // Memory stays off: its prompt section does not fit the small context
+    // the historical compaction below works in.
+    for agent in fixture.config.agents.values_mut() {
+        agent.frontmatter.permissions.insert(
+            "memory".parse().expect("memory key"),
+            cookie_agent_config::PermissionValue::Effect(PermissionEffect::Deny),
+        );
+    }
     let primary_id = AgentId::new("primary").expect("primary ID");
     let worker_id = AgentId::new("worker").expect("worker ID");
     let mut python_agents = fixture.config.agents.clone();

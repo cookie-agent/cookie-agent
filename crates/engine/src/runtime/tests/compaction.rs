@@ -228,10 +228,12 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
         bodies.extend(responses);
         let (endpoint, captured, _reached, _release) =
             scripted_server_with_status_and_delay(bodies, usize::MAX).await;
+        // Memory stays off: its prompt section does not fit the small
+        // contexts this test sizes.
         let (mut fixture, selection) =
             custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
                 &endpoint,
-                "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest raw-first compaction.\n",
+                "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  memory: deny\n---\nTest raw-first compaction.\n",
                 Some((
                     "compaction.md",
                     "---\ndescription: Test compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize faithfully.\n",
