@@ -323,7 +323,8 @@ fn row_explanation(row: &PermissionRow, has_patterns: bool, draft: bool) -> Stri
     };
     let origin = match row.source {
         PermissionRuleSource::SessionOverlay => format!(
-            "{}, checked before the agent's rules; d removes it, Enter edits it.",
+            "{}: it replaces the agent's rule with this pattern, and the most specific \
+             rule wins; d removes it, Enter edits it.",
             capitalized(override_noun)
         ),
         PermissionRuleSource::AgentDocument => {
@@ -446,11 +447,13 @@ pub(in crate::ui) fn render_permissions(
         .or_else(|| {
             panel.add_row_selected().then(|| {
                 if panel.draft {
-                    "Add a rule for the new session: it is checked before the agent's rules \
-                     and applies from its first run."
+                    "Add a rule for the new session: it replaces the agent's rule with the \
+                     same pattern, the most specific rule wins, and it applies from its first \
+                     run."
                 } else {
-                    "Add a session rule: it is checked before the agent's rules and lasts for \
-                     this session and its revert/fork branches."
+                    "Add a session rule: it replaces the agent's rule with the same pattern, the \
+                     most specific rule wins, and it lasts for this session and its \
+                     revert/fork branches."
                 }
                 .to_owned()
             })
