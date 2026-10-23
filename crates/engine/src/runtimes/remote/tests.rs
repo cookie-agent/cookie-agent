@@ -1608,6 +1608,7 @@ impl PreparedExecutor for ReportExecutor {
                 .reached_with(cookie_agent_runtime_api::Detachable {
                     note: None,
                     reports_itself: true,
+                    on_user_interrupt: None,
                 });
             tokio::select! {
                 () = context.cancellation.cancelled() => {

@@ -426,7 +426,7 @@ async fn cancelling_a_stream_drains_chunks_before_tool_termination() {
                 assert!(!result.output.contains("before cancellation"));
                 assert_eq!(
                     termination.error.as_ref().unwrap().message.as_str(),
-                    "tool call cancelled after it started"
+                    "Interrupted by the user before it finished."
                 );
                 Some(event.seq)
             }
@@ -487,7 +487,7 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
         assert!(!result.output.contains("external cleanup result"));
         assert_eq!(
             termination.error.unwrap().message.as_str(),
-            "tool call cancelled after it started"
+            "Interrupted by the user before it finished."
         );
         assert_eq!(
             with_watchdog("captured fixture completion", captured)
@@ -498,6 +498,99 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
         );
         fixture.engine.shutdown().await;
     }
+}
+
+/// The terminal error of the streaming bash call `call_id` in `session_id`.
+async fn streaming_call_error(
+    engine: &crate::Engine,
+    session_id: cookie_agent_protocol::SessionId,
+    call_id: cookie_agent_protocol::ToolCallId,
+) -> String {
+    let terminal = await_event(engine, session_id, "interrupted tool call", |event| {
+        matches!(&event.payload, EventPayload::ToolCallTerminated { termination }
+            if termination.tool_call_id == call_id)
+    })
+    .await;
+    let EventPayload::ToolCallTerminated { termination } = terminal.payload else {
+        unreachable!("awaited tool termination");
+    };
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
+    termination
+        .error
+        .expect("termination error")
+        .message
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_cancellation_the_user_did_not_ask_for_names_its_cause() {
+    // Another origin than a client.
+    let (fixture, session_id, run_id, call_id, awaiting_cancellation, _, _captured, _) =
+        start_streaming_bash_test_run("session-shaped").await;
+    with_watchdog(
+        "executor awaits cancellation",
+        awaiting_cancellation.notified(),
+    )
+    .await;
+    fixture
+        .engine
+        .cancel_run(
+            run_id,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        )
+        .await
+        .expect("cancel as the engine");
+    assert_eq!(
+        streaming_call_error(&fixture.engine, session_id, call_id).await,
+        "Interrupted by `engine:test` before it finished."
+    );
+    fixture.engine.shutdown().await;
+
+    // The engine's recorded reason, as when a parent stops its subagent.
+    let (fixture, session_id, run_id, call_id, awaiting_cancellation, _, _captured, _) =
+        start_streaming_bash_test_run("session-shaped").await;
+    with_watchdog(
+        "executor awaits cancellation",
+        awaiting_cancellation.notified(),
+    )
+    .await;
+    fixture
+        .engine
+        .cancel_run_durably(
+            run_id,
+            Some("stopped by its parent with stop_background".into()),
+        )
+        .expect("cancel with a reason");
+    assert_eq!(
+        streaming_call_error(&fixture.engine, session_id, call_id).await,
+        "Interrupted before it finished: stopped by its parent with stop_background."
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[test]
+fn the_generic_interrupted_result_names_each_cause() {
+    use crate::runtime::CancelCause;
+    use crate::runtime::tool_execution::interrupted_message;
+    assert_eq!(
+        interrupted_message(Some(&CancelCause::User), true),
+        "Interrupted by the user before it finished; cleanup deadline elapsed."
+    );
+    assert_eq!(
+        interrupted_message(Some(&CancelCause::Shutdown), true),
+        "Interrupted by engine shutdown before it finished; cleanup deadline elapsed."
+    );
+    assert_eq!(
+        interrupted_message(
+            Some(&CancelCause::Reason("admission failed.".into())),
+            false
+        ),
+        "Interrupted before it finished: admission failed."
+    );
+    assert_eq!(
+        interrupted_message(None, false),
+        "Interrupted before it finished: its run was cancelled."
+    );
 }
 
 #[tokio::test]
@@ -578,9 +671,9 @@ async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
         .message
         .to_string();
     assert!(cancelled_at.elapsed() < std::time::Duration::from_secs(3));
-    assert!(
-        error_message.contains("cleanup deadline elapsed"),
-        "{error_message}"
+    assert_eq!(
+        error_message,
+        "Interrupted by the user before it finished; cleanup deadline elapsed."
     );
     assert_eq!(
         with_watchdog("captured fixture completion", captured)

@@ -375,6 +375,9 @@ struct ActiveRun {
     /// Who cancelled the run through [`Engine::cancel_run`]; the engine
     /// itself when unset.
     cancelled_by: Mutex<Option<cookie_agent_protocol::EventOrigin>>,
+    /// Why the run was cancelled, as the results of the calls it interrupts
+    /// name it; the first cause recorded wins.
+    cancel_cause: Mutex<Option<CancelCause>>,
     /// Executing calls of background-capable tools, and the signal that
     /// moves each to the background.
     detach_requests: Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Notify>>>,
@@ -395,6 +398,54 @@ impl ActiveRun {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
             .unwrap_or_else(|| event_origin("engine:model-loop"))
+    }
+
+    /// Records why the run is being cancelled, unless a cause already is.
+    /// Called before the run's cancellation trips, so the calls it
+    /// interrupts read it.
+    fn record_cancel_cause(&self, cause: CancelCause) {
+        self.cancel_cause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert(cause);
+    }
+
+    /// Why the run was cancelled, when a cause was recorded.
+    fn cancel_cause(&self) -> Option<CancelCause> {
+        self.cancel_cause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// Why a run was cancelled. The results of the tool calls the cancellation
+/// interrupts name it (`docs/site/specs/background-tools.md`, addendum of
+/// 2026-10-23).
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CancelCause {
+    /// A client cancelled the run (`run.cancel`): the user interrupted it.
+    User,
+    /// The engine shut down.
+    Shutdown,
+    /// Something other than a client cancelled the run through
+    /// [`Engine::cancel_run`].
+    Origin(cookie_agent_protocol::EventOrigin),
+    /// The engine cancelled the run for the reason it recorded, such as a
+    /// parent stopping its subagent.
+    Reason(String),
+}
+
+impl CancelCause {
+    /// The cause of a cancellation `origin` asked for: the user when it is
+    /// a client.
+    fn from_origin(origin: &cookie_agent_protocol::EventOrigin) -> Self {
+        let origin_text = origin.as_str();
+        if origin_text == "user" || origin_text.starts_with("client:") {
+            Self::User
+        } else {
+            Self::Origin(origin.clone())
+        }
     }
 }
 
@@ -1836,6 +1887,7 @@ impl Engine {
             .cloned()
             .collect();
         for run in active {
+            run.record_cancel_cause(CancelCause::Shutdown);
             run.cancellation.cancel();
         }
         // Joined here, before the plugin and MCP transports go away and well

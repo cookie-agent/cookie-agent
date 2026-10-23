@@ -182,6 +182,9 @@ impl Engine {
                 &mut committed,
             );
         };
+        if let Some(reason) = &reason {
+            active.record_cancel_cause(super::CancelCause::Reason(reason.clone()));
+        }
         active.cancellation.cancel();
         let origin = active.cancel_origin();
         let mut committed = active
@@ -376,7 +379,8 @@ impl Engine {
                 .cancelled_by
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get_or_insert(origin);
+                .get_or_insert_with(|| origin.clone());
+            active.record_cancel_cause(super::CancelCause::from_origin(&origin));
             active.cancellation.cancel();
             let events = engine.inner.store.log(session)?.event_snapshot();
             let pending = approval_records(session, &events)

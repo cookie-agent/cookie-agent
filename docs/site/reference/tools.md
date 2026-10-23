@@ -111,11 +111,19 @@ has in the foreground at once, and each call ends as `cancelled`:
 - **`webfetch`** drops its request.
 - **A foreground `delegate_subagent`** stops waiting; its subagent keeps
   running and reports its turn (see [Background calls](#background-calls)).
+  Its result says so: ``The user interrupted this run. Subagent `<handle>`
+  keeps running; its <subagent_report> arrives when its turn ends.``,
+  followed by the handle's note.
 
+Every other interrupted call ends with a result that names who stopped it:
+`Interrupted by the user before it finished.` for `run.cancel`, and for
+other cancellations a wording that names their cause, such as
+`Interrupted by engine shutdown before it finished.`
+([background tools spec, section 14](../specs/background-tools.md#14-addendum-2026-10-23-interrupted-calls-name-their-cause)).
 The engine waits at most 2 s for a call to stop on its own. A call still
-running then ends as cancelled with `cleanup deadline elapsed`, its late
-result is dropped, and the run records `RunCancelled` without waiting
-further. Calls in the background belong to the session, not the run, and
+running then ends as cancelled with `; cleanup deadline elapsed` added to
+that result, its late result is dropped, and the run records `RunCancelled`
+without waiting further. Calls in the background belong to the session, not the run, and
 keep running; `stop_background` stops them.
 
 ## Tool display

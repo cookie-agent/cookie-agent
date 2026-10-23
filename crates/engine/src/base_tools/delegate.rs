@@ -547,10 +547,7 @@ impl PreparedExecutor for DelegateExecutor {
                     // waiting for it.
                     context
                         .detach
-                        .reached_with(cookie_agent_runtime_api::Detachable {
-                            note: Some(detach_note(handle.child_session_id, short_id)),
-                            reports_itself: true,
-                        });
+                        .reached_with(subagent_detachable(handle.child_session_id, short_id));
                     engine
                         .await_delegate(handle)
                         .await
@@ -585,6 +582,26 @@ pub(crate) fn detach_note(
     format!(
         "[subagent session {label}] Each time its turn ends you get a <subagent_report handle=\"{label}\">. Message it with send_message; read its full output with get_subagent_result (session_id \"{label}\"); stop its turn with stop_background({label})."
     )
+}
+
+/// What a call that waits on a subagent reports at its detach point: the
+/// subagent reports itself, the immediate result carries its
+/// [`detach_note`], and a user interrupt says the subagent keeps running.
+pub(crate) fn subagent_detachable(
+    child_session_id: cookie_agent_protocol::SessionId,
+    short_id: Option<String>,
+) -> cookie_agent_runtime_api::Detachable {
+    let label = short_id
+        .clone()
+        .unwrap_or_else(|| child_session_id.to_string());
+    let note = detach_note(child_session_id, short_id);
+    cookie_agent_runtime_api::Detachable {
+        on_user_interrupt: Some(format!(
+            "The user interrupted this run. Subagent `{label}` keeps running; its <subagent_report> arrives when its turn ends.\n{note}"
+        )),
+        note: Some(note),
+        reports_itself: true,
+    }
 }
 
 fn parse_delegate(arguments: &serde_json::Value) -> Result<DelegateArgs, ToolError> {

@@ -2,7 +2,8 @@
 
 Status: **implemented** (decisions of 2026-10-16; all three phases landed 2026-10-16;
 addenda of 2026-10-22 in sections [12](#12-addendum-2026-10-22-a-parent-waits-while-its-child-can-still-wake)
-and [13](#13-addendum-2026-10-22-a-producer-wait-does-not-keep-a-session-in-memory)).
+and [13](#13-addendum-2026-10-22-a-producer-wait-does-not-keep-a-session-in-memory),
+and of 2026-10-23 in section [14](#14-addendum-2026-10-23-interrupted-calls-name-their-cause)).
 Sections 1, 7.1, and the "today" notes describe the design this replaced. This document is the
 governing specification for running supported tool calls in the background,
 whether the model asks for it or the user moves a running call there.
@@ -471,3 +472,46 @@ minutes for a root tree), since it has already waited that long.
   serve it from the in-memory summary with the live kinds added, and
   announcing a change never reloads the session. The parent propagation of
   section 12 works whether the child, the parent, or both are evicted.
+
+## 14. Addendum 2026-10-23: interrupted calls name their cause
+
+Decided by the user on 2026-10-23 and implemented the same day. Before it, a
+call its run's cancellation interrupted ended with `tool call cancelled after
+it started` (or `tool call cancelled; its work keeps running and reports
+itself` for work that reports itself), whoever cancelled the run.
+
+The run records why it was cancelled before its cancellation trips, the first
+cause winning, and every call it interrupts still ends as a cancelled, failed
+(`is_error`) result after the same 2 s cleanup grace (4.2):
+
+- **A tool may supply its own result for a user interrupt.** The
+  `Detachable` a call reports at its detach point carries an optional
+  `on_user_interrupt` text. When the user interrupts the run, the host
+  commits that text instead of its own: at once for work that reports
+  itself, otherwise only if the call winds down within the grace. A
+  foreground `delegate_subagent` and a `cron_run` waiting on its child supply
+
+  ```text
+  The user interrupted this run. Subagent `<handle>` keeps running; its <subagent_report> arrives when its turn ends.
+  [subagent session <handle>] Each time its turn ends you get a <subagent_report handle="<handle>">. ...
+  ```
+
+  The runtime protocol's `tool/detachable` carries no such text, so a
+  runtime's tool gets the generic result.
+- **Otherwise the host writes a generic result that names the cause**:
+
+  | Cause | Result |
+  |---|---|
+  | A client's `run.cancel` (the user) | `Interrupted by the user before it finished.` |
+  | Engine shutdown | `Interrupted by engine shutdown before it finished.` |
+  | The engine, with a recorded reason (a parent's `stop_background`, an abandoned delegate admission, a provider's cancelled response) | `Interrupted before it finished: <reason>.` |
+  | Another origin through `cancel_run` | ``Interrupted by `<origin>` before it finished.`` |
+
+  A call that did not wind down within the grace adds `; cleanup deadline
+  elapsed` before the final period. Work that reports itself but supplied no
+  text, or was cancelled for another cause, adds `Its work keeps running and
+  reports itself.` and its detach note.
+- Subagent reports still wake the interrupted session, as in 7.2 and 7.4:
+  the user decided not to hold them.
+- A call that completed before the run was cancelled keeps its result and
+  `cancelled_after_completion` marker unchanged.

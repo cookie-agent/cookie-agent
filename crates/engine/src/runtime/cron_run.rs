@@ -175,13 +175,10 @@ impl Engine {
             .and_then(|meta| meta.short_id);
         context
             .detach
-            .reached_with(cookie_agent_runtime_api::Detachable {
-                note: Some(crate::base_tools::delegate::detach_note(
-                    handle.child_session_id,
-                    short_id,
-                )),
-                reports_itself: true,
-            });
+            .reached_with(crate::base_tools::delegate::subagent_detachable(
+                handle.child_session_id,
+                short_id,
+            ));
         self.await_delegate(handle)
             .await
             .map(ToolCompletion::single)

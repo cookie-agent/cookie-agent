@@ -1748,6 +1748,9 @@ impl ClientInner {
                             .reached_with(cookie_agent_runtime_api::Detachable {
                                 note,
                                 reports_itself,
+                                // The runtime protocol carries no interrupt
+                                // result: the host writes its generic one.
+                                on_user_interrupt: None,
                             });
                     }
                 }

@@ -600,6 +600,7 @@ impl Engine {
             cancellation: CancellationToken::new(),
             cancelled_committed: Mutex::new(false),
             cancelled_by: Mutex::new(None),
+            cancel_cause: Mutex::new(None),
             detach_requests: Mutex::new(HashMap::new()),
             started_at: jiff::Timestamp::now(),
             fallback_index: AtomicU64::new(0),
@@ -1117,6 +1118,12 @@ impl Engine {
                 cookie_agent_protocol::ModelFinishReason::Cancelled
                     | cookie_agent_protocol::ModelFinishReason::Aborted
             ) {
+                // An aborted turn is the salvage of a cancellation whose
+                // cause is already recorded; a cancelled one is the
+                // provider's own ending.
+                active.record_cancel_cause(super::CancelCause::Reason(
+                    "the model provider cancelled its response".into(),
+                ));
                 active.cancellation.cancel();
             }
             let in_stream_results = attempt
@@ -1537,7 +1544,10 @@ impl Engine {
                 Err(ToolFailure {
                     partial_output: None,
                     code: ToolCallFailureCode::ExecutionFailed,
-                    message: "tool call cancelled after it started".into(),
+                    message: super::tool_execution::interrupted_message(
+                        active.cancel_cause().as_ref(),
+                        false,
+                    ),
                 }),
                 original_arguments,
             )

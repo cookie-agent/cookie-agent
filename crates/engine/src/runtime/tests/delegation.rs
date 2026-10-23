@@ -487,12 +487,13 @@ async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting(
             .engine
             .session_short_id(child)
             .expect("child handle");
+        // The call supplied its own result for the user's interrupt.
+        let message = termination.error.as_ref().expect("error").message.as_str();
         assert!(
-            termination.error.as_ref().is_some_and(|error| error
-                .message
-                .as_str()
-                .contains(&format!("[subagent session {handle}]"))),
-            "{termination:?}"
+            message.starts_with(&format!(
+                "The user interrupted this run. Subagent `{handle}` keeps running; its <subagent_report> arrives when its turn ends. [subagent session {handle}] "
+            )),
+            "{message}"
         );
     }
 
@@ -533,9 +534,16 @@ async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting(
         );
         assert!(body.as_plain_text().contains("complete"), "{body}");
     }
-    // The reports wake the parent; what it does with them is not this test's
-    // concern.
-    server.abort();
+    // The reports wake the parent, whose next request carries the
+    // interrupted calls' results.
+    let requests = with_watchdog("the parent woke", server)
+        .await
+        .expect("scripted server");
+    let follow_up = requests.last().expect("parent follow-up request");
+    assert!(
+        follow_up.contains("The user interrupted this run. Subagent `"),
+        "{follow_up}"
+    );
     fixture.engine.shutdown().await;
 
     // A restart does not report the turns again.
@@ -665,13 +673,12 @@ async fn cancelling_the_parent_while_its_child_starts_still_names_the_child() {
         })
         .expect("call terminated");
     assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
+    let message = termination.error.as_ref().expect("error").message.as_str();
     assert!(
-        termination.error.as_ref().is_some_and(|error| {
-            let message = error.message.as_str();
-            message.contains("keeps running and reports itself")
-                && message.contains(&format!("[subagent session {handle}]"))
-        }),
-        "{termination:?}"
+        message.starts_with(&format!(
+            "The user interrupted this run. Subagent `{handle}` keeps running; its <subagent_report> arrives when its turn ends. [subagent session {handle}] "
+        )),
+        "{message}"
     );
     server.abort();
     fixture.engine.shutdown().await;

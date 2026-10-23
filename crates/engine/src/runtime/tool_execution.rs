@@ -1089,12 +1089,21 @@ impl Engine {
                         drop(invoke);
                         hub.finalize();
                         engine.retain_finalized_output_hub(call.id);
+                        let cause = active.cancel_cause();
+                        let user_interrupt = cause == Some(super::CancelCause::User);
                         if let Some(detachable) = self_reporting {
-                            let mut message = "tool call cancelled; its work keeps running and reports itself".to_owned();
-                            if let Some(note) = detachable.note.as_deref().map(str::trim).filter(|note| !note.is_empty()) {
-                                message.push('\n');
-                                message.push_str(note);
-                            }
+                            let message = match detachable.on_user_interrupt.filter(|_| user_interrupt) {
+                                Some(message) => message,
+                                None => {
+                                    let mut message = interrupted_message(cause.as_ref(), false);
+                                    message.push_str("\nIts work keeps running and reports itself.");
+                                    if let Some(note) = detachable.note.as_deref().map(str::trim).filter(|note| !note.is_empty()) {
+                                        message.push('\n');
+                                        message.push_str(note);
+                                    }
+                                    message
+                                }
+                            };
                             let partial_output = finalize_output(capture.as_ref(), incomplete_completion(&message), true, result_truncation).await.ok().map(Box::new);
                             return Err(ToolFailure {
                                 code: ToolCallFailureCode::ExecutionFailed,
@@ -1105,12 +1114,13 @@ impl Engine {
                         if !cleanup_timed_out && let Some(result) = delegate_result {
                             return finalize_output(capture.as_ref(), result, true, result_truncation).await.map_err(ToolFailure::from);
                         }
-                        let message = if cleanup_timed_out {
-                            "tool call cancelled after it started; cleanup deadline elapsed"
-                        } else {
-                            "tool call cancelled after it started"
-                        }
-                        .to_owned();
+                        // A call that wound down within the grace may supply
+                        // its own result for a user interrupt.
+                        let message = detach_watch
+                            .current()
+                            .and_then(|detachable| detachable.on_user_interrupt)
+                            .filter(|_| user_interrupt && !cleanup_timed_out)
+                            .unwrap_or_else(|| interrupted_message(cause.as_ref(), cleanup_timed_out));
                         let partial_output = finalize_output(capture.as_ref(), incomplete_completion(&message), true, result_truncation).await.ok().map(Box::new);
                         return Err(ToolFailure {
                             code: ToolCallFailureCode::ExecutionFailed,
@@ -1388,6 +1398,37 @@ fn tool_source(source: &SourcedProvider, name: &str) -> ToolSource {
             },
             _ => ToolSource::Base,
         },
+    }
+}
+
+/// The host's result for a call its run's cancellation interrupted, naming
+/// why the run was cancelled; `cleanup_timed_out` when the call did not wind
+/// down within its cleanup grace.
+pub(super) fn interrupted_message(
+    cause: Option<&super::CancelCause>,
+    cleanup_timed_out: bool,
+) -> String {
+    let detail = if cleanup_timed_out {
+        "; cleanup deadline elapsed"
+    } else {
+        ""
+    };
+    match cause {
+        Some(super::CancelCause::User) => {
+            format!("Interrupted by the user before it finished{detail}.")
+        }
+        Some(super::CancelCause::Shutdown) => {
+            format!("Interrupted by engine shutdown before it finished{detail}.")
+        }
+        Some(super::CancelCause::Origin(origin)) => format!(
+            "Interrupted by `{}` before it finished{detail}.",
+            origin.as_str()
+        ),
+        Some(super::CancelCause::Reason(reason)) => format!(
+            "Interrupted before it finished: {}{detail}.",
+            reason.trim().trim_end_matches('.')
+        ),
+        None => format!("Interrupted before it finished: its run was cancelled{detail}."),
     }
 }
 

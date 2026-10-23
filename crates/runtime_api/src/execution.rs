@@ -402,6 +402,13 @@ pub struct Detachable {
     /// each finished turn), so the host only stops waiting: it drops the
     /// call's execution and sends no `<background_result>`.
     pub reports_itself: bool,
+    /// The result the host commits, in place of its generic one, when the
+    /// user interrupts the run while the call runs in the foreground at or
+    /// past this point: at once for work that reports itself, otherwise
+    /// once the call winds down within the cleanup grace. Other
+    /// cancellations, and a call that misses the grace, get the host's
+    /// generic result, which names their cause.
+    pub on_user_interrupt: Option<String>,
 }
 
 /// The host's side of a [`DetachPoint`].
@@ -427,7 +434,7 @@ impl DetachPoint {
     pub fn reached(&self, note: Option<String>) {
         self.reached_with(Detachable {
             note,
-            reports_itself: false,
+            ..Detachable::default()
         });
     }
 

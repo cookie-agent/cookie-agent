@@ -247,9 +247,11 @@ is, and returns once it has ended; its report follows with
 `status="cancelled"`. A queued delegation is dropped instead. Stopping an idle
 child is an error. The child can still be resumed or messaged afterwards.
 Cancelling or interrupting the parent's run does **not** stop its children: a
-foreground `delegate_subagent` call it was waiting on ends cancelled, and the
-child keeps running and reports its turn as if the call had been moved to the
-background. Result and stop operations reject sessions that are not direct
+foreground `delegate_subagent` call it was waiting on ends cancelled, with a
+result that says who interrupted the run and that the subagent keeps running
+(`The user interrupted this run. ...` for the user), and the child
+keeps running and reports its turn as if the call had been moved to the
+background; the report still wakes the parent. Result and stop operations reject sessions that are not direct
 children of the caller.
 
 The former `steer_subagent` tool is removed. Agents reach children and other
