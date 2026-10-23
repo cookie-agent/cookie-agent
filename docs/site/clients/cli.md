@@ -22,6 +22,7 @@ attaching clients to it.
 | [`cookie machine`](#cookie-machine) | List and regroup the machines the daemon's runtimes run on |
 | [`cookie memory`](#cookie-memory) | List, edit, and delete the daemon's memories |
 | [`cookie project`](#cookie-project) | List, create, rename, delete, and edit the daemon's projects |
+| [`cookie cron`](#cookie-cron) | List, create, edit, run, and delete the daemon's cron jobs |
 | [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
 | [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
 
@@ -39,9 +40,9 @@ attaching clients to it.
 ### Reaching a daemon
 
 `attach`, `web`, `connect`, `disconnect`, `config`, `machine`, `memory`,
-`project`, `mcp`, and `runtime serve --daemon` talk to a running daemon. Each
-takes `--url` and `--token`; for `config`, `machine`, `memory`, and `project`
-the two may also follow the nested subcommand. They resolve the daemon this way:
+`project`, `cron`, `mcp`, and `runtime serve --daemon` talk to a running
+daemon. Each takes `--url` and `--token`; for `config`, `machine`, `memory`,
+`project`, and `cron` the two may also follow the nested subcommand. They resolve the daemon this way:
 
 - **URL:** `--url`, else `[server] url` in this machine's `config.toml`, else
   the local daemon that table describes, `ws://<host>:<port>/ws`. The URL must
@@ -380,6 +381,92 @@ changed since it was opened offers to reload it and edit again.
 `cookie project defaults <NAME> --from-session <SESSION_ID>` sets the
 project's defaults from a session: its runtime attachments, whether it has
 `global`, and its agent and agent preset.
+
+### `cookie cron`
+
+```text
+cookie cron <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Manages the daemon's cron jobs: prompts it fires on a schedule into a
+session, or into a new session per fire. See
+[Scheduling prompts](../sessions/scheduling.md). The daemon needs client
+protocol 1.15 or later; an older one is refused with a message saying so.
+Times are printed in this machine's time zone; cron expressions are the
+daemon host's local time.
+
+#### `cookie cron list`
+
+`cookie cron list` prints two lines per job: its ID, its name (or the start
+of its prompt), and why it is disabled; then its schedule read plainly (such
+as `every day at 03:00`), its next fire, its target, and the outcome of its
+last fire. When `[cron] enabled = false` holds on the daemon, a first line
+says jobs do not fire.
+
+#### `cookie cron show`
+
+`cookie cron show <ID>` prints a job: its schedule and its plain reading,
+target, state, next fire, runs against its limit, delivery or agent, model
+pin, and permission mode, failures in a row, who created it and when; then
+its prompt and its history, newest first, with each fire's outcome and the
+session it went to.
+
+#### `cookie cron create`
+
+```text
+cookie cron create --prompt <TEXT> --schedule <SCHEDULE>
+                   (--session <SESSION_ID> [--delivery steer|queue]
+                    | --agent <AGENT> [--model <MODEL>] [--permission-mode <MODE>] [--project <NAME>])
+                   [--name <NAME>] [--max-runs <RUNS>] [--disabled]
+```
+
+Creates a job and prints its ID and next fire.
+
+| Option | Meaning |
+|---|---|
+| `--prompt <TEXT>` | What each fire sends. |
+| `--schedule <SCHEDULE>` | Five cron fields in the daemon host's local time, such as `"0 3 * * *"`, or a delay, such as `"in 20m"` (`s`, `m`, `h`, or `d`, from `1s` to `365d`), which fires once. |
+| `--name <NAME>` | What lists show instead of the prompt's start. |
+| `--max-runs <RUNS>` | Cron schedules only: the fires the job delivers, a whole number from 1 or `unlimited`; 1 when omitted. |
+| `--session <SESSION_ID>` | Fire into this session, a root or a delegated one. |
+| `--delivery <MODE>` | With `--session`: `queue` (after the running turn, the default) or `steer` (into it). |
+| `--agent <AGENT>` | Start a new session with this agent per fire instead. |
+| `--model <MODEL>` | With `--agent`: pin `provider/model` or `provider/model[variant]`; the agent's own models otherwise. |
+| `--permission-mode <MODE>` | With `--agent`: the run sessions' mode, spelled as for `cookie run`; `auto-approve-n` when omitted. |
+| `--project <NAME>` | With `--agent`: the project the run sessions belong to. |
+| `--disabled` | Create the job disabled. |
+
+#### `cookie cron edit`
+
+`cookie cron edit <ID> [OPTIONS]` changes a job; only what the options give
+changes, and an edit that changes nothing says so. It takes `--prompt`,
+`--schedule`, `--name` (empty removes the name), `--max-runs`, `--session`
+(fire into that session instead), `--delivery`, `--agent` (start a new
+session with that agent per fire, or change a new-session job's agent),
+`--model` (empty removes the pin), and `--permission-mode`. A new schedule
+computes the next fire from now.
+
+#### `cookie cron rm`
+
+`cookie cron rm <ID> [-y | --yes]` deletes a job, asking first unless
+`--yes`. Its run sessions stay.
+
+#### `cookie cron enable`
+
+`cookie cron enable <ID>` enables a job: its next fire is computed from now,
+its failure count resets, and a finished job's run count starts again. A
+one-shot whose time has passed needs a new `--schedule` first.
+
+#### `cookie cron disable`
+
+`cookie cron disable <ID>` disables a job; it keeps its history.
+
+#### `cookie cron run`
+
+`cookie cron run <ID>` fires a job now, as its schedule would, and prints
+the fire's outcome and the session it went to. A run now counts toward
+neither the job's run limit nor its failures, and fires even with
+`[cron] enabled = false`.
 
 ### `cookie sessions upgrade`
 

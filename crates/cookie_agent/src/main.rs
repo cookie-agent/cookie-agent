@@ -284,6 +284,26 @@ enum Command {
         )]
         token: Option<String>,
     },
+    /// List, create, edit, run, and delete a daemon's cron jobs: prompts
+    /// it fires on a schedule into a session or a new session.
+    Cron {
+        #[command(subcommand)]
+        command: cron_command::CronCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
     /// Manage the session history this machine stores.
     Sessions {
         #[command(subcommand)]
@@ -685,6 +705,14 @@ async fn main_result(cli: Cli) -> anyhow::Result<()> {
             let target = daemon_target(url, token)?;
             project_command::run_project(&target.url, &target.token, command).await
         }
+        Some(Command::Cron {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            cron_command::run_cron(&target.url, &target.token, command).await
+        }
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
@@ -741,6 +769,7 @@ fn local_workspace(
                 | Command::Machine { .. }
                 | Command::Memory { .. }
                 | Command::Project { .. }
+                | Command::Cron { .. }
                 | Command::Runtime { .. },
         )
     ) {
@@ -2155,6 +2184,7 @@ fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
 }
 
 mod config_command;
+mod cron_command;
 mod local_daemon;
 mod machine_command;
 mod memory_command;
