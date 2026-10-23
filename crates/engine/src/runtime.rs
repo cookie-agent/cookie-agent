@@ -1521,7 +1521,7 @@ impl Engine {
     /// Reloads the provider store when it changed on disk and publishes the
     /// runtime it compiles to. Waits for a runtime change in progress, so
     /// what follows sees the runtime that change publishes; async callers
-    /// use [`Self::reconcile_provider_store_off_worker`].
+    /// use `reconcile_provider_store_off_worker`.
     pub fn reconcile_provider_store(&self) -> Result<bool, EngineError> {
         let mutation = self
             .inner
