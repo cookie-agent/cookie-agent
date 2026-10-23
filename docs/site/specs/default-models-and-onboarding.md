@@ -31,10 +31,11 @@ to implement.
 - `cookie onboard` installs it and writes a persistent `onboarded` marker;
   the daemon answers whether it is onboarded, so the TUI and the web client
   offer onboarding only until then.
-- **Onboarding requires a connected provider and `default_model`**
-  (decided 2026-10-23): it completes only once at least one model provider
-  is connected and `default_model` names one of its available models.
-  `small_model` and the kit stay optional.
+- **Onboarding requires a connected provider, `default_model`, and
+  `small_model`** (decided 2026-10-23): it completes only once at least one
+  model provider is connected and both fields name available models of the
+  connected providers (they may name the same model). The kit stays
+  optional.
 - **Any client can onboard** (decided 2026-10-23): everything onboarding does
   is a daemon RPC (section 8), so the TUI, the web client, `cookie onboard`,
   and any third-party client do it the same way, with no client-side file
@@ -153,10 +154,10 @@ cookie onboard [--from <file>] [--diff] [--yes]
   `--diff` prints what would change and writes nothing.
 - **Steps:** connect a provider when none is connected (the existing
   `provider.connect`, with its auth methods), choose `default_model` from the
-  connected providers' available models (required), optionally
-  `small_model`, then optionally install the kit. The flags answer the
-  questions; with `--yes` and no `--default-model` it refuses rather than
-  guess.
+  connected providers' available models, then `small_model` the same way
+  (both required), then optionally install the kit. The flags answer the
+  questions; with `--yes` and no `--default-model` or `--small-model` it
+  refuses rather than guess.
 - **The marker:** on success writes `~/.cookie-agent/onboarded`, a small JSON
   file (`{"version": 1, "at": "…", "cookie": "0.3.0", "kit": "…"}`). Running
   `cookie onboard` again works and updates the marker.
@@ -170,8 +171,9 @@ branches on the kind of client asking.
 
 - `onboarding.get` → `{ onboarded, at?, cookie_version?, kit_version?,
   providers_connected, default_model?, missing }`, where `missing` lists what
-  completing still needs: `provider` (no provider connected) and
-  `default_model` (unset, or naming a model no connected provider offers).
+  completing still needs: `provider` (no provider connected),
+  `default_model`, and `small_model` (unset, or naming a model no connected
+  provider offers).
 - `onboarding.preview { source? }` → the kit's version and, per file, what
   installing would do (`write`, `skip` as identical, `write_new` beside a
   changed file) with a diff for changed files. `source` is `release`
@@ -184,8 +186,8 @@ branches on the kind of client asking.
   set, then the marker. Model values use the configuration's shapes and are
   checked like `config.apply`. **It refuses** (error `onboarding_incomplete`,
   naming what is `missing`) when, after applying its own fields, no provider
-  is connected or `default_model` does not name an available model; nothing
-  is written then, kit included.
+  is connected or `default_model` or `small_model` does not name an available
+  model; nothing is written then, kit included.
 - Providers are connected with the existing `provider.connect` and
   `provider.disconnect`; onboarding adds no provider call of its own.
 - `onboarding.dismiss` writes the marker without the requirements, for a
@@ -198,8 +200,8 @@ branches on the kind of client asking.
 ## 9. Clients
 
 - **TUI:** on connecting to a daemon that is not onboarded, a notice offers
-  onboarding (connect a provider, pick `default_model` and optionally
-  `small_model`, preview and install the kit) or skipping it; `/onboard`
+  onboarding (connect a provider, pick `default_model` and `small_model`,
+  preview and install the kit) or skipping it; `/onboard`
   opens it later. Finishing is disabled until `missing` is empty.
 - **Web:** the same as a first-run sheet, and an entry in Settings.
 - **`cookie onboard`:** the same steps in a terminal (section 7).
@@ -218,7 +220,7 @@ branches on the kind of client asking.
 - Onboarding: install into an empty root, `.new` beside a changed file,
   identical files skipped, `--diff`, hash mismatch refused, the marker,
   `onboarding.run` refused without a provider or an available
-  `default_model` (and writing nothing), `missing` in `onboarding.get`,
+  `default_model` or `small_model` (and writing nothing), `missing` in `onboarding.get`,
   `onboarding.get/preview/run/dismiss` from a plain protocol client (no TUI
   or web code), an uploaded archive as the source, the TUI notice, the web
   sheet.
