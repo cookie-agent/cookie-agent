@@ -1791,7 +1791,7 @@ list_agents(for?: "delegate" | "cron")
 Description sent to the model:
 
 ```text
-List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules a run of it starts with, the daemon's defaults marked (default). Leave `for` out to list both.
+List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. Leave `for` out to list both.
 ```
 
 Only when the session has the `global` runtime attached and the run is offered `delegate_subagent` or a cron tool. It has no permission of its own.
@@ -1821,13 +1821,21 @@ Only when the session has the `global` runtime attached and the run is offered `
 
 <!-- /generated -->
 
-`list_agents` reads the agent registry of the calling run's preset. Each
-agent shows its mode, description, presets, models, what it is usable for,
-and the permission rules a run of it starts with: its document's rules and
-the daemon's defaults for the actions it names no key for, marked
-`(default)`. An agent usable both as a delegation target and for a
-new-session job shows its rules as a root run and as a subagent when they
-differ ([cron spec](../specs/cron.md) section 8.1).
+`list_agents` reads the agent registry of the calling run's preset. For
+`delegate` it lists the run's delegation targets; for `cron` every enabled
+`primary` or `all` agent, the ones a new-session job can run. Each agent
+shows its mode, description, presets, models, what it is usable for, and
+the permission keys its document declares, each in full with `${agent_id}`
+written as the agent's ID; the actions it names no key for, which get the
+daemon's defaults, share one `defaults:` line. An agent usable both as a
+delegation target and for a new-session job shows its rules as a root run
+and as a subagent when they differ, each block with its own `defaults:`
+line. After the agents comes the defaults section, once: what the defaults
+are for a root run and for a subagent (as the listed agents need them),
+which ones only some modes get, and what `${session_machine}`,
+`${session_project}`, and `${workspace_dir}` stand for. The result ends
+with `Actions not listed are denied.` ([cron spec](../specs/cron.md)
+section 8.1).
 
 ## Cron tools
 

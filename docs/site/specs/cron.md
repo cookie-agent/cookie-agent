@@ -324,14 +324,24 @@ is and which permissions it starts with.
 - **Which agents:**
   - for `delegate`: the run's delegation targets (enabled `subagent` and
     `all` agents its `delegate` rules allow), at its remaining depth;
-  - for `cron`: every enabled non-internal agent, since a new-session job
-    may run any of them.
+  - for `cron`: every enabled `primary` or `all` agent, the ones a
+    new-session job may run (amended 2026-10-23; it first listed every
+    non-internal agent, `subagent` ones included, which `cron_create`
+    refuses).
 - **Each agent:** its id, description, mode, presets, the models of its
   default chain (provider/model and variant), and its permission rules as
-  a run of it would have them: its own document's rules plus the defaults
-  for an action it names no key for, with each rule marked `document` or
-  `default`. Memory and cron defaults are shown for a root run, the
-  delegated defaults for a delegation.
+  a run of it would have them: each key its document declares in full,
+  with `${agent_id}` written as the agent's ID, then one `defaults:` line
+  naming the actions it names no key for, whose rules are the daemon's
+  defaults. Memory and cron defaults are those of a root run, the delegated
+  ones for a delegation; an agent usable for both shows each block, with
+  its own `defaults:` line, when they differ.
+- **After the agents**, once per result: the defaults section, generated
+  from the default-rule functions themselves, listing the defaults for a
+  root run and for a subagent (only the kinds the listed agents need), the
+  ones only some modes get, that internal agents get none, and what
+  `${session_machine}`, `${session_project}`, and `${workspace_dir}` stand
+  for. The result ends with `Actions not listed are denied.`
 - **Example result:**
 
   ```text
@@ -344,8 +354,19 @@ is and which permissions it starts with.
       bash: allow
       webfetch: allow
       mcp: my_chrome_* allow
-      list_runtimes: allow (default)
-      memory: * allow (default) ...
+      defaults: list_runtimes, memory, memory_write, cron
+
+  Defaults (for actions an agent document names no key for):
+    as a root run:
+      list_runtimes: allow
+      mcp: ask
+      memory: allow
+      memory_write: user://* allow; agent://<agent id> allow; machine://${session_machine}/* allow; project://${session_project}/* allow
+      cron: allow
+    Internal agents get none.
+    Variables: ${session_machine} is each machine the session's attachments run on; ${session_project} is the session's project; ${workspace_dir} is the session's workspace.
+
+  Actions not listed are denied.
   ```
 
 ### 8.2 `cron_run`
@@ -607,10 +628,16 @@ Decisions taken where the spec left room, and deviations:
 - **`list_agents`** is published exactly when the run's tools include
   `delegate_subagent` or a cron tool other than `cron_list`; its prepared
   operation names no permission. For a run offered the cron tools it lists
-  every enabled non-internal agent of the run's preset, as section 8.1 says,
-  including `subagent`-mode ones, which a new-session job refuses; the mode
-  is shown. An agent usable for both shows its rules as a root run and as a
-  subagent when they differ. Memory rule variables are shown unexpanded.
+  every enabled `primary` or `all` agent of the run's preset. An agent
+  usable for both shows its rules as a root run and as a subagent when they
+  differ. As first landed it listed `subagent` agents for `cron` too and
+  marked each default rule `(default)` in full; amended 2026-10-23 (section
+  8.1): only agents a job can run, default-only actions collapsed into one
+  `defaults:` line per block, `${agent_id}` expanded in an agent's own
+  block, a defaults section generated from the default-rule functions
+  (mode, memory, and cron defaults) after the agents, which also explains
+  `${session_machine}`, `${session_project}`, and `${workspace_dir}`, and a
+  closing `Actions not listed are denied.`
 - **`cron_run` of a new-session job** goes through `delegate_subagent`'s
   path: the call's template (rules, attachments, job) waits in
   `DelegationRuntimeState::cron_runs` by tool call ID while the child is

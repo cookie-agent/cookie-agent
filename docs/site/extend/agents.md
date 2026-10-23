@@ -967,9 +967,11 @@ more rights than its own. Grant it to a subagent deliberately.
 **`list_agents`.** Whenever a run is offered `delegate_subagent` or a cron
 tool other than `cron_list`, the `global` runtime also offers `list_agents`,
 which has no action of its own: for `delegate` it lists the run's delegation
-targets, for `cron` every enabled agent that is not internal, each with its
-mode, description, presets, models, and its permission rules as a run of it
-would start with them, the daemon's defaults marked `(default)`. See
+targets, for `cron` every enabled `primary` or `all` agent (the ones a
+new-session job can run), each with its mode, description, presets, models,
+and the permission keys its document declares; the actions left to the
+daemon's defaults share one `defaults:` line, and the defaults are listed
+once at the end. See
 [`list_agents`](../reference/tools.md#list_agents).
 
 ### Listing runtimes

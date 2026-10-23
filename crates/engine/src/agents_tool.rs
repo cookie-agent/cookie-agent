@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use cookie_agent_protocol::{
     AgentId, ApprovalResourceSource, PermissionAction, PermissionRule,
     PersistedToolResult as ToolResult, PreparedBindingLifetime, RunId, RuntimeId, SessionId,
+    WildcardPattern,
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolConcurrency,
@@ -33,7 +34,7 @@ use crate::{Engine, runtime::Inner};
 pub(crate) const PROVIDER_ID: &str = "builtin.agents";
 pub(crate) const LIST_AGENTS: &str = "list_agents";
 
-const DESCRIPTION: &str = "List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules a run of it starts with, the daemon's defaults marked (default). Leave `for` out to list both.";
+const DESCRIPTION: &str = "List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. Leave `for` out to list both.";
 
 /// What an agent is listed for.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -122,21 +123,22 @@ const fn effect_name(effect: cookie_agent_protocol::PermissionEffect) -> &'stati
 }
 
 /// `rules` grouped by key (`action` or `action@runtime`) in first-seen
-/// order, each line marked `(default)` when the daemon supplied its rules.
-fn permission_lines(rules: &[(PermissionRule, bool)]) -> Vec<String> {
-    let mut keys = Vec::<(String, Vec<&PermissionRule>, bool)>::new();
-    for (rule, default) in rules {
+/// order, each with its rules' text: `allow` for a lone `*` rule, else
+/// `pattern effect` per rule, joined by `; `.
+fn key_lines<'a>(rules: impl IntoIterator<Item = &'a PermissionRule>) -> Vec<(String, String)> {
+    let mut keys = Vec::<(String, Vec<&PermissionRule>)>::new();
+    for rule in rules {
         let key = match &rule.runtime {
             Some(runtime) => format!("{}@{runtime}", rule.action),
             None => rule.action.to_string(),
         };
-        match keys.iter_mut().find(|(existing, ..)| *existing == key) {
-            Some((_, group, _)) => group.push(rule),
-            None => keys.push((key, vec![rule], *default)),
+        match keys.iter_mut().find(|(existing, _)| *existing == key) {
+            Some((_, group)) => group.push(rule),
+            None => keys.push((key, vec![rule])),
         }
     }
     keys.into_iter()
-        .map(|(key, group, default)| {
+        .map(|(key, group)| {
             let text = if let [rule] = group[..]
                 && rule.resource.as_str() == "*"
             {
@@ -148,10 +150,127 @@ fn permission_lines(rules: &[(PermissionRule, bool)]) -> Vec<String> {
                     .collect::<Vec<_>>()
                     .join("; ")
             };
-            let mark = if default { " (default)" } else { "" };
-            format!("{key}: {text}{mark}")
+            (key, text)
         })
         .collect()
+}
+
+/// The permission lines of a run of `agent` with `rules`, each marked
+/// whether the daemon supplied it: one line per key the document declares,
+/// with `${agent_id}` expanded to `agent`, then one `defaults:` line naming
+/// the actions whose rules are all the daemon's defaults.
+fn permission_lines(agent: &AgentId, rules: &[(PermissionRule, bool)]) -> Vec<String> {
+    let [agent_id, ..] = WildcardPattern::MEMORY_VARIABLES;
+    let mut lines = key_lines(
+        rules
+            .iter()
+            .filter(|(_, default)| !default)
+            .map(|(rule, _)| rule),
+    )
+    .into_iter()
+    .map(|(key, text)| format!("{key}: {}", text.replace(agent_id, agent.as_str())))
+    .collect::<Vec<_>>();
+    let mut defaults = Vec::<&str>::new();
+    for (rule, _) in rules.iter().filter(|(_, default)| *default) {
+        if !defaults.contains(&rule.action.as_str()) {
+            defaults.push(rule.action.as_str());
+        }
+    }
+    if !defaults.is_empty() {
+        lines.push(format!("defaults: {}", defaults.join(", ")));
+    }
+    lines
+}
+
+/// The defaults section of `list_agents`: the daemon's default rules for a
+/// root run (of a `primary` or `all` agent) when `root`, and for a subagent
+/// (of a `subagent` or `all` agent) when `subagent`, each line noting the
+/// modes it is limited to, from the same functions that supply them to runs
+/// ([`crate::permissions::run_default_rules`]). `${agent_id}` reads as
+/// `<agent id>`.
+fn defaults_section(root: bool, subagent: bool) -> Vec<String> {
+    use cookie_agent_config::AgentMode;
+    let [agent_id, ..] = WildcardPattern::MEMORY_VARIABLES;
+    let mut lines = vec!["Defaults (for actions an agent document names no key for):".to_owned()];
+    let kinds = [
+        (
+            root,
+            "as a root run",
+            false,
+            [AgentMode::All, AgentMode::Primary],
+        ),
+        (
+            subagent,
+            "as a subagent",
+            true,
+            [AgentMode::All, AgentMode::Subagent],
+        ),
+    ];
+    for (_, title, delegated, modes) in kinds.into_iter().filter(|(shown, ..)| *shown) {
+        // Each key's text, with the modes that get it, in first-seen order;
+        // `all` agents come first, as they have every default either kind
+        // has.
+        let mut entries = Vec::<(String, String, Vec<AgentMode>)>::new();
+        for mode in modes {
+            let rules = crate::permissions::run_default_rules(mode, delegated);
+            for (key, text) in key_lines(&rules) {
+                match entries
+                    .iter_mut()
+                    .find(|(existing, existing_text, _)| *existing == key && *existing_text == text)
+                {
+                    Some((.., with)) => with.push(mode),
+                    None => entries.push((key, text, vec![mode])),
+                }
+            }
+        }
+        lines.push(format!("  {title}:"));
+        for (key, text, with) in entries {
+            let text = text.replace(agent_id, "<agent id>");
+            if with.len() == modes.len() {
+                lines.push(format!("    {key}: {text}"));
+            } else {
+                let names = with.iter().map(|mode| mode_name(*mode)).collect::<Vec<_>>();
+                lines.push(format!(
+                    "    {key}: {text} (only agents of mode {})",
+                    names.join(" or ")
+                ));
+            }
+        }
+    }
+    if crate::permissions::run_default_rules(AgentMode::Internal, false).is_empty()
+        && crate::permissions::run_default_rules(AgentMode::Internal, true).is_empty()
+    {
+        lines.push("  Internal agents get none.".to_owned());
+    }
+    lines
+}
+
+/// What each rule variable that `text` uses stands for, as one line.
+fn variables_line(text: &str) -> Option<String> {
+    let [_, session_machine, session_project] = WildcardPattern::MEMORY_VARIABLES;
+    let meanings = [
+        (
+            session_machine,
+            "each machine the session's attachments run on",
+        ),
+        (session_project, "the session's project"),
+        (
+            WildcardPattern::WORKSPACE_DIR_EXPRESSION,
+            "the session's workspace",
+        ),
+    ]
+    .into_iter()
+    .filter(|(variable, _)| text.contains(variable))
+    .map(|(variable, meaning)| format!("{variable} is {meaning}"))
+    .collect::<Vec<_>>();
+    (!meanings.is_empty()).then(|| format!("  Variables: {}.", meanings.join("; ")))
+}
+
+fn mode_name(mode: cookie_agent_config::AgentMode) -> String {
+    serde_json::to_value(mode)
+        .ok()
+        .and_then(|mode| mode.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 impl Engine {
@@ -213,6 +332,7 @@ pub(crate) fn render_agent_list(
             .collect::<Vec<_>>()
     };
     let mut output = String::new();
+    let (mut shows_root, mut shows_subagent) = (false, false);
     for (id, agent) in policy.registry.agents() {
         let frontmatter = &agent.document.frontmatter;
         if !frontmatter.enabled || frontmatter.mode == cookie_agent_config::AgentMode::Internal {
@@ -222,16 +342,19 @@ pub(crate) fn render_agent_list(
         if wants(Use::Delegate) && delegate_targets.contains(id) {
             uses.push("delegate");
         }
-        if wants(Use::Cron) && cron_offered {
+        // A new-session job runs its agent as a root, which only `primary`
+        // and `all` agents can be (cron_create refuses the others).
+        let runs_as_root = matches!(
+            frontmatter.mode,
+            cookie_agent_config::AgentMode::Primary | cookie_agent_config::AgentMode::All
+        );
+        if wants(Use::Cron) && cron_offered && runs_as_root {
             uses.push("cron");
         }
         if uses.is_empty() {
             continue;
         }
-        let mode = serde_json::to_value(frontmatter.mode)
-            .ok()
-            .and_then(|mode| mode.as_str().map(str::to_owned))
-            .unwrap_or_default();
+        let mode = mode_name(frontmatter.mode);
         let _ = writeln!(output, "{id} ({mode}) — {}", frontmatter.description);
         let presets = presets_of(id);
         if !presets.is_empty() {
@@ -268,17 +391,27 @@ pub(crate) fn render_agent_list(
             (true, _) => vec![("permissions", root)],
             (false, _) => vec![("permissions", delegated)],
         };
+        shows_root |= uses.contains(&"cron");
+        shows_subagent |= uses.contains(&"delegate");
         for (title, rules) in blocks {
             let _ = writeln!(output, "  {title}:");
-            for line in permission_lines(&rules) {
+            for line in permission_lines(id, &rules) {
                 let _ = writeln!(output, "    {line}");
             }
         }
     }
     if output.is_empty() {
-        output.push_str("No agents are usable from here.");
+        return "No agents are usable from here.".to_owned();
     }
-    output.trim_end().to_owned()
+    output.push('\n');
+    for line in defaults_section(shows_root, shows_subagent) {
+        let _ = writeln!(output, "{line}");
+    }
+    if let Some(line) = variables_line(&output) {
+        let _ = writeln!(output, "{line}");
+    }
+    output.push_str("\nActions not listed are denied.");
+    output
 }
 
 #[async_trait]

@@ -821,52 +821,104 @@ async fn agents_target_only_themselves_and_sessions_below_them() {
     assert_eq!(template.project, None);
 }
 
+/// `list_agents` for a primary agent with declared keys, a `subagent`
+/// agent (delegation only: a new-session job cannot run it), and an `all`
+/// agent (both uses, so a root block and a subagent block): declared keys in
+/// full with `${agent_id}` expanded, default-only actions on one line per
+/// block, the defaults once at the end, and the closing line.
 #[tokio::test]
-async fn list_agents_shows_each_agents_uses_and_marks_default_rules() {
+async fn list_agents_shows_declared_rules_and_collapses_the_defaults() {
     let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
-    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let primary = "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  write:\n    \"${workspace_dir}/*\": allow\n    \"*\": ask\n  memory_write:\n    \"agent://${agent_id}\": allow\n  delegate:\n    worker: allow\n    helper: allow\n---\nPrimary prompt.\n";
+    let helper = "---\ndescription: Helper test agent\nmode: all\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: ask\n---\nHelper prompt.\n";
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        &endpoint,
+        primary,
+        Some(("helper.md", helper)),
+        None,
+        false,
+    );
     let policy = frozen_root_policy(&fixture, &selection);
     let runtime = fixture.engine.current_runtime();
     let overlay = cookie_agent_protocol::SessionPermissionOverlay::default();
-    let listing = crate::agents_tool::render_agent_list(&policy, &overlay, 0, None, &runtime);
-    assert!(
-        listing.contains("primary (primary) — Primary test agent"),
-        "{listing}"
-    );
-    assert!(
-        listing.contains("worker (subagent) — Worker test agent"),
-        "{listing}"
-    );
-    assert!(listing.contains("    cron: allow (default)"), "{listing}");
-    assert!(
-        listing.contains("    delegate: worker allow\n"),
-        "{listing}"
-    );
-    assert!(
-        listing.contains("    list_runtimes: allow (default)"),
-        "{listing}"
-    );
-    // The worker is a delegation target and, like any agent, usable for a
-    // new-session job; as a subagent it has no cron default.
-    assert!(listing.contains("usable for: delegate, cron"), "{listing}");
-    assert!(listing.contains("permissions as a subagent:"), "{listing}");
+    let list =
+        |filter| crate::agents_tool::render_agent_list(&policy, &overlay, 0, filter, &runtime);
+    assert_eq!(
+        list(None),
+        "\
+helper (all) — Helper test agent
+  models: custom.test/group/model
+  usable for: delegate, cron
+  permissions as a root run:
+    bash: ask
+    defaults: list_runtimes, mcp, memory, memory_write, cron
+  permissions as a subagent:
+    bash: ask
+    defaults: list_runtimes, mcp, memory, memory_write
+primary (primary) — Primary test agent
+  models: custom.test/group/model
+  usable for: cron
+  permissions:
+    read: allow
+    write: ${workspace_dir}/* allow; * ask
+    memory_write: agent://primary allow
+    delegate: worker allow; helper allow
+    defaults: list_runtimes, mcp, memory, cron
+worker (subagent) — Worker test agent
+  models: custom.test/group/model
+  usable for: delegate
+  permissions:
+    defaults: mcp, memory, memory_write
 
-    let delegate_only = crate::agents_tool::render_agent_list(
-        &policy,
-        &overlay,
-        0,
-        Some(crate::agents_tool::Use::Delegate),
-        &runtime,
+Defaults (for actions an agent document names no key for):
+  as a root run:
+    list_runtimes: allow
+    mcp: ask
+    memory: allow
+    memory_write: user://* allow; agent://<agent id> allow; machine://${session_machine}/* allow; project://${session_project}/* allow
+    cron: allow
+  as a subagent:
+    list_runtimes: allow (only agents of mode all)
+    mcp: ask
+    memory: agent://<agent id> allow
+    memory_write: agent://<agent id> allow
+  Internal agents get none.
+  Variables: ${session_machine} is each machine the session's attachments run on; ${session_project} is the session's project; ${workspace_dir} is the session's workspace.
+
+Actions not listed are denied."
     );
-    assert!(
-        !delegate_only.contains("primary (primary)"),
-        "{delegate_only}"
+    // For delegation only: the subagent-side defaults alone.
+    assert_eq!(
+        list(Some(crate::agents_tool::Use::Delegate)),
+        "\
+helper (all) — Helper test agent
+  models: custom.test/group/model
+  usable for: delegate
+  permissions:
+    bash: ask
+    defaults: list_runtimes, mcp, memory, memory_write
+worker (subagent) — Worker test agent
+  models: custom.test/group/model
+  usable for: delegate
+  permissions:
+    defaults: mcp, memory, memory_write
+
+Defaults (for actions an agent document names no key for):
+  as a subagent:
+    list_runtimes: allow (only agents of mode all)
+    mcp: ask
+    memory: agent://<agent id> allow
+    memory_write: agent://<agent id> allow
+  Internal agents get none.
+
+Actions not listed are denied."
     );
-    assert!(
-        delegate_only.contains("worker (subagent)"),
-        "{delegate_only}"
-    );
-    assert!(!delegate_only.contains("cron: allow"), "{delegate_only}");
+    // For cron: only the agents a new-session job can run.
+    let cron = list(Some(crate::agents_tool::Use::Cron));
+    assert!(cron.starts_with("helper (all)"), "{cron}");
+    assert!(cron.contains("\nprimary (primary)"), "{cron}");
+    assert!(!cron.contains("worker (subagent)"), "{cron}");
+    assert!(!cron.contains("as a subagent"), "{cron}");
 }
 
 #[test]
