@@ -72,7 +72,7 @@ pub(crate) fn preview_to_wire(preview: KitPreview) -> OnboardingPreviewResult {
             .files
             .into_iter()
             .map(|file| OnboardingKitFile {
-                path: file.path.as_string(),
+                path: file.path.as_str().to_owned(),
                 action: match file.action {
                     KitFileAction::Write => OnboardingFileAction::Write,
                     KitFileAction::Skip => OnboardingFileAction::Skip,

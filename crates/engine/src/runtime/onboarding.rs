@@ -14,12 +14,11 @@ use std::{
 
 use cookie_agent_config::{
     ConfigTree, ConfiguredModel, EngineConfig, load_from_tree, write_beside, write_tree,
-    write_user_file,
 };
 use cookie_agent_identity::ProviderId;
 use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
 
-pub use kit::{Kit, KitError, KitFileAction, KitFilePlan, KitManifest, KitPath};
+pub use kit::{Kit, KitError, KitFileAction, KitFilePlan, KitManifest};
 
 use super::configuration::config_error;
 use crate::{Engine, EngineError};
@@ -211,7 +210,7 @@ impl Engine {
         let plan_kit = Arc::clone(&kit);
         let files = super::blocking_io::run(move || {
             let tree = ConfigTree::read(Some(&root)).map_err(config_error)?;
-            Ok::<_, EngineError>(plan_kit.plan(&tree, Some(&root)))
+            Ok::<_, EngineError>(plan_kit.plan(&tree))
         })
         .await
         .map_err(|error| EngineError::Runtime(error.to_string()))??;
@@ -245,12 +244,9 @@ impl Engine {
         let (outcome, loaded) = super::blocking_io::run(move || {
             let tree = ConfigTree::read(Some(&root)).map_err(config_error)?;
             let mut candidate = tree.clone();
-            let plan = kit
-                .as_ref()
-                .map(|kit| kit.plan(&tree, Some(&root)))
-                .unwrap_or_default();
+            let plan = kit.as_ref().map(|kit| kit.plan(&tree)).unwrap_or_default();
             if let Some(kit) = &kit {
-                for (path, bytes) in kit.config_files() {
+                for (path, bytes) in &kit.files {
                     if candidate.get(path).is_none() {
                         candidate
                             .put(path.clone(), bytes.clone())
@@ -293,15 +289,9 @@ impl Engine {
             };
             if let Some(kit) = &kit {
                 for file in plan {
-                    let path = file.path.as_string();
+                    let path = file.path.as_str().to_owned();
                     match file.action {
-                        KitFileAction::Write => {
-                            if let KitPath::Skill(_) = &file.path {
-                                write_user_file(&root, &path, None, &kit.files[&file.path])
-                                    .map_err(config_error)?;
-                            }
-                            outcome.written.push(path);
-                        }
+                        KitFileAction::Write => outcome.written.push(path),
                         KitFileAction::Skip => outcome.skipped.push(path),
                         KitFileAction::WriteNew => {
                             write_beside(&root, &path, &kit.files[&file.path])

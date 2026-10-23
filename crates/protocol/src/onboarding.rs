@@ -116,8 +116,7 @@ pub enum OnboardingFileAction {
 /// One kit file against the daemon's user root.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct OnboardingKitFile {
-    /// Below the user root: `config.toml`, `agents/<id>.md`, or
-    /// `skills/<name>/SKILL.md`.
+    /// Below the user root: `config.toml` or `agents/<id>.md`.
     pub path: String,
     pub action: OnboardingFileAction,
     /// For `write_new`, a unified diff from the file to the kit's version.

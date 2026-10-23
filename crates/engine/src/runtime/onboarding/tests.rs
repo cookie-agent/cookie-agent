@@ -5,7 +5,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     KitSource, OnboardingRequest, OnboardingRequirement,
-    kit::{Kit, KitError, KitFileAction, KitPath, pack},
+    kit::{Kit, KitError, KitFileAction, pack},
 };
 use crate::{
     EngineError,
@@ -50,13 +50,16 @@ fn the_shipped_kit_matches_its_manifest_and_loads_with_this_build() {
              scripts/pack-defaults.sh --update-manifest"
         )
     });
-    let paths = kit.files.keys().map(KitPath::as_string).collect::<Vec<_>>();
+    let paths = kit
+        .files
+        .keys()
+        .map(|path| path.as_str().to_owned())
+        .collect::<Vec<_>>();
     for expected in [
         "config.toml",
         "agents/primary.md",
         "agents/explore.md",
         "agents/worker.md",
-        "skills/customize-cookie-agent/SKILL.md",
     ] {
         assert!(paths.iter().any(|path| path == expected), "{expected}");
     }
@@ -72,7 +75,7 @@ fn the_kit_agents_are_the_root_and_its_two_subagents() {
 
     let kit = Kit::from_files(defaults_files()).expect("kit");
     let mut tree = ConfigTree::new(None);
-    for (path, bytes) in kit.config_files() {
+    for (path, bytes) in &kit.files {
         tree.put(path.clone(), bytes.clone()).expect("put");
     }
     let loaded = load_from_tree(&tree).expect("kit loads");
@@ -126,7 +129,7 @@ fn sha(bytes: &[u8]) -> String {
 const AGENT: &[u8] =
     b"---\ndescription: Helper\nmode: subagent\nmodels: [\"${small_model}\"]\n---\nHelp.\n";
 const CONFIG: &[u8] = b"# a starter configuration\n";
-const SKILL: &[u8] = b"---\nname: tidy\ndescription: Tidy things.\n---\nTidy.\n";
+const REVIEWER: &[u8] = b"---\ndescription: Reviewer\nmode: subagent\n---\nReview.\n";
 const MINE: &str = "---\ndescription: Mine\nmode: subagent\n---\nMine.\n";
 
 fn manifest(files: &[(&str, &[u8])]) -> Vec<u8> {
@@ -145,7 +148,7 @@ fn archive() -> Vec<u8> {
     let files: [(&str, &[u8]); 3] = [
         ("config.toml", CONFIG),
         ("agents/helper.md", AGENT),
-        ("skills/tidy/SKILL.md", SKILL),
+        ("agents/reviewer.md", REVIEWER),
     ];
     let manifest = manifest(&files);
     let mut entries = files.to_vec();
@@ -159,7 +162,10 @@ fn an_archive_is_read_and_checked_against_its_manifest() {
     assert_eq!(kit.manifest.kit_version, 1);
     assert_eq!(kit.manifest.cookie_version.as_deref(), Some("9.9.9"));
     assert_eq!(kit.files.len(), 3);
-    assert_eq!(kit.files[&KitPath::Skill("tidy".into())], SKILL);
+    assert_eq!(
+        kit.files[&ConfigPath::new("agents/reviewer.md").unwrap()],
+        REVIEWER
+    );
 }
 
 #[test]
@@ -197,6 +203,17 @@ fn a_kit_that_does_not_match_its_manifest_is_refused() {
         ])),
         Err(KitError::UnsafePath(_))
     ));
+    let skill = manifest(&[("skills/tidy/SKILL.md", CONFIG)]);
+    assert!(
+        matches!(
+            Kit::from_archive(&pack(&[
+                ("skills/tidy/SKILL.md", CONFIG),
+                ("manifest.json", &skill)
+            ])),
+            Err(KitError::UnsafePath(_))
+        ),
+        "skills are not kit files"
+    );
     let unknown_file = manifest(&[("notes.txt", CONFIG)]);
     assert!(matches!(
         Kit::from_archive(&pack(&[
@@ -222,15 +239,6 @@ fn a_kit_this_build_cannot_load_is_refused() {
         ])),
         Err(KitError::Invalid(_))
     ));
-    let skill = b"---\nname: other\ndescription: Named for another directory.\n---\nNo.\n";
-    let mismatched = manifest(&[("skills/tidy/SKILL.md", skill)]);
-    assert!(matches!(
-        Kit::from_archive(&pack(&[
-            ("skills/tidy/SKILL.md", skill),
-            ("manifest.json", &mismatched)
-        ])),
-        Err(KitError::Invalid(_))
-    ));
 }
 
 #[test]
@@ -239,7 +247,7 @@ fn the_plan_writes_new_files_skips_identical_ones_and_puts_changed_ones_beside()
     let root = tempfile::tempdir().expect("root");
     let empty = ConfigTree::read(Some(root.path())).expect("tree");
     assert!(
-        kit.plan(&empty, Some(root.path()))
+        kit.plan(&empty)
             .iter()
             .all(|file| file.action == KitFileAction::Write)
     );
@@ -247,17 +255,16 @@ fn the_plan_writes_new_files_skips_identical_ones_and_puts_changed_ones_beside()
     std::fs::write(root.path().join("config.toml"), CONFIG).expect("config");
     std::fs::create_dir_all(root.path().join("agents")).expect("agents");
     std::fs::write(root.path().join("agents/helper.md"), MINE).expect("agent");
-    std::fs::create_dir_all(root.path().join("skills/tidy")).expect("skills");
-    std::fs::write(root.path().join("skills/tidy/SKILL.md"), SKILL).expect("skill");
+    std::fs::write(root.path().join("agents/reviewer.md"), REVIEWER).expect("reviewer");
     let tree = ConfigTree::read(Some(root.path())).expect("tree");
-    let plan = kit.plan(&tree, Some(root.path()));
+    let plan = kit.plan(&tree);
     let file = |path: &str| {
         plan.iter()
-            .find(|file| file.path.as_string() == path)
+            .find(|file| file.path.as_str() == path)
             .unwrap_or_else(|| panic!("{path}"))
     };
     assert_eq!(file("config.toml").action, KitFileAction::Skip);
-    assert_eq!(file("skills/tidy/SKILL.md").action, KitFileAction::Skip);
+    assert_eq!(file("agents/reviewer.md").action, KitFileAction::Skip);
     let changed = file("agents/helper.md");
     assert_eq!(changed.action, KitFileAction::WriteNew);
     let diff = changed.diff.as_deref().expect("diff");
@@ -372,7 +379,6 @@ async fn a_run_that_would_not_be_ready_writes_nothing() {
         before
     );
     assert!(!root(&fixture).join("agents").exists());
-    assert!(!root(&fixture).join("skills").exists());
     assert!(!root(&fixture).join("config.toml.new").exists());
     fixture.engine.shutdown().await;
 }
@@ -394,11 +400,11 @@ async fn a_run_sets_the_models_and_installs_the_kit_beside_changed_files() {
     let actions = preview
         .files
         .iter()
-        .map(|file| (file.path.as_string(), file.action))
+        .map(|file| (file.path.as_str().to_owned(), file.action))
         .collect::<BTreeMap<_, _>>();
     assert_eq!(actions["agents/helper.md"], KitFileAction::WriteNew);
     assert_eq!(actions["config.toml"], KitFileAction::WriteNew);
-    assert_eq!(actions["skills/tidy/SKILL.md"], KitFileAction::Write);
+    assert_eq!(actions["agents/reviewer.md"], KitFileAction::Write);
 
     let outcome = fixture
         .engine
@@ -407,7 +413,7 @@ async fn a_run_sets_the_models_and_installs_the_kit_beside_changed_files() {
         .expect("run");
     assert!(outcome.state.ready());
     assert_eq!(outcome.settings, ["default_model", "small_model"]);
-    assert_eq!(outcome.written, ["skills/tidy/SKILL.md"]);
+    assert_eq!(outcome.written, ["agents/reviewer.md"]);
     assert_eq!(outcome.written_new, ["agents/helper.md", "config.toml"]);
     assert_eq!(
         std::fs::read(agents.join("helper.md.new")).expect(".new"),
@@ -418,8 +424,8 @@ async fn a_run_sets_the_models_and_installs_the_kit_beside_changed_files() {
         MINE
     );
     assert_eq!(
-        std::fs::read(root(&fixture).join("skills/tidy/SKILL.md")).expect("skill"),
-        SKILL
+        std::fs::read(agents.join("reviewer.md")).expect("reviewer"),
+        REVIEWER
     );
     let config = fixture.engine.configuration();
     assert_eq!(
@@ -431,7 +437,7 @@ async fn a_run_sets_the_models_and_installs_the_kit_beside_changed_files() {
         Some("custom.test/z-model".into())
     );
 
-    // Again: the skill is identical now and nothing else changes.
+    // Again: the reviewer is identical now and nothing else changes.
     let again = fixture
         .engine
         .run_onboarding(OnboardingRequest {
@@ -441,7 +447,7 @@ async fn a_run_sets_the_models_and_installs_the_kit_beside_changed_files() {
         })
         .await
         .expect("second run");
-    assert_eq!(again.skipped, ["skills/tidy/SKILL.md"]);
+    assert_eq!(again.skipped, ["agents/reviewer.md"]);
     assert!(again.written.is_empty() && again.settings.is_empty());
     fixture.engine.shutdown().await;
 }
@@ -455,10 +461,7 @@ async fn new_kit_documents_are_written_and_applied() {
         .run_onboarding(ready_request(true, KitSource::Archive(archive())))
         .await
         .expect("run");
-    assert_eq!(
-        outcome.written,
-        ["agents/helper.md", "skills/tidy/SKILL.md"]
-    );
+    assert_eq!(outcome.written, ["agents/helper.md", "agents/reviewer.md"]);
     assert_eq!(
         outcome.written_new,
         ["config.toml"],

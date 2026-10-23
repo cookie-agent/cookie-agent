@@ -136,7 +136,7 @@ pub fn write_beside(
 /// [`ConfigError::UnsafePath`] for a path that leaves the root,
 /// [`ConfigError::ChangedOnDisk`] when the file no longer holds `original`,
 /// and I/O errors.
-pub fn write_user_file(
+fn write_user_file(
     root: &Path,
     relative: &str,
     original: Option<&[u8]>,

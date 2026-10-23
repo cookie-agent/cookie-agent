@@ -300,13 +300,6 @@ pub fn run_summary(result: &OnboardingRunResult) -> Vec<String> {
             .iter()
             .map(|path| format!("Skipped {path} (same as yours)")),
     );
-    if result
-        .written
-        .iter()
-        .any(|path| path.starts_with("skills/"))
-    {
-        lines.push("New skills load when the daemon restarts.".into());
-    }
     if lines.is_empty() {
         lines.push("Nothing to change.".into());
     }

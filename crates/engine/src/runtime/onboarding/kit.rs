@@ -2,20 +2,16 @@
 //! `config.toml`, agent documents, and a `manifest.json` with each file's
 //! SHA-256 (`docs/site/specs/default-models-and-onboarding.md` section 6).
 //!
-//! Its files are configuration documents and user skills
-//! (`skills/<name>/SKILL.md`). An archive is read whole in memory, checked
-//! against its manifest and against this build's configuration and skill
-//! parsers, and only then compared with the user root: a file that does not exist is written, an identical one
+//! Its files are configuration documents; skills are not in the kit (the
+//! daemon keeps the official ones up to date itself). An archive is read
+//! whole in memory, checked against its manifest and against this build's
+//! configuration parsers, and only then compared with the user root: a file that does not exist is written, an identical one
 //! skipped, and a changed one left alone with the kit's version written
 //! beside it as `<name>.new`.
 
-use std::{
-    collections::BTreeMap,
-    io::Read as _,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, io::Read as _};
 
-use cookie_agent_config::{ConfigPath, ConfigTree, load_from_tree, parse_skill_document};
+use cookie_agent_config::{ConfigPath, ConfigTree, load_from_tree};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
@@ -62,60 +58,12 @@ pub struct KitManifest {
     pub files: BTreeMap<String, String>,
 }
 
-/// A file a kit may install, by its path below the user root.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum KitPath {
-    /// `config.toml` or an agent document.
-    Config(ConfigPath),
-    /// `skills/<name>/SKILL.md`, a user skill.
-    Skill(String),
-}
-
-impl KitPath {
-    /// Validates a path of a kit's manifest.
-    pub fn new(path: &str) -> Result<Self, KitError> {
-        let unsafe_path = || KitError::UnsafePath(path.to_owned());
-        if let Some(rest) = path.strip_prefix("skills/") {
-            let name = rest.strip_suffix("/SKILL.md").ok_or_else(unsafe_path)?;
-            let valid = !name.is_empty()
-                && name.len() <= 64
-                && !name.starts_with('-')
-                && !name.ends_with('-')
-                && !name.contains("--")
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-            return valid
-                .then(|| Self::Skill(name.to_owned()))
-                .ok_or_else(unsafe_path);
-        }
-        ConfigPath::new(path)
-            .map(Self::Config)
-            .map_err(|_| unsafe_path())
-    }
-
-    /// The path below the user root.
-    #[must_use]
-    pub fn as_string(&self) -> String {
-        match self {
-            Self::Config(path) => path.as_str().to_owned(),
-            Self::Skill(name) => format!("skills/{name}/SKILL.md"),
-        }
-    }
-}
-
-impl std::fmt::Display for KitPath {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.as_string())
-    }
-}
-
 /// A kit whose files match its manifest and load with this build.
 #[derive(Clone, Debug)]
 pub struct Kit {
     pub manifest: KitManifest,
     /// The files to install, by their path below the user root.
-    pub files: BTreeMap<KitPath, Vec<u8>>,
+    pub files: BTreeMap<ConfigPath, Vec<u8>>,
 }
 
 /// What installing a kit file does.
@@ -133,7 +81,7 @@ pub enum KitFileAction {
 /// One kit file against the user root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KitFilePlan {
-    pub path: KitPath,
+    pub path: ConfigPath,
     pub action: KitFileAction,
     /// For [`KitFileAction::WriteNew`], a unified diff from the file to the
     /// kit's version.
@@ -176,7 +124,7 @@ impl Kit {
         }
         let mut checked = BTreeMap::new();
         for (path, expected) in &manifest.files {
-            let kit_path = KitPath::new(path)?;
+            let kit_path = ConfigPath::new(path).map_err(|_| KitError::UnsafePath(path.clone()))?;
             let bytes = files
                 .remove(path)
                 .ok_or_else(|| KitError::Missing(path.clone()))?;
@@ -197,48 +145,25 @@ impl Kit {
         Ok(kit)
     }
 
-    /// Loads the kit alone with this build's strict configuration, agent,
-    /// and skill parsers.
+    /// Loads the kit alone with this build's strict configuration and agent
+    /// parsers.
     fn validate(&self) -> Result<(), KitError> {
         let invalid =
             |error: cookie_agent_config::ConfigError| KitError::Invalid(error.to_string());
         let mut tree = ConfigTree::new(None);
         for (path, bytes) in &self.files {
-            match path {
-                KitPath::Config(path) => tree.put(path.clone(), bytes.clone()).map_err(invalid)?,
-                KitPath::Skill(name) => {
-                    let text = std::str::from_utf8(bytes)
-                        .map_err(|_| KitError::Invalid(format!("skill `{name}` is not UTF-8")))?;
-                    let directory = Path::new("skills").join(name);
-                    parse_skill_document(
-                        text,
-                        cookie_agent_protocol::SkillSource::User,
-                        &directory.join("SKILL.md"),
-                        &directory,
-                        Vec::new(),
-                    )
-                    .map_err(invalid)?;
-                }
-            }
+            tree.put(path.clone(), bytes.clone()).map_err(invalid)?;
         }
         load_from_tree(&tree).map(drop).map_err(invalid)
     }
 
-    /// The configuration documents of the kit.
-    pub fn config_files(&self) -> impl Iterator<Item = (&ConfigPath, &Vec<u8>)> {
-        self.files.iter().filter_map(|(path, bytes)| match path {
-            KitPath::Config(path) => Some((path, bytes)),
-            KitPath::Skill(_) => None,
-        })
-    }
-
-    /// What installing the kit over the user root `root`, whose configuration
-    /// documents read as `tree`, does with each file, in path order.
+    /// What installing the kit over the user root whose documents read as
+    /// `tree` does with each file, in path order.
     #[must_use]
-    pub fn plan(&self, tree: &ConfigTree, root: Option<&Path>) -> Vec<KitFilePlan> {
+    pub fn plan(&self, tree: &ConfigTree) -> Vec<KitFilePlan> {
         self.files
             .iter()
-            .map(|(path, kit)| match current(path, tree, root).as_deref() {
+            .map(|(path, kit)| match tree.get(path) {
                 None => KitFilePlan {
                     path: path.clone(),
                     action: KitFileAction::Write,
@@ -252,22 +177,10 @@ impl Kit {
                 Some(current) => KitFilePlan {
                     path: path.clone(),
                     action: KitFileAction::WriteNew,
-                    diff: Some(unified_diff(&path.as_string(), current, kit)),
+                    diff: Some(unified_diff(path.as_str(), current, kit)),
                 },
             })
             .collect()
-    }
-}
-
-/// What `path` holds now: from `tree` for a configuration document, from
-/// disk below `root` for a skill.
-fn current(path: &KitPath, tree: &ConfigTree, root: Option<&Path>) -> Option<Vec<u8>> {
-    match path {
-        KitPath::Config(path) => tree.get(path).map(<[u8]>::to_vec),
-        KitPath::Skill(_) => {
-            let file: PathBuf = root?.join(path.as_string());
-            std::fs::read(file).ok()
-        }
     }
 }
 

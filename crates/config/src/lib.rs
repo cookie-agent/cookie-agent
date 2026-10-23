@@ -52,4 +52,4 @@ pub use skills::{
 };
 pub use tree::{CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree};
 pub use wildcard::simple_wildcard_match;
-pub use writer::{write_beside, write_server_token, write_tree, write_user_file};
+pub use writer::{write_beside, write_server_token, write_tree};
