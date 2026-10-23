@@ -72,6 +72,8 @@ for path in "${changed[@]}"; do
         scripts/web-e2e/* | scripts/test-web-page.sh | scripts/build-web.sh) web=true ;;
         scripts/test-wasm-client.sh) wasm_client=true ;;
         scripts/update_models_dev.py) crate_dirs+=(models) ;;
+        # The engine's tests load the starter kit and pack it.
+        defaults/* | scripts/pack-defaults.sh) crate_dirs+=(engine) ;;
         *.md | .github/* | scripts/*) ;;
         *) workspace=true ;;
     esac

@@ -24,6 +24,7 @@ cookie_agent_mcp = { version = "=0.4.0", path = "../mcp", features = ["oauth"] }
 cookie_agent_models = { version = "=0.4.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
 cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api" }
+flate2.workspace = true
 fs2.workspace = true
 futures-util.workspace = true
 indexmap.workspace = true
@@ -31,6 +32,7 @@ jiff.workspace = true
 jsonschema = { version = "0.49.9", default-features = false }
 oven-sdk.workspace = true
 process-wrap.workspace = true
+reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

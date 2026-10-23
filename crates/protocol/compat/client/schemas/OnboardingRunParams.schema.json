@@ -1,0 +1,127 @@
+{
+  "$defs": {
+    "OnboardingKitSource": {
+      "description": "Where the starter kit comes from.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The release of the daemon's version, else the latest release.",
+          "properties": {
+            "type": {
+              "const": "release",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A downloaded `cookie-agent-defaults.tar.gz`, sent whole.",
+          "properties": {
+            "data": {
+              "description": "The archive's bytes in standard base64, at most\n[`MAX_ONBOARDING_ARCHIVE_BYTES`] decoded.",
+              "maxLength": 1398104,
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "const": "archive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OnboardingModelInput": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/OnboardingModelTable"
+        }
+      ],
+      "description": "A model value as `config.toml` takes it: a model key, or\n`{ model, variant }`."
+    },
+    "OnboardingModelTable": {
+      "additionalProperties": false,
+      "description": "The table form of [`OnboardingModelInput`].",
+      "properties": {
+        "model": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "variant": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9._-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`onboarding.run`: sets the model fields given and installs the kit when\nasked, as one change. Refused with `onboarding_incomplete`, writing\nnothing, when the daemon would not be set up afterwards.",
+  "properties": {
+    "default_model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OnboardingModelInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "install_kit": {
+      "type": "boolean"
+    },
+    "small_model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OnboardingModelInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OnboardingKitSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`release` when absent; ignored without `install_kit`."
+    }
+  },
+  "required": [
+    "install_kit"
+  ],
+  "title": "OnboardingRunParams",
+  "type": "object"
+}

@@ -63,6 +63,10 @@ pub use runtime::messaging_api::{
     MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED,
     MESSAGE_NOT_TREE_PEER, MESSAGE_SELF_SEND, MESSAGE_UNKNOWN_SESSION,
 };
+pub use runtime::onboarding::{
+    KitError, KitFileAction, KitFilePlan, KitManifest, KitPath, KitPreview, KitSource,
+    OnboardingOutcome, OnboardingRequest, OnboardingRequirement, OnboardingState, RELEASES_URL,
+};
 pub use runtime::restart::{RestartHook, RestartScheduled, RestartStatus};
 pub use runtime::uploads::{MAX_UPLOADS_PER_CONNECTION, MediaError};
 pub use runtime::{

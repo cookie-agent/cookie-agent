@@ -30,7 +30,11 @@ The workflow publishes crates in dependency order:
 `cookie_agent_client_state`, `cookie_agent_web_assets`, then
 `cookie_agent_plugin_sdk`. `cookie_agent_web_assets` carries the web client's
 bundle: the workflow builds it once (`build-web`), every release binary embeds
-it, and the release attaches it as `cookie-agent-web.tar.gz`. It waits for each dependency version to appear in
+it, and the release attaches it as `cookie-agent-web.tar.gz`. The same job
+packs the starter kit, `defaults/`, with `scripts/pack-defaults.sh` and the
+release attaches it as `cookie-agent-defaults.tar.gz`, prereleases included;
+`cookie onboard` downloads it from the release of its own version, else the
+latest release. It waits for each dependency version to appear in
 the crates.io sparse index before publishing the dependent crate. Publication
 finishes before the artifacts are uploaded. Each crate is skipped when its exact
 version is already indexed, so rerunning a partially completed release resumes

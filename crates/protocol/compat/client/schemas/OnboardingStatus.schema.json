@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "OnboardingModel": {
+      "description": "A model and its variant as the configuration holds them: `variant`\nabsent means the model's default variant, `base` its base variant.",
+      "properties": {
+        "model": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "variant": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9._-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "OnboardingRequirement": {
+      "description": "What onboarding still needs. A value this build does not know reads as\n`unknown`: something the daemon needs that a client cannot name, which\nkeeps Finish disabled.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "provider",
+          "description": "No model provider is connected.",
+          "type": "string"
+        },
+        {
+          "const": "default_model",
+          "description": "`default_model` is unset or names no model a connected provider\noffers.",
+          "type": "string"
+        },
+        {
+          "const": "small_model",
+          "description": "`small_model` is unset or names no model a connected provider offers.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Whether the daemon is set up: the result of `onboarding.get` and the\npayload of `onboarding.changed`. Computed from the live configuration and\nruntime; nothing is stored for it.",
+  "properties": {
+    "default_model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OnboardingModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "missing": {
+      "items": {
+        "$ref": "#/$defs/OnboardingRequirement"
+      },
+      "maxItems": 16,
+      "type": "array"
+    },
+    "providers_connected": {
+      "description": "The providers that offer at least one available model, sorted.",
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+        "type": "string"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "ready": {
+      "description": "`missing` is empty.",
+      "type": "boolean"
+    },
+    "small_model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OnboardingModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "ready",
+    "missing",
+    "providers_connected"
+  ],
+  "title": "OnboardingStatus",
+  "type": "object"
+}

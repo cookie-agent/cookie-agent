@@ -411,7 +411,7 @@ fn agent_fingerprints(
         .collect()
 }
 
-fn config_error(error: ConfigError) -> EngineError {
+pub(crate) fn config_error(error: ConfigError) -> EngineError {
     EngineError::Config(Box::new(error))
 }
 

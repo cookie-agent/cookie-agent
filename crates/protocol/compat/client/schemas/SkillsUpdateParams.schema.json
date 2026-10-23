@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`skills.update`: refresh the official skills now.",
+  "title": "SkillsUpdateParams",
+  "type": "object"
+}

@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "OfficialSkill": {
+      "description": "One official skill the daemon keeps.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What `skills.update` did: the official skills kept afterwards, what\nchanged, and why the refresh failed, if it did (the cached skills stay).",
+  "properties": {
+    "enabled": {
+      "description": "`false` when `[skills] official` is off: nothing was refreshed.",
+      "type": "boolean"
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "removed": {
+      "description": "Skills removed by this refresh.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "skills": {
+      "items": {
+        "$ref": "#/$defs/OfficialSkill"
+      },
+      "maxItems": 1024,
+      "type": "array"
+    },
+    "updated": {
+      "description": "Skills added or changed by this refresh.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "enabled",
+    "skills"
+  ],
+  "title": "SkillsUpdateResult",
+  "type": "object"
+}

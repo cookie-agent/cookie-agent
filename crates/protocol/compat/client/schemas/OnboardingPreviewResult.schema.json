@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "OnboardingFileAction": {
+      "description": "What installing a kit file would do. A value this build does not know\nreads as `unknown`.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "write",
+          "description": "The file does not exist: it is written.",
+          "type": "string"
+        },
+        {
+          "const": "skip",
+          "description": "The file is identical to the kit's: nothing is written.",
+          "type": "string"
+        },
+        {
+          "const": "write_new",
+          "description": "The file differs: it stays, and the kit's version is written beside\nit as `<path>.new`.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "OnboardingKitFile": {
+      "description": "One kit file against the daemon's user root.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/OnboardingFileAction"
+        },
+        "diff": {
+          "description": "For `write_new`, a unified diff from the file to the kit's version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Below the user root: `config.toml` or `agents/<id>.md`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "cookie_version": {
+      "description": "The cookie version the kit was packed for, when its manifest says.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/OnboardingKitFile"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "kit_version": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "origin": {
+      "description": "Where the kit came from: its URL, or `archive`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kit_version",
+    "origin",
+    "files"
+  ],
+  "title": "OnboardingPreviewResult",
+  "type": "object"
+}

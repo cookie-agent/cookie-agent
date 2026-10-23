@@ -72,6 +72,7 @@ pub(crate) mod memory_api;
 pub(crate) mod memory_runs;
 pub(crate) mod messaging_api;
 mod model_loop;
+pub(crate) mod onboarding;
 mod output_capture;
 pub(crate) mod plugin_diagnostics;
 mod producer_claims;
@@ -195,6 +196,13 @@ pub enum EngineError {
     /// A configuration change that cannot be made as asked.
     #[error("configuration change refused: {0}")]
     ConfigChangeRefused(String),
+    /// `onboarding.run` would leave the daemon not set up; nothing was
+    /// written.
+    #[error("onboarding is incomplete: {}", onboarding::describe_missing(.0))]
+    OnboardingIncomplete(Vec<onboarding::OnboardingRequirement>),
+    /// The starter kit could not be fetched, or was refused.
+    #[error(transparent)]
+    OnboardingKit(#[from] onboarding::KitError),
     #[error("agent `{0}` is not eligible in this session origin")]
     IneligibleAgent(AgentId),
     #[error(
@@ -968,6 +976,7 @@ pub(crate) struct Inner {
     pub(crate) background: background_tasks::BackgroundTaskState,
     pub(crate) compaction: CompactionState,
     pub(crate) uploads: uploads::UploadState,
+    pub(crate) onboarding: onboarding::OnboardingRuntimeState,
     /// The revision each session last saw of each memory.
     pub(crate) memory_seen: memory_runs::SeenMemories,
     runtime: Option<tokio::runtime::Handle>,
@@ -1236,6 +1245,7 @@ impl Engine {
                 background: background_tasks::BackgroundTaskState::default(),
                 compaction: CompactionState::default(),
                 uploads: uploads::UploadState::default(),
+                onboarding: onboarding::OnboardingRuntimeState::default(),
                 memory_seen: memory_runs::SeenMemories::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),

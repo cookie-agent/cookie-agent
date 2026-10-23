@@ -109,6 +109,56 @@ pub fn write_tree(original: &ConfigTree, candidate: &ConfigTree) -> Result<(), C
     Ok(())
 }
 
+/// Writes `bytes` beside the document `path` of the user root `root`, as
+/// `<path>.new`, owner-only and atomically, replacing an earlier `.new`.
+/// The configuration never reads it: it is for the user to compare and
+/// merge. Returns the file written.
+///
+/// # Errors
+///
+/// I/O errors.
+pub fn write_beside(
+    root: &Path,
+    path: &str,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, ConfigError> {
+    let relative = format!("{path}.new");
+    let original = read_original(&root.join(&relative))?;
+    write_user_file(root, &relative, original.as_deref(), bytes)
+}
+
+/// Writes `bytes` to `relative` below the user root `root`, owner-only and
+/// atomically, while it still holds `original` (`None`: does not exist), as
+/// configuration documents are written. Returns the file written.
+///
+/// # Errors
+///
+/// [`ConfigError::UnsafePath`] for a path that leaves the root,
+/// [`ConfigError::ChangedOnDisk`] when the file no longer holds `original`,
+/// and I/O errors.
+pub fn write_user_file(
+    root: &Path,
+    relative: &str,
+    original: Option<&[u8]>,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, ConfigError> {
+    if relative.is_empty()
+        || relative.starts_with('/')
+        || relative.contains('\\')
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(ConfigError::UnsafePath);
+    }
+    let file = root.join(relative);
+    file.parent()
+        .ok_or(ConfigError::UnsafePath)
+        .and_then(create_private_directories)?;
+    commit(&file, original, Some(bytes), |_| {})?;
+    Ok(file)
+}
+
 fn create_private_directories(path: &Path) -> Result<(), ConfigError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
