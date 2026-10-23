@@ -35,6 +35,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
+| [Permission consolidation](permission-consolidation.md) | Draft (2026-10-23), awaiting the go-ahead; defaults, the agent document, and session overrides merged into one rule list per run (session rules replace by action, runtime, and pattern), used for offered tools, every call, memory, and `/permissions` |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |

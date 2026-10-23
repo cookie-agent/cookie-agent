@@ -173,6 +173,7 @@ nav:
           - Projects: specs/projects.md
           - Delegating to runtimes: specs/runtime-delegation.md
           - Cron jobs: specs/cron.md
+          - Permission consolidation: specs/permission-consolidation.md
           - Model configuration: specs/model-configuration.md
           - Documentation overhaul: specs/documentation-overhaul.md
           - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
