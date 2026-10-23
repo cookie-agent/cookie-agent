@@ -599,8 +599,9 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
     }
 }
 
-/// A run session's clock mark in the session list: it opens the job that
-/// started the session.
+/// A run session's clock mark in the session list: a click opens the job
+/// that started the session, while a press that moves drags the row like
+/// the rest of it.
 pub fn clock_mark(workspace: Workspace, cron: cookie_agent_protocol::SessionCron) -> impl IntoView {
     let job = cron.job_id.clone();
     let title = {
@@ -628,7 +629,6 @@ pub fn clock_mark(workspace: Workspace, cron: cookie_agent_protocol::SessionCron
                 event.stop_propagation();
                 workspace.open_cron_job(job.clone());
             }
-            on:pointerdown=move |event: leptos::ev::PointerEvent| event.stop_propagation()
         >
             <Glyph icon=icondata::FaClockSolid class="text-xs" />
         </span>
