@@ -24,7 +24,8 @@ ones.
 - You and agents can create, list, edit, and delete jobs. A job is an id,
   a prompt, a schedule, and a target.
 - **Schedule:** a 5-field cron expression, or a one-shot delay such as
-  `in 200s`. The only other schedule option is `max_runs`. Cron times are
+  `in 200s`. The only other schedule option is `max_runs`, default 1 (added
+  2026-10-22). Cron times are
   the daemon host's local time. There are no self-paced loops (an agent can
   already wait on a background command).
 - **Payload:** a prompt, nothing else (no shell commands, no scripts).
@@ -44,8 +45,9 @@ ones.
 - **Agents can manage every job.** The `cron` permission's resource is the
   target kind (`session`, `subagent`, or `new`), and one action covers
   reading and changing jobs.
-- **No expiry:** a job without `max_runs` runs until it is deleted or
-  disabled.
+- **No expiry:** a job with `max_runs: "unlimited"` runs until it is
+  deleted or disabled. A job that reaches `max_runs` is deleted if an agent
+  created it and kept, disabled as finished, if you did.
 - **No catch-up:** a fire missed while the daemon was down is recorded as
   skipped and not run.
 - **Failures:** a job is disabled after `[cron] max_consecutive_failures`
@@ -86,7 +88,7 @@ triggers.
   "name": "Nightly dependency check",
   "prompt": "Check for outdated dependencies and open a summary.",
   "schedule": { "cron": "0 3 * * *" },
-  "max_runs": null,
+  "max_runs": "unlimited",
   "target": { "new": { "agent": "builder", "project": "cookie-agent", "...": "..." } },
   "delivery": null,
   "permission_mode": "auto_approve_n",
@@ -111,8 +113,12 @@ triggers.
   - `{"in": "<duration>"}` on create and update: a whole number with `s`,
     `m`, `h`, or `d`, from `1s` to `365d`. The daemon turns it into
     `{"at": "<RFC 3339 time>"}` at once and stores that; it fires once.
-- **`max_runs`:** optional, 1 or more, cron schedules only. A job that has
-  run `max_runs` times is disabled with the reason "finished".
+- **`max_runs`:** cron schedules only: a whole number from 1, or
+  `"unlimited"`. **Default 1**, so a job fires once unless told otherwise.
+  A job that has run `max_runs` times:
+  - created by an agent: is deleted;
+  - created by you: stays, disabled with the reason "finished", until you
+    delete or re-arm it.
 - **`target`:** one of:
   - `{"session": "<session id>"}`: a root session;
   - `{"subagent": "<session id>"}`: a delegated session;
@@ -214,16 +220,21 @@ The daemon keeps, per job:
 - **The session records its job:** `SessionMeta::cron = {job_id,
   fired_at}`, so clients can mark and filter run sessions. The session is
   otherwise ordinary; it stays when the job is deleted.
-- An agent in `subagent` mode can be a new-session job's agent: cron runs
-  are the one exception to "subagent-mode agents never run as roots".
+- A new-session job's agent must be one that can run as a root
+  (`primary` or `all` mode). A `subagent`-mode agent reaches a job only
+  through an in-session job targeting a subagent's session.
 - **Skipped** while the job's previous run session is still running.
 
 ### 4.4 Failures and finishing
 
 - **A failure** is a run the fire started that ends `failed`, or a fire
   that cannot start: the agent is missing or disabled, no model is
-  available, a runtime is offline, or session creation fails. A steered
-  fire counts the run it joined.
+  available, a runtime is offline, or session creation fails.
+- **A fire's outcome is the run its prompt lands in.** Steering into a busy
+  turn is not a failure: the fire succeeds or fails with the turn it
+  joined. A queued fire succeeds or fails with the run that takes it. While
+  that prompt is still waiting, a new fire is skipped (section 4.2), so its
+  outcome is the earlier prompt's.
 - A run that completes resets `consecutive_failures` to 0. A cancelled run
   and a skip change nothing.
 - At `max_consecutive_failures` the job is disabled with the reason. Enabling
@@ -275,7 +286,7 @@ The daemon keeps, per job:
 
 ## 8. Model tools
 
-The cron provider, `builtin.cron`, offers four tools, each gated by
+The cron provider, `builtin.cron`, offers five tools, each gated by
 `cron`:
 
 | Tool | Arguments | Result |
@@ -284,12 +295,14 @@ The cron provider, `builtin.cron`, offers four tools, each gated by
 | `cron_list` | `target?` (a kind, to filter) | Each job the rules let it see: id, name, schedule, next fire, target, enabled, the last fire's outcome |
 | `cron_update` | `id`, any field of `cron_create`, `enabled?` | The updated job |
 | `cron_delete` | `id` | Confirmation |
+| `cron_run` | `id`, `background?` | Runs the job now as a delegated subagent of the caller (section 8.2) |
 
 - `"self"` is the calling session. A subagent is named by its handle, as
   `delegate_subagent` names it.
 - Descriptions say: schedules are in the host's local time; a fire is
   marked as a scheduled job; prefer updating a job to creating a near
-  duplicate; a job without `max_runs` runs until deleted.
+  duplicate; `max_runs` defaults to 1, and `"unlimited"` runs until
+  deleted.
 
 ### 8.1 `list_agents`
 
@@ -329,14 +342,32 @@ is and which permissions it starts with.
       memory: * allow (default) ...
   ```
 
+### 8.2 `cron_run`
+
+Added 2026-10-22. An agent runs a job now the way it delegates:
+
+- **A delegated subagent of the caller.** For a new-session job, the child
+  session uses the job's template (agent, permission rules, attachments)
+  and the prompt as its first input, under the caller's session, not as a
+  new root.
+- **Foreground or background,** like `delegate_subagent`: foreground waits
+  and returns the result; background returns the child's handle at once,
+  and the caller reads the result with `get_subagent_result` or receives
+  the usual background report.
+- The child counts against the caller's delegation depth and its resident
+  subagents, like any delegated child.
+- See section 15 for what `cron_run` does with an in-session job and how it
+  counts in the job's history.
+
 ## 9. Client protocol
 
 - **RPCs:**
   - `crons.list` → every job with its state and history;
   - `crons.create`, `crons.update` (any field, `permission_mode`
     included), `crons.delete`;
-  - `crons.run`: fire a job now. It counts as a fire, is recorded with the
-    actual time as its scheduled time, and moves nothing else;
+  - `crons.run`: fire a job now, as a scheduled fire would (a new root
+    session for a new-session job). It is recorded with the actual time as
+    its scheduled time and moves nothing else;
   - `crons.changed`: notification, empty, coalesced like
     `projects.changed`.
 - **Additions:** `SessionMeta::cron`, `WaitingOn::ScheduledJob` (an open
@@ -425,4 +456,12 @@ history = 20                   # fires kept per job
 
 ## 15. Open questions
 
-None.
+- **`cron_run` on an in-session job.** Does it fire into the job's target
+  session as a scheduled fire would, or also start a delegated subagent of
+  the caller with the prompt?
+- **`cron_run` in the job's state.** Is a run-now recorded in the job's
+  history, and does it count toward `max_runs` and the failure count?
+- **`cron_run`'s agent mode.** A new-session job's agent is `primary` or
+  `all`; a `primary`-only agent cannot normally be delegated to. Does
+  `cron_run` make an exception, or refuse a job whose agent cannot run as
+  a subagent?
