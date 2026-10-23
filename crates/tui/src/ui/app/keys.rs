@@ -1075,6 +1075,7 @@ impl App {
             Modal::DisconnectConfirm => self.handle_disconnect_confirm_key(key),
             Modal::UserMessage => self.handle_user_menu_key(key).await,
             Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
+            Modal::RestartConfirm => self.handle_restart_confirm_key(key),
             Modal::AttachConfirm => self.handle_attach_offer_key(key).await,
             Modal::Mcp => self.handle_mcp_key(key).await,
             Modal::Runtimes => self.handle_runtime_key(key),
@@ -1543,6 +1544,7 @@ impl App {
                     | Modal::ConnectError
                     | Modal::DisconnectConfirm
                     | Modal::RevertConfirm
+                    | Modal::RestartConfirm
                     | Modal::AttachConfirm
                     | Modal::Mcp
                     | Modal::Runtimes

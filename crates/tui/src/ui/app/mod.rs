@@ -6,7 +6,7 @@ mod approvals;
 mod attachments;
 mod background;
 mod composer;
-mod config_panel;
+pub(in crate::ui) mod config_panel;
 pub(in crate::ui) mod cron_panel;
 mod draw;
 mod emoji_backend;
@@ -19,6 +19,7 @@ mod pointer;
 mod projects;
 mod providers;
 mod refresh;
+pub(in crate::ui) mod restart;
 mod session_delete;
 mod session_rename;
 mod sessions;
@@ -155,6 +156,8 @@ pub(super) enum Modal {
     UserMessage,
     /// Confirm guard behind the menu's revert action.
     RevertConfirm,
+    /// `/restart`: how to restart the daemon.
+    RestartConfirm,
     /// The offer to attach a pasted file path.
     AttachConfirm,
     Mcp,
@@ -490,6 +493,12 @@ pub(super) enum PointerTarget {
     CronRow(usize),
     CronAction(cron_panel::CronAction),
     ConfirmButton(ConfirmButton),
+    /// A button of the restart confirmation.
+    RestartChoice(restart::RestartChoice),
+    /// The restart banner's *Restart daemon* button.
+    RestartBanner,
+    /// A button of the `/config` panel's action row.
+    ConfigAction(config_panel::ConfigAction),
     /// A picker's search input: a click places its caret.
     PickerInput,
     PickerRow(usize),
@@ -590,6 +599,12 @@ pub(super) struct UiHitMap {
     pub(super) provider_cancel: Option<Rect>,
     /// The open confirm panel's Confirm/Cancel buttons.
     pub(super) confirm_buttons: Vec<(Rect, ConfirmButton)>,
+    /// The restart confirmation's buttons.
+    pub(super) restart_choices: Vec<(Rect, restart::RestartChoice)>,
+    /// The restart banner's button.
+    pub(super) restart_banner: Option<Rect>,
+    /// The `/config` panel's action row.
+    pub(super) config_actions: Vec<(Rect, config_panel::ConfigAction)>,
     /// The session picker's action row buttons.
     pub(super) session_picker_actions: Vec<(Rect, session_delete::SessionPickerAction)>,
     pub(super) goal_actions: Vec<(Rect, GoalBarAction)>,
@@ -631,6 +646,9 @@ impl UiHitMap {
         self.provider_submit = None;
         self.provider_cancel = None;
         self.confirm_buttons.clear();
+        self.restart_choices.clear();
+        self.restart_banner = None;
+        self.config_actions.clear();
         self.session_picker_actions.clear();
         self.goal_actions.clear();
         self.goal_close = None;
@@ -818,6 +836,8 @@ pub struct App {
     background_panel: background::BackgroundPanelState,
     plugin_panel: plugins::PluginPanelState,
     pub(super) config_panel: config_panel::ConfigPanelState,
+    /// The restart banner's status and a restart under way.
+    pub(super) restart: restart::RestartState,
     /// A configuration document the event loop opens in the editor next.
     pub(super) pending_editor: Option<config_panel::EditorRequest>,
     pub(super) memory_panel: memory_panel::MemoryPanelState,
@@ -974,6 +994,10 @@ pub(in crate::ui) enum RpcUpdate {
     },
     /// An outcome that is not a failure: shown in the status line only.
     Notice(String),
+    /// `config.get` answered, for the restart banner; `None` when it failed.
+    ConfigStatusFetched(Option<cookie_agent_protocol::ConfigStatus>),
+    /// `daemon.restart` answered.
+    RestartAnswered(cookie_agent_client_state::restart::RestartOutcome),
     /// The complete content of a call's cut display block was read, or
     /// could not be.
     FullContentLoaded {
@@ -1521,6 +1545,7 @@ impl App {
             background_panel: background::BackgroundPanelState::default(),
             plugin_panel: plugins::PluginPanelState::default(),
             config_panel: config_panel::ConfigPanelState::default(),
+            restart: restart::RestartState::default(),
             pending_editor: None,
             memory_panel: memory_panel::MemoryPanelState::default(),
             pending_memory_editor: None,
@@ -2288,6 +2313,34 @@ pub(super) fn render_confirm_panel(
     body: impl FnOnce(u16) -> Vec<Line<'static>>,
     theme: &Theme,
 ) -> Vec<(Rect, ConfirmButton)> {
+    let buttons = [
+        (
+            ConfirmButton::Confirm,
+            "Confirm",
+            "enter/y",
+            DecisionTone::Deny,
+        ),
+        (
+            ConfirmButton::Cancel,
+            "Cancel",
+            "esc/n",
+            DecisionTone::Neutral,
+        ),
+    ];
+    render_choice_panel(frame, screen, title, body, &buttons, theme)
+}
+
+/// A confirm dialog like [`render_confirm_panel`] with `buttons` (each its
+/// value, label, hotkeys, and tone) in a centered row. Returns their hit
+/// rects.
+pub(super) fn render_choice_panel<T: Copy>(
+    frame: &mut ratatui::Frame,
+    screen: Rect,
+    title: &str,
+    body: impl FnOnce(u16) -> Vec<Line<'static>>,
+    buttons: &[(T, &str, &str, DecisionTone)],
+    theme: &Theme,
+) -> Vec<(Rect, T)> {
     let preferred = u16::try_from(u32::from(screen.width) * 64 / 100).unwrap_or(u16::MAX);
     let width = preferred.clamp(52.min(screen.width), 76.min(screen.width));
     let lines = body(width.saturating_sub(2 + 2 * CONFIRM_PAD));
@@ -2324,20 +2377,6 @@ pub(super) fn render_confirm_panel(
     );
     frame.render_widget(Paragraph::new(lines), body_area);
 
-    let buttons = [
-        (
-            ConfirmButton::Confirm,
-            "Confirm",
-            "enter/y",
-            DecisionTone::Deny,
-        ),
-        (
-            ConfirmButton::Cancel,
-            "Cancel",
-            "esc/n",
-            DecisionTone::Neutral,
-        ),
-    ];
     // Equal-width buttons centered as one group with a two-cell gutter:
     // framed ones stack label and keys, flat ones put them side by side.
     let content_width = |label: &str, keys: &str| {
@@ -2352,12 +2391,14 @@ pub(super) fn render_confirm_panel(
         .iter()
         .map(|(_, label, keys, _)| content_width(label, keys))
         .max()
-        .map_or(0, |width| u16::try_from(width).unwrap_or(u16::MAX))
-        .min(inner.width.saturating_sub(2) / 2);
-    let group_width = button_width * 2 + 2;
+        .map_or(0, |width| u16::try_from(width).unwrap_or(u16::MAX));
+    let count = u16::try_from(buttons.len()).unwrap_or(u16::MAX).max(1);
+    let gutters = 2 * (count - 1);
+    let button_width = button_width.min(inner.width.saturating_sub(gutters) / count);
+    let group_width = button_width * count + gutters;
     let mut x = inner.x + inner.width.saturating_sub(group_width) / 2;
     let mut hits = Vec::new();
-    for (button, label, keys, tone) in buttons {
+    for &(button, label, keys, tone) in buttons {
         let rect = Rect::new(x, buttons_y, button_width, button_height);
         let style = theme.decision(tone, false);
         let label = Span::styled(label, style);

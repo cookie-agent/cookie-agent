@@ -1,6 +1,7 @@
 //! The `/config` panel: the daemon's `config.toml` and agent documents,
 //! edited in `$VISUAL`/`$EDITOR` and applied with `config.apply`; creating
-//! and deleting agents; and reloading hand edits with `config.reload`.
+//! and deleting agents; reloading hand edits with `config.reload`; and
+//! restarting the daemon for the parts that need it.
 
 use std::collections::HashMap;
 
@@ -18,6 +19,8 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph, Wrap},
 };
 
+use unicode_width::UnicodeWidthStr as _;
+
 use super::{App, Modal, RpcUpdate, centered, paint_panel};
 use crate::ui::input::InputState;
 
@@ -31,6 +34,24 @@ pub(in crate::ui) struct EditorRequest {
     pub(in crate::ui) original: Option<String>,
     pub(in crate::ui) expected_fingerprint: Option<String>,
     pub(in crate::ui) revision: ConfigRevision,
+}
+
+/// A button on the `/config` panel's action row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum ConfigAction {
+    /// Re-reads the files (`r`).
+    Reload,
+    /// Restarts the daemon (`R`), highlighted while a part waits for it.
+    Restart,
+}
+
+impl ConfigAction {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Reload => " Reload from disk (r) ",
+            Self::Restart => " Restart daemon (R) ",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -259,7 +280,19 @@ impl App {
                 _ => self.status = "only an agent document can be deleted".into(),
             },
             KeyCode::Char('r') => self.reload_config(),
+            KeyCode::Char('R') => self.open_restart_confirm(),
             _ => {}
+        }
+    }
+
+    /// Acts on a button of the panel's action row.
+    pub(in crate::ui) fn activate_config_action(&mut self, action: ConfigAction) {
+        if self.config_panel.new_path.is_some() || self.config_panel.confirm_delete.is_some() {
+            return;
+        }
+        match action {
+            ConfigAction::Reload => self.reload_config(),
+            ConfigAction::Restart => self.open_restart_confirm(),
         }
     }
 
@@ -349,7 +382,7 @@ impl App {
                         .title(crate::ui::panel_title("Configuration"))
                         .title_bottom(crate::ui::panel_title(
                             Line::from(Span::styled(
-                                "enter edit | n new agent | d delete | r reload | esc close",
+                                "enter edit | n new agent | d delete | r reload | R restart | esc close",
                                 self.theme.internal(),
                             ))
                             .right_aligned(),
@@ -359,14 +392,59 @@ impl App {
             &mut self.config_panel.selection,
         );
         let detail = self.config_detail();
-        frame.render_widget(
-            Paragraph::new(detail).wrap(Wrap { trim: false }).block(
-                crate::ui::panel_block()
-                    .border_style(self.theme.panel_border())
-                    .title(crate::ui::panel_title("Status")),
-            ),
-            chunks[1],
-        );
+        let block = crate::ui::panel_block()
+            .border_style(self.theme.panel_border())
+            .title(crate::ui::panel_title("Status"));
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+        let (text_area, actions_row) = if inner.height > 2 {
+            (
+                ratatui::layout::Rect::new(inner.x, inner.y, inner.width, inner.height - 1),
+                Some(ratatui::layout::Rect::new(
+                    inner.x,
+                    inner.bottom() - 1,
+                    inner.width,
+                    1,
+                )),
+            )
+        } else {
+            (inner, None)
+        };
+        frame.render_widget(Paragraph::new(detail).wrap(Wrap { trim: false }), text_area);
+        if let Some(row) = actions_row {
+            self.render_config_actions(frame, row);
+        }
+    }
+
+    /// The action row: Reload from disk, and Restart daemon beside it,
+    /// highlighted while a part of the configuration waits for a restart.
+    fn render_config_actions(&mut self, frame: &mut ratatui::Frame, row: ratatui::layout::Rect) {
+        let restart_waiting = self
+            .config_panel
+            .config
+            .as_ref()
+            .is_some_and(|config| !config.status.restart_required.is_empty());
+        let mut spans = Vec::new();
+        let mut x = row.x;
+        for action in [ConfigAction::Reload, ConfigAction::Restart] {
+            let label = action.label();
+            let width = u16::try_from(label.width()).unwrap_or(u16::MAX);
+            if x.saturating_add(width) > row.right() {
+                break;
+            }
+            self.hit_map
+                .config_actions
+                .push((ratatui::layout::Rect::new(x, row.y, width, 1), action));
+            let style = if action == ConfigAction::Restart && restart_waiting {
+                self.theme.warning()
+            } else {
+                self.theme.link()
+            };
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw(" "));
+            x = x.saturating_add(width + 1);
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), row);
     }
 
     fn config_detail(&self) -> String {

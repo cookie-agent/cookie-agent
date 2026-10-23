@@ -1023,7 +1023,7 @@ impl App {
             | Modal::ConnectError
             | Modal::DisconnectConfirm => {}
             Modal::UserMessage => self.activate_user_menu_entry(index),
-            Modal::RevertConfirm | Modal::AttachConfirm => {}
+            Modal::RevertConfirm | Modal::RestartConfirm | Modal::AttachConfirm => {}
             Modal::Mcp
             | Modal::Runtimes
             | Modal::Permissions

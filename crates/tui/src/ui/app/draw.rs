@@ -76,7 +76,28 @@ impl App {
             input_text_rows,
         );
         self.render_tree(frame, layout.agent, &tree_entries);
-        self.render_conversation(frame, layout.conversation);
+        // The restart banner takes the conversation's top row while there is
+        // room for both.
+        let (banner, conversation) =
+            if self.restart_banner_text().is_some() && layout.conversation.height > 3 {
+                let banner = Rect::new(
+                    layout.conversation.x,
+                    layout.conversation.y,
+                    layout.conversation.width,
+                    1,
+                );
+                let conversation = Rect::new(
+                    layout.conversation.x,
+                    layout.conversation.y + 1,
+                    layout.conversation.width,
+                    layout.conversation.height - 1,
+                );
+                (banner, conversation)
+            } else {
+                (Rect::default(), layout.conversation)
+            };
+        self.render_restart_banner(frame, banner);
+        self.render_conversation(frame, conversation);
         self.render_queue_strip(frame, layout.queue);
         self.render_background_bar(frame, layout.background);
         self.render_goal_bar(frame, layout.goal);
@@ -395,6 +416,9 @@ impl App {
             }
             Modal::RevertConfirm => {
                 self.render_revert_confirm(frame, frame.area());
+            }
+            Modal::RestartConfirm => {
+                self.render_restart_confirm(frame, frame.area());
             }
             Modal::AttachConfirm => {
                 self.render_attach_offer(frame, frame.area());

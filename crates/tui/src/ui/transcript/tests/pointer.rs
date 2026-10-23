@@ -50,6 +50,9 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::CronRow(_) => "cron row",
         PointerTarget::CronAction(_) => "cron action",
         PointerTarget::ConfirmButton(_) => "confirm button",
+        PointerTarget::RestartChoice(_) => "restart choice",
+        PointerTarget::RestartBanner => "restart banner",
+        PointerTarget::ConfigAction(_) => "config action",
         PointerTarget::PickerInput => "picker input",
         PointerTarget::PickerRow(_) => "picker row",
         PointerTarget::SessionPickerAction(_) => "session picker action",
@@ -315,6 +318,25 @@ async fn every_clickable_element_hovers_visibly() {
     app.sessions = listed;
     app.modal = Modal::None;
 
+    // Configuration waiting for a restart: the banner's button, then the
+    // confirmation it opens.
+    app.restart.config_status = Some(restart_waiting_status());
+    seen.extend(sweep(&mut app, "restart banner"));
+    let button = app.hit_map.restart_banner.expect("restart banner button");
+    app.handle_click(button.x, button.y).await;
+    assert_eq!(app.modal, Modal::RestartConfirm);
+    seen.extend(sweep(&mut app, "restart confirmation"));
+    app.modal = Modal::None;
+    app.restart.config_status = None;
+
+    // The `/config` panel's action row: Reload from disk and Restart
+    // daemon.
+    app.modal = Modal::Config;
+    app.config_panel.config = Some(crate::ui::transcript::tests::config_panel::sample_config());
+    seen.extend(sweep(&mut app, "config panel"));
+    app.config_panel = Default::default();
+    app.modal = Modal::None;
+
     app.modal = Modal::Permissions;
     app.permission_panel.install(sample_permissions());
     app.permission_panel.selection.select(Some(7));
@@ -411,6 +433,9 @@ async fn every_clickable_element_hovers_visibly() {
         "cron row",
         "cron action",
         "confirm button",
+        "restart choice",
+        "restart banner",
+        "config action",
         "picker input",
         "picker row",
         "session picker action",
@@ -441,6 +466,23 @@ async fn every_clickable_element_hovers_visibly() {
     .filter(|kind| !seen.contains(kind))
     .collect::<Vec<_>>();
     assert!(missing.is_empty(), "never swept: {missing:?}");
+}
+
+/// A configuration status whose plugins and runtimes wait for a restart.
+pub(super) fn restart_waiting_status() -> cookie_agent_protocol::ConfigStatus {
+    cookie_agent_protocol::ConfigStatus {
+        applied_revision: cookie_agent_protocol::ConfigRevision::new(format!(
+            "sha256:{}",
+            "2".repeat(64)
+        ))
+        .expect("revision"),
+        restart_required: vec![
+            cookie_agent_protocol::ConfigRestartPart::Plugins,
+            cookie_agent_protocol::ConfigRestartPart::Runtimes,
+        ],
+        error: None,
+        diagnostics: Vec::new(),
+    }
 }
 
 /// Cells of `rect` whose style differs between two frames.

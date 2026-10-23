@@ -40,6 +40,8 @@ pub(crate) enum SlashCommand {
     Background,
     Plugins,
     Config,
+    /// Restart the daemon, when idle or now.
+    Restart,
     Memory,
     Cron,
     CronNew,
@@ -190,6 +192,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         description: "edit the daemon's config.toml and agent documents",
         action: PaletteAction::Run(SlashCommand::Config),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "restart",
+        aliases: &[],
+        description: "restart the daemon, once idle or now, to apply its configuration or a new build",
+        action: PaletteAction::Run(SlashCommand::Restart),
         writes_session: false,
     },
     CommandSpec {

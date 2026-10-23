@@ -116,7 +116,8 @@ Esc in a step returns to the command list with the search intact.
 | `/mcp` | Manage MCP servers; see [MCP servers](../extend/mcp.md) |
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes, or choose a new session's before its first prompt; see [Runtimes panel](#runtimes-panel) |
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
-| `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, and reload hand edits; see [config.toml](../engine/configuration.md#changes-while-the-daemon-runs) |
+| `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, reload hand edits (`r` or *Reload from disk*), and restart the daemon (`R` or *Restart daemon*, highlighted while a part waits for a restart); see [config.toml](../engine/configuration.md#changes-while-the-daemon-runs) |
+| `/restart` | Restart the daemon, when idle or now; see [Restarting the daemon](#restarting-the-daemon) |
 | `/memory` (also `memories`) | Browse the daemon's memories by layer, edit one in your editor, create and delete memories, and see invalid files with the reason; see [Memory](../sessions/memory.md#managing-memory) |
 | `/cron` (also `crons`) | List, create, edit, enable and disable, run now, and delete the daemon's cron jobs; see [Scheduled prompts](#scheduled-prompts) |
 | `/cron new` | Schedule a prompt in the session on screen: opens a new job's form for it; listed only while a session is open; see [Scheduled prompts](#scheduled-prompts) |
@@ -152,6 +153,28 @@ The composer only ever sends messages: text beginning with `/` is sent as a
 prompt like any other. To start a message with `/`, open the palette and type
 `/` in its empty search; the palette closes and a literal `/` lands in the
 composer. A `/` typed after other text, as in a path, is always literal.
+
+## Restarting the daemon
+
+While the daemon's configuration lists parts that apply only after a
+restart, a banner above the conversation says so, such as
+`⟳ Restart needed to apply: plugins, runtimes`, with a *Restart daemon*
+button. The button, `/restart`, and `R` or *Restart daemon* in `/config`
+open the same confirmation:
+
+- **Restart when idle** (Enter or `i`, the default) waits until no turn is
+  running in any session; new turns are refused meanwhile.
+- **Restart now** (`n`) interrupts the running turns; the confirmation says
+  how many there are.
+- **Cancel** (Esc) keeps the daemon running and returns to the panel it
+  opened over.
+
+Once the daemon announces the restart, the banner shows
+*Restarting when idle… (2 running turns)* until the connection closes, then
+the TUI reconnects as after any dropped connection. A daemon not started by
+`cookie daemon`, including the engine of `cookie --standalone`, cannot
+restart itself and says so. See
+[Restarting the daemon](../daemon/persistent.md#restarting-the-daemon).
 
 ## Steering, queueing, and the pending strip
 

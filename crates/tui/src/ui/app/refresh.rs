@@ -679,6 +679,8 @@ impl App {
             }
             RpcUpdate::MemoryDeleted { result } => self.install_memory_delete(result),
             RpcUpdate::CronsListed { result } => self.install_cron_listing(result),
+            RpcUpdate::ConfigStatusFetched(status) => self.install_config_status(status),
+            RpcUpdate::RestartAnswered(outcome) => self.finish_restart_request(outcome),
             RpcUpdate::CronSaved { request, result } => {
                 self.install_cron_save(*request, *result);
             }
@@ -1050,7 +1052,23 @@ impl App {
         if matches!(delivery, ClientDelivery::ProjectsChanged(_)) {
             self.poll_projects();
         }
+        if let ClientDelivery::DaemonRestarting(restarting) = &delivery {
+            self.note_daemon_restarting(restarting.clone());
+            return;
+        }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
+            // A new connection, or a configuration change: the banner's
+            // status may have changed.
+            if changed.reasons.iter().any(|reason| {
+                matches!(
+                    reason,
+                    cookie_agent_protocol::RuntimeChangeReason::Startup
+                        | cookie_agent_protocol::RuntimeChangeReason::ConfigReloaded
+                        | cookie_agent_protocol::RuntimeChangeReason::Resync
+                )
+            }) {
+                self.poll_config_status();
+            }
             let duplicate = self.runtime.revision() == Some(&changed.snapshot.revision);
             if !self.install_runtime_notification((**changed).clone()) && !duplicate {
                 // Outside the predecessor chain: this client missed a

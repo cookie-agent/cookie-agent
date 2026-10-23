@@ -41,6 +41,9 @@ impl App {
         {
             return Some(PointerTarget::GoalAction(*action));
         }
+        if hits.restart_banner.is_some_and(over) {
+            return Some(PointerTarget::RestartBanner);
+        }
         if hits.background_bar.is_some_and(over) {
             return Some(PointerTarget::BackgroundBar);
         }
@@ -127,6 +130,20 @@ impl App {
     fn modal_target_at(&self, over: impl Fn(Rect) -> bool) -> Option<PointerTarget> {
         let hits = &self.hit_map;
         match self.modal {
+            Modal::Config => {
+                return hits
+                    .config_actions
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, action)| PointerTarget::ConfigAction(*action));
+            }
+            Modal::RestartConfirm => {
+                return hits
+                    .restart_choices
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, choice)| PointerTarget::RestartChoice(*choice));
+            }
             Modal::GoalDetail => {
                 return hits
                     .goal_close
@@ -417,6 +434,9 @@ impl App {
             PointerTarget::ApprovalDetails => self.toggle_approval_details(),
             PointerTarget::GoalAction(action) => self.activate_goal_action(action),
             PointerTarget::BackgroundBar => self.open_background_panel(),
+            PointerTarget::RestartBanner => self.open_restart_confirm(),
+            PointerTarget::ConfigAction(action) => self.activate_config_action(action),
+            PointerTarget::RestartChoice(choice) => self.answer_restart_confirm(choice),
             PointerTarget::SessionCost => {
                 self.modal = Modal::Usage;
                 self.load_usage();
@@ -693,6 +713,23 @@ impl App {
                 fill_style,
             ),
             PointerTarget::BackgroundBar => (one(hits.background_bar), text_style),
+            PointerTarget::RestartBanner => (one(hits.restart_banner), fill_style),
+            PointerTarget::ConfigAction(action) => (
+                one(hits
+                    .config_actions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
+            PointerTarget::RestartChoice(choice) => (
+                one(hits
+                    .restart_choices
+                    .iter()
+                    .find(|(_, candidate)| *candidate == choice)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
             PointerTarget::TitleSegment(segment) => (
                 one(hits
                     .title_segments

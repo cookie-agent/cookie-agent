@@ -232,6 +232,7 @@ impl App {
         self.deliveries = client.subscribe_deliveries();
         self.client = client;
         self.reconnecting = false;
+        self.reset_restart_after_reconnect();
         self.reset_subscriptions();
         self.status = "reconnected to the daemon".into();
         self.request_runtime_resync();

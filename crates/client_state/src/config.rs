@@ -3,8 +3,7 @@
 //! `config.reload` answered, and what the panel says about it.
 
 use cookie_agent_protocol::{
-    ClientError, ConfigApplyErrorCode, ConfigApplyResult, ConfigGetResult, ConfigRestartPart,
-    ConfigStatus,
+    ClientError, ConfigApplyErrorCode, ConfigApplyResult, ConfigGetResult, ConfigStatus,
 };
 
 /// The text a new agent document starts from.
@@ -109,17 +108,10 @@ pub fn restart_note(status: &ConfigStatus) -> String {
     if status.restart_required.is_empty() {
         return String::new();
     }
-    let parts = status
-        .restart_required
-        .iter()
-        .map(|part| match part {
-            ConfigRestartPart::Server => "server",
-            ConfigRestartPart::Plugins => "plugins",
-            ConfigRestartPart::Runtimes => "runtimes",
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(" Restart the daemon to apply: {parts}.")
+    format!(
+        " Restart the daemon to apply: {}.",
+        crate::restart::restart_parts(status)
+    )
 }
 
 /// One row: a document, or a preset heading.

@@ -502,6 +502,7 @@ impl App {
             | Modal::ConnectError
             | Modal::DisconnectConfirm
             | Modal::RevertConfirm
+            | Modal::RestartConfirm
             | Modal::AttachConfirm
             | Modal::Config
             | Modal::Memory

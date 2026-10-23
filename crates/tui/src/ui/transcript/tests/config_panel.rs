@@ -125,3 +125,81 @@ async fn config_documents_are_edited_created_and_deleted_from_the_panel() {
     app.handle_key(key(KeyCode::Char('r'))).await;
     pump_until(&mut app, |app| app.status == "Reloaded the configuration.").await;
 }
+
+/// A configuration listing whose plugins wait for a restart.
+pub(crate) fn sample_config() -> cookie_agent_protocol::ConfigGetResult {
+    let revision = cookie_agent_protocol::ConfigRevision::new(format!("sha256:{}", "3".repeat(64)))
+        .expect("revision");
+    cookie_agent_protocol::ConfigGetResult {
+        revision,
+        documents: vec![cookie_agent_protocol::ConfigDocument {
+            path: "config.toml".into(),
+            text: "[plugins]\n".into(),
+            fingerprint: format!("sha256:{}", "4".repeat(64)),
+        }],
+        empty_presets: Vec::new(),
+        status: super::pointer::restart_waiting_status(),
+    }
+}
+
+/// `R` and the panel's Restart daemon button open the restart
+/// confirmation over the panel, which it returns to; an embedded daemon
+/// refuses the restart and the TUI says why. `/restart` opens the same
+/// confirmation, and the daemon's announcement shows in the banner.
+#[tokio::test]
+async fn the_config_panel_restarts_the_daemon_and_returns_to_the_panel() {
+    let (_directory, server) = crate::tests::in_process_server_with_configuration();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    let mut app = App::new(client).await.expect("app");
+    let _deliveries = app.take_deliveries();
+
+    app.run_command(SlashCommand::Config).await;
+    pump_until(&mut app, |app| app.config_panel.config.is_some()).await;
+    let frame = rendered_frame(&mut app, 120, 40);
+    assert!(frame.contains("Reload from disk (r)"), "{frame}");
+    assert!(frame.contains("Restart daemon (R)"), "{frame}");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT))
+        .await;
+    assert_eq!(app.modal, Modal::RestartConfirm);
+    let frame = rendered_frame(&mut app, 120, 40);
+    assert!(frame.contains("Restart when idle"), "{frame}");
+    assert!(frame.contains("Restart now"), "{frame}");
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert_eq!(app.modal, Modal::Config, "cancelling returns to the panel");
+
+    rendered_frame(&mut app, 120, 40);
+    let (button, _) = app
+        .hit_map
+        .config_actions
+        .iter()
+        .copied()
+        .find(|(_, action)| *action == crate::ui::app::config_panel::ConfigAction::Restart)
+        .expect("the restart button");
+    app.handle_click(button.x, button.y).await;
+    assert_eq!(app.modal, Modal::RestartConfirm);
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert_eq!(app.modal, Modal::Config);
+    pump_until(&mut app, |app| app.status.contains("can't restart itself")).await;
+
+    app.modal = Modal::None;
+    app.run_command(SlashCommand::Restart).await;
+    assert_eq!(app.modal, Modal::RestartConfirm);
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert_eq!(app.modal, Modal::None);
+
+    app.handle_delivery(cookie_agent_protocol::ClientDelivery::DaemonRestarting(
+        cookie_agent_protocol::DaemonRestartingNotification {
+            when: cookie_agent_protocol::RestartWhen::Idle,
+            active_runs: 2,
+            reason: None,
+        },
+    ))
+    .await;
+    let frame = rendered_frame(&mut app, 120, 40);
+    assert!(
+        frame.contains("Restarting when idle… (2 running turns)"),
+        "{frame}"
+    );
+}
