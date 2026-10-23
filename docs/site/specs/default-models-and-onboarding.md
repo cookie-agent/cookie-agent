@@ -309,18 +309,18 @@ that every daemon keeps current.
 
 ### 13.2 The daemon
 
-- **Managed skills** live in `~/.cookie-agent/managed/skills/<name>/`,
+- **Managed skills** live in `<data_root>/official_skills/<name>/` (`~/.cookie-agent/official_skills/` by default),
   written only by the daemon.
 - **Refresh:** at start and then every 24 hours; the index first, then the
   files whose hashes changed, each checked against the index before it
   replaces the cached copy. Skills the index no longer lists, or whose
   `requires_cookie` this version does not satisfy, are removed from the
-  managed folder. Network failures keep the cached copies and are reported
+  official skills folder. Network failures keep the cached copies and are reported
   as a configuration diagnostic; offline daemons keep working.
-- **Discovery:** the managed folder is one more skill root with the lowest
+- **Discovery:** the official skills folder is one more skill root with the lowest
   precedence: a user or project skill of the same name wins.
 - **Configuration:** `[skills] official = true` (default) or `false`, which
-  stops refreshing and leaves the managed folder unused.
+  stops refreshing and leaves the official skills folder unused.
 - **Trust:** the source URL is fixed to the official one, over HTTPS, with
   every file hash-checked. Skills grant no tools; permission rules still
   decide every call.
