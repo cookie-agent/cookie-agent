@@ -195,11 +195,22 @@ pub(super) fn pane_scrollbar_track(area: Rect, viewport: Rect) -> Rect {
     )
 }
 
+/// Where the conversation viewport rests, and whether it follows live output.
+///
+/// Following pins the view to the bottom on every frame. Any scroll the user
+/// makes away from the bottom stops it at once, and it stays stopped, however
+/// output streams in or content changes under the view, until the user's own
+/// scrolling (wheel, keys, the scrollbar) or a block they fold brings the view
+/// back to the bottom.
 #[derive(Debug)]
 pub struct ConversationScroll {
     pub(super) offset: usize,
     pub(super) following: bool,
     max_offset: Option<usize>,
+    /// The user moved the view, or folded or opened a block, since the last
+    /// clamp: resting on the bottom then means they came back to it, while
+    /// content shrinking under a scrolled-up view only pushes it there.
+    moved: bool,
 }
 
 impl Default for ConversationScroll {
@@ -208,6 +219,7 @@ impl Default for ConversationScroll {
             offset: 0,
             following: false,
             max_offset: None,
+            moved: false,
         };
         scroll.bottom();
         scroll
@@ -222,14 +234,18 @@ impl ConversationScroll {
     pub(super) fn clamp(&mut self, total_lines: usize, viewport_height: u16) {
         let max_offset = Self::max_offset(total_lines, viewport_height);
         self.max_offset = Some(max_offset);
+        // Content that shrank below a scrolled-up view pushes it onto the new
+        // bottom without the user coming back there.
+        let pushed = !self.moved && self.offset > max_offset;
+        self.moved = false;
         self.offset = if self.following {
             max_offset
         } else {
             self.offset.min(max_offset)
         };
-        // A non-following view resting exactly on the last valid top offset is
-        // the live bottom; wheel/track input re-engages following from there.
-        if self.offset == max_offset {
+        // A non-following view the user brought exactly onto the last valid
+        // top offset is the live bottom; following resumes from there.
+        if self.offset == max_offset && !pushed {
             self.following = true;
         }
     }
@@ -253,10 +269,18 @@ impl ConversationScroll {
     #[cfg(test)]
     pub fn top(&mut self) {
         self.following = false;
+        self.moved = true;
         self.offset = 0;
     }
     pub fn bottom(&mut self) {
         self.following = true;
+    }
+
+    /// Keeps the view where it is while the user folds or opens a block:
+    /// what they read stays put instead of following the tail.
+    pub(super) fn hold(&mut self) {
+        self.following = false;
+        self.moved = true;
     }
 
     /// Absolute top offset from a scrollbar thumb/track gesture.
@@ -264,12 +288,14 @@ impl ConversationScroll {
         // Resolve the gesture against the last rendered content, before an
         // output append can move the bottom on the next frame.
         self.offset = offset;
+        self.moved = true;
         self.following = self.max_offset.is_some_and(|max| offset >= max);
     }
 
     pub fn reveal(&mut self, region: BlockRegion, viewport_height: u16) {
         let height = usize::from(viewport_height.max(1));
         self.following = false;
+        self.moved = true;
         if region.start_line < self.offset {
             self.offset = region.start_line;
         } else if region.end_line > self.offset.saturating_add(height) {
@@ -1835,7 +1861,7 @@ impl App {
         }
         // An explicit layout change preserves what the user is reading. Only
         // output received while already following should advance to the tail.
-        self.conversation_scroll.following = false;
+        self.conversation_scroll.hold();
         let expanded = self.expanded_blocks.entry(session_id).or_default();
         if !expanded.insert(block_id) {
             expanded.remove(&block_id);

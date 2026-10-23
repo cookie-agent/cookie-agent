@@ -1,6 +1,6 @@
 use crate::ui::transcript::*;
 
-use cookie_agent_protocol::{AttemptId, EventSubscriptionMessage, SessionId};
+use cookie_agent_protocol::{AttemptId, EventSubscriptionMessage, RunId, SessionId};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
@@ -495,4 +495,195 @@ async fn the_composer_reserves_columns_only_for_an_overflowing_ceiling() {
         app.input.composer_rows(fitted.rect.width - 2),
         usize::from(crate::ui::input::MAX_TEXT_ROWS) + 1
     );
+}
+
+/// A run whose reply streams text below a collapsed thinking block, with
+/// enough text before it to overflow a 24-row frame.
+async fn streaming_reply_app() -> (App, SessionId, RunId, AttemptId) {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let attempt = AttemptId::new_v7();
+    app.selected = Some(session);
+    app.tree_root = Some(session);
+    for event in [
+        session_created(session, 1),
+        attempt_started(session, 2, run, attempt, None),
+        text_delta(session, 3, run, attempt, &"agent progress\n\n".repeat(40)),
+        reasoning_delta(session, 4, run, attempt, "thought\n"),
+    ] {
+        app.store.apply_event(event);
+    }
+    (app, session, run, attempt)
+}
+
+#[test]
+fn content_shrinking_under_a_scrolled_view_does_not_resume_following() {
+    let mut scroll = ConversationScroll::default();
+    scroll.clamp(200, 10);
+    assert_eq!(scroll.offset, 190);
+    scroll.up(3);
+    scroll.clamp(200, 10);
+    assert!(!scroll.following);
+    // A tool's live rows fold away: the view lands on the new bottom, but
+    // the user never came back to it.
+    scroll.clamp(195, 10);
+    assert_eq!(scroll.offset, 185);
+    assert!(!scroll.following);
+    scroll.clamp(240, 10);
+    assert_eq!(scroll.offset, 185, "output arriving below stays below");
+    // Their own scroll onto the bottom resumes following.
+    scroll.down(100);
+    scroll.clamp(240, 10);
+    assert!(scroll.following);
+    scroll.clamp(260, 10);
+    assert_eq!(scroll.offset, 250);
+}
+
+#[tokio::test]
+async fn a_scroll_up_during_a_stream_stays_put_until_the_user_returns_to_the_bottom() {
+    for gesture in ["wheel", "page up", "scrollbar"] {
+        let (mut app, session, run, attempt) = streaming_reply_app().await;
+        conversation_rows(&mut app, 60, 24);
+        assert!(app.conversation_scroll.following, "{gesture}");
+        let bottom = app.conversation_scroll.offset;
+        let viewport = app.hit_map.conversation.unwrap();
+        match gesture {
+            "wheel" => app.handle_wheel(viewport.x + 2, viewport.y + 2, true),
+            "page up" => {
+                app.handle_key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::PageUp,
+                    KeyModifiers::NONE,
+                ))
+                .await;
+            }
+            _ => app.conversation_scroll.scroll_to(bottom - 1),
+        }
+        assert!(!app.conversation_scroll.following, "{gesture}");
+        let before = conversation_rows(&mut app, 60, 24);
+        let offset = app.conversation_scroll.offset;
+        assert!(offset < bottom, "{gesture}");
+        let mut seq = 5;
+        // The collapsed thinking block grows without a visible row, then
+        // text streams in below it: neither moves the view.
+        for index in 0..20 {
+            let event = if index < 10 {
+                reasoning_delta(session, seq, run, attempt, "more thought\n")
+            } else {
+                text_delta(session, seq, run, attempt, "more text\n\n")
+            };
+            seq += 1;
+            app.store.apply_event(event);
+            assert_eq!(conversation_rows(&mut app, 60, 24), before, "{gesture}");
+            assert_eq!(app.conversation_scroll.offset, offset, "{gesture}");
+            assert!(!app.conversation_scroll.following, "{gesture}");
+        }
+        // Back at the bottom, following resumes and keeps up with output.
+        let page = usize::from(viewport.height);
+        while !app.conversation_scroll.following {
+            app.conversation_scroll.down(page);
+            conversation_rows(&mut app, 60, 24);
+        }
+        app.store
+            .apply_event(text_delta(session, seq, run, attempt, "\n\nnew tail\n\n"));
+        let rows = conversation_rows(&mut app, 60, 24);
+        assert!(rows.iter().any(|row| row.contains("new tail")), "{gesture}");
+        assert_eq!(
+            app.conversation_scroll.offset,
+            app.scrollbar_geometry.unwrap().max_offset,
+            "{gesture}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_collapsed_last_block_receiving_deltas_keeps_a_following_view_still() {
+    let (mut app, session, run, attempt) = streaming_reply_app().await;
+    let before = conversation_rows(&mut app, 60, 24);
+    let offset = app.conversation_scroll.offset;
+    for seq in 5..25 {
+        app.store.apply_event(reasoning_delta(
+            session,
+            seq,
+            run,
+            attempt,
+            "more thought\n",
+        ));
+        let rows = conversation_rows(&mut app, 60, 24);
+        assert_eq!(app.conversation_scroll.offset, offset);
+        // Only the folded block's own header counts its hidden lines.
+        assert_eq!(rows[..rows.len() - 1], before[..before.len() - 1]);
+        assert!(app.conversation_scroll.following);
+    }
+}
+
+#[tokio::test]
+async fn toggling_an_earlier_block_during_a_stream_applies_on_the_next_frame() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let first = AttemptId::new_v7();
+    let second = AttemptId::new_v7();
+    let call = cookie_agent_protocol::ToolCallId::new_v7();
+    app.selected = Some(session);
+    app.tree_root = Some(session);
+    for event in [
+        session_created(session, 1),
+        attempt_started(session, 2, run, first, None),
+        turn_committed(
+            session,
+            3,
+            run,
+            first,
+            3,
+            vec![text_part("looking first"), tool_part("call-1")],
+            Vec::new(),
+            None,
+        ),
+        tool_started_at(session, 4, run, call, 3, "call-1", 1, "call-1", None),
+        tool_terminated(
+            session,
+            5,
+            run,
+            call,
+            3,
+            "call-1",
+            cookie_agent_protocol::ToolTerminationOutcome::Completed,
+        ),
+        attempt_started(session, 6, run, second, None),
+        text_delta(session, 7, run, second, "streaming answer\n\n"),
+    ] {
+        app.store.apply_event(event);
+    }
+    conversation_rows(&mut app, 80, 30);
+    for (seq, round) in (8..).zip(0..4) {
+        // A delta lays out only the part that streams.
+        let parts = app.layout_cache.assistant_part_layout_passes;
+        app.store.apply_event(text_delta(
+            session,
+            seq,
+            run,
+            second,
+            &format!("line {round}\n\n"),
+        ));
+        conversation_rows(&mut app, 80, 30);
+        assert_eq!(app.layout_cache.assistant_part_layout_passes - parts, 1);
+        let hit = *app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == BlockId::Tool(call))
+            .expect("the tool row is on screen");
+        let expanded = round % 2 == 0;
+        let parts = app.layout_cache.assistant_part_layout_passes;
+        app.handle_click(hit.rect.x, hit.rect.y).await;
+        let rows = conversation_rows(&mut app, 80, 30);
+        assert_eq!(
+            rows.iter().any(|row| row.contains("done")),
+            expanded,
+            "round {round}: {rows:#?}"
+        );
+        // The toggle reuses every text and thinking part's layout.
+        assert_eq!(app.layout_cache.assistant_part_layout_passes, parts);
+    }
 }
