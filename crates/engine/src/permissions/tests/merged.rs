@@ -224,9 +224,17 @@ fn runtime_selectors_are_distinct_identities() {
 
 #[test]
 fn home_patterns_are_compared_as_matching_resolves_them() {
+    // Path resources must be absolute on the platform the test runs on.
+    let root = if cfg!(windows) { "C:" } else { "" };
+    let path = |rest: &str| format!("{root}{rest}");
     let agent = policy(vec![allow(PermissionAction::READ, "~/notes/*")]);
-    let overlay = session(vec![deny(PermissionAction::READ, "/home/ada/notes/*")]);
-    let ada = PermissionScope::runtime("labpc", None).with_home(Some("/home/ada"));
+    let overlay = session(vec![deny(
+        PermissionAction::READ,
+        &path("/home/ada/notes/*"),
+    )]);
+    let ada_home = path("/home/ada");
+    let bob_home = path("/home/bob");
+    let ada = PermissionScope::runtime("labpc", None).with_home(Some(&ada_home));
     // On a runtime whose home is `/home/ada` the two are one identity: the
     // session's rule replaces the document's, so nothing offers `read`.
     assert_eq!(
@@ -240,7 +248,7 @@ fn home_patterns_are_compared_as_matching_resolves_them() {
             &agent,
             &overlay,
             PermissionAction::READ,
-            "/home/ada/notes/todo.md",
+            &path("/home/ada/notes/todo.md"),
             ada
         ),
         Deny
@@ -253,7 +261,7 @@ fn home_patterns_are_compared_as_matching_resolves_them() {
         ada
     ));
     // Elsewhere `~/notes/*` names another home, so both rules stay.
-    let bob = PermissionScope::runtime("laptop", None).with_home(Some("/home/bob"));
+    let bob = PermissionScope::runtime("laptop", None).with_home(Some(&bob_home));
     assert_eq!(
         MergedRules::of(&agent, Some(&overlay), bob.home)
             .rules()
@@ -265,7 +273,7 @@ fn home_patterns_are_compared_as_matching_resolves_them() {
             &agent,
             &overlay,
             PermissionAction::READ,
-            "/home/bob/notes/todo.md",
+            &path("/home/bob/notes/todo.md"),
             bob
         ),
         Allow
