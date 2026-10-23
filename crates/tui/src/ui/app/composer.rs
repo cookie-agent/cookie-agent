@@ -1039,6 +1039,7 @@ impl App {
                 }
             }
             SlashCommand::Agent => self.open_selection_modal(Modal::Agents),
+            SlashCommand::Options => self.open_agent_options(),
             SlashCommand::Model => {
                 self.open_selection_modal(Modal::Models);
                 // Only the palette's `/model` continues on to the variant

@@ -47,6 +47,8 @@ pub(crate) enum SlashCommand {
     Usage,
     Sessions,
     Project,
+    /// The session's ACP agent options.
+    Options,
     Cancel,
 }
 
@@ -133,6 +135,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "select the preset for the next root run and future new sessions",
         action: PaletteAction::Run(SlashCommand::Preset),
         writes_session: false,
+    },
+    CommandSpec {
+        name: "options",
+        aliases: &[],
+        description: "change the session's ACP agent options (model, mode, effort)",
+        action: PaletteAction::Run(SlashCommand::Options),
+        writes_session: true,
     },
     CommandSpec {
         name: "agent",
@@ -378,6 +387,12 @@ pub(crate) enum TextTarget {
     /// The title of `session_id`, prefilled with its current one.
     SessionTitle {
         session_id: cookie_agent_protocol::SessionId,
+    },
+    /// The input of an ACP agent's command `name`, sent as `/<name>
+    /// <input>`.
+    AgentCommand {
+        name: String,
+        hint: Option<String>,
     },
 }
 

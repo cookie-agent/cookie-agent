@@ -323,11 +323,15 @@ fn block_rows(
             table_rows(columns, rows, sink, theme, out);
             cut(*omitted_rows, Unit::ROW).rows(sink, theme, out);
         }
-        // Its canonical text, a checklist, until the plan gets its own view.
-        DisplayBlock::Plan { .. } => {
-            for line in source_lines(&block.to_text()) {
-                if let Some(text) = sink.line(line) {
-                    out.push(ToolBodyLine::wrapped(Line::from(text)));
+        DisplayBlock::Plan { entries } => {
+            for line in super::events::plan_lines(entries, theme) {
+                let runs = line
+                    .spans
+                    .into_iter()
+                    .map(|span| (span.style, span.content.into_owned()))
+                    .collect();
+                if let Some(spans) = sink.runs(runs) {
+                    out.push(ToolBodyLine::wrapped(Line::from(spans)));
                 }
             }
         }

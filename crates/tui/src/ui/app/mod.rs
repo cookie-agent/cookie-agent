@@ -1,5 +1,6 @@
 //! Application state, event handling, and terminal loop.
 
+mod acp;
 mod agents;
 mod approvals;
 mod attachments;
@@ -24,6 +25,8 @@ mod sessions;
 #[cfg(test)]
 pub(in crate::ui) use session_delete::{SessionDeletePrompt, SessionPickerAction};
 mod subscriptions;
+#[cfg(test)]
+pub(crate) use acp::agent_command_prompt_for_test;
 pub(super) use agents::DescendantEvent;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(super) use approvals::{ApprovalPanel, approval_content};
@@ -170,6 +173,9 @@ pub(super) enum Modal {
     Cron,
     /// `/project` or the bottom bar's project: the project picker.
     Projects,
+    /// `/options`: the session's ACP agent options, then the values of
+    /// `App::agent_option_step`.
+    AgentOptions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -850,6 +856,9 @@ pub struct App {
     pub(super) model_then_variant: bool,
     /// The model chosen in `/model`, applied only once its variant is picked.
     pub(super) variant_step_model: Option<ModelKey>,
+    /// The ACP agent option whose values `/options` lists; `None` lists
+    /// the options.
+    pub(super) agent_option_step: Option<String>,
     pub(super) last_escape: Option<Instant>,
     /// When Ctrl-C last found nothing to interrupt; a second press inside
     /// the quit window exits.
@@ -927,6 +936,13 @@ const USER_MENU_ITEMS: &[(&str, &str)] = &[
 ];
 
 pub(in crate::ui) enum RpcUpdate {
+    /// `session.agent_option.set` answered: the agent's options after the
+    /// change, or why it failed.
+    AgentOptionSet {
+        session_id: SessionId,
+        label: String,
+        result: Result<Vec<cookie_agent_protocol::AcpConfigOption>, String>,
+    },
     /// The daemon was redialed after the connection dropped.
     Reconnected {
         client: Client,
@@ -1526,6 +1542,7 @@ impl App {
             palette: None,
             model_then_variant: false,
             variant_step_model: None,
+            agent_option_step: None,
             last_escape: None,
             last_quit_press: None,
             input: InputState::default(),

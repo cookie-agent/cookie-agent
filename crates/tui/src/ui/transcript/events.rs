@@ -48,6 +48,60 @@ pub(super) fn goal_layout(goal: &GoalState, width: u16, theme: &Theme) -> Vec<Li
     role_block(Role::Goal, body, width, theme)
 }
 
+/// An ACP agent's plan, as a checklist with each step's status.
+pub(super) fn plan_layout(
+    entries: &[cookie_agent_protocol::PlanEntry],
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    role_block(Role::Plan, plan_lines(entries, theme), width, theme)
+}
+
+/// The lines of a plan: `[x]` done, `[~]` in progress, `[ ]` pending, and a
+/// high or low priority after the step.
+pub(super) fn plan_lines(
+    entries: &[cookie_agent_protocol::PlanEntry],
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    use cookie_agent_protocol::{PlanEntryPriority, PlanEntryStatus};
+    if entries.is_empty() {
+        return vec![Line::styled("no steps", theme.muted())];
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            let (marker, marker_style, text_style) = match entry.status {
+                PlanEntryStatus::Completed => (
+                    "[x]",
+                    theme.tool_success(),
+                    theme
+                        .muted()
+                        .add_modifier(ratatui::style::Modifier::CROSSED_OUT),
+                ),
+                PlanEntryStatus::InProgress => ("[~]", theme.tool_running(), theme.assistant()),
+                PlanEntryStatus::Pending | PlanEntryStatus::Unknown => {
+                    ("[ ]", theme.muted(), theme.internal())
+                }
+            };
+            let mut spans = vec![
+                Span::styled(marker, marker_style),
+                Span::raw(" "),
+                Span::styled(entry.content.clone(), text_style),
+            ];
+            match entry.priority {
+                Some(PlanEntryPriority::High) => {
+                    spans.push(Span::styled(" · high", theme.warning()));
+                }
+                Some(PlanEntryPriority::Low) => {
+                    spans.push(Span::styled(" · low", theme.muted()));
+                }
+                Some(PlanEntryPriority::Medium | PlanEntryPriority::Unknown) | None => {}
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 pub(super) fn producer_message_layout(
     message_id: ProducerMessageId,
     owner: &ProducerOwner,

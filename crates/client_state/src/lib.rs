@@ -9,6 +9,7 @@
 //! assistant header projects the canonical `Agent • Model[variant]`, with the
 //! model's display name (looked up at render time) ahead of its id.
 
+pub mod acp;
 pub mod activity;
 pub mod badges;
 pub mod config;
@@ -577,6 +578,15 @@ pub enum TranscriptItem {
         change: cookie_agent_protocol::MemoryChangeKind,
         url: String,
     },
+    /// An ACP agent's plan during one run: a checklist the agent replaces
+    /// as it works, kept in place (`docs/site/specs/acp-agents.md`
+    /// section 6). Each run's plan is its own row.
+    Plan {
+        id: u64,
+        version: u64,
+        run: Option<RunId>,
+        entries: Vec<cookie_agent_protocol::PlanEntry>,
+    },
     Goal {
         id: u64,
         seq: u64,
@@ -705,6 +715,7 @@ impl TranscriptItem {
             | Self::SkillLoaded { id, .. }
             | Self::MemoryChange { id, .. }
             | Self::Goal { id, .. }
+            | Self::Plan { id, .. }
             | Self::ProducerMessage { id, .. } => *id,
         }
     }
@@ -718,7 +729,8 @@ impl TranscriptItem {
             | Self::Compaction { version, .. }
             | Self::PluginMessage { version, .. }
             | Self::AgentMd { version, .. }
-            | Self::SkillLoaded { version, .. } => *version,
+            | Self::SkillLoaded { version, .. }
+            | Self::Plan { version, .. } => *version,
             Self::Goal { .. } | Self::MemoryChange { .. } => 0,
             Self::ProducerMessage { status, .. } => match status {
                 ProducerMessageStatus::Pending => 0,
@@ -879,6 +891,40 @@ pub struct ProducerClaimProjection {
     pub(crate) message_ids: Vec<ProducerMessageId>,
 }
 
+/// What a session's ACP agent reported about its session
+/// (`docs/site/specs/acp-agents.md` sections 5 and 10), each the latest
+/// whole value.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AcpSessionView {
+    /// The agent and its runtime, from the latest `acp_session_started`.
+    pub agent: Option<AgentId>,
+    pub runtime_id: Option<cookie_agent_protocol::RuntimeId>,
+    /// The slash commands the agent offers, which the composers list as the
+    /// agent's.
+    pub commands: Vec<cookie_agent_protocol::AcpCommand>,
+    /// The agent's config options (model, mode, effort, ...), which the
+    /// session's details show and `session.agent_option.set` changes.
+    pub options: Vec<cookie_agent_protocol::AcpConfigOption>,
+}
+
+impl AcpSessionView {
+    /// The agent's commands whose name starts with `prefix` (without the
+    /// `/`), in the agent's order.
+    pub fn commands_matching<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a cookie_agent_protocol::AcpCommand> + 'a {
+        self.commands
+            .iter()
+            .filter(move |command| command.name.starts_with(prefix))
+    }
+
+    /// Whether `name` is one of the agent's commands.
+    pub fn has_command(&self, name: &str) -> bool {
+        self.commands.iter().any(|command| command.name == name)
+    }
+}
+
 /// Per-session projection of persisted events and live output.
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
@@ -916,6 +962,9 @@ pub struct SessionState {
     /// events.
     pub runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold,
     pub goal: Option<GoalState>,
+    /// What the session's ACP agent reported: its slash commands and its
+    /// config options. Empty for a session of a daemon agent.
+    pub acp: AcpSessionView,
     pub transcript: Vec<TranscriptItem>,
     /// Durable insertion time per transcript item id. Cross-session rows such
     /// as aggregated descendant warnings merge into a viewed transcript by

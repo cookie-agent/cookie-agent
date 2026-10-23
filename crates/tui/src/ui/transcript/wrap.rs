@@ -127,6 +127,7 @@ fn role_block_lines_with(
         Role::User => ("You", "┌─", "│ ", theme.user()),
         Role::Action => ("Action", "--", "│ ", theme.user()),
         Role::Goal => ("Goal", "◆─", "│ ", theme.assistant()),
+        Role::Plan => ("Plan", "◇─", "│ ", theme.assistant()),
         Role::ToolRunning => ("TOOL RUNNING", "┏…", "┃ ", theme.tool_running()),
         Role::ToolSuccess => ("TOOL SUCCESS", "┏✓", "┃ ", theme.tool_success()),
         Role::ToolFailure => ("TOOL FAILURE", "┏!", "┃ ", theme.tool_failure()),
@@ -136,7 +137,7 @@ fn role_block_lines_with(
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
     };
-    if matches!(role, Role::User | Role::Goal | Role::Action) {
+    if matches!(role, Role::User | Role::Goal | Role::Plan | Role::Action) {
         if width == 0 {
             return Vec::new();
         }
@@ -145,6 +146,7 @@ fn role_block_lines_with(
                 "[{}]",
                 match role {
                     Role::Goal => "G",
+                    Role::Plan => "L",
                     Role::Action => "A",
                     Role::User => "U",
                     _ => "P",
@@ -168,6 +170,7 @@ fn role_block_lines_with(
             Role::User => "U",
             Role::Action => "A",
             Role::Goal => "G",
+            Role::Plan => "L",
             Role::ToolRunning => "T…",
             Role::ToolSuccess => "T✓",
             Role::ToolFailure => "T!",

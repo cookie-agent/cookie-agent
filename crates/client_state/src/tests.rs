@@ -3798,3 +3798,159 @@ fn a_user_messages_files_are_kept_by_its_sequence() {
     );
     assert_eq!(state.user_files.get(&7), Some(&vec![artifact]));
 }
+
+#[test]
+fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
+    use cookie_agent_protocol::{
+        AcpCommand, AcpConfigOption, AcpConfigValue, AcpSessionRecord, AcpSessionStart,
+        AcpSessionUpdate, DisplayBlock, Open, PlanEntry, PlanEntryStatus,
+    };
+    let session_id = SessionId::new_v7();
+    let (first, second) = (RunId::new_v7(), RunId::new_v7());
+    let mut state = SessionState::default();
+    let apply = |state: &mut SessionState, run, seq, payload| {
+        reduce_event(
+            state,
+            session_id,
+            Some(run),
+            seq,
+            jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            payload,
+        );
+    };
+    let plan = |statuses: &[PlanEntryStatus]| {
+        Open::Known(DisplayBlock::Plan {
+            entries: statuses
+                .iter()
+                .enumerate()
+                .map(|(index, status)| PlanEntry {
+                    content: format!("step {index}"),
+                    status: *status,
+                    priority: None,
+                })
+                .collect(),
+        })
+    };
+    let plans = |state: &SessionState| {
+        state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Plan { run, entries, .. } => Some((
+                    *run,
+                    entries.iter().map(|entry| entry.status).collect::<Vec<_>>(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    apply(
+        &mut state,
+        first,
+        1,
+        EventPayload::AcpSessionStarted {
+            record: AcpSessionRecord {
+                agent: AgentId::new("local-claude").unwrap(),
+                runtime_id: cookie_agent_protocol::RuntimeId::new("local").unwrap(),
+                runtime_agent: AgentId::new("claude").unwrap(),
+                acp_session_id: "s-1".into(),
+                cwd: "/work".into(),
+                protocol_version: 1,
+                agent_info: serde_json::Value::Null,
+                how: AcpSessionStart::New,
+            },
+        },
+    );
+    assert_eq!(
+        state.acp.agent.as_ref().map(AgentId::as_str),
+        Some("local-claude")
+    );
+    apply(
+        &mut state,
+        first,
+        2,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                commands: Some(vec![
+                    AcpCommand {
+                        name: "review".into(),
+                        description: "Review the changes".into(),
+                        input_hint: Some("what to review".into()),
+                    },
+                    AcpCommand {
+                        name: "compact".into(),
+                        description: String::new(),
+                        input_hint: None,
+                    },
+                ]),
+                options: Some(vec![AcpConfigOption {
+                    id: "mode".into(),
+                    name: "Mode".into(),
+                    description: None,
+                    category: Some("mode".into()),
+                    current_value: "auto".into(),
+                    values: vec![AcpConfigValue {
+                        value: "auto".into(),
+                        name: "Auto".into(),
+                        description: None,
+                    }],
+                }]),
+                plan: Some(plan(&[
+                    PlanEntryStatus::InProgress,
+                    PlanEntryStatus::Pending,
+                ])),
+            },
+        },
+    );
+    assert_eq!(
+        state
+            .acp
+            .commands_matching("re")
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>(),
+        ["review"]
+    );
+    assert!(state.acp.has_command("compact"));
+    assert_eq!(state.acp.options[0].current_value, "auto");
+    // A later update of the same run replaces the run's plan in place and
+    // keeps what it does not carry.
+    apply(
+        &mut state,
+        first,
+        3,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                plan: Some(plan(&[
+                    PlanEntryStatus::Completed,
+                    PlanEntryStatus::InProgress,
+                ])),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    assert_eq!(state.acp.commands.len(), 2);
+    assert_eq!(
+        plans(&state),
+        [(
+            Some(first),
+            vec![PlanEntryStatus::Completed, PlanEntryStatus::InProgress]
+        )]
+    );
+    // Another run's plan is a row of its own.
+    apply(
+        &mut state,
+        second,
+        4,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                plan: Some(plan(&[PlanEntryStatus::Pending])),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    assert_eq!(plans(&state).len(), 2);
+    assert_eq!(
+        plans(&state)[1],
+        (Some(second), vec![PlanEntryStatus::Pending])
+    );
+}

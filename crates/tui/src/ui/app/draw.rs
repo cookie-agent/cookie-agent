@@ -235,6 +235,17 @@ impl App {
                     self.render_agent_picker(frame, centered(frame.area(), 56, 44));
                 }
             }
+            Modal::AgentOptions => {
+                let (title, entries) = self.agent_option_rows();
+                self.render_picker(
+                    frame,
+                    &title,
+                    entries,
+                    Some("The agent offers no options."),
+                    centered(frame.area(), 56, 44),
+                    Some("↑↓ move · enter: select · esc: close"),
+                );
+            }
             Modal::Presets => {
                 let mut entries =
                     vec![format!("{} (shared agents)", super::agents::DEFAULT_PRESET)];
@@ -857,6 +868,11 @@ impl App {
             PaletteAction::Run(SlashCommand::Project) => self.daemon_has_projects(),
             // A job for this session needs one on screen and a daemon that
             // keeps jobs.
+            // The session's agent options need an ACP agent that offers
+            // some.
+            PaletteAction::Run(SlashCommand::Options) => {
+                self.viewed_acp().is_some_and(|acp| !acp.options.is_empty())
+            }
             PaletteAction::Run(SlashCommand::CronNew) => {
                 self.daemon_has_crons() && self.viewed_session().is_some()
             }
@@ -1643,6 +1659,14 @@ impl App {
                         "Attach".to_owned(),
                         format!("Path of the file to attach ({accepts})"),
                         "enter: attach · esc: back",
+                    ),
+                    TextTarget::AgentCommand { name, hint } => (
+                        format!("/{name} (the agent's)"),
+                        hint.as_deref().map_or_else(
+                            || "Input (optional)".to_owned(),
+                            |hint| format!("Input: {hint}"),
+                        ),
+                        "enter: send to the agent · esc: back",
                     ),
                     TextTarget::SkillArguments { name, hint } => (
                         format!("/{name}"),

@@ -1064,7 +1064,7 @@ impl App {
             Modal::Cron => self.handle_cron_key(key),
             Modal::Projects => self.handle_project_picker(key).await,
             Modal::Sessions => self.handle_session_picker(key).await,
-            Modal::Presets => self.handle_selection_picker(key).await,
+            Modal::Presets | Modal::AgentOptions => self.handle_selection_picker(key).await,
             Modal::Agents => self.handle_agent_picker_key(key).await,
             Modal::Models => self.handle_model_picker_key(key).await,
             Modal::Variants => self.handle_variant_picker_key(key).await,
@@ -1533,7 +1533,9 @@ impl App {
                         self.agent_search.focus_list();
                         self.picker_entry_count()
                     }
-                    Modal::Presets | Modal::Variants | Modal::Projects => self.picker_entry_count(),
+                    Modal::Presets | Modal::Variants | Modal::Projects | Modal::AgentOptions => {
+                        self.picker_entry_count()
+                    }
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::UserMessage => USER_MENU_ITEMS.len(),
                     Modal::ConnectDetails

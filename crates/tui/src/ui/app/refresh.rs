@@ -616,6 +616,11 @@ impl App {
                 }
             }
             RpcUpdate::ApprovalList { .. } => {}
+            RpcUpdate::AgentOptionSet {
+                session_id,
+                label,
+                result,
+            } => self.finish_agent_option_set(session_id, label, result),
             RpcUpdate::PermissionModeMutationFinished {
                 session_id,
                 generation,

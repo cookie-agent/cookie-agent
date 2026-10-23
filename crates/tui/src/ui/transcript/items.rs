@@ -58,6 +58,8 @@ pub(super) enum Role {
     User,
     Action,
     Goal,
+    /// An ACP agent's plan.
+    Plan,
     ToolRunning,
     ToolSuccess,
     ToolFailure,
@@ -120,7 +122,9 @@ pub(super) fn for_each_item_block_id(
             visit(BlockId::ProducerMessage(*message_id))
         }
         TranscriptItem::Event { id, .. } => visit(BlockId::Event(*id)),
-        TranscriptItem::User { .. } | TranscriptItem::Goal { .. } => true,
+        TranscriptItem::User { .. } | TranscriptItem::Goal { .. } | TranscriptItem::Plan { .. } => {
+            true
+        }
     }
 }
 
@@ -189,6 +193,7 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
         | TranscriptItem::SkillLoaded { .. }
         | TranscriptItem::MemoryChange { .. }
         | TranscriptItem::Goal { .. }
+        | TranscriptItem::Plan { .. }
         | TranscriptItem::ProducerMessage { .. } => false,
     }
 }
@@ -282,6 +287,11 @@ pub(super) fn transcript_item_layout(
         TranscriptItem::MemoryChange {
             seq, change, url, ..
         } => memory_change_layout(*seq, *change, url, context),
+        TranscriptItem::Plan { entries, .. } => ItemLayout {
+            lines: plan_layout(entries, context.width, context.theme),
+            regions: Vec::new(),
+            user_seq: None,
+        },
         TranscriptItem::Goal {
             goal, activation, ..
         } => ItemLayout {

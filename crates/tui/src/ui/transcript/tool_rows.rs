@@ -267,6 +267,18 @@ pub(super) fn tool_child_layout(
         }
         _ => suffix,
     };
+    // An ACP agent's own call names the agent that ran it.
+    let suffix = match tool
+        .presentation
+        .tool
+        .source
+        .as_ref()
+        .and_then(|source| source.known())
+        .and_then(cookie_agent_client_state::acp::acp_source_label)
+    {
+        Some(label) => format!(" · {label}{suffix}"),
+        None => suffix,
+    };
     let button_width = UnicodeWidthStr::width(BACKGROUND_BUTTON);
     let content_width = tool_header_content_width(header_width);
     let offer_background = tool.status == ToolStatus::Running

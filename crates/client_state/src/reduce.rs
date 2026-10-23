@@ -1220,18 +1220,35 @@ pub(super) fn reduce_event_from(
                 url,
             });
         }
-        // The ACP session an agent talks in; its commands, options, and
-        // plan are not shown yet.
-        EventPayload::AcpSessionStarted { record } => push_event(
-            state,
-            EventLevel::Debug,
-            format!(
-                "ACP session {} of {} ({:?})",
-                record.acp_session_id, record.agent, record.how
-            ),
-            timestamp,
-        ),
-        EventPayload::AcpSessionUpdated { .. } => {}
+        // The ACP session an agent talks in, shown at the debug level.
+        EventPayload::AcpSessionStarted { record } => {
+            state.acp.agent = Some(record.agent.clone());
+            state.acp.runtime_id = Some(record.runtime_id.clone());
+            push_event(
+                state,
+                EventLevel::Debug,
+                format!(
+                    "ACP session {} of {} ({:?})",
+                    record.acp_session_id, record.agent, record.how
+                ),
+                timestamp,
+            );
+        }
+        // Each member is the whole new value.
+        EventPayload::AcpSessionUpdated { update } => {
+            if let Some(commands) = update.commands {
+                state.acp.commands = commands;
+            }
+            if let Some(options) = update.options {
+                state.acp.options = options;
+            }
+            if let Some(cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::DisplayBlock::Plan { entries },
+            )) = update.plan
+            {
+                upsert_plan(state, run_id, entries, timestamp);
+            }
+        }
         // What a writer left out changes nothing; the debug view names it.
         EventPayload::RecordOmitted { omitted_type } => push_event(
             state,
@@ -2332,6 +2349,41 @@ fn push_child(
         child_times.push(timestamp);
     }
     children.push(child);
+}
+
+/// The plan of run `run`: its row replaced in place, or a new row for a
+/// run that had none.
+fn upsert_plan(
+    state: &mut SessionState,
+    run: Option<RunId>,
+    entries: Vec<cookie_agent_protocol::PlanEntry>,
+    timestamp: jiff::Timestamp,
+) {
+    let existing = state
+        .transcript
+        .iter_mut()
+        .rev()
+        .find_map(|item| match item {
+            TranscriptItem::Plan {
+                run: item_run,
+                version,
+                entries: item_entries,
+                ..
+            } if *item_run == run => Some((version, item_entries)),
+            _ => None,
+        });
+    match existing {
+        Some((version, item_entries)) => {
+            *item_entries = entries;
+            *version = version.wrapping_add(1);
+        }
+        None => push_item(state, timestamp, |id| TranscriptItem::Plan {
+            id,
+            version: 0,
+            run,
+            entries,
+        }),
+    }
 }
 
 pub(super) fn push_item(

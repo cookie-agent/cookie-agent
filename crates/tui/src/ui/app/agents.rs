@@ -22,16 +22,24 @@ impl App {
         self.root_agents_for_preset(preset)
     }
 
-    pub(super) fn new_session_selectable_agents(&self) -> Vec<&AgentDescriptor> {
-        self.root_agents_for_preset(self.selected_preset.as_deref())
-    }
-
+    /// The agent picker's rows: the root-runnable agents, and ACP agents
+    /// that are unavailable now, shown dimmed and not pickable.
     pub(super) fn agent_picker_candidates(&self) -> Vec<&AgentDescriptor> {
-        if self.new_session_draft.is_some() {
-            self.new_session_selectable_agents()
+        let preset = if self.new_session_draft.is_some() {
+            self.selected_preset.as_deref()
         } else {
-            self.selectable_agents()
-        }
+            self.draft
+                .as_ref()
+                .and_then(|draft| draft.preset.as_deref())
+                .or_else(|| {
+                    self.selected_session_meta()
+                        .and_then(|session| session.creation_selection.preset.as_deref())
+                })
+        };
+        self.agents
+            .iter()
+            .filter(|agent| cookie_agent_client_state::acp::listed_in_root_picker(agent, preset))
+            .collect()
     }
 
     pub(in crate::ui) fn filtered_agent_picker_candidates(&self) -> Vec<&AgentDescriptor> {
@@ -191,6 +199,14 @@ impl App {
     /// Model draft changes are allowed whenever a draft exists — for
     /// delegated sessions within their frozen agent's persisted suffix.
     /// This gate is independent of the active run.
+    /// Whether the draft's model is an ACP agent's synthetic one.
+    pub(in crate::ui) fn draft_is_acp(&self) -> bool {
+        self.new_session_draft
+            .as_ref()
+            .or(self.draft.as_ref())
+            .is_some_and(|draft| cookie_agent_client_state::acp::is_acp_model(&draft.model))
+    }
+
     pub(in crate::ui) fn model_selection_allowed(&self) -> bool {
         self.new_session_draft.is_some() || self.draft.is_some()
     }
@@ -222,6 +238,9 @@ impl App {
                     .delegated_pin_reason()
                     .unwrap_or_else(|| "agent switching requires a root session".into());
             }
+            // An ACP agent chooses its own model: it is one of the agent's
+            // options.
+            Modal::Models if self.draft_is_acp() => self.open_agent_options(),
             Modal::Models if !self.model_selection_allowed() => {
                 self.status = if self.runtime.is_empty() {
                     EMPTY_RUNTIME_GUIDANCE.into()
@@ -386,11 +405,18 @@ impl App {
         })
     }
 
+    /// Whether `selection` can run now: a model of the catalog, or the
+    /// synthetic model of an ACP agent the daemon lists, which is in no
+    /// catalog (the agent chooses its own model).
     pub(super) fn selection_is_live(&self, selection: &ModelSelection) -> bool {
         self.model_descriptor(&selection.model)
             .is_some_and(|descriptor| {
                 Self::variant_is_valid(descriptor, selection.variant.as_ref())
             })
+            || (cookie_agent_client_state::acp::is_acp_model(selection)
+                && self.agents.iter().any(|agent| {
+                    cookie_agent_client_state::acp::acp_model(agent).as_ref() == Some(selection)
+                }))
     }
 
     pub(super) fn preferred_model_for_agent(

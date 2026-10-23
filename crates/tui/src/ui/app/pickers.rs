@@ -2,6 +2,8 @@
 
 use super::*;
 
+use super::acp::{agent_command_label, agent_command_prompt};
+
 /// The exact `Agent • Model[Variant]` draft-selection title form.
 pub(super) fn draft_title(draft: &RunSelection) -> String {
     let variant = draft
@@ -26,12 +28,41 @@ pub(super) fn agent_picker_row(
     } else {
         id_style
     };
+    // An ACP agent that cannot be picked now is dimmed.
+    let pickable = cookie_agent_client_state::acp::pickable(agent);
+    let id_style = if pickable { id_style } else { theme.muted() };
     let mut spans = vec![Span::styled(id, id_style)];
+    let mut used = id_width;
+    if let Some(note) = cookie_agent_client_state::acp::runtime_note(agent)
+        && used < width
+    {
+        let note = truncate_with_ellipsis(&format!(" [{note}]"), width - used);
+        used += UnicodeWidthStr::width(note.as_str());
+        let style = if pickable {
+            theme.internal()
+        } else {
+            theme.muted()
+        };
+        spans.push(Span::styled(
+            note,
+            if selected {
+                style.patch(theme.selected_overlay())
+            } else {
+                style
+            },
+        ));
+    }
+    let id_width = used;
     if !agent.description.trim().is_empty() && id_width < width {
         let description_style = if selected {
             theme.internal().patch(theme.selected_overlay())
         } else {
             theme.internal()
+        };
+        let description_style = if pickable {
+            description_style
+        } else {
+            description_style.patch(theme.muted())
         };
         spans.push(Span::styled(
             truncate_with_ellipsis(
@@ -162,7 +193,7 @@ impl App {
         self.palette = None;
     }
 
-    fn push_palette_step(&mut self, step: PaletteStep) {
+    pub(super) fn push_palette_step(&mut self, step: PaletteStep) {
         if let Some(palette) = self.palette.as_mut() {
             palette.steps.push(step);
         }
@@ -214,7 +245,7 @@ impl App {
 
     fn palette_list_len(&self) -> usize {
         match self.palette_step() {
-            None => self.palette_commands().len(),
+            None => self.palette_commands().len() + self.palette_agent_commands().len(),
             Some(PaletteStep::EventLevel { .. }) => EVENT_LEVELS.len(),
             Some(PaletteStep::Skills { .. }) => self.palette_skills().len(),
             Some(PaletteStep::Text { .. }) => 0,
@@ -228,6 +259,11 @@ impl App {
                 .palette_commands()
                 .iter()
                 .map(|spec| spec.label())
+                .chain(
+                    self.palette_agent_commands()
+                        .iter()
+                        .map(agent_command_label),
+                )
                 .collect(),
             Some(PaletteStep::EventLevel { .. }) => EVENT_LEVELS
                 .iter()
@@ -361,9 +397,15 @@ impl App {
         };
         match submit {
             PaletteSubmit::Command => {
-                let Some(spec) =
-                    index.and_then(|index| self.palette_commands().get(index).copied())
-                else {
+                let commands = self.palette_commands();
+                if let Some(agent_command) = index
+                    .and_then(|index| index.checked_sub(commands.len()))
+                    .and_then(|index| self.palette_agent_commands().get(index).cloned())
+                {
+                    self.choose_agent_command(agent_command).await;
+                    return;
+                }
+                let Some(spec) = index.and_then(|index| commands.get(index).copied()) else {
                     self.status = "no matching command".into();
                     return;
                 };
@@ -401,6 +443,11 @@ impl App {
             PaletteSubmit::Text(TextTarget::CompactFocus, focus) => {
                 self.close_command_palette();
                 self.compact_selected_session((!focus.is_empty()).then_some(focus))
+                    .await;
+            }
+            PaletteSubmit::Text(TextTarget::AgentCommand { name, .. }, input) => {
+                self.close_command_palette();
+                self.submit_prompt(agent_command_prompt(&name, &input))
                     .await;
             }
             PaletteSubmit::Text(TextTarget::SkillArguments { name, .. }, args) => {
@@ -866,8 +913,16 @@ impl App {
                 let agent = self
                     .filtered_agent_picker_candidates()
                     .get(index)
-                    .map(|agent| agent.id.clone());
-                if let Some(agent) = agent {
+                    .map(|agent| {
+                        (cookie_agent_client_state::acp::pickable(agent))
+                            .then(|| agent.id.clone())
+                            .ok_or_else(|| cookie_agent_client_state::acp::unpickable_reason(agent))
+                    });
+                if let Some(Err(reason)) = agent {
+                    self.status = reason;
+                    return;
+                }
+                if let Some(Ok(agent)) = agent {
                     self.set_draft_agent(agent);
                     self.agent_search.reset();
                     self.modal = Modal::None;
@@ -980,6 +1035,7 @@ impl App {
             | Modal::Memory
             | Modal::Cron => {}
             Modal::Projects => self.choose_project_entry(index),
+            Modal::AgentOptions => self.choose_agent_option(index),
             Modal::None => {}
         }
     }
