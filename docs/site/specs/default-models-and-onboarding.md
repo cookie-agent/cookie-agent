@@ -11,8 +11,9 @@ to implement.
 - **The starter kit.** A default `config.toml` and default agent documents,
   shipped with each release as a downloadable asset, not bundled in the
   binary.
-- **Onboarding.** `cookie onboard` installs the kit and sets the models, and
-  records that the daemon is onboarded so clients stop offering it.
+- **Onboarding.** `cookie onboard` (or the TUI or web client) connects a
+  provider, sets the models, and can install the kit; clients offer it while
+  the daemon's configuration is not set up.
 
 **Decided 2026-10-23:**
 
@@ -28,9 +29,9 @@ to implement.
   cache warm.
 - The built-in `default` agent uses `${default_model}`.
 - The starter kit is a release asset; no GitHub Pages copy.
-- `cookie onboard` installs it and writes a persistent `onboarded` marker;
-  the daemon answers whether it is onboarded, so the TUI and the web client
-  offer onboarding only until then.
+- **Whether the daemon is set up comes from its configuration, not a marker
+  file** (decided 2026-10-23): it is set up when the requirements below hold,
+  and clients offer onboarding only while they do not.
 - **Onboarding requires a connected provider, `default_model`, and
   `small_model`** (decided 2026-10-23): it completes only once at least one
   model provider is connected and both fields name available models of the
@@ -158,22 +159,24 @@ cookie onboard [--from <file>] [--diff] [--yes]
   (both required), then optionally install the kit. The flags answer the
   questions; with `--yes` and no `--default-model` or `--small-model` it
   refuses rather than guess.
-- **The marker:** on success writes `~/.cookie-agent/onboarded`, a small JSON
-  file (`{"version": 1, "at": "…", "cookie": "0.3.0", "kit": "…"}`). Running
-  `cookie onboard` again works and updates the marker.
+- **Running it again** on a set-up daemon works: it shows the current
+  provider and models, and offers the kit again.
 
 ## 8. The daemon's onboarding API
 
 Client protocol minor, additive. These calls are the only way onboarding
 happens: every client uses them, the daemon does the work (downloading,
-checking hashes, writing files and configuration, the marker), and it never
+checking hashes, writing files and configuration), and it never
 branches on the kind of client asking.
 
-- `onboarding.get` → `{ onboarded, at?, cookie_version?, kit_version?,
-  providers_connected, default_model?, missing }`, where `missing` lists what
-  completing still needs: `provider` (no provider connected),
-  `default_model`, and `small_model` (unset, or naming a model no connected
-  provider offers).
+- `onboarding.get` → `{ ready, missing, providers_connected, default_model?,
+  small_model? }`, computed from the live configuration and
+  runtime: `ready` is `missing` being empty, and `missing` lists `provider`
+  (no provider connected), `default_model`, and `small_model` (unset, or
+  naming a model no connected provider offers). Nothing is stored for it, so
+  setting things up by hand (`config.apply`, `provider.connect`, editing
+  `config.toml`) counts just the same, and disconnecting the last provider
+  makes the daemon not ready again. The kit is not part of readiness.
 - `onboarding.preview { source? }` → the kit's version and, per file, what
   installing would do (`write`, `skip` as identical, `write_new` beside a
   changed file) with a diff for changed files. `source` is `release`
@@ -182,31 +185,34 @@ branches on the kind of client asking.
   kit but writes nothing; the daemon keeps it briefly for the run that
   follows.
 - `onboarding.run { install_kit, source?, default_model?, small_model? }` →
-  the files written, skipped, and written as `.new`, the configuration fields
-  set, then the marker. Model values use the configuration's shapes and are
+  the files written, skipped, and written as `.new`, and the configuration
+  fields set. Model values use the configuration's shapes and are
   checked like `config.apply`. **It refuses** (error `onboarding_incomplete`,
   naming what is `missing`) when, after applying its own fields, no provider
   is connected or `default_model` or `small_model` does not name an available
   model; nothing is written then, kit included.
 - Providers are connected with the existing `provider.connect` and
   `provider.disconnect`; onboarding adds no provider call of its own.
-- `onboarding.dismiss` writes the marker without the requirements, for a
-  user who configures everything by hand; clients offer it as a secondary
-  "skip" action.
-- `onboarding.changed` notification, so every connected client updates.
+- No dismiss call: there is nothing on the daemon to dismiss. A client may
+  remember "not now" locally (the browser's storage, the TUI's own state)
+  and ask again later; the daemon's answer stays what its configuration says.
+- `onboarding.changed` notification whenever `onboarding.get`'s answer would
+  change: a configuration reload or apply, a provider connected or
+  disconnected, or a model becoming available or not.
 - The models to choose from come from the existing model listing, so a
   client needs nothing onboarding-specific for the pickers.
 
 ## 9. Clients
 
-- **TUI:** on connecting to a daemon that is not onboarded, a notice offers
+- **TUI:** on connecting to a daemon that is not ready, a notice offers
   onboarding (connect a provider, pick `default_model` and `small_model`,
-  preview and install the kit) or skipping it; `/onboard`
-  opens it later. Finishing is disabled until `missing` is empty.
+  preview and install the kit) or "Not now", which the TUI remembers for the
+  machine; `/onboard` opens it any time. Finishing is disabled until
+  `missing` is empty.
 - **Web:** the same as a first-run sheet, and an entry in Settings.
 - **`cookie onboard`:** the same steps in a terminal (section 7).
-- All three use only the RPCs of section 8, and none asks again once
-  `onboarding.get` says onboarded.
+- All three use only the RPCs of section 8, and none offers it once
+  `onboarding.get` says ready.
 
 ## 10. Tests
 
@@ -218,10 +224,11 @@ branches on the kind of client asking.
   agent.
 - Kit: every file loads with the build's parsers; the manifest's hashes.
 - Onboarding: install into an empty root, `.new` beside a changed file,
-  identical files skipped, `--diff`, hash mismatch refused, the marker,
-  `onboarding.run` refused without a provider or an available
+  identical files skipped, `--diff`, hash mismatch refused,
+  `ready` following the configuration (set up by hand, a provider
+  disconnected, a model gone), `onboarding.changed`, `onboarding.run` refused without a provider or an available
   `default_model` or `small_model` (and writing nothing), `missing` in `onboarding.get`,
-  `onboarding.get/preview/run/dismiss` from a plain protocol client (no TUI
+  `onboarding.get/preview/run` from a plain protocol client (no TUI
   or web code), an uploaded archive as the source, the TUI notice, the web
   sheet.
 
