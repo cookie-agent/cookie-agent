@@ -356,8 +356,16 @@ Added 2026-10-22. An agent runs a job now the way it delegates:
   the usual background report.
 - The child counts against the caller's delegation depth and its resident
   subagents, like any delegated child.
-- See section 15 for what `cron_run` does with an in-session job and how it
-  counts in the job's history.
+- **The job's agent need not be a delegation target.** A new-session job's
+  agent may be `primary`-only; `cron_run` is the one exception to "only
+  `subagent` and `all` agents are delegated to", since the job already names
+  the agent (decided 2026-10-22).
+- **An in-session job** fires into its target session, exactly as a
+  scheduled fire would (section 4.2), with its `steer` or `queue`; no child
+  is created.
+- **In the job's state:** a run-now is recorded in the job's history as
+  `run now`, but counts toward neither `max_runs` nor the failure count.
+  The same holds for `crons.run`.
 
 ## 9. Client protocol
 
@@ -366,8 +374,9 @@ Added 2026-10-22. An agent runs a job now the way it delegates:
   - `crons.create`, `crons.update` (any field, `permission_mode`
     included), `crons.delete`;
   - `crons.run`: fire a job now, as a scheduled fire would (a new root
-    session for a new-session job). It is recorded with the actual time as
-    its scheduled time and moves nothing else;
+    session for a new-session job). It is recorded in the history as `run
+    now`, counts toward neither `max_runs` nor the failure count, and moves
+    nothing else;
   - `crons.changed`: notification, empty, coalesced like
     `projects.changed`.
 - **Additions:** `SessionMeta::cron`, `WaitingOn::ScheduledJob` (an open
@@ -456,12 +465,4 @@ history = 20                   # fires kept per job
 
 ## 15. Open questions
 
-- **`cron_run` on an in-session job.** Does it fire into the job's target
-  session as a scheduled fire would, or also start a delegated subagent of
-  the caller with the prompt?
-- **`cron_run` in the job's state.** Is a run-now recorded in the job's
-  history, and does it count toward `max_runs` and the failure count?
-- **`cron_run`'s agent mode.** A new-session job's agent is `primary` or
-  `all`; a `primary`-only agent cannot normally be delegated to. Does
-  `cron_run` make an exception, or refuse a job whose agent cannot run as
-  a subagent?
+None.
