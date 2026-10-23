@@ -116,17 +116,21 @@ and `memory.list` mark it as belonging to no current agent.
 In the TUI, `/memory` lists every layer: the `user` categories, each agent's
 file, and the machine and project memories grouped by machine and project,
 with invalid files marked and, at the end, anything in the memory folder that
-is not a memory, each with the reason. Enter opens the selected memory in
-`$VISUAL` or `$EDITOR`, frontmatter included, stamps too (the daemon
-replaces whatever you leave in them); saving writes it at the revision it
-read. `n` creates a memory, starting from the URL of the selected
+is not a memory, each with the reason. The details show when the selected
+memory was created, modified, and last read by a model, with exact times,
+and its size against its limit; a memory over its limit says so. Enter opens
+it in `$VISUAL` or `$EDITOR`, frontmatter included but without the `created`
+and `modified` stamps, which the daemon keeps; saving writes it at the
+revision it read. `n` creates a memory, starting from the URL of the selected
 layer, machine, or project, and `d` deletes the selected one after you
 confirm. Every action is also a button under the details. When the text you
 saved is not a valid memory, `e` reopens it as you left it; when the memory
 changed since you opened it, nothing is overwritten: `r` reloads the current
 version into the editor, and `o` overwrites it with your edit. The panel
 refreshes when a memory changes through the daemon, by you, another client,
-or the agent.
+or the agent. An agent's change also shows in the transcript as one line,
+such as `Saved project://web/build`; clicking it opens `/memory` at that
+memory. The web client's Memory view shows the same ages, sizes, and lines.
 
 From a terminal, `cookie memory` lists, edits, and deletes memories through
 the daemon, so it works against a remote daemon as well (`--url` and
@@ -135,11 +139,13 @@ the daemon, so it works against a remote daemon as well (`--url` and
 ```sh
 cookie memory list                      # every layer, invalid files with the reason
 cookie memory list project              # one layer: user, agent, machine, or project
+cookie memory show project://web/build  # stamps, size, and text
 cookie memory edit project://web/build  # in $VISUAL or $EDITOR; created when absent
 cookie memory rm machine://labpc/gpu    # asks first; --yes does not
 ```
 
-`edit` opens the whole file, frontmatter included, and saves it at the
+`list` gives each memory's ages and size under it. `edit` opens the file,
+frontmatter included but without the daemon's stamps, and saves it at the
 revision it read. Text that is not a valid memory is offered again as you
 left it; a memory that changed since you opened it is not overwritten, and
 you can reload it and edit the current version. You may add and remove

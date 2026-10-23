@@ -326,7 +326,8 @@ when it was created, modified, and last read, its size against its limit
 
 #### `cookie memory edit`
 
-`cookie memory edit <URL>` opens a memory, frontmatter included, in
+`cookie memory edit <URL>` opens a memory, frontmatter included but without
+the `created` and `modified` lines the daemon keeps, in
 the editor `cookie config edit` uses, such as `project://web/build`; a memory
 that does not exist yet is created. Text that is not a valid memory, or a
 memory that changed since it was opened, offers to edit again.
