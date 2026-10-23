@@ -3656,6 +3656,7 @@ mod windows_tests {
                     cwd_identity: CwdIdentity::new("workspace:test").unwrap(),
                     creation_selection: selection.clone(),
                     creation_agent: Box::new(agent.clone()),
+                    cron: None,
                     revisions: cookie_agent_protocol::RuntimeRevisions {
                         runtime_revision: runtime_revision.clone(),
                         catalog_revision: catalog_revision.clone(),
