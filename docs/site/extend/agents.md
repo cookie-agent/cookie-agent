@@ -262,8 +262,13 @@ run has been idle for longer than `delegation.idle_eviction_after`. Each tree
 is capped on its own, so one tree's activity never pages out another tree's
 children. This is a soft trigger: running,
 queued, recently active, pending-input, pending-approval, and not-yet-notified
-children remain resident even above the configured count. Root sessions are
-never evicted. Eligible children are selected oldest-idle first.
+children remain resident even above the configured count. Eligible children
+are selected oldest-idle first. A root session's whole tree pages out once
+nobody has used or watched it for 30 minutes. Waiting on a producer alone
+(a background call, a subagent, an external producer, or a goal) keeps no
+session in memory: when the producer sends, the session reloads and the send
+is accepted as if it had stayed. A scheduled wake or a message not yet
+delivered still keeps it.
 
 Paging happens only after event appends have been synced and, for background
 work, after the parent completion teaser is durable. Session listings retain

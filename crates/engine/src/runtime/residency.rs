@@ -324,7 +324,9 @@ impl Engine {
     }
 
     /// Whether anything still needs `session` in memory: a live or queued
-    /// run, compaction, an approval, unadmitted input, or producer work.
+    /// run, compaction, an approval, unadmitted input, or producer work
+    /// about to happen. A producer that only holds a registration does not
+    /// pin it (`Engine::producers_pin_session`).
     fn session_has_pending_work(&self, session: &crate::session::SessionProjection) -> bool {
         let session_id = session.meta.session_id;
         session.status == SessionStatus::Running
@@ -434,12 +436,7 @@ impl Engine {
                     .store
                     .notify_evicted_subscribers(member, last_event_seq);
                 if member == root {
-                    self.inner
-                        .sessions
-                        .producers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&member);
+                    self.retain_registrations_on_eviction(member);
                     self.inner
                         .sessions
                         .producer_projections
@@ -515,12 +512,7 @@ impl Engine {
     }
 
     fn clear_evicted_session_caches(&self, session_id: SessionId, origin: &SessionOrigin) {
-        self.inner
-            .sessions
-            .producers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&session_id);
+        self.retain_registrations_on_eviction(session_id);
         self.inner
             .sessions
             .producer_projections

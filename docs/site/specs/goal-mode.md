@@ -142,7 +142,9 @@ Semantics:
   registration is rejected.
 - A registered producer may send **after its turn ends**; sending to an idle
   session wakes it (section 3). Sending to a session being evicted/closed is
-  rejected.
+  rejected. (Since 2026-10-22 a registration no longer keeps its session in
+  memory; a send to an evicted session reloads it and is accepted, see
+  [background tools section 13](background-tools.md#13-addendum-2026-10-22-a-producer-wait-does-not-keep-a-session-in-memory).)
 - There are **no deadlines, watchdogs, or expiry**. Producers are good-faith
   owners of their registration lifecycle; a leaked registration only affects
   goal-readiness evaluation (4.2) and is surfaced in inspection.

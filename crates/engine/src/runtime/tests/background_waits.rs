@@ -1,5 +1,6 @@
-//! What a session waits on through its subagents
-//! (`docs/site/specs/background-tools.md`, section 12).
+//! What a session waits on through its subagents, and producer waits that
+//! leave a session free to page out (`docs/site/specs/background-tools.md`,
+//! sections 12 and 13).
 
 use std::sync::Arc;
 
@@ -8,7 +9,9 @@ use cookie_agent_protocol::{
     WaitingOn,
 };
 
-use super::background_tasks::{JOB_AGENT, JobControl, JobProvider};
+use super::background_tasks::{
+    JOB_AGENT, JobControl, JobProvider, background_result, start_job_run,
+};
 use super::support::*;
 use crate::runtime::producers::ProducerAuthority;
 
@@ -318,6 +321,154 @@ async fn a_foreground_delegation_leaves_its_parent_waiting_on_nothing() {
             .is_empty()
     );
     with_watchdog("scripted server", captured)
+        .await
+        .expect("requests");
+    engine.shutdown().await;
+}
+
+/// A root whose only pending thing is a running background call pages out
+/// after its idle window, lists as waiting meanwhile, and the call's result
+/// reloads it and starts the follow-up run.
+#[tokio::test]
+async fn a_root_waiting_only_on_a_background_call_pages_out_and_reloads_for_its_result() {
+    let run = start_job_run(
+        serde_json::json!({"command": "finish", "background": true}),
+        vec![
+            MatchedScriptedResponse::last_message_role("tool", scripted_text_body("waiting")),
+            MatchedScriptedResponse::last_message_contains(
+                "background_result",
+                scripted_text_body("noted"),
+            ),
+        ],
+        3,
+    )
+    .await;
+    let engine = run.fixture.engine.clone();
+    let session = run.session_id;
+    with_watchdog("detach point", run.control.detachable.notified()).await;
+    wait_for_run_inactive(&engine, run.run_id).await;
+    wait_for_session_not_running(&engine, session).await;
+
+    // Recent activity still keeps it; the idle window passed, the waiting
+    // call does not.
+    let evicted = engine
+        .evict_idle_roots_with(std::time::Duration::from_secs(60 * 60))
+        .await
+        .expect("recent janitor pass");
+    assert!(evicted.is_empty(), "{evicted:?}");
+    let evicted = engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("idle janitor pass");
+    assert_eq!(evicted, vec![session]);
+    assert!(!engine.inner.store.is_resident(session));
+    let listed = engine
+        .list_sessions()
+        .into_iter()
+        .find(|meta| meta.session_id == session)
+        .expect("listed root");
+    assert_eq!(listed.waiting_on, [WaitingOn::BackgroundCall]);
+    assert!(!engine.inner.store.is_resident(session));
+
+    run.control.release.notify_one();
+    let projection = await_projection(&engine, session, "the result reloaded it", |projection| {
+        background_result(projection).is_some()
+            && projection.runs.len() == 2
+            && projection.status == SessionStatus::Completed
+    })
+    .await;
+    assert!(background_result(&projection).is_some());
+    let requests = with_watchdog("woken run", run.captured)
+        .await
+        .expect("requests");
+    assert!(
+        requests
+            .last()
+            .is_some_and(|request| request.contains("background_result")),
+        "{requests:?}"
+    );
+    assert!(
+        engine
+            .get_session(session)
+            .expect("root")
+            .waiting_on
+            .is_empty()
+    );
+    engine.shutdown().await;
+}
+
+/// A delegated child whose only pending thing is its running background
+/// call pages out after its idle window while its parent keeps waiting on
+/// it; the call's result reloads it, starts its follow-up turn, and that
+/// turn reports to the parent.
+#[tokio::test]
+async fn a_child_waiting_only_on_a_background_call_pages_out_and_reloads_for_its_result() {
+    let job = start_child_job().await;
+    let engine = job.fixture.engine.clone();
+    let evicted = engine
+        .evict_idle_subagents_for_test(0, std::time::Duration::ZERO)
+        .await
+        .expect("janitor pass");
+    assert_eq!(evicted, vec![job.child]);
+    assert!(!engine.inner.store.is_resident(job.child));
+    assert_eq!(
+        listed_waiting(&engine, job.child),
+        [WaitingOn::BackgroundCall]
+    );
+    assert_eq!(listed_waiting(&engine, job.parent), [WaitingOn::Subagent]);
+    assert!(!engine.inner.store.is_resident(job.child));
+
+    let job = finish_child_job(job).await;
+    let child = engine.inner.store.get(job.child).expect("child");
+    assert!(background_result(&child).is_some());
+    assert_eq!(child.runs.len(), 2);
+    assert!(listed_waiting(&engine, job.parent).is_empty());
+    with_watchdog("scripted server", job.captured)
+        .await
+        .expect("requests");
+    engine.shutdown().await;
+}
+
+/// Producer work about to happen still pins: a background result accepted
+/// while its wake is held keeps the root resident until the woken run ends.
+#[tokio::test]
+async fn a_scheduled_wake_with_an_undelivered_result_keeps_the_root_resident() {
+    let run = start_job_run(
+        serde_json::json!({"command": "finish", "background": true}),
+        vec![
+            MatchedScriptedResponse::last_message_role("tool", scripted_text_body("waiting")),
+            MatchedScriptedResponse::last_message_contains(
+                "background_result",
+                scripted_text_body("noted"),
+            ),
+        ],
+        3,
+    )
+    .await;
+    let engine = run.fixture.engine.clone();
+    let session = run.session_id;
+    with_watchdog("detach point", run.control.detachable.notified()).await;
+    wait_for_run_inactive(&engine, run.run_id).await;
+    wait_for_session_not_running(&engine, session).await;
+    let (reached, release) = engine.install_producer_wake_hook();
+    run.control.release.notify_one();
+    with_watchdog("held wake", reached)
+        .await
+        .expect("wake reached");
+    assert!(engine.producers_pin_session(session));
+    let evicted = engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("janitor pass");
+    assert!(evicted.is_empty(), "{evicted:?}");
+    assert!(engine.inner.store.is_resident(session));
+
+    release.notify_one();
+    await_projection(&engine, session, "the woken run", |projection| {
+        projection.runs.len() == 2 && projection.status == SessionStatus::Completed
+    })
+    .await;
+    with_watchdog("woken run", run.captured)
         .await
         .expect("requests");
     engine.shutdown().await;

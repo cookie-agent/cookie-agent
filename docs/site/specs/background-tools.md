@@ -1,7 +1,8 @@
 # Background Tool Calls
 
 Status: **implemented** (decisions of 2026-10-16; all three phases landed 2026-10-16;
-addendum of 2026-10-22 in [section 12](#12-addendum-2026-10-22-a-parent-waits-while-its-child-can-still-wake)).
+addenda of 2026-10-22 in sections [12](#12-addendum-2026-10-22-a-parent-waits-while-its-child-can-still-wake)
+and [13](#13-addendum-2026-10-22-a-producer-wait-does-not-keep-a-session-in-memory)).
 Sections 1, 7.1, and the "today" notes describe the design this replaced. This document is the
 governing specification for running supported tool calls in the background,
 whether the model asks for it or the user moves a running call there.
@@ -448,3 +449,25 @@ and the turn it starts has ended.
 - A restart ends every live producer, so the derived state resets with it.
 - The client protocol is unchanged: only when `subagent` is listed changed.
 
+## 13. Addendum 2026-10-22: a producer wait does not keep a session in memory
+
+Decided by the user on 2026-10-22 and implemented the same day.
+
+A producer registration alone no longer pins a session or its tree: a
+session that only waits on a background call, a background delegation, an
+external producer, or its goal pages out once it has been unused for the
+usual idle window (`delegation.idle_eviction_after` for a subagent, 30
+minutes for a root tree), since it has already waited that long.
+
+- Work about to happen still pins, as before: a scheduled producer wake, an
+  accepted message not yet delivered, a running or queued run, compaction,
+  pending approvals, and unadmitted input.
+- Eviction keeps the session's registrations
+  (`Engine::retain_registrations_on_eviction`). When the producer sends,
+  the send reloads the session from disk and is accepted exactly as if it
+  had stayed resident, with the same producer ID and idempotency key, and
+  the woken run starts as usual.
+- What an evicted session waits on stays current for clients: listings
+  serve it from the in-memory summary with the live kinds added, and
+  announcing a change never reloads the session. The parent propagation of
+  section 12 works whether the child, the parent, or both are evicted.

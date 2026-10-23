@@ -1985,6 +1985,13 @@ impl Engine {
         Ok(())
     }
 
+    /// Whether producer work about to happen keeps `session` in memory: a
+    /// scheduled wake or an accepted message not yet delivered. A
+    /// registration alone does not: a session that only waits on a
+    /// background call, delegation, external producer, or its goal pages
+    /// out after the idle window like any other, keeping its registrations
+    /// (see [`Self::retain_registrations_on_eviction`]), and a later send
+    /// reloads it.
     pub(super) fn producers_pin_session(&self, session: SessionId) -> bool {
         self.inner
             .sessions
@@ -1992,10 +1999,33 @@ impl Engine {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&session)
-            .is_some_and(|state| !state.registrations.is_empty() || state.wake_scheduled)
+            .is_some_and(|state| state.wake_scheduled)
             || self
                 .goal_producer_projection(session)
                 .is_ok_and(|projection| projection.messages.iter().any(pending))
+    }
+
+    /// Forgets `session`'s producer state as it pages out, all but its
+    /// registrations: the producers holding them still send with them, and
+    /// the send reloads the session and is accepted as if it had stayed.
+    pub(super) fn retain_registrations_on_eviction(&self, session: SessionId) {
+        let mut registry = self
+            .inner
+            .sessions
+            .producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = registry.remove(&session)
+            && !state.registrations.is_empty()
+        {
+            registry.insert(
+                session,
+                SessionProducers {
+                    registrations: state.registrations,
+                    ..SessionProducers::default()
+                },
+            );
+        }
     }
 
     pub(super) fn reconcile_reverted_producers_direct(
