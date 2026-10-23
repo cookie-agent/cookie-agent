@@ -1498,7 +1498,7 @@ phase 1 of [delegating to runtimes](runtime-delegation.md#11-implementation-note
 ### 16.9 Addendum 2026-10-22: memory that stays worth keeping
 
 Settled 2026-10-22. Phase 1, the engine, is implemented (section
-16.9.15); the clients and docs phases remain. Models with write
+16.9.15), and phase 3, the docs, is written; the clients phase remains. Models with write
 access saved things that are useless by the next session. For example,
 after "explore this directory", one saved the directory listing. The only
 save guidance was "save what a later session should know", and nothing
@@ -2080,3 +2080,7 @@ Deviations and details decided:
   history still compacts under the longer system prompt. The future plugin
   corpus's expected handshake answer names plugin protocol 1.6.0, as it has
   named each earlier minor.
+
+#### 16.9.16 Implementation notes: phase 3
+
+Written 2026-10-22: the memory guide, the permissions pages (`extend/agents.md`, `concepts/permissions.md`), the system prompt reference's `Project:` line, memory section, and trimmed memory turn, and the concept page; the configuration reference and the tools reference were already current from phase 1.

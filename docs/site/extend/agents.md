@@ -282,9 +282,7 @@ User agent documents and the built-in documents form one registry by agent ID.
 The IDs `approval`, `compaction`, and `title` are reserved for internal agents;
 an authored document with one of those IDs must use `mode: internal` and
 replaces the built-in document completely. The ID `default` is reserved for
-the engine-supplied fallback agent and cannot be authored at all, and so is
-`self`, which memory permission rules use for the run's own agent
-(`agent://self`).
+the engine-supplied fallback agent and cannot be authored at all.
 
 If no authored agent is runnable as a root, the engine synthesizes the built-in
 `default` coding agent bound to the first available model selection. Its prompt
@@ -786,33 +784,84 @@ searching and reading and `memory_write` for writing, editing, and deleting,
 both with the memory URL as resource (`user://<category>`,
 `agent://<agent>`, `machine://<machine>/<name>`,
 `project://<project>/<name>`). Unlike `list_runtimes` and `mcp`, they have
-no default: an agent document, the built-in `default` included, that names
-no `memory` key gets no memory tools, no `memory_search`, and no memory
-snapshot. Memory is opt-in: `memory: allow` lets an agent read every memory,
-per-URL rules narrow it, and `memory_write` rules let it write. A session
-overlay can grant either for one session tree, as for any action. (Until
-2026-10-22 `primary` and `all` agents got both by default and `subagent`
-agents `memory: allow` and `memory_write: {"agent://self": allow}`.) In a rule
-pattern, `agent://self` stands for the run's own agent: it is read as
-`agent://<agent ID>` before matching, in agent documents and session
-overlays alike, and ranks like that literal URL.
+no default for a root run: an agent document, the built-in `default`
+included, that names no `memory` key gets no memory tools, no
+`memory_search`, and no memory snapshot. Memory is opt-in: `memory: allow`
+lets an agent read every memory, per-URL rules narrow it, and `memory_write`
+rules let it write. A session overlay can grant either for one session tree,
+as for any action.
 
-```yaml
+**Variables.** A `memory` or `memory_write` pattern may name the run's agent,
+machines, and project, so one document works wherever it runs:
+
+| Variable | Stands for | Example |
+|---|---|---|
+| `${agent_id}` | the run's agent | `agent://${agent_id}` |
+| `${session_machine}` | each machine the session's attachments run on | `machine://${session_machine}/*` |
+| `${session_project}` | the session's project | `project://${session_project}/*` |
+
+A variable must be a whole URL segment (`project://${session_project}-old/*`
+is refused), it is valid only in `memory` and `memory_write` patterns of an
+agent document, and an unknown variable fails the document to load. Session
+overlay rules take no variables. Variables are expanded when a run starts and
+its policy is frozen, so a session that gains an attachment or moves to a
+project is covered from its next run. `${session_machine}` makes one rule per
+machine, and a variable that stands for nothing (`${session_project}` in a
+session without a project, or a session with no machine) drops its rule, so
+it matches no memory. `agent://self`, the old spelling for the run's own
+agent, is gone: it is now an ordinary pattern, and `${agent_id}` replaces it.
+
+**Delegated runs.** A delegated run (a subagent started by
+`delegate_subagent`) whose agent document has no key for `memory`, or none for
+`memory_write`, gets `agent://${agent_id}: allow` for that action: it sees and
+maintains its own agent file and nothing else. The default depends on whether
+the run is delegated, not on the agent's mode, so an `all` agent has it when
+delegated and not as a root. A document that declares either action gets
+exactly its own rules for it, delegated or not; there is no hard limit
+behind the default, so a subagent granted `user://*` may write it.
+
+**The write tools.** `memory_write`, `memory_edit`, and `memory_delete`, and
+the rubric that tells the agent how to keep memory, are offered only when some
+memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and
+writable (an `allow` or `ask` `memory_write` rule matches it). `deny` rules
+are not considered in this check. A run that only reads gets `memory_search`
+and `memory_read`. Beyond the rules, nothing limits what an agent may write,
+edit, or delete; the rubric says what it should, and `ask` rules put a
+reviewer or you in front of the rest.
+
+A worked agent document: a reviewer that keeps its own file, reads the
+memory of its session's project and machines, and writes to those two only
+after asking, and that never sees the user's memory.
+
+```markdown
+---
+description: Reviews a diff for bugs and missing tests
+mode: all
+models:
+  - { model: "openai/gpt-5", variant: null }
 permissions:
   memory:
-    "agent://reviewer": deny
-    "*": allow
+    "user://*": deny
+    "agent://${agent_id}": allow
+    "project://${session_project}/*": allow
+    "machine://${session_machine}/*": allow
   memory_write:
-    "user://*": ask
-    "agent://self": allow
-    "project://*": allow
-    "machine://labpc/*": deny
+    "agent://${agent_id}": allow
+    "project://${session_project}/*": ask
+    "machine://${session_machine}/*": ask
+---
+You review a diff for bugs and missing tests.
 ```
+
+Run as a root, this agent's snapshot shows its own file and the session's
+project and machine memories, it can write its own file freely, and the
+others after approval. Delegated, it has these same rules rather than the
+default, since it declares both keys. A subagent that should only keep its own
+file needs no rules at all: the delegated default covers it.
 
 Memory needs both the `global` runtime and a visible `memory` action: an
 agent without one gets no memory tools at all, even with `memory_write`
-rules. A delegated run may write only its own `agent://<agent>` file,
-whatever its rules say.
+rules.
 
 The `memory` rules also decide what the memory snapshot shows of each
 memory: one they allow is shown, one they ask for is listed by URL and

@@ -60,9 +60,11 @@ default entirely: `mcp: {"my_chrome_*": ask}` offers only that server's
 tools, and `mcp: deny` hides them all. `/permissions` shows a default with
 the source `default`. See [MCP default](../extend/agents.md#mcp-default).
 
-Memory has no default: an agent gets the memory tools and the memory
-snapshot only when its document (or the session overlay) names `memory`,
-and writes only with `memory_write` rules. See
+Memory has no default for a root run: an agent gets the memory tools and the
+memory snapshot only when its document (or the session overlay) names
+`memory`, and writes only with `memory_write` rules (patterns may use
+`${agent_id}`, `${session_machine}`, and `${session_project}`). A delegated
+run whose document names neither gets its own `agent://` file. See
 [Memory permissions](../extend/agents.md#memory-permissions).
 
 Rules can also be added to one session tree without touching the agent, in

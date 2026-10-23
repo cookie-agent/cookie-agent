@@ -38,8 +38,13 @@ in full and an index of its other memories; other projects' memories the
 agent searches for. The memory
 tools,
 `memory_search`, `memory_read`, `memory_write`, `memory_edit`, and
-`memory_delete`, read and change memories by URL. Writes name the revision
-they read, so a memory that changed meanwhile is never overwritten. See
+`memory_delete`, read and change memories by URL. A whole-memory write needs
+the memory as the session last saw it, so one that changed meanwhile is never
+silently overwritten. The memory related to the session is what the agent is
+told to maintain: the system prompt asks it to keep memory small, accurate,
+and current, a write that looks like an existing memory is refused unless the
+agent says it is new, each kind of memory has a size limit, and every change
+is a line in the transcript. See
 [What the model sees](../sessions/memory.md#what-the-model-sees) and
 [Tools](../reference/tools.md#memory-tools).
 
@@ -47,7 +52,7 @@ The `memory` and `memory_write` permission actions govern the tools, with the
 memory URL as the resource. Memory is opt-in: an agent without `memory` rules
 of its own (or from the session overlay) gets no memory tools and no
 snapshot, and the snapshot shows each memory only as far as those rules
-allow. See [Memory permissions](../extend/agents.md#memory-permissions).
+allow. A delegated run without memory rules gets its own agent memory. See [Memory permissions](../extend/agents.md#memory-permissions).
 
 ## Where it lives
 

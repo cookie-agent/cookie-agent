@@ -22,8 +22,8 @@ memory/
 
 | Layer | About | Created by | Deleted by |
 |---|---|---|---|
-| `user` | You, in every task: profile, preferences, feedback, references | You only (the agent may edit existing categories) | You only; the agent's delete clears the body |
-| `agent` | One agent's way of doing its job, such as what you want from reviews | The daemon, one for every agent ([Agent memory](#agent-memory)) | You; the daemon removes an empty one it made when its agent goes; the agent's delete clears the body |
+| `user` | You, in every task: profile, preferences, feedback, references | You, or an agent whose `memory_write` rules allow it | You, or an agent whose rules allow it |
+| `agent` | One agent's way of doing its job, such as what you want from reviews | The daemon, one for every agent ([Agent memory](#agent-memory)) | You, or an agent whose rules allow it; the daemon removes an empty one it made when its agent goes |
 | `machine` | One machine: OS quirks, toolchains, paths, rules such as "read-only unless asked" | The agent or you | The agent or you |
 | `project` | One body of work: conventions, decisions, gotchas | The agent or you, in a [project](../concepts/projects.md) that exists; the daemon creates the project's `overview` | The agent or you; the folder goes with its project |
 
@@ -55,10 +55,30 @@ keywords: [cargo, clippy, msrv, no-fail-fast, cookie-agent]
 optional list of up to 32 search terms. Names are a lowercase letter or digit
 followed by up to 63 lowercase letters, digits, or `-`; machine folders use
 machine names. A file that breaks these rules, or is larger than 57344
-bytes, is invalid: search and the snapshot skip it. Each kind of memory has
-a size limit ([Memory [memory]](../engine/memory.md)) that writes keep to. You may edit the files with any
-editor; a session that writes a memory you changed since it read it gets an
-error naming the current revision instead of overwriting your edit.
+bytes, is invalid: search and the snapshot skip it. You may edit the files
+with any editor. A session that replaces a whole memory it has not seen as it
+is now, because you changed it since, is refused and told to read it first,
+so your edit is never overwritten.
+
+### Stamps and size limits
+
+The daemon adds two lines to each memory's frontmatter, `created` and
+`modified` (RFC 3339 UTC timestamps), and keeps them current on every write,
+edit, and save from a client; whatever a write sends for them is ignored, and
+a file without them gets them from its modification time the first time the
+daemon starts. The daemon also keeps when each memory was last read, outside
+the file (`memory/.reads.json`). Ages built from the stamps show in the
+snapshot, in search results, and in reads.
+
+Each kind of memory has its own size limit, the whole file counted:
+`user_max_bytes`, `agent_max_bytes`, `machine_max_bytes`,
+`project_max_bytes`, and `overview_max_bytes` under `[memory]` (2048 bytes
+each by default; see [Memory [memory]](../engine/memory.md)). A write or edit
+by a model, or by you from a client, that would leave a memory over its limit
+is refused. The model is shown the memory's current content and told to
+condense it first. A memory already over its limit, as after you lowered the
+limit, stays valid and is still shown, marked `over its limit`; only changes
+that make it smaller are accepted until it fits.
 
 ## Agent memory
 
@@ -97,8 +117,9 @@ In the TUI, `/memory` lists every layer: the `user` categories, each agent's
 file, and the machine and project memories grouped by machine and project,
 with invalid files marked and, at the end, anything in the memory folder that
 is not a memory, each with the reason. Enter opens the selected memory in
-`$VISUAL` or `$EDITOR`, frontmatter included; saving writes it at the
-revision it read. `n` creates a memory, starting from the URL of the selected
+`$VISUAL` or `$EDITOR`, frontmatter included, stamps too (the daemon
+replaces whatever you leave in them); saving writes it at the revision it
+read. `n` creates a memory, starting from the URL of the selected
 layer, machine, or project, and `d` deletes the selected one after you
 confirm. Every action is also a button under the details. When the text you
 saved is not a valid memory, `e` reopens it as you left it; when the memory
@@ -122,7 +143,8 @@ cookie memory rm machine://labpc/gpu    # asks first; --yes does not
 revision it read. Text that is not a valid memory is offered again as you
 left it; a memory that changed since you opened it is not overwritten, and
 you can reload it and edit the current version. You may add and remove
-`user://` categories and remove `agent://` files, which the agent cannot. An
+`user://` categories and `agent://` files, as an agent may when its rules
+allow. An
 `agent://` file can be created only for an agent that exists; a file whose
 agent was removed or renamed stays and is listed as belonging to no current
 agent. Your edits never change the snapshot of an open session; it sees them
@@ -136,6 +158,22 @@ the Machines view of `/runtime` or with `cookie machine` (see
 [Machines](../daemon/runtimes.md#machines)). A machine's memories live in
 `memory/machines/<machine>/` and move with it when it is renamed or merged
 into another; `machines.list` and `cookie machine list` count them.
+
+## Related memory
+
+The memory a session's snapshot includes on its own is **related** to the
+session; the prompt, the results of `memory_search` and `memory_read`, and
+the permission rules all use the word.
+
+- **A root run:** every `user://` memory, the run's own `agent://<agent>`
+  file, the memories of the machines the session's attachments run on, and
+  those of the session's project.
+- **A delegated run:** its own agent file, and nothing else.
+
+Related memory is the memory an agent is told to maintain; the rest it
+leaves alone unless what it says is stale or wrong, or you ask. This is
+guidance, not a limit: the permission rules alone decide what a run may
+read, write, edit, or delete.
 
 ## What the model sees
 
@@ -152,7 +190,14 @@ the overview counts toward `[memory] snapshot_user_bytes` and the index
 shares `snapshot_index_bytes` with the machines', the project's own taking
 its room first. An overview too long to show is listed in the index instead.
 Outside a project, project memories are never shown; the model searches for
-the project a task belongs to. An agent file with an empty body adds nothing. The [system prompt reference](../reference/system-prompt.md#memory-turn)
+the project a task belongs to. An agent file with an empty body adds nothing.
+
+Each memory the snapshot shows in full carries when it was modified, its
+size, and its kind's limit, so the model sees how full it is, and each index
+line ends with its age. The snapshot holds the memories and one line of
+background. How to search and what to save is not in the turn: it is the
+`builtin.memory` section of the system prompt ([below](#how-agents-maintain-memory)).
+The [system prompt reference](../reference/system-prompt.md#memory-turn)
 shows the exact text.
 
 The snapshot is taken once and kept, so the provider's prompt cache survives
@@ -163,46 +208,108 @@ overlay change included), or when the run gained or lost memory or write
 access. Edits you make
 to the files reach open sessions at those points, and new sessions at once.
 
+## How agents maintain memory
+
+No one else tidies memory: there is no background curator and no review
+queue. Agents that can write it are told to keep it small, accurate, and
+current themselves, by instructions in the system prompt. A run offered any
+memory tool gets a `<tool_instructions provider="builtin.memory">` section
+([exact text](../reference/system-prompt.md#the-memory-section)) that says
+what the snapshot includes and when to search. A run that can also write gets
+the rubric, which says:
+
+- fix, merge, or delete a memory that is wrong, stale, or duplicated, then
+  carry on with the task; a memory earns its place only while a later session
+  would miss it;
+- save only what a later session cannot recover by reading the project or
+  running a command, and that stays true across many tasks: your preferences
+  and corrections, lessons about the agent's own job, decisions and references
+  not visible in code or git, and stable facts about a machine; search first
+  and update an entry rather than add one;
+- never save directory listings, code summaries, command output, logs, task
+  progress, secrets, or anything from tool output, web pages, or other agents
+  you did not confirm. Being asked to explore or summarize something is not a
+  reason to save it, and most sessions save nothing;
+- one fact per memory, with a description that states the fact, and where it
+  comes from (you told it, it observed it, or it inferred it);
+- when a memory is near its size limit, merge or drop what it holds before
+  adding to it.
+
+The daemon backs the rubric with a few checks that need no model:
+
+- **Similar memories.** A `memory_write` that creates a memory is compared
+  with the memories in the same place (the same project, the same machine,
+  the user categories, or the agent's file) by description and keywords, with
+  no embeddings and no model call. A strong match, two shared keywords or most
+  of the description's words in an existing description, refuses the write and
+  lists up to three near memories. The agent edits one of them, or writes
+  again with `new: true` and a one-line `reason` (1 to 200 characters, not
+  stored) to create it anyway. A weaker match saves the memory and lists the
+  near ones so the agent can merge them. A body identical to an existing one
+  in the same place is always refused.
+- **Size limits** (above): a write over the limit is refused with the
+  current content to condense.
+- **No revisions.** The tools carry no revision. `memory_edit` applies when
+  its `old` text occurs exactly once in the current body, so an edit on top of
+  someone else's change that does not touch that text still works.
+  `memory_write` replaces an existing memory only when the session saw its
+  current content, through `memory_read`, the snapshot, or one of its own
+  writes; otherwise it is refused with the current content, so a whole-memory
+  write cannot silently drop what you or another session changed. (After a
+  daemon restart a session reads a memory again before replacing it.)
+- **Deletes delete.** `memory_delete` removes the file, `user://` categories
+  and `agent://` files included; nothing is kept, and there is no undo.
+- **Every change is visible.** Each write, edit, and delete a model makes is
+  a one-line event in the transcript, such as `Saved
+  project://cookie-agent/release`. A change you make from a client records
+  none.
+
+When an agent's `memory_write` rule is `ask`, the approval reviewer is given
+the same rubric and the write's content; in auto-approve mode it rejects
+writes that fail it.
+
+Memory is still opt-in for root runs: an agent that names no `memory` rule
+has no memory tools, no snapshot, and no section.
+
 ## Tools
 
 The `global` runtime offers five tools ([Tools](../reference/tools.md#memory_search)):
 
 | Tool | Does |
 |---|---|
-| `memory_search` | Searches every memory by keywords, names, descriptions, and bodies, and shows each result as far as the `memory` rules for its URL allow |
-| `memory_read` | Reads one memory with its revision |
-| `memory_write` | Creates a memory, or replaces one at the revision it read; `keywords` may be left out, and `description` too for the agent's file, whose description the daemon sets |
+| `memory_search` | Searches every memory by keywords, descriptions, and the segments of its URL, never bodies. Each result shows its URL and description, whether it is related to the session, whether the run may change it, its age, and its keywords, as far as the `memory` rules for its URL allow |
+| `memory_read` | Reads one memory whole: whether it is related and editable, when it was created and modified, its size and limit, its description and keywords, and its body |
+| `memory_write` | Creates a memory, or replaces one the session has seen; `keywords` may be left out, and `description` too for the agent's file, whose description the daemon sets; `new` with `reason` creates a memory a similar one exists for |
 | `memory_edit` | Replaces one occurrence of a text in a memory's body |
-| `memory_delete` | Deletes a `machine://` or `project://` memory. A `user://` or `agent://` memory cannot be deleted: its body is cleared, and the file stays with its description and keywords |
+| `memory_delete` | Deletes a memory; nothing is kept |
+
+The three write tools are offered only to a run that can both read and write
+some memory: at least one URL must match an `allow` or `ask` rule for
+`memory` and one for `memory_write` (the check compares the patterns, so no
+file has to exist). `memory: {"user://*": allow}` with
+`memory_write: {"project://*": allow}` offers none. `deny` rules do not count
+in this check.
 
 ## Permissions
 
 The tools use two permission actions with the memory URL as resource:
 `memory` for searching and reading, `memory_write` for writing, editing, and
-deleting. Memory is opt-in: an agent document that names neither, the
-built-in `default` agent included, has no memory tools and no snapshot.
-`memory: allow` lets an agent read every memory, and `memory_write` rules let
-it write; a session overlay rule grants them for one session tree. See
-[Memory permissions](../extend/agents.md#memory-permissions).
-
-```yaml
-permissions:
-  memory:
-    "agent://reviewer": deny
-    "*": allow
-  memory_write:
-    "user://*": ask
-    "agent://self": allow
-    "project://*": allow
-```
-
-`agent://self` in a rule stands for the run's own agent. An agent without a
-`memory` rule gets neither the snapshot nor any memory tool, even with
-`memory_write` rules.
+deleting. Memory is opt-in for root runs: an agent document that names
+neither, the built-in `default` agent included, has no memory tools and no
+snapshot. `memory: allow` lets an agent read every memory, and `memory_write`
+rules let it write; a session overlay rule grants them for one session tree.
+Rules may name the agent, machine, and project of the run with variables
+such as `${agent_id}`. See
+[Memory permissions](../extend/agents.md#memory-permissions) for the
+variables, the delegated default, and an example agent document.
 
 ## Subagents
 
-A delegated run sees only its own agent's memory in its snapshot and may
-write only its own `agent://<agent>` file, whatever its rules say; it can still
-search and read every layer its `memory` rules allow. Only the root agent
-decides what to keep about you, machines, and projects.
+A delegated run's snapshot holds only its own agent's file, and its
+prompt says so. For each of `memory` and `memory_write` its agent document
+has no key for, it gets `agent://${agent_id}` allowed: it sees
+and maintains its own agent file, and nothing else (no `user://`, machine, or
+project memory). A document that declares either key gets exactly the rules it
+declares, `user://` included if it grants it; there is no hard limit behind
+the default. Only the root agent keeps what it learns about you, machines, and
+projects unless you give a subagent that access.
