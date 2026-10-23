@@ -104,13 +104,15 @@ run_set() {
     }
 
     # Starts the daemon of home $1 and sets `link` to what `cookie web` prints
-    # for it.
+    # for it. A debug daemon compiles the model catalog before it is ready,
+    # seconds of CPU, while every group starts its daemons and browser at
+    # once: on a cold four-core runner that takes longer than 20 s.
     start_daemon() {
         local home="$1"
         (cd "$home/workspace" && HOME="$home" exec "$cookie" daemon >"$home/daemon.out" 2>"$home/daemon.err") &
         pids+=("$!")
         echo "$!" >"$home/daemon.pid"
-        for _ in $(seq 1 200); do
+        for _ in $(seq 1 600); do
             grep -q '^daemon-ready ' "$home/daemon.out" 2>/dev/null && break
             sleep 0.1
         done
