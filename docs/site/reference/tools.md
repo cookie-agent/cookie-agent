@@ -1853,13 +1853,13 @@ Agents never set a job's permission mode or pin its model.
 <!-- generated: tool cron_create -->
 
 ```text
-cron_create(delivery?: "queue" | "steer", max_runs?: integer | "unlimited", name?: string, prompt: string, schedule: object | object, target: string | object)
+cron_create(delivery?: "queue" | "steer", max_runs?: integer | "unlimited", name?: string, prompt: string, schedule: object | object, target?: string | object)
 ```
 
 Description sent to the model:
 
 ```text
-Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; "unlimited" runs until the job is deleted or disabled.
+Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; "unlimited" runs until the job is deleted or disabled.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `cron`, which a root run of any agent but an internal one has by default; a delegated run has none unless its agent document grants it.
@@ -1871,7 +1871,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
 | `name` | `string` | no | A short name, at most 80 characters |
 | `prompt` | `string` | yes | What to do at each fire |
 | `schedule` | `object \| object` | yes | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
-| `target` | `string \| object` | yes | "self", a subagent's handle, or {"new": {...}} |
+| `target` | `string \| object` | no | "self" (the default), a subagent's handle, or {"new": {...}} |
 
 ??? note "Parameters JSON Schema"
 
@@ -1939,7 +1939,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
           ]
         },
         "target": {
-          "description": "\"self\", a subagent's handle, or {\"new\": {...}}",
+          "description": "\"self\" (the default), a subagent's handle, or {\"new\": {...}}",
           "oneOf": [
             {
               "type": "string"
@@ -2025,8 +2025,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
       },
       "required": [
         "prompt",
-        "schedule",
-        "target"
+        "schedule"
       ],
       "type": "object"
     }
@@ -2100,7 +2099,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
 | `name` | `string` | no |  |
 | `prompt` | `string` | no |  |
 | `schedule` | `object \| object` | no | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
-| `target` | `string \| object` | no | "self", a subagent's handle, or {"new": {...}} |
+| `target` | `string \| object` | no | "self", a subagent's handle, or {"new": {...}}; unchanged when omitted |
 
 ??? note "Parameters JSON Schema"
 
@@ -2173,7 +2172,7 @@ Only when the session has the `global` runtime attached and the agent or the ses
           ]
         },
         "target": {
-          "description": "\"self\", a subagent's handle, or {\"new\": {...}}",
+          "description": "\"self\", a subagent's handle, or {\"new\": {...}}; unchanged when omitted",
           "oneOf": [
             {
               "type": "string"

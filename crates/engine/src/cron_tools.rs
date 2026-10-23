@@ -49,7 +49,7 @@ pub(crate) const RUN: &str = "cron_run";
 
 const SCHEDULE_NOTES: &str = "Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; \"unlimited\" runs until the job is deleted or disabled.";
 
-const TARGET_NOTES: &str = "`target`: \"self\" fires into this session; a subagent's handle (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for=\"cron\").";
+const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's handle (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, runtimes, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for=\"cron\").";
 
 fn create_description() -> String {
     format!(
@@ -95,6 +95,13 @@ enum TargetArg {
     },
 }
 
+impl TargetArg {
+    /// `"self"`: the calling session.
+    fn own_session() -> Self {
+        Self::Session("self".into())
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct NewArg {
@@ -118,6 +125,8 @@ struct CreateArgs {
     max_runs: Option<CronMaxRuns>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// `"self"` when omitted (decided 2026-10-23).
+    #[serde(default = "TargetArg::own_session")]
     target: TargetArg,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delivery: Option<ProducerDeliveryMode>,
@@ -168,9 +177,10 @@ fn schedule_schema() -> serde_json::Value {
     })
 }
 
-fn target_schema() -> serde_json::Value {
+/// `description` says what an omitted `target` means.
+fn target_schema(description: &str) -> serde_json::Value {
     serde_json::json!({
-        "description": "\"self\", a subagent's handle, or {\"new\": {...}}",
+        "description": description,
         "oneOf": [
             {"type": "string"},
             {"type": "object", "additionalProperties": false, "required": ["new"],
@@ -250,13 +260,13 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             false,
             serde_json::json!({
                 "type": "object", "additionalProperties": false,
-                "required": ["prompt", "schedule", "target"],
+                "required": ["prompt", "schedule"],
                 "properties": {
                     "prompt": {"type": "string", "description": "What to do at each fire"},
                     "schedule": schedule_schema(),
                     "max_runs": max_runs_schema(),
                     "name": {"type": "string", "description": "A short name, at most 80 characters"},
-                    "target": target_schema(),
+                    "target": target_schema("\"self\" (the default), a subagent's handle, or {\"new\": {...}}"),
                     "delivery": delivery,
                 }
             }),
@@ -287,7 +297,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                     "schedule": schedule_schema(),
                     "max_runs": max_runs_schema(),
                     "name": {"type": "string"},
-                    "target": target_schema(),
+                    "target": target_schema("\"self\", a subagent's handle, or {\"new\": {...}}; unchanged when omitted"),
                     "delivery": delivery,
                     "enabled": {"type": "boolean"},
                 }
@@ -982,5 +992,20 @@ impl Engine {
             .map(|projection| projection.permission_overlay.clone())
             .unwrap_or_default();
         kind_visible(&policy.agent, &overlay, kind)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreateArgs, TargetArg};
+
+    #[test]
+    fn a_create_without_a_target_fires_into_its_own_session() {
+        let args: CreateArgs = serde_json::from_value(serde_json::json!({
+            "prompt": "check the build",
+            "schedule": {"in": "10m"},
+        }))
+        .expect("a create without a target");
+        assert!(matches!(args.target, TargetArg::Session(target) if target == "self"));
     }
 }
