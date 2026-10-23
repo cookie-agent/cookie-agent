@@ -20,6 +20,10 @@ otherwise the last user text decides.
 - containing "many lines": a `bash` call that prints 100 lines;
 - containing "picture": a `read` call on `dot.png`, whose result is a media
   block;
+- containing "stream only": a long markdown answer streamed fast, its lines
+  named after the word that follows "label" (or "line"), to scroll while it
+  streams; containing "stream long": a `bash` call that prints a tick every
+  50 ms, then that long answer, to fold the call while the answer streams;
 - containing "remember": a `memory_write` of `user://e2e-build`; containing
   "forget": a `memory_delete` of it;
 - anything else: "ok".
@@ -34,6 +38,7 @@ Run: python3 -I mock-model.py <port-file>; it writes the port it listens on.
 """
 
 import json
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -76,6 +81,19 @@ def tool_reply(name="bash", arguments=None):
     yield chunk({}, "tool_calls", USAGE)
 
 
+def long_reply(text):
+    """A long markdown answer streamed fast, a code block now and then."""
+    label = re.search(r"label (\w+)", text)
+    label = label.group(1) if label else "line"
+    parts = []
+    for index in range(600):
+        if index % 50 == 25:
+            parts.append("```rust\nfn step_%d() {}\n```\n\n" % index)
+        else:
+            parts.append("%s %d of the long answer.\n\n" % (label, index))
+    return text_reply(parts, pause=0.02)
+
+
 def last_text(messages):
     for message in reversed(messages):
         if message.get("role") == "user":
@@ -89,6 +107,8 @@ def last_text(messages):
 def reply(request):
     messages = request.get("messages", [])
     if messages and messages[-1].get("role") == "tool":
+        if "stream long" in last_text(messages).lower():
+            return long_reply(last_text(messages).lower())
         return text_reply(["The tool ran."])
     if not request.get("tools"):
         # A compaction or other tool-less request: a summary.
@@ -132,6 +152,10 @@ def reply(request):
             "delegate_subagent",
             {"description": "child task", "prompt": prompt, "agent_type": "helper"},
         )
+    if "stream only" in text:
+        return long_reply(text)
+    if "stream long" in text:
+        return tool_reply("bash", {"command": "for i in $(seq 1 40); do echo tick $i; sleep 0.05; done"})
     if "chatty" in text:
         return tool_reply("bash", {"command": "printf 'step one\\n'; sleep 6; printf 'done\\n'"})
     if "many lines" in text:

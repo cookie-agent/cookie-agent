@@ -17,17 +17,20 @@ use cookie_agent_protocol::{
     SessionId, SessionMeta, SessionRenameChange,
 };
 use leptos::{ev, html, prelude::*};
-use wasm_bindgen::JsCast as _;
+use wasm_bindgen::{JsCast as _, closure::Closure};
 
 use crate::{
     commands::{Command, MENU},
+    follow::{Follow, Metrics},
     format::{compact_cost, compact_count, relative_time},
     goal::{GoalCommand, action_label, goal_actions, status_name},
     icons::{self, Glyph},
     keys::{ComposerAction, ComposerButtons, KeyPress, composer_action, composer_buttons},
     render::{
         blocks::{BlockPlace, display_html},
-        transcript::{Delegate, TranscriptView, item_html, item_key},
+        transcript::{
+            Delegate, PartHtml, RowCache, RowHtml, Rows, TranscriptView, transcript_rows,
+        },
     },
     workspace::{Panel, Workspace},
 };
@@ -1197,15 +1200,34 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
 
 #[component]
 fn Transcript(workspace: Workspace) -> impl IntoView {
-    let cache = StoredValue::new(HashMap::<u64, Arc<str>>::new());
-    let items = Memo::new(move |_| {
+    let cache = StoredValue::new(RowCache::default());
+    // Store changes reach the transcript at most once an animation frame: a
+    // reply streaming dozens of deltas a second draws once a frame, and a
+    // click between frames finds the page free. What the user changes (a
+    // block opened, the event level) draws at once.
+    let store_frame = Trigger::new();
+    let frame_due = StoredValue::new(false);
+    Effect::new(move |_| {
+        workspace.revision.track();
+        if frame_due.get_value() {
+            return;
+        }
+        frame_due.set_value(true);
+        request_animation_frame(move || {
+            if frame_due.try_update_value(|due| *due = false).is_some() {
+                store_frame.notify();
+            }
+        });
+    });
+    let rows = Memo::new(move |_| {
         let Some(session_id) = workspace
             .selected
             .get()
             .filter(|_| !workspace.new_session.get())
         else {
-            return Vec::new();
+            return Rows::default();
         };
+        store_frame.track();
         let level = workspace.level.get();
         // What the user opened in this session: its own, as in the TUI.
         let expanded = workspace
@@ -1224,88 +1246,133 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 .map(|(call, child)| (call, child.clone()))
                 .collect::<Vec<_>>()
         });
-        workspace.with_store(|store| {
-            let Some(state) = store.sessions.get(&session_id) else {
-                return Vec::new();
-            };
-            // What each running subagent does, from its own projection
-            // (the page follows a tree's live sessions).
-            let delegates = delegates
-                .into_iter()
-                .map(|(call, child)| {
-                    let activity = store.sessions.get(&child.session_id).and_then(|child| {
-                        Activity::of(
-                            child.active_run.is_some(),
-                            child
-                                .tools
-                                .values()
-                                .any(|tool| tool.status == ToolStatus::Running),
-                            child
-                                .approvals
-                                .iter()
-                                .any(|approval| approval.is_visible_user_escalation()),
-                        )
-                    });
-                    let delegate = Delegate {
-                        session_id: child.session_id,
-                        agent: child.creation_selection.agent.to_string(),
-                        handle: child.short_id.clone(),
-                        activity,
-                    };
-                    (call, delegate)
-                })
-                .collect::<HashMap<_, _>>();
-            let view = TranscriptView {
-                session_id,
-                state,
-                names: &names,
-                minimum_level: level,
-                expanded: &expanded,
-                delegates: &delegates,
-                homes: &homes,
-            };
-            // The system prompt and the tools, pinned at the top.
-            let pinned =
-                crate::render::transcript::pinned_rows(state, &expanded, draft_agent.as_ref())
-                    .map(|(key, html)| (key, Arc::from(html)))
-                    .into_iter();
-            cache
-                .try_update_value(|cache| {
-                    let mut kept = HashMap::new();
-                    let rows = pinned
-                        .chain(state.transcript.iter().filter_map(|item| {
-                            let key = item_key(&view, item);
-                            let html = match cache.get(&key) {
-                                Some(html) => Arc::clone(html),
-                                None => Arc::from(item_html(&view, item)?),
-                            };
-                            kept.insert(key, Arc::clone(&html));
-                            Some((key, html))
-                        }))
-                        .collect::<Vec<_>>();
-                    *cache = kept;
-                    rows
-                })
-                .unwrap_or_default()
+        untrack(|| {
+            workspace.with_store(|store| {
+                let Some(state) = store.sessions.get(&session_id) else {
+                    return Rows::default();
+                };
+                // What each running subagent does, from its own projection
+                // (the page follows a tree's live sessions).
+                let delegates = delegates
+                    .into_iter()
+                    .map(|(call, child)| {
+                        let activity = store.sessions.get(&child.session_id).and_then(|child| {
+                            Activity::of(
+                                child.active_run.is_some(),
+                                child
+                                    .tools
+                                    .values()
+                                    .any(|tool| tool.status == ToolStatus::Running),
+                                child
+                                    .approvals
+                                    .iter()
+                                    .any(|approval| approval.is_visible_user_escalation()),
+                            )
+                        });
+                        let delegate = Delegate {
+                            session_id: child.session_id,
+                            agent: child.creation_selection.agent.to_string(),
+                            handle: child.short_id.clone(),
+                            activity,
+                        };
+                        (call, delegate)
+                    })
+                    .collect::<HashMap<_, _>>();
+                let view = TranscriptView {
+                    session_id,
+                    state,
+                    names: &names,
+                    minimum_level: level,
+                    expanded: &expanded,
+                    delegates: &delegates,
+                    homes: &homes,
+                };
+                // The system prompt and the tools, pinned at the top.
+                let pinned =
+                    crate::render::transcript::pinned_rows(state, &expanded, draft_agent.as_ref())
+                        .map(|(_, html)| html);
+                cache
+                    .try_update_value(|cache| transcript_rows(&view, pinned, cache))
+                    .unwrap_or_default()
+            })
         })
     });
     let container = NodeRef::<html::Div>::new();
-    let following = StoredValue::new(true);
+    let content = NodeRef::<html::Div>::new();
+    let follow = StoredValue::new(Follow::default());
+    // Whether the view follows the end, for the jump-to-latest button.
+    let following = RwSignal::new(true);
+    let metrics = move || {
+        container.try_get_untracked().flatten().map(|element| {
+            let element: web_sys::Element = element.into();
+            let at = Metrics {
+                top: element.scroll_top(),
+                height: element.scroll_height(),
+                view: element.client_height(),
+            };
+            (element, at)
+        })
+    };
+    // Mirrors `follow` into `following` once it changed.
+    let shown = move || {
+        if let Some(now) = follow.try_with_value(|follow| follow.following())
+            && following.try_get_untracked() != Some(now)
+        {
+            following.set(now);
+        }
+    };
+    // Pins the view to the end when following and the end moved away.
+    let pin = move || {
+        let Some((element, at)) = metrics() else {
+            return;
+        };
+        if let Some(end) = follow.try_update_value(|follow| follow.pin(at)).flatten() {
+            element.set_scroll_top(end);
+        }
+        shown();
+    };
+    // A session opens at its end.
     Effect::new(move |_| {
-        items.track();
+        workspace.selected.track();
+        workspace.new_session.track();
+        follow.set_value(Follow::default());
+        shown();
+    });
+    // The content growing or the box shrinking moves the end: pinned before
+    // the frame paints, and only then.
+    let observer = StoredValue::new_local(None::<(web_sys::ResizeObserver, Closure<dyn Fn()>)>);
+    Effect::new(move |_| {
+        let (Some(scroller), Some(column)) = (container.get(), content.get()) else {
+            return;
+        };
+        if observer.with_value(Option::is_some) {
+            return;
+        }
+        let callback = Closure::<dyn Fn()>::new(pin);
+        if let Ok(watch) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            watch.observe(&scroller);
+            watch.observe(&column);
+            observer.set_value(Some((watch, callback)));
+        }
+    });
+    on_cleanup(move || {
+        if let Some((watch, _)) = observer.try_update_value(Option::take).flatten() {
+            watch.disconnect();
+        }
+    });
+    Effect::new(move |_| {
+        rows.track();
         let Some(element) = container.get() else {
             return;
         };
         let element: web_sys::Element = element.into();
         // The transcript may be gone by the next frame (a new session's
-        // cards took its place), `following` with it: nothing to follow.
+        // cards took its place), `follow` with it: nothing to follow.
         request_animation_frame(move || {
-            let Some(following) = following.try_get_value() else {
+            if follow.try_with_value(|_| ()).is_none() {
                 return;
-            };
-            if following {
-                element.set_scroll_top(element.scroll_height());
             }
+            pin();
             crate::highlight::highlight_within(&element);
             crate::media::show_within(&element, workspace);
         });
@@ -1371,28 +1438,44 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             _ => {}
         }
     };
-    // Following stops only when the user scrolls away from the bottom
-    // (wheel, touch, or the scrollbar), never when an item's node is
-    // replaced or the box shrinks under a bar.
-    let near_bottom = move || {
-        container.get().is_some_and(|element| {
-            let element: web_sys::Element = element.into();
-            element.scroll_height() - element.scroll_top() - element.client_height() < 80
-        })
-    };
-    let user_scrolling = StoredValue::new(false);
     let message_press = MessagePress {
         workspace,
         press: StoredValue::new(Press::default()),
         timer: StoredValue::new(None),
         seq: StoredValue::new(None),
     };
-    let on_scroll = move |_| {
-        if near_bottom() {
-            following.set_value(true);
-        } else if user_scrolling.get_value() {
-            following.set_value(false);
+    // Following stops the moment the user scrolls toward older rows (a
+    // wheel, a key, a finger, the scrollbar, a flick's momentum) and
+    // resumes only when they come back to the end.
+    let back = move || {
+        follow.update_value(Follow::back);
+        shown();
+    };
+    let forward = move || {
+        if let Some((_, at)) = metrics() {
+            follow.update_value(|follow| follow.forward(at));
+            shown();
         }
+    };
+    let touch_y = StoredValue::new(None::<i32>);
+    let on_touch_move = move |event: ev::TouchEvent| {
+        let Some(touch) = event.touches().get(0) else {
+            return;
+        };
+        let y = touch.client_y();
+        if let Some(last) = touch_y.get_value() {
+            // A finger dragging down pulls older rows into view.
+            if y > last {
+                back();
+            } else if y < last {
+                forward();
+            }
+        }
+        touch_y.set_value(Some(y));
+    };
+    let jump = move |_| {
+        follow.update_value(Follow::jump);
+        pin();
     };
     view! {
         <div
@@ -1400,30 +1483,43 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             id="transcript"
             class="min-h-0 flex-1 overflow-y-auto px-3 py-2"
             on:click=on_click
-            on:scroll=on_scroll
-            on:wheel=move |event: ev::WheelEvent| {
-                if event.delta_y() < 0.0 {
-                    following.set_value(false);
+            on:scroll=move |_| {
+                if let Some((_, at)) = metrics() {
+                    follow.update_value(|follow| follow.scrolled(at));
+                    shown();
                 }
             }
-            on:touchstart=move |_| user_scrolling.set_value(true)
+            on:wheel=move |event: ev::WheelEvent| {
+                if event.ctrl_key() {
+                    return;
+                }
+                if event.delta_y() < 0.0 {
+                    back();
+                } else if event.delta_y() > 0.0 {
+                    forward();
+                }
+            }
+            on:keydown=move |event: ev::KeyboardEvent| match event.key().as_str() {
+                "ArrowUp" | "PageUp" | "Home" => back(),
+                " " if event.shift_key() => back(),
+                "ArrowDown" | "PageDown" | "End" | " " => forward(),
+                _ => {}
+            }
+            on:touchstart=move |event: ev::TouchEvent| {
+                touch_y.set_value(event.touches().get(0).map(|touch| touch.client_y()));
+            }
+            on:touchmove=on_touch_move
             on:touchend=move |event: ev::TouchEvent| {
-                user_scrolling.set_value(false);
+                touch_y.set_value(None);
                 // Chrome ends a long press with a click, which would land on
                 // the menu's backdrop the press just opened and close it.
                 if message_press.fired() {
                     event.prevent_default();
                 }
             }
-            on:pointerdown=move |event: ev::PointerEvent| {
-                user_scrolling.set_value(true);
-                message_press.down(&event);
-            }
+            on:pointerdown=move |event: ev::PointerEvent| message_press.down(&event)
             on:pointermove=move |event: ev::PointerEvent| message_press.moved(&event)
-            on:pointerup=move |_| {
-                user_scrolling.set_value(false);
-                message_press.cancel();
-            }
+            on:pointerup=move |_| message_press.cancel()
             on:pointercancel=move |_| message_press.cancel()
             on:pointerover=move |event: ev::PointerEvent| mark_message_row(&event)
             on:pointerleave=move |_| {
@@ -1441,16 +1537,136 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             <Show when=move || workspace.new_session.get()>
                 <cards::NewSessionCards workspace=workspace />
             </Show>
-            <div class="mx-auto flex max-w-4xl flex-col gap-2">
+            <div node_ref=content class="mx-auto flex max-w-4xl flex-col gap-2">
                 <For
-                    each=move || items.get()
-                    key=|(key, _)| *key
-                    children=move |(_, html)| {
-                        view! { <div class="transcript-item min-w-0" inner_html=html.to_string()></div> }
-                    }
+                    each=move || rows.with(|rows| rows.order.to_vec())
+                    key=|id| *id
+                    children=move |id| view! { <TranscriptRow rows=rows id=id /> }
+                />
+            </div>
+            // Over the end of the transcript while it does not follow it;
+            // the row it sits in takes no room.
+            <div class="pointer-events-none sticky bottom-0 mx-auto h-0 max-w-4xl">
+                <Show when=move || {
+                    !following.get() && workspace.selected.get().is_some()
+                        && !workspace.new_session.get()
+                }>
+                    <button
+                        type="button"
+                        class="pointer-events-auto absolute right-0 bottom-1 inline-flex min-h-11 items-center gap-2 rounded-full border border-crust bg-cream px-3 text-sm shadow-md hover:bg-toasted active:bg-crust dark:border-smoke dark:bg-night dark:hover:bg-ember dark:active:bg-smoke"
+                        title="Jump to the latest and follow it"
+                        data-jump-latest
+                        on:click=jump
+                    >
+                        <Glyph icon=icondata::FaArrowDownSolid />
+                        "Latest"
+                    </button>
+                </Show>
+            </div>
+        </div>
+    }
+}
+
+/// One transcript row, keyed by its item: its node stays while its content
+/// changes, and only a change to its own HTML redraws it.
+#[component]
+fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
+    let row = Memo::new(move |_| rows.with(|rows| rows.html.get(&id).cloned()));
+    let reply = untrack(|| row.with(|row| matches!(row, Some(RowHtml::Reply { .. }))));
+    if !reply {
+        let html = move || {
+            row.with(|row| match row {
+                Some(RowHtml::Html(html)) => html.to_string(),
+                _ => String::new(),
+            })
+        };
+        return view! { <div class="transcript-item min-w-0" inner_html=html></div> }.into_any();
+    }
+    let header = Memo::new(move |_| {
+        row.with(|row| match row {
+            Some(RowHtml::Reply { header, .. }) => Arc::clone(header),
+            _ => Arc::from(""),
+        })
+    });
+    let parts = Memo::new(move |_| {
+        row.with(|row| match row {
+            Some(RowHtml::Reply { parts, .. }) => Arc::clone(parts),
+            _ => Arc::from([]),
+        })
+    });
+    view! {
+        <div class="transcript-item min-w-0">
+            <div class="flex flex-col gap-1">
+                <div class="contents" inner_html=move || header.get().to_string()></div>
+                <For
+                    each=move || parts.with(|parts| parts.iter().map(|(id, _)| *id).collect::<Vec<_>>())
+                    key=|id| *id
+                    children=move |id| view! { <ReplyPart parts=parts id=id /> }
                 />
             </div>
         </div>
+    }
+    .into_any()
+}
+
+/// One part of a reply: a tool call, a thinking block, text. Text keeps the
+/// nodes of its settled markdown blocks and redraws only its open tail.
+#[component]
+fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, id: u64) -> impl IntoView {
+    let part = Memo::new(move |_| {
+        parts.with(|parts| {
+            parts
+                .iter()
+                .find(|(part, _)| *part == id)
+                .map(|(_, html)| html.clone())
+        })
+    });
+    let markdown = untrack(|| part.with(|part| matches!(part, Some(PartHtml::Markdown(_)))));
+    if !markdown {
+        let html = move || {
+            part.with(|part| match part {
+                Some(PartHtml::Html(html)) => html.to_string(),
+                _ => String::new(),
+            })
+        };
+        return view! { <div class="contents" inner_html=html></div> }.into_any();
+    }
+    let node = NodeRef::<html::Div>::new();
+    // The blocks on the page, each with the number of nodes it drew.
+    let drawn = StoredValue::new(Vec::<(Arc<str>, u32)>::new());
+    Effect::new(move |_| {
+        let blocks = part.with(|part| match part {
+            Some(PartHtml::Markdown(blocks)) => Arc::clone(blocks),
+            _ => Arc::from([]),
+        });
+        let Some(element) = node.get() else {
+            return;
+        };
+        drawn.update_value(|drawn| draw_blocks(&element, drawn, &blocks));
+    });
+    view! { <div class="markdown" node_ref=node></div> }.into_any()
+}
+
+/// Brings the markdown blocks under `element` from `drawn` to `blocks`:
+/// the blocks both start with stay, the rest go, and the new ones are added
+/// after them.
+fn draw_blocks(element: &web_sys::Element, drawn: &mut Vec<(Arc<str>, u32)>, blocks: &[Arc<str>]) {
+    let kept = drawn
+        .iter()
+        .zip(blocks)
+        .take_while(|((old, _), new)| old == *new)
+        .count();
+    let stale: u32 = drawn[kept..].iter().map(|(_, nodes)| nodes).sum();
+    for _ in 0..stale {
+        if let Some(last) = element.last_child() {
+            let _ = element.remove_child(&last);
+        }
+    }
+    drawn.truncate(kept);
+    for block in &blocks[kept..] {
+        let before = element.child_nodes().length();
+        let _ = element.insert_adjacent_html("beforeend", block);
+        drawn.push((Arc::clone(block), element.child_nodes().length() - before));
     }
 }
 

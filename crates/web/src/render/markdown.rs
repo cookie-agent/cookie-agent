@@ -4,18 +4,33 @@
 //! shown as links, so a page never loads a remote image on its own; code
 //! blocks carry their language for the highlighter.
 
-use cookie_agent_client_state::markdown::MarkdownDocument;
+use std::sync::{Arc, OnceLock};
+
+use cookie_agent_client_state::markdown::{MarkdownBlock, MarkdownDocument};
 use pulldown_cmark::{CowStr, Event, Tag, TagEnd};
 
 use super::{escape, safe_link};
 
 /// The document as HTML.
 pub fn document_html(document: &MarkdownDocument) -> String {
-    let mut html = String::new();
-    for block in document.blocks() {
+    document
+        .blocks()
+        .map(block_html)
+        .collect::<Vec<_>>()
+        .concat()
+}
+
+/// One block of a document as HTML, drawn once per block: a block never
+/// changes, and a settled one lasts while the text after it streams on.
+pub fn block_html(block: &MarkdownBlock) -> Arc<str> {
+    let slot = block
+        .renderer_cache()
+        .get_or_default::<OnceLock<Arc<str>>>();
+    Arc::clone(slot.get_or_init(|| {
+        let mut html = String::new();
         push_events(&mut html, block.events().iter().cloned());
-    }
-    html
+        Arc::from(html)
+    }))
 }
 
 /// `text`, a whole markdown document, as HTML.

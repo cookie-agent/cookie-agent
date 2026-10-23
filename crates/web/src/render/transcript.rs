@@ -1,10 +1,13 @@
 //! A session's transcript items as HTML, from the shared reducer's
 //! projection. Each item renders on its own, so the page re-renders only
-//! the items whose [`item_key`] changed.
+//! the items whose [`item_key`] changed; an assistant reply renders part by
+//! part ([`transcript_rows`]), so a streaming reply draws again only the
+//! parts that changed, and its text only its open tail.
 
 use std::{
     collections::{HashMap, HashSet},
     hash::{BuildHasher as _, Hash, Hasher as _},
+    sync::Arc,
 };
 
 use cookie_agent_client_state::{
@@ -22,7 +25,7 @@ use super::{
     blocks::{BlockPlace, display_html, media_html},
     budget::{ALL_OUTPUT_LINES, OUTPUT_LINES, within_budget},
     escape,
-    markdown::document_html,
+    markdown::{block_html, document_html},
 };
 use crate::icons::{self, Icon, svg};
 
@@ -407,6 +410,261 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             ProducerMessageStatus::Discarded => return None,
         },
     })
+}
+
+/// One part of an assistant reply as the page draws it, under the part's
+/// own node.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PartHtml {
+    /// The part's HTML, whole.
+    Html(Arc<str>),
+    /// Text: the HTML of each of its markdown blocks, in order. A settled
+    /// block keeps its HTML (and the page its nodes) while the open tail
+    /// after it streams.
+    Markdown(Arc<[Arc<str>]>),
+}
+
+/// One transcript row as the page draws it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RowHtml {
+    /// The row's HTML, whole.
+    Html(Arc<str>),
+    /// An assistant reply: its header, then each part under its ID, so a
+    /// part that did not change keeps its node while a later one streams.
+    Reply {
+        header: Arc<str>,
+        parts: Arc<[(u64, PartHtml)]>,
+    },
+}
+
+/// The transcript's rows: their IDs in order and each one's HTML. A row's
+/// ID stays the same while its content changes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Rows {
+    pub order: Arc<[u64]>,
+    pub html: Arc<HashMap<u64, RowHtml>>,
+}
+
+/// What the last pass drew, by content key, so a row or part whose key did
+/// not change is not drawn again. Each pass keeps only what it used.
+#[derive(Debug, Default)]
+pub struct RowCache {
+    rows: HashMap<u64, CachedRow>,
+    parts: HashMap<u64, Arc<str>>,
+    /// Rows and parts drawn anew since the cache was made, for tests that
+    /// check what a change draws again.
+    pub drawn: u64,
+}
+
+#[derive(Debug)]
+struct CachedRow {
+    html: RowHtml,
+    /// The content keys of a reply's parts, kept while the reply is.
+    parts: Vec<u64>,
+}
+
+/// The ID of the row the system prompt and tools are pinned in.
+fn pinned_row_id(session_id: cookie_agent_protocol::SessionId) -> u64 {
+    foldhash::fast::FixedState::default().hash_one(("pinned", session_id))
+}
+
+/// A row's ID: its item's, which item kinds share, in its session.
+fn row_id(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
+    foldhash::fast::FixedState::default().hash_one((
+        view.session_id,
+        std::mem::discriminant(item),
+        item.id(),
+    ))
+}
+
+/// A reply part's ID within its reply: its segment, call, or committed
+/// content index; the rest by position.
+fn part_id(child: &AssistantChild, index: usize) -> u64 {
+    let state = foldhash::fast::FixedState::default();
+    match child {
+        AssistantChild::Text { id, .. } => state.hash_one((0u8, id)),
+        AssistantChild::Thinking { id, .. } => state.hash_one((1u8, id)),
+        AssistantChild::Tool { call_id } => state.hash_one((2u8, call_id)),
+        AssistantChild::CommittedTool {
+            turn_seq,
+            content_index,
+            ..
+        } => state.hash_one((3u8, turn_seq, content_index)),
+        AssistantChild::MediaFile {
+            turn_seq,
+            content_index,
+            ..
+        } => state.hash_one((4u8, turn_seq, content_index)),
+        AssistantChild::Attribution { .. } => state.hash_one((5u8, index)),
+        AssistantChild::Notice { .. } => state.hash_one((6u8, index)),
+    }
+}
+
+/// A key that changes whenever the part's HTML would.
+fn part_key(view: &TranscriptView<'_>, child: &AssistantChild) -> u64 {
+    let mut hasher = foldhash::fast::FixedState::default().build_hasher();
+    homes_key(view.homes).hash(&mut hasher);
+    std::mem::discriminant(child).hash(&mut hasher);
+    match child {
+        // A folded thinking block shows only its header, whatever streams
+        // into it.
+        AssistantChild::Thinking { id, version, .. } => {
+            let open = view.expanded.contains(&thinking_key(*id));
+            (id, open).hash(&mut hasher);
+            if open {
+                version.hash(&mut hasher);
+            }
+        }
+        AssistantChild::Tool { call_id } => {
+            let id = call_id.to_string();
+            id.hash(&mut hasher);
+            view.expanded.contains(&id).hash(&mut hasher);
+            view.expanded
+                .contains(&all_output_key(&id))
+                .hash(&mut hasher);
+            (view.minimum_level <= EventLevel::Info).hash(&mut hasher);
+            if let Some(tool) = view.state.tools.get(call_id) {
+                tool.revision.hash(&mut hasher);
+                view.waiting_approval(tool).hash(&mut hasher);
+            }
+            view.delegates.get(call_id).hash(&mut hasher);
+        }
+        // The rest show what they hold, which does not change.
+        AssistantChild::Text { id, version, .. } => (id, version).hash(&mut hasher),
+        AssistantChild::CommittedTool {
+            turn_seq,
+            content_index,
+            name,
+        } => (turn_seq, content_index, name.as_str()).hash(&mut hasher),
+        AssistantChild::MediaFile {
+            turn_seq,
+            content_index,
+            ..
+        } => (turn_seq, content_index).hash(&mut hasher),
+        AssistantChild::Attribution { resolved_model } => {
+            view.names
+                .selection_label(&resolved_model.selection)
+                .hash(&mut hasher);
+        }
+        AssistantChild::Notice { text } => text.hash(&mut hasher),
+    }
+    hasher.finish()
+}
+
+/// The transcript's rows: the pinned row (`pinned`, from [`pinned_rows`])
+/// first, then every item the view shows. Rows and parts whose content
+/// key is in `cache` reuse its HTML.
+pub fn transcript_rows(
+    view: &TranscriptView<'_>,
+    pinned: Option<String>,
+    cache: &mut RowCache,
+) -> Rows {
+    let mut rows = HashMap::new();
+    let mut parts = HashMap::new();
+    let mut order = Vec::new();
+    let mut html = HashMap::new();
+    if let Some(pinned) = pinned {
+        let id = pinned_row_id(view.session_id);
+        order.push(id);
+        html.insert(id, RowHtml::Html(Arc::from(pinned)));
+    }
+    for item in &view.state.transcript {
+        let key = item_key(view, item);
+        let row = match cache.rows.remove(&key) {
+            Some(row) => {
+                for key in &row.parts {
+                    if let Some(part) = cache.parts.get(key) {
+                        parts.insert(*key, Arc::clone(part));
+                    }
+                }
+                row
+            }
+            None => {
+                let row = match item {
+                    TranscriptItem::Assistant {
+                        attribution,
+                        children,
+                        ..
+                    } => {
+                        let (reply, keys) = reply_parts(view, children, cache, &mut parts);
+                        CachedRow {
+                            html: RowHtml::Reply {
+                                header: Arc::from(format!(
+                                    "<div class=\"{NOTE} font-mono\">{}</div>",
+                                    escape(&attribution.header(view.names))
+                                )),
+                                parts: reply,
+                            },
+                            parts: keys,
+                        }
+                    }
+                    _ => match item_html(view, item) {
+                        Some(item) => CachedRow {
+                            html: RowHtml::Html(Arc::from(item)),
+                            parts: Vec::new(),
+                        },
+                        None => continue,
+                    },
+                };
+                cache.drawn += 1;
+                row
+            }
+        };
+        let id = row_id(view, item);
+        if html.insert(id, row.html.clone()).is_none() {
+            order.push(id);
+        }
+        rows.insert(key, row);
+    }
+    cache.rows = rows;
+    cache.parts = parts;
+    Rows {
+        order: order.into(),
+        html: Arc::new(html),
+    }
+}
+
+/// A reply's parts, each under its ID, and their content keys. Parts whose
+/// key is in `cache` reuse its HTML; every part drawn lands in `used`.
+fn reply_parts(
+    view: &TranscriptView<'_>,
+    children: &[AssistantChild],
+    cache: &mut RowCache,
+    used: &mut HashMap<u64, Arc<str>>,
+) -> (Arc<[(u64, PartHtml)]>, Vec<u64>) {
+    let mut seen = HashSet::new();
+    let mut keys = Vec::new();
+    let parts = children
+        .iter()
+        .enumerate()
+        .map(|(index, child)| {
+            let mut id = part_id(child, index);
+            if !seen.insert(id) {
+                id = foldhash::fast::FixedState::default().hash_one((id, index));
+                seen.insert(id);
+            }
+            let html = match child {
+                AssistantChild::Text { markdown, .. } => {
+                    PartHtml::Markdown(markdown.blocks().map(block_html).collect())
+                }
+                _ => {
+                    let key = part_key(view, child);
+                    let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
+                        Some(html) => Arc::clone(html),
+                        None => {
+                            cache.drawn += 1;
+                            Arc::from(child_html(view, child))
+                        }
+                    };
+                    used.insert(key, Arc::clone(&html));
+                    keys.push(key);
+                    PartHtml::Html(html)
+                }
+            };
+            (id, html)
+        })
+        .collect();
+    (parts, keys)
 }
 
 /// The key under which a collapsible row's expansion is kept, shared with
@@ -1221,5 +1479,192 @@ mod tests {
         );
         assert_eq!(open.matches("<li ").count(), 2);
         assert_ne!(open_key, folded_key, "opening changes its key");
+    }
+
+    /// A session whose one reply has a folded thinking block, a finished
+    /// call, and text still streaming, and the call's ID.
+    fn streaming_reply() -> (SessionState, cookie_agent_protocol::ToolCallId) {
+        use cookie_agent_client_state::{AssistantChild, FrozenAssistantAttribution};
+        use cookie_agent_protocol::{
+            AdaptorId, AgentId, ModelSelection, ProviderId, ProviderModelId, ResolvedModelRef,
+            Sha256Digest,
+        };
+
+        let call = run("Run `ls`", "ls");
+        let call_id = call.id;
+        let selection = ModelSelection {
+            model: "gateway/model".parse().expect("model key"),
+            variant: None,
+        };
+        let attribution = FrozenAssistantAttribution {
+            agent: AgentId::new("primary").expect("agent"),
+            resolved_model: ResolvedModelRef {
+                provider_id: ProviderId::new("gateway").expect("provider"),
+                model_id: ProviderModelId::new("model").expect("model"),
+                adapter_id: AdaptorId::OPENAI_COMPATIBLE,
+                selection_fingerprint: Sha256Digest::of_bytes(b"selection"),
+                selection,
+            },
+        };
+        let mut markdown = cookie_agent_client_state::markdown::MarkdownDocument::default();
+        markdown.append("# Settled\n\nA settled paragraph.\n\nthe open tail");
+        let state = SessionState {
+            transcript: vec![TranscriptItem::Assistant {
+                id: 1,
+                version: 0,
+                attribution,
+                committed_turn_seq: None,
+                child_times: Vec::new(),
+                children: vec![
+                    AssistantChild::Thinking {
+                        id: 2,
+                        version: 0,
+                        text: "weighing".into(),
+                    },
+                    AssistantChild::Tool { call_id },
+                    AssistantChild::Text {
+                        id: 3,
+                        version: 0,
+                        markdown,
+                    },
+                ],
+            }],
+            tools: [(call_id, call)].into_iter().collect(),
+            ..SessionState::default()
+        };
+        (state, call_id)
+    }
+
+    /// The reply row's parts.
+    fn reply_parts(rows: &super::Rows) -> Vec<(u64, super::PartHtml)> {
+        assert_eq!(rows.order.len(), 1);
+        match &rows.html[&rows.order[0]] {
+            super::RowHtml::Reply { parts, .. } => parts.to_vec(),
+            super::RowHtml::Html(html) => panic!("not a reply: {html}"),
+        }
+    }
+
+    /// Streams `text` into the reply's text and `thinking` into its folded
+    /// thinking block, as deltas do.
+    fn stream(state: &mut SessionState, text: &str, thinking: &str) {
+        use cookie_agent_client_state::AssistantChild;
+        let TranscriptItem::Assistant {
+            version, children, ..
+        } = &mut state.transcript[0]
+        else {
+            unreachable!()
+        };
+        *version += 1;
+        for child in children {
+            match child {
+                AssistantChild::Text {
+                    version, markdown, ..
+                } => {
+                    *version += 1;
+                    markdown.append(text);
+                }
+                AssistantChild::Thinking {
+                    version, text: own, ..
+                } => {
+                    *version += 1;
+                    own.push_str(thinking);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_streaming_reply_draws_again_only_its_open_tail() {
+        let (mut state, _) = streaming_reply();
+        let names = ModelDisplayNames::default();
+        let expanded = HashSet::new();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let mut cache = super::RowCache::default();
+        let draw = |state: &SessionState, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded: &expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+            };
+            super::transcript_rows(&view, None, cache)
+        };
+        let first = draw(&state, &mut cache);
+        let drawn = cache.drawn;
+        stream(&mut state, " grows\n\nand settles", " further");
+        let second = draw(&state, &mut cache);
+        // The reply drew again; its folded thinking and its call did not.
+        assert_eq!(cache.drawn - drawn, 1);
+        assert_eq!(first.order, second.order, "the row keeps its ID");
+        let (before, after) = (reply_parts(&first), reply_parts(&second));
+        assert_eq!(before.len(), after.len());
+        for ((id, old), (new_id, new)) in before.iter().zip(&after) {
+            assert_eq!(id, new_id, "a part keeps its ID");
+            match (old, new) {
+                (super::PartHtml::Html(old), super::PartHtml::Html(new)) => {
+                    assert!(std::sync::Arc::ptr_eq(old, new), "{new}");
+                }
+                (super::PartHtml::Markdown(old), super::PartHtml::Markdown(new)) => {
+                    // The settled blocks keep their HTML; the tail moved on.
+                    assert!(std::sync::Arc::ptr_eq(&old[0], &new[0]));
+                    assert!(std::sync::Arc::ptr_eq(&old[1], &new[1]));
+                    assert_ne!(old[2], new[2]);
+                    assert!(new[2].contains("the open tail grows"), "{}", new[2]);
+                    assert!(new.last().expect("a tail").contains("and settles"));
+                }
+                _ => panic!("a part changed its kind"),
+            }
+        }
+        // Nothing changed: nothing draws, and the rows compare equal.
+        let drawn = cache.drawn;
+        assert_eq!(draw(&state, &mut cache), second);
+        assert_eq!(cache.drawn, drawn);
+    }
+
+    #[test]
+    fn opening_a_call_in_a_streaming_reply_draws_only_that_call() {
+        let (mut state, call_id) = streaming_reply();
+        let names = ModelDisplayNames::default();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let mut cache = super::RowCache::default();
+        let draw =
+            |state: &SessionState, expanded: &HashSet<String>, cache: &mut super::RowCache| {
+                let view = TranscriptView {
+                    session_id,
+                    state,
+                    names: &names,
+                    minimum_level: EventLevel::Warning,
+                    expanded,
+                    delegates: &NO_DELEGATES,
+                    homes: &NO_HOMES,
+                };
+                super::transcript_rows(&view, None, cache)
+            };
+        let folded = HashSet::new();
+        let open = HashSet::from([call_id.to_string()]);
+        let first = draw(&state, &folded, &mut cache);
+        stream(&mut state, " more", " more");
+        draw(&state, &folded, &mut cache);
+        let drawn = cache.drawn;
+        let opened = draw(&state, &open, &mut cache);
+        // The reply and its call drew again, nothing else.
+        assert_eq!(cache.drawn - drawn, 2);
+        let (before, after) = (reply_parts(&first), reply_parts(&opened));
+        let super::PartHtml::Html(call) = &after[1].1 else {
+            panic!("the call is not HTML")
+        };
+        assert!(call.contains("aria-expanded=\"true\""), "{call}");
+        let (super::PartHtml::Html(old), super::PartHtml::Html(new)) = (&before[0].1, &after[0].1)
+        else {
+            panic!("the thinking block is not HTML")
+        };
+        assert!(
+            std::sync::Arc::ptr_eq(old, new),
+            "the folded thinking drew again"
+        );
     }
 }

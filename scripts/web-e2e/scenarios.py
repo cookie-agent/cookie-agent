@@ -541,6 +541,204 @@ def tool_rows(browser):
     browser.wait("its answer", lambda: "working" not in browser.text("#status-bar"), timeout=40)
 
 
+# The transcript's scroll position: how far its end is below the box,
+# its scroll top and content height, and whether the jump-to-latest
+# button shows.
+SCROLL_STATE = """
+const t = document.querySelector('#transcript');
+return {gap: t.scrollHeight - t.scrollTop - t.clientHeight, top: t.scrollTop,
+    height: t.scrollHeight, jump: !!document.querySelector('[data-jump-latest]')};
+"""
+
+# Counts the page's writes to the transcript's scroll position from now on
+# (window.__pins), as a pin makes them.
+COUNT_PINS = """
+const t = document.querySelector('#transcript');
+const property = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+window.__pins = 0;
+Object.defineProperty(t, 'scrollTop', {
+    configurable: true,
+    get() { return property.get.call(this); },
+    set(value) { window.__pins += 1; property.set.call(this, value); },
+});
+"""
+
+# Presses the toggle of tool row `arguments[0]` with real mouse events held
+# for `arguments[1]` ms (in which a stream redraws the page many times), and
+# reports the ms from the release until the row shows itself toggled, or
+# null when it never does within a second.
+TIMED_TOGGLE = """
+const [call, hold, done] = arguments;
+const row = () => document.querySelector('#transcript [data-tool="' + call + '"]');
+const before = row().dataset.expanded;
+const box = row().querySelector('[data-action=toggle-tool]').getBoundingClientRect();
+window.__toggle = {x: box.left + 24, y: box.top + box.height / 2, before};
+done(window.__toggle);
+"""
+
+TOGGLE_LATENCY = """
+const [call, done] = arguments;
+const row = () => document.querySelector('#transcript [data-tool="' + call + '"]');
+const released = window.__released;
+const check = () => {
+    if (row().dataset.expanded !== window.__toggle.before) {
+        done(performance.now() - released);
+    } else if (performance.now() - released > 1000) {
+        done(null);
+    } else {
+        requestAnimationFrame(check);
+    }
+};
+check();
+"""
+
+
+def mouse(browser, kind, x, y, **extra):
+    browser.cdp(
+        "Input.dispatchMouseEvent",
+        dict({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1}, **extra),
+    )
+
+
+def wheel(browser, delta):
+    """A mouse wheel turned over the transcript's middle: up when `delta`
+    is negative."""
+    box = browser.script(
+        "const b = document.querySelector('#transcript').getBoundingClientRect();"
+        "return [b.left + b.width / 2, b.top + b.height / 2]"
+    )
+    browser.cdp(
+        "Input.dispatchMouseEvent",
+        {"type": "mouseWheel", "x": box[0], "y": box[1], "deltaX": 0, "deltaY": delta},
+    )
+
+
+def stays_put(browser, what, seconds=1.5):
+    """Asserts the transcript keeps its scroll position for `seconds` while
+    the reply grows below it, and offers the jump to the latest."""
+    time.sleep(0.4)
+    before = browser.script(SCROLL_STATE)
+    time.sleep(seconds)
+    after = browser.script(SCROLL_STATE)
+    assert after["height"] > before["height"], "%s: the reply stopped growing: %s" % (what, after)
+    assert abs(after["top"] - before["top"]) <= 1, "%s: the view moved: %s -> %s" % (what, before, after)
+    assert after["jump"], "%s: no jump to the latest: %s" % (what, after)
+
+
+def follows(browser, what, seconds=1.0):
+    """Asserts the transcript follows its growing end for `seconds`."""
+    before = browser.script(SCROLL_STATE)
+    time.sleep(seconds)
+    after = browser.script(SCROLL_STATE)
+    assert after["height"] > before["height"], "%s: the reply stopped growing: %s" % (what, after)
+    assert after["gap"] <= 2 and not after["jump"], "%s: not at the end: %s" % (what, after)
+
+
+def streaming_scroll(browser):
+    """While a reply streams, the transcript follows its end only when the
+    content grows, any scroll up stops that at once until the user comes
+    back to the end or jumps to the latest, and a row opened or closed in
+    the streaming reply responds within a frame or two."""
+    new_session(browser)
+    send(browser, "stream only, label alpha")
+    browser.wait("the long reply", lambda: "alpha 60 " in browser.text("#transcript"), timeout=30)
+    follows(browser, "the stream")
+    # A wheel up stops following at once, whatever streams in below.
+    wheel(browser, -100)
+    stays_put(browser, "a wheel up")
+    # Back at the end, following resumes.
+    for _ in range(5):
+        wheel(browser, 4000)
+        time.sleep(0.2)
+    browser.wait("the end", lambda: browser.script(SCROLL_STATE)["gap"] <= 2)
+    follows(browser, "back at the end")
+    # A small scroll up, as the scrollbar or a flick's momentum makes it.
+    browser.script("document.querySelector('#transcript').scrollTop -= 30")
+    stays_put(browser, "30 px up")
+    browser.click("[data-jump-latest]")
+    follows(browser, "the jump to the latest")
+    print("a scroll up during a stream stays put; the end or the jump follows again")
+    browser.wait("the long reply's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+
+    # A folded call at the end gets progress: nothing grows, nothing pins.
+    send(browser, "stream long, label beta")
+    browser.wait("the approval", lambda: browser.text("#approvals-badge") != "")
+    browser.click("#approvals-badge")
+    browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    browser.click("#sheet [data-decision=approve_once]")
+    close_sheet(browser)
+    last_tool = "const rows = document.querySelectorAll('#transcript [data-tool]'); const r = rows[rows.length - 1];"
+    browser.wait(
+        "the progress",
+        lambda: browser.script(last_tool + "return r.dataset.expanded === 'false' && !!r.querySelector('[data-progress]')"),
+        timeout=20,
+    )
+    time.sleep(0.3)
+    browser.script(COUNT_PINS)
+    time.sleep(1)
+    pins = browser.script("return window.__pins")
+    still_running = browser.script(last_tool + "return !!r.querySelector('[data-progress]')")
+    assert still_running, "the call ended before its progress was watched"
+    assert pins == 0, "progress in a folded call pinned the view %d times" % pins
+    print("progress in a folded call at the end pins nothing")
+    # A row of the streaming reply opens and closes promptly.
+    browser.wait("the answer after the call", lambda: "beta 30 " in browser.text("#transcript"), timeout=30)
+    call = browser.script(last_tool + "r.scrollIntoView({block: 'center'}); return r.dataset.tool")
+    latencies = []
+    for _ in range(4):
+        spot = browser.script_async(TIMED_TOGGLE, call, 150)
+        top = browser.script("return document.querySelector('#transcript [data-tool=\"' + arguments[0] + '\"]').getBoundingClientRect().top", call)
+        mouse(browser, "mousePressed", spot["x"], spot["y"])
+        time.sleep(0.15)
+        browser.script("window.__released = performance.now()")
+        mouse(browser, "mouseReleased", spot["x"], spot["y"])
+        latency = browser.script_async(TOGGLE_LATENCY, call)
+        assert latency is not None, "a click on the streaming reply's call did nothing"
+        latencies.append(latency)
+        moved = browser.script("return document.querySelector('#transcript [data-tool=\"' + arguments[0] + '\"]').getBoundingClientRect().top", call)
+        assert abs(moved - top) <= 1, "the toggled row moved from %s to %s" % (top, moved)
+        time.sleep(0.2)
+    assert "beta 500 " not in browser.text("#transcript"), "the reply ended before the toggles"
+    print("toggles during the stream applied in %s ms" % ", ".join("%.0f" % ms for ms in latencies))
+    assert max(latencies) < 250, "a toggle took %.0f ms" % max(latencies)
+    browser.click("[data-jump-latest]")
+    follows(browser, "the jump after the toggles")
+    browser.wait("the reply's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+
+    # A phone: a finger dragging the page down stops following.
+    session = browser.script(
+        "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
+    )
+    phone = Browser(touch=True)
+    try:
+        phone.go(LINK)
+        phone.wait("the connection", lambda: phone.text("#connected") != "")
+        phone.phone(390, 844)
+        phone.click("main [data-sidebar-toggle]")
+        phone.wait("the drawer", lambda: count(phone, '#drawer [data-session="%s"]' % session) > 0)
+        phone.script("document.querySelector(arguments[0]).click()", '#drawer [data-session="%s"]' % session)
+        phone.wait("the session", lambda: "beta 500 " in phone.text("#transcript"), timeout=30)
+        send(browser, "stream only, label gamma")
+        phone.wait("the long reply", lambda: "gamma 60 " in phone.text("#transcript"), timeout=30)
+        follows(phone, "the phone's stream")
+        origin = {ELEMENT: phone.find("#transcript")}
+        perform(phone, [{
+            "type": "pointer", "id": "finger", "parameters": {"pointerType": "touch"}, "actions": [
+                {"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": -100},
+                {"type": "pointerDown", "button": 0},
+                {"type": "pointerMove", "duration": 300, "origin": "pointer", "x": 0, "y": 200},
+                {"type": "pointerUp", "button": 0},
+            ],
+        }])
+        stays_put(phone, "a finger dragging down")
+        phone.click("[data-jump-latest]")
+        follows(phone, "the phone's jump to the latest")
+        print("phone: a finger dragging the page down stays put; the jump follows again")
+    finally:
+        phone.close()
+    browser.wait("the last reply's end", lambda: "working" not in browser.text("#status-bar"), timeout=60)
+
+
 def pinned_rows(browser):
     """The system prompt and the tools the latest request offered, pinned
     folded at the top of the transcript as in the TUI; each opens to the
@@ -4403,6 +4601,7 @@ SCENARIOS = [
     ("composer", composer, "chat", []),
     ("tool_rows", tool_rows, "chat", []),
     ("pinned_rows", pinned_rows, "chat", ["tool_rows"]),
+    ("streaming_scroll", streaming_scroll, "chat", []),
     ("message_menu", message_menu, "chat", ["basics"]),
     ("session_depth", session_depth, "depth", []),
     ("permission_rules", permission_rules, "depth", []),
