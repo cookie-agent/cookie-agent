@@ -38,6 +38,13 @@ the TUI. A session without the global runtime has no user skills, and one
 without a coding runtime has no project skills. Skill files are not
 hot-reloaded; restart the engine after changing them.
 
+The [starter kit](agents.md#the-starter-kit) installs two user skills:
+`customize-cookie-agent`, pointers for an agent asked to change cookie itself
+(its configuration, providers, runtimes, MCP servers, agents, skills, and
+cron jobs), and `add-cookie-runtime`, for bringing another machine in as a
+runtime over ssh or by dialing in. Each names the `cookie` commands to use
+and the pages to read.
+
 ## Authoring
 
 Complete `release-check/SKILL.md`:

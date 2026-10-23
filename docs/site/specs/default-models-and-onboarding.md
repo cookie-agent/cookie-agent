@@ -1,6 +1,6 @@
 # Default models, the starter kit, and onboarding
 
-Status: **approved** (2026-10-23), being implemented.
+Status: **implemented** (2026-10-23); see [implementation notes](#14-implementation-notes).
 
 ## 1. Goal and scope
 
@@ -118,15 +118,43 @@ models:
     agents/primary.md  # mode primary, models: [${default_model}]
     agents/explore.md  # mode subagent, read-only exploring, models: [${small_model}, ${default_model}]
     agents/worker.md   # mode subagent, does a delegated task, models: [${default_model}]
-    manifest.json      # skills are not in the kit (section 13)      # kit version, the cookie version it was built for, each file's sha256
+    manifest.json      # kit version, the cookie version it was built for, each file's sha256
+                       # skills are not in the kit (section 13)
   ```
 
 - **Agents:** `primary` is the root agent (the daemon already falls back to an
   agent named `primary`); it may delegate to `explore` and `worker`.
   `explore` reads and searches and never writes; `worker` carries out a task
-  with the same tools as `primary`. Their permission rules are conservative:
-  writes inside the workspace allowed, elsewhere asked; `bash` asked except
-  read-only commands.
+  with the same tools as `primary`. **Permissions (decided 2026-10-23):**
+  `primary` allows `read`, `write`, `webfetch`, `skill`, `memory` with the
+  related `memory_write` rules (`user://*`, `agent://${agent_id}`,
+  `machine://${session_machine}/*`, `project://${session_project}/*`), and
+  `delegate` to `explore` and `worker`; `bash` asks except read-only
+  commands (`ls *`, `cat *`, `rg *`, `git status*`, `git diff*`, `git log*`,
+  …); `mcp` asks, `cron` and `list_runtimes` as their defaults. `worker`
+  has `primary`'s `read`, `write`, and `bash` rules; `explore` stays
+  read-only. Every permission is written explicitly, the defaults included,
+  each line with a YAML comment saying whether it equals the daemon's
+  default and what the default would be without the key, and why a
+  non-default line is there.
+- **The `customize-cookie-agent` skill (decided 2026-10-23):** pointers, not
+  a manual, for an agent asked to change cookie itself: where the binary,
+  `~/.cookie-agent/` (configuration, agents, skills, memory, sessions), and a
+  remote daemon's root live; the `cookie` commands to prefer over editing
+  files by hand (configuration is strict); and links to the published docs
+  of each topic. A test checks that every `cookie` command it names exists
+  in the CLI and every docs link names a page of the site. It installs like
+  the other kit files (`.new` beside a changed one).
+- **The `add-cookie-runtime` skill (decided 2026-10-23):** for an agent the
+  user wants to work on another machine, or gives ssh access to one. Short,
+  pointing at the docs: a `[runtimes.<id>]` template the daemon starts over
+  ssh (`cookie runtime serve --stdio`; needs cookie on the remote, nothing
+  left running), or a runtime that dials in (`cookie runtime serve
+  --daemon`), temporarily or as a service; installing cookie there; adding
+  the runtime with the daemon's own commands and restarting; checking it
+  with `list_runtimes`; using it through `capabilities` or `/runtime`; and
+  safety (ask before installing or leaving a service, never show the token,
+  remove temporary setups). The same test keeps it honest.
 - **Release asset:** the release workflow packs `defaults/` as
   `cookie-agent-defaults.tar.gz` and uploads it with the binaries, as it does
   `cookie-agent-web.tar.gz`. Prereleases carry it too.
@@ -342,3 +370,110 @@ The refresh against a local fixture server (new, changed, removed, a hash
 mismatch refused, a `requires_cookie` range not met, offline with a cache),
 precedence against a user skill of the same name, `official = false`,
 `cookie skills check` passing and failing cases.
+
+## 14. Implementation notes
+
+Implemented 2026-10-23 in four phases on one branch.
+
+**Versions.** Client protocol 1.20.0, plugin protocol 1.9.0 (the events
+carry the `${parent_model}` variant), runtime protocol unchanged, history
+format unchanged: the frozen `ParentModel` fallback gained an optional
+`variant` that is omitted when absent, so earlier logs read as before.
+
+**Engine and configuration.**
+
+- `default_model` and `small_model` are `ConfiguredModel { model, variant }`
+  on `EngineConfig`, decoded from a key string or a strict table; the
+  top-level key allowlist names both.
+- `AgentModelRef` has `DefaultModel` and `SmallModel`; a `models` entry
+  deserializes from a string or a strict mapping. `${parent_model}` takes a
+  variant override (still internal-only); the override is frozen into
+  `run_started` and applied by binding the parent's model in that variant,
+  skipping the entry when the variant is not available.
+- An entry naming an unset field is skipped; the agent lists the field in
+  `AgentDescriptor.unset_models`, and an authored agent reports it in
+  `ConfigStatus.diagnostics` (which landed meanwhile for ACP agents):
+  "agent `x` skips a `models` entry: `small_model` is not set", or "has no
+  model" when nothing is left. Built-in agents report no diagnostic, since
+  their fallback to `${parent_model}` is by design.
+- **Deviation:** a resolved chain keeps the first entry per model. The
+  protocol refuses a chain naming one model twice, so `${default_model}`
+  followed by the key it names resolves to one entry rather than two.
+- The built-in `default` agent resolves `${default_model}` (when set and
+  available), then the first available model when that is another model.
+  Its permissions are unchanged and differ from the kit's `primary`: it
+  asks before writes, commands, and delegation and has no `webfetch`.
+
+**The kit and the release.**
+
+- `defaults/` holds `config.toml`, the three agents, the
+  `customize-cookie-agent` and `add-cookie-runtime` skills, and
+  `manifest.json` (`kit_version` and
+  each file's SHA-256; `scripts/pack-defaults.sh --update-manifest`
+  refreshes the hashes). The release workflow's `build-web` job packs it
+  with `scripts/pack-defaults.sh <tag>`, which checks the hashes and writes
+  `cookie_version` into the archive's manifest, and uploads
+  `cookie-agent-defaults.tar.gz` with the other artifacts, prereleases
+  included.
+- Kit files are configuration documents (`config.toml`, `agents/…`) and
+  user skills (`skills/<name>/SKILL.md`, written below the daemon's user
+  root, loaded when the daemon restarts, which the run summary says). The
+  engine reads the archive in memory (gzip plus a small ustar/pax reader,
+  no new dependency), refuses unlisted, missing, unsafe, or mismatched
+  files, and loads the kit alone with this build's configuration, agent,
+  and skill parsers before comparing it with the user root.
+- Tests load `defaults/` with those parsers, check its manifest, load
+  `config.toml` with every commented example uncommented, read a GNU tar
+  archive packed by the script, and keep the skill honest against the CLI
+  and the docs pages.
+
+**Onboarding.**
+
+- The release source tries `<releases>/download/v<version>/…` then
+  `<releases>/latest/download/…`; the base URL is injectable
+  (`Engine::set_releases_url`) and tests serve kits from a local HTTP
+  server. A downloaded kit is kept ten minutes for the run after a preview.
+- **Deviation:** an uploaded archive travels inline, base64 in the
+  `source` (`{"type": "archive", "data": …}`, at most 1 MiB), not through
+  an upload lease: upload leases belong to a session's tree and accept only
+  attachment media, while onboarding runs before any session exists.
+- `onboarding.run` edits the configuration under the configuration lock:
+  new kit documents and the model fields go into one candidate tree, which
+  is validated, checked for readiness against the current models, and only
+  then written; `.new` files and skills follow. A refusal is
+  `onboarding_incomplete` with `missing`; a kit that cannot be used is
+  `onboarding_kit_unavailable`; a model value the configuration refuses is
+  `config_apply_refused`, as for `config.apply`.
+- `onboarding.changed` is sent per connection after any runtime
+  publication that changes the answer (configuration applies and reloads,
+  provider changes, and catalog refreshes all publish one).
+- "Connected providers" are those offering at least one available model.
+- Readiness before a run is checked against the models compiled now; a run
+  whose candidate configuration changes providers is not recompiled first,
+  and its result reports the state after it applied.
+- `cookie onboard` reuses `cookie connect`'s provider flow and the shared
+  rules in `client_state::onboarding`; without `--yes` or `--diff` it needs
+  a terminal.
+- **TUI:** while the daemon is not ready, a notice in the background bar's
+  row (background calls take precedence) says what is missing, with Set up
+  and Not now. Not now is kept in `~/.cookie-agent/tui-state.json` until
+  the missing set changes. `/onboard` opens a panel of four clickable step
+  tabs with checks; step 1 opens the connect panel, steps 2 and 3 the model
+  picker in an onboarding mode, step 4 the kit preview (`d` diff, `i`
+  install, `o` a local archive path); `f` finishes. Four new pointer
+  targets hover visibly. The kit preview is fetched on reaching its step.
+- **Web:** a first-run sheet (full screen with 44px targets on a phone, a
+  dialog on wider windows) opens on connecting to a daemon that is not
+  ready, unless Not now is stored (`cookie.onboarding_not_now` in
+  localStorage; the page's origin is the daemon's, so it is per daemon). It
+  reuses Settings' connect forms, closes in every tab when the daemon
+  becomes ready, and Settings has "Set up Cookie". The browser suite's main
+  daemon now sets both model fields so the sheet stays out of the other
+  scenarios; a new scenario covers the sheet on an empty daemon. The kit
+  step is not browser-tested, since previewing the release kit would reach
+  GitHub. **Deviation:** the model lists show context size but no price:
+  the catalog view's model descriptors carry none.
+- **Deviation:** `/config`, the web configuration view, and
+  `cookie config` edit `default_model` and `small_model` as `config.toml`
+  text (`cookie config set default_model …`); the model pickers are the
+  onboarding panels', which run again on a set-up daemon.

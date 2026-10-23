@@ -144,9 +144,11 @@ model's default variant.
 The variables resolve when the agents compile: at start and on every
 configuration reload, so changing `default_model` retargets every agent that
 uses it without touching documents. An entry naming a field that is not set
-is skipped, and the agent reports the field (`unset_models` in the agent
-listing, "`small_model` is not set"); later entries still apply. An agent left
-with no entry is unavailable until the field is set.
+is skipped, and the agent reports the field: `unset_models` in the agent
+listing, and a configuration diagnostic ("agent `explore` skips a `models`
+entry: `small_model` is not set") in `cookie config status` and `/config`.
+Later entries still apply. An agent left with no entry is unavailable until
+the field is set.
 
 A primary agent must declare at least one entry. The chain may contain up to
 256 entries with no duplicates, compared as written: `${default_model}` and
@@ -380,6 +382,30 @@ On attach, the TUI replays the selected session and the tree's live children
 (running or idle). A finished child's history loads when you open it in the
 Agents panel, so resuming a tree with many long finished children stays fast.
 A finished child that is woken again is picked up on the next tree refresh.
+
+## The starter kit
+
+`cookie onboard`, the TUI's `/onboard`, and the web page's setup sheet can
+install the starter kit, a release asset (`cookie-agent-defaults.tar.gz`)
+holding three agents to start from or replace:
+
+| Agent | Mode | `models` | What it does |
+|---|---|---|---|
+| `primary` | `primary` | `${default_model}` | Runs sessions: reads, writes, fetches, uses skills and memory, and delegates to `explore` and `worker` |
+| `explore` | `subagent` | `${small_model}`, then `${default_model}` | Reads and searches, never writes, and reports what it found |
+| `worker` | `subagent` | `${default_model}` | Carries out one delegated task with `primary`'s tools |
+
+Their `permissions` name every action explicitly, defaults included, each
+line with a comment saying whether it is a default and what it does, so a
+document shows its whole policy. `bash` asks, except a list of read-only
+commands (`ls *`, `cat *`, `rg *`, `git status*`, `git diff*`, …); such a
+pattern also matches a longer command that starts the same way, so narrow it
+if that matters to you. An installed kit file is yours to change: installing
+the kit again never overwrites it, writing the kit's version beside it as
+`<name>.new`. The kit also installs two skills:
+`customize-cookie-agent`, which points an agent at the commands and pages
+for changing cookie itself, and `add-cookie-runtime`, for adding another
+machine as a runtime when the user gives the agent ssh access to it.
 
 ## Layering and replacement
 

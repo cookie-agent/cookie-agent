@@ -38,7 +38,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
-| [Default models, the starter kit, and onboarding](default-models-and-onboarding.md) | Approved (2026-10-23), being implemented; `default_model`/`small_model` and their variables, plain-string model entries, the starter kit as a release asset, `cookie onboard` and the onboarding RPCs |
+| [Default models, the starter kit, and onboarding](default-models-and-onboarding.md) | Implemented (2026-10-23); `default_model`/`small_model` and their variables, plain-string model entries, the starter kit (agents and the `customize-cookie-agent` and `add-cookie-runtime` skills) as a release asset, `cookie onboard`, the TUI and web setup panels, and the onboarding RPCs (client protocol 1.20.0, plugin protocol 1.9.0) |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |
