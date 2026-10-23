@@ -60,6 +60,8 @@ pub(super) enum Role {
     Goal,
     /// An ACP agent's plan.
     Plan,
+    /// An ACP agent's notice.
+    Notice,
     ToolRunning,
     ToolSuccess,
     ToolFailure,
@@ -122,9 +124,10 @@ pub(super) fn for_each_item_block_id(
             visit(BlockId::ProducerMessage(*message_id))
         }
         TranscriptItem::Event { id, .. } => visit(BlockId::Event(*id)),
-        TranscriptItem::User { .. } | TranscriptItem::Goal { .. } | TranscriptItem::Plan { .. } => {
-            true
-        }
+        TranscriptItem::User { .. }
+        | TranscriptItem::Goal { .. }
+        | TranscriptItem::Plan { .. }
+        | TranscriptItem::AcpNotice { .. } => true,
     }
 }
 
@@ -194,6 +197,7 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
         | TranscriptItem::MemoryChange { .. }
         | TranscriptItem::Goal { .. }
         | TranscriptItem::Plan { .. }
+        | TranscriptItem::AcpNotice { .. }
         | TranscriptItem::ProducerMessage { .. } => false,
     }
 }
@@ -237,6 +241,14 @@ pub(super) fn transcript_item_layout(
                     .into_iter()
                     .flat_map(|line| markdown_body_line(line, width, theme.user())),
                 );
+                // Delivered into an ACP agent's running turn.
+                if state.acp.steered.contains(seq) {
+                    lines.extend(repeated_prefixed_wrapped_line(
+                        vec![Span::styled("│ ", theme.user())],
+                        Line::styled("↪ steered into the agent's running turn", theme.muted()),
+                        width,
+                    ));
+                }
                 lines
             },
             regions: Vec::new(),
@@ -289,6 +301,11 @@ pub(super) fn transcript_item_layout(
         } => memory_change_layout(*seq, *change, url, context),
         TranscriptItem::Plan { entries, .. } => ItemLayout {
             lines: plan_layout(entries, context.width, context.theme),
+            regions: Vec::new(),
+            user_seq: None,
+        },
+        TranscriptItem::AcpNotice { notice, .. } => ItemLayout {
+            lines: acp_notice_layout(notice, context.width, context.theme),
             regions: Vec::new(),
             user_seq: None,
         },

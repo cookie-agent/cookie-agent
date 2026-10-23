@@ -138,11 +138,19 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                         .collect::<String>()
                 })
                 .unwrap_or_default();
+            // Delivered into an ACP agent's running turn.
+            let steered = if view.state.acp.steered.contains(seq) {
+                format!(
+                    "<div class=\"{NOTE} mt-1\" data-steered>↪ steered into the agent's running turn</div>"
+                )
+            } else {
+                String::new()
+            };
             format!(
                 // The row is the whole band at the bubble's height: a mouse
                 // over it shows the ⋯ (style/main.css), whose room stays;
                 // a touch screen long-presses the bubble instead.
-                "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-toasted px-3 py-2 dark:bg-ember\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div></div>",
+                "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-ink hover:bg-toasted active:bg-crust dark:text-sand dark:hover:bg-ember dark:active:bg-smoke\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-toasted px-3 py-2 dark:bg-ember\" data-bubble><div class=\"markdown\">{}</div>{files}{steered}</div></div></div>",
                 svg(icondata::FaEllipsisSolid, ""),
                 document_html(markdown)
             )
@@ -310,6 +318,42 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 &header,
                 Some(&detail),
                 rendered_body,
+            )
+        }
+        TranscriptItem::AcpNotice { notice, .. } => {
+            use cookie_agent_protocol::AcpNoticeSeverity;
+            let (class, icon) = match notice.severity {
+                AcpNoticeSeverity::Error => (
+                    "text-red-700 dark:text-red-400",
+                    icondata::FaCircleExclamationSolid,
+                ),
+                AcpNoticeSeverity::Warning => (
+                    "text-caramel dark:text-maple",
+                    icondata::FaTriangleExclamationSolid,
+                ),
+                AcpNoticeSeverity::Info | AcpNoticeSeverity::Unknown => {
+                    ("text-ink dark:text-sand", icondata::FaCircleInfoSolid)
+                }
+            };
+            let description = notice
+                .description
+                .as_deref()
+                .map(|description| {
+                    format!(
+                        "<div class=\"{NOTE} whitespace-pre-wrap\">{}</div>",
+                        escape(description)
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                "<div class=\"agent-notice rounded border-l-4 border-crust px-3 py-1 dark:border-smoke\" data-severity=\"{}\"><div class=\"flex items-center gap-2 text-sm {class}\">{}<span>{}</span></div>{description}</div>",
+                match notice.severity {
+                    AcpNoticeSeverity::Error => "error",
+                    AcpNoticeSeverity::Warning => "warning",
+                    _ => "info",
+                },
+                svg(icon, ""),
+                escape(&notice.title)
             )
         }
         TranscriptItem::Plan { entries, .. } => format!(
@@ -1666,5 +1710,116 @@ mod tests {
             std::sync::Arc::ptr_eq(old, new),
             "the folded thinking drew again"
         );
+    }
+
+    #[test]
+    fn an_acp_notice_and_a_steered_message_render() {
+        let mut state = SessionState::default();
+        state.acp.steered.insert(7);
+        let names = ModelDisplayNames::default();
+        let expanded = HashSet::new();
+        let view = TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded: &expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+        };
+        let user = item_html(
+            &view,
+            &TranscriptItem::User {
+                id: 1,
+                version: 0,
+                markdown: cookie_agent_client_state::markdown::MarkdownDocument::with_hard_breaks(
+                    "look at notes.txt".into(),
+                )
+                .finished(),
+                seq: 7,
+            },
+        )
+        .unwrap();
+        assert!(
+            user.contains("data-steered>↪ steered into the agent's running turn</div>"),
+            "{user}"
+        );
+        let notice = item_html(
+            &view,
+            &TranscriptItem::AcpNotice {
+                id: 2,
+                notice: cookie_agent_protocol::AcpNotice {
+                    severity: cookie_agent_protocol::AcpNoticeSeverity::Warning,
+                    title: "Rate limited".into(),
+                    description: Some("Retrying <soon>.".into()),
+                },
+            },
+        )
+        .expect("no level filter hides a notice");
+        assert!(notice.contains("data-severity=\"warning\""), "{notice}");
+        assert!(notice.contains("<span>Rate limited</span>"), "{notice}");
+        assert!(notice.contains("Retrying &lt;soon&gt;."), "{notice}");
+    }
+
+    #[test]
+    fn a_late_presentation_draws_its_call_again_with_the_new_title() {
+        let (mut state, call_id) = streaming_reply();
+        let names = ModelDisplayNames::default();
+        let expanded = HashSet::new();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let mut cache = super::RowCache::default();
+        let draw = |state: &SessionState, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded: &expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+            };
+            super::transcript_rows(&view, None, cache)
+        };
+        let first = draw(&state, &mut cache);
+        let drawn = cache.drawn;
+        // The agent's raw input arrived after the call started.
+        let mut store = cookie_agent_client_state::StateStore::default();
+        store.sessions.insert(session_id, state);
+        store.apply_event(cookie_agent_protocol::StoredEvent {
+            engine_version: None,
+            origin: None,
+            session_id,
+            run_id: None,
+            seq: 1,
+            timestamp: jiff::Timestamp::now(),
+            payload: cookie_agent_protocol::EventPayload::AcpSessionUpdated {
+                update: cookie_agent_protocol::AcpSessionUpdate {
+                    tool_presentation: Some(cookie_agent_protocol::AcpToolPresentation {
+                        tool_call_id: call_id,
+                        presentation: cookie_agent_protocol::PreparedPresentation::new(
+                            cookie_agent_protocol::SafeDisplayText::new("Read notes.txt")
+                                .expect("title"),
+                            None,
+                        ),
+                    }),
+                    ..cookie_agent_protocol::AcpSessionUpdate::default()
+                },
+            },
+        });
+        state = store.sessions.remove(&session_id).expect("the session");
+        let second = draw(&state, &mut cache);
+        // The reply and its call drew again; the folded thinking did not.
+        assert_eq!(cache.drawn - drawn, 2);
+        assert_eq!(first.order, second.order);
+        let (before, after) = (reply_parts(&first), reply_parts(&second));
+        let super::PartHtml::Html(call) = &after[1].1 else {
+            panic!("the call is not HTML")
+        };
+        assert!(call.contains("Read notes.txt"), "{call}");
+        let (super::PartHtml::Html(old), super::PartHtml::Html(new)) = (&before[0].1, &after[0].1)
+        else {
+            panic!("the thinking block is not HTML")
+        };
+        assert!(std::sync::Arc::ptr_eq(old, new));
     }
 }

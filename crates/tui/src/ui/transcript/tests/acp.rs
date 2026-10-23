@@ -266,3 +266,36 @@ fn an_acp_agents_tool_call_names_the_agent() {
         "{text}"
     );
 }
+
+#[test]
+fn a_notice_and_a_steered_message_render() {
+    let mut state = SessionState::default();
+    state.transcript.push(TranscriptItem::User {
+        id: 1,
+        version: 0,
+        markdown: crate::markdown::MarkdownDocument::with_hard_breaks("look at notes.txt".into())
+            .finished(),
+        seq: 7,
+    });
+    state.acp.steered.insert(7);
+    state.transcript.push(TranscriptItem::AcpNotice {
+        id: 2,
+        notice: cookie_agent_protocol::AcpNotice {
+            severity: cookie_agent_protocol::AcpNoticeSeverity::Info,
+            title: "The agent compacted its conversation".into(),
+            description: Some("We read notes.txt.".into()),
+        },
+    });
+    let text = snapshot_lines(
+        &transcript_layout_with(&state, None, 60, &Theme::default(), &PlainHighlighter).lines,
+    );
+    for line in [
+        "│ look at notes.txt",
+        "│ ↪ steered into the agent's running turn",
+        "◇─ Notice",
+        "│ The agent compacted its conversation",
+        "│ We read notes.txt.",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+}

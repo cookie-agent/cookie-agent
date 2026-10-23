@@ -57,6 +57,30 @@ pub(super) fn plan_layout(
     role_block(Role::Plan, plan_lines(entries, theme), width, theme)
 }
 
+/// A notice of an ACP agent: its title, colored by its severity, and its
+/// description.
+pub(super) fn acp_notice_layout(
+    notice: &cookie_agent_protocol::AcpNotice,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    use cookie_agent_protocol::AcpNoticeSeverity;
+    let style = match notice.severity {
+        AcpNoticeSeverity::Error => theme.error(),
+        AcpNoticeSeverity::Warning => theme.warning(),
+        AcpNoticeSeverity::Info | AcpNoticeSeverity::Unknown => theme.assistant(),
+    };
+    let mut body = vec![Line::styled(notice.title.clone(), style)];
+    body.extend(
+        notice
+            .description
+            .iter()
+            .flat_map(|description| description.lines())
+            .map(|line| Line::styled(line.to_owned(), theme.internal())),
+    );
+    role_block(Role::Notice, body, width, theme)
+}
+
 /// The lines of a plan: `[x]` done, `[~]` in progress, `[ ]` pending, and a
 /// high or low priority after the step.
 pub(super) fn plan_lines(

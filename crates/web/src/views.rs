@@ -2111,8 +2111,16 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                                 "queue-send", "Queue", "Alt+Enter", icondata::FaClockRegular, false,
                                 |workspace| workspace.submit(InputDelivery::Queue),
                             )}
+                            // An ACP agent without the steering extension
+                            // takes the message only with its next turn.
                             {button(
-                                "steer", "Steer", "Enter", icondata::FaPaperPlaneSolid, true,
+                                "steer",
+                                if workspace.unsteerable() {
+                                    "Queue (this agent can't be steered)"
+                                } else {
+                                    "Steer"
+                                },
+                                "Enter", icondata::FaPaperPlaneSolid, true,
                                 |workspace| workspace.submit(InputDelivery::Steer),
                             )}
                         }

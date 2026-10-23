@@ -1224,6 +1224,7 @@ pub(super) fn reduce_event_from(
         EventPayload::AcpSessionStarted { record } => {
             state.acp.agent = Some(record.agent.clone());
             state.acp.runtime_id = Some(record.runtime_id.clone());
+            state.acp.steering = record.steering;
             push_event(
                 state,
                 EventLevel::Debug,
@@ -1247,6 +1248,37 @@ pub(super) fn reduce_event_from(
             )) = update.plan
             {
                 upsert_plan(state, run_id, entries, timestamp);
+            }
+            if let Some(notice) = update.notice {
+                push_item(state, timestamp, |id| TranscriptItem::AcpNotice {
+                    id,
+                    notice,
+                });
+            }
+            if let Some(steered) = update.steered {
+                for seq in steered.user_inputs {
+                    state.acp.steered.insert(seq);
+                    if let Some(TranscriptItem::User { version, .. }) =
+                        state.transcript.iter_mut().rev().find(
+                            |item| matches!(item, TranscriptItem::User { seq: user, .. } if *user == seq),
+                        )
+                    {
+                        *version = version.wrapping_add(1);
+                    }
+                }
+            }
+            if let Some(presented) = update.tool_presentation {
+                let tool_call_id = presented.tool_call_id;
+                if let Some(tool) = state.tools.get_mut(&tool_call_id) {
+                    let presentation = presented.presentation;
+                    tool.presentation.title = presentation.title;
+                    tool.presentation.hint = presentation.hint;
+                    tool.presentation.primary_argument = presentation.primary_argument;
+                    tool.presentation.arguments = presentation.arguments;
+                    tool.presentation.preview = presentation.preview;
+                    tool.revision = next_tool_revision();
+                }
+                bump_tool_item(state, tool_call_id);
             }
         }
         // What a writer left out changes nothing; the debug view names it.

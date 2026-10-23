@@ -579,6 +579,13 @@ pub enum TranscriptItem {
         change: cookie_agent_protocol::MemoryChangeKind,
         url: String,
     },
+    /// A notice of a session's ACP agent (its `notice` update, or a
+    /// compaction it reported), shown where it arrived; no level filter
+    /// hides it (client protocol 1.19.0).
+    AcpNotice {
+        id: u64,
+        notice: cookie_agent_protocol::AcpNotice,
+    },
     /// An ACP agent's plan during one run: a checklist the agent replaces
     /// as it works, kept in place (`docs/site/specs/acp-agents.md`
     /// section 6). Each run's plan is its own row.
@@ -717,6 +724,7 @@ impl TranscriptItem {
             | Self::MemoryChange { id, .. }
             | Self::Goal { id, .. }
             | Self::Plan { id, .. }
+            | Self::AcpNotice { id, .. }
             | Self::ProducerMessage { id, .. } => *id,
         }
     }
@@ -732,7 +740,7 @@ impl TranscriptItem {
             | Self::AgentMd { version, .. }
             | Self::SkillLoaded { version, .. }
             | Self::Plan { version, .. } => *version,
-            Self::Goal { .. } | Self::MemoryChange { .. } => 0,
+            Self::Goal { .. } | Self::MemoryChange { .. } | Self::AcpNotice { .. } => 0,
             Self::ProducerMessage { status, .. } => match status {
                 ProducerMessageStatus::Pending => 0,
                 ProducerMessageStatus::Admitted => 1,
@@ -906,6 +914,12 @@ pub struct AcpSessionView {
     /// The agent's config options (model, mode, effort, ...), which the
     /// session's details show and `session.agent_option.set` changes.
     pub options: Vec<cookie_agent_protocol::AcpConfigOption>,
+    /// Whether the agent takes messages into its running turn, from the
+    /// latest `acp_session_started` (client protocol 1.19.0).
+    pub steering: bool,
+    /// The `user_input_submitted` sequence numbers of the messages steered
+    /// into the agent's running turn, which the transcript marks.
+    pub steered: std::collections::HashSet<u64>,
 }
 
 impl AcpSessionView {
@@ -918,6 +932,14 @@ impl AcpSessionView {
         self.commands
             .iter()
             .filter(move |command| command.name.starts_with(prefix))
+    }
+
+    /// How a message sent to steer reaches the session's agent while it
+    /// runs: `Some(true)` into its running turn, `Some(false)` only with
+    /// its next turn (an ACP agent without the steering extension), `None`
+    /// when `run_agent` is not the session's ACP agent.
+    pub fn steers_into_turn(&self, run_agent: Option<&AgentId>) -> Option<bool> {
+        (self.agent.is_some() && self.agent.as_ref() == run_agent).then_some(self.steering)
     }
 
     /// Whether `name` is one of the agent's commands.

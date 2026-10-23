@@ -1819,6 +1819,20 @@ impl Workspace {
         })
     }
 
+    /// Whether the viewed session runs an ACP agent that cannot take a
+    /// message into its running turn: a steered message waits for its next
+    /// turn, so the Steer button reads as queueing.
+    pub fn unsteerable(self) -> bool {
+        let Some(session_id) = self.selected.get() else {
+            return false;
+        };
+        self.with_store(|store| {
+            store.sessions.get(&session_id).is_some_and(|state| {
+                state.acp.steers_into_turn(state.run_agent.as_ref()) == Some(false)
+            })
+        })
+    }
+
     /// Cancels the viewed session's running run (`run.cancel`).
     pub fn cancel(self) {
         let (Some(client), Some(run_id)) = (self.client(), self.active_run()) else {

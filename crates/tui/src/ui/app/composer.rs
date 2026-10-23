@@ -579,8 +579,23 @@ impl App {
             .duration_since(pending[0].accepted_at)
             .as_secs()
             .max(0);
+        // An ACP agent without the steering extension takes steered input
+        // only with its next turn.
+        let unsteerable = self
+            .selected
+            .and_then(|id| self.store.sessions.get(&id))
+            .and_then(|state| state.acp.steers_into_turn(state.run_agent.as_ref()))
+            == Some(false);
         let title = truncate_with_ellipsis(
-            &format!("Pending · oldest {}", queue_age_label(oldest_age)),
+            &format!(
+                "Pending · oldest {}{}",
+                queue_age_label(oldest_age),
+                if unsteerable {
+                    " · queued: this agent can't be steered"
+                } else {
+                    ""
+                }
+            ),
             usize::from(
                 area.width
                     .saturating_sub(2 + 2 * crate::ui::PANEL_TITLE_PAD),

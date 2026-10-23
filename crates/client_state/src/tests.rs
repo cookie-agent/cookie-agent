@@ -3858,6 +3858,7 @@ fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
                 protocol_version: 1,
                 agent_info: serde_json::Value::Null,
                 how: AcpSessionStart::New,
+                steering: false,
             },
         },
     );
@@ -3899,6 +3900,7 @@ fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
                     PlanEntryStatus::InProgress,
                     PlanEntryStatus::Pending,
                 ])),
+                ..AcpSessionUpdate::default()
             },
         },
     );
@@ -3953,4 +3955,144 @@ fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
         plans(&state)[1],
         (Some(second), vec![PlanEntryStatus::Pending])
     );
+}
+
+#[test]
+fn an_acp_sessions_steering_notices_and_late_tool_presentations_fold_from_its_events() {
+    use cookie_agent_protocol::{
+        AcpNotice, AcpNoticeSeverity, AcpSessionRecord, AcpSessionStart, AcpSessionUpdate,
+        AcpSteered, AcpToolPresentation, BoundedDisplayText, PreparedPresentation, SafeDisplayText,
+    };
+    let session_id = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let mut state = SessionState::default();
+    let apply = |state: &mut SessionState, seq, payload| {
+        reduce_event(
+            state,
+            session_id,
+            Some(run),
+            seq,
+            jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            payload,
+        );
+    };
+    let agent = AgentId::new("claude").unwrap();
+    apply(
+        &mut state,
+        1,
+        EventPayload::AcpSessionStarted {
+            record: AcpSessionRecord {
+                agent: agent.clone(),
+                runtime_id: cookie_agent_protocol::RuntimeId::new("local").unwrap(),
+                runtime_agent: agent.clone(),
+                acp_session_id: "s-1".into(),
+                cwd: "/work".into(),
+                protocol_version: 1,
+                agent_info: serde_json::Value::Null,
+                how: AcpSessionStart::New,
+                steering: true,
+            },
+        },
+    );
+    assert_eq!(state.acp.steers_into_turn(Some(&agent)), Some(true));
+    assert_eq!(
+        state
+            .acp
+            .steers_into_turn(Some(&AgentId::new("primary").unwrap())),
+        None,
+        "another agent runs the session now"
+    );
+    apply(
+        &mut state,
+        2,
+        EventPayload::UserInputSubmitted {
+            content: "look at notes.txt".into(),
+        },
+    );
+    let version = state.transcript.last().unwrap().version();
+    apply(
+        &mut state,
+        3,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                steered: Some(AcpSteered {
+                    user_inputs: vec![2],
+                    producer_messages: Vec::new(),
+                }),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    assert!(state.acp.steered.contains(&2));
+    let user = state
+        .transcript
+        .iter()
+        .find(|item| matches!(item, TranscriptItem::User { .. }))
+        .unwrap();
+    assert_eq!(user.version(), version + 1, "the marked row is drawn again");
+    apply(
+        &mut state,
+        4,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                notice: Some(AcpNotice {
+                    severity: AcpNoticeSeverity::Warning,
+                    title: "Rate limited".into(),
+                    description: Some("Retrying in 1 s.".into()),
+                }),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    assert!(matches!(
+        state.transcript.last(),
+        Some(TranscriptItem::AcpNotice { notice, .. })
+            if notice.title == "Rate limited" && notice.severity == AcpNoticeSeverity::Warning
+    ));
+    let call = ToolCallId::new_v7();
+    let owner = AssistantToolCallRef {
+        model_turn_seq: 1,
+        content_index: 0,
+        model_call_id: cookie_agent_protocol::ModelCallId::new("call-late").unwrap(),
+        provider_item_id: None,
+    };
+    state.tools.insert(
+        call,
+        ToolCallState::started(
+            call,
+            owner,
+            base_presentation(PreparedPresentation::new(
+                SafeDisplayText::new("Tool").unwrap(),
+                None,
+            )),
+            "{}".into(),
+        ),
+    );
+    let revision = state.tools[&call].revision;
+    apply(
+        &mut state,
+        5,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                tool_presentation: Some(AcpToolPresentation {
+                    tool_call_id: call,
+                    presentation: PreparedPresentation::new(
+                        SafeDisplayText::new("Read notes.txt").unwrap(),
+                        Some(BoundedDisplayText::new("/work/notes.txt").unwrap()),
+                    ),
+                }),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    let tool = &state.tools[&call];
+    assert_eq!(tool.presentation.title.as_str(), "Read notes.txt");
+    assert_eq!(
+        tool.presentation
+            .primary_argument
+            .as_ref()
+            .map(|text| text.as_str()),
+        Some("/work/notes.txt")
+    );
+    assert_ne!(tool.revision, revision);
 }
