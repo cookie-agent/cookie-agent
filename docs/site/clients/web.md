@@ -298,8 +298,9 @@ address bar.
     its end, and moves only when what it shows grows (a delta inside a
     folded block moves nothing). Scrolling up in any way (the wheel, the
     keys, a finger, the scrollbar) stops that at once: the view stays where
-    you left it until you scroll back to the end or press **Latest**,
-    which shows at the bottom meanwhile. A session opens at its end.
+    you left it until you scroll back to the end, press **Latest**,
+    which shows at the bottom meanwhile, or send a message (steered or
+    queued too). A session opens at its end.
   - **Pinned at the top**, folded side by side on one line, as in the
     TUI: the system prompt of the session's last run (`system prompt ·
     primary (last run) (42 lines)`; before its first run, the one it was
