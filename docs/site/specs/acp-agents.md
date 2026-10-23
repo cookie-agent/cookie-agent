@@ -1,7 +1,6 @@
 # ACP agents
 
-Status: **draft** (2026-10-23), settled with the user, awaiting the go-ahead
-to implement.
+Status: **approved** (2026-10-23), being implemented.
 
 ## 1. Goal and scope
 
