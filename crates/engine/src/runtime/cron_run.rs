@@ -7,7 +7,9 @@
 //! delegation targets are (any agent but an internal one), gives the child
 //! the template's attachments and rules, and records the job on it.
 
-use cookie_agent_protocol::{CronJobId, PermissionRule, RuntimeAttachment, ToolCallId};
+use cookie_agent_protocol::{
+    CronJobId, PermissionRule, RunId, RuntimeAttachment, SessionId, SessionStatus, ToolCallId,
+};
 use cookie_agent_runtime_api::{ToolCompletion, ToolError, ToolExecutionContext};
 use jiff::Timestamp;
 
@@ -160,6 +162,13 @@ impl Engine {
         self.record_cron_child(id, handle.child_session_id)
             .await
             .map_err(refused)?;
+        // The child's run may have ended before its fire was recorded, when
+        // nothing awaited it yet; its end is recorded now instead.
+        if let Some(ended) = self.first_ended_run(handle.child_session_id) {
+            self.settle_cron_runs(handle.child_session_id, ended)
+                .await
+                .map_err(refused)?;
+        }
         let short_id = self
             .get_session(handle.child_session_id)
             .ok()
@@ -177,5 +186,27 @@ impl Engine {
             .await
             .map(ToolCompletion::single)
             .map_err(refused)
+    }
+}
+
+impl Engine {
+    /// The earliest of `session`'s runs that has ended, if any. Run IDs are
+    /// UUIDv7, so their text orders them by start.
+    fn first_ended_run(&self, session: SessionId) -> Option<RunId> {
+        let projection = self.inner.store.get(session).ok()?;
+        projection
+            .runs
+            .values()
+            .filter(|run| {
+                matches!(
+                    run.status,
+                    SessionStatus::Completed
+                        | SessionStatus::Failed
+                        | SessionStatus::Cancelled
+                        | SessionStatus::Interrupted
+                )
+            })
+            .map(|run| run.id)
+            .min_by_key(ToString::to_string)
     }
 }
