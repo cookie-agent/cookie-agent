@@ -5,7 +5,7 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "The release of the daemon's version, else the latest release.",
+          "description": "The release of the daemon's version, else the newest release of that\nversion in the release list (a nightly's), else the latest release.",
           "properties": {
             "type": {
               "const": "release",

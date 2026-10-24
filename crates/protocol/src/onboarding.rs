@@ -75,7 +75,8 @@ pub struct OnboardingGetParams {}
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OnboardingKitSource {
-    /// The release of the daemon's version, else the latest release.
+    /// The release of the daemon's version, else the newest release of that
+    /// version in the release list (a nightly's), else the latest release.
     #[default]
     Release,
     /// A downloaded `cookie-agent-defaults.tar.gz`, sent whole.
