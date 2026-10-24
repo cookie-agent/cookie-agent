@@ -168,7 +168,7 @@ never stored.
 | `session_title_committed` | state | either | A title change |
 | `session_project_set` | state | runless | The root session's [project](#projects) |
 | `acp_session_started` | state | either | The ACP session the session's [ACP agent](../specs/acp-agents.md) talks in: new, resumed, or loaded |
-| `acp_session_updated` | state | either | What the ACP agent reported of its session: its commands, options, or plan; a notice; input steered into its turn; or a tool call's new presentation |
+| `acp_session_updated` | state | either | What the ACP agent reported of its session: its commands, options, or plan; a notice; input steered into its turn; a tool call's new presentation; or the starting options the session was created with |
 | `elicitation_requested` | state | run | An agent of the run asks the user a question, a form or a URL (see [Questions](protocol.md#questions)) |
 | `elicitation_resolved` | state | run | How the question was answered: accept, decline, or cancel, by whom, and an accepted form's values |
 | `delegated_attachments_added` | state | runless | The attachments a root's subagent brought that the root did not record yet ([delegated attachments](#delegated-attachments)) |

@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.24.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.26.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.25.0",
+    "protocol_version": "1.26.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.25.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.26.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -224,7 +224,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `onboarding.get` | Empty object (since 1.22.0) | Whether the daemon is set up: `ready`, `missing` (`provider`, `default_model`, `small_model`), `providers_connected`, and the configured `default_model` and `small_model` as `{ model, variant? }`. Derived from the live configuration and runtime; nothing is stored, so setting up by hand counts the same |
 | `onboarding.preview` | Optional `source`: `{"type": "release"}` (the default: the daemon's version's release, else that version's newest prerelease with a kit, else the latest) or `{"type": "archive", "data": "<base64>"}` (since 1.22.0) | The starter kit's `kit_version`, `cookie_version`, where it came from (`origin`), and per file its `path` and `action` (`write`, `skip` as identical, `write_new` beside a changed file) with a `diff` for changed files. Writes nothing; a failed download or a kit that does not match its manifest or does not load is `onboarding_kit_unavailable` |
 | `onboarding.run` | `install_kit`, optional `source`, optional `default_model` and `small_model` (a model key or `{ model, variant }`, checked as `config.apply` checks them) (since 1.22.0) | The kit files `written`, `skipped`, and `written_new` (the kit's version beside them as `<path>.new`), the configuration `settings` set, and the new `status`. Refused with `onboarding_incomplete`, naming what is `missing`, when the daemon would not be set up afterwards; nothing is written then |
-| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
+| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory), optional `project` (since 1.8.0; see [Projects](#projects)), optional `agent_options` (since 1.26.0; see [ACP agents](#acp-agents)) | Session metadata with skipped-event diagnostics, its `attachments`, and its `project`, and the session's `runtimes` |
 | `session.list` | Optional cwd identity, optional `project` (a project ID, or `"none"` for sessions in no project; since 1.8.0) | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
@@ -822,6 +822,19 @@ over the Agent Client Protocol (see the
   bridge are ordinary tool calls of its turn.
 - `session.agent_option.set` changes one of the session's options and
   answers the options after the change.
+- Since 1.26.0 each entry of an agent's `runtimes` (and `runtime`) has
+  `options`, the config options a new ACP session of the agent starts with
+  on that runtime, as the daemon last saw them with the agent document's
+  `acp.mode` and `acp.config` applied, and `input_media`, the files the
+  agent takes in a prompt (`image`, `audio`, and `text` entries, as
+  `input_media` on a model); both are empty until the agent has started
+  there. A draft offers those options, the `model`-category one as its
+  model and the `thought_level` one as its variant, and sends its choices
+  as `session.create`'s `agent_options` (`[{ option_id, value }]`, at most
+  64, each option once; refused for an agent that is not an ACP agent).
+  The session records them as `acp_session_updated.starting_options`, and
+  each new ACP session of the session applies them after `acp.config`;
+  one the agent does not offer then is skipped with a diagnostic.
 - The display block `plan` (`entries`, each `content`, `status`
   `pending`/`in_progress`/`completed`, optional `priority`
   `high`/`medium`/`low`) reaches a client older than 1.17.0 as its text.

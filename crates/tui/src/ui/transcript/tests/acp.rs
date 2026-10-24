@@ -26,6 +26,8 @@ fn acp_descriptor(
         runtime_id: RuntimeId::new(runtime).unwrap(),
         agent: agent.id.clone(),
         available,
+        options: Vec::new(),
+        input_media: Vec::new(),
     });
     agent.runtimes = agent.runtime.iter().cloned().collect();
     agent

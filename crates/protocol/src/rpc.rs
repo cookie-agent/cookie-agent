@@ -422,6 +422,15 @@ pub struct SessionCreateParams {
     /// `runtimes` instead of the usual ones, if it has defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectId>,
+    /// Values for the config options of the session's ACP agent (client
+    /// protocol 1.26.0), such as its model and effort, which its new ACP
+    /// sessions start with, on top of the agent document's `acp.config`.
+    /// The options are the agent's `AgentRuntime.options`; one the agent
+    /// does not offer when its session starts is skipped with a
+    /// diagnostic. Refused for an agent that is not an ACP agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64))]
+    pub agent_options: Vec<crate::AcpOptionChoice>,
 }
 
 const fn attach_global() -> bool {
@@ -446,6 +455,7 @@ impl SessionCreateParams {
             global: true,
             cwd: None,
             project: None,
+            agent_options: Vec::new(),
         }
     }
 }

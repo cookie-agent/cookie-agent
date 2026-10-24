@@ -570,6 +570,21 @@ pub struct AgentRuntime {
     /// runtime is connected, or the daemon starts it on demand, and the
     /// declaration is enabled.
     pub available: bool,
+    /// The config options a new ACP session of the agent on this runtime
+    /// starts with, as the daemon last saw them, with the agent document's
+    /// `acp.mode` and `acp.config` applied (client protocol 1.26.0). Empty
+    /// until the agent has started a session there. A draft offers these
+    /// before its session exists and sends its choices as
+    /// `session.create`'s `agent_options`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub options: Vec<crate::AcpConfigOption>,
+    /// The files the agent takes in a prompt (client protocol 1.26.0):
+    /// images, audio, and text, as its last start on this runtime
+    /// advertised them. Empty until the agent has started there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 8))]
+    pub input_media: Vec<crate::InputMedia>,
 }
 
 struct AgentDescriptionSchema;

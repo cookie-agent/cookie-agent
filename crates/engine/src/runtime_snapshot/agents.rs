@@ -626,6 +626,8 @@ fn agent_runtime(offer: &RuntimeAgent) -> cookie_agent_protocol::AgentRuntime {
         runtime_id: offer.runtime.clone(),
         agent: offer.agent.clone(),
         available: offer.available(),
+        options: Vec::new(),
+        input_media: Vec::new(),
     }
 }
 

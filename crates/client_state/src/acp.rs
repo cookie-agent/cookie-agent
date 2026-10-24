@@ -190,6 +190,8 @@ mod tests {
                 runtime_id: runtime(runtime_id),
                 agent: id.clone(),
                 available: *available,
+                options: Vec::new(),
+                input_media: Vec::new(),
             })
             .collect::<Vec<_>>();
         AgentDescriptor {

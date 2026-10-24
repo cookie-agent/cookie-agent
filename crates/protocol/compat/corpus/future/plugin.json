@@ -4,9 +4,9 @@
   {
    "about": "the handshake of a newer minor, with a feature and members this build does not know",
    "message": {"jsonrpc": "2.0", "id": 1, "method": "plugin/initialize", "params": {
-    "protocol_version": "1.13.0", "engine_version": "9.0.0", "features": ["teleportation"],
+    "protocol_version": "1.15.0", "engine_version": "9.0.0", "features": ["teleportation"],
     "interception_timeout_ms": 2000, "cluster": {"nodes": 3}}},
-   "answer": {"result": {"protocol_version": "1.13.0", "name": "reference"}}
+   "answer": {"result": {"protocol_version": "1.14.0", "name": "reference"}}
   },
   {
    "about": "a hook whose params carry members this build does not know",

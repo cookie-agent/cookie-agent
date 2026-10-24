@@ -16,6 +16,88 @@ expression: schema_for!(RuntimeSnapshotResult)
     "snapshot"
   ],
   "$defs": {
+    "AcpConfigOption": {
+      "description": "One config option an ACP agent offers in a session, such as its model,\nmode, or reasoning effort. An agent that offers modes but no mode option\nis shown as an option `mode` of category `mode`.",
+      "type": "object",
+      "properties": {
+        "category": {
+          "description": "The agent's label for what the option is, such as `model`, `mode`,\nor `thought_level`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_value": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "The option's control: a select (the default, left out) or a boolean\n(client protocol 1.23.0).",
+          "$ref": "#/$defs/AcpConfigOptionKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AcpConfigValue"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "current_value"
+      ]
+    },
+    "AcpConfigOptionKind": {
+      "description": "The control an [`AcpConfigOption`] is (client protocol 1.23.0). An\nunknown kind reads as a select, whose `values` a client lists.",
+      "oneOf": [
+        {
+          "description": "One of `values`.",
+          "type": "string",
+          "const": "select"
+        },
+        {
+          "description": "On or off: `current_value` is `true` or `false`, and `values`\nlists both (`true`, named On, and `false`, named Off), so a\nclient that reads every option as a select can still set it.",
+          "type": "string",
+          "const": "boolean"
+        }
+      ],
+      "x-open": true
+    },
+    "AcpConfigValue": {
+      "description": "One value an [`AcpConfigOption`] can take.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "name"
+      ]
+    },
     "AgentDescriptor": {
       "type": "object",
       "properties": {
@@ -151,6 +233,22 @@ expression: schema_for!(RuntimeSnapshotResult)
         "available": {
           "description": "Whether a session that attaches the runtime can use it now: the\nruntime is connected, or the daemon starts it on demand, and the\ndeclaration is enabled.",
           "type": "boolean"
+        },
+        "input_media": {
+          "description": "The files the agent takes in a prompt (client protocol 1.26.0):\nimages, audio, and text, as its last start on this runtime\nadvertised them. Empty until the agent has started there.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InputMedia"
+          },
+          "maxItems": 8
+        },
+        "options": {
+          "description": "The config options a new ACP session of the agent on this runtime\nstarts with, as the daemon last saw them, with the agent document's\n`acp.mode` and `acp.config` applied (client protocol 1.26.0). Empty\nuntil the agent has started a session there. A draft offers these\nbefore its session exists and sends its choices as\n`session.create`'s `agent_options`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AcpConfigOption"
+          },
+          "maxItems": 256
         },
         "runtime_id": {
           "description": "The runtime that offers the agent.",

@@ -1,7 +1,8 @@
 //! What the client protocol and session history say about ACP agents
 //! (`docs/site/specs/acp-agents.md` sections 5, 10, and 11; client protocol
 //! 1.17.0, notices, steering, and tool presentations 1.20.0, context use
-//! and boolean options 1.23.0, forked and detached sessions 1.24.0).
+//! and boolean options 1.23.0, forked and detached sessions 1.24.0,
+//! starting options 1.26.0).
 //!
 //! The daemon records the ACP session a cookie session talks to
 //! (`acp_session_started`) and what the agent reports about it
@@ -142,6 +143,50 @@ pub struct AcpConfigValue {
     pub description: Option<String>,
 }
 
+/// A value chosen for one of an ACP agent's config options before its
+/// session exists (client protocol 1.26.0): a draft's model or effort,
+/// applied when the agent's session starts.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpOptionChoice {
+    pub option_id: String,
+    pub value: String,
+}
+
+/// The most starting choices one session records.
+pub const MAX_ACP_OPTION_CHOICES: usize = 64;
+
+impl AcpOptionChoice {
+    /// Checks a list of choices a client sent: at most
+    /// [`MAX_ACP_OPTION_CHOICES`], each option once, and every ID and value
+    /// nonempty and at most [`MAX_ACP_LABEL_BYTES`].
+    pub fn validate_list(choices: &[Self]) -> Result<(), String> {
+        if choices.len() > MAX_ACP_OPTION_CHOICES {
+            return Err(format!(
+                "at most {MAX_ACP_OPTION_CHOICES} agent options can be chosen"
+            ));
+        }
+        for (index, choice) in choices.iter().enumerate() {
+            for (what, text) in [("option ID", &choice.option_id), ("value", &choice.value)] {
+                if text.is_empty() || text.len() > MAX_ACP_LABEL_BYTES {
+                    return Err(format!(
+                        "an agent option's {what} is 1 to {MAX_ACP_LABEL_BYTES} bytes"
+                    ));
+                }
+            }
+            if choices[..index]
+                .iter()
+                .any(|earlier| earlier.option_id == choice.option_id)
+            {
+                return Err(format!(
+                    "agent option `{}` is chosen more than once",
+                    choice.option_id
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The payload of `acp_session_started`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct AcpSessionRecord {
@@ -271,6 +316,12 @@ pub struct AcpSessionUpdate {
     /// protocol 1.24.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_point: Option<bool>,
+    /// The values the session's new ACP sessions start with, on top of the
+    /// agent document's `acp.config` (client protocol 1.26.0): what
+    /// `session.create`'s `agent_options` chose. Recorded once, as the
+    /// session is created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starting_options: Option<Vec<AcpOptionChoice>>,
 }
 
 impl AcpSessionUpdate {
@@ -286,6 +337,7 @@ impl AcpSessionUpdate {
             && self.context.is_none()
             && self.detached.is_none()
             && self.fork_point.is_none()
+            && self.starting_options.is_none()
     }
 }
 

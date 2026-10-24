@@ -5,6 +5,22 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.26.0
+
+- ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15, input
+  and pickers), all optional members an older peer ignores:
+  - `AgentRuntime` (an entry of `AgentDescriptor.runtimes`, and `runtime`)
+    has `options`, the config options a new ACP session of the agent starts
+    with on that runtime as the daemon last saw them, with the agent
+    document's `acp.mode` and `acp.config` applied, and `input_media`, the
+    files the agent takes in a prompt (`image`, `audio`, `text`).
+  - `session.create` takes `agent_options` (`[{ option_id, value }]`): the
+    values the session's new ACP sessions start with, on top of the
+    agent document's `acp.config`. Send it only to a daemon of 1.26.0 or
+    later.
+  - `acp_session_updated` has `starting_options`, those values, recorded as
+    the session is created. Plugin protocol 1.14.0 carries it too.
+
 ## 1.25.0
 
 - Questions an agent asks the user ([ACP agents spec](../specs/acp-agents.md)

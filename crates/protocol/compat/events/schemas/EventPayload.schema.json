@@ -206,6 +206,22 @@
       ],
       "x-open": true
     },
+    "AcpOptionChoice": {
+      "description": "A value chosen for one of an ACP agent's config options before its\nsession exists (client protocol 1.26.0): a draft's model or effort,\napplied when the agent's session starts.",
+      "properties": {
+        "option_id": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "value"
+      ],
+      "type": "object"
+    },
     "AcpSessionStart": {
       "description": "How the daemon got the ACP session a turn runs in. An unknown way\nreads as `new`.",
       "oneOf": [
@@ -8507,6 +8523,16 @@
             }
           ],
           "description": "The agent's plan, a `plan` display block."
+        },
+        "starting_options": {
+          "description": "The values the session's new ACP sessions start with, on top of the\nagent document's `acp.config` (client protocol 1.26.0): what\n`session.create`'s `agent_options` chose. Recorded once, as the\nsession is created.",
+          "items": {
+            "$ref": "#/$defs/AcpOptionChoice"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "steered": {
           "anyOf": [

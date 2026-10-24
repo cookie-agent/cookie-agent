@@ -1,5 +1,21 @@
 {
   "$defs": {
+    "AcpOptionChoice": {
+      "description": "A value chosen for one of an ACP agent's config options before its\nsession exists (client protocol 1.26.0): a draft's model or effort,\napplied when the agent's session starts.",
+      "properties": {
+        "option_id": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "value"
+      ],
+      "type": "object"
+    },
     "PermissionEffect": {
       "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
       "enum": [
@@ -143,6 +159,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "agent_options": {
+      "description": "Values for the config options of the session's ACP agent (client\nprotocol 1.26.0), such as its model and effort, which its new ACP\nsessions start with, on top of the agent document's `acp.config`.\nThe options are the agent's `AgentRuntime.options`; one the agent\ndoes not offer when its session starts is skipped with a\ndiagnostic. Refused for an agent that is not an ACP agent.",
+      "items": {
+        "$ref": "#/$defs/AcpOptionChoice"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
     "cwd": {
       "description": "The client's directory, as the client names it: the workspace of\n`local`'s `coding` capability when `runtimes` is omitted. The\nsession's `cwd_identity` is the canonical workspace its first\nattachment with a workspace reports; only a session without one takes\nthis directory instead, canonicalized on the daemon's machine (as\ngiven when that fails). The daemon's own directory when omitted.",
       "type": [
