@@ -32,14 +32,73 @@ pub fn Glyph(
 }
 
 /// `icon` as SVG markup for HTML the page renders as text, `class` on the
-/// `<svg>`.
+/// `<svg>`: a `<use>` of the icon's symbol in the page's sprite, which
+/// holds each icon's paths once however many transcript rows show it.
 pub fn svg(icon: Icon, class: &str) -> String {
     format!(
-        "<svg class=\"inline-block shrink-0 {class}\" aria-hidden=\"true\" width=\"1em\" height=\"1em\" viewBox=\"{}\" fill=\"currentColor\">{}</svg>",
-        icon.view_box.unwrap_or("0 0 512 512"),
-        icon.data
+        "<svg class=\"inline-block shrink-0 {class}\" aria-hidden=\"true\" width=\"1em\" height=\"1em\" fill=\"currentColor\"><use href=\"#{}\"></use></svg>",
+        symbol(icon)
     )
 }
+
+thread_local! {
+    /// The icons whose symbol is in the sprite.
+    static SYMBOLS: std::cell::RefCell<std::collections::HashSet<&'static str>> =
+        std::cell::RefCell::default();
+}
+
+/// The ID of `icon`'s symbol in the page's sprite, which gets the symbol
+/// the first time the icon is asked for.
+fn symbol(icon: Icon) -> String {
+    use std::hash::BuildHasher as _;
+    let id = format!(
+        "icon-{:x}",
+        foldhash::fast::FixedState::default().hash_one(icon.data)
+    );
+    if SYMBOLS.with(|symbols| symbols.borrow_mut().insert(icon.data)) {
+        add_symbol(&id, icon);
+    }
+    id
+}
+
+/// Adds `icon`'s symbol to the sprite, a hidden `<svg>` at the end of the
+/// page made with the first.
+#[cfg(target_arch = "wasm32")]
+fn add_symbol(id: &str, icon: Icon) {
+    const SPRITE: &str = "icon-sprite";
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let sprite = match document.get_element_by_id(SPRITE) {
+        Some(sprite) => sprite,
+        None => {
+            let Some(body) = document.body() else {
+                return;
+            };
+            let _ = body.insert_adjacent_html(
+                "beforeend",
+                &format!(
+                    "<svg id=\"{SPRITE}\" aria-hidden=\"true\" style=\"position:absolute;width:0;height:0;overflow:hidden\"></svg>"
+                ),
+            );
+            let Some(sprite) = document.get_element_by_id(SPRITE) else {
+                return;
+            };
+            sprite
+        }
+    };
+    let _ = sprite.insert_adjacent_html(
+        "beforeend",
+        &format!(
+            "<symbol id=\"{id}\" viewBox=\"{}\">{}</symbol>",
+            icon.view_box.unwrap_or("0 0 512 512"),
+            icon.data
+        ),
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn add_symbol(_: &str, _: Icon) {}
 
 /// The icon of a tool call's presentation hint, by the hint and never by
 /// the tool's name; a hint this build does not know is generic.
@@ -288,6 +347,13 @@ mod tests {
         assert!(markup.starts_with("<svg class=\"inline-block shrink-0 text-xs\""));
         assert!(markup.contains("aria-hidden=\"true\""));
         assert!(markup.contains("fill=\"currentColor\""));
-        assert!(markup.contains(icondata::FaCheckSolid.data));
+        // The paths are in the sprite, once, under one ID per icon.
+        assert!(!markup.contains(icondata::FaCheckSolid.data));
+        assert_eq!(markup, svg(icondata::FaCheckSolid, "text-xs"));
+        assert_ne!(
+            markup,
+            svg(icondata::FaBanSolid, "text-xs"),
+            "two icons share a symbol"
+        );
     }
 }
