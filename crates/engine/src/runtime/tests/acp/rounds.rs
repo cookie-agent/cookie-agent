@@ -45,3 +45,55 @@ async fn a_failed_or_cancelled_round_records_the_usage_that_arrived() {
     assert_eq!(usage[2].input_tokens, Some(555));
     assert_eq!(usage[2].output_tokens, None);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_reason_names_why_the_run_failed_and_how_the_turn_finished() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for (index, (reason, message, finish)) in [
+        (
+            "refusal",
+            "the agent refused (stop reason `refusal`)",
+            cookie_agent_protocol::ModelFinishReason::Refused,
+        ),
+        (
+            "max_tokens",
+            "the agent hit its output token limit (stop reason `max_tokens`)",
+            cookie_agent_protocol::ModelFinishReason::Length,
+        ),
+        (
+            "max_turn_requests",
+            "the agent hit its turn request limit (stop reason `max_turn_requests`)",
+            cookie_agent_protocol::ModelFinishReason::Other("max_turn_requests".to_owned()),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run = start(
+            engine,
+            session,
+            &format!("stop-{index}"),
+            &format!("stop {reason}"),
+        )
+        .await;
+        let outcome = finished(engine, session, run).await;
+        wait_for_session_not_running(engine, session).await;
+        assert!(
+            matches!(&outcome, RunOutcome::Failed { error, .. } if error.as_str() == message),
+            "{outcome:?}"
+        );
+        let finished_as = events(engine, session)
+            .into_iter()
+            .rev()
+            .find_map(|event| match event.payload {
+                EventPayload::ModelTurnCommitted { turn, .. } if event.run_id == Some(run) => {
+                    Some(turn.finish_reason)
+                }
+                _ => None,
+            })
+            .expect("the turn so far");
+        assert_eq!(finished_as, finish);
+    }
+}

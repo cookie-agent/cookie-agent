@@ -86,6 +86,37 @@ enum RoundEnd {
     Completed(Option<String>),
     Cancelled,
     Failed(String),
+    /// The agent stopped for `reason` (a stop reason other than
+    /// `end_turn` and `cancelled`): the run fails with `message`, and the
+    /// turn so far commits as finished for `finish`.
+    Stopped {
+        message: String,
+        finish: ModelFinishReason,
+    },
+}
+
+/// What the run's failure says, and how the turn so far finished, for an
+/// agent's stop reason other than `end_turn` and `cancelled`.
+fn stopped(reason: &str) -> RoundEnd {
+    let (message, finish) = match reason {
+        "max_tokens" => (
+            "the agent hit its output token limit (stop reason `max_tokens`)".to_owned(),
+            ModelFinishReason::Length,
+        ),
+        "max_turn_requests" => (
+            "the agent hit its turn request limit (stop reason `max_turn_requests`)".to_owned(),
+            ModelFinishReason::Other("max_turn_requests".to_owned()),
+        ),
+        "refusal" => (
+            "the agent refused (stop reason `refusal`)".to_owned(),
+            ModelFinishReason::Refused,
+        ),
+        other => (
+            format!("the agent stopped for an unknown reason `{other}`"),
+            ModelFinishReason::Error,
+        ),
+    };
+    RoundEnd::Stopped { message, finish }
 }
 
 /// One ACP option or mode list in the session's terms.
@@ -1878,7 +1909,10 @@ impl Engine {
                     self.append_run_cancelled_once(&active, run_id, None)?;
                     return Ok(());
                 }
-                RoundEnd::Failed(reason) => return Err(EngineError::Acp(reason)),
+                RoundEnd::Failed(reason)
+                | RoundEnd::Stopped {
+                    message: reason, ..
+                } => return Err(EngineError::Acp(reason)),
             }
         }
     }
@@ -2028,15 +2062,12 @@ impl Engine {
                     }
                     let usage = usage_of(response.usage.as_ref(), turn.usage_update.as_ref());
                     self.record_acp_usage(turn, usage).await?;
-                    RoundEnd::Completed((!turn.last_text.is_empty()).then(|| turn.last_text.clone()))
+                    RoundEnd::Completed(
+                        (!turn.last_text.is_empty()).then(|| turn.last_text.clone()),
+                    )
                 }
                 "cancelled" => RoundEnd::Cancelled,
-                "max_tokens" => RoundEnd::Failed("the agent stopped: it reached its token limit (max_tokens)".to_owned()),
-                "max_turn_requests" => RoundEnd::Failed(
-                    "the agent stopped: it reached its limit of model requests in one turn (max_turn_requests)".to_owned(),
-                ),
-                "refusal" => RoundEnd::Failed("the agent refused to continue (refusal)".to_owned()),
-                other => RoundEnd::Failed(format!("the agent stopped for an unknown reason `{other}`")),
+                other => stopped(other),
             },
             Some(Err(error)) if cancelled => {
                 let _ = error;
@@ -2057,10 +2088,10 @@ impl Engine {
             if let Some(step) = turn.step.as_ref()
                 && !step.parts.is_empty()
             {
-                let finish = if matches!(end, RoundEnd::Cancelled) {
-                    ModelFinishReason::Cancelled
-                } else {
-                    ModelFinishReason::Error
+                let finish = match &end {
+                    RoundEnd::Cancelled => ModelFinishReason::Cancelled,
+                    RoundEnd::Stopped { finish, .. } => finish.clone(),
+                    _ => ModelFinishReason::Error,
                 };
                 turn.commit(finish).await?;
             } else if let Some(step) = turn.step.take() {
