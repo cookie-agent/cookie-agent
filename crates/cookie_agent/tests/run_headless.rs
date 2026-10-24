@@ -43,6 +43,11 @@ const PLUGIN_FIXTURE: &str = concat!(
     "/../engine/tests/fixtures/fake_plugin.py"
 );
 
+/// Bounds waits for what arrives on its own: only a hang reaches it, so it
+/// leaves room for a heavily loaded machine, where the debug binary alone
+/// can take tens of seconds to start.
+const HANG_WATCHDOG: Duration = Duration::from_secs(180);
+
 enum MockResponse {
     Sse(String),
     GatedSse {
@@ -56,12 +61,16 @@ enum MockResponse {
         body: String,
     },
     Delay(Duration),
+    /// Holds the connection without answering until the sender is dropped.
+    Hold(std_mpsc::Receiver<()>),
 }
 
 struct MockModelServer {
     address: std::net::SocketAddr,
     responses: Arc<Mutex<VecDeque<MockResponse>>>,
     requests: Arc<Mutex<Vec<String>>>,
+    /// How many requests have arrived, for waits on the next one.
+    arrived: tokio::sync::watch::Sender<usize>,
     stop: Arc<AtomicBool>,
     task: Option<thread::JoinHandle<()>>,
 }
@@ -75,9 +84,11 @@ impl MockModelServer {
         let address = listener.local_addr().expect("mock address");
         let responses = Arc::new(Mutex::new(VecDeque::new()));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let arrived = tokio::sync::watch::Sender::new(0);
         let stop = Arc::new(AtomicBool::new(false));
         let task_responses = Arc::clone(&responses);
         let task_requests = Arc::clone(&requests);
+        let task_arrived = arrived.clone();
         let task_stop = Arc::clone(&stop);
         let task = thread::spawn(move || {
             while !task_stop.load(Ordering::Acquire) {
@@ -89,7 +100,12 @@ impl MockModelServer {
                         let Some(request) = read_request(&mut stream) else {
                             continue;
                         };
-                        task_requests.lock().expect("request capture").push(request);
+                        let count = {
+                            let mut requests = task_requests.lock().expect("request capture");
+                            requests.push(request);
+                            requests.len()
+                        };
+                        task_arrived.send_replace(count);
                         let Some(response) =
                             task_responses.lock().expect("response queue").pop_front()
                         else {
@@ -117,6 +133,9 @@ impl MockModelServer {
                                 write!(stream, "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\nx-request-id: req-diagnostic\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).expect("write error body");
                             }
                             MockResponse::Delay(duration) => thread::sleep(duration),
+                            MockResponse::Hold(release) => {
+                                let _ = release.recv();
+                            }
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -130,6 +149,7 @@ impl MockModelServer {
             address,
             responses,
             requests,
+            arrived,
             stop,
             task: Some(task),
         }
@@ -152,6 +172,15 @@ impl MockModelServer {
 
     fn requests(&self) -> Vec<String> {
         self.requests.lock().expect("requests").clone()
+    }
+
+    /// Waits until `count` requests have arrived.
+    async fn await_requests(&self, count: usize, what: &str) {
+        let mut arrived = self.arrived.subscribe();
+        tokio::time::timeout(HANG_WATCHDOG, arrived.wait_for(|&seen| seen >= count))
+            .await
+            .unwrap_or_else(|_| panic!("{what}: no request {count} within {HANG_WATCHDOG:?}"))
+            .expect("the mock server keeps its request count");
     }
 }
 
@@ -580,7 +609,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             }))
             .unwrap();
         let fixture = Fixture::with_plugins(vec![("opt_out_gate".into(), plugin)]).await;
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(HANG_WATCHDOG, async {
             while !fixture
                 .engine
                 .plugin_statuses()
@@ -678,7 +707,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .await
             .unwrap()
             .run_id;
-        let hook = tokio::time::timeout(Duration::from_secs(10), async {
+        let hook = tokio::time::timeout(HANG_WATCHDOG, async {
             loop {
                 if let Ok(text) = fs::read_to_string(&reached)
                     && let Some(hook) = text
@@ -710,7 +739,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .unwrap();
         fs::write(&release, b"release").unwrap();
         tokio::time::timeout(
-            Duration::from_secs(10),
+            HANG_WATCHDOG,
             wait_for_run_terminal(&fixture.engine, session.session_id, run),
         )
         .await
@@ -1230,26 +1259,44 @@ async fn wait_for_background_report(
     engine: &Engine,
     session_id: SessionId,
 ) -> (String, Option<cookie_agent_protocol::RetainedToolOutput>) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let (replay, _live) = engine
-            .subscribe(session_id, None)
-            .await
-            .expect("session subscription");
-        if let Some(report) = replay.events.iter().find_map(|event| match &event.payload {
-            EventPayload::ProducerMessageAccepted {
-                producer_owner: cookie_agent_protocol::ProducerOwner::Tool { .. },
-                body,
-                retained_output,
-                ..
-            } => Some((body.as_plain_text().into_owned(), retained_output.clone())),
-            _ => None,
-        }) {
-            return report;
+    let report = |event: &StoredEvent| match &event.payload {
+        EventPayload::ProducerMessageAccepted {
+            producer_owner: cookie_agent_protocol::ProducerOwner::Tool { .. },
+            body,
+            retained_output,
+            ..
+        } => Some((body.as_plain_text().into_owned(), retained_output.clone())),
+        _ => None,
+    };
+    let wait = async {
+        let mut cursor = None;
+        loop {
+            let (replay, mut live) = engine
+                .subscribe(session_id, cursor)
+                .await
+                .expect("session subscription");
+            if let Some(found) = replay.events.iter().find_map(|event| report(event)) {
+                return found;
+            }
+            cursor = replay.events.last().map(|event| event.seq).or(cursor);
+            loop {
+                match live.recv().await {
+                    Some(EventSubscriptionMessage::Event { event }) => {
+                        if let Some(found) = report(&event) {
+                            return found;
+                        }
+                        cursor = Some(event.seq);
+                    }
+                    Some(EventSubscriptionMessage::Transient { .. }) => {}
+                    // Resubscribe from what was seen and replay the rest.
+                    Some(_) | None => break,
+                }
+            }
         }
-        assert!(Instant::now() < deadline, "background report never arrived");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    };
+    tokio::time::timeout(HANG_WATCHDOG, wait)
+        .await
+        .expect("background report never arrived")
 }
 
 #[tokio::test]
@@ -1319,14 +1366,10 @@ async fn background_bash_returns_at_once_and_reports_when_it_exits() {
     assert_eq!(retained.expect("retained output").reference, None);
 
     // The report wakes the finished session for one more turn.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while fixture.server.requests().len() < 3 {
-        assert!(
-            Instant::now() < deadline,
-            "the report never woke the session"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    fixture
+        .server
+        .await_requests(3, "the report never woke the session")
+        .await;
     let woken = fixture.server.requests().pop().expect("woken request");
     assert!(woken.contains(r#"status=\"completed\""#), "{woken}");
     fixture.shutdown().await;
@@ -1673,7 +1716,7 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
             .await
             .unwrap()
             .run_id;
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(HANG_WATCHDOG, async {
             while let Some(message) = receiver.recv().await {
                 match message {
                     EventSubscriptionMessage::Event { event } => {
@@ -1973,7 +2016,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
         }
     })).unwrap();
     let fixture = Fixture::with_plugins(vec![("review_guard".into(), plugin)]).await;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_WATCHDOG, async {
         while !fixture
             .engine
             .plugin_statuses()
@@ -2003,7 +2046,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
         .unwrap();
     let (release, gate) = std_mpsc::channel();
     let observed = tokio::spawn(async move {
-        tokio::time::timeout(Duration::from_secs(10), async move {
+        tokio::time::timeout(HANG_WATCHDOG, async move {
             while let Some(message) = events.recv().await {
                 if let EventSubscriptionMessage::Event { event } = message
                     && matches!(&event.payload, EventPayload::Diagnostic { source, .. } if source.plugin_name() == Some("review_guard")) {
@@ -2023,7 +2066,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
     fixture.server.enqueue(MockResponse::GatedSse {
         body: final_response("handled rejection"),
         start: gate,
-        deadline: Instant::now() + Duration::from_secs(10),
+        deadline: Instant::now() + HANG_WATCHDOG,
     });
     let mut args = run_args("plugin diagnostics");
     args.resume_session = Some(session.session_id);
@@ -2459,7 +2502,7 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
             preset: None,
         })
         .expect("gap session");
-    let coordination_deadline = Instant::now() + Duration::from_secs(30);
+    let coordination_deadline = Instant::now() + HANG_WATCHDOG;
     let (start_burst, await_burst) = std_mpsc::sync_channel(1);
     fixture.server.enqueue(MockResponse::GatedSse {
         body: burst_response(1500),
@@ -2614,9 +2657,9 @@ async fn start_run_admission_failures_map_to_one() {
             preset: None,
         })
         .expect("running session");
-    fixture
-        .server
-        .enqueue(MockResponse::Delay(Duration::from_millis(500)));
+    // The first run waits on its model until the conflict is checked.
+    let (_release, hold) = std_mpsc::channel();
+    fixture.server.enqueue(MockResponse::Hold(hold));
     let running = fixture
         .engine
         .start_run(
@@ -2797,9 +2840,11 @@ env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"producer_messa
 #[test]
 fn cookie_binary_sigint_cancels_the_active_run() {
     let fixture = ProcessFixture::new();
-    fixture
-        .server
-        .enqueue(MockResponse::Delay(Duration::from_millis(500)));
+    // The model request stays unanswered until the binary has exited, so
+    // SIGINT finds the run waiting on it however late it lands.
+    let (release, hold) = std_mpsc::channel();
+    fixture.server.enqueue(MockResponse::Hold(hold));
+    let mut arrived = fixture.server.arrived.subscribe();
     let mut child = fixture
         .command()
         .args(["run", "SIGINT prompt", "--output", "none", "--data-dir"])
@@ -2808,15 +2853,25 @@ fn cookie_binary_sigint_cancels_the_active_run() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn cookie SIGINT run");
-    for _ in 0..3_000 {
-        if !fixture.server.requests().is_empty()
-            || child.try_wait().expect("child status").is_some()
-        {
-            break;
+    // Waits for the request or the binary's exit; the latter has no event
+    // to wait on, so it is checked between short waits.
+    let deadline = Instant::now() + HANG_WATCHDOG;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("wait runtime");
+    let requested = runtime.block_on(async {
+        loop {
+            if *arrived.borrow_and_update() > 0 {
+                return true;
+            }
+            if child.try_wait().expect("child status").is_some() || Instant::now() >= deadline {
+                return false;
+            }
+            let _ = tokio::time::timeout(Duration::from_millis(100), arrived.changed()).await;
         }
-        thread::sleep(Duration::from_millis(10));
-    }
-    if fixture.server.requests().is_empty() {
+    });
+    if !requested {
         let _ = child.kill();
         let output = child.wait_with_output().expect("collect failed startup");
         panic!(
@@ -2829,6 +2884,7 @@ fn cookie_binary_sigint_cancels_the_active_run() {
     let output = child
         .wait_with_output()
         .expect("wait for cookie SIGINT run");
+    drop(release);
     assert_eq!(output.status.code(), Some(4), "{}", process_report(&output));
     assert!(output.stderr.is_empty(), "{}", process_report(&output));
 }
@@ -2847,7 +2903,7 @@ fn run_args(prompt: &str) -> RunArgs {
         skill: None,
         skill_args: None,
         max_turns: 100,
-        timeout: 10,
+        timeout: HANG_WATCHDOG.as_secs(),
         resume_session: None,
         data_dir: None,
         output: Some(OutputMode::Text),
