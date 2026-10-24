@@ -5,6 +5,27 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.28.0
+
+- The approval reviewer ([approval reviewer spec](../specs/approval-reviewer.md)
+  sections 7, 10, and 11), all additions an older peer ignores:
+  - `ApprovalInternalDecision` has an optional `rationale`, the reviewer's
+    one-sentence reason for its verdict, at most 300 characters.
+  - `ApprovalReasonCode` has the value `internal_agent_failed`: the reviewer
+    failed (an error, a timeout, an unparseable reply, or no model), so the
+    evaluated step escalates and no permission mode approves it for the
+    user. An older reader reads it as `system_error`; a reader before
+    1.28.0 also checked an evaluated step's decision with that fallback and
+    refuses the step as contradictory, which 1.28.0 readers no longer do.
+    The `escalated` step that follows keeps the reason `escalated`.
+  - The `escalated` approval step has an optional `expires_at`, when the
+    user's window to answer ends: it now starts at the escalation, so the
+    request a 1.28.0 daemon writes carries no `expires_at` of its own, and
+    the approval's record (`approval.list`) carries the step's.
+  - New event `permission_mode_set` (`mode`), which a root session records
+    outside its runs when its tree's permission mode changes. Plugin
+    protocol 1.16.0 carries these too; an older reader skips the event.
+
 ## 1.27.0
 
 - `FrozenOpenAiPromptCacheTtl` (the `ttl` of an `openai` frozen cache

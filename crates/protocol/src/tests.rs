@@ -1783,6 +1783,7 @@ fn approval_wire_requires_nonempty_evaluations_and_accepts_multiple() {
         source: ApprovalDecisionSource::Policy,
         reason_code: ApprovalReasonCode::PolicyRequiresApproval,
         evaluations: vec![test_evaluation(first), test_evaluation(second)],
+        rationale: None,
     };
     let valid_decision = serde_json::to_value(decision).expect("decision JSON");
     assert!(serde_json::from_value::<ApprovalInternalDecision>(valid_decision.clone()).is_ok());
@@ -2102,6 +2103,7 @@ fn internal_approval_decision(
         source,
         reason_code,
         evaluations: vec![test_evaluation(b"decision")],
+        rationale: None,
     }
 }
 
@@ -3009,7 +3011,8 @@ fn audit_events_and_only_they_carry_skippable() {
     );
     assert!(
         !step(ApprovalStep::Escalated {
-            reason_code: ApprovalReasonCode::Escalated
+            reason_code: ApprovalReasonCode::Escalated,
+            expires_at: None,
         })
         .is_audit()
     );
@@ -3655,4 +3658,117 @@ fn frozen_openai_prompt_cache_ttl_is_open_and_reads_unknown_values_as_30m() {
         serde_json::from_value::<FrozenOpenAiPromptCacheTtl>(serde_json::json!("7d")).unwrap(),
         FrozenOpenAiPromptCacheTtl::ThirtyMinutes
     );
+}
+
+#[test]
+fn permission_mode_set_round_trips_as_a_runless_state_event() {
+    let event = StoredEvent {
+        engine_version: None,
+        origin: Some(EventOrigin::new("client:tui").unwrap()),
+        session_id: SessionId::new_v7(),
+        run_id: None,
+        seq: 4,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::PermissionModeSet {
+            mode: PermissionMode::AutoApproveN,
+        },
+    };
+    assert!(!event.payload.is_audit());
+    assert_eq!(event.validate(), Ok(()));
+    let value = serde_json::to_value(&event).unwrap();
+    assert_eq!(
+        value["payload"],
+        json!({"type": "permission_mode_set", "mode": "auto_approve_n"})
+    );
+    assert_eq!(serde_json::from_value::<StoredEvent>(value).unwrap(), event);
+}
+
+#[test]
+fn a_failed_reviewer_escalates_coherently_and_never_otherwise() {
+    assert_eq!(
+        internal_approval_decision(
+            ApprovalInternalDecisionKind::Escalate,
+            ApprovalDecisionSource::InternalAgent,
+            ApprovalReasonCode::InternalAgentFailed,
+        )
+        .validate(),
+        Ok(())
+    );
+    assert_eq!(
+        serde_json::to_value(ApprovalReasonCode::InternalAgentFailed).unwrap(),
+        json!("internal_agent_failed")
+    );
+    for (decision, source) in [
+        (
+            ApprovalInternalDecisionKind::Allow,
+            ApprovalDecisionSource::InternalAgent,
+        ),
+        (
+            ApprovalInternalDecisionKind::Escalate,
+            ApprovalDecisionSource::Policy,
+        ),
+    ] {
+        assert_eq!(
+            internal_approval_decision(decision, source, ApprovalReasonCode::InternalAgentFailed)
+                .validate(),
+            Err(ApprovalSchemaError::ContradictoryDecision)
+        );
+    }
+}
+
+#[test]
+fn an_internal_decision_rationale_is_optional_and_bounded() {
+    let mut decision = internal_approval_decision(
+        ApprovalInternalDecisionKind::Deny,
+        ApprovalDecisionSource::InternalAgent,
+        ApprovalReasonCode::InternalAgentDenied,
+    );
+    let bare = serde_json::to_value(&decision).unwrap();
+    assert!(bare.get("rationale").is_none());
+    decision.rationale = Some("é".repeat(300));
+    assert_eq!(decision.validate(), Ok(()));
+    let value = serde_json::to_value(&decision).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ApprovalInternalDecision>(value).unwrap(),
+        decision
+    );
+    decision.rationale = Some("a".repeat(301));
+    assert_eq!(
+        decision.validate(),
+        Err(ApprovalSchemaError::ContradictoryDecision)
+    );
+}
+
+/// A reason a newer build adds reads as `system_error` inside an evaluated
+/// step, and the step still reads: its coherence is the writer's.
+#[test]
+fn an_evaluated_step_with_a_newer_reason_reads_as_its_fallback() {
+    let decision = internal_approval_decision(
+        ApprovalInternalDecisionKind::Escalate,
+        ApprovalDecisionSource::InternalAgent,
+        ApprovalReasonCode::Escalated,
+    );
+    let mut value = serde_json::to_value(StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id: SessionId::new_v7(),
+        run_id: Some(RunId::new_v7()),
+        seq: 5,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::ApprovalStep {
+            approval_id: ApprovalId::new_v7(),
+            step: Open::Known(ApprovalStep::Evaluated { decision }),
+        },
+    })
+    .unwrap();
+    value["payload"]["step"]["decision"]["reason_code"] = json!("reviewer_on_vacation");
+    let read = serde_json::from_value::<StoredEvent>(value).expect("newer reason");
+    let EventPayload::ApprovalStep {
+        step: Open::Known(ApprovalStep::Evaluated { decision }),
+        ..
+    } = read.payload
+    else {
+        panic!("an evaluated step");
+    };
+    assert_eq!(decision.reason_code, ApprovalReasonCode::SystemError);
 }

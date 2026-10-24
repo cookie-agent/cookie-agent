@@ -254,6 +254,7 @@ impl Engine {
                 source: ApprovalDecisionSource::TreeGrant,
                 reason_code: ApprovalReasonCode::TreeGrantMatched,
                 evaluations: approval_evaluations(&request),
+                rationale: None,
             };
             self.append(
                 active.session,
@@ -298,6 +299,7 @@ impl Engine {
                 source: ApprovalDecisionSource::Policy,
                 reason_code: ApprovalReasonCode::PolicyDenied,
                 evaluations: approval_evaluations(&request),
+                rationale: None,
             };
             self.append(
                 active.session,
@@ -355,6 +357,7 @@ impl Engine {
                             source: ApprovalDecisionSource::Policy,
                             reason_code: ApprovalReasonCode::YoloApproved,
                             evaluations: approval_evaluations(&request),
+                            rationale: None,
                         },
                     },
                 ),

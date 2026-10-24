@@ -387,6 +387,11 @@ pub enum ApprovalReasonCode {
     ApprovalExpired,
     Escalated,
     Unattended,
+    // The approval reviewer failed (an error, a timeout, an unparseable
+    // reply, or no model): the call escalates, and no permission mode
+    // approves it on the user's behalf (client protocol 1.28.0). A doc
+    // comment would change the variant's schema.
+    InternalAgentFailed,
     #[serde(other)]
     SystemError,
 }
@@ -435,6 +440,8 @@ pub enum ApprovalInternalDecisionKind {
     #[serde(other)]
     Ask,
 }
+/// The longest `ApprovalInternalDecision::rationale`, in characters.
+pub const MAX_APPROVAL_RATIONALE_CHARS: usize = 300;
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ApprovalInternalDecision {
     pub decision: ApprovalInternalDecisionKind,
@@ -442,8 +449,23 @@ pub struct ApprovalInternalDecision {
     pub reason_code: ApprovalReasonCode,
     #[schemars(length(min = 1, max = 256))]
     pub evaluations: Vec<ApprovalEvaluation>,
+    /// The approval reviewer's one-sentence reason for its verdict, at most
+    /// 300 characters; absent when it gave none or did not decide (client
+    /// protocol 1.28.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 300))]
+    pub rationale: Option<String>,
 }
 impl ApprovalInternalDecision {
+    /// Whether the reason or the source holds its open-enum fallback, the
+    /// value a newer build's addition reads as. No writer records either in
+    /// an internal decision.
+    #[must_use]
+    pub fn holds_fallback(&self) -> bool {
+        self.reason_code == ApprovalReasonCode::SystemError
+            || self.source == ApprovalDecisionSource::System
+    }
+
     pub fn validate(&self) -> Result<(), ApprovalSchemaError> {
         if self.evaluations.is_empty() {
             return Err(ApprovalSchemaError::MissingEvaluation);
@@ -475,9 +497,10 @@ impl ApprovalInternalDecision {
                 self.reason_code,
                 ApprovalReasonCode::PolicyRequiresApproval | ApprovalReasonCode::ModelRequested
             ),
-            ApprovalInternalDecisionKind::Escalate => {
-                self.reason_code == ApprovalReasonCode::Escalated
-            }
+            ApprovalInternalDecisionKind::Escalate => matches!(
+                self.reason_code,
+                ApprovalReasonCode::Escalated | ApprovalReasonCode::InternalAgentFailed
+            ),
         };
         let source_coherent = match self.reason_code {
             ApprovalReasonCode::PolicyAllowed
@@ -485,7 +508,9 @@ impl ApprovalInternalDecision {
             | ApprovalReasonCode::PolicyRequiresApproval
             | ApprovalReasonCode::YoloApproved => self.source == ApprovalDecisionSource::Policy,
             ApprovalReasonCode::ModelRequested => self.source == ApprovalDecisionSource::Model,
-            ApprovalReasonCode::InternalAgentAllowed | ApprovalReasonCode::InternalAgentDenied => {
+            ApprovalReasonCode::InternalAgentAllowed
+            | ApprovalReasonCode::InternalAgentDenied
+            | ApprovalReasonCode::InternalAgentFailed => {
                 self.source == ApprovalDecisionSource::InternalAgent
             }
             ApprovalReasonCode::TreeGrantMatched => {
@@ -503,7 +528,11 @@ impl ApprovalInternalDecision {
             ),
             _ => self.source == ApprovalDecisionSource::System,
         };
-        if coherent && source_coherent {
+        let rationale_fits = self
+            .rationale
+            .as_ref()
+            .is_none_or(|rationale| rationale.chars().count() <= MAX_APPROVAL_RATIONALE_CHARS);
+        if coherent && source_coherent && rationale_fits {
             Ok(())
         } else {
             Err(ApprovalSchemaError::ContradictoryDecision)
@@ -521,6 +550,8 @@ impl<'de> Deserialize<'de> for ApprovalInternalDecision {
             source: ApprovalDecisionSource,
             reason_code: ApprovalReasonCode,
             evaluations: Vec<ApprovalEvaluation>,
+            #[serde(default)]
+            rationale: Option<String>,
         }
         let raw = serde_json::Value::deserialize(deserializer)?;
         let wire = Wire::deserialize(&raw).map_err(serde::de::Error::custom)?;
@@ -529,6 +560,7 @@ impl<'de> Deserialize<'de> for ApprovalInternalDecision {
             source: wire.source,
             reason_code: wire.reason_code,
             evaluations: wire.evaluations,
+            rationale: wire.rationale,
         };
         if reads_as_known(&raw, &value, DECISION_MEMBERS) {
             value.validate().map_err(serde::de::Error::custom)?;
@@ -778,6 +810,13 @@ impl ApprovalRequest {
         self.runtime_id = runtime_id;
         self
     }
+    /// The request whose user window ends at `expires_at`: what an
+    /// approval's record carries once its `escalated` step set the window.
+    #[must_use]
+    pub fn with_expires_at(mut self, expires_at: Option<Timestamp>) -> Self {
+        self.constraints.expires_at = expires_at;
+        self
+    }
     /// Runtime ID of the tool the request is for; `None` for the base layer.
     #[must_use]
     pub const fn runtime_id(&self) -> Option<&RuntimeId> {
@@ -1020,7 +1059,11 @@ impl ApprovalRecord {
                     && self.internal_decision.as_ref().is_some_and(|internal| {
                         internal.decision == ApprovalInternalDecisionKind::Escalate
                             && internal.source == ApprovalDecisionSource::InternalAgent
-                            && internal.reason_code == ApprovalReasonCode::Escalated
+                            && matches!(
+                                internal.reason_code,
+                                ApprovalReasonCode::Escalated
+                                    | ApprovalReasonCode::InternalAgentFailed
+                            )
                     })
             }
             Some(final_decision)

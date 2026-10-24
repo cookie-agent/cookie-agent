@@ -103,6 +103,7 @@ impl Engine {
                         source,
                         reason_code,
                         evaluations: approval_evaluations(&request),
+                        rationale: None,
                     },
                 },
             ),
@@ -188,6 +189,7 @@ impl Engine {
                 approval_id,
                 cookie_agent_protocol::ApprovalStep::Escalated {
                     reason_code: ApprovalReasonCode::Escalated,
+                    expires_at: None,
                 },
             ),
         )?;

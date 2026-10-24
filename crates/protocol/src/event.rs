@@ -2322,7 +2322,17 @@ pub enum ApprovalStep {
     /// The internal decision pipeline decided.
     Evaluated { decision: ApprovalInternalDecision },
     /// The approval waits for the user.
-    Escalated { reason_code: ApprovalReasonCode },
+    Escalated {
+        reason_code: ApprovalReasonCode,
+        /// When the user's window to answer ends (client protocol 1.28.0):
+        /// it starts at the escalation, so the reviewer's time never comes
+        /// out of it. The request then carries no `expires_at`, and the
+        /// approval's record carries this one. Absent from an earlier
+        /// writer, whose request carries the window, and when the window
+        /// never ends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<Timestamp>,
+    },
     /// A client answered for the user.
     UserDecision {
         client_response_id: ClientResponseId,
@@ -2964,6 +2974,12 @@ pub enum EventPayload {
         #[serde(flatten)]
         resolution: crate::ElicitationResolution,
     },
+    /// The session tree's permission mode became `mode` (client protocol
+    /// 1.28.0). Only root sessions record it, outside their runs; loading
+    /// the tree restores the newest one.
+    PermissionModeSet {
+        mode: crate::PermissionMode,
+    },
 }
 
 // Plugins receive events as `Open<EventPayload>`: an event type a plugin
@@ -3007,6 +3023,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "model_usage_recorded",
     "native_compaction_finished",
     "native_compaction_started",
+    "permission_mode_set",
     "producer_message_accepted",
     "producer_message_admitted",
     "producer_message_consumed",
@@ -3171,6 +3188,7 @@ impl EventPayload {
             | Self::ElicitationRequested { .. }
             | Self::ElicitationResolved { .. }
             | Self::SessionPermissionOverlaySet { .. }
+            | Self::PermissionModeSet { .. }
             | Self::RuntimeAttached { .. }
             | Self::RuntimeDetached { .. }
             | Self::SkillLoaded { .. }
@@ -3259,6 +3277,7 @@ impl EventPayload {
             self,
             Self::SessionCreated { .. }
                 | Self::SessionPermissionOverlaySet { .. }
+                | Self::PermissionModeSet { .. }
                 | Self::RuntimeAttached { .. }
                 | Self::RuntimeDetached { .. }
                 | Self::SkillLoaded { .. }
@@ -3642,10 +3661,15 @@ impl EventPayload {
                 step: Open::Known(step),
                 ..
             } => match step {
-                ApprovalStep::Evaluated { decision } => decision
+                // A reason or source a newer build added reads as its
+                // fallback, and the combination may be coherent only among
+                // that build's values: as for the approval records, the
+                // writer keeps coherence and a reader checks only what it
+                // knows.
+                ApprovalStep::Evaluated { decision } if !decision.holds_fallback() => decision
                     .validate()
                     .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?,
-                ApprovalStep::Escalated { reason_code }
+                ApprovalStep::Escalated { reason_code, .. }
                     if *reason_code != ApprovalReasonCode::Escalated =>
                 {
                     return Err(EventSchemaError::InvalidApprovalLifecycle);

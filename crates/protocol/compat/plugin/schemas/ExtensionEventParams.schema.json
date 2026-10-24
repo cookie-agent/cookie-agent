@@ -690,6 +690,14 @@
           "minItems": 1,
           "type": "array"
         },
+        "rationale": {
+          "description": "The approval reviewer's one-sentence reason for its verdict, at most\n300 characters; absent when it gave none or did not decide (client\nprotocol 1.28.0).",
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "reason_code": {
           "$ref": "#/$defs/ApprovalReasonCode"
         },
@@ -742,6 +750,7 @@
         "approval_expired",
         "escalated",
         "unattended",
+        "internal_agent_failed",
         "system_error"
       ],
       "type": "string",
@@ -841,6 +850,14 @@
         {
           "description": "The approval waits for the user.",
           "properties": {
+            "expires_at": {
+              "description": "When the user's window to answer ends (client protocol 1.28.0):\nit starts at the escalation, so the reviewer's time never comes\nout of it. The request then carries no `expires_at`, and the\napproval's record carries this one. Absent from an earlier\nwriter, whose request carries the window, and when the window\nnever ends.",
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "reason_code": {
               "$ref": "#/$defs/ApprovalReasonCode"
             },
@@ -4768,6 +4785,23 @@
             "answered_by"
           ],
           "type": "object"
+        },
+        {
+          "description": "The session tree's permission mode became `mode` (client protocol\n1.28.0). Only root sessions record it, outside their runs; loading\nthe tree restores the newest one.",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/PermissionMode"
+            },
+            "type": {
+              "const": "permission_mode_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "mode"
+          ],
+          "type": "object"
         }
       ],
       "x-open": true
@@ -5966,6 +6000,18 @@
       "enum": [
         "allow",
         "deny",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "PermissionMode": {
+      "description": "A value this build does not know reads as `ask`: asking.",
+      "enum": [
+        "auto_approve",
+        "auto_approve_n",
+        "auto_approve_y",
+        "yolo",
         "ask"
       ],
       "type": "string",

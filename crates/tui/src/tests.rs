@@ -524,6 +524,7 @@ async fn app_draws_conversation_approval_tree_and_input() {
             approval_id,
             cookie_agent_protocol::ApprovalStep::Escalated {
                 reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
+                expires_at: None,
             },
         ),
     });

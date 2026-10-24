@@ -3160,6 +3160,7 @@ fn approval_escalation_is_info_while_rejected_and_expired_keep_existing_levels()
             approval_id,
             cookie_agent_protocol::ApprovalStep::Escalated {
                 reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
+                expires_at: None,
             },
         ),
     );

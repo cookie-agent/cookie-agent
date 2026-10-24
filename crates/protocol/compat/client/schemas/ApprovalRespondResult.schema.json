@@ -207,6 +207,14 @@
           "minItems": 1,
           "type": "array"
         },
+        "rationale": {
+          "description": "The approval reviewer's one-sentence reason for its verdict, at most\n300 characters; absent when it gave none or did not decide (client\nprotocol 1.28.0).",
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "reason_code": {
           "$ref": "#/$defs/ApprovalReasonCode"
         },
@@ -259,6 +267,7 @@
         "approval_expired",
         "escalated",
         "unattended",
+        "internal_agent_failed",
         "system_error"
       ],
       "type": "string",

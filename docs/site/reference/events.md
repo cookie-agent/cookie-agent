@@ -167,6 +167,7 @@ never stored.
 | `skill_invocation_noted` | audit | either | A repeat of an identical skill load |
 | `session_title_committed` | state | either | A title change |
 | `session_project_set` | state | runless | The root session's [project](#projects) |
+| `permission_mode_set` | state | runless | The root session tree's [permission mode](../concepts/permissions.md#modes-and-approvals), restored when the tree loads |
 | `acp_session_started` | state | either | The ACP session the session's [ACP agent](../specs/acp-agents.md) talks in: new, resumed, or loaded |
 | `acp_session_updated` | state | either | What the ACP agent reported of its session: its commands, options, or plan; a notice; input steered into its turn; a tool call's new presentation; or the starting options the session was created with |
 | `elicitation_requested` | state | run | An agent of the run asks the user a question, a form or a URL (see [Questions](protocol.md#questions)) |

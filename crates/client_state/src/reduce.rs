@@ -990,7 +990,7 @@ pub(super) fn reduce_event_from(
                 .to_lowercase(),
                 timestamp,
             ),
-            Some(cookie_agent_protocol::ApprovalStep::Escalated { reason_code }) => {
+            Some(cookie_agent_protocol::ApprovalStep::Escalated { reason_code, .. }) => {
                 if let Some(approval) = state
                     .approvals
                     .iter_mut()
@@ -1478,6 +1478,7 @@ pub(super) fn reduce_event_from(
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::PermissionModeSet { .. }
         | EventPayload::SessionProjectSet { .. }
         | EventPayload::DelegatedAttachmentsAdded { .. }
         | EventPayload::RuntimeAttached { .. }

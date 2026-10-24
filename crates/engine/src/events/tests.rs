@@ -3342,6 +3342,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
                 approval_id,
                 cookie_agent_protocol::ApprovalStep::Escalated {
                     reason_code: ApprovalReasonCode::Escalated,
+                    expires_at: None,
                 },
             ),
         ),
