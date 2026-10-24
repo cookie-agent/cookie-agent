@@ -140,10 +140,14 @@ impl AgentProcess {
     /// returned channel, replacing an earlier route.
     pub(crate) fn route(&self, session: &str) -> mpsc::UnboundedReceiver<SessionEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
+        // Held across the drain and the insert, in `deliver`'s order
+        // (sessions, then early): an update delivered in between would
+        // otherwise find no route and wait in `early` for good.
+        let mut sessions = lock(&self.sessions);
         for update in lock(&self.early).remove(session).unwrap_or_default() {
             let _ = sender.send(SessionEvent::Update(update));
         }
-        lock(&self.sessions).insert(session.to_owned(), sender);
+        sessions.insert(session.to_owned(), sender);
         receiver
     }
 
