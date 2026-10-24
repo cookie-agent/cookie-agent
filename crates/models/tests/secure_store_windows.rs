@@ -102,11 +102,13 @@ fn windows_replacement_is_never_observed_absent_by_a_concurrent_reader() {
     const EVEN: &[u8] = br#"{"generation":"even","payload":"aaaaaaaaaaaaaaaaaaaaaaaa"}"#;
     const ODD: &[u8] = br#"{"generation":"odd","payload":"bbbbbbbbbbbbbbbbbbbbbbbbbb"}"#;
 
+    // The staged file is not flushed: what a reader sees by name does not
+    // depend on whether its bytes reached the disk, and a flush for each of
+    // the thousands of replacements only slows the test down.
     fn stage(directory: &Path, name: &str, bytes: &[u8]) -> PathBuf {
         let staging = directory.join(name);
         let mut file = create_windows_private_file(&staging).expect("staging file");
         file.write_all(bytes).expect("write staging payload");
-        file.sync_all().expect("flush staging payload");
         drop(file);
         staging
     }
