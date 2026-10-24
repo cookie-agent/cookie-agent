@@ -16,6 +16,11 @@ configured in the repository's Actions secrets.
 4. On GitHub, draft a new release with a new `vX.Y.Z` tag targeting the release
    commit on `main`, write the notes, and publish it.
 5. Monitor the CI run for the `release` event and verify the attached artifacts.
+6. Once the release's docs are published as `latest`, move links that point
+   at `https://cookie-agent.github.io/doc/dev/` back to `doc/latest/`
+   (`rg 'github.io/doc/dev/'`: `skills_command.rs`'s `DOCS_SITE`, the starter
+   kit, the web client, and the official skills repository). Until a stable
+   release carries the current docs, `latest` serves older pages.
 
 Publishing fires the `release: published` event; drafts fire nothing. CI runs
 every required check on the tag, then cargo-dist builds and uploads the

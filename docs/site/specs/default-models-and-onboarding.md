@@ -323,7 +323,7 @@ that every daemon keeps current.
 - **CI in the repository** runs the latest release's `cookie skills check`
   on every push and nightly: each skill parses, names only `cookie`
   subcommands that exist, and links only to documentation pages that exist
-  (unversioned `/doc/latest/` paths). A failing skill does not publish.
+  (`/doc/dev/` paths until a stable release carries the current docs, then `/doc/latest/`). A failing skill does not publish.
 
 ### 13.2 The daemon
 

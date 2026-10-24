@@ -589,7 +589,7 @@ cookie skills check <DIR> [--docs <DIR>]
 Checks skills before they are published, with no daemon: each
 `<DIR>/<name>/SKILL.md` (or `<DIR>/SKILL.md` alone) must parse, every
 backticked `cookie …` command it names must exist in this build, and every
-link to `https://cookie-agent.github.io/doc/latest/…` must name a page. Links
+link to `https://cookie-agent.github.io/doc/dev/…` must name a page. Links
 are fetched from the published site, or checked against a `docs/site`
 checkout with `--docs`. An `index.json` in `<DIR>` must list every skill
 there, with a version, a `requires_cookie` range, and each file's SHA-256.

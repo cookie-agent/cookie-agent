@@ -2,7 +2,7 @@
 ##
 ## Every setting is optional; a commented line shows a setting and an example
 ## value. Uncomment and edit what you want to change. The full reference is
-## https://cookie-agent.github.io/doc/latest/engine/configuration/
+## https://cookie-agent.github.io/doc/dev/engine/configuration/
 ##
 ## Lines starting with `##` are notes; lines starting with `# ` are settings.
 

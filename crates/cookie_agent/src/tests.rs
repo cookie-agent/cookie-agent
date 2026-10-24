@@ -3598,7 +3598,7 @@ async fn cookie_skills_check_finds_what_a_skill_gets_wrong() {
     let sha = write_check_skill(
         good.path(),
         "tidy",
-        "Run `cookie config set <key> <value>`, then `cookie daemon restart`.\nSee https://cookie-agent.github.io/doc/latest/engine/configuration/ and https://cookie-agent.github.io/doc/latest/extend/skills/#official-skills.",
+        "Run `cookie config set <key> <value>`, then `cookie daemon restart`.\nSee https://cookie-agent.github.io/doc/dev/engine/configuration/ and https://cookie-agent.github.io/doc/dev/extend/skills/#official-skills.",
     );
     std::fs::write(
         good.path().join("index.json"),
@@ -3618,7 +3618,7 @@ async fn cookie_skills_check_finds_what_a_skill_gets_wrong() {
     write_check_skill(
         bad.path(),
         "broken",
-        "Run `cookie teleport now` and `cookie config frobnicate`.\nSee https://cookie-agent.github.io/doc/latest/no/such/page/.",
+        "Run `cookie teleport now` and `cookie config frobnicate`.\nSee https://cookie-agent.github.io/doc/dev/no/such/page/.",
     );
     std::fs::create_dir_all(bad.path().join("unparsable")).unwrap();
     std::fs::write(bad.path().join("unparsable/SKILL.md"), "no frontmatter").unwrap();

@@ -7,7 +7,7 @@
 //! The rules are plain functions, tested natively; the browser calls at the
 //! end of the module only work in a browser.
 //!
-//! [spec]: https://cookie-agent.github.io/doc/latest/specs/web-mcp-oauth/
+//! [spec]: https://cookie-agent.github.io/doc/dev/specs/web-mcp-oauth/
 
 use std::{cell::RefCell, collections::BTreeMap, collections::HashSet, time::Duration};
 

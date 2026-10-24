@@ -13,7 +13,7 @@ use cookie_agent_protocol::{Client, SkillSource, SkillsListParams};
 use sha2::{Digest as _, Sha256};
 
 /// The published documentation every skill links to.
-pub(crate) const DOCS_SITE: &str = "https://cookie-agent.github.io/doc/latest/";
+pub(crate) const DOCS_SITE: &str = "https://cookie-agent.github.io/doc/dev/";
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum SkillsCommand {
