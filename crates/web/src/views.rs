@@ -46,6 +46,7 @@ mod manage;
 mod memory;
 mod onboarding;
 mod projects;
+mod questions;
 mod restart;
 mod row_menu;
 mod shell;
@@ -214,6 +215,11 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 <BackgroundBar workspace=workspace />
                 <QueueStrip workspace=workspace />
                 <DraftFiles workspace=workspace />
+                // An agent's question waits above the composer, scrolling
+                // within itself so the transcript keeps some room.
+                <div class="max-h-[60dvh] shrink-0 overflow-y-auto px-2 empty:hidden">
+                    <questions::QuestionCard workspace=workspace />
+                </div>
                 <StatusLine workspace=workspace />
                 <cards::DraftNotice workspace=workspace />
                 // A short window (a phone on its side) puts the
@@ -1228,6 +1234,7 @@ fn delegate(
                 .approvals
                 .iter()
                 .any(|approval| approval.is_visible_user_escalation()),
+            !child.questions.is_empty(),
         )
     });
     Delegate {
@@ -2324,6 +2331,16 @@ fn running(workspace: Workspace) -> bool {
     workspace.viewed.with(|viewed| viewed.running)
 }
 
+/// What a running session's spinner says: it waits on the user while an
+/// agent's question does.
+fn working_label(workspace: Workspace) -> &'static str {
+    if workspace.questions().is_empty() {
+        "working…"
+    } else {
+        "waiting for your answer"
+    }
+}
+
 fn approvals_label(count: usize) -> String {
     match count {
         1 => "1 approval waiting".to_owned(),
@@ -2491,7 +2508,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             <Show when=move || running(workspace)>
                 <span class="inline-flex min-h-11 items-center gap-1.5 px-2 font-bold text-caramel compact:hidden dark:text-maple" role="status">
                     <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
-                    "working…"
+                    {move || working_label(workspace)}
                 </span>
             </Show>
             <span
@@ -2578,7 +2595,7 @@ fn StatusLine(workspace: Workspace) -> impl IntoView {
                 <Show when=move || running(workspace)>
                     <span class="inline-flex shrink-0 items-center gap-1.5 px-2 font-bold text-caramel dark:text-maple" role="status">
                         <Glyph icon=icondata::FaCircleNotchSolid class="animate-spin" />
-                        "working…"
+                        {move || working_label(workspace)}
                     </span>
                 </Show>
                 <Show when=move || live.get()>

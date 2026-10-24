@@ -176,6 +176,8 @@ fn collect_delegates<'a>(
 /// What a running subagent is doing, as a delegate call's row says it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Activity {
+    /// An agent's question waits for the user's answer.
+    WaitingForAnswer,
     WaitingForApproval,
     /// Running a tool call.
     RunningTool,
@@ -184,11 +186,19 @@ pub enum Activity {
 }
 
 impl Activity {
-    /// What the subagent's session state says it does: an approval
-    /// outranks a running tool, which outranks the run itself. `None` for
-    /// a subagent that is not running.
-    pub fn of(running: bool, tool_running: bool, approval_waiting: bool) -> Option<Self> {
-        if approval_waiting {
+    /// What the subagent's session state says it does: a question waiting
+    /// for the user outranks an approval, which outranks a running tool,
+    /// which outranks the run itself. `None` for a subagent that is not
+    /// running.
+    pub fn of(
+        running: bool,
+        tool_running: bool,
+        approval_waiting: bool,
+        question_waiting: bool,
+    ) -> Option<Self> {
+        if question_waiting {
+            Some(Self::WaitingForAnswer)
+        } else if approval_waiting {
             Some(Self::WaitingForApproval)
         } else if tool_running {
             Some(Self::RunningTool)
@@ -201,6 +211,7 @@ impl Activity {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::WaitingForAnswer => "waiting for your answer",
             Self::WaitingForApproval => "waiting for approval",
             Self::RunningTool => "running a tool",
             Self::Thinking => "thinking",
@@ -476,13 +487,27 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_outranks_a_tool_which_outranks_thinking() {
+    fn a_question_outranks_an_approval_which_outranks_a_tool_and_thinking() {
         assert_eq!(
-            Activity::of(true, true, true),
+            Activity::of(true, true, true, true),
+            Some(Activity::WaitingForAnswer)
+        );
+        assert_eq!(
+            Activity::WaitingForAnswer.label(),
+            "waiting for your answer"
+        );
+        assert_eq!(
+            Activity::of(true, true, true, false),
             Some(Activity::WaitingForApproval)
         );
-        assert_eq!(Activity::of(true, true, false), Some(Activity::RunningTool));
-        assert_eq!(Activity::of(true, false, false), Some(Activity::Thinking));
-        assert_eq!(Activity::of(false, false, false), None);
+        assert_eq!(
+            Activity::of(true, true, false, false),
+            Some(Activity::RunningTool)
+        );
+        assert_eq!(
+            Activity::of(true, false, false, false),
+            Some(Activity::Thinking)
+        );
+        assert_eq!(Activity::of(false, false, false, false), None);
     }
 }

@@ -4819,6 +4819,62 @@ def acp_agents(browser):
     print("the model chip opens the agent's options, sets one, and toggles a boolean one")
 
 
+def acp_questions(browser):
+    """An ACP agent's questions (elicitation) as a card above the composer:
+    the scripted agent asks a form, whose required choice is checked before
+    anything is sent, and the answer reaches the agent; then a URL, whose
+    host is picked out and whose link opens only on a click, declined."""
+    new_session(browser)
+    browser.click("#agent-chip")
+    fixture = '#sheet [data-agent="fixture"]'
+    browser.wait("the runtime agent", lambda: count(browser, fixture) == 1, timeout=40)
+    browser.click(fixture)
+    browser.wait("the picked agent", lambda: "fixture" in browser.text("#agent-chip"))
+    send(browser, "elicit form")
+    browser.wait("the question", lambda: count(browser, "#question") == 1, timeout=60)
+    assert browser.text("#question [data-question-heading]") == "fixture asks", browser.text("#question")
+    assert browser.text("#question [data-question-message]") == "How should I go?"
+    browser.wait("the run waiting on the user", lambda: "waiting for your answer" in browser.text("#status-bar"))
+    fields = browser.script(
+        "return [...document.querySelectorAll('#question [data-field]')].map(e => e.dataset.field)"
+    )
+    assert fields == ["count", "ok", "question_0", "question_0_custom", "tags"], fields
+    browser.click('#question [data-answer="accept"]')
+    browser.wait(
+        "the missing choice",
+        lambda: browser.text('#question [data-field="question_0"] [data-field-problem]') == "Plan is required",
+    )
+    browser.click('#question [data-field="question_0"] [data-choice="fast"]')
+    browser.click('#question [data-field="tags"] [data-choice="y"]')
+    settle(browser)
+    browser.shot("acp-question-form")
+    browser.click('#question [data-answer="accept"]')
+    browser.wait(
+        "the agent's answer",
+        lambda: "elicitation: accept" in browser.text("#transcript")
+        and '"question_0":"fast"' in browser.text("#transcript")
+        and '"tags":["y"]' in browser.text("#transcript"),
+        timeout=60,
+    )
+    browser.wait("the answered card gone", lambda: count(browser, "#question") == 0)
+    print("a form question is checked, answered, and reaches the agent")
+
+    send(browser, "elicit url")
+    browser.wait("the URL question", lambda: count(browser, "#question [data-question-url]") == 1, timeout=60)
+    assert browser.text("#question [data-question-host]") == "example.com"
+    link = browser.script(
+        "const a = document.querySelector('#question [data-question-open]');"
+        "return [a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')]"
+    )
+    assert link == ["https://example.com/connect?id=url-2", "_blank", "noopener noreferrer"], link
+    settle(browser)
+    browser.shot("acp-question-url")
+    browser.click('#question [data-answer="decline"]')
+    browser.wait("the declined answer", lambda: "elicitation: decline null" in browser.text("#transcript"), timeout=60)
+    browser.wait("the declined card gone", lambda: count(browser, "#question") == 0)
+    print("a URL question shows its host and its link, and is declined")
+
+
 def runtime_mcp(browser):
     """The runtime panels list each runtime's MCP servers: the daemon's
     `local` runtime hosts the stdio fixture server, which connects, one
@@ -4931,6 +4987,7 @@ SCENARIOS = [
     # Its daemon's `local` runtime hosts MCP servers (test-web-page.sh).
     ("runtime_mcp", runtime_mcp, "runtime_mcp", []),
     ("acp_agents", acp_agents, "acp", []),
+    ("acp_questions", acp_questions, "acp", []),
     # It restarts its daemon.
     ("restart_daemon", restart_daemon, "restart", []),
     ("install_prompt", install_prompt, "install", []),

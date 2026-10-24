@@ -2006,6 +2006,57 @@ impl Workspace {
         })
     }
 
+    /// The agent's questions waiting in the viewed session, oldest first.
+    pub fn questions(self) -> Vec<cookie_agent_client_state::elicitation::QuestionState> {
+        let Some(session_id) = self.selected.get() else {
+            return Vec::new();
+        };
+        self.with_store(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .map(|state| state.questions.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Answers `question` with `action` (and an accepted form's
+    /// `content`). `failed` gets what to show beside the question when
+    /// the daemon refused the answer and the question still waits, `None`
+    /// once it was answered or no longer waits; `elicitation_resolved`
+    /// then takes it off the page.
+    pub fn answer_question(
+        self,
+        question: &cookie_agent_client_state::elicitation::QuestionState,
+        action: cookie_agent_protocol::ElicitationAction,
+        content: Option<cookie_agent_protocol::ElicitationContent>,
+        failed: impl Fn(Option<String>) + 'static,
+    ) {
+        let Some(client) = self.client() else {
+            failed(Some("not connected to the daemon".into()));
+            return;
+        };
+        let params = cookie_agent_protocol::ElicitationRespondParams {
+            session_id: question.session_id,
+            elicitation_id: question.request.elicitation_id,
+            action,
+            content,
+        };
+        spawn_local(async move {
+            match client.respond_elicitation(params).await {
+                Ok(_) => {
+                    self.status.set("question answered".into());
+                    failed(None);
+                }
+                Err(error) if error.error_code() == Some("elicitation_not_pending") => {
+                    self.status.set("the question no longer waits".into());
+                    failed(None);
+                }
+                Err(error) => failed(Some(crate::errors::ErrorText::of(&error).line())),
+            }
+        });
+    }
+
     /// Answers an approval at the revision and fingerprint it was shown at.
     pub fn respond(
         self,

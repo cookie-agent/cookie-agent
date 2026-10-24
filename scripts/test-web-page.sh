@@ -220,7 +220,7 @@ scope = \"runtime\""
     # The acp group's `local` runtime hosts the scripted ACP agent, and a
     # disabled one the agent picker shows dimmed.
     acp_agents=""
-    if [[ " $* " == *" acp_agents "* ]]; then
+    if [[ " $* " == *" acp_agents "* || " $* " == *" acp_questions "* ]]; then
         acp_agents="
 [runtimes.local.acp.agents.fixture]
 command = [\"python3\", \"$root/crates/engine/tests/fixtures/acp_agent.py\"]
