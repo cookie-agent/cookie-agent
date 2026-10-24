@@ -1326,6 +1326,16 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             })
             .unwrap_or_default()
     });
+    let row_slots = Slots::new();
+    Effect::new(move |_| {
+        rows.with(|rows| {
+            row_slots.update(
+                rows.order
+                    .iter()
+                    .filter_map(|id| Some((*id, rows.html.get(id)?))),
+            );
+        });
+    });
     let container = NodeRef::<html::Div>::new();
     let content = NodeRef::<html::Div>::new();
     let follow = StoredValue::new(Follow::default());
@@ -1593,7 +1603,13 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 <For
                     each=move || rows.with(|rows| rows.order.to_vec())
                     key=|id| *id
-                    children=move |id| view! { <TranscriptRow rows=rows id=id /> }
+                    children=move |id| {
+                        let row = row_slots.slot(id, || {
+                            rows.with_untracked(|rows| rows.html.get(&id).cloned())
+                        });
+                        on_cleanup(move || row_slots.remove(id));
+                        view! { <TranscriptRow row=row id=id /> }
+                    }
                 />
             </div>
             // Over the end of the transcript while it does not follow it;
@@ -1619,12 +1635,72 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// Values by ID, each in a signal of its own, for the transcript's rows and
+/// a reply's parts. Were every row (or part) to read one shared memo, each
+/// change would wake them all, and each one's resubscription costs the
+/// number of readers: a frame of a long transcript would cost the square
+/// of its rows. A change here wakes only the readers of what changed.
+struct Slots<V: Send + Sync + 'static> {
+    map: StoredValue<HashMap<u64, ArcRwSignal<Option<V>>>>,
+}
+
+impl<V: Send + Sync + 'static> Clone for Slots<V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<V: Send + Sync + 'static> Copy for Slots<V> {}
+
+impl<V: Clone + PartialEq + Send + Sync + 'static> Slots<V> {
+    fn new() -> Self {
+        Self {
+            map: StoredValue::new(HashMap::new()),
+        }
+    }
+
+    /// The slot of `id`, holding `initial` when it is new.
+    fn slot(self, id: u64, initial: impl FnOnce() -> Option<V>) -> ArcRwSignal<Option<V>> {
+        if let Some(slot) = self.map.with_value(|map| map.get(&id).cloned()) {
+            return slot;
+        }
+        let slot = ArcRwSignal::new(initial());
+        self.map.update_value(|map| {
+            map.insert(id, slot.clone());
+        });
+        slot
+    }
+
+    /// Sets each slot whose value is not its entry's in `values` any more.
+    fn update<'a>(self, values: impl Iterator<Item = (u64, &'a V)>)
+    where
+        V: 'a,
+    {
+        let changed = self.map.with_value(|map| {
+            values
+                .filter_map(|(id, value)| {
+                    let slot = map.get(&id)?;
+                    slot.with_untracked(|shown| shown.as_ref() != Some(value))
+                        .then(|| (slot.clone(), value.clone()))
+                })
+                .collect::<Vec<_>>()
+        });
+        for (slot, value) in changed {
+            slot.set(Some(value));
+        }
+    }
+
+    /// Forgets the slot of an ID the page no longer shows.
+    fn remove(self, id: u64) {
+        self.map.try_update_value(|map| map.remove(&id));
+    }
+}
+
 /// One transcript row, keyed by its item: its node stays while its content
 /// changes, and only a change to its own HTML redraws it.
 #[component]
-fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
-    let row = Memo::new(move |_| rows.with(|rows| rows.html.get(&id).cloned()));
-    let reply = untrack(|| row.with(|row| matches!(row, Some(RowHtml::Reply { .. }))));
+fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
+    let reply = row.with_untracked(|row| matches!(row, Some(RowHtml::Reply { .. })));
     if !reply {
         let html = move || {
             row.with(|row| match row {
@@ -1637,17 +1713,24 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
         }
         .into_any();
     }
-    let header = Memo::new(move |_| {
-        row.with(|row| match row {
-            Some(RowHtml::Reply { header, .. }) => Arc::clone(header),
-            _ => Arc::from(""),
-        })
+    let header = Memo::new({
+        let row = row.clone();
+        move |_| {
+            row.with(|row| match row {
+                Some(RowHtml::Reply { header, .. }) => Arc::clone(header),
+                _ => Arc::from(""),
+            })
+        }
     });
     let parts = Memo::new(move |_| {
         row.with(|row| match row {
             Some(RowHtml::Reply { parts, .. }) => Arc::clone(parts),
             _ => Arc::from([]),
         })
+    });
+    let part_slots = Slots::new();
+    Effect::new(move |_| {
+        parts.with(|parts| part_slots.update(parts.iter().map(|(part, html)| (*part, html))));
     });
     view! {
         <div class="transcript-item min-w-0" id=row_element_id(id)>
@@ -1659,13 +1742,24 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
                             parts
                                 .iter()
                                 .enumerate()
-                                .map(|(at, (id, _))| (*id, at))
+                                .map(|(at, (part, _))| (*part, at))
                                 .collect::<Vec<_>>()
                         })
                     }
-                    key=|(id, _)| *id
+                    key=|(part, _)| *part
                     children=move |(part, at)| {
-                        view! { <ReplyPart parts=parts row=id id=part at=at /> }
+                        // Where the part is when it shows: looked at first.
+                        let slot = part_slots.slot(part, || {
+                            parts.with_untracked(|parts| {
+                                parts
+                                    .get(at)
+                                    .filter(|(id, _)| *id == part)
+                                    .or_else(|| parts.iter().find(|(id, _)| *id == part))
+                                    .map(|(_, html)| html.clone())
+                            })
+                        });
+                        on_cleanup(move || part_slots.remove(part));
+                        view! { <ReplyPart part=slot row=id id=part /> }
                     }
                 />
             </div>
@@ -1676,23 +1770,9 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
 
 /// One part of a reply: a tool call, a thinking block, text. Text keeps the
 /// nodes of its settled markdown blocks and redraws only its open tail.
-/// `at` is where the part was when it showed: it looks there first, so a
-/// reply of many parts does not search them all for each.
 #[component]
-fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, row: u64, id: u64, at: usize) -> impl IntoView {
-    let at = StoredValue::new(at);
-    let part = Memo::new(move |_| {
-        parts.with(|parts| {
-            let hint = at.get_value();
-            let index = match parts.get(hint) {
-                Some((part, _)) if *part == id => Some(hint),
-                _ => parts.iter().position(|(part, _)| *part == id),
-            }?;
-            at.set_value(index);
-            Some(parts[index].1.clone())
-        })
-    });
-    let markdown = untrack(|| part.with(|part| matches!(part, Some(PartHtml::Markdown(_)))));
+fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl IntoView {
+    let markdown = part.with_untracked(|part| matches!(part, Some(PartHtml::Markdown(_))));
     if !markdown {
         let html = move || {
             part.with(|part| match part {
