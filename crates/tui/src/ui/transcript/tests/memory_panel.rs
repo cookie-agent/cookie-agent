@@ -198,14 +198,19 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
     .await;
     let request = app.pending_memory_editor.take().unwrap();
     let theirs = "---\ndescription: Build conventions\n---\nRun every gate.\n";
-    std::fs::write(&path, theirs).unwrap();
+    // Another writer changes the body and keeps the stamps: dropping them
+    // would leave the file's own time as its creation, which the overwrite
+    // below could not tell from when the memory was made.
+    let theirs_on_disk = stamped.replace("Run the gates.\n", "Run every gate.\n");
+    assert_eq!(unstamped(&theirs_on_disk), theirs);
+    std::fs::write(&path, &theirs_on_disk).unwrap();
     let mine = "---\ndescription: Build conventions\n---\nMine.\n";
     app.finish_memory_edit(request.clone(), Ok(mine.into()));
     pump_until(&mut app, &mut deliveries, |app| {
         matches!(app.memory_panel.pending, Some(PendingEdit::Changed { .. }))
     })
     .await;
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs_on_disk);
     assert!(
         rendered_frame(&mut app, 120, 50).contains("changed since you opened it"),
         "the details say why"
