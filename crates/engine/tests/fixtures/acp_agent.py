@@ -74,6 +74,7 @@ Environment:
                          fork point and copies the whole history
   ACP_FIXTURE_FORK_DELAY seconds session/fork takes to answer
   ACP_FIXTURE_DELETE     "1": offers session/delete
+  ACP_FIXTURE_NO_COMPACT "1": announces no `compact` command
   ACP_FIXTURE_STEERING   "1": advertises the steering extension
                          (`_meta.steering.supported`) and serves
                          `_session/steering` as Claude Code's adapter does
@@ -202,13 +203,10 @@ def session_result(session_id, include_id):
 
 
 def announce_commands(session_id):
-    update(session_id, {
-        "sessionUpdate": "available_commands_update",
-        "availableCommands": [
-            {"name": "review", "description": "Review the changes", "input": {"hint": "what to review"}},
-            {"name": "compact", "description": "Compact the conversation"},
-        ],
-    })
+    commands = [{"name": "review", "description": "Review the changes", "input": {"hint": "what to review"}}]
+    if not env("ACP_FIXTURE_NO_COMPACT"):
+        commands.append({"name": "compact", "description": "Compact the conversation"})
+    update(session_id, {"sessionUpdate": "available_commands_update", "availableCommands": commands})
 
 
 def bridge(session):

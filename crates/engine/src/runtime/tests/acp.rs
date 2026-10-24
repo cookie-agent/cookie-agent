@@ -17,6 +17,7 @@ use cookie_agent_protocol::{
 
 use super::support::*;
 
+mod compaction;
 mod lifecycle;
 mod rounds;
 use crate::{Engine, EngineOptions};

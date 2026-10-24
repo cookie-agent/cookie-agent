@@ -761,8 +761,8 @@ error_codes! {
         rpc: APPLICATION_ERROR,
         fields: [required("reason", "What the agent cannot do, in the daemon's words.")],
         message: "{reason}.",
-        hint: Some("Revert or fork to before the agent's first reply, or go on from where the session is."),
-        description: "`session.revert` or `session.fork` would cut into the conversation of an ACP agent that cannot fork it there: one that offers no `session/fork`, whose fork does not take a fork point (for a revert, or a fork before the end of its conversation), or that the daemon has not asked yet.",
+        hint: Some("Revert or fork to before the agent's first reply, or go on from where the session is; an agent without compaction compacts on its own, if at all."),
+        description: "`session.revert` or `session.fork` would cut into the conversation of an ACP agent that cannot fork it there: one that offers no `session/fork`, whose fork does not take a fork point (for a revert, or a fork before the end of its conversation), or that the daemon has not asked yet; or `session.compact` for an ACP agent that offers no `compact` command.",
     }
     ONBOARDING_INCOMPLETE {
         code: "onboarding_incomplete",

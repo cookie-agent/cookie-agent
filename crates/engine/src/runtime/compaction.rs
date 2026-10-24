@@ -152,6 +152,13 @@ impl Engine {
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionCompactResult, EngineError> {
         self.ensure_appendable(session)?;
+        // An ACP agent compacts its own conversation, when it can.
+        if let Some(result) = self
+            .compact_acp_session(session, focus, origin.clone())
+            .await?
+        {
+            return Ok(result);
+        }
         let focus = focus.map(str::to_owned);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.on_actor(session, move |engine| {

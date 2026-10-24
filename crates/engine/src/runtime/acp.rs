@@ -23,6 +23,7 @@ use cookie_agent_protocol::{AgentId, RuntimeId};
 use super::Engine;
 use crate::runtime_snapshot::RuntimeAgent;
 
+pub(crate) mod compaction;
 pub(crate) mod lifecycle;
 pub(crate) mod mcp;
 pub(crate) mod permissions;
