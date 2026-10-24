@@ -701,3 +701,20 @@ session and a run without the agent's runtime refused before the run
 starts; a daemon document without an `acp` block shadowing a declaration
 (the configuration diagnostic); the client placement and picker notes; the
 `list_agents` placement lines.
+
+**Fixes** (2026-10-23):
+
+- **Processes stop with the daemon.** `agent/stop` and a runtime that
+  stops (the end of its connection, `runtime/shutdown`) kill each agent's
+  process group and answer only once it has been reaped; before, the kill
+  ran after the answer, so a daemon that exited right after stopping its
+  agents (its shutdown, SIGTERM, or `daemon.restart`) could leave an agent
+  and its children running.
+- **A cancel always reaches the agent.** The round's loop polls the run's
+  cancellation first (a biased select), so an agent that streams without a
+  pause cannot hold `session/cancel` back; a steer being taken when the run
+  is cancelled is dropped instead of sent; and a turn the agent ends after
+  the cancel was accepted ends the run as cancelled, as a model run's does.
+  The manual check of round 3 saw an accepted `run.cancel` that never sent
+  `session/cancel` while Claude Code streamed updates; this was the window.
+
