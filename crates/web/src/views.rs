@@ -29,7 +29,8 @@ use crate::{
     render::{
         blocks::{BlockPlace, display_html},
         transcript::{
-            Delegate, Expanded, PartHtml, RowCache, RowHtml, Rows, TranscriptView, transcript_rows,
+            Delegate, Expanded, PartHtml, RowCache, RowHtml, Rows, TranscriptView, fills_in,
+            part_element_id, row_element_id, to_fill_in, transcript_rows,
         },
     },
     workspace::{Panel, Workspace},
@@ -1397,12 +1398,17 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             watch.disconnect();
         }
     });
+    // The rows the page last drew, to tell which changed.
+    let drawn = StoredValue::new(Rows::default());
     Effect::new(move |_| {
-        rows.track();
-        let Some(element) = container.get() else {
+        let fill_in = rows.with(|rows| {
+            let fill_in = drawn.with_value(|drawn| to_fill_in(drawn, rows));
+            drawn.set_value(rows.clone());
+            fill_in
+        });
+        if container.get().is_none() {
             return;
-        };
-        let element: web_sys::Element = element.into();
+        }
         // The transcript may be gone by the next frame (a new session's
         // cards took its place), `follow` with it: nothing to follow.
         request_animation_frame(move || {
@@ -1410,8 +1416,17 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 return;
             }
             pin();
-            crate::highlight::highlight_within(&element);
-            crate::media::show_within(&element, workspace);
+            // Code and media in the rows and parts that changed, not the
+            // whole page.
+            let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+                return;
+            };
+            for id in fill_in {
+                if let Some(changed) = document.get_element_by_id(&id) {
+                    crate::highlight::highlight_within(&changed);
+                    crate::media::show_within(&changed, workspace);
+                }
+            }
         });
     });
     let on_click = move |event: ev::MouseEvent| {
@@ -1617,7 +1632,10 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
                 _ => String::new(),
             })
         };
-        return view! { <div class="transcript-item min-w-0" inner_html=html></div> }.into_any();
+        return view! {
+            <div class="transcript-item min-w-0" id=row_element_id(id) inner_html=html></div>
+        }
+        .into_any();
     }
     let header = Memo::new(move |_| {
         row.with(|row| match row {
@@ -1632,7 +1650,7 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
         })
     });
     view! {
-        <div class="transcript-item min-w-0">
+        <div class="transcript-item min-w-0" id=row_element_id(id)>
             <div class="flex flex-col gap-1">
                 <div class="contents" inner_html=move || header.get().to_string()></div>
                 <For
@@ -1646,7 +1664,9 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
                         })
                     }
                     key=|(id, _)| *id
-                    children=move |(id, at)| view! { <ReplyPart parts=parts id=id at=at /> }
+                    children=move |(part, at)| {
+                        view! { <ReplyPart parts=parts row=id id=part at=at /> }
+                    }
                 />
             </div>
         </div>
@@ -1659,7 +1679,7 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
 /// `at` is where the part was when it showed: it looks there first, so a
 /// reply of many parts does not search them all for each.
 #[component]
-fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, id: u64, at: usize) -> impl IntoView {
+fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, row: u64, id: u64, at: usize) -> impl IntoView {
     let at = StoredValue::new(at);
     let part = Memo::new(move |_| {
         parts.with(|parts| {
@@ -1680,7 +1700,8 @@ fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, id: u64, at: usize) -> impl In
                 _ => String::new(),
             })
         };
-        return view! { <div class="contents" inner_html=html></div> }.into_any();
+        return view! { <div class="contents" id=part_element_id(row, id) inner_html=html></div> }
+            .into_any();
     }
     let node = NodeRef::<html::Div>::new();
     // The blocks on the page, each with the number of nodes it drew.
@@ -1717,7 +1738,20 @@ fn draw_blocks(element: &web_sys::Element, drawn: &mut Vec<(Arc<str>, u32)>, blo
     for block in &blocks[kept..] {
         let before = element.child_nodes().length();
         let _ = element.insert_adjacent_html("beforeend", block);
-        drawn.push((Arc::clone(block), element.child_nodes().length() - before));
+        let after = element.child_nodes().length();
+        // A code block is highlighted as it is added, alone.
+        if fills_in(block) {
+            let nodes = element.child_nodes();
+            for index in before..after {
+                if let Some(node) = nodes
+                    .item(index)
+                    .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+                {
+                    crate::highlight::highlight_within(&node);
+                }
+            }
+        }
+        drawn.push((Arc::clone(block), after - before));
     }
 }
 

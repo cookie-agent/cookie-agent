@@ -616,6 +616,61 @@ pub struct Rows {
     pub html: Arc<FastMap<u64, RowHtml>>,
 }
 
+/// The DOM ID of the transcript row whose ID is `id`.
+pub fn row_element_id(id: u64) -> String {
+    format!("row-{id:x}")
+}
+
+/// The DOM ID of the part `part` of the reply in row `row`.
+pub fn part_element_id(row: u64, part: u64) -> String {
+    format!("part-{row:x}-{part:x}")
+}
+
+/// Whether HTML holds what the page fills in after drawing it: a code
+/// block to highlight, or media to read.
+pub fn fills_in(html: &str) -> bool {
+    html.contains("language-") || html.contains("data-media")
+}
+
+/// The DOM IDs of the rows, and of the parts of replies, whose HTML changed
+/// since `old` and holds something the page fills in after drawing it:
+/// only those need looking into. What kept its HTML kept its nodes, filled
+/// in already (the page compares HTML as it draws: by content, the same
+/// text first by pointer). Text is left out: the page fills in each of its
+/// markdown blocks as it adds it.
+pub fn to_fill_in(old: &Rows, new: &Rows) -> Vec<String> {
+    let mut found = Vec::new();
+    for id in new.order.iter().copied() {
+        match (old.html.get(&id), new.html.get(&id)) {
+            (Some(old), Some(new)) if old == new => {}
+            (_, Some(RowHtml::Html(html))) => {
+                if fills_in(html) {
+                    found.push(row_element_id(id));
+                }
+            }
+            (old, Some(RowHtml::Reply { parts, .. })) => {
+                let old = match old {
+                    Some(RowHtml::Reply { parts, .. }) => parts
+                        .iter()
+                        .map(|(part, html)| (*part, html))
+                        .collect::<FastMap<_, _>>(),
+                    _ => FastMap::default(),
+                };
+                for (part, html) in parts.iter() {
+                    if let PartHtml::Html(html) = html
+                        && !matches!(old.get(part), Some(PartHtml::Html(old)) if old == html)
+                        && fills_in(html)
+                    {
+                        found.push(part_element_id(id, *part));
+                    }
+                }
+            }
+            (_, None) => {}
+        }
+    }
+    found
+}
+
 /// What the last pass drew, by content key, so a row or part whose key did
 /// not change is not drawn again. Each pass keeps only what it used.
 #[derive(Debug, Default)]
@@ -1932,6 +1987,57 @@ mod tests {
             panic!("the thinking block is not HTML")
         };
         assert!(std::sync::Arc::ptr_eq(old, new));
+    }
+
+    #[test]
+    fn only_rows_and_parts_whose_new_html_holds_code_or_media_are_filled_in() {
+        let (mut state, call_id) = streaming_reply();
+        let names = ModelDisplayNames::default();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let mut cache = super::RowCache::default();
+        let draw = |state: &SessionState, expanded: &Expanded, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+            };
+            super::transcript_rows(&view, None, cache)
+        };
+        let folded = Expanded::default();
+        let first = draw(&state, &folded, &mut cache);
+        let row = first.order[0];
+        let call = reply_parts(&first)[1].0;
+        // Nothing in it to fill in, drawn or not; text fills itself in.
+        assert!(super::to_fill_in(&super::Rows::default(), &first).is_empty());
+        stream(&mut state, "\n\n```rust\nfn main() {}\n```\n\n", "");
+        let coded = draw(&state, &folded, &mut cache);
+        assert!(super::to_fill_in(&first, &coded).is_empty());
+        // A call whose output shows media, opened.
+        let tool = state.tools.get_mut(&call_id).expect("the call");
+        tool.display = vec![cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::DisplayBlock::Media {
+                artifact: serde_json::from_value(serde_json::json!({
+                    "sha256": "c".repeat(64),
+                    "byte_length": 3,
+                    "media_type": "image/png",
+                }))
+                .expect("artifact"),
+                alt: None,
+            },
+        )];
+        tool.revision += 1;
+        let opened = Expanded::from_iter([call_id.to_string()]);
+        let shown = draw(&state, &opened, &mut cache);
+        assert_eq!(
+            super::to_fill_in(&coded, &shown),
+            [super::part_element_id(row, call)]
+        );
+        // Nothing changed: nothing to fill in.
+        assert!(super::to_fill_in(&shown, &draw(&state, &opened, &mut cache)).is_empty());
     }
 
     /// The cost of one delta at the end of a reply of 4000 parts (half of
