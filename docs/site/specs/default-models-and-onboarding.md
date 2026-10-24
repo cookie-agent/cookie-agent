@@ -417,10 +417,17 @@ format unchanged: the frozen `ParentModel` fallback gained an optional
 
 **Onboarding.**
 
-- The release source tries `<releases>/download/v<version>/…` then
-  `<releases>/latest/download/…`; the base URL is injectable
-  (`Engine::set_releases_url`) and tests serve kits from a local HTTP
-  server. A downloaded kit is kept ten minutes for the run after a preview.
+- The release source tries, in order: `<releases>/download/v<version>/…`
+  (this build's release); the newest release in one unauthenticated page
+  of the GitHub releases API (prereleases included, drafts skipped) whose
+  tag's major.minor.patch is this build's version and which carries the
+  kit, since nightlies are tagged `v<version>-alpha.<n>` while the crate
+  version is a plain `<version>`; then `<releases>/latest/download/…`, the
+  latest stable release. A rate limit or any other failure of the list
+  moves on to the next step; when every step fails the kit is unavailable,
+  with each step's reason. The base URL is injectable
+  (`Engine::set_releases_url`; a non-GitHub base serves its list at
+  `<base>/api`) and tests serve kits and lists from a local HTTP server. A downloaded kit is kept ten minutes for the run after a preview.
 - **Deviation:** an uploaded archive travels inline, base64 in the
   `source` (`{"type": "archive", "data": …}`, at most 1 MiB), not through
   an upload lease: upload leases belong to a session's tree and accept only

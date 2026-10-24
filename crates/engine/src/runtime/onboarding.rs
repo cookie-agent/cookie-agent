@@ -368,8 +368,16 @@ impl Engine {
     }
 }
 
-/// Downloads the kit of this build's release, else of the latest release:
-/// its URL and bytes.
+/// Downloads the kit and says where it came from. In order:
+///
+/// 1. `<releases>/download/v<version>/<asset>`, this build's own release;
+/// 2. the newest release in the release list, prereleases included, whose
+///    tag's major.minor.patch is this build's version and which carries the
+///    kit (nightlies are tagged `v<version>-alpha.<n>`);
+/// 3. `<releases>/latest/download/<asset>`, the latest stable release.
+///
+/// The list is one unauthenticated page of the GitHub API; a rate limit or
+/// any other failure there moves on to the next step.
 async fn download_release_kit(releases_url: &str) -> Result<(String, Vec<u8>), KitError> {
     let unavailable = |reason: String| KitError::Unavailable(reason);
     let client = reqwest::Client::builder()
@@ -380,47 +388,156 @@ async fn download_release_kit(releases_url: &str) -> Result<(String, Vec<u8>), K
         .build()
         .map_err(|error| unavailable(error.to_string()))?;
     let base = releases_url.trim_end_matches('/');
-    let candidates = [
-        format!(
-            "{base}/download/v{}/{}",
-            env!("CARGO_PKG_VERSION"),
-            kit::KIT_ASSET
-        ),
-        format!("{base}/latest/download/{}", kit::KIT_ASSET),
-    ];
-    for url in candidates {
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|error| unavailable(format!("{url}: {error}")))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            continue;
+    let own = format!(
+        "{base}/download/v{}/{}",
+        env!("CARGO_PKG_VERSION"),
+        kit::KIT_ASSET
+    );
+    let mut failures = Vec::new();
+    match download(&client, &own).await {
+        Ok(Some(bytes)) => return Ok((own, bytes)),
+        Ok(None) => failures.push(format!("{own}: not found")),
+        Err(KitError::TooLarge) => return Err(KitError::TooLarge),
+        Err(error) => failures.push(error.to_string()),
+    }
+    match prerelease_kit_url(&client, &releases_api_url(base), env!("CARGO_PKG_VERSION")).await {
+        Ok(Some(url)) => match download(&client, &url).await {
+            Ok(Some(bytes)) => return Ok((url, bytes)),
+            Ok(None) => failures.push(format!("{url}: not found")),
+            Err(KitError::TooLarge) => return Err(KitError::TooLarge),
+            Err(error) => failures.push(error.to_string()),
+        },
+        Ok(None) => failures.push(format!(
+            "no release of {} carries a starter kit",
+            env!("CARGO_PKG_VERSION")
+        )),
+        Err(error) => failures.push(error),
+    }
+    let latest = format!("{base}/latest/download/{}", kit::KIT_ASSET);
+    match download(&client, &latest).await {
+        Ok(Some(bytes)) => return Ok((latest, bytes)),
+        Ok(None) => failures.push(format!("{latest}: not found")),
+        Err(KitError::TooLarge) => return Err(KitError::TooLarge),
+        Err(error) => failures.push(error.to_string()),
+    }
+    Err(unavailable(format!(
+        "no release has a starter kit for this version ({})",
+        failures.join("; ")
+    )))
+}
+
+/// The GitHub API's release list for a `https://github.com/<owner>/<repo>/releases`
+/// page, one page of 30; for any other base (a test's server),
+/// `<base>/api`.
+fn releases_api_url(base: &str) -> String {
+    match base
+        .strip_prefix("https://github.com/")
+        .and_then(|rest| rest.strip_suffix("/releases"))
+    {
+        Some(repository) => {
+            format!("https://api.github.com/repos/{repository}/releases?per_page=30")
         }
-        if !response.status().is_success() {
-            return Err(unavailable(format!("{url}: HTTP {}", response.status())));
-        }
-        if response
-            .content_length()
-            .is_some_and(|length| length > kit::MAX_ARCHIVE_BYTES as u64)
-        {
+        None => format!("{base}/api"),
+    }
+}
+
+/// The download URL of the kit of the newest release in the list at `api`
+/// whose tag is `version`, or a pre-release of it, and which carries the
+/// kit; `None` when no release does.
+async fn prerelease_kit_url(
+    client: &reqwest::Client,
+    api: &str,
+    version: &str,
+) -> Result<Option<String>, String> {
+    #[derive(serde::Deserialize)]
+    struct Release {
+        tag_name: String,
+        #[serde(default)]
+        draft: bool,
+        #[serde(default)]
+        published_at: Option<String>,
+        #[serde(default)]
+        assets: Vec<Asset>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+    }
+    let response = client
+        .get(api)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|error| format!("{api}: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("{api}: HTTP {}", response.status()));
+    }
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| format!("{api}: {error}"))?;
+    let mut releases = serde_json::from_slice::<Vec<Release>>(&body)
+        .map_err(|error| format!("{api}: the release list does not read: {error}"))?;
+    // Newest first, as the API lists them; published_at settles it when the
+    // list says otherwise. RFC 3339 times in UTC sort as text.
+    releases.sort_by(|left, right| right.published_at.cmp(&left.published_at));
+    Ok(releases
+        .into_iter()
+        .filter(|release| !release.draft)
+        .filter(|release| release_core(&release.tag_name) == Some(release_core_of(version)))
+        .find_map(|release| {
+            release
+                .assets
+                .into_iter()
+                .find(|asset| asset.name == kit::KIT_ASSET)
+                .map(|asset| asset.browser_download_url)
+        }))
+}
+
+/// The major.minor.patch of a release tag: `v0.4.0-alpha.7` is `0.4.0`.
+fn release_core(tag: &str) -> Option<&str> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let core = release_core_of(version);
+    (core.split('.').count() == 3 && core.split('.').all(|part| part.parse::<u64>().is_ok()))
+        .then_some(core)
+}
+
+fn release_core_of(version: &str) -> &str {
+    version.split(['-', '+']).next().unwrap_or(version)
+}
+
+/// The body at `url`: `None` for a 404, an error for any other failure.
+async fn download(client: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>, KitError> {
+    let unavailable = |reason: String| KitError::Unavailable(reason);
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| unavailable(format!("{url}: {error}")))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(unavailable(format!("{url}: HTTP {}", response.status())));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > kit::MAX_ARCHIVE_BYTES as u64)
+    {
+        return Err(KitError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| unavailable(format!("{url}: {error}")))?
+    {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > kit::MAX_ARCHIVE_BYTES {
             return Err(KitError::TooLarge);
         }
-        let mut bytes = Vec::new();
-        let mut response = response;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| unavailable(format!("{url}: {error}")))?
-        {
-            bytes.extend_from_slice(&chunk);
-            if bytes.len() > kit::MAX_ARCHIVE_BYTES {
-                return Err(KitError::TooLarge);
-            }
-        }
-        return Ok((url, bytes));
     }
-    Err(unavailable(
-        "neither this version's release nor the latest release has a starter kit".into(),
-    ))
+    Ok(Some(bytes))
 }

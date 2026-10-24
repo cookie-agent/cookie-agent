@@ -224,8 +224,9 @@ The steps, as numbered questions:
    same as yours and skipped, or differs and written beside yours as
    `<name>.new`) and asks whether to install it.
 
-The kit comes from the release of this daemon's version, else the latest
-release; `--from` takes a downloaded `cookie-agent-defaults.tar.gz` instead.
+The kit comes from the daemon's own release (`v<version>`), else its
+newest nightly of the same version that carries one (`v<version>-alpha.<n>`,
+from GitHub's release list), else the latest stable release; `--from` takes a downloaded `cookie-agent-defaults.tar.gz` instead.
 Its manifest's hashes are checked before anything is written. `--diff`
 prints what installing the kit would change, with a diff of each changed
 file, and changes nothing. `--default-model` and `--small-model` answer

@@ -34,7 +34,8 @@ it, and the release attaches it as `cookie-agent-web.tar.gz`. The same job
 packs the starter kit, `defaults/`, with `scripts/pack-defaults.sh` and the
 release attaches it as `cookie-agent-defaults.tar.gz`, prereleases included;
 `cookie onboard` downloads it from the release of its own version, else the
-latest release. It waits for each dependency version to appear in
+newest prerelease of that version that has it (from the releases API,
+which is how a nightly finds its kit), else the latest stable release. It waits for each dependency version to appear in
 the crates.io sparse index before publishing the dependent crate. Publication
 finishes before the artifacts are uploaded. Each crate is skipped when its exact
 version is already indexed, so rerunning a partially completed release resumes

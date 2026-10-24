@@ -487,11 +487,24 @@ async fn new_kit_documents_are_written_and_applied() {
 /// Serves `GET <path>` from `routes`, 404 for anything else; the base URL
 /// of `/releases`.
 async fn serve(routes: BTreeMap<String, Vec<u8>>) -> String {
+    serve_with(move |_| {
+        routes
+            .into_iter()
+            .map(|(path, body)| (path, (200, body)))
+            .collect()
+    })
+    .await
+}
+
+/// [`serve`] with routes built from the server's own origin
+/// (`http://127.0.0.1:<port>`), each with its status.
+async fn serve_with(build: impl FnOnce(&str) -> BTreeMap<String, (u16, Vec<u8>)>) -> String {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener");
     let address = listener.local_addr().expect("address");
+    let routes = build(&format!("http://{address}"));
     tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
@@ -510,9 +523,9 @@ async fn serve(routes: BTreeMap<String, Vec<u8>>) -> String {
                 let request = String::from_utf8_lossy(&request);
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
                 let response = match routes.get(&path) {
-                    Some(body) => {
+                    Some((status, body)) => {
                         let mut response = format!(
-                            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/gzip\r\nconnection: close\r\n\r\n",
+                            "HTTP/1.1 {status} Answer\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                             body.len()
                         )
                         .into_bytes();
@@ -598,4 +611,145 @@ fn a_gnu_tar_archive_of_the_kit_reads() {
     let kit = Kit::from_archive(&std::fs::read(&archive).expect("archive")).expect("kit");
     assert_eq!(kit.manifest.cookie_version.as_deref(), Some("0.0.0-test"));
     assert_eq!(kit.files.len(), defaults_files().len() - 1);
+}
+
+fn release(tag: &str, published: &str, kit_url: Option<&str>, draft: bool) -> serde_json::Value {
+    serde_json::json!({
+        "tag_name": tag,
+        "draft": draft,
+        "published_at": published,
+        "assets": kit_url.map_or_else(Vec::new, |url| vec![
+            serde_json::json!({"name": "cookie-agent-web.tar.gz", "browser_download_url": "http://127.0.0.1:9/web"}),
+            serde_json::json!({"name": "cookie-agent-defaults.tar.gz", "browser_download_url": url}),
+        ]),
+    })
+}
+
+#[tokio::test]
+async fn a_nightly_finds_the_kit_of_its_newest_prerelease() {
+    let fixture = fixture();
+    let version = env!("CARGO_PKG_VERSION");
+    let base = serve_with(|origin| {
+        let list = serde_json::json!([
+            // Another version's nightly, newest of all: not this build's.
+            release(
+                "v99.0.0-alpha.3",
+                "2026-10-24T09:00:00Z",
+                Some(&format!("{origin}/other")),
+                false
+            ),
+            // A draft of this version: never.
+            release(
+                &format!("v{version}-alpha.9"),
+                "2026-10-24T08:00:00Z",
+                Some(&format!("{origin}/draft")),
+                true
+            ),
+            // This version's newest nightly carries no kit.
+            release(
+                &format!("v{version}-alpha.8"),
+                "2026-10-24T07:00:00Z",
+                None,
+                false
+            ),
+            // The one to take.
+            release(
+                &format!("v{version}-alpha.7"),
+                "2026-10-24T06:00:00Z",
+                Some(&format!("{origin}/nightly-7")),
+                false
+            ),
+            release(
+                &format!("v{version}-alpha.6"),
+                "2026-10-24T05:00:00Z",
+                Some(&format!("{origin}/nightly-6")),
+                false
+            ),
+        ]);
+        BTreeMap::from([
+            (
+                "/releases/api".to_owned(),
+                (200, serde_json::to_vec(&list).unwrap()),
+            ),
+            ("/nightly-7".to_owned(), (200, archive())),
+            ("/nightly-6".to_owned(), (200, b"older".to_vec())),
+            ("/other".to_owned(), (200, b"another version's".to_vec())),
+            ("/draft".to_owned(), (200, b"a draft's".to_vec())),
+            (
+                "/releases/latest/download/cookie-agent-defaults.tar.gz".to_owned(),
+                (200, b"stable".to_vec()),
+            ),
+        ])
+    })
+    .await;
+    fixture.engine.set_releases_url(&base);
+    let preview = fixture
+        .engine
+        .preview_kit(KitSource::Release)
+        .await
+        .expect("the nightly's kit");
+    assert!(preview.origin.ends_with("/nightly-7"), "{}", preview.origin);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_rate_limited_release_list_falls_back_to_the_latest_release() {
+    let fixture = fixture();
+    let base = serve_with(|_| {
+        BTreeMap::from([
+            (
+                "/releases/api".to_owned(),
+                (403, br#"{"message":"API rate limit exceeded"}"#.to_vec()),
+            ),
+            (
+                "/releases/latest/download/cookie-agent-defaults.tar.gz".to_owned(),
+                (200, archive()),
+            ),
+        ])
+    })
+    .await;
+    fixture.engine.set_releases_url(&base);
+    let preview = fixture
+        .engine
+        .preview_kit(KitSource::Release)
+        .await
+        .expect("the latest release's kit");
+    assert!(
+        preview
+            .origin
+            .ends_with("/latest/download/cookie-agent-defaults.tar.gz")
+    );
+
+    // With no stable kit either, the kit is unavailable, naming each try.
+    let none =
+        serve_with(|_| BTreeMap::from([("/releases/api".to_owned(), (403, b"{}".to_vec()))])).await;
+    fixture.engine.set_releases_url(&none);
+    let error = fixture
+        .engine
+        .preview_kit(KitSource::Release)
+        .await
+        .expect_err("no kit anywhere");
+    let EngineError::OnboardingKit(KitError::Unavailable(reason)) = error else {
+        panic!("{error:?}");
+    };
+    assert!(reason.contains("HTTP 403"), "{reason}");
+    fixture.engine.shutdown().await;
+}
+
+#[test]
+fn the_release_list_is_the_github_api_for_a_github_releases_page() {
+    assert_eq!(
+        super::releases_api_url("https://github.com/cookie-agent/cookie-agent/releases"),
+        "https://api.github.com/repos/cookie-agent/cookie-agent/releases?per_page=30"
+    );
+    assert_eq!(
+        super::releases_api_url("http://127.0.0.1:4000/releases"),
+        "http://127.0.0.1:4000/releases/api"
+    );
+    assert_eq!(
+        super::release_core("v0.4.0-alpha.1792900000"),
+        Some("0.4.0")
+    );
+    assert_eq!(super::release_core("0.4.1"), Some("0.4.1"));
+    assert_eq!(super::release_core("nightly"), None);
 }
