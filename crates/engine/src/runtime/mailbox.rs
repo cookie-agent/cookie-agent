@@ -248,22 +248,32 @@ impl Engine {
 
     pub(super) fn retain_finalized_output_hub(&self, call: ToolCallId) {
         const FINALIZED_HUB_RETENTION: usize = 128;
+        /// What the kept hubs hold at most together: a hub holds up to 64 KiB
+        /// a stream, but most calls print far less.
+        const FINALIZED_HUB_RETENTION_BYTES: u64 = 2 * 1024 * 1024;
+        let mut hubs = self
+            .inner
+            .output
+            .hubs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let bytes = hubs.get(&call).map_or(0, events::OutputHub::retained_bytes);
         let mut finalized = self
             .inner
             .output
             .finalized_hubs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        finalized.push_back(call);
-        if finalized.len() > FINALIZED_HUB_RETENTION
-            && let Some(expired) = finalized.pop_front()
+        finalized.hubs.push_back((call, bytes));
+        finalized.bytes += bytes;
+        while finalized.hubs.len() > FINALIZED_HUB_RETENTION
+            || (finalized.bytes > FINALIZED_HUB_RETENTION_BYTES && finalized.hubs.len() > 1)
         {
-            self.inner
-                .output
-                .hubs
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&expired);
+            let Some((expired, bytes)) = finalized.hubs.pop_front() else {
+                break;
+            };
+            finalized.bytes -= bytes;
+            hubs.remove(&expired);
         }
     }
 

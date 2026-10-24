@@ -4109,34 +4109,37 @@ impl OutputHub {
         if state.finalized {
             return;
         }
-        let index = stream.name().to_owned();
-        let (delta, end) = {
-            let buffer = state.streams.entry(index.clone()).or_default();
-            let delta = OutputDelta {
-                call_id: self.call_id,
-                stream: stream.clone(),
-                byte_offset: buffer.end,
-                data: STANDARD.encode(data),
-            };
+        let end = {
+            let buffer = state.streams.entry(stream.name().to_owned()).or_default();
             buffer.chunks.push_back(Chunk {
                 offset: buffer.end,
                 data: data.to_vec(),
             });
             buffer.end += data.len() as u64;
-            while buffer
-                .chunks
-                .iter()
-                .map(|chunk| chunk.data.len())
-                .sum::<usize>()
-                > self.limit
-            {
-                if let Some(chunk) = buffer.chunks.pop_front() {
-                    buffer.start = chunk.offset + chunk.data.len() as u64;
-                }
+            // The retained chunks are contiguous, from `start` to `end`.
+            while buffer.end - buffer.start > self.limit as u64 {
+                let Some(chunk) = buffer.chunks.pop_front() else {
+                    break;
+                };
+                buffer.start = chunk.offset + chunk.data.len() as u64;
             }
-            (delta, buffer.end)
+            buffer.end
         };
-        let subscribers = state.subscribers.entry(index).or_default();
+        // Only a live subscriber takes the delta, so output nobody watches is
+        // never encoded.
+        let Some(subscribers) = state
+            .subscribers
+            .get_mut(stream.name())
+            .filter(|subscribers| !subscribers.is_empty())
+        else {
+            return;
+        };
+        let delta = OutputDelta {
+            call_id: self.call_id,
+            stream: stream.clone(),
+            byte_offset: end - data.len() as u64,
+            data: STANDARD.encode(data),
+        };
         subscribers.retain_mut(|subscriber| {
             if let Some(next_offset) = subscriber.gap {
                 match subscriber.sender.try_send(OutputMessage::Gap(OutputGap {
@@ -4219,6 +4222,17 @@ impl OutputHub {
                 .push(Subscriber { sender, gap });
         }
         (snapshot, receiver)
+    }
+
+    /// The output bytes the hub holds, across its streams.
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .streams
+            .values()
+            .map(|buffer| buffer.end - buffer.start)
+            .sum()
     }
 
     /// Prevents late producer clones from publishing after the owning call has

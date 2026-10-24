@@ -3657,6 +3657,21 @@ async fn lagging_live_subscriber_receives_a_gap_before_later_delta() {
     }
 }
 
+#[test]
+fn unwatched_output_keeps_only_its_retention_per_stream() {
+    let hub = OutputHub::new(ToolCallId(Uuid::from_u128(8)), 5);
+    for chunk in [&b"one"[..], b"two", b"three"] {
+        hub.emit(OutputStream::Stdout, chunk);
+    }
+    hub.emit(OutputStream::Stderr, b"err");
+    // stdout keeps "three" (5 bytes), stderr "err".
+    assert_eq!(hub.retained_bytes(), 8);
+    let (snapshot, _live) = hub.subscribe(OutputStream::Stdout, 4);
+    assert_eq!((snapshot.start_offset, snapshot.end_offset), (6, 11));
+    assert_eq!(snapshot.chunks.len(), 1);
+    assert_eq!(snapshot.chunks[0].byte_offset, 6);
+}
+
 #[tokio::test]
 async fn finalize_drains_queued_delta_before_closing() {
     let hub = OutputHub::new(ToolCallId(Uuid::from_u128(5)), 64);

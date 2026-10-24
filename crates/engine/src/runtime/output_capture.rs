@@ -25,7 +25,16 @@ use cookie_agent_protocol::ToolCallId;
 pub(crate) struct OutputState {
     pub(crate) hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
     pub(crate) captures: Mutex<HashMap<ToolCallId, OutputCapture>>,
-    pub(crate) finalized_hubs: Mutex<VecDeque<ToolCallId>>,
+    pub(crate) finalized_hubs: Mutex<FinalizedHubs>,
+}
+
+/// The finalized hubs kept for a late subscriber's snapshot (a headless run
+/// that subscribes once it sees the call start), oldest first, with the
+/// output bytes they hold.
+#[derive(Default)]
+pub(crate) struct FinalizedHubs {
+    pub(crate) hubs: VecDeque<(ToolCallId, u64)>,
+    pub(crate) bytes: u64,
 }
 
 /// Accepted output waits in memory until a channel holds this much, so a
