@@ -54,7 +54,7 @@ pub(super) fn repeated_prefixed_hanging_line(
         if index == 0 {
             spans.extend(first_prefix.clone());
         } else if continuation_indent > 0 {
-            spans.push(Span::raw(" ".repeat(continuation_indent)));
+            spans.push(Span::raw(crate::markdown::spaces(continuation_indent)));
         }
         spans.append(&mut line.spans);
         line.spans = spans;

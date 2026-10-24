@@ -1279,3 +1279,44 @@ async fn returning_to_a_recent_session_reuses_its_layout() {
             .all(|(now, then)| std::sync::Arc::ptr_eq(now, then))
     );
 }
+
+/// Parked layout caches go oldest first, once there are more than the
+/// count allows or together they hold more rows than the row budget.
+#[test]
+fn parked_layouts_are_evicted_oldest_first_by_count_and_rows() {
+    let parked_with = |rows: &[usize]| {
+        rows.iter()
+            .map(|rows| {
+                let mut cache = LayoutCache::default();
+                cache
+                    .layout
+                    .lines
+                    .push_chunk(vec![ratatui::text::Line::default(); *rows].into());
+                cache
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = |caches: &[LayoutCache]| {
+        caches
+            .iter()
+            .map(|cache| cache.layout.lines.len())
+            .collect::<Vec<_>>()
+    };
+
+    let mut parked = parked_with(&[1, 2, 3]);
+    assert!(evict_parked_layouts(&mut parked, 3, 6).is_empty());
+    assert_eq!(rows(&parked), [1, 2, 3]);
+
+    let mut parked = parked_with(&[1, 2, 3, 4]);
+    assert_eq!(rows(&evict_parked_layouts(&mut parked, 3, 100)), [1]);
+    assert_eq!(rows(&parked), [2, 3, 4]);
+
+    let mut parked = parked_with(&[5, 2, 3]);
+    assert_eq!(rows(&evict_parked_layouts(&mut parked, 3, 5)), [5]);
+    assert_eq!(rows(&parked), [2, 3]);
+
+    // A layout bigger than the whole budget is not kept either.
+    let mut parked = parked_with(&[1, 9]);
+    assert_eq!(rows(&evict_parked_layouts(&mut parked, 3, 5)), [1, 9]);
+    assert!(parked.is_empty());
+}

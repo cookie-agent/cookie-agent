@@ -1291,3 +1291,24 @@ fn deferred_code_renders_plain_on_the_rows_it_highlights_to() {
         }
     }
 }
+
+/// Released, a settled block renders afresh — to the same lines — instead of
+/// handing back what its cache kept.
+#[test]
+fn released_blocks_render_afresh() {
+    let document =
+        MarkdownDocument::new("para\n\n```rust\nlet a = 1;\n```\n".to_owned()).finished();
+    let theme = Theme::default();
+    let render = || {
+        super::render_markdown_blocks_width(&document, &theme, &PlainHighlighter, 40, false)
+            .into_iter()
+            .map(|(lines, _)| lines)
+            .collect::<Vec<_>>()
+    };
+    let first = render();
+    assert!(first.iter().zip(render()).all(|(a, b)| Arc::ptr_eq(a, &b)));
+    super::release_rendered(&document);
+    let again = render();
+    assert_eq!(first, again);
+    assert!(first.iter().zip(&again).all(|(a, b)| !Arc::ptr_eq(a, b)));
+}

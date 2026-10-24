@@ -1111,6 +1111,18 @@ pub(crate) fn render_markdown_blocks_width(
     blocks
 }
 
+/// Drop the rendered lines each block of `document` keeps for its last
+/// width, keeping its highlighted code.
+pub(crate) fn release_rendered(document: &MarkdownDocument) {
+    for block in document.blocks() {
+        block_cache(block)
+            .rendered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}
+
 /// One settled block's rendered lines, from its per-block cache when the
 /// width, theme and highlighter still match.
 fn render_stable_block(
@@ -1735,11 +1747,10 @@ impl<'a> MarkdownRenderer<'a> {
             .into_iter()
             .enumerate()
             {
-                let label = code_line_number(number_width, line_index, index);
-                let label = if number_width == 0 {
-                    label
-                } else {
-                    format!(" {label}")
+                let label = match code_line_number(number_width, line_index, index) {
+                    label if number_width == 0 => label,
+                    std::borrow::Cow::Borrowed(blank) => spaces(blank.len() + 1),
+                    std::borrow::Cow::Owned(label) => format!(" {label}").into(),
                 };
                 let mut spans = vec![Span::styled(label, marker)];
                 spans.extend(content.into_iter().map(|mut span| {
@@ -1761,10 +1772,17 @@ impl<'a> MarkdownRenderer<'a> {
         for mut row in rows {
             let used = row.iter().map(Span::width).sum::<usize>();
             if used < band_width {
-                row.push(Span::styled(" ".repeat(band_width - used), band));
+                row.push(Span::styled(spaces(band_width - used), band));
             }
-            let mut spans = vec![Span::styled(quote_prefix.clone(), self.theme.quote())];
-            spans.extend(row);
+            // Outside a quote the row starts with its marker: no empty
+            // prefix span to keep for every row.
+            let spans = if quote_prefix.is_empty() {
+                row
+            } else {
+                let mut spans = vec![Span::styled(quote_prefix.clone(), self.theme.quote())];
+                spans.extend(row);
+                spans
+            };
             self.push_code_line(Line::from(spans));
         }
     }
@@ -1799,10 +1817,11 @@ impl<'a> MarkdownRenderer<'a> {
             .into_iter()
             .enumerate()
             {
-                let mut spans = vec![
-                    Span::styled(quote_prefix.clone(), self.theme.quote()),
-                    Span::styled("│ ", border),
-                ];
+                let mut spans = Vec::with_capacity(3 + content.len());
+                if !quote_prefix.is_empty() {
+                    spans.push(Span::styled(quote_prefix.clone(), self.theme.quote()));
+                }
+                spans.push(Span::styled("│ ", border));
                 if number_width > 0 {
                     spans.push(Span::styled(
                         code_line_number(number_width, line_index, index),
@@ -1861,6 +1880,20 @@ impl<'a> MarkdownRenderer<'a> {
     }
 }
 
+/// `count` spaces, borrowed from one static run when it is long enough:
+/// padding fills most code and tool rows, and a long transcript keeps every
+/// row it rendered.
+pub(crate) fn spaces(count: usize) -> std::borrow::Cow<'static, str> {
+    const SPACES: &str = match std::str::from_utf8(&[b' '; 256]) {
+        Ok(spaces) => spaces,
+        Err(_) => panic!("spaces are UTF-8"),
+    };
+    match SPACES.get(..count) {
+        Some(spaces) => std::borrow::Cow::Borrowed(spaces),
+        None => std::borrow::Cow::Owned(" ".repeat(count)),
+    }
+}
+
 /// Terminal tab stops: every eight columns.
 pub(crate) const TAB_WIDTH: usize = 8;
 
@@ -1910,13 +1943,17 @@ fn code_number_width(line_count: usize) -> usize {
 
 /// The line-number cell of one code row plus its trailing space: the number
 /// on a line's first row, blank on its wrapped continuations.
-fn code_line_number(number_width: usize, line_index: usize, row_index: usize) -> String {
+fn code_line_number(
+    number_width: usize,
+    line_index: usize,
+    row_index: usize,
+) -> std::borrow::Cow<'static, str> {
     if number_width == 0 {
-        " ".to_owned()
+        spaces(1)
     } else if row_index == 0 {
-        format!("{:>number_width$} ", line_index + 1)
+        format!("{:>number_width$} ", line_index + 1).into()
     } else {
-        " ".repeat(number_width + 1)
+        spaces(number_width + 1)
     }
 }
 

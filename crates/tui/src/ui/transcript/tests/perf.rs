@@ -10,8 +10,15 @@
 //!
 //! Optional: `PERF_RUNS` (150 runs ≈ 15k transcript lines, 300 code blocks)
 //! and `PERF_REPEAT` (30 samples per measurement).
+//!
+//! Heap figures come from a counting allocator installed for the test
+//! binary: the live bytes a step leaves allocated.
 
-use std::time::{Duration, Instant};
+use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    sync::atomic::{AtomicIsize, Ordering},
+    time::{Duration, Instant},
+};
 
 use cookie_agent_protocol::{
     AttemptId, EventPayload, RunId, SafeDisplayText, SessionId, SessionTree, StoredEvent,
@@ -23,6 +30,44 @@ use ratatui::{Terminal, backend::TestBackend};
 use crate::ui::app::App;
 
 use super::support::*;
+
+/// Bytes allocated and not yet freed by the whole test binary.
+static LIVE: AtomicIsize = AtomicIsize::new(0);
+
+struct Counting;
+
+// SAFETY: every call forwards to the system allocator unchanged; the
+// counter only observes sizes.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
+        // SAFETY: the caller upholds `alloc`'s contract.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
+        // SAFETY: the caller upholds `dealloc`'s contract.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        LIVE.fetch_add(
+            new_size as isize - layout.size() as isize,
+            Ordering::Relaxed,
+        );
+        // SAFETY: the caller upholds `realloc`'s contract.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+/// Live heap growth in MB since `before` (a [`LIVE`] reading).
+fn live_mb(before: isize) -> f64 {
+    (LIVE.load(Ordering::Relaxed) - before) as f64 / 1e6
+}
 
 const WIDTH: u16 = 160;
 const HEIGHT: u16 = 50;
@@ -310,7 +355,9 @@ async fn scenario(with_descendants: bool) {
     let replay = start.elapsed();
 
     let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("terminal");
+    let live = LIVE.load(Ordering::Relaxed);
     let first = draw(&mut terminal, &mut app);
+    let first_live = live_mb(live);
     let state = &app.store.sessions[&root];
     eprintln!(
         "scenario: descendants={with_descendants} runs={runs} live turns={live_turns} items={} lines={} descendant rows={}",
@@ -325,7 +372,7 @@ async fn scenario(with_descendants: bool) {
         replay.as_secs_f64() * 1000.0
     );
     eprintln!(
-        "  {:<34} {:>9.3} ms",
+        "  {:<34} {:>9.3} ms   live heap +{first_live:.1} MB",
         "first draw",
         first.as_secs_f64() * 1000.0
     );
@@ -522,9 +569,10 @@ async fn scenario(with_descendants: bool) {
     report("page up + redraw", samples, &app, before);
     app.conversation_scroll.bottom();
 
-    // A long session never viewed before, with code of its own.
-    let before = passes(&app);
-    let samples = (0..repeat.min(4))
+    // A long session never viewed before, with code of its own. The heap
+    // each leaves behind is its layout, parked once the next one shows.
+    let mut layout_live = Vec::new();
+    let samples: Vec<_> = (0..repeat.min(8))
         .map(|index| {
             let unseen = SessionId::new_v7();
             let history = root_history(
@@ -537,10 +585,19 @@ async fn scenario(with_descendants: bool) {
             );
             assert!(app.store.rebuild_session(unseen, 0, history));
             app.selected = Some(unseen);
-            draw(&mut terminal, &mut app)
+            let live = LIVE.load(Ordering::Relaxed);
+            let elapsed = draw(&mut terminal, &mut app);
+            layout_live.push(format!("{:.1}", live_mb(live)));
+            elapsed
         })
         .collect();
-    report("switch to unseen + redraw", samples, &app, before);
+    // Every switch lays out a fresh cache, so pass counts do not compare.
+    eprintln!(
+        "  {:<34} median {:>9.3} ms   live heap MB per switch: {}",
+        "switch to unseen + redraw",
+        median(samples).as_secs_f64() * 1000.0,
+        layout_live.join(", ")
+    );
 }
 
 /// What keeping only the markdown source in the shared state would add:

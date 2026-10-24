@@ -550,7 +550,8 @@ pub(super) fn paint_band(
     let right = usize::from(padded).min(fill);
     let start = gutter_spans.min(line.spans.len());
     if fill > right {
-        line.spans.push(Span::raw(" ".repeat(fill - right)));
+        line.spans
+            .push(Span::raw(crate::markdown::spaces(fill - right)));
     }
     if let Some(row) = tint.or(background) {
         for span in &mut line.spans[start..] {
@@ -560,7 +561,7 @@ pub(super) fn paint_band(
         }
     }
     if right > 0 {
-        let mut margin = Span::raw(" ".repeat(right));
+        let mut margin = Span::raw(crate::markdown::spaces(right));
         if let Some(background) = background {
             margin.style = margin.style.bg(background);
         }

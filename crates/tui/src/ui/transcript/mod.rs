@@ -1115,8 +1115,13 @@ fn next_layout_revision() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Layout caches kept for recently viewed sessions besides the current one.
+/// Layout caches kept for recently viewed sessions besides the current one...
 const PARKED_LAYOUT_CACHES: usize = 4;
+
+/// ...holding at most this many rows together: a parked row costs a few
+/// hundred bytes, and laying out a session again costs about 5 ms per
+/// thousand rows.
+const PARKED_LAYOUT_LINES: usize = 40_000;
 
 /// Descendant rows spliced into a rendered transcript, kept apart from the
 /// transcript's own lines: the view reads through both, so no frame copies
@@ -1928,8 +1933,19 @@ impl App {
             .unwrap_or_default();
         let previous = std::mem::replace(&mut self.layout_cache, parked);
         self.parked_layout_caches.push(previous);
-        if self.parked_layout_caches.len() > PARKED_LAYOUT_CACHES {
-            self.parked_layout_caches.remove(0);
+        for evicted in evict_parked_layouts(
+            &mut self.parked_layout_caches,
+            PARKED_LAYOUT_CACHES,
+            PARKED_LAYOUT_LINES,
+        ) {
+            // Its markdown keeps rendered blocks only for this layout to
+            // reuse; they would outlive it in the session for good.
+            if let Some(state) = evicted
+                .key
+                .and_then(|key| self.store.sessions.get(&key.session_id))
+            {
+                release_rendered_markdown(state);
+            }
         }
     }
 
@@ -2154,6 +2170,45 @@ fn transcript_layout_at_clock(
         append_item_layout(&mut layout, item_layout);
     }
     layout
+}
+
+/// Remove the oldest of the `parked` layout caches (oldest first) until at
+/// most `max_caches` remain holding at most `max_lines` rows together, and
+/// return them.
+fn evict_parked_layouts(
+    parked: &mut Vec<LayoutCache>,
+    max_caches: usize,
+    max_lines: usize,
+) -> Vec<LayoutCache> {
+    let mut lines = parked
+        .iter()
+        .map(|cache| cache.layout.lines.len())
+        .sum::<usize>();
+    let mut evicted = 0;
+    while evicted < parked.len() && (parked.len() - evicted > max_caches || lines > max_lines) {
+        lines -= parked[evicted].layout.lines.len();
+        evicted += 1;
+    }
+    parked.drain(..evicted).collect()
+}
+
+/// Drop the rendered blocks `state`'s markdown keeps for a layout, keeping
+/// their highlighted code: once no layout cache of the session is left,
+/// the next layout renders every block afresh anyway.
+fn release_rendered_markdown(state: &SessionState) {
+    for item in &state.transcript {
+        match item {
+            TranscriptItem::User { markdown, .. } => crate::markdown::release_rendered(markdown),
+            TranscriptItem::Assistant { children, .. } => {
+                for child in children {
+                    if let AssistantChild::Text { markdown, .. } = child {
+                        crate::markdown::release_rendered(markdown);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Append one item to the cached layout after the one-blank-row separator
