@@ -756,6 +756,14 @@ error_codes! {
         hint: Some("On a conflict, reload the configuration and apply the change again; otherwise fix what the details name."),
         description: "`config.apply` changed nothing; `detail` says why.",
     }
+    ACP_AGENT_UNSUPPORTED {
+        code: "acp_agent_unsupported",
+        rpc: APPLICATION_ERROR,
+        fields: [required("reason", "What the agent cannot do, in the daemon's words.")],
+        message: "{reason}.",
+        hint: Some("Revert or fork to before the agent's first reply, or go on from where the session is."),
+        description: "`session.revert` or `session.fork` would cut into the conversation of an ACP agent that cannot fork it there: one that offers no `session/fork`, whose fork does not take a fork point (for a revert, or a fork before the end of its conversation), or that the daemon has not asked yet.",
+    }
     ONBOARDING_INCOMPLETE {
         code: "onboarding_incomplete",
         rpc: APPLICATION_ERROR,

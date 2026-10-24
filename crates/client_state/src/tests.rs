@@ -4044,6 +4044,9 @@ fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
                 agent_info: serde_json::Value::Null,
                 how: AcpSessionStart::New,
                 steering: false,
+                forked_from: None,
+                fork: None,
+                fork_point: None,
             },
         },
     );
@@ -4177,6 +4180,9 @@ fn an_acp_sessions_steering_notices_and_late_tool_presentations_fold_from_its_ev
                 agent_info: serde_json::Value::Null,
                 how: AcpSessionStart::New,
                 steering: true,
+                forked_from: None,
+                fork: None,
+                fork_point: None,
             },
         },
     );

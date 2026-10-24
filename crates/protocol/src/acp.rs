@@ -1,7 +1,7 @@
 //! What the client protocol and session history say about ACP agents
 //! (`docs/site/specs/acp-agents.md` sections 5, 10, and 11; client protocol
 //! 1.17.0, notices, steering, and tool presentations 1.20.0, context use
-//! and boolean options 1.23.0).
+//! and boolean options 1.23.0, forked and detached sessions 1.24.0).
 //!
 //! The daemon records the ACP session a cookie session talks to
 //! (`acp_session_started`) and what the agent reports about it
@@ -36,7 +36,45 @@ crate::open_enum! {
         /// `session/load` of the session recorded before; its replay is
         /// ignored.
         Loaded,
+        /// `session/fork` of the session a fork or a revert left behind
+        /// ([`AcpSessionRecord::forked_from`]); client protocol 1.24.0.
+        Forked,
     }
+}
+
+crate::open_enum! {
+    /// Why a cookie session stopped continuing an ACP session as it
+    /// stands (client protocol 1.24.0). An unknown reason reads as
+    /// `forked`, which never ends the agent's session.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum AcpDetachReason {
+        /// The cookie session is a fork: the ACP session stays its
+        /// source's.
+        Forked,
+        /// The cookie session was reverted to before the end of the ACP
+        /// session's conversation: the agent's session holds turns the
+        /// cookie session no longer has, and is deleted once the next
+        /// turn has branched off it.
+        Reverted,
+    }
+}
+
+/// A cookie session's ACP session left behind by a fork or a revert
+/// (client protocol 1.24.0): the next turn of its agent does not resume
+/// it but branches off it at `message_id`, the agent's last message the
+/// cookie session keeps (`session/fork`, else a new session given the
+/// cookie transcript), and the session recorded before is no longer the
+/// cookie session's.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpDetached {
+    /// The agent's session ID ([`AcpSessionRecord::acp_session_id`]).
+    pub acp_session_id: String,
+    pub reason: AcpDetachReason,
+    /// The ACP `messageId` of the agent's last message the cookie session
+    /// keeps; none when it keeps none of the agent's messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 /// One slash command an ACP agent offers in a session.
@@ -129,6 +167,20 @@ pub struct AcpSessionRecord {
     /// (client protocol 1.20.0).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub steering: bool,
+    /// The agent's session this one was forked from, for `how: forked`
+    /// (client protocol 1.24.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<String>,
+    /// Whether the agent offers `session/fork` (client protocol 1.24.0);
+    /// absent in a record an older build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork: Option<bool>,
+    /// Whether the agent's `session/fork` forks at a message (the JetBrains
+    /// AIR fork point), as the daemon found by asking it; absent until it
+    /// has, when `acp_session_updated.fork_point` may say later (client
+    /// protocol 1.24.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_point: Option<bool>,
 }
 
 crate::open_enum! {
@@ -210,6 +262,15 @@ pub struct AcpSessionUpdate {
     /// The agent's context use, when it changed (client protocol 1.23.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<AcpContextUsage>,
+    /// The ACP session a fork or a revert left behind (client protocol
+    /// 1.24.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached: Option<AcpDetached>,
+    /// Whether the agent's `session/fork` forks at a message, found after
+    /// the session's record ([`AcpSessionRecord::fork_point`]; client
+    /// protocol 1.24.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_point: Option<bool>,
 }
 
 impl AcpSessionUpdate {
@@ -223,6 +284,8 @@ impl AcpSessionUpdate {
             && self.steered.is_none()
             && self.tool_presentation.is_none()
             && self.context.is_none()
+            && self.detached.is_none()
+            && self.fork_point.is_none()
     }
 }
 

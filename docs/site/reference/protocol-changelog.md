@@ -5,6 +5,25 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.24.0
+
+- ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,
+  session lifecycle): `acp_session_started` has the `how` value `forked`
+  (the agent's `session/fork` of a session a fork or a revert left behind;
+  an older client reads it as `new`) and the optional `forked_from`, the
+  agent's session it was forked from. `acp_session_updated` has the
+  optional `detached` (`acp_session_id`, `reason` `forked` or `reverted`,
+  and the optional `message_id` of the agent's last message the session
+  keeps): a fork or a revert left that ACP session behind, so the agent's
+  next turn branches off it instead of resuming it. `acp_session_started`
+  also has the optional `fork` (the agent offers `session/fork`) and
+  `fork_point` (its fork takes a fork point), and `acp_session_updated` the
+  optional `fork_point`, found once the daemon has asked the agent. Plugin
+  protocol 1.12.0 carries them; an older reader ignores them.
+- New error `acp_agent_unsupported` (`reason`): `session.revert` or
+  `session.fork` would cut into the conversation of an ACP agent that
+  cannot fork it there.
+
 ## 1.23.0
 
 - ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,

@@ -3278,9 +3278,23 @@ impl EventPayload {
                         && !value.chars().any(char::is_control)
                 };
                 if !label(&record.acp_session_id)
+                    || record.forked_from.as_deref().is_some_and(|id| !label(id))
                     || record.cwd.is_empty()
                     || record.cwd.len() > 4096
                     || record.cwd.chars().any(char::is_control)
+                {
+                    return Err(EventSchemaError::InvalidAcpSession);
+                }
+            }
+            Self::AcpSessionUpdated { update } => {
+                let label = |value: &str| {
+                    !value.is_empty()
+                        && value.len() <= crate::MAX_ACP_LABEL_BYTES
+                        && !value.chars().any(char::is_control)
+                };
+                if let Some(detached) = &update.detached
+                    && (!label(&detached.acp_session_id)
+                        || detached.message_id.as_deref().is_some_and(|id| !label(id)))
                 {
                     return Err(EventSchemaError::InvalidAcpSession);
                 }

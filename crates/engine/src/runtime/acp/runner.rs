@@ -2418,6 +2418,9 @@ impl Engine {
                     agent_info: process.init().agent_info.clone(),
                     how,
                     steering: process.init().steering(),
+                    forked_from: None,
+                    fork: None,
+                    fork_point: None,
                 },
             },
         )

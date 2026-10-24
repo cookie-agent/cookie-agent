@@ -130,6 +130,46 @@
       ],
       "type": "object"
     },
+    "AcpDetachReason": {
+      "description": "Why a cookie session stopped continuing an ACP session as it\nstands (client protocol 1.24.0). An unknown reason reads as\n`forked`, which never ends the agent's session.",
+      "oneOf": [
+        {
+          "const": "forked",
+          "description": "The cookie session is a fork: the ACP session stays its\nsource's.",
+          "type": "string"
+        },
+        {
+          "const": "reverted",
+          "description": "The cookie session was reverted to before the end of the ACP\nsession's conversation: the agent's session holds turns the\ncookie session no longer has, and is deleted once the next\nturn has branched off it.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "AcpDetached": {
+      "description": "A cookie session's ACP session left behind by a fork or a revert\n(client protocol 1.24.0): the next turn of its agent does not resume\nit but branches off it at `message_id`, the agent's last message the\ncookie session keeps (`session/fork`, else a new session given the\ncookie transcript), and the session recorded before is no longer the\ncookie session's.",
+      "properties": {
+        "acp_session_id": {
+          "description": "The agent's session ID ([`AcpSessionRecord::acp_session_id`]).",
+          "type": "string"
+        },
+        "message_id": {
+          "description": "The ACP `messageId` of the agent's last message the cookie session\nkeeps; none when it keeps none of the agent's messages.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/AcpDetachReason"
+        }
+      },
+      "required": [
+        "acp_session_id",
+        "reason"
+      ],
+      "type": "object"
+    },
     "AcpNotice": {
       "description": "An advisory line an ACP agent sent (its `notice` update, or what the\ndaemon makes of a compaction update), shown where it arrives (client\nprotocol 1.20.0).",
       "properties": {
@@ -182,6 +222,11 @@
         {
           "const": "loaded",
           "description": "`session/load` of the session recorded before; its replay is\nignored.",
+          "type": "string"
+        },
+        {
+          "const": "forked",
+          "description": "`session/fork` of the session a fork or a revert left behind\n([`AcpSessionRecord::forked_from`]); client protocol 1.24.0.",
           "type": "string"
         }
       ],
@@ -4064,6 +4109,27 @@
               "description": "The session's working directory on the runtime's machine.",
               "type": "string"
             },
+            "fork": {
+              "description": "Whether the agent offers `session/fork` (client protocol 1.24.0);\nabsent in a record an older build wrote.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "fork_point": {
+              "description": "Whether the agent's `session/fork` forks at a message (the JetBrains\nAIR fork point), as the daemon found by asking it; absent until it\nhas, when `acp_session_updated.fork_point` may say later (client\nprotocol 1.24.0).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "forked_from": {
+              "description": "The agent's session this one was forked from, for `how: forked`\n(client protocol 1.24.0).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "how": {
               "$ref": "#/$defs/AcpSessionStart"
             },
@@ -4130,6 +4196,24 @@
                 }
               ],
               "description": "The agent's context use, when it changed (client protocol 1.23.0)."
+            },
+            "detached": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AcpDetached"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The ACP session a fork or a revert left behind (client protocol\n1.24.0)."
+            },
+            "fork_point": {
+              "description": "Whether the agent's `session/fork` forks at a message, found after\nthe session's record ([`AcpSessionRecord::fork_point`]; client\nprotocol 1.24.0).",
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "notice": {
               "anyOf": [
