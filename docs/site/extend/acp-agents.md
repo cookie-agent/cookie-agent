@@ -137,6 +137,12 @@ session runs it on the runtime it attaches that offers it:
   the machine that ran it.
 - A subagent runs it on the runtimes it has: its parent's, or the
   capabilities its delegation names, by the same rule.
+- The agent works in the session's first workspace on that runtime (the
+  runtime's home without one). The session's other workspaces on the same
+  runtime reach an agent that supports it (`additionalDirectories`) as
+  extra workspace roots, when its session starts or resumes: attach
+  `local` at two folders and the agent may work in both. Workspaces on
+  other runtimes are on other machines, and the agent does not get them.
 
 `list_agents` shows an agent's runtimes and whether it runs in the calling
 session, and `list_runtimes` names the ACP agents each runtime offers.

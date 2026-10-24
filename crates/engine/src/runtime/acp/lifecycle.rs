@@ -442,6 +442,7 @@ impl super::super::Engine {
         message_id: Option<&str>,
         delete: bool,
         cwd: &str,
+        additional_directories: &[String],
         mcp_servers: &[wire::McpServer],
     ) -> Result<Option<(String, wire::SessionResponse)>, super::super::EngineError> {
         let Some(message_id) = message_id else {
@@ -456,7 +457,14 @@ impl super::super::Engine {
             return Ok(None);
         };
         let forked = self
-            .fork_acp_session(process, from, message_id, cwd, mcp_servers)
+            .fork_acp_session(
+                process,
+                from,
+                message_id,
+                cwd,
+                additional_directories,
+                mcp_servers,
+            )
             .await
             .map_err(|reason| {
                 let what = if delete {
@@ -505,6 +513,7 @@ impl super::super::Engine {
                 &wire::ForkSessionRequest {
                     session_id: &live.acp_session_id,
                     cwd: &live.cwd,
+                    additional_directories: &[],
                     mcp_servers: &[],
                     meta: Some(wire::air_fork_point(&missing)),
                 },
@@ -650,6 +659,7 @@ impl super::super::Engine {
         from: &AcpSessionRecord,
         message_id: &str,
         cwd: &str,
+        additional_directories: &[String],
         mcp_servers: &[wire::McpServer],
     ) -> Result<(String, wire::SessionResponse), String> {
         if !process.init().agent_capabilities.session("fork") {
@@ -662,6 +672,7 @@ impl super::super::Engine {
                 &wire::ForkSessionRequest {
                     session_id: &from.acp_session_id,
                     cwd,
+                    additional_directories,
                     mcp_servers,
                     meta: Some(wire::air_fork_point(message_id)),
                 },

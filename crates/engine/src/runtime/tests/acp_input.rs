@@ -314,3 +314,76 @@ async fn files_an_agent_does_not_take_become_a_note() {
         ]
     );
 }
+
+/// A session of the agent that attaches `local` at the daemon's workspace
+/// and at a second folder in it, whose canonical path it returns.
+async fn two_workspace_session(acp: &AcpFixture) -> (cookie_agent_protocol::SessionId, String) {
+    let second = acp.workspace().join("second");
+    std::fs::create_dir_all(&second).unwrap();
+    let request = |workspace: std::path::PathBuf| crate::SessionRuntimeRequest {
+        runtime_id: "local".to_owned(),
+        capability: Some("coding".to_owned()),
+        workspace: Some(workspace),
+    };
+    let session = acp
+        .engine()
+        .create_session_with_permissions(
+            selection(),
+            None,
+            Vec::new(),
+            SessionRuntimes {
+                runtimes: Some(vec![request(acp.workspace()), request(second.clone())]),
+                global: true,
+                cwd: None,
+            },
+        )
+        .await
+        .expect("a session with two workspaces")
+        .session_id;
+    let second = cookie_agent_protocol::paths::canonicalize(&second).unwrap();
+    (session, second.to_string_lossy().into_owned())
+}
+
+/// The `session/new` requests the agent received.
+fn new_sessions(acp: &AcpFixture) -> Vec<serde_json::Value> {
+    acp.received()
+        .into_iter()
+        .filter(|message| message["method"] == "session/new")
+        .map(|message| message["params"].clone())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sessions_other_workspaces_are_the_agents_additional_directories() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[]).await;
+    let engine = acp.engine();
+    let (session, second) = two_workspace_session(&acp).await;
+    turn(engine, session, "first", "say hi").await;
+    let new = new_sessions(&acp).pop().expect("session/new");
+    let cwd = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
+    assert_eq!(new["cwd"], cwd.to_string_lossy().as_ref());
+    assert_eq!(new["additionalDirectories"], serde_json::json!([second]));
+    // A resume names them too.
+    super::acp::stop_process(engine).await;
+    turn(engine, session, "second", "say again").await;
+    let resume = acp
+        .received()
+        .into_iter()
+        .rev()
+        .find(|message| message["method"] == "session/resume")
+        .expect("session/resume");
+    assert_eq!(
+        resume["params"]["additionalDirectories"],
+        serde_json::json!([second])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_without_additional_directories_gets_only_its_cwd() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_IMAGE_ONLY", "1")], &[]).await;
+    let engine = acp.engine();
+    let (session, _) = two_workspace_session(&acp).await;
+    turn(engine, session, "first", "say hi").await;
+    let new = new_sessions(&acp).pop().expect("session/new");
+    assert!(new.get("additionalDirectories").is_none(), "{new}");
+}

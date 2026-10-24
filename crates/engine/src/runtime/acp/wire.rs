@@ -99,18 +99,26 @@ pub(crate) struct McpServer {
     pub env: Vec<Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NewSessionRequest<'a> {
     pub cwd: &'a str,
+    /// The session's other workspace roots on the agent's machine, sent
+    /// only to an agent that offers `sessionCapabilities.additionalDirectories`.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
 }
 
-#[derive(Debug, Serialize)]
+/// `session/resume` and `session/load`.
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ExistingSessionRequest<'a> {
     pub session_id: &'a str,
     pub cwd: &'a str,
+    /// As in [`NewSessionRequest`].
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
 }
 
@@ -122,6 +130,9 @@ pub(crate) struct ExistingSessionRequest<'a> {
 pub(crate) struct ForkSessionRequest<'a> {
     pub session_id: &'a str,
     pub cwd: &'a str,
+    /// As in [`NewSessionRequest`].
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub additional_directories: &'a [String],
     pub mcp_servers: &'a [McpServer],
     #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<Value>,

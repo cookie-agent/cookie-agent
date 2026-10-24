@@ -2352,6 +2352,15 @@ impl Engine {
             &process.init().agent_capabilities.prompt_capabilities,
         );
         let cwd = self.acp_cwd(session, agent, process)?;
+        let additional_directories = if process
+            .init()
+            .agent_capabilities
+            .session("additionalDirectories")
+        {
+            self.acp_additional_directories(session, agent, &cwd)?
+        } else {
+            Vec::new()
+        };
         let bridge = self.open_acp_bridge(session, agent, process).await;
         // Bound before the agent hears of it: an agent connects its MCP
         // servers while it answers `session/new`.
@@ -2432,6 +2441,7 @@ impl Engine {
                     message_id.as_deref(),
                     *delete,
                     &cwd,
+                    &additional_directories,
                     &mcp_servers,
                 )
                 .await?;
@@ -2446,6 +2456,7 @@ impl Engine {
             let request = wire::ExistingSessionRequest {
                 session_id: &prior.acp_session_id,
                 cwd: &cwd,
+                additional_directories: &additional_directories,
                 mcp_servers: &mcp_servers,
             };
             let attempt = if caps.session("resume") {
@@ -2489,6 +2500,7 @@ impl Engine {
                         wire::method::SESSION_NEW,
                         &wire::NewSessionRequest {
                             cwd: &cwd,
+                            additional_directories: &additional_directories,
                             mcp_servers: &mcp_servers,
                         },
                     ),
@@ -2776,6 +2788,32 @@ impl Engine {
                 agent.runtime
             ))
         })
+    }
+
+    /// The workspace roots besides `cwd` that `session` attaches on
+    /// `agent`'s runtime, each once, in attachment order: the agent's
+    /// `additionalDirectories`. Workspaces on other runtimes are on other
+    /// machines, and are left out.
+    fn acp_additional_directories(
+        &self,
+        session: SessionId,
+        agent: &RuntimeAgent,
+        cwd: &str,
+    ) -> Result<Vec<String>, EngineError> {
+        let projection = self.inner.store.get(session)?;
+        let mut directories = Vec::<String>::new();
+        for workspace in projection
+            .meta
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.runtime_id == agent.runtime)
+            .filter_map(|attachment| attachment.workspace.as_ref())
+        {
+            if workspace != cwd && !directories.contains(workspace) {
+                directories.push(workspace.clone());
+            }
+        }
+        Ok(directories)
     }
 
     async fn open_acp_bridge(

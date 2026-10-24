@@ -761,6 +761,19 @@ protocol 1.14.0; history format unchanged):
   starts (image, audio, and text entries with the upload types and caps,
   20 files of a kind), since the synthetic model is in no catalog; the web
   client's file picker offers every file when the agent takes text.
+- **Additional directories.** When the agent offers
+  `sessionCapabilities.additionalDirectories`, `session/new`,
+  `session/resume`, `session/load`, and the `session/fork` a fork or a
+  revert branches off with carry `additionalDirectories`: the
+  workspaces of the session's attachments on the agent's runtime other
+  than `cwd` (the first of them), each once, in attachment order, as the
+  runtime reported them (canonical paths on its machine). Workspaces on
+  other runtimes are left out. An agent without the capability gets none,
+  and the member is left out when there are none. They are the
+  attachments when the ACP session starts or resumes: attaching a
+  workspace to a live ACP session reaches the agent with its next new,
+  resumed, or loaded session. *(ACP has no request that changes a live
+  session's roots.)*
 - **Protocol shape.** `session.create` rather than the first `run.start`:
   the draft becomes a session there in both clients (attachments are
   uploaded into it first), the choices are the session's like its
