@@ -632,6 +632,11 @@ impl App {
                 label,
                 result,
             } => self.finish_agent_option_set(session_id, label, result),
+            RpcUpdate::QuestionAnswered {
+                session_id,
+                elicitation_id,
+                result,
+            } => self.finish_question_answer(session_id, elicitation_id, result),
             RpcUpdate::PermissionModeMutationFinished {
                 session_id,
                 generation,

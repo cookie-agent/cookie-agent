@@ -1024,6 +1024,7 @@ impl App {
         }
         if self.modal == Modal::None
             && self.current_approval().is_none()
+            && self.current_question().is_none()
             && !self.command_palette_visible()
         {
             if !self.goal_bar_visible() {
@@ -1097,6 +1098,7 @@ impl App {
             },
             Modal::None
                 if self.current_approval().is_none()
+                    && self.current_question().is_none()
                     && !self.command_palette_visible()
                     && agent_cycle_backward(key).is_some() =>
             {
@@ -1104,6 +1106,7 @@ impl App {
             }
             Modal::None
                 if self.current_approval().is_none()
+                    && self.current_question().is_none()
                     && !self.command_palette_visible()
                     && key.code == KeyCode::Char('t')
                     && key.modifiers == KeyModifiers::CONTROL =>
@@ -1118,6 +1121,7 @@ impl App {
             }
             Modal::None if self.command_palette_visible() => self.handle_palette_key(key).await,
             Modal::None if self.current_approval().is_some() => self.handle_approval_key(key).await,
+            Modal::None if self.current_question().is_some() => self.handle_question_key(key).await,
             Modal::None if key.code == KeyCode::Esc && self.selection.is_some() => {
                 // Esc retires a selection before it ever counts toward the
                 // double-Esc run cancel.
@@ -1218,7 +1222,8 @@ impl App {
         // approval that opened since the last frame still owns its presses.
         let overlay = self.command_palette_visible()
             || self.modal != Modal::None
-            || self.current_approval().is_some();
+            || self.current_approval().is_some()
+            || self.current_question().is_some();
         if !overlay {
             if self
                 .hit_map
@@ -1582,6 +1587,25 @@ impl App {
                 self.scroll_approval(up, 3);
             }
             return;
+        }
+        // Over the question panel the wheel scrolls it; the conversation
+        // above it still scrolls, the composer under it does not.
+        if self.current_question().is_some() {
+            if self
+                .hit_map
+                .question
+                .is_some_and(|rect| contains(rect, column, row))
+            {
+                self.scroll_question(up, 3);
+                return;
+            }
+            if self
+                .hit_map
+                .input
+                .is_some_and(|hit| contains(hit.rect, column, row))
+            {
+                return;
+            }
         }
         if self
             .hit_map

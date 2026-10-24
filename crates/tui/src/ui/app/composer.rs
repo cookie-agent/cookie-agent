@@ -48,6 +48,7 @@ impl App {
         self.modal == Modal::None
             && self.palette.is_none()
             && self.current_approval().is_none()
+            && self.current_question().is_none()
             && self.goal_focus.is_none()
             && self.session_writable()
     }
@@ -292,6 +293,11 @@ impl App {
             && let Some(note) = &mut self.approval_panel.note
         {
             note.insert_text(&text.replace(['\r', '\n'], " "));
+            return;
+        }
+        // A question's focused text field takes the paste.
+        if self.modal == Modal::None && self.current_question().is_some() {
+            self.paste_into_question(text);
             return;
         }
         if self.modal != Modal::None || self.current_approval().is_some() {

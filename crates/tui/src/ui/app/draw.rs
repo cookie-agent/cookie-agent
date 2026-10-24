@@ -217,6 +217,8 @@ impl App {
         if let Some(approval) = self.current_approval().cloned() {
             self.hit_map.approval_actions =
                 self.render_approval(frame, &approval, frame.area(), layout.input.bottom());
+        } else if let Some(question) = self.current_question().cloned() {
+            self.render_question(frame, &question, frame.area(), layout.input.bottom());
         }
         match self.modal {
             Modal::GoalDetail => self.render_goal_detail(frame),

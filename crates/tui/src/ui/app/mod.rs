@@ -19,6 +19,7 @@ mod plugins;
 mod pointer;
 mod projects;
 mod providers;
+mod questions;
 mod refresh;
 pub(in crate::ui) mod restart;
 mod session_delete;
@@ -38,6 +39,8 @@ pub(super) use cookie_agent_client_state::subscriptions::{SubscribeIntent, Subsc
 use emoji_backend::EmojiBackend;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
 use pickers::{agent_picker_row, draft_title, model_picker_row};
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(super) use questions::{QuestionFocus, QuestionPanel};
 pub(super) use sessions::status_change_from_event;
 use sessions::{
     collect_known_statuses, collect_known_titles, collect_live_tree_sessions,
@@ -583,6 +586,8 @@ pub(super) struct UiHitMap {
     pub(super) palette_rows: Vec<PaletteRowHit>,
     pub(super) approval_actions: Vec<ApprovalHit>,
     pub(super) approval: Option<Rect>,
+    /// The question panel.
+    pub(super) question: Option<Rect>,
     /// The approval panel's `details` toggle row.
     pub(super) approval_details: Option<Rect>,
     /// The `/permissions` panel's rows, effect segments, and mode.
@@ -644,6 +649,7 @@ impl UiHitMap {
         self.palette_rows.clear();
         self.approval_actions.clear();
         self.approval = None;
+        self.question = None;
         self.approval_details = None;
         self.permissions = PermissionHits::default();
         self.runtimes = crate::ui::management::RuntimeHits::default();
@@ -828,6 +834,8 @@ pub struct App {
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
     pub(super) approval_panel: ApprovalPanel,
+    /// The panel of the question on top, an agent's to the user.
+    pub(super) question_panel: QuestionPanel,
     pub(super) pending_approval: Option<PendingApprovalSubmission>,
     /// The approval request that most recently became the topmost panel,
     /// and when. Hotkeys stay inert for [`APPROVAL_HOTKEY_GRACE`] after it
@@ -1121,6 +1129,13 @@ pub(in crate::ui) enum RpcUpdate {
     },
     ProviderMutationFinished {
         outcome: ProviderMutationOutcome,
+    },
+    /// `elicitation.respond` answered, or failed with the error's code and
+    /// message.
+    QuestionAnswered {
+        session_id: SessionId,
+        elicitation_id: cookie_agent_protocol::ElicitationId,
+        result: Result<(), (Option<String>, String)>,
     },
     ApprovalResponse {
         request_id: u64,
@@ -1571,6 +1586,7 @@ impl App {
             scrollbar_geometry: None,
             scrollbar_drag: None,
             approval_panel: ApprovalPanel::default(),
+            question_panel: QuestionPanel::default(),
             pending_approval: None,
             approval_shown: None,
             next_approval_request_id: 0,

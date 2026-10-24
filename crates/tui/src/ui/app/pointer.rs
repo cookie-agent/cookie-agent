@@ -34,6 +34,11 @@ impl App {
                 .filter(|rect| over(*rect))
                 .map(|_| PointerTarget::ApprovalDetails);
         }
+        // The question panel takes the keyboard only; nothing under it is
+        // a target while it is up.
+        if self.current_question().is_some() {
+            return None;
+        }
         // A goal that went away since the last frame leaves no target
         // behind on its stale bar geometry.
         if self.goal_bar_visible()
