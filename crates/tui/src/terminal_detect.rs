@@ -541,7 +541,7 @@ mod tests {
     }
 
     /// With no terminal to ask, the configured preference wins, then
-    /// `COOKIE_THEME`, else the default theme.
+    /// `COOKIE_THEME`, else the platform's fallback theme.
     #[test]
     fn themes_without_a_terminal_come_from_preference_then_cookie_theme() {
         assert_eq!(
@@ -554,7 +554,7 @@ mod tests {
         );
         assert_eq!(
             kind_without_terminal_detection(Some(ThemePreference::Auto), None),
-            ThemeKind::Default
+            platform_fallback_theme()
         );
     }
 
