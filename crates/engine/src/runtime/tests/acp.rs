@@ -633,6 +633,49 @@ async fn stop_process(engine: &Engine) {
     engine.inner.acp.processes.stop(&process, "test").await;
 }
 
+/// The ACP sessions and bridges the engine holds for one cookie session.
+fn acp_state_of(engine: &Engine, session: SessionId) -> (bool, usize) {
+    let processes = &engine.inner.acp.processes;
+    let live = processes.sessions.lock().unwrap().contains_key(&session);
+    let bridges = processes
+        .bridges
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|binding| binding.session == session)
+        .count();
+    (live, bridges)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_process_and_a_paged_out_session_leave_no_acp_session_behind() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say one").await;
+    assert_eq!(acp_state_of(engine, session), (true, 1));
+    // A process stopped while idle takes its sessions and their bridges.
+    stop_process(engine).await;
+    assert_eq!(acp_state_of(engine, session), (false, 0));
+
+    // Paging the session out ends its live ACP session; the next turn
+    // resumes it.
+    turn(engine, session, "second", "say two").await;
+    assert_eq!(acp_state_of(engine, session), (true, 1));
+    let evicted = engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("idle janitor pass");
+    assert_eq!(evicted, vec![session]);
+    assert_eq!(acp_state_of(engine, session), (false, 0));
+    let outcome = turn(engine, session, "third", "say three").await;
+    assert_eq!(final_text(&outcome), "three");
+    let starts = session_starts(engine, session);
+    assert_eq!(starts.len(), 3);
+    assert_eq!(starts[2].how, AcpSessionStart::Resumed);
+    assert_eq!(starts[2].acp_session_id, starts[0].acp_session_id);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_load_ignores_the_replay() {
     let acp = acp_fixture(&[("ACP_FIXTURE_LOAD", "1")], &[]).await;

@@ -180,7 +180,7 @@ impl Engine {
         cap: usize,
         idle_after: Duration,
     ) -> Result<Vec<SessionId>, EngineError> {
-        let _delegation_admission = self.inner.delegation.admission.lock().await;
+        let delegation_admission = self.inner.delegation.admission.lock().await;
         // The cap applies to each tree on its own: one tree's activity never
         // pages out another tree's children (tree-local C10).
         let over_cap = self
@@ -282,6 +282,10 @@ impl Engine {
                 evicted.push(session_id);
             }
         }
+        drop(delegation_admission);
+        for session in &evicted {
+            self.close_acp_session(*session).await;
+        }
         Ok(evicted)
     }
 
@@ -377,7 +381,7 @@ impl Engine {
         &self,
         idle_after: Duration,
     ) -> Result<Vec<SessionId>, EngineError> {
-        let _delegation_admission = self.inner.delegation.admission.lock().await;
+        let delegation_admission = self.inner.delegation.admission.lock().await;
         let now = Timestamp::now();
         let resident = self.inner.store.all();
         let candidates = resident
@@ -454,6 +458,12 @@ impl Engine {
             {
                 self.forget_evicted_tree(root, &members);
             }
+        }
+        drop(delegation_admission);
+        // An evicted session's ACP session ends as a deleted one's does; its
+        // next turn resumes or loads it, or starts a new one.
+        for session in &evicted {
+            self.close_acp_session(*session).await;
         }
         Ok(evicted)
     }

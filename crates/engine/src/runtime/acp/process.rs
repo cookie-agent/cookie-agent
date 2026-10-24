@@ -429,6 +429,7 @@ impl Processes {
             }
         }
         process.gone(format!("the agent's process was stopped ({reason})"));
+        self.forget_sessions_of(process);
         let _ = process
             .client
             .agent_request::<_, Empty>(
@@ -465,6 +466,27 @@ impl Processes {
         };
         lock(&self.running).remove(&process.key);
         process.gone(reason);
+        self.forget_sessions_of(&process);
+    }
+
+    /// Drops the ACP sessions of `process`, which is gone, and the bridges
+    /// bound to them: a later turn of one of those cookie sessions resumes
+    /// its ACP session in a new process, over a new bridge.
+    fn forget_sessions_of(&self, process: &Arc<AgentProcess>) {
+        let mut bridges = Vec::new();
+        lock(&self.sessions).retain(|_, live| {
+            if !Arc::ptr_eq(&live.process, process) {
+                return true;
+            }
+            if let Some(bridge) = &live.bridge {
+                bridges.push((process.key.runtime.clone(), bridge.clone()));
+            }
+            false
+        });
+        let mut bound = lock(&self.bridges);
+        for bridge in bridges {
+            bound.remove(&bridge);
+        }
     }
 
     fn connection_lost(&self, client: &RuntimeClient) {
@@ -487,6 +509,7 @@ impl Processes {
                 "the connection to runtime `{}` ended",
                 client.runtime_id()
             ));
+            self.forget_sessions_of(&process);
         }
     }
 }
