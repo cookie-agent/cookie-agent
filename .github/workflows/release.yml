@@ -205,6 +205,20 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+      # Hand-maintained (allow-dirty = ["ci"]): the secret scan of the binary
+      # the x86_64 Linux archive ships. It fails this job, and host and
+      # publish-crates need every build to succeed, so nothing is published
+      # past a failed scan. The other targets build from the same sources.
+      - name: Scan the shipped binary for secret material
+        if: ${{ contains(matrix.targets, 'x86_64-unknown-linux-gnu') }}
+        shell: bash
+        run: |
+          scan="$RUNNER_TEMP/scan"
+          mkdir -p "$scan"
+          tar -xJf target/distrib/cookie_agent-x86_64-unknown-linux-gnu.tar.xz -C "$scan"
+          binary="$(find "$scan" -type f -name cookie)"
+          [[ -n "$binary" ]] || { echo "no cookie binary in the archive" >&2; exit 1; }
+          COOKIE_RELEASE_BINARY="$binary" cargo test --locked -p cookie_agent_models --test release_integrity release_binary_contains_no_secret_material -- --ignored --exact
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up

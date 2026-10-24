@@ -424,15 +424,16 @@ fn owned_source_tree_contains_no_secret_or_temporary_material() {
     );
 }
 
+/// The release workflow runs this on the binary its x86_64 Linux archive
+/// ships, named by `COOKIE_RELEASE_BINARY`, before anything is published;
+/// locally it scans `target/release/cookie`.
 #[test]
-#[ignore = "requires the locked release binary built by the release gate"]
+#[ignore = "requires a release binary: the release workflow names the shipped one"]
 fn release_binary_contains_no_secret_material() {
-    let path = workspace().join("target/release/cookie");
-    assert!(
-        path.is_file(),
-        "missing locked release binary: {}",
-        path.display()
-    );
+    let path = std::env::var_os("COOKIE_RELEASE_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace().join("target/release/cookie"));
+    assert!(path.is_file(), "missing release binary: {}", path.display());
     assert_no_secret_material(&path, &fs::read(&path).unwrap());
 }
 
@@ -462,12 +463,10 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73",
         "tool: cargo-deny@0.20.2,cargo-audit@0.22.2",
         "cargo clippy --locked --workspace --all-targets -- -D warnings",
-        "cargo build --release --locked -p cookie_agent",
         "cargo audit --file Cargo.lock --deny yanked",
         "cargo deny --locked check advisories licenses sources",
         "cargo test --locked -p cookie_agent_models --test release_integrity",
         "crates/protocol/scripts/check-schema-additive.sh",
-        "release_binary_contains_no_secret_material -- --ignored --exact",
         "cargo check --locked --target wasm32-unknown-unknown -p cookie_agent_protocol -p cookie_agent_client_state",
         "tool: trunk@0.21.14,wasm-bindgen@0.2.126",
         "scripts/test-wasm-client.sh",
@@ -503,6 +502,19 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         assert!(
             !workflow.contains(&forbidden),
             "forbidden packaging bypass remains in CI: {forbidden}"
+        );
+    }
+
+    // The secret scan reads the binary the release ships, in the job that
+    // builds it, which the publishing jobs need.
+    let release = fs::read_to_string(workspace().join(".github/workflows/release.yml")).unwrap();
+    for required in [
+        "tar -xJf target/distrib/cookie_agent-x86_64-unknown-linux-gnu.tar.xz",
+        "release_binary_contains_no_secret_material -- --ignored --exact",
+    ] {
+        assert!(
+            release.contains(required),
+            "missing release gate: {required}"
         );
     }
 }

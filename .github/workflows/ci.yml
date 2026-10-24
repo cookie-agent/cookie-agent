@@ -57,12 +57,11 @@ jobs:
         run: crates/protocol/scripts/check-schema-additive.sh
       - name: Check the reference plugin's messages against the plugin protocol schemas
         run: python3 examples/plugins/python/check_reference_plugin.py
+      # The shipped binary's secret scan runs in release.yml, on the
+      # x86_64 Linux archive the release publishes, before anything is
+      # published.
       - name: Enforce release metadata and provenance
         run: cargo test --locked -p cookie_agent_models --test release_integrity
-      - name: Build the locked release binary
-        run: cargo build --release --locked -p cookie_agent
-      - name: Scan locked release binary
-        run: cargo test --locked -p cookie_agent_models --test release_integrity release_binary_contains_no_secret_material -- --ignored --exact
       - name: Install pinned supply-chain tools
         uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:

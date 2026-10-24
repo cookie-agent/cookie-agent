@@ -81,6 +81,11 @@ reapply and review these edits:
   cache, plan manifest, local artifacts, global artifacts, and final manifest.
 - Set `COOKIE_GIT_HASH: ${{ github.sha }}` in `build-local-artifacts`.
 - Run `cargo metadata --locked --format-version=1` before `dist build`.
+- Keep the secret scan step after `Build artifacts`: on the
+  `x86_64-unknown-linux-gnu` build it unpacks that archive and runs
+  `release_binary_contains_no_secret_material` on the `cookie` binary inside
+  (`COOKIE_RELEASE_BINARY`). A failed scan fails the build job, so `host` and
+  `publish-crates` publish nothing.
 - Preserve the `publish-crates` job, its `refs/tags/v` gate, and its
   `fromJson(needs.plan.outputs.val).announcement_is_prerelease == false` guard.
   The `host` job accepts that job being skipped for branch nightlies but still

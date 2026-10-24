@@ -70,8 +70,8 @@ The local tier is:
 
 The CI-only tier is the Rust 1.88 MSRV build, the Windows build and tests,
 the full workspace test run, the release target checks, and the release
-gates (the locked release build and its secret scan, `cargo audit`, and
-`cargo deny`). Run one of them locally only when the change is aimed at
+gates (`cargo audit`, `cargo deny`, and the release workflow's secret scan
+of the binary it ships). Run one of them locally only when the change is aimed at
 it: a Windows-only path (`cargo check --target x86_64-pc-windows-msvc
 --all-targets`), a language feature or dependency that may need a newer
 Rust than 1.88, or release metadata.
