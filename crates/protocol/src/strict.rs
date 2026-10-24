@@ -88,6 +88,15 @@ where
     serde_json::from_value(value).map_err(CommandDecodeError::Invalid)
 }
 
+/// Checks `value` against the schema of the params of a command of type
+/// `T`, as [`decode_command`] does before decoding, without decoding it.
+pub fn check_command_params<T>(value: &Value) -> Result<(), CommandDecodeError>
+where
+    T: JsonSchema + 'static,
+{
+    check_command(&command_schema::<T>(), value)
+}
+
 /// Checks `value` against a command's `schema`: the first member the schema
 /// does not list, or enum value it does not list, is refused with its JSON
 /// path. Members are checked only where the schema lists properties; a

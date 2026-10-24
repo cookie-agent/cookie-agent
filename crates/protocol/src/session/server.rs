@@ -1302,8 +1302,7 @@ enum RawSessionRenameChange {
 
 fn decode_rename(params: Option<Value>) -> Result<SessionRenameParams, ServerFault> {
     let params = params.unwrap_or(Value::Null);
-    crate::strict::check_command(&schemars::schema_for!(SessionRenameParams), &params)
-        .map_err(command_fault)?;
+    crate::strict::check_command_params::<SessionRenameParams>(&params).map_err(command_fault)?;
     if let Ok(request) = serde_json::from_value::<SessionRenameParams>(params.clone()) {
         return Ok(request);
     }
