@@ -40,18 +40,31 @@ async fn compose_isolated<T: CatalogTransport + 'static>(
 /// Startup serves the cached or bundled catalog and refreshes from the
 /// transport in the background; waits until that first refresh is published.
 async fn await_initial_catalog_refresh(runtime: &Runtime) {
-    // The recompile runs on the blocking pool, so a wall-clock deadline (the
-    // test's clock may be paused) rather than a count of yields bounds it.
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while std::time::Instant::now() < deadline {
-        if runtime.engine.current_runtime().models.catalog().source
+    let published = || {
+        runtime.engine.current_runtime().models.catalog().source
             == cookie_agent_models::catalog::CatalogSource::Network
-        {
-            return;
+    };
+    // The engine stores a runtime before it announces it, so a check after
+    // subscribing sees a publication that came first.
+    let mut changes = runtime.engine.subscribe_runtime_changes();
+    // A plain thread keeps the deadline in wall-clock time: on a paused
+    // clock a tokio timer would fire as soon as the runtime idled, while
+    // the recompile still runs on the blocking pool.
+    let (expire, mut expired) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(60));
+        let _ = expire.send(());
+    });
+    while !published() {
+        tokio::select! {
+            change = changes.recv() => {
+                if let Err(tokio::sync::broadcast::error::RecvError::Closed) = change {
+                    panic!("the engine closed its runtime changes");
+                }
+            }
+            _ = &mut expired => panic!("initial catalog refresh was not published"),
         }
-        tokio::task::yield_now().await;
     }
-    panic!("initial catalog refresh was not published");
 }
 
 /// Waits, on a paused clock, until the catalog refresh loop sleeps again
