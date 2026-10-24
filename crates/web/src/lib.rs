@@ -35,6 +35,7 @@ pub mod oauth;
 pub mod panics;
 pub mod places;
 pub mod render;
+pub mod session_list;
 pub mod skills;
 pub mod theme;
 pub mod tree;

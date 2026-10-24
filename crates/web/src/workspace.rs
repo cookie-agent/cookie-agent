@@ -23,10 +23,10 @@ use cookie_agent_protocol::{
     ApprovalUserDecision, ArtifactReadParams, AvailableModelDescriptor, Client, ClientDelivery,
     ClientError, ClientResponseId, ClientRunId, EventPayload, InputDelivery, ModelSelection,
     PermissionMode, RunCancelParams, RunSelection, SessionCreateParams, SessionId,
-    SessionListParams, SessionMeta, SessionOrigin, SessionPermissionGetParams,
-    SessionRecallInputParams, SessionRecallInputResult, SessionSelectModelParams,
-    SessionSetPermissionModeParams, SessionSubmitInputParams, SessionSubmitInputResult,
-    SessionUsageParams, SessionsChangedNotification, ToolCallId, UsageRollup,
+    SessionListParams, SessionMeta, SessionPermissionGetParams, SessionRecallInputParams,
+    SessionRecallInputResult, SessionSelectModelParams, SessionSetPermissionModeParams,
+    SessionSubmitInputParams, SessionSubmitInputResult, SessionUsageParams,
+    SessionsChangedNotification, ToolCallId, UsageRollup,
 };
 use leptos::{prelude::*, task::spawn_local};
 
@@ -188,6 +188,9 @@ pub struct Workspace {
     /// The reads change notices start, so only the newest one's answer is
     /// installed.
     reads: StoredValue<reads::Reads>,
+    /// `session.list`'s reads, with the `sessions.changed` that came while
+    /// one was on its way.
+    session_list: StoredValue<crate::session_list::ListReads>,
     pub user_menu: RwSignal<Option<UserMenu>>,
     pub goal_draft: RwSignal<String>,
     pub skills: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
@@ -403,6 +406,7 @@ impl Workspace {
             collapsed: RwSignal::new(HashSet::new()),
             tree_request: StoredValue::new(0),
             reads: StoredValue::new(reads::Reads::default()),
+            session_list: StoredValue::new(Default::default()),
             user_menu: RwSignal::new(None),
             goal_draft: RwSignal::new(String::new()),
             skills: RwSignal::new(None),
@@ -587,9 +591,24 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
-        match client.list_sessions(SessionListParams::default()).await {
-            Ok(result) => self.sessions.set(result.sessions),
-            Err(error) => self.status.set(crate::errors::describe(&error)),
+        let read = self.session_list.try_update_value(|list| list.begin());
+        let answer = client.list_sessions(SessionListParams::default()).await;
+        if let Some(read) = read {
+            match answer {
+                Ok(result) => {
+                    if let Some(sessions) = self
+                        .session_list
+                        .try_update_value(|list| list.land(read, result.sessions))
+                        .flatten()
+                    {
+                        self.sessions.set(sessions);
+                    }
+                }
+                Err(error) => {
+                    self.session_list.update_value(|list| list.fail(read));
+                    self.status.set(crate::errors::describe(&error));
+                }
+            }
         }
         self.refresh_projects();
         self.poll_runtimes();
@@ -799,22 +818,15 @@ impl Workspace {
     }
 
     fn apply_sessions_change(self, change: SessionsChangedNotification) {
+        // A `session.list` answer on its way may predate this change.
+        self.session_list.update_value(|list| list.note(&change));
         match change {
-            SessionsChangedNotification::Upserted { session } => {
+            SessionsChangedNotification::Upserted { .. } => {
                 // A project's session count follows its sessions, which
                 // `projects.changed` does not announce.
                 let mut moved = false;
                 self.sessions.update(|sessions| {
-                    if let Some(existing) = sessions
-                        .iter_mut()
-                        .find(|existing| existing.session_id == session.session_id)
-                    {
-                        moved = existing.project != session.project;
-                        *existing = *session;
-                    } else if matches!(session.origin, SessionOrigin::Root) {
-                        moved = session.project.is_some();
-                        sessions.push(*session);
-                    }
+                    moved = crate::session_list::apply_change(sessions, &change);
                 });
                 if moved {
                     self.refresh_projects();
