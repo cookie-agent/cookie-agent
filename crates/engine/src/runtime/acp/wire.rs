@@ -80,10 +80,14 @@ impl AgentCapabilities {
     }
 }
 
+/// What the agent takes in a prompt besides text and resource links.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct PromptCapabilities {
     pub image: bool,
+    pub audio: bool,
+    /// `resource` blocks: a file's content embedded in the prompt.
+    pub embedded_context: bool,
 }
 
 /// One stdio MCP server handed to the agent.

@@ -42,6 +42,14 @@ impl Workspace {
     /// the runtime snapshot describes it.
     pub fn accepted_media(self) -> Option<AcceptedMedia> {
         let draft = self.draft.get()?;
+        // An ACP agent takes what it advertised when it last started on the
+        // runtime it runs on.
+        if let Some(agent) = self.draft_acp_agent() {
+            return Some(AcceptedMedia {
+                model: agent.id.to_string(),
+                media: cookie_agent_client_state::acp::input_media(&agent, &self.agent_runtimes()),
+            });
+        }
         self.with_runtime(|runtime| {
             let media = runtime
                 .snapshot()?

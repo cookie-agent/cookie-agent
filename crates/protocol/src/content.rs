@@ -293,8 +293,9 @@ impl JsonSchema for UserContent {
 }
 
 crate::snake_label!(
-    /// A media kind label: `image`, `pdf`, `audio`, or `video` today. A kind
-    /// this build does not know is shown by its label and never offered.
+    /// A media kind label: `image`, `pdf`, `audio`, `video`, or (an ACP
+    /// agent's, client protocol 1.26.0) `text` today. A kind this build does
+    /// not know is shown by its label and never offered.
     MediaKindLabel,
     "media kind",
     "A media kind, such as `image`."
@@ -305,6 +306,9 @@ impl MediaKindLabel {
     pub const PDF: &'static str = "pdf";
     pub const AUDIO: &'static str = "audio";
     pub const VIDEO: &'static str = "video";
+    /// A text file, which an ACP agent takes in its prompt (client protocol
+    /// 1.26.0).
+    pub const TEXT: &'static str = "text";
 }
 
 /// What one model accepts of one media kind in user input. The limits are

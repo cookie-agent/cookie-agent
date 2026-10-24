@@ -146,3 +146,41 @@ async fn a_sessions_model_picker_sets_the_agents_model_option() {
     assert_eq!(params["value"], "opus");
     drop(incoming_guard);
 }
+
+#[tokio::test]
+async fn an_acp_draft_attaches_what_its_agent_takes() {
+    let (mut app, _) = acp_session_app().await;
+    let mut claude = acp_descriptor("claude", "local", true);
+    claude.runtimes[0].input_media = vec![
+        serde_json::from_value(serde_json::json!({
+            "kind": "text", "mime_types": ["text/plain"], "max_bytes": 1000, "max_count": 4,
+        }))
+        .unwrap(),
+    ];
+    claude.runtime = claude.runtimes.first().cloned();
+    app.agents[1] = claude;
+    app.run_command(SlashCommand::New).await;
+    let index = app
+        .filtered_agent_picker_candidates()
+        .iter()
+        .position(|agent| agent.id.as_str() == "claude")
+        .unwrap();
+    app.choose_picker_entry(index).await;
+    let accepted = app.accepted_media().expect("what the agent takes");
+    assert_eq!(accepted.model, "claude");
+    assert_eq!(accepted.kinds(), "text");
+    assert!(app.attachments_offered());
+    assert!(
+        accepted
+            .check("notes.md", "text", "text/plain", 10, None)
+            .is_ok()
+    );
+    assert!(
+        accepted
+            .check("a.png", "image", "image/png", 10, None)
+            .is_err()
+    );
+    // An agent that never started there takes nothing yet.
+    app.agents[1].runtimes[0].input_media.clear();
+    assert!(!app.attachments_offered());
+}

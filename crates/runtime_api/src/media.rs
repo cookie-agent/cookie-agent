@@ -218,6 +218,17 @@ const UPLOAD_MEDIA_TYPES: &[(&str, &str)] = &[
     (MediaKindLabel::VIDEO, "video/x-msvideo"),
 ];
 
+/// The media types an upload of kind `kind` (`image`, `audio`, ...) can be
+/// recognized as.
+#[must_use]
+pub fn upload_media_types(kind: &str) -> Vec<&'static str> {
+    UPLOAD_MEDIA_TYPES
+        .iter()
+        .filter(|(of, _)| *of == kind)
+        .map(|(_, mime_type)| *mime_type)
+        .collect()
+}
+
 const fn media_kind_label(kind: CapabilityMediaKind) -> &'static str {
     match kind {
         CapabilityMediaKind::Image => MediaKindLabel::IMAGE,
@@ -1063,9 +1074,32 @@ mod tests {
             validate_upload(&gif(8, 4, 2)).map(|upload| upload.image),
             Ok(Some((8, 4)))
         );
+        // UTF-8 that is no media file is text; other bytes are refused.
         assert_eq!(
-            validate_upload(b"plain text").unwrap_err(),
+            validate_upload(b"plain text"),
+            Ok(ValidatedUpload {
+                media_type: "text/plain",
+                kind: "text",
+                image: None,
+            })
+        );
+        assert_eq!(
+            validate_upload(b"nul\0byte").unwrap_err(),
             UploadRejection::Unrecognized
+        );
+        assert_eq!(
+            validate_upload(&[b'a', 0xc3, b'b']).unwrap_err(),
+            UploadRejection::Unrecognized
+        );
+        let long = vec![b'a'; 1024 * 1024 + 1];
+        assert_eq!(
+            validate_upload(&long).unwrap_err(),
+            UploadRejection::TooLarge {
+                kind: "text",
+                byte_length: 1024 * 1024 + 1,
+                max_bytes: 1024 * 1024,
+                image: None,
+            }
         );
         let mut torn = png(4, 4);
         torn.truncate(torn.len() - 3);

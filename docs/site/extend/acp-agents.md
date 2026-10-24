@@ -392,6 +392,13 @@ each call decided by the rules as a model's would be.
   document's `acp.config`; one the agent no longer takes is skipped with a
   note in the transcript. Before the agent has started a session on that
   runtime, there is nothing to offer yet: send a first message.
+- **Attachments.** Files go to the agent as it takes them: images to an
+  agent that takes images, audio to one that takes audio (Gemini CLI), and
+  text files, up to 1 MiB, as embedded context to one that takes it
+  (Claude Code and Codex do). The composers offer attaching once the
+  agent has started on that runtime and check files against what it
+  advertised; anything else, such as a PDF, reaches the agent as a note
+  that it cannot read the file.
 - **Agent options.** The agent's other options, such as its mode, are the
   session's agent options: `/options` in the TUI, and **All agent options**
   in the web client's model sheet. An on/off option, such as Claude Code's

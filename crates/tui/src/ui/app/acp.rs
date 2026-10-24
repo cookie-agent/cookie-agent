@@ -106,7 +106,7 @@ impl App {
     }
 
     /// The ACP agent the draft runs, when it runs one.
-    fn draft_acp_agent(&self) -> Option<&cookie_agent_protocol::AgentDescriptor> {
+    pub(super) fn draft_acp_agent(&self) -> Option<&cookie_agent_protocol::AgentDescriptor> {
         let draft = self.new_session_draft.as_ref().or(self.draft.as_ref())?;
         if !cookie_agent_client_state::acp::is_acp_model(&draft.model) {
             return None;

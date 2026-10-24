@@ -180,7 +180,7 @@ services above. Deleting it is **permanent and cannot be undone**:
 - `config.toml` and `tui.toml`, with the daemon's token (`[server] token`);
 - `providers/`, your connected providers' credentials;
 - `mcp-oauth.json`, the OAuth credentials of remote MCP servers;
-- `acp-agents.json`, the options ACP agents last offered, which drafts show;
+- `acp-agents.json`, what ACP agents last offered (options, file kinds), which drafts show;
 - `sessions/`, every session's history;
 - `memory/`, `projects/`, and `machines.json`;
 - `agents/` and `skills/` you wrote there;

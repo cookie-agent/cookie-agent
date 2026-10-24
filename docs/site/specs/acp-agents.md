@@ -429,8 +429,8 @@ Where the spec left a detail open, or where the code differs:
   title after a round; see the lifecycle round below.)*
 - **Not run for ACP agents:** `AGENTS.md` loading, the skill listing and tool
   prompt sections, the `agent_before_start` hook, and input media admission
-  (images go to an agent whose `promptCapabilities.image` is set; other
-  files become a note).
+  (files go to the agent as its prompt capabilities allow, others become a
+  note; see **Input and pickers** below).
 - **The bridge.** The daemon's MCP server is hand-written (`initialize`,
   `ping`, `tools/list`, `tools/call`); rmcp's server features are not used.
   A bridged call runs inside the agent's turn as a cookie tool call of the
@@ -742,6 +742,25 @@ protocol 1.14.0; history format unchanged):
   with a diagnostic as `acp.config` is. *Assumption:* they apply to every
   new ACP session of the cookie session, a lost session's replacement
   included, not only the first.
+- **Files as prompt input.** An agent's `promptCapabilities` decide how a
+  file the user attached reaches it (`acp/prompt.rs`): an image as an
+  `image` block (as before), audio as an `audio` block when it advertises
+  `audio` (Gemini CLI does), and a text file as a `resource` block
+  (`uri` `attachment:///<file name>`, `mimeType`, `text`) when it
+  advertises `embeddedContext` (Claude Code's and Codex's adapters do).
+  Anything else, PDFs and video included, stays the note `[attached file
+  <name> (<type>), which this agent cannot read]`: ACP's blob resources
+  would carry them, but Claude Code's adapter drops blob resources, so a
+  note says more. Uploads take text files: content that is no media file
+  but UTF-8 without NUL bytes is `text/plain` of the new media kind
+  `text` (an open label), up to 1 MiB (`MAX_TEXT_ATTACHMENT_BYTES`);
+  models list no `text`, so a model run still refuses one at admission.
+  Audio was already admitted (`audio/flac`, `mpeg`, `ogg`, `wav`, 20 MiB).
+  The clients check attachments against `AgentRuntime.input_media`, which
+  the daemon records from the agent's `initialize` answer each time it
+  starts (image, audio, and text entries with the upload types and caps,
+  20 files of a kind), since the synthetic model is in no catalog; the web
+  client's file picker offers every file when the agent takes text.
 - **Protocol shape.** `session.create` rather than the first `run.start`:
   the draft becomes a session there in both clients (attachments are
   uploaded into it first), the choices are the session's like its

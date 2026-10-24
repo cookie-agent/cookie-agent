@@ -179,3 +179,138 @@ async fn malformed_starting_options_create_no_session() {
     assert!(refused.to_string().contains("more than once"), "{refused}");
     assert_eq!(engine.list_sessions().len(), before);
 }
+
+async fn upload(
+    engine: &crate::Engine,
+    session: cookie_agent_protocol::SessionId,
+    bytes: &[u8],
+    filename: &str,
+) -> cookie_agent_protocol::ArtifactRef {
+    use sha2::Digest as _;
+    let id = engine
+        .begin_upload(1, session, bytes.len() as u64, Some(filename.into()))
+        .await
+        .expect("begin upload");
+    engine
+        .upload_chunk(1, &id, 0, bytes.to_vec())
+        .await
+        .expect("upload chunk");
+    engine
+        .finish_upload(1, &id, &format!("{:x}", sha2::Sha256::digest(bytes)))
+        .await
+        .expect("finish upload")
+        .artifact
+}
+
+/// A WAV file's header and a few samples.
+fn wav() -> Vec<u8> {
+    let mut bytes = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\x04\0\0\0".to_vec();
+    bytes.extend_from_slice(&[0, 0, 1, 0]);
+    bytes
+}
+
+/// Runs one prompt of `text` with files `artifacts` and returns the
+/// non-text blocks of the prompt the agent received.
+async fn prompt_with_files(
+    acp: &AcpFixture,
+    session: cookie_agent_protocol::SessionId,
+    text: &str,
+    artifacts: Vec<cookie_agent_protocol::ArtifactRef>,
+) -> Vec<serde_json::Value> {
+    use cookie_agent_protocol::{Open, UserContent, UserContentPart};
+    let engine = acp.engine();
+    let mut parts = vec![Open::Known(UserContentPart::Text { text: text.into() })];
+    parts.extend(
+        artifacts
+            .into_iter()
+            .map(|artifact| Open::Known(UserContentPart::File { artifact })),
+    );
+    let run = engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("files").unwrap(),
+                selection: selection(),
+                content: UserContent::new(parts).unwrap(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run started")
+        .run_id;
+    final_text(&finished(engine, session, run).await);
+    acp.received()
+        .into_iter()
+        .rev()
+        .find(|message| message["method"] == "session/prompt")
+        .expect("a prompt")["params"]["prompt"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|block| {
+            block["type"] != "text" || block["text"].as_str().unwrap().starts_with("[attached")
+        })
+        .cloned()
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn text_and_audio_files_reach_an_agent_that_takes_them() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let notes = upload(engine, session, b"line one\n", "notes.md").await;
+    assert_eq!(notes.media_type, "text/plain");
+    let sound = upload(engine, session, &wav(), "hello.wav").await;
+    assert_eq!(sound.media_type, "audio/wav");
+    let blocks = prompt_with_files(&acp, session, "say ok", vec![notes, sound]).await;
+    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    assert_eq!(
+        blocks[0],
+        serde_json::json!({"type": "resource", "resource": {
+            "uri": "attachment:///notes.md", "mimeType": "text/plain", "text": "line one\n",
+        }})
+    );
+    assert_eq!(blocks[1]["type"], "audio");
+    assert_eq!(blocks[1]["mimeType"], "audio/wav");
+    // The clients are told what the agent takes, once its process started.
+    let kinds = engine
+        .current_runtime()
+        .result
+        .snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id == agent_id())
+        .and_then(|agent| agent.runtimes.first())
+        .map(|runtime| {
+            runtime
+                .input_media
+                .iter()
+                .map(|media| media.kind.as_str().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(kinds, ["image", "audio", "text"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_an_agent_does_not_take_become_a_note() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_IMAGE_ONLY", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let notes = upload(engine, session, b"line one\n", "notes.md").await;
+    let sound = upload(engine, session, &wav(), "hello.wav").await;
+    let blocks = prompt_with_files(&acp, session, "say ok", vec![notes, sound]).await;
+    let notes = blocks
+        .iter()
+        .map(|block| block["text"].as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        notes,
+        [
+            "[attached file notes.md (text/plain), which this agent cannot read]",
+            "[attached file hello.wav (audio/wav), which this agent cannot read]",
+        ]
+    );
+}

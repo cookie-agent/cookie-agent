@@ -6,7 +6,7 @@
 
 use cookie_agent_protocol::{
     ACP_MODEL_PROVIDER, AcpConfigOption, AcpOptionChoice, AgentDescriptor, AgentId, AgentMode,
-    AgentRuntime, ModelSelection, RuntimeId, ToolSource,
+    AgentRuntime, InputMedia, ModelSelection, RuntimeId, ToolSource,
 };
 
 use crate::AcpSessionView;
@@ -233,6 +233,16 @@ pub fn placed_runtime<'a>(
         }
         AcpPlacement::NeedsOneOf(_) | AcpPlacement::Ambiguous(_) => None,
     }
+}
+
+/// The files ACP agent `agent` takes in a prompt on the runtime a draft or
+/// session that attaches `attached` runs it on, as the daemon last saw it
+/// start there: what the clients check attachments against, its synthetic
+/// model being in no catalog.
+pub fn input_media(agent: &AgentDescriptor, attached: &[RuntimeId]) -> Vec<InputMedia> {
+    placed_runtime(agent, attached)
+        .map(|runtime| runtime.input_media.clone())
+        .unwrap_or_default()
 }
 
 /// `options` with `choices` made their current values, where an option

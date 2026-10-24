@@ -72,7 +72,7 @@ impl Workspace {
     }
 
     /// The ACP agent the draft runs, when it runs one.
-    fn draft_acp_agent(self) -> Option<AgentDescriptor> {
+    pub(crate) fn draft_acp_agent(self) -> Option<AgentDescriptor> {
         let draft = self.draft.get()?;
         if !cookie_agent_client_state::acp::is_acp_model(&draft.model) {
             return None;

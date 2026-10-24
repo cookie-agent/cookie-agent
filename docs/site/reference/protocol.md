@@ -353,7 +353,9 @@ that was still only in memory.
    filename never decides it), validates the content as tool attachments are
    validated (structure, the 20 MiB cap or 25 MiB for video, and for images at
    most 16384 pixels a side and 16 Mi pixels), and stores the blob under its
-   digest. It returns `{ artifact: ArtifactRef, image? }`; put `artifact` in a
+   digest. Since 1.26.0 content that is no media file but UTF-8 without NUL
+   bytes is a text file, `text/plain` of kind `text`, up to 1 MiB: an ACP
+   agent may take it, a model never does. It returns `{ artifact: ArtifactRef, image? }`; put `artifact` in a
    `file` part as it is. An upload whose digest or content is refused
    (`digest_mismatch`, `media_type_unsupported`, `media_too_large`) is
    dropped; one finished before all of its bytes arrived
@@ -384,7 +386,9 @@ limits), and the parts of one kind must not outnumber `max_count`
 meets these errors. A refused input records nothing. A model the input does
 not reach this way, such as a fallback or a model the session moves to later,
 sees a placeholder for each file it does not accept
-([Media reads](tools.md#media-reads) describes the wording).
+([Media reads](tools.md#media-reads) describes the wording). A run of an
+[ACP agent](#acp-agents) checks none of this: the agent gets each file it
+takes (its `AgentRuntime.input_media`) and a note naming the others.
 
 **`artifact.read`** `{ session_id, sha256, offset, length }` returns
 `{ data, total_bytes, media_type }`: up to `length` (at most 1 MiB) bytes
@@ -906,7 +910,8 @@ The run waits on it, and clients show it as waiting on the user.
   configuration fields (`default_model`, `small_model`) its `models` entries
   name that are not set, omitted when empty; those entries are skipped.
 - **`input_media`** on every model says what it accepts in user input, one
-  entry per kind (an open label: `image`, `pdf`, `audio`, or `video`):
+  entry per kind (an open label: `image`, `pdf`, `audio`, or `video`; and
+  `text`, which only an ACP agent's `AgentRuntime.input_media` lists):
 
   ```json
   { "kind": "image", "mime_types": ["image/jpeg", "image/png"],

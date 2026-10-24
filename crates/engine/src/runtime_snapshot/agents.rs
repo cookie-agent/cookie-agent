@@ -641,7 +641,7 @@ fn agent_runtime(
             &offer.known.options,
             &document.frontmatter.acp.clone().unwrap_or_default(),
         ),
-        input_media: Vec::new(),
+        input_media: offer.known.input_media.clone(),
     }
 }
 

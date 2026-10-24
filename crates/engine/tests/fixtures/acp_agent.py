@@ -6,7 +6,8 @@ Each prompt's last text block is a command:
   say <text>             answers <text>
   think <text>           a thought, then <text>
   echo                   answers every text block of the prompt joined by " | ",
-                         as it does any prompt that is not a command
+                         then the type of every other block, as it does any
+                         prompt that is not a command
   work                   a thought, an edit tool call with a diff, a plan, usage
                          (the same usage_update twice)
   stop <reason>          answers with stop reason <reason> and usage (40 input
@@ -83,6 +84,9 @@ Environment:
                          fork point is `cookie-fork-probe-...`)
   ACP_FIXTURE_DELETE     "1": offers session/delete
   ACP_FIXTURE_NO_COMPACT "1": announces no `compact` command
+  ACP_FIXTURE_IMAGE_ONLY "1": takes images but no audio or embedded context in a
+                         prompt, and no additional directories (by default it
+                         advertises all of them)
   ACP_FIXTURE_STEERING   "1": advertises the steering extension
                          (`_meta.steering.supported`) and serves
                          `_session/steering` as Claude Code's adapter does
@@ -610,11 +614,14 @@ def handle(message):
         return
     if method == "initialize":
         client_capabilities.update(params.get("clientCapabilities") or {})
+        rich = not env("ACP_FIXTURE_IMAGE_ONLY")
         capabilities = {
             "loadSession": env("ACP_FIXTURE_LOAD"),
-            "promptCapabilities": {"image": True, "audio": False, "embeddedContext": False},
+            "promptCapabilities": {"image": True, "audio": rich, "embeddedContext": rich},
             "sessionCapabilities": {"close": {}},
         }
+        if rich:
+            capabilities["sessionCapabilities"]["additionalDirectories"] = {}
         if env("ACP_FIXTURE_RESUME"):
             capabilities["sessionCapabilities"]["resume"] = {}
         if env("ACP_FIXTURE_FORK"):

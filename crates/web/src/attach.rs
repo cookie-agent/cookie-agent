@@ -14,6 +14,12 @@ use cookie_agent_protocol::{
 /// The `accept` attribute for a file input: every media type the model
 /// takes. Empty when it takes none, so the page offers no attaching.
 pub fn accept_attribute(media: &[InputMedia]) -> String {
+    // Text files have no media type the browser knows them by (a `.rs` or
+    // `.md` file is not `text/plain` to a file picker): offer every file,
+    // and let the content decide.
+    if media.iter().any(|entry| entry.kind.as_str() == "text") {
+        return String::new();
+    }
     let mut types = media
         .iter()
         .flat_map(|entry| entry.mime_types.iter().cloned())
@@ -268,6 +274,17 @@ mod tests {
             "application/pdf,image/jpeg,image/png"
         );
         assert_eq!(accept_attribute(&[]), "");
+        // An ACP agent that takes text files is offered every file.
+        let text = media("text", &["text/plain"]);
+        assert_eq!(accept_attribute(&[image.clone(), text.clone()]), "");
+        assert_eq!(
+            assess("notes.md", b"# Notes\n", &accepted(vec![text.clone()])),
+            Assessment::Attach
+        );
+        assert!(matches!(
+            assess("notes.md", b"# Notes\n", &accepted(vec![image.clone()])),
+            Assessment::Refuse(reason) if reason.contains("does not accept text files")
+        ));
         assert!(accepts_images(&[pdf.clone(), image.clone()]));
         assert!(!accepts_images(std::slice::from_ref(&pdf)));
         // The composer's buttons, whose room its padding keeps.

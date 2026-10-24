@@ -736,7 +736,7 @@ fn finish(
         runtime_media::validate_upload(&bytes).map_err(|rejection| match rejection {
             UploadRejection::Unrecognized => MediaError::TypeUnsupported {
                 media_type: "application/octet-stream".into(),
-                reason: "not a recognized image, PDF, audio, or video file".into(),
+                reason: "not a recognized image, PDF, audio, video, or text file".into(),
             },
             UploadRejection::Malformed { media_type } => MediaError::TypeUnsupported {
                 media_type: media_type.into(),

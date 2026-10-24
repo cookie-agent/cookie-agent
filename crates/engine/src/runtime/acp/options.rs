@@ -30,6 +30,9 @@ pub(crate) struct KnownAgent {
     /// any.
     #[serde(default)]
     pub options: Vec<AcpConfigOption>,
+    /// The files it takes in a prompt, from its `initialize` answer.
+    #[serde(default)]
+    pub input_media: Vec<cookie_agent_protocol::InputMedia>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -239,6 +242,25 @@ impl crate::runtime::Engine {
                 }
             });
         if changed {
+            self.refresh_runtime_agents();
+        }
+    }
+
+    /// Remembers the files `agent` takes in a prompt, as its process
+    /// answered `initialize`, and publishes the agents again when that
+    /// changed.
+    pub(super) fn remember_acp_input(
+        &self,
+        agent: &crate::runtime_snapshot::RuntimeAgent,
+        caps: &super::wire::PromptCapabilities,
+    ) {
+        let media = super::prompt::input_media(caps);
+        if self
+            .inner
+            .acp
+            .known
+            .update(&agent.id, &agent.runtime, |known| known.input_media = media)
+        {
             self.refresh_runtime_agents();
         }
     }

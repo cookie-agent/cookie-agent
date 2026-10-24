@@ -413,10 +413,11 @@ async fn a_digest_mismatch_or_refused_content_drops_the_upload() {
         MediaError::UploadNotFound
     );
 
-    let text = b"just some text".to_vec();
-    let id = send(text.clone()).await;
+    // Bytes that are neither a media file nor text.
+    let binary = b"\x00\x01\xfe not media".to_vec();
+    let id = send(binary.clone()).await;
     assert!(matches!(
-        media(engine.finish_upload(CONNECTION, &id, &digest(&text)).await.unwrap_err()),
+        media(engine.finish_upload(CONNECTION, &id, &digest(&binary)).await.unwrap_err()),
         MediaError::TypeUnsupported { media_type, .. } if media_type == "application/octet-stream"
     ));
     let mut torn = png(4, 4, 64);
@@ -447,7 +448,7 @@ async fn a_digest_mismatch_or_refused_content_drops_the_upload() {
     );
     // Nothing refused was stored, and no temporary file is left behind.
     assert!(upload_temporaries(&fixture).is_empty());
-    for refused in [&text, &torn, &wide] {
+    for refused in [&binary, &torn, &wide] {
         assert!(
             !engine
                 .inner
@@ -763,8 +764,9 @@ async fn a_reference_must_say_what_the_stored_content_is() {
             .await
             .unwrap_err(),
     );
+    // The stored bytes are text, which the reference does not say.
     assert!(
-        matches!(error, MediaError::TypeUnsupported { ref media_type, .. } if media_type == "image/png"),
+        matches!(error, MediaError::ArtifactNotFound { ref reason, .. } if reason.contains("text/plain, not image/png")),
         "{error:?}"
     );
     fixture.engine.shutdown().await;

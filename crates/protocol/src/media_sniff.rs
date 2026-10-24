@@ -22,6 +22,11 @@ const PDF_TAIL_BYTES: usize = 1024;
 pub const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 /// Upper bound on a retained video attachment.
 pub const MAX_VIDEO_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+/// Upper bound on an uploaded text file, which an ACP agent takes whole in
+/// its prompt.
+pub const MAX_TEXT_ATTACHMENT_BYTES: u64 = 1024 * 1024;
+/// The media type of an uploaded text file.
+pub const TEXT_MEDIA_TYPE: &str = "text/plain";
 
 /// Whether `accepted`, a media type a model lists (exact, or a prefix
 /// ending in `*`), accepts `mime_type`. Case does not matter, and a video
@@ -56,11 +61,14 @@ pub fn media_kind(mime_type: &str) -> Option<&'static str> {
 }
 
 /// The attachment cap of a media kind: [`MAX_VIDEO_ATTACHMENT_BYTES`] for
-/// video, [`MAX_ATTACHMENT_BYTES`] for everything else.
+/// video, [`MAX_TEXT_ATTACHMENT_BYTES`] for text, [`MAX_ATTACHMENT_BYTES`]
+/// for everything else.
 #[must_use]
 pub fn max_attachment_bytes(kind: &str) -> u64 {
     if kind == MediaKindLabel::VIDEO {
         MAX_VIDEO_ATTACHMENT_BYTES
+    } else if kind == MediaKindLabel::TEXT {
+        MAX_TEXT_ATTACHMENT_BYTES
     } else {
         MAX_ATTACHMENT_BYTES
     }
@@ -160,11 +168,14 @@ pub enum UploadRejection {
 /// Recognizes and validates an upload: its media type comes from its content
 /// alone, never from a filename, and it is held to the checks and caps a
 /// tool attachment is (the runtime's `validate_attachment`), with an
-/// image's size reported.
+/// image's size reported. Content that is no media file but UTF-8 without
+/// NUL bytes is a text file, `text/plain` of kind `text`, which models do
+/// not take and ACP agents may.
 pub fn validate_upload(bytes: &[u8]) -> Result<ValidatedUpload, UploadRejection> {
     let byte_length = bytes.len() as u64;
-    let (media_type, kind) =
-        recognize(Path::new(""), bytes, byte_length).ok_or(UploadRejection::Unrecognized)?;
+    let Some((media_type, kind)) = recognize(Path::new(""), bytes, byte_length) else {
+        return validate_text_upload(bytes);
+    };
     let label = match kind {
         MediaKind::Image(_) => MediaKindLabel::IMAGE,
         MediaKind::Pdf => MediaKindLabel::PDF,
@@ -218,6 +229,28 @@ pub fn validate_upload(bytes: &[u8]) -> Result<ValidatedUpload, UploadRejection>
         media_type,
         kind: label,
         image,
+    })
+}
+
+/// [`validate_upload`] of content no media type recognizes: a text file, or
+/// refused.
+fn validate_text_upload(bytes: &[u8]) -> Result<ValidatedUpload, UploadRejection> {
+    if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
+        return Err(UploadRejection::Unrecognized);
+    }
+    let byte_length = bytes.len() as u64;
+    if byte_length > MAX_TEXT_ATTACHMENT_BYTES {
+        return Err(UploadRejection::TooLarge {
+            kind: MediaKindLabel::TEXT,
+            byte_length,
+            max_bytes: MAX_TEXT_ATTACHMENT_BYTES,
+            image: None,
+        });
+    }
+    Ok(ValidatedUpload {
+        media_type: TEXT_MEDIA_TYPE,
+        kind: MediaKindLabel::TEXT,
+        image: None,
     })
 }
 

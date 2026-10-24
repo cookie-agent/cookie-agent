@@ -158,6 +158,14 @@ impl App {
     /// no model is selected.
     pub(in crate::ui) fn accepted_media(&self) -> Option<AcceptedMedia> {
         let selection = self.new_session_draft.as_ref().or(self.draft.as_ref())?;
+        // An ACP agent takes what it advertised when it last started on the
+        // runtime it runs on.
+        if let Some(agent) = self.draft_acp_agent() {
+            return Some(AcceptedMedia {
+                model: agent.id.to_string(),
+                media: cookie_agent_client_state::acp::input_media(agent, &self.agent_runtimes()),
+            });
+        }
         let key = &selection.model.model;
         let media = self
             .model_descriptor(key)

@@ -915,14 +915,14 @@ impl Turn<'_> {
         if self.active.cancellation.is_cancelled() {
             return Ok(None);
         }
-        let images = self
+        let caps = self
             .live
             .process
             .init()
             .agent_capabilities
             .prompt_capabilities
-            .image;
-        let (prompt, steered) = engine.input_since(&claim.events, self.input_through_seq, images);
+            .clone();
+        let (prompt, steered) = engine.input_since(&claim.events, self.input_through_seq, &caps);
         if prompt.is_empty() {
             return Ok(None);
         }
@@ -2241,8 +2241,8 @@ impl Engine {
         if live.first_prompt {
             prompt.extend(context.iter().map(|part| wire::text_block(part)));
         }
-        let images = process.init().agent_capabilities.prompt_capabilities.image;
-        prompt.extend(self.input_since(events, boundary, images).0);
+        let caps = &process.init().agent_capabilities.prompt_capabilities;
+        prompt.extend(self.input_since(events, boundary, caps).0);
         if prompt.is_empty() {
             prompt.push(wire::text_block("Continue."));
         }
@@ -2258,7 +2258,7 @@ impl Engine {
         &self,
         events: &crate::events::EventSnapshot,
         boundary: u64,
-        images: bool,
+        caps: &wire::PromptCapabilities,
     ) -> (Vec<Value>, cookie_agent_protocol::AcpSteered) {
         let producers = crate::goal_projection::GoalProducerProjection::from_events(events);
         let admitted = producers
@@ -2281,13 +2281,13 @@ impl Engine {
                 }
                 Event::UserInputApplied { user_input_seq } if event.seq > boundary => {
                     if let Some(content) = submitted.get(user_input_seq) {
-                        self.push_content(&mut prompt, event.session_id, content, images);
+                        self.push_content(&mut prompt, event.session_id, content, caps);
                         taken.user_inputs.push(*user_input_seq);
                     }
                 }
                 Event::ProducerMessageAdmitted { .. } if event.seq > boundary => {
                     if let Some((message_id, body)) = admitted.get(&event.seq) {
-                        self.push_content(&mut prompt, event.session_id, body, images);
+                        self.push_content(&mut prompt, event.session_id, body, caps);
                         taken.producer_messages.push(*message_id);
                     }
                 }
@@ -2297,38 +2297,22 @@ impl Engine {
         (prompt, taken)
     }
 
-    /// Adds the blocks of `content` to `prompt`: text, and images when the
-    /// agent takes them.
+    /// Adds the blocks of `content` to `prompt`: text, and files as the
+    /// agent's prompt capabilities `caps` allow ([`super::prompt`]).
     fn push_content(
         &self,
         prompt: &mut Vec<Value>,
         session: SessionId,
         content: &cookie_agent_protocol::UserContent,
-        images: bool,
+        caps: &wire::PromptCapabilities,
     ) {
         for part in content.parts() {
             match part {
                 Open::Known(UserContentPart::Text { text }) => prompt.push(wire::text_block(text)),
                 Open::Known(UserContentPart::File { artifact }) => {
-                    let image = images && artifact.media_type.starts_with("image/");
-                    let bytes = image
-                        .then(|| self.read_user_artifact(session, artifact))
-                        .flatten();
-                    match bytes {
-                        Some(bytes) => {
-                            use base64::Engine as _;
-                            prompt.push(serde_json::json!({
-                                "type": "image",
-                                "mimeType": artifact.media_type,
-                                "data": base64::engine::general_purpose::STANDARD.encode(bytes),
-                            }));
-                        }
-                        None => prompt.push(wire::text_block(&format!(
-                            "[attached file {} ({}), which this agent cannot read]",
-                            artifact.filename.as_deref().unwrap_or("unnamed"),
-                            artifact.media_type
-                        ))),
-                    }
+                    prompt.push(super::prompt::file_block(artifact, caps, || {
+                        self.read_user_artifact(session, artifact)
+                    }));
                 }
                 Open::Unknown { .. } => {}
             }
@@ -2363,6 +2347,10 @@ impl Engine {
         {
             return Ok(live);
         }
+        self.remember_acp_input(
+            agent,
+            &process.init().agent_capabilities.prompt_capabilities,
+        );
         let cwd = self.acp_cwd(session, agent, process)?;
         let bridge = self.open_acp_bridge(session, agent, process).await;
         // Bound before the agent hears of it: an agent connects its MCP
