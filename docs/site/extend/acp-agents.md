@@ -367,21 +367,38 @@ each call decided by the rules as a model's would be.
   shown dimmed with why and cannot be picked: no attached runtime offers it
   (`needs lab attached`), two do (`offered by lab, local: attach one`), or
   its runtime is away or has it disabled (`on lab · unavailable`). No model picker lists
-  an ACP agent's synthetic model `acp/<agent>`: the agent chooses its own.
+  an ACP agent's synthetic model `acp/<agent>`: the agent chooses its own,
+  and the model picker lists the agent's models instead (below).
 - **Agent commands.** Once the agent has announced its slash commands, the
   TUI's command palette (`/` on an empty composer, or ctrl+p) lists them
   after cookie's own, marked `(agent)`; a command that takes input asks for
   it. In the web client, typing `/` in the composer lists them above it.
   Choosing one sends `/<name> <input>` to the agent.
-- **Agent options.** The agent's options, such as its model, mode, and
-  effort, are the session's agent options: `/options` in the TUI (or the
-  title's model, which opens them for an ACP agent), and the model chip in
-  the web client, which shows the agent's model. An on/off option, such as
-  Claude Code's fast mode, is a switch in the web client and toggles from
-  its row in `/options`. Choosing a value changes
-  it on the agent at once, and a mode the agent switches to by itself
-  (Claude Code leaving plan mode) shows at once too. They appear once the
-  agent's session has started, with the first message.
+- **Model and effort.** The agent's model option (category `model`) and
+  its reasoning effort (category `thought_level`), when it offers them,
+  read as the session's model and variant: `claude • Opus[High]` in the
+  TUI's title, `Opus • High` on the web client's model chip. The model
+  picker (the TUI's `/model` or the title's model, the web client's model
+  chip) lists the model option's values, and the variant (the TUI's
+  bracketed variant or ctrl+t, the efforts in the web client's model sheet)
+  the effort option's. Claude Code offers `model` and `effort`; Codex
+  `model` and `reasoning_effort`.
+- **A new session's draft** offers the options the agent last started a
+  session with on the runtime the draft would run it on, with the
+  document's `acp.mode` and `acp.config` applied: what its new session
+  would start with. The daemon remembers them per agent and runtime in
+  `acp-agents.json` in its data folder, across restarts. Your choices go
+  with the new session and apply when its agent session starts, after the
+  document's `acp.config`; one the agent no longer takes is skipped with a
+  note in the transcript. Before the agent has started a session on that
+  runtime, there is nothing to offer yet: send a first message.
+- **Agent options.** The agent's other options, such as its mode, are the
+  session's agent options: `/options` in the TUI, and **All agent options**
+  in the web client's model sheet. An on/off option, such as Claude Code's
+  fast mode, is a switch in the web client and toggles from its row in
+  `/options`. Choosing a value changes it on the agent at once (on a
+  draft, when its session starts), and a mode the agent switches to by
+  itself (Claude Code leaving plan mode) shows at once too.
 - **Context.** The status line shows how much context the agent's
   conversation uses, as the agent reports it (`ctx` in the TUI, with the
   share of the agent's context window; the tokens in the web client).

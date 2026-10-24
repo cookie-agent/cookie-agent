@@ -2434,13 +2434,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 class=format!("{CHIP} compact:max-w-none compact:flex-1")
                 aria-label=move || format!("Model: {}", model())
                 title=move || format!("Model: {} (click to change)", model())
-                on:click=move |_| {
-                    workspace.panel.set(Some(if workspace.draft_is_acp() {
-                        Panel::AgentOptions
-                    } else {
-                        Panel::Models
-                    }))
-                }
+                on:click=move |_| workspace.panel.set(Some(Panel::Models))
             >
                 <Glyph icon=icondata::FaMicrochipSolid class="text-caramel dark:text-maple" />
                 <span class="min-w-0 flex-1 truncate text-left">{model}</span>
@@ -2764,22 +2758,24 @@ fn agents_sheet(workspace: Workspace) -> impl IntoView {
         .into_any()
 }
 
-/// The session's ACP agent options: each with its values, the current one
-/// pressed; choosing a value sets it on the agent.
+/// What the ACP sheets say before the agent has offered any options.
+const NO_AGENT_OPTIONS: &str =
+    "The agent's options appear once it has started a session: send a first message.";
+
+/// The ACP agent's options: each with its values, the current one pressed;
+/// choosing a value sets it on the agent, or on a new session's draft.
 fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
     move || {
-        let Some(acp) = workspace.acp() else {
-            return empty_state(
-                icondata::FaSlidersSolid,
-                "The agent's options appear once its session has started: send a first message.",
-            )
-            .into_any();
-        };
-        if acp.options.is_empty() {
-            return empty_state(icondata::FaSlidersSolid, "The agent offers no options.")
-                .into_any();
+        let options = workspace.acp_options();
+        if options.is_empty() {
+            let message = if workspace.acp().is_some() {
+                "The agent offers no options."
+            } else {
+                NO_AGENT_OPTIONS
+            };
+            return empty_state(icondata::FaSlidersSolid, message).into_any();
         }
-        acp.options
+        options
             .into_iter()
             .map(|option| {
                 // A boolean is a switch that sets the other value.
@@ -2834,7 +2830,7 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
                                 title=value.description.clone().unwrap_or_default()
                                 on:click=move |_| {
                                     if !chosen {
-                                        workspace.set_agent_option(
+                                        workspace.choose_agent_option(
                                             option_id.clone(),
                                             value_id.clone(),
                                             label.clone(),
@@ -2861,7 +2857,117 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// The model sheet of an ACP agent (`docs/site/specs/acp-agents.md`
+/// section 15, input and pickers): its model option's values as the models,
+/// its effort option's as the variants, and the rest of its options a tap
+/// away.
+fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
+    move || {
+        let options = workspace.acp_options();
+        let model = cookie_agent_client_state::acp::model_option(&options).cloned();
+        let effort = cookie_agent_client_state::acp::effort_option(&options).cloned();
+        let choose = move |option: &cookie_agent_protocol::AcpConfigOption,
+                           value: &cookie_agent_protocol::AcpConfigValue| {
+            let (option_id, value_id) = (option.id.clone(), value.value.clone());
+            let label = format!("{}: {}", option.name, value.name);
+            move |_| {
+                workspace.choose_agent_option(option_id.clone(), value_id.clone(), label.clone());
+                workspace.panel.set(None);
+            }
+        };
+        let models = model.map(|option| {
+            option
+                .values
+                .iter()
+                .map(|value| {
+                    let chosen = value.value == option.current_value;
+                    view! {
+                        <button
+                            type="button"
+                            class=ROW
+                            class:bg-toasted=chosen
+                            class:dark:bg-ember=chosen
+                            data-acp-model=value.value.clone()
+                            on:click=choose(&option, value)
+                        >
+                            {choice_line(value.name.clone(), chosen, "text-sm font-bold")}
+                            {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
+                        </button>
+                    }
+                })
+                .collect_view()
+        });
+        let efforts = effort.map(|option| {
+            let values = option
+                .values
+                .iter()
+                .map(|value| {
+                    let chosen = value.value == option.current_value;
+                    view! {
+                        <button
+                            type="button"
+                            class=BUTTON
+                            class:bg-toasted=chosen
+                            class:dark:bg-ember=chosen
+                            aria-pressed=chosen.to_string()
+                            data-acp-effort=value.value.clone()
+                            title=value.description.clone().unwrap_or_default()
+                            on:click=choose(&option, value)
+                        >
+                            {value.name.clone()}
+                        </button>
+                    }
+                })
+                .collect_view();
+            view! {
+                <div class="flex flex-col gap-1 border-b border-toasted pb-2 dark:border-ember">
+                    <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
+                    <div class="flex flex-wrap gap-2 px-3">{values}</div>
+                </div>
+            }
+        });
+        if models.is_none() && efforts.is_none() {
+            let message = if options.is_empty() {
+                NO_AGENT_OPTIONS
+            } else {
+                "The agent offers no model option."
+            };
+            return view! {
+                {empty_state(icondata::FaMicrochipSolid, message)}
+                {(!options.is_empty()).then(|| view! {
+                    <button
+                        type="button"
+                        class=ROW
+                        id="agent-options-more"
+                        on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
+                    >
+                        {choice_line("All agent options".to_owned(), false, "text-sm")}
+                    </button>
+                })}
+            }
+            .into_any();
+        }
+        view! {
+            <div class="flex flex-col gap-1 border-b border-toasted pb-2 dark:border-ember">{models}</div>
+            {efforts}
+            <button
+                type="button"
+                class=ROW
+                id="agent-options-more"
+                on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
+            >
+                {choice_line("All agent options".to_owned(), false, "text-sm")}
+                <span class=NOTE>"Mode and the agent's other settings"</span>
+            </button>
+        }
+        .into_any()
+    }
+}
+
 fn models_sheet(workspace: Workspace) -> impl IntoView {
+    if workspace.draft_is_acp() {
+        return acp_models_sheet(workspace).into_any();
+    }
     let current = workspace.draft.get_untracked().map(|draft| draft.model);
     let models = workspace.models();
     if models.is_empty() {

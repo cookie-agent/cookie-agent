@@ -1,6 +1,7 @@
 //! Transcript rendering tests, grouped by topic.
 
 mod acp;
+mod acp_input;
 mod approvals;
 mod assistant;
 mod attachments;

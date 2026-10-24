@@ -498,9 +498,12 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     would run them on; one that cannot run there (no attached runtime
     offers it, two do, or its runtime is away) is dimmed with why and
     cannot be picked. For an ACP agent the model chip shows the agent's
-    own model and opens **Agent options**: each option the agent offers
-    (model, mode, effort) with its values, the current one pressed; a click
-    changes it on the agent;
+    own model and effort (`Opus • High`) and opens their values, a click
+    changing them on the agent (on a new session's draft, the values its
+    session starts with; a draft offers what the agent last started a
+    session with); **All agent options** there lists every option the
+    agent offers (model, mode, effort) with its values, the current one
+    pressed;
   - the approvals waiting, when there are any (click to answer them);
   - **working…** while the session runs;
   - the last status message;

@@ -1113,7 +1113,7 @@ impl App {
             {
                 // Ctrl-T cycles the draft model's variants, like clicking the
                 // bracketed variant suffix in the composer title.
-                if self.draft_variants().len() > 1 {
+                if self.draft_is_acp() || self.draft_variants().len() > 1 {
                     self.cycle_draft_variant();
                 } else {
                     self.status = "this model has no other variants".into();

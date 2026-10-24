@@ -4735,9 +4735,11 @@ def acp_agents(browser):
     and not pickable; the agent's turn shows its plan as a checklist and its
     tool call with the agent as its source, and the status bar its context;
     the commands it runs show their output, and an image in its reply shows
-    as media; its commands are offered in the composer; and the model chip
-    opens its options, which change on the agent, a boolean one as a
-    switch."""
+    as media; its commands are offered in the composer; the model chip
+    shows its model and effort options and its sheet picks them, with the
+    other options a tap away, a boolean one as a switch; and a new
+    session's draft picks the model and effort the agent last offered,
+    which its first turn starts with."""
     new_session(browser)
     browser.click("#agent-chip")
     fixture = '#sheet [data-agent="fixture"]'
@@ -4798,14 +4800,32 @@ def acp_agents(browser):
     clear_composer(browser)
     print("the composer offers the agent's commands")
 
-    browser.wait("the agent's model", lambda: "Small" in browser.text("#model-chip"), timeout=40)
+    # The model chip shows the agent's model and effort options as the
+    # model and variant, and its sheet picks them.
+    browser.wait("the agent's model", lambda: "Small • Low" in browser.text("#model-chip"), timeout=40)
     browser.click("#model-chip")
-    large = '#sheet [data-agent-option="model"] [data-option-value="large"]'
-    browser.wait("the agent's options", lambda: count(browser, large) == 1)
+    large = '#sheet [data-acp-model="large"]'
+    browser.wait("the agent's models", lambda: count(browser, large) == 1)
+    assert count(browser, '#sheet [data-acp-effort="high"]') == 1
+    settle(browser)
+    browser.shot("acp-agent-models")
+    browser.click(large)
+    browser.wait("the changed model", lambda: "Large • Low" in browser.text("#model-chip"), timeout=40)
+    browser.click("#model-chip")
+    browser.wait("the agent's models", lambda: count(browser, "#agent-options-more") == 1)
+    browser.click("#agent-options-more")
+    plan_mode = '#sheet [data-agent-option="mode"] [data-option-value="plan"]'
+    browser.wait("the agent's other options", lambda: count(browser, plan_mode) == 1)
     settle(browser)
     browser.shot("acp-agent-options")
-    browser.click(large)
-    browser.wait("the changed option", lambda: "Large" in browser.text("#model-chip"), timeout=40)
+    browser.click(plan_mode)
+    browser.wait(
+        "the changed mode",
+        lambda: browser.script(
+            "return document.querySelector(arguments[0]).getAttribute('aria-pressed')", plan_mode
+        ) == "true",
+        timeout=40,
+    )
     fast = '#sheet [data-agent-option="fast"] [role="switch"]'
     browser.wait("the boolean option", lambda: count(browser, fast) == 1)
     assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-checked')", fast) == "false"
@@ -4816,7 +4836,32 @@ def acp_agents(browser):
         timeout=40,
     )
     close_sheet(browser)
-    print("the model chip opens the agent's options, sets one, and toggles a boolean one")
+    print("the model chip shows and picks the agent's model and effort, and opens its other options, a boolean one a switch")
+
+    # A new session's draft offers the options the agent last started a
+    # session with, and its choices start the new session.
+    new_session(browser)
+    browser.click("#agent-chip")
+    browser.wait("the runtime agents", lambda: count(browser, fixture) == 1, timeout=40)
+    browser.click(fixture)
+    browser.wait("the draft's agent model", lambda: "Small • Low" in browser.text("#model-chip"), timeout=40)
+    browser.click("#model-chip")
+    browser.wait("the draft's models", lambda: count(browser, large) == 1)
+    browser.click(large)
+    browser.wait("the draft's model", lambda: "Large • Low" in browser.text("#model-chip"))
+    browser.click("#model-chip")
+    high = '#sheet [data-acp-effort="high"]'
+    browser.wait("the draft's efforts", lambda: count(browser, high) == 1)
+    browser.click(high)
+    browser.wait("the draft's effort", lambda: "Large • High" in browser.text("#model-chip"))
+    send(browser, "say drafted")
+    browser.wait("the drafted session's turn", lambda: "drafted" in browser.text("#transcript"), timeout=60)
+    browser.wait(
+        "the agent's own options",
+        lambda: "Large • High" in browser.text("#model-chip"),
+        timeout=40,
+    )
+    print("a draft picks the agent's model and effort before its session exists")
 
 
 def acp_questions(browser):

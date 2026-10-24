@@ -610,6 +610,7 @@ mod tests {
                     description: String::new(),
                     enabled: *enabled,
                     connected: *connected,
+                    known: Default::default(),
                 })
                 .collect(),
             id,

@@ -14,7 +14,7 @@ use crate::ui::app::*;
 
 use super::support::*;
 
-fn acp_descriptor(
+pub(super) fn acp_descriptor(
     id: &str,
     runtime: &str,
     available: bool,
@@ -35,7 +35,7 @@ fn acp_descriptor(
 
 /// An app viewing root session `session`, whose ACP agent offers commands
 /// and a mode option.
-async fn acp_session_app() -> (App, SessionId) {
+pub(super) async fn acp_session_app() -> (App, SessionId) {
     let mut app = test_app().await;
     app.agents = vec![
         descriptor("primary", true),

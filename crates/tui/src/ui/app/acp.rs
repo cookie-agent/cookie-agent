@@ -1,6 +1,7 @@
 //! A session's ACP agent in the TUI (`docs/site/specs/acp-agents.md`
 //! sections 5 and 10): the agent's slash commands in the command palette,
-//! marked as the agent's, and its config options in `/options`.
+//! marked as the agent's, and its config options in `/options`, its model
+//! and effort as the model and variant (section 15, input and pickers).
 
 use super::*;
 
@@ -104,41 +105,123 @@ impl App {
             .await;
     }
 
+    /// The ACP agent the draft runs, when it runs one.
+    fn draft_acp_agent(&self) -> Option<&cookie_agent_protocol::AgentDescriptor> {
+        let draft = self.new_session_draft.as_ref().or(self.draft.as_ref())?;
+        if !cookie_agent_client_state::acp::is_acp_model(&draft.model) {
+            return None;
+        }
+        self.agents
+            .iter()
+            .find(|agent| agent.id == draft.agent && agent.preset == draft.preset)
+    }
+
+    /// The options of the draft's ACP agent (`docs/site/specs/acp-agents.md`
+    /// section 15, input and pickers): a new session's draft offers what the
+    /// agent last started a session with on the runtime it would run on,
+    /// with the draft's choices; a session's are its agent's, or, before its
+    /// agent session started, what it was created with.
+    pub(in crate::ui) fn agent_options(&self) -> Vec<AcpConfigOption> {
+        let attached = self.agent_runtimes();
+        let agent = self.draft_acp_agent();
+        if self.new_session_draft.is_some() {
+            return agent.map_or_else(Vec::new, |agent| {
+                cookie_agent_client_state::acp::draft_options(
+                    agent,
+                    &attached,
+                    self.draft_agent_options.for_agent(&agent.id),
+                )
+            });
+        }
+        let Some(state) = self
+            .viewed_session()
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+        else {
+            return Vec::new();
+        };
+        cookie_agent_client_state::acp::session_options(&state.acp, agent, &attached)
+    }
+
+    /// The draft's ACP model and effort for the title, when the agent
+    /// offers a model option.
+    pub(in crate::ui) fn acp_model_and_effort(&self) -> Option<(String, Option<String>)> {
+        cookie_agent_client_state::acp::model_and_effort(&self.agent_options())
+    }
+
     /// Opens `/options` on the session's agent options.
     pub(super) fn open_agent_options(&mut self) {
-        match self.viewed_acp() {
-            None => {
-                self.status =
-                    "the agent's options appear once its session has started: send a first message"
-                        .into();
-                return;
-            }
-            Some(acp) if acp.options.is_empty() => {
-                self.status = "the session's agent offers no options".into();
-                return;
-            }
-            Some(_) => {}
+        if self.agent_options().is_empty() {
+            self.status = if self.viewed_acp().is_some() {
+                "the session's agent offers no options".into()
+            } else {
+                "the agent's options appear once it has started a session: send a first message"
+                    .into()
+            };
+            return;
         }
         self.agent_option_step = None;
         self.picker_state.select(Some(0));
         self.modal = Modal::AgentOptions;
     }
 
-    fn agent_options(&self) -> &[AcpConfigOption] {
-        self.viewed_acp().map_or(&[], |acp| acp.options.as_slice())
+    /// Opens the values of the agent's model option (`model`) or effort
+    /// option (`effort`) as the model or variant picker, else `/options`.
+    pub(super) fn open_agent_model_picker(&mut self, effort: bool) {
+        let options = self.agent_options();
+        let option = if effort {
+            cookie_agent_client_state::acp::effort_option(&options)
+        } else {
+            cookie_agent_client_state::acp::model_option(&options)
+        };
+        let Some(option) = option.filter(|option| !option.values.is_empty()) else {
+            self.open_agent_options();
+            return;
+        };
+        let current = option
+            .values
+            .iter()
+            .position(|value| value.value == option.current_value)
+            .unwrap_or(0);
+        self.agent_option_step = Some(option.id.clone());
+        self.picker_state.select(Some(current));
+        self.modal = Modal::AgentOptions;
     }
 
-    fn agent_option_in_step(&self) -> Option<&AcpConfigOption> {
+    /// The next value of the agent's effort option, as the variant segment
+    /// cycles cookie's own variants.
+    pub(super) fn cycle_agent_effort(&mut self) {
+        let options = self.agent_options();
+        let Some(option) = cookie_agent_client_state::acp::effort_option(&options) else {
+            self.status = "the agent offers no effort option".into();
+            return;
+        };
+        if option.values.len() <= 1 {
+            return;
+        }
+        let index = option
+            .values
+            .iter()
+            .position(|value| value.value == option.current_value)
+            .map_or(0, |index| (index + 1) % option.values.len());
+        let value = &option.values[index];
+        let label = format!("{}: {}", option.name, value.name);
+        self.apply_agent_option(option.id.clone(), value.value.clone(), label);
+    }
+
+    fn agent_option_in_step(&self) -> Option<AcpConfigOption> {
         let id = self.agent_option_step.as_deref()?;
-        self.agent_options().iter().find(|option| option.id == id)
+        self.agent_options()
+            .into_iter()
+            .find(|option| option.id == id)
     }
 
     /// The title and rows of `/options`: the options, or the values of the
     /// option being changed, the current one marked.
     pub(super) fn agent_option_rows(&self) -> (String, Vec<String>) {
         let agent = self
-            .viewed_acp()
-            .and_then(|acp| acp.agent.as_ref())
+            .draft_acp_agent()
+            .map(|agent| &agent.id)
+            .or_else(|| self.viewed_acp().and_then(|acp| acp.agent.as_ref()))
             .map_or_else(String::new, ToString::to_string);
         match self.agent_option_in_step() {
             Some(option) => (
@@ -170,7 +253,7 @@ impl App {
     }
 
     /// Row `index` of `/options`: an option opens its values, and a boolean
-    /// one toggles; a value sets it on the agent.
+    /// one toggles; a value sets it on the agent, or on the draft.
     pub(super) fn choose_agent_option(&mut self, index: usize) {
         if let Some(option) = self.agent_option_in_step() {
             let Some(value) = option.values.get(index) else {
@@ -180,10 +263,10 @@ impl App {
             let label = format!("{}: {}", option.name, value.name);
             self.agent_option_step = None;
             self.modal = Modal::None;
-            self.set_agent_option(option_id, value_id, label);
+            self.apply_agent_option(option_id, value_id, label);
             return;
         }
-        let Some(option) = self.agent_options().get(index) else {
+        let Some(option) = self.agent_options().get(index).cloned() else {
             return;
         };
         // A boolean toggles at once; the picker stays open on it.
@@ -191,7 +274,7 @@ impl App {
             let on = option.current_value != "true";
             let label = format!("{}: {}", option.name, if on { "on" } else { "off" });
             let option_id = option.id.clone();
-            self.set_agent_option(option_id, on.to_string(), label);
+            self.apply_agent_option(option_id, on.to_string(), label);
             return;
         }
         if option.values.is_empty() {
@@ -205,6 +288,18 @@ impl App {
             .unwrap_or(0);
         self.agent_option_step = Some(option.id.clone());
         self.picker_state.select(Some(current));
+    }
+
+    /// Chooses `value` for option `option_id`: a new session's draft keeps
+    /// it for `session.create`; a session sets it on its agent.
+    fn apply_agent_option(&mut self, option_id: String, value: String, label: String) {
+        if let Some(draft) = &self.new_session_draft {
+            let agent = draft.agent.clone();
+            self.draft_agent_options.choose(&agent, &option_id, &value);
+            self.status = format!("Draft agent option {label}");
+            return;
+        }
+        self.set_agent_option(option_id, value, label);
     }
 
     /// Sets the session's agent option `option_id` to `value`

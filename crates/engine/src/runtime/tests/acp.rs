@@ -34,18 +34,18 @@ fn fixture_script() -> PathBuf {
 /// An engine whose `local` runtime hosts the scripted ACP agent as
 /// `fixture` (`fixture`), started with `env`, and whose user layer
 /// has the agent `documents` (file name, text).
-struct AcpFixture {
-    fixture: Fixture,
+pub(super) struct AcpFixture {
+    pub(super) fixture: Fixture,
     log: PathBuf,
     _markers: PanicResistantTempDir,
 }
 
 impl AcpFixture {
-    fn engine(&self) -> &Engine {
+    pub(super) fn engine(&self) -> &Engine {
         &self.fixture.engine
     }
 
-    fn workspace(&self) -> PathBuf {
+    pub(super) fn workspace(&self) -> PathBuf {
         self.fixture
             .engine
             .inner
@@ -55,7 +55,7 @@ impl AcpFixture {
     }
 
     /// The messages the agent received, in order.
-    fn received(&self) -> Vec<serde_json::Value> {
+    pub(super) fn received(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(&self.log)
             .unwrap_or_default()
             .lines()
@@ -63,7 +63,7 @@ impl AcpFixture {
             .collect()
     }
 
-    fn received_methods(&self) -> Vec<String> {
+    pub(super) fn received_methods(&self) -> Vec<String> {
         self.received()
             .iter()
             .filter_map(|message| message.get("method").and_then(serde_json::Value::as_str))
@@ -76,11 +76,11 @@ fn toml_string(value: &str) -> String {
     serde_json::to_string(value).unwrap()
 }
 
-async fn acp_fixture(env: &[(&str, &str)], documents: &[(&str, &str)]) -> AcpFixture {
+pub(super) async fn acp_fixture(env: &[(&str, &str)], documents: &[(&str, &str)]) -> AcpFixture {
     acp_fixture_with(env, documents, "").await
 }
 
-async fn acp_fixture_with(
+pub(super) async fn acp_fixture_with(
     env: &[(&str, &str)],
     documents: &[(&str, &str)],
     extra_config: &str,
@@ -160,11 +160,11 @@ async fn acp_fixture_with(
     }
 }
 
-fn agent_id() -> cookie_agent_protocol::AgentId {
+pub(super) fn agent_id() -> cookie_agent_protocol::AgentId {
     cookie_agent_protocol::AgentId::new("fixture").unwrap()
 }
 
-fn selection() -> RunSelection {
+pub(super) fn selection() -> RunSelection {
     RunSelection {
         agent: agent_id(),
         model: cookie_agent_protocol::acp_model_selection(&agent_id()),
@@ -172,7 +172,7 @@ fn selection() -> RunSelection {
     }
 }
 
-async fn start(engine: &Engine, session: SessionId, key: &str, text: &str) -> RunId {
+pub(super) async fn start(engine: &Engine, session: SessionId, key: &str, text: &str) -> RunId {
     engine
         .start_run(
             RunStartParams {
@@ -190,7 +190,7 @@ async fn start(engine: &Engine, session: SessionId, key: &str, text: &str) -> Ru
 }
 
 /// Waits for `run` to end and returns how.
-async fn finished(engine: &Engine, session: SessionId, run: RunId) -> RunOutcome {
+pub(super) async fn finished(engine: &Engine, session: SessionId, run: RunId) -> RunOutcome {
     let event = await_event(engine, session, "the run's end", |event| {
         event.run_id == Some(run) && matches!(event.payload, EventPayload::RunFinished { .. })
     })
@@ -204,21 +204,24 @@ async fn finished(engine: &Engine, session: SessionId, run: RunId) -> RunOutcome
 }
 
 /// Runs one prompt `text` in `session` and returns how it ended.
-async fn turn(engine: &Engine, session: SessionId, key: &str, text: &str) -> RunOutcome {
+pub(super) async fn turn(engine: &Engine, session: SessionId, key: &str, text: &str) -> RunOutcome {
     let run = start(engine, session, key, text).await;
     let outcome = finished(engine, session, run).await;
     wait_for_session_not_running(engine, session).await;
     outcome
 }
 
-fn final_text(outcome: &RunOutcome) -> String {
+pub(super) fn final_text(outcome: &RunOutcome) -> String {
     match outcome {
         RunOutcome::Completed { final_text } => final_text.clone().unwrap_or_default(),
         other => panic!("the run did not complete: {other:?}"),
     }
 }
 
-fn events(engine: &Engine, session: SessionId) -> Vec<cookie_agent_protocol::StoredEvent> {
+pub(super) fn events(
+    engine: &Engine,
+    session: SessionId,
+) -> Vec<cookie_agent_protocol::StoredEvent> {
     engine
         .inner
         .store
@@ -229,7 +232,7 @@ fn events(engine: &Engine, session: SessionId) -> Vec<cookie_agent_protocol::Sto
         .to_vec()
 }
 
-fn session_starts(
+pub(super) fn session_starts(
     engine: &Engine,
     session: SessionId,
 ) -> Vec<cookie_agent_protocol::AcpSessionRecord> {
@@ -1322,7 +1325,7 @@ async fn a_delegation_target_no_runtime_reported_yet_is_a_diagnostic_until_one_d
 }
 
 /// The text blocks of each `session/prompt` the agent received.
-fn prompts(acp: &AcpFixture) -> Vec<Vec<String>> {
+pub(super) fn prompts(acp: &AcpFixture) -> Vec<Vec<String>> {
     acp.received()
         .iter()
         .filter(|message| message["method"] == "session/prompt")

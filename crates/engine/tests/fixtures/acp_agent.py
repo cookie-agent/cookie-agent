@@ -194,6 +194,11 @@ def options(session):
             "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}],
         })
     result.append(fast)
+    result.append({
+        "id": "reasoning_effort", "name": "Reasoning", "category": "thought_level", "type": "select",
+        "currentValue": session.get("reasoning_effort", "low"),
+        "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}],
+    })
     return result
 
 

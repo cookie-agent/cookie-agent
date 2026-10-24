@@ -760,6 +760,9 @@ pub struct App {
     /// The new-session draft's permission mode and overlay rules, sent with
     /// `session.create` so its first run already sees them.
     pub(super) draft_permissions: DraftPermissions,
+    /// The new-session draft's choices for its ACP agent's options (its
+    /// model and effort among them), sent with `session.create`.
+    pub(super) draft_agent_options: cookie_agent_client_state::acp::DraftAgentOptions,
     /// The runtimes the new-session draft attaches, sent with
     /// `session.create`; `None` until `/runtime` edits them, when the
     /// session attaches `session.create`'s defaults.
@@ -1534,6 +1537,7 @@ impl App {
             selected_preset: None,
             new_session_draft: None,
             draft_permissions: DraftPermissions::default(),
+            draft_agent_options: Default::default(),
             draft_runtimes: None,
             draft_project: placement.project,
             next_draft_runtime: 0,
@@ -1829,6 +1833,7 @@ impl App {
                 runtimes,
                 global,
                 project,
+                agent_options: self.draft_agent_options.for_agent(&agent).to_vec(),
                 ..SessionCreateParams::new(selection)
             })
             .await
@@ -1840,6 +1845,7 @@ impl App {
                     self.permission_modes.insert(session_id, mode);
                 }
                 self.draft_permissions = DraftPermissions::default();
+                self.draft_agent_options.clear();
                 self.draft_runtimes = None;
                 self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);

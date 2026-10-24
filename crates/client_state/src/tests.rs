@@ -4103,6 +4103,24 @@ fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
     );
     assert!(state.acp.has_command("compact"));
     assert_eq!(state.acp.options[0].current_value, "auto");
+    // The starting options a session was created with are kept beside the
+    // options, which they do not replace.
+    apply(
+        &mut state,
+        first,
+        3,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                starting_options: Some(vec![cookie_agent_protocol::AcpOptionChoice {
+                    option_id: "model".into(),
+                    value: "opus".into(),
+                }]),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    assert_eq!(state.acp.starting_options[0].value, "opus");
+    assert_eq!(state.acp.options[0].current_value, "auto");
     // A later update of the same run replaces the run's plan in place and
     // keeps what it does not carry.
     apply(

@@ -1092,7 +1092,7 @@ impl Engine {
         }
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
-        let acp = acp::AcpState::new(&options.config);
+        let acp = acp::AcpState::new(&options.config, &options.data_dir);
         let (agents, agent_presets) =
             resolve_agent_registries(&options.config, &current_models, &acp.runtime_agents())?;
         let current_manifest = prepare_runtime_manifest(&current_models)?;

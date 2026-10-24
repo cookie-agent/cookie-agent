@@ -916,6 +916,9 @@ pub struct AcpSessionView {
     /// The agent's config options (model, mode, effort, ...), which the
     /// session's details show and `session.agent_option.set` changes.
     pub options: Vec<cookie_agent_protocol::AcpConfigOption>,
+    /// The values the session was created with for its agent's options
+    /// (client protocol 1.26.0), which its ACP session starts with.
+    pub starting_options: Vec<cookie_agent_protocol::AcpOptionChoice>,
     /// Whether the agent takes messages into its running turn, from the
     /// latest `acp_session_started` (client protocol 1.20.0).
     pub steering: bool,

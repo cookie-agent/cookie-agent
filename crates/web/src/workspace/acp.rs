@@ -1,10 +1,10 @@
 //! A session's ACP agent in the web client
 //! (`docs/site/specs/acp-agents.md` sections 5 and 10): its commands in the
-//! composer's suggestions, and its options in the agent options sheet the
-//! model chip opens.
+//! composer's suggestions, its model and effort options in the model chip
+//! and sheet, and its other options in the agent options sheet.
 
 use cookie_agent_client_state::AcpSessionView;
-use cookie_agent_protocol::{AcpCommand, AgentDescriptor};
+use cookie_agent_protocol::{AcpCommand, AcpConfigOption, AgentDescriptor};
 use leptos::{prelude::*, task::spawn_local};
 
 use super::Workspace;
@@ -71,21 +71,80 @@ impl Workspace {
         })
     }
 
-    /// The model chip's label for an ACP agent: the value of its `model`
-    /// option when it has one.
+    /// The ACP agent the draft runs, when it runs one.
+    fn draft_acp_agent(self) -> Option<AgentDescriptor> {
+        let draft = self.draft.get()?;
+        if !cookie_agent_client_state::acp::is_acp_model(&draft.model) {
+            return None;
+        }
+        self.with_runtime(|runtime| {
+            runtime.snapshot().and_then(|snapshot| {
+                snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.id == draft.agent && agent.preset == draft.preset)
+                    .cloned()
+            })
+        })
+    }
+
+    /// The options of the draft's ACP agent
+    /// (`docs/site/specs/acp-agents.md` section 15, input and pickers): a
+    /// new session's draft offers what the agent last started a session
+    /// with on the runtime it would run on, with the draft's choices; a
+    /// session's are its agent's, or, before its agent session started,
+    /// what it was created with.
+    pub fn acp_options(self) -> Vec<AcpConfigOption> {
+        let attached = self.agent_runtimes();
+        let agent = self.draft_acp_agent();
+        if self.new_session.get() {
+            return agent.map_or_else(Vec::new, |agent| {
+                self.draft_agent_options.with(|draft| {
+                    cookie_agent_client_state::acp::draft_options(
+                        &agent,
+                        &attached,
+                        draft.for_agent(&agent.id),
+                    )
+                })
+            });
+        }
+        let Some(session_id) = self.selected.get() else {
+            return Vec::new();
+        };
+        self.with_store(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .map(|state| {
+                    cookie_agent_client_state::acp::session_options(
+                        &state.acp,
+                        agent.as_ref(),
+                        &attached,
+                    )
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    /// The model chip's label for an ACP agent: its model option's value
+    /// and its effort option's, as cookie labels a model and its variant.
     pub fn acp_model_label(self) -> Option<String> {
-        let acp = self.acp()?;
-        let option = acp
-            .options
-            .iter()
-            .find(|option| option.category.as_deref() == Some("model") || option.id == "model")?;
-        Some(
-            option
-                .values
-                .iter()
-                .find(|value| value.value == option.current_value)
-                .map_or_else(|| option.current_value.clone(), |value| value.name.clone()),
-        )
+        cookie_agent_client_state::acp::model_label(&self.acp_options())
+    }
+
+    /// Chooses `value` for the agent's option `option_id`: a new session's
+    /// draft keeps it for `session.create`; a session sets it on its agent.
+    pub fn choose_agent_option(self, option_id: String, value: String, label: String) {
+        if self.new_session.get_untracked() {
+            let Some(agent) = self.draft.get_untracked().map(|draft| draft.agent) else {
+                return;
+            };
+            self.draft_agent_options
+                .update(|draft| draft.choose(&agent, &option_id, &value));
+            self.status.set(format!("draft agent option {label}"));
+            return;
+        }
+        self.set_agent_option(option_id, value, label);
     }
 
     /// Sets the viewed session's agent option `option_id` to `value`

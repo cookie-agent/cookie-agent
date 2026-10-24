@@ -278,9 +278,9 @@ impl App {
                     .delegated_pin_reason()
                     .unwrap_or_else(|| "agent switching requires a root session".into());
             }
-            // An ACP agent chooses its own model: it is one of the agent's
-            // options.
-            Modal::Models if self.draft_is_acp() => self.open_agent_options(),
+            // An ACP agent chooses its own model: the values of its model
+            // option.
+            Modal::Models if self.draft_is_acp() => self.open_agent_model_picker(false),
             Modal::Models if !self.model_selection_allowed() => {
                 self.status = if self.runtime.is_empty() {
                     EMPTY_RUNTIME_GUIDANCE.into()
@@ -842,6 +842,11 @@ impl App {
     }
 
     pub(in crate::ui) fn cycle_draft_variant(&mut self) {
+        // An ACP agent's variant is its effort option.
+        if self.draft_is_acp() {
+            self.cycle_agent_effort();
+            return;
+        }
         let variants = self.draft_variants();
         if variants.len() <= 1 {
             return;

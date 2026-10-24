@@ -203,6 +203,9 @@ pub struct Workspace {
         RwSignal<Option<Result<Vec<cookie_agent_protocol::EffectivePermissionAction>, String>>>,
     /// The rules a new session is created with.
     pub draft_rules: RwSignal<Vec<cookie_agent_protocol::PermissionRule>>,
+    /// The new session draft's choices for its ACP agent's options (its
+    /// model and effort among them), sent with `session.create`.
+    pub draft_agent_options: RwSignal<cookie_agent_client_state::acp::DraftAgentOptions>,
     permission_request: StoredValue<u64>,
     /// The files the next message attaches.
     pub attachments: RwSignal<Vec<cookie_agent_protocol::ArtifactRef>>,
@@ -419,6 +422,7 @@ impl Workspace {
             skill_args: RwSignal::new(String::new()),
             permissions: RwSignal::new(None),
             draft_rules: RwSignal::new(Vec::new()),
+            draft_agent_options: RwSignal::new(Default::default()),
             permission_request: StoredValue::new(0),
             attachments: RwSignal::new(Vec::new()),
             draft_files: StoredValue::new(Vec::new()),
@@ -1178,6 +1182,7 @@ impl Workspace {
         self.drop_draft_files();
         self.downscale_offer.set(None);
         self.draft_rules.set(Vec::new());
+        self.draft_agent_options.set(Default::default());
         self.composer.set(String::new());
         self.draft.set(self.default_draft());
         self.panel.set(None);
@@ -1721,6 +1726,9 @@ impl Workspace {
                 runtimes,
                 global,
                 project,
+                agent_options: self
+                    .draft_agent_options
+                    .with_untracked(|draft| draft.for_agent(&selection.agent).to_vec()),
                 ..SessionCreateParams::new(selection)
             })
             .await
@@ -1763,6 +1771,7 @@ impl Workspace {
         }
         self.new_session_mode.set(None);
         self.draft_rules.set(Vec::new());
+        self.draft_agent_options.set(Default::default());
         self.draft_error.set(None);
         self.card_errors.set(HashMap::new());
         self.new_session.set(false);

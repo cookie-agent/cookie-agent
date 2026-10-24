@@ -27,6 +27,7 @@ pub(crate) mod compaction;
 pub(crate) mod elicitation;
 pub(crate) mod lifecycle;
 pub(crate) mod mcp;
+pub(crate) mod options;
 pub(crate) mod permissions;
 pub(crate) mod process;
 pub(crate) mod runner;
@@ -46,6 +47,8 @@ pub(crate) struct AcpState {
     agents: Mutex<Vec<RuntimeAgent>>,
     /// Refused declarations already reported, so each is reported once.
     reported: Mutex<HashSet<String>>,
+    /// What each agent offered on each runtime when it last started there.
+    pub(crate) known: options::KnownAgents,
     /// The agents' processes and sessions.
     pub(crate) processes: process::Processes,
     /// The agents' questions waiting on the user.
@@ -55,7 +58,10 @@ pub(crate) struct AcpState {
 impl AcpState {
     /// The state of an engine opening with `config`: the agents its
     /// runtimes declare, until they connect and report.
-    pub(crate) fn new(config: &cookie_agent_config::LoadedConfiguration) -> Self {
+    pub(crate) fn new(
+        config: &cookie_agent_config::LoadedConfiguration,
+        data_dir: &std::path::Path,
+    ) -> Self {
         let declared = config
             .runtimes
             .iter()
@@ -80,10 +86,12 @@ impl AcpState {
             })
             .collect();
         let reported = Mutex::default();
-        let agents = runtime_agents(declared, &reported);
+        let known = options::KnownAgents::open(data_dir);
+        let agents = runtime_agents(declared, &reported, &known);
         Self {
             agents: Mutex::new(agents),
             reported,
+            known,
             processes: process::Processes::default(),
             questions: elicitation::Questions::default(),
         }
@@ -103,11 +111,12 @@ fn report_once(reported: &Mutex<HashSet<String>>, message: String) {
 }
 
 /// The agents of every runtime, one entry per runtime and agent, in
-/// agent and runtime order. A declaration whose ID is not an agent ID is
-/// refused and reported.
+/// agent and runtime order, with what `known` remembers of each. A
+/// declaration whose ID is not an agent ID is refused and reported.
 fn runtime_agents(
     by_runtime: BTreeMap<String, crate::runtimes::RuntimeAcpAgents>,
     reported: &Mutex<HashSet<String>>,
+    known: &options::KnownAgents,
 ) -> Vec<RuntimeAgent> {
     let mut agents = BTreeMap::<(AgentId, RuntimeId), RuntimeAgent>::new();
     for (runtime, declared) in by_runtime {
@@ -128,6 +137,7 @@ fn runtime_agents(
             agents.insert(
                 (agent.clone(), runtime_id.clone()),
                 RuntimeAgent {
+                    known: known.get(&agent, &runtime_id),
                     id: agent.clone(),
                     runtime: runtime_id.clone(),
                     agent,
@@ -180,7 +190,11 @@ impl Engine {
     pub(crate) fn refresh_runtime_agents(&self) {
         // A daemon document without an `acp` block keeps its ID; the
         // configuration status names the declarations it shadows.
-        let agents = runtime_agents(self.inner.runtimes.acp_agents(), &self.inner.acp.reported);
+        let agents = runtime_agents(
+            self.inner.runtimes.acp_agents(),
+            &self.inner.acp.reported,
+            &self.inner.acp.known,
+        );
         {
             let mut current = lock(&self.inner.acp.agents);
             if *current == agents {
@@ -247,6 +261,7 @@ mod tests {
                 ("lab_pc".to_owned(), declared(&["codex", "Bad"], false)),
             ]),
             &reported,
+            &options::KnownAgents::default(),
         );
         let listed = agents
             .iter()

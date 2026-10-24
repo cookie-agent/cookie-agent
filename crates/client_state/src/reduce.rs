@@ -1284,6 +1284,9 @@ pub(super) fn reduce_event_from(
                 state.context_tokens = Some(context.used);
                 state.context_window = context.size;
             }
+            if let Some(starting) = update.starting_options {
+                state.acp.starting_options = starting;
+            }
             if let Some(cookie_agent_protocol::Open::Known(
                 cookie_agent_protocol::DisplayBlock::Plan { entries },
             )) = update.plan

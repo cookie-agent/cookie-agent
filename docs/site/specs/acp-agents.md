@@ -708,6 +708,46 @@ starts; a daemon document without an `acp` block shadowing a declaration
 (the configuration diagnostic); the client placement and picker notes; the
 `list_agents` placement lines.
 
+**Input and pickers** (2026-10-24; client protocol 1.26.0, plugin
+protocol 1.14.0; history format unchanged):
+
+- **Model and effort as cookie's model and variant.** ACP dropped
+  `session/set_model`: an agent's model is a config option of category
+  `model`, its reasoning effort one of category `thought_level` (Claude
+  Code's adapter: `model` and `effort`; Codex's: `model` and
+  `reasoning_effort`). The clients show them as the model and variant
+  (`cookie_agent_client_state::acp::model_label`, `Opus • High`; the TUI's
+  title `claude • Opus[High]`), the model picker lists the model option's
+  values and the variant (the TUI's bracketed variant and ctrl+t, the web
+  sheet's effort buttons) the effort option's, and choosing one is
+  `session.agent_option.set`. The other options stay in `/options` and the
+  web client's **All agent options**. An option is the model by its ID
+  `model` when none has the category. Gemini CLI's older `models` API is
+  not read.
+- **Drafts.** The daemon remembers, per agent and runtime, the options a
+  new ACP session answered `session/new` with (the agent's own starting
+  values, before cookie sets any), and keeps them in `acp-agents.json` in
+  its data folder, a cache it rewrites when they change and ignores when
+  unreadable. A resumed or loaded session's options are taken only while
+  nothing is known (their values are that session's). They reach clients as
+  `AgentRuntime.options`, with the document's `acp.mode` (or `auto`) and
+  `acp.config` applied, so a draft shows what its session would start with;
+  a change republishes the agents. A draft's choices are kept per agent
+  (`DraftAgentOptions`) and sent as `session.create`'s `agent_options`;
+  they need an ACP agent, at most 64, each option once. The session records
+  them as `acp_session_updated.starting_options`, and every new ACP session
+  of that cookie session applies them after `acp.config` (a session
+  created but not started yet shows them over the remembered options);
+  one the agent does not offer, or a value it does not take, is skipped
+  with a diagnostic as `acp.config` is. *Assumption:* they apply to every
+  new ACP session of the cookie session, a lost session's replacement
+  included, not only the first.
+- **Protocol shape.** `session.create` rather than the first `run.start`:
+  the draft becomes a session there in both clients (attachments are
+  uploaded into it first), the choices are the session's like its
+  permission overlay, and recording them at creation keeps `run.start`
+  free of a member that would mean something only once.
+
 **Fixes** (2026-10-23):
 
 - **Processes stop with the daemon.** `agent/stop` and a runtime that

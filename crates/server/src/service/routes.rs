@@ -71,12 +71,13 @@ impl ServerProtocol for Server {
         };
         let session = self
             .engine
-            .create_session_in_project(
+            .create_session_with_agent_options(
                 params.selection,
                 params.permission_mode,
                 params.permission_rules,
                 runtimes,
                 params.project,
+                params.agent_options,
             )
             .await
             .map_err(protocol_fault)?;

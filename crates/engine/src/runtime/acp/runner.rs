@@ -2572,6 +2572,7 @@ impl Engine {
         }
         let (options, modes_as_option) =
             options_of(response.config_options.as_ref(), response.modes.as_ref());
+        self.remember_acp_options(agent, &options, matches!(how, AcpSessionStart::New));
         let mut live = LiveSession {
             session,
             process: Arc::clone(process),
@@ -2586,6 +2587,8 @@ impl Engine {
         };
         if matches!(how, AcpSessionStart::New) {
             self.apply_starting_options(session, run, &mut live, document)
+                .await;
+            self.apply_session_starting_options(session, run, &mut live)
                 .await;
         }
         if !live.options.is_empty() {
@@ -2616,19 +2619,9 @@ impl Engine {
         document: &cookie_agent_config::AgentDocument,
     ) {
         let settings = document.frontmatter.acp.clone().unwrap_or_default();
-        let mode_option = live
-            .options
-            .iter()
-            .find(|option| option.category.as_deref() == Some("mode") || option.id == "mode")
-            .cloned();
+        let mode_option = super::options::mode_option(&live.options).cloned();
         if let Some(option) = mode_option {
-            let wanted = settings.mode.clone().or_else(|| {
-                option
-                    .values
-                    .iter()
-                    .any(|value| value.value == "auto")
-                    .then(|| "auto".to_owned())
-            });
+            let wanted = super::options::wanted_mode(&option, &settings);
             if let Some(wanted) = wanted
                 && wanted != option.current_value
                 && let Err(reason) = self.set_live_option(live, &option.id, &wanted).await

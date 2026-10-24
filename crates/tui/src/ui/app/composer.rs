@@ -1051,6 +1051,7 @@ impl App {
                 self.new_session_draft =
                     self.draft_selection_for_preset(self.selected_preset.as_deref(), None);
                 self.draft_permissions = DraftPermissions::default();
+                self.draft_agent_options.clear();
                 self.draft_runtimes = None;
                 // The conversation pane now shows the fresh session; a drag
                 // selection addresses lines of the one it replaced.

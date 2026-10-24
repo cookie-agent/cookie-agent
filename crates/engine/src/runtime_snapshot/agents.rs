@@ -47,6 +47,8 @@ pub(crate) struct RuntimeAgent {
     pub enabled: bool,
     /// Whether its runtime is connected, or started on demand.
     pub connected: bool,
+    /// What it offered when it last started there.
+    pub known: crate::runtime::acp::options::KnownAgent,
 }
 
 impl RuntimeAgent {
@@ -418,13 +420,17 @@ impl AgentRegistry {
                     .map(|field| (*field).to_owned())
                     .collect(),
                 runtime: agent.acp.as_ref().and_then(|acp| match &acp.offers[..] {
-                    [offer] => Some(agent_runtime(offer)),
+                    [offer] => Some(agent_runtime(offer, &agent.document)),
                     _ => None,
                 }),
                 runtimes: agent
                     .acp
                     .iter()
-                    .flat_map(|acp| acp.offers.iter().map(agent_runtime))
+                    .flat_map(|acp| {
+                        acp.offers
+                            .iter()
+                            .map(|offer| agent_runtime(offer, &agent.document))
+                    })
                     .collect(),
             })
             .collect();
@@ -621,12 +627,20 @@ fn built_in_internal_document(
     })
 }
 
-fn agent_runtime(offer: &RuntimeAgent) -> cookie_agent_protocol::AgentRuntime {
+/// How a client sees `offer`: with the options a new session of it starts
+/// with under `document`.
+fn agent_runtime(
+    offer: &RuntimeAgent,
+    document: &AgentDocument,
+) -> cookie_agent_protocol::AgentRuntime {
     cookie_agent_protocol::AgentRuntime {
         runtime_id: offer.runtime.clone(),
         agent: offer.agent.clone(),
         available: offer.available(),
-        options: Vec::new(),
+        options: crate::runtime::acp::options::starting_view(
+            &offer.known.options,
+            &document.frontmatter.acp.clone().unwrap_or_default(),
+        ),
         input_media: Vec::new(),
     }
 }

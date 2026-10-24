@@ -13,6 +13,25 @@ impl App {
     pub(super) fn message_title_spans(&self) -> Vec<Span<'static>> {
         let regular = Style::default().remove_modifier(Modifier::BOLD);
         match self.new_session_draft.as_ref().or(self.draft.as_ref()) {
+            // An ACP agent's model and effort options read as the model and
+            // variant.
+            Some(draft) if self.draft_is_acp() => {
+                let (model, effort) = self
+                    .acp_model_and_effort()
+                    .unwrap_or_else(|| ("agent's model".to_owned(), None));
+                let mut spans = vec![
+                    Span::styled(
+                        draft.agent.to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" • ", regular),
+                    Span::styled(model, regular),
+                ];
+                if let Some(effort) = effort {
+                    spans.push(Span::styled(format!("[{effort}]"), regular));
+                }
+                spans
+            }
             Some(draft) => vec![
                 Span::styled(
                     draft.agent.to_string(),
