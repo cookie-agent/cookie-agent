@@ -265,6 +265,14 @@ pub(crate) struct ProjectionFoldState {
     goals: crate::goal_projection::GoalFold,
 }
 
+impl ProjectionFoldState {
+    /// Whether the user or a delegation named the session: an automatic
+    /// title no longer shows.
+    pub(crate) fn titled_by_user(&self) -> bool {
+        self.user_title.is_some() || self.delegated_title.is_some()
+    }
+}
+
 /// Where a committed turn's provisionally counted usage sits in the rollup.
 #[derive(Clone, Debug)]
 struct ProvisionalUsage {

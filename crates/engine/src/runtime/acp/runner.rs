@@ -1883,6 +1883,11 @@ impl Engine {
             };
             match end {
                 RoundEnd::Completed(final_text) => {
+                    // A title is a nicety: a failure leaves the session
+                    // untitled, as a model run's does.
+                    let _ = self
+                        .acp_fallback_title(&active, run_id, turn.input_through_seq)
+                        .await;
                     // Once the agent has replied in a session, its process
                     // can be asked whether its fork takes a fork point.
                     let engine = self.clone();
@@ -2933,6 +2938,42 @@ impl Engine {
         live.process.unroute(&live.acp_session_id);
     }
 
+    /// Names a session the agent has not named after its round: cookie's
+    /// own title generation, on the title agent's models but never the
+    /// synthetic `acp/<agent>` it would inherit as `${parent_model}`;
+    /// nothing when that leaves no model (no `small_model`).
+    async fn acp_fallback_title(
+        &self,
+        active: &ActiveRun,
+        run: RunId,
+        input_through_seq: u64,
+    ) -> Result<(), EngineError> {
+        if self.inner.store.get(active.session)?.meta.title.is_some()
+            || matches!(
+                self.inner.store.origin(active.session)?,
+                cookie_agent_protocol::SessionOrigin::Delegated { .. }
+            )
+        {
+            return Ok(());
+        }
+        let policy = self.internal_agent_policy(
+            cookie_agent_protocol::InternalAgentKind::SessionTitle,
+            &active.policy,
+            None,
+        )?;
+        if policy.models.is_empty() {
+            return Ok(());
+        }
+        self.maybe_generate_session_title(
+            active.session,
+            run,
+            input_through_seq,
+            &active.cancellation,
+            &policy,
+        )
+        .await
+    }
+
     /// Sets the session's title from the agent's, unless the user set one.
     async fn set_acp_title(
         &self,
@@ -2940,12 +2981,14 @@ impl Engine {
         run: RunId,
         title: &str,
     ) -> Result<(), EngineError> {
-        let eligible = self.inner.store.get(session)?.automatic_title_eligible;
+        // The agent's title applies, again and again, until the user names
+        // the session, even over a title cookie generated.
+        let projection = self.inner.store.get(session)?;
         let Ok(title) = cookie_agent_protocol::SessionTitle::new(truncate(title.trim(), 512))
         else {
             return Ok(());
         };
-        if !eligible {
+        if projection.fold.titled_by_user() || projection.meta.title.as_ref() == Some(&title) {
             return Ok(());
         }
         let input_through_seq = self.inner.store.get(session)?.meta.last_event_seq;

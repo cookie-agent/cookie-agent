@@ -20,6 +20,7 @@ use super::support::*;
 mod compaction;
 mod lifecycle;
 mod rounds;
+mod titles;
 use crate::{Engine, EngineOptions};
 
 fn origin() -> EventOrigin {
@@ -118,7 +119,7 @@ async fn acp_fixture_with(
     create_private_test_dir(&provider_store);
     let manager = Arc::new(
         cookie_agent_models::ModelManager::new(
-            BTreeMap::new(),
+            config.runtime.providers.clone(),
             empty_catalog(),
             cookie_agent_models::provider_store::ProviderStore::open(provider_store)
                 .expect("provider store"),
