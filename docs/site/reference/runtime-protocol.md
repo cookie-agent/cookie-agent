@@ -707,7 +707,8 @@ them; the daemon speaks ACP to them.
   configuration again. The daemon lists each under its own ID; runtimes
   that report the same ID offer the same agent.
 - **Processes.** `agent/start` (`agent`) runs the agent's `command` without a
-  shell in the runtime's home directory, in its own process group (a job
+  shell (on Windows, a bare program name also finds a `.cmd` or `.bat`
+  launcher on `PATH`) in the runtime's home directory, in its own process group (a job
   object on Windows), with the runtime's environment and the agent's `env`;
   it answers `{}` once the process runs, and at once when it runs already.
   `agent/stop` (`agent`) kills it. The runtime answers `agent_failed` for an

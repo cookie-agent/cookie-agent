@@ -48,13 +48,10 @@ pub fn editor_command(editor: &str, path: &Path) -> Command {
         let program = words.next().unwrap_or("notepad");
         // `Command` finds only `.exe` files on `PATH`; editors such as
         // VS Code install a `.cmd` launcher.
-        #[cfg(windows)]
-        let mut command = match crate::paths::find_executable(program) {
-            Some(found) => Command::new(found),
-            None => Command::new(program),
-        };
-        #[cfg(not(windows))]
-        let mut command = Command::new(program);
+        let mut command = Command::new(crate::paths::resolve_program(
+            program,
+            std::iter::empty::<(&str, &str)>(),
+        ));
         command.args(words).arg(path);
         command
     }

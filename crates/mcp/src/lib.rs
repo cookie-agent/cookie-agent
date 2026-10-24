@@ -1325,7 +1325,9 @@ impl ServerRuntime {
         };
         let timeout = self.timeout();
         let mut service = if let Some(command) = &self.loaded.config.command {
-            let mut process = tokio::process::Command::new(command);
+            let mut process = tokio::process::Command::new(
+                cookie_agent_protocol::paths::resolve_program(command, &self.loaded.config.env),
+            );
             process
                 .args(&self.loaded.config.args)
                 .envs(&self.loaded.config.env);

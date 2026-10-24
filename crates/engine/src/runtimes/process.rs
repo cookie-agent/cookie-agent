@@ -68,7 +68,9 @@ impl ProcessConnector {
 impl RuntimeConnector for ProcessConnector {
     async fn connect(&self) -> Result<RuntimeConnection, String> {
         let (program, arguments) = self.command.split_first().ok_or("the command is empty")?;
-        let mut command = tokio::process::Command::new(program);
+        let mut command = tokio::process::Command::new(
+            cookie_agent_protocol::paths::resolve_program(program, &self.env),
+        );
         command
             .args(arguments)
             .envs(&self.env)

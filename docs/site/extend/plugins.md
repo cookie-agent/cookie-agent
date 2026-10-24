@@ -39,7 +39,7 @@ them.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `command` | array of strings | *(required)* | The program and its arguments. |
+| `command` | array of strings | *(required)* | The program and its arguments. On Windows, a bare program name also finds a `.cmd` or `.bat` launcher on `PATH`, such as `npx`'s. |
 | `env` | map of strings | empty | Additions to the inherited environment; a listed variable overrides the inherited value. |
 | `cwd` | string | *(none)* | The process's working directory. |
 | `enabled` | boolean | `true` | Whether the plugin starts with the daemon. |

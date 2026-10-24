@@ -423,7 +423,7 @@ described in [config.toml](../engine/configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `command` | string | *(none)* | Stdio server executable. Exactly one of `command` or `url` is required. |
+| `command` | string | *(none)* | Stdio server executable, started without a shell. On Windows, a bare program name also finds a `.cmd` or `.bat` launcher on `PATH`, such as `npx`'s. Exactly one of `command` or `url` is required. |
 | `args` | array of strings | empty | Command arguments; valid only with `command`. |
 | `env` | map of strings | empty | Command environment additions; valid only with `command`. |
 | `cwd` | string | *(none)* | Child working directory; valid only with `command`. Without one, and for a relative one, see [working directory](#working-directory). |

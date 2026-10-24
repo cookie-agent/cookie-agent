@@ -221,6 +221,98 @@ pub fn find_executable(name: &str) -> Option<PathBuf> {
     .next()
 }
 
+/// The program to hand `std::process::Command` (or tokio's) for a
+/// user-configured command: MCP stdio servers, ACP agents, runtime launch
+/// commands, and plugins all go through here. `env` is the child's
+/// configured environment; a `PATH` in it is searched instead of the
+/// daemon's, as `Command` itself does.
+///
+/// On Windows, `Command` appends only `.exe` to a bare name, so `npx`, which
+/// npm installs as `npx.cmd`, is "program not found". A `program` with no
+/// path separator that does not already end in a `PATHEXT` extension is
+/// therefore looked up on `PATH` with each `PATHEXT` extension, as
+/// [`search_path_candidates`] does, and the first hit `CreateProcess` can
+/// start (`.com`, `.exe`, `.bat`, `.cmd`; never `.ps1`) replaces it. A
+/// `.bat` or `.cmd` hit goes to `Command` as is: since Rust 1.77.2
+/// (CVE-2024-24576, "BatBadBut") the standard library runs a batch file
+/// through `cmd.exe /e:ON /v:OFF /d /c` with escaping that keeps every
+/// argument literal, and fails the spawn when an argument cannot be passed
+/// safely. Never build that `cmd.exe /c` line by hand.
+///
+/// Elsewhere, and when nothing is found, `program` comes back unchanged.
+#[must_use]
+pub fn resolve_program<K, V>(program: &str, env: impl IntoIterator<Item = (K, V)>) -> PathBuf
+where
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    #[cfg(windows)]
+    {
+        let path = env
+            .into_iter()
+            .find(|(key, _)| key.as_ref().eq_ignore_ascii_case("PATH"))
+            .map(|(_, value)| value.as_ref().to_owned())
+            .or_else(|| std::env::var_os("PATH").map(|value| value.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        let pathext = std::env::var_os("PATHEXT");
+        windows_program(
+            program,
+            &path,
+            pathext
+                .as_deref()
+                .map(|value| value.to_string_lossy())
+                .as_deref(),
+            Path::is_file,
+        )
+        .unwrap_or_else(|| PathBuf::from(program))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = env;
+        PathBuf::from(program)
+    }
+}
+
+/// The Windows lookup behind [`resolve_program`]; `None` leaves `program`
+/// to `Command`.
+#[cfg(any(windows, test))]
+fn windows_program(
+    program: &str,
+    path: &str,
+    pathext: Option<&str>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    const RUNNABLE: [&str; 4] = ["com", "exe", "bat", "cmd"];
+    if program.is_empty() || program.contains(['/', '\\', ':']) {
+        return None;
+    }
+    let has_extension = pathext
+        .unwrap_or(".COM;.EXE;.BAT;.CMD")
+        .split(';')
+        .map(str::trim)
+        .filter(|extension| !extension.is_empty())
+        .any(|extension| {
+            program.len() > extension.len()
+                && program.is_char_boundary(program.len() - extension.len())
+                && program[program.len() - extension.len()..].eq_ignore_ascii_case(extension)
+        });
+    if has_extension {
+        return None;
+    }
+    search_path_candidates(program, path, pathext, exists)
+        .into_iter()
+        .find(|candidate| {
+            candidate
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    RUNNABLE
+                        .iter()
+                        .any(|runnable| extension.eq_ignore_ascii_case(runnable))
+                })
+        })
+}
+
 /// Pure candidate selection behind `where.exe`-style lookups: for each
 /// `PATH` entry in order, tries `name` with each `PATHEXT` extension in order
 /// (default `.COM;.EXE;.BAT;.CMD`). Like `where`, a name that already ends in
@@ -440,5 +532,108 @@ mod path_search_tests {
     fn no_match_and_empty_path_yield_nothing() {
         assert!(search("bash", r"C:\a;C:\b", None, &[]).is_empty());
         assert!(search("bash", "", None, &["bash.EXE"]).is_empty());
+    }
+
+    fn program(name: &str, path: &str, pathext: Option<&str>, present: &[&str]) -> Option<String> {
+        let present: Vec<String> = present.iter().map(|file| norm(file)).collect();
+        super::windows_program(name, path, pathext, |candidate: &Path| {
+            present.contains(&norm(&candidate.to_string_lossy()))
+        })
+        .map(|found| norm(&found.to_string_lossy()))
+    }
+
+    #[test]
+    fn a_bare_program_resolves_to_its_first_runnable_launcher() {
+        assert_eq!(
+            program(
+                "npx",
+                r"C:\empty;C:\node",
+                None,
+                &[r"C:\node\npx", r"C:\node\npx.CMD"]
+            ),
+            Some(norm(r"C:\node\npx.CMD"))
+        );
+        // `CreateProcess` cannot start a PowerShell script, even when
+        // `PATHEXT` lists it first.
+        assert_eq!(
+            program(
+                "npx",
+                r"C:\node",
+                Some(".PS1;.EXE;.CMD"),
+                &[r"C:\node\npx.PS1", r"C:\node\npx.CMD"]
+            ),
+            Some(norm(r"C:\node\npx.CMD"))
+        );
+        assert_eq!(
+            program("npx", r"C:\node", Some(".PS1"), &[r"C:\node\npx.PS1"]),
+            None
+        );
+    }
+
+    #[test]
+    fn paths_extensions_and_misses_are_left_to_command() {
+        let present = [r"C:\node\npx.CMD", r"C:\node\npx.cmd.CMD"];
+        assert_eq!(program(r"C:\node\npx", r"C:\node", None, &present), None);
+        assert_eq!(program(r"node\npx", r"C:", None, &present), None);
+        assert_eq!(program("./npx", r"C:\node", None, &present), None);
+        assert_eq!(program("C:npx", r"C:\node", None, &present), None);
+        assert_eq!(program("npx.cmd", r"C:\node", None, &present), None);
+        assert_eq!(program("", r"C:\node", None, &present), None);
+        assert_eq!(program("uvx", r"C:\node", None, &present), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn programs_are_unchanged_off_windows() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("cookie-shim.cmd"), "").unwrap();
+        let path = directory.path().to_string_lossy().into_owned();
+        assert_eq!(
+            super::resolve_program("cookie-shim", [("PATH", path.as_str())]),
+            Path::new("cookie-shim")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_cmd_launcher_on_the_child_path_runs_with_literal_arguments() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("cookie-shim.cmd"),
+            "@echo off\r\necho %*> \"%~dp0out.txt\"\r\n",
+        )
+        .unwrap();
+        let path = directory.path().to_string_lossy().into_owned();
+        let program = super::resolve_program("cookie-shim", [("Path", path.as_str())]);
+        assert_eq!(
+            program.to_string_lossy().to_lowercase(),
+            directory
+                .path()
+                .join("cookie-shim.cmd")
+                .to_string_lossy()
+                .to_lowercase()
+        );
+        // The BatBadBut shape: a quote that would end the argument and an
+        // `&` that would start a second command.
+        let status = std::process::Command::new(&program)
+            .args(["hello world", "x\" & echo injected> pwned.txt & \""])
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let out = std::fs::read_to_string(directory.path().join("out.txt")).unwrap();
+        assert!(out.contains("hello world"), "{out}");
+        assert!(!directory.path().join("pwned.txt").exists(), "{out}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_program_is_left_to_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_string_lossy().into_owned();
+        assert_eq!(
+            super::resolve_program("cookie-missing", [("PATH", path.as_str())]),
+            Path::new("cookie-missing")
+        );
     }
 }

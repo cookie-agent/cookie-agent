@@ -255,7 +255,9 @@ impl AcpHost {
             .command
             .split_first()
             .ok_or_else(|| agent_error(agent, "the agent's command is empty"))?;
-        let mut command = tokio::process::Command::new(program);
+        let mut command = tokio::process::Command::new(
+            cookie_agent_protocol::paths::resolve_program(program, &settings.env),
+        );
         command
             .args(arguments)
             .envs(&settings.env)

@@ -57,7 +57,9 @@ that uses `labpc`.
 - **`command`** must be nonempty and its first element must name a program.
   One process serves every workspace, so the command names none. An element
   containing `{workspace}`, which older templates used, is rejected.
-- **No shell is involved.** cookie starts the program directly. `ssh`
+- **No shell is involved.** cookie starts the program directly; on
+  Windows, a bare program name such as `npx` also finds its `.cmd` or
+  `.bat` launcher on `PATH`. `ssh`
   itself, however, joins its arguments into one string that the remote
   login shell interprets, so arguments with spaces or shell metacharacters
   need quoting that survives that shell. A workspace path travels in the

@@ -215,7 +215,7 @@ server.
 
     ```toml
     [runtimes.local.mcp.servers.my_chrome]
-    command = "npx.cmd"
+    command = "npx"
     args = ["-y", "@playwright/mcp@latest", "--extension"]
     env = { PLAYWRIGHT_MCP_EXTENSION_TOKEN = "<extension-token>" }
     scope = "runtime"
@@ -223,8 +223,6 @@ server.
     timeout_ms = 90000
     ```
 
-    - `npx.cmd`, not `npx`: cookie starts the command directly, without a
-      shell, and on Windows `npx` is a `.cmd` script.
     - If the extension is installed in several Chrome profiles, it connects to
       the one used last; add `"--profile-dir-name", "Profile 2"` (the last part
       of *Profile Path* in `chrome://version`) to pick one, with that
@@ -381,7 +379,6 @@ tools of every attached runtime included. Claude Code lists them as
   a systemd user unit needs `Environment=PATH=...` with Node's directory, and
   a version manager such as nvm installs Node where services do not look. An
   absolute `command` (`/usr/bin/npx`) avoids the question.
-- *On Windows, `npx` not found*: use `command = "npx.cmd"`.
 - *`connect timed out` on the first start*: `npx` was still downloading the
   package. Pre-fetch it (`npx -y @playwright/mcp@latest --version`, as the
   user the daemon or runtime runs as) or raise `timeout_ms`.

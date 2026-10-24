@@ -62,7 +62,7 @@ they stream.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `command` | array of strings | required | The program and its arguments, run without a shell on the runtime's machine, in its home directory. |
+| `command` | array of strings | required | The program and its arguments, run without a shell on the runtime's machine, in its home directory. On Windows, a bare program name also finds a `.cmd` or `.bat` launcher on `PATH`, such as `npx`'s. |
 | `env` | table of strings | `{}` | Variables merged over the runtime's environment. |
 | `description` | string | `""` | Shown where the agent is listed when its daemon document gives none. |
 | `enabled` | boolean | `true` | A disabled agent is listed as unavailable. |
