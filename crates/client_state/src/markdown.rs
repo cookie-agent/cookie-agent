@@ -362,7 +362,8 @@ impl MarkdownDocument {
 /// settles only once a blank line separates it from what follows, because
 /// until then the next line may still belong to it: a table's first body
 /// row, half streamed as `|`, parses as a paragraph of its own and would
-/// otherwise settle the table without its rows.
+/// otherwise settle the table without its rows. The split falls at the
+/// start of that block's line, so its indentation stays with it.
 fn settled_split(source: &str, blocks: &[ParsedBlock]) -> usize {
     let Some(last) = blocks.last() else {
         return 0;
@@ -376,7 +377,18 @@ fn settled_split(source: &str, blocks: &[ParsedBlock]) -> usize {
         }
         split = block.range.start;
     }
-    split
+    // Keep the indentation before the first open block in the tail: an
+    // indented fence strips as much from its code lines, so parsing the tail
+    // from the fence itself would read different code than the whole
+    // document does.
+    let line_start = source[..split].rfind('\n').map_or(0, |index| index + 1);
+    let settled_end = blocks
+        .iter()
+        .map(|block| block.range.end)
+        .filter(|end| *end <= split)
+        .max()
+        .unwrap_or(0);
+    line_start.max(settled_end)
 }
 
 fn markdown_options() -> Options {
@@ -610,6 +622,13 @@ mod tests {
             "```\na\u{0}b\n    ```\n",
             "```\n```\n```\nsecond\n",
             "- item\n\n  ```\n  code\n  ```\n",
+            " ```\n code\n  two\n```\n",
+            "  ~~~ py\n  x = 1\n    y = 2\nz\n  ~~~\nafter\n",
+            "   ```\nindented fence\n   ```\n",
+            "   ```rust\n   let a = 1;\n      let b = 2;\n",
+            "Intro\n\n ```\n code\n ```\n\n   ~~~\n   open\n",
+            "# Title\n  ```\n  after a heading\n  ```\n  para\n",
+            "para\n\n   ```\n   x\n\n   ```\n\n  ```\n  y\n",
         ];
         let blocks = |document: &MarkdownDocument| {
             document
