@@ -289,6 +289,7 @@ impl Engine {
                 return;
             }
         }
+        let mut backoff = super::helpers::RetryBackoff::new();
         loop {
             let (summary, body, retained) = (summary.clone(), body.clone(), retained.clone());
             let committed = self
@@ -303,10 +304,20 @@ impl Engine {
                     )
                 })
                 .await;
-            if committed.is_ok() || self.admission_tasks_closing() || signals.kill.is_cancelled() {
+            let futile = committed
+                .as_ref()
+                .is_err_and(super::helpers::retry_is_futile);
+            if committed.is_ok()
+                || futile
+                || self.admission_tasks_closing()
+                || signals.kill.is_cancelled()
+            {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::select! {
+                () = backoff.wait() => {}
+                () = signals.kill.cancelled() => break,
+            }
         }
         self.release_background_job(session, tool_call_id, producer_id);
     }

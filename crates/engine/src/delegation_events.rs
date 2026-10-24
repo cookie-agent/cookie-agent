@@ -425,6 +425,26 @@ impl DelegationEventStore {
             .cloned()
     }
 
+    /// The delegation that started `child_run_id` of `child_session_id`,
+    /// found without copying the others.
+    #[must_use]
+    pub fn find_child_run(
+        &self,
+        child_session_id: SessionId,
+        child_run_id: RunId,
+    ) -> Option<DelegationEntry> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .values()
+            .find(|entry| {
+                entry.reservation.child_session_id == child_session_id
+                    && entry.child_run_id == Some(child_run_id)
+            })
+            .cloned()
+    }
+
     #[must_use]
     pub fn entries(&self) -> Vec<DelegationEntry> {
         let state = self

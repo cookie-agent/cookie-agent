@@ -211,3 +211,38 @@ pub(super) fn truncate_utf8(value: &str, maximum: usize) -> String {
     }
     value[..end].to_owned()
 }
+
+/// Whether an operation on a session that failed with `error` cannot succeed
+/// on a retry: the session is gone, or another process or a closed store
+/// keeps it out of reach for good.
+pub(super) fn retry_is_futile(error: &EngineError) -> bool {
+    matches!(
+        error,
+        EngineError::Session(
+            crate::session::SessionError::Missing(_)
+                | crate::session::SessionError::SessionLocked(_)
+                | crate::session::SessionError::StoreClosed
+        ) | EngineError::SessionOwnedByAnotherProcess(_)
+    )
+}
+
+/// Delays between retries of a failed background delivery, doubling from
+/// [`Self::FIRST`] up to [`Self::LONGEST`].
+pub(super) struct RetryBackoff {
+    next: std::time::Duration,
+}
+
+impl RetryBackoff {
+    const FIRST: std::time::Duration = std::time::Duration::from_millis(100);
+    const LONGEST: std::time::Duration = std::time::Duration::from_secs(5);
+
+    pub(super) const fn new() -> Self {
+        Self { next: Self::FIRST }
+    }
+
+    /// Sleeps the current delay and doubles the next one.
+    pub(super) async fn wait(&mut self) {
+        tokio::time::sleep(self.next).await;
+        self.next = (self.next * 2).min(Self::LONGEST);
+    }
+}

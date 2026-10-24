@@ -260,3 +260,22 @@ async fn a_tombstone_a_crash_left_behind_is_removed_at_the_next_start() {
     );
     reopened.shutdown().await;
 }
+
+/// A subagent report owed by a session that was deleted since can never be
+/// delivered: its delivery gives up instead of retrying until shutdown.
+#[tokio::test]
+async fn a_report_owed_by_a_deleted_subagent_stops_retrying() {
+    let (fixture, selection) = custom_fixture();
+    let (root, child, last) = published_tree(&fixture, selection);
+    let engine = &fixture.engine;
+    let deleted = engine.delete_session(root, last).await.expect("delete");
+    assert_eq!(deleted, vec![root, child]);
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        engine.deliver_subagent_report_until_done(child, cookie_agent_protocol::RunId::new_v7()),
+    )
+    .await
+    .expect("the delivery gives up once the session is gone");
+    fixture.engine.shutdown().await;
+}

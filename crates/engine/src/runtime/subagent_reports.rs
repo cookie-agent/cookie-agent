@@ -10,14 +10,16 @@
 //! run of a foreground delegation, whose tool result carries it while the
 //! call waits.
 
-use std::time::Duration;
-
 use cookie_agent_protocol::{
     ProducerDeliveryMode, ProducerIdempotencyKey, ProducerOwner, ProducerSendParams, RunId,
     SessionId, SessionOrigin, SessionStatus,
 };
 
-use super::{Engine, EngineError, Event, producers::ProducerAuthority};
+use super::{
+    Engine, EngineError, Event,
+    helpers::{RetryBackoff, retry_is_futile},
+    producers::ProducerAuthority,
+};
 
 impl Engine {
     /// Called once `event` is appended to `session`: a run of a delegated
@@ -53,14 +55,16 @@ impl Engine {
         });
     }
 
-    /// Delivers the report of `run` of `child`, retrying until it is
-    /// delivered, not owed, or the engine shuts down.
+    /// Delivers the report of `run` of `child`, retrying with a growing
+    /// delay until it is delivered, not owed, can no longer be delivered
+    /// (the child or its parent is gone), or the engine shuts down.
     pub(super) async fn deliver_subagent_report_until_done(&self, child: SessionId, run: RunId) {
+        let mut backoff = RetryBackoff::new();
         loop {
             match self.deliver_subagent_report(child, run).await {
                 Ok(()) => return,
-                Err(_) if self.admission_tasks_closing() => return,
-                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                Err(error) if retry_is_futile(&error) || self.admission_tasks_closing() => return,
+                Err(_) => backoff.wait().await,
             }
         }
     }
@@ -89,7 +93,7 @@ impl Engine {
         ) {
             return Ok(());
         }
-        if !self.report_owed(parent_session_id, child, run).await? {
+        if !self.report_owed(parent_session_id, child, run)? {
             return Ok(());
         }
         let teaser = super::delegation::delegate_teaser(
@@ -152,19 +156,13 @@ impl Engine {
 
     /// Whether `run` of `child` reports through a subagent report, rather
     /// than through its invocation's completion or a foreground tool result.
-    async fn report_owed(
+    fn report_owed(
         &self,
         parent: SessionId,
         child: SessionId,
         run: RunId,
     ) -> Result<bool, EngineError> {
-        let delegation_events = self.inner.delegation_events.clone();
-        let entries = self
-            .spawn_admission_blocking(move || Ok::<_, EngineError>(delegation_events.entries()))
-            .await?;
-        let Some(entry) = entries.iter().find(|entry| {
-            entry.reservation.child_session_id == child && entry.child_run_id == Some(run)
-        }) else {
+        let Some(entry) = self.inner.delegation_events.find_child_run(child, run) else {
             return Ok(true);
         };
         if entry.request.background {
@@ -175,7 +173,7 @@ impl Engine {
         }
         // A foreground call that got the child's result reported it already.
         let parent = self.inner.store.get(parent)?;
-        let reported = parent.log.events().iter().any(|event| {
+        let reported = parent.log.event_snapshot().iter().rev().any(|event| {
             matches!(
                 &event.payload,
                 Event::ToolCallTerminated { termination }
