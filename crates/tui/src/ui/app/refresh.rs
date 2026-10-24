@@ -659,12 +659,15 @@ impl App {
                 }
             }
             RpcUpdate::McpRefreshed { result } => {
-                self.mcp_panel.refresh_in_flight = false;
+                let again = self.mcp_panel.refresh.landed();
                 match result {
                     Ok(servers) => {
                         self.mcp_panel.install(servers.servers);
                     }
                     Err(error) => self.status = format!("MCP refresh failed: {error}"),
+                }
+                if again {
+                    self.poll_mcp();
                 }
             }
             RpcUpdate::PluginsRefreshed { result } => self.install_plugins(result),
@@ -698,7 +701,7 @@ impl App {
             RpcUpdate::MachinesRefreshed { result } => self.runtime_panel.install_machines(result),
             RpcUpdate::MachineChanged { result } => self.install_machine_change(result),
             RpcUpdate::RuntimesRefreshed { result } => {
-                self.runtime_panel.refresh_in_flight = false;
+                let again = self.runtime_panel.refresh.landed();
                 match result {
                     Ok(listing) => {
                         self.install_runtime_homes(
@@ -707,6 +710,9 @@ impl App {
                         self.runtime_panel.install(listing);
                     }
                     Err(error) => self.status = format!("runtime refresh failed: {error}"),
+                }
+                if again {
+                    self.poll_runtimes();
                 }
             }
             RpcUpdate::RuntimeMcpRefreshed { result } => match result {
@@ -1413,10 +1419,9 @@ impl App {
 
     pub(in crate::ui) fn poll_runtimes(&mut self) {
         self.poll_machines();
-        if self.modal != Modal::Runtimes || self.runtime_panel.refresh_in_flight {
+        if self.modal != Modal::Runtimes || !self.runtime_panel.refresh.start() {
             return;
         }
-        self.runtime_panel.refresh_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1435,10 +1440,9 @@ impl App {
     }
 
     pub(in crate::ui) fn poll_mcp(&mut self) {
-        if self.modal != Modal::Mcp || self.mcp_panel.refresh_in_flight {
+        if self.modal != Modal::Mcp || !self.mcp_panel.refresh.start() {
             return;
         }
-        self.mcp_panel.refresh_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

@@ -105,7 +105,7 @@ pub(in crate::ui) struct CronPanelState {
     /// `crons.list`, or why it failed; `None` until it answers.
     pub(in crate::ui) listing: Option<Result<CronsListResult, String>>,
     pub(in crate::ui) selection: ListState,
-    pub(in crate::ui) refresh_in_flight: bool,
+    pub(in crate::ui) refresh: super::ListingRefresh,
     /// The job a delete waits to be confirmed for.
     pub(in crate::ui) confirm_delete: Option<CronJob>,
     /// A form the panel or the daemon refused, with why: edit it again or
@@ -156,7 +156,6 @@ impl CronPanelState {
 
     fn install(&mut self, listing: Result<CronsListResult, String>) {
         self.listing = Some(listing);
-        self.refresh_in_flight = false;
         let count = self.jobs().len();
         if let Some(index) = self
             .focus
@@ -441,10 +440,9 @@ impl App {
 
     /// Fetches `crons.list` for the open panel.
     pub(super) fn poll_crons(&mut self) {
-        if self.modal != Modal::Cron || self.cron_panel.refresh_in_flight {
+        if self.modal != Modal::Cron || !self.cron_panel.refresh.start() {
             return;
         }
-        self.cron_panel.refresh_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -457,7 +455,11 @@ impl App {
     }
 
     pub(in crate::ui) fn install_cron_listing(&mut self, result: Result<CronsListResult, String>) {
+        let again = self.cron_panel.refresh.landed();
         self.cron_panel.install(result);
+        if again {
+            self.poll_crons();
+        }
     }
 
     /// The session on screen as a target: its ID and whether it is a

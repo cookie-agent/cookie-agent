@@ -59,7 +59,7 @@ pub(in crate::ui) struct ConfigPanelState {
     /// `None` until `config.get` answers.
     pub(in crate::ui) config: Option<ConfigGetResult>,
     pub(in crate::ui) selection: ListState,
-    pub(in crate::ui) refresh_in_flight: bool,
+    pub(in crate::ui) refresh: super::ListingRefresh,
     /// Edits the daemon refused, by path: the next edit reopens them.
     pub(in crate::ui) drafts: HashMap<String, EditorRequest>,
     /// Why the last edit was refused.
@@ -94,10 +94,9 @@ impl App {
     }
 
     pub(super) fn poll_config(&mut self) {
-        if self.modal != Modal::Config || self.config_panel.refresh_in_flight {
+        if self.modal != Modal::Config || !self.config_panel.refresh.start() {
             return;
         }
-        self.config_panel.refresh_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -107,10 +106,13 @@ impl App {
     }
 
     pub(super) fn install_config(&mut self, result: Result<ConfigGetResult, String>) {
-        self.config_panel.refresh_in_flight = false;
+        let again = self.config_panel.refresh.landed();
         match result {
             Ok(config) => self.config_panel.config = Some(config),
             Err(error) => self.status = format!("configuration unavailable: {error}"),
+        }
+        if again {
+            self.poll_config();
         }
     }
 

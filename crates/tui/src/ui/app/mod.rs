@@ -2613,3 +2613,37 @@ mod post_teardown_tests {
         assert!(messages[1].contains("daemon disconnected"));
     }
 }
+
+/// One panel listing's refresh: at most one request on its way, and one
+/// more once it lands when a change was announced meanwhile — the listing
+/// on its way may have been read before that change, and no further notice
+/// will come for it.
+#[derive(Debug, Default)]
+pub(in crate::ui) struct ListingRefresh {
+    in_flight: bool,
+    again: bool,
+}
+
+impl ListingRefresh {
+    #[cfg(test)]
+    pub(in crate::ui) fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
+    /// Whether to send a listing request now; asked while one is on its
+    /// way, [`Self::landed`] answers that another is due.
+    pub(in crate::ui) fn start(&mut self) -> bool {
+        if self.in_flight {
+            self.again = true;
+            return false;
+        }
+        self.in_flight = true;
+        true
+    }
+
+    /// The listing on its way landed: whether to send another.
+    pub(in crate::ui) fn landed(&mut self) -> bool {
+        self.in_flight = false;
+        std::mem::take(&mut self.again)
+    }
+}

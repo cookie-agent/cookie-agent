@@ -106,7 +106,7 @@ pub(in crate::ui) struct RuntimePanel {
     pub(in crate::ui) listing: Option<RuntimesListResult>,
     pub(in crate::ui) selection: ListState,
     pub(in crate::ui) form: Option<RuntimeAttachForm>,
-    pub(in crate::ui) refresh_in_flight: bool,
+    pub(in crate::ui) refresh: crate::ui::app::ListingRefresh,
     pub(in crate::ui) view: RuntimeView,
     /// `machines.list`, or why it failed.
     pub(in crate::ui) machines: Option<Result<MachinesListResult, String>>,
@@ -121,7 +121,6 @@ pub(in crate::ui) struct RuntimePanel {
 impl RuntimePanel {
     pub(in crate::ui) fn install(&mut self, listing: RuntimesListResult) {
         self.listing = Some(listing);
-        self.refresh_in_flight = false;
     }
 
     pub(in crate::ui) fn install_mcp_servers(&mut self, servers: Vec<McpServerInfo>) {

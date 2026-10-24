@@ -117,7 +117,7 @@ pub(in crate::ui) struct MemoryPanelState {
     /// `memory.list`, or why it failed; `None` until it answers.
     pub(in crate::ui) listing: Option<Result<MemoryListResult, String>>,
     pub(in crate::ui) selection: ListState,
-    pub(in crate::ui) refresh_in_flight: bool,
+    pub(in crate::ui) refresh: super::ListingRefresh,
     /// The URL of a new memory being typed.
     pub(in crate::ui) new_url: Option<InputState>,
     /// The memory a delete waits to be confirmed for: URL and revision.
@@ -188,7 +188,6 @@ impl MemoryPanelState {
     fn install(&mut self, listing: Result<MemoryListResult, String>) -> Option<String> {
         let listed = listing.is_ok();
         self.listing = Some(listing);
-        self.refresh_in_flight = false;
         let rows = self.rows();
         let count = rows.len();
         self.selection
@@ -223,10 +222,9 @@ impl App {
 
     /// Fetches `memory.list` for the open `/memory` panel.
     pub(super) fn poll_memory(&mut self) {
-        if self.modal != Modal::Memory || self.memory_panel.refresh_in_flight {
+        if self.modal != Modal::Memory || !self.memory_panel.refresh.start() {
             return;
         }
-        self.memory_panel.refresh_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -242,8 +240,12 @@ impl App {
         &mut self,
         result: Result<MemoryListResult, String>,
     ) {
+        let again = self.memory_panel.refresh.landed();
         if let Some(url) = self.memory_panel.install(result) {
             self.status = format!("{url} is not in memory now.");
+        }
+        if again {
+            self.poll_memory();
         }
     }
 

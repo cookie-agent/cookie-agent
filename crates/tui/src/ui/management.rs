@@ -200,7 +200,7 @@ pub(super) struct McpPanel {
     pub(super) servers: Vec<McpServerInfo>,
     pub(super) selection: ListState,
     pub(super) form: Option<McpForm>,
-    pub(super) refresh_in_flight: bool,
+    pub(super) refresh: crate::ui::app::ListingRefresh,
     pub(super) auth: Option<McpAuthView>,
     /// The loopback listener waiting for the browser's OAuth redirect; it
     /// stops when the wait ends.
@@ -224,7 +224,6 @@ impl McpPanel {
     pub(super) fn install(&mut self, mut servers: Vec<McpServerInfo>) {
         sort_servers(&mut servers);
         self.servers = servers;
-        self.refresh_in_flight = false;
         if self.auth.as_ref().is_some_and(|auth| {
             !self.servers.iter().any(|server| {
                 server.name == auth.server

@@ -245,7 +245,7 @@ async fn memories_are_browsed_created_edited_and_deleted_from_the_panel() {
 
     // `d` asks first; Esc keeps the memory, and the button deletes it.
     pump_until(&mut app, &mut deliveries, |app| {
-        !app.memory_panel.refresh_in_flight
+        !app.memory_panel.refresh.in_flight()
     })
     .await;
     let build = memory_row(&app, "project://web/build").unwrap();

@@ -434,7 +434,7 @@ async fn jobs_are_edited_toggled_run_now_and_deleted_by_key_and_button() {
     assert_eq!(app.status, "No changes to Nightly check.");
 
     // `t` disables the enabled job.
-    updates_until(&mut app, |app| !app.cron_panel.refresh_in_flight).await;
+    updates_until(&mut app, |app| !app.cron_panel.refresh.in_flight()).await;
     app.handle_key(key(KeyCode::Char('t'))).await;
     updates_until(&mut app, |app| app.status.starts_with("Disabled")).await;
     assert_eq!(app.status, "Disabled Nightly check.");
@@ -444,7 +444,7 @@ async fn jobs_are_edited_toggled_run_now_and_deleted_by_key_and_button() {
     );
 
     // The run-now button fires it.
-    updates_until(&mut app, |app| !app.cron_panel.refresh_in_flight).await;
+    updates_until(&mut app, |app| !app.cron_panel.refresh.in_flight()).await;
     rendered_frame(&mut app, 160, 50);
     let (button, _) = app
         .hit_map
@@ -467,7 +467,7 @@ async fn jobs_are_edited_toggled_run_now_and_deleted_by_key_and_button() {
     );
 
     // `d` asks first; Esc keeps the job, and the button deletes it.
-    updates_until(&mut app, |app| !app.cron_panel.refresh_in_flight).await;
+    updates_until(&mut app, |app| !app.cron_panel.refresh.in_flight()).await;
     app.handle_key(key(KeyCode::Char('d'))).await;
     assert!(
         frame_rows(&mut app, 160, 50)
@@ -599,4 +599,29 @@ async fn jobs_round_trip_through_an_in_process_daemon() {
     })
     .await;
     assert_eq!(app.status, "Deleted Nightly.");
+}
+
+/// A change announced while a listing is on its way may postdate what that
+/// listing read: the panel lists again once it lands, so the change is not
+/// lost behind it.
+#[tokio::test]
+async fn a_change_announced_during_a_listing_lists_again() {
+    let (mut app, _, recorded) = cron_app("1.15.0").await;
+    app.run_command(SlashCommand::Cron).await;
+    assert!(app.cron_panel.refresh.in_flight());
+    app.handle_delivery(ClientDelivery::CronsChanged(
+        cookie_agent_protocol::CronsChangedNotification {},
+    ))
+    .await;
+    updates_until(&mut app, |app| {
+        matches!(app.cron_panel.listing, Some(Ok(_)))
+    })
+    .await;
+    updates_until(&mut app, |_| {
+        recorded_method_count(&recorded, "crons.list") == 2
+    })
+    .await;
+    updates_until(&mut app, |app| !app.cron_panel.refresh.in_flight()).await;
+    // Settled: nothing further is asked for.
+    assert_eq!(recorded_method_count(&recorded, "crons.list"), 2);
 }

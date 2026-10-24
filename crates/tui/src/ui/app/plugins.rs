@@ -17,7 +17,7 @@ pub(super) struct PluginPanelState {
     /// `None` until `plugins.list` answers.
     pub(super) plugins: Option<Vec<PluginInfo>>,
     pub(super) selection: ListState,
-    pub(super) refresh_in_flight: bool,
+    pub(super) refresh: super::ListingRefresh,
 }
 
 impl App {
@@ -29,10 +29,9 @@ impl App {
 
     /// Refetches `plugins.list` while the panel is open.
     pub(super) fn poll_plugins(&mut self) {
-        if self.modal != Modal::Plugins || self.plugin_panel.refresh_in_flight {
+        if self.modal != Modal::Plugins || !self.plugin_panel.refresh.start() {
             return;
         }
-        self.plugin_panel.refresh_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -46,10 +45,13 @@ impl App {
     }
 
     pub(super) fn install_plugins(&mut self, result: Result<Vec<PluginInfo>, String>) {
-        self.plugin_panel.refresh_in_flight = false;
+        let again = self.plugin_panel.refresh.landed();
         match result {
             Ok(plugins) => self.plugin_panel.plugins = Some(plugins),
             Err(error) => self.status = format!("plugin refresh failed: {error}"),
+        }
+        if again {
+            self.poll_plugins();
         }
     }
 

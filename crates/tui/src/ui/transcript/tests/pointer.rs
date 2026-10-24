@@ -366,7 +366,7 @@ async fn every_clickable_element_hovers_visibly() {
 
     app.open_memory_panel();
     app.memory_panel.listing = Some(Ok(sample_memory()));
-    app.memory_panel.refresh_in_flight = false;
+    app.memory_panel.refresh = Default::default();
     // The second row is a memory, which offers every row action.
     app.memory_panel.selection.select(Some(1));
     seen.extend(sweep(&mut app, "memory panel"));
