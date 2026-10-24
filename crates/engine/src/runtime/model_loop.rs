@@ -1790,7 +1790,7 @@ impl Engine {
                     Some(binding),
                 )?;
                 let uncompacted_events = Arc::clone(&request_events);
-                let request_events = match self
+                let compacted = self
                     .maybe_compact_context(CompactionInput {
                         session,
                         run,
@@ -1805,9 +1805,12 @@ impl Engine {
                         focus: None,
                         origin: event_origin("engine:auto-compact"),
                     })
-                    .await
-                {
-                    Ok(events) => events,
+                    .await;
+                let request_events = match compacted {
+                    Ok(events) => {
+                        drop(uncompacted_events);
+                        events
+                    }
                     // A plugin refused this compaction: the request goes on
                     // uncompacted, as when the plugin cancels it.
                     Err(EngineError::CompactionCancelled(_) | EngineError::PluginHookFailed(_)) => {
@@ -1815,6 +1818,18 @@ impl Engine {
                     }
                     Err(error) => return Err(error),
                 };
+                let input_through_seq = request_events.last().map_or(0, |event| event.seq);
+                let context = assemble_model_context(
+                    &request_events,
+                    &self.inner.artifacts,
+                    binding,
+                    composed_prompt,
+                )?;
+                // The context is built from the snapshot alone, so it is built
+                // first: a snapshot still held when the attempt is appended,
+                // or through the call, makes each append copy the event list.
+                drop(request_events);
+                request_claim.forget_events();
                 // The checkpoint must precede the attempt that consumes the
                 // compacted context: consumers anchor a turn's transcript item
                 // to `ModelAttemptStarted`, so emitting it before compaction
@@ -1835,13 +1850,6 @@ impl Engine {
                     },
                 )
                 .await?;
-                let input_through_seq = request_events.last().map_or(0, |event| event.seq);
-                let context = assemble_model_context(
-                    &request_events,
-                    &self.inner.artifacts,
-                    binding,
-                    composed_prompt,
-                )?;
                 let replay_preflight = context.replay_decisions;
                 let capabilities = policy
                     .model_capabilities(binding)

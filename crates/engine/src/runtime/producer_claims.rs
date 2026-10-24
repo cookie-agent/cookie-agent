@@ -15,6 +15,12 @@ pub(super) struct ClaimedPrompt {
 }
 
 impl ClaimedPrompt {
+    /// Drops the claim's view of the log, once nothing reads it any more,
+    /// keeping the claim itself.
+    pub fn forget_events(&mut self) {
+        self.events = Arc::default();
+    }
+
     pub async fn release(&mut self) -> Result<(), EngineError> {
         let Some(claim_seq) = self.claim_seq else {
             return Ok(());
