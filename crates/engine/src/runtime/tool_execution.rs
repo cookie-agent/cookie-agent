@@ -28,7 +28,8 @@ use crate::{
     runtimes::{ComposedTool, Composition, SourcedProvider, compose},
 };
 
-const TOOL_CANCELLATION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+pub(crate) const TOOL_CANCELLATION_CLEANUP_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(2);
 
 fn tool_progress_event(progress: &ToolProgress) -> Event {
     Event::ToolCallProgress {
