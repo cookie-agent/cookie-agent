@@ -148,13 +148,15 @@ fn user_input(root: SessionId, seq: &mut Seq, run_id: RunId, base: i64, text: &s
 }
 
 /// `runs` finished runs of one turn each, then one live run that has
-/// already committed `live_turns` turns into a single assistant block.
+/// already committed `live_turns` turns into a single assistant block. Runs
+/// are numbered from `first_run`, which makes their code distinct.
 fn root_history(
     root: SessionId,
     runs: usize,
     live_turns: usize,
     live_run: RunId,
     seq: &mut Seq,
+    first_run: usize,
 ) -> Vec<StoredEvent> {
     let mut events = vec![at(session_created(root, seq.next()), 0)];
     for run in 0..runs {
@@ -167,7 +169,7 @@ fn root_history(
             base,
             &format!("Please do step {run}"),
         ));
-        push_turn(&mut events, root, seq, run_id, base, run);
+        push_turn(&mut events, root, seq, run_id, base, first_run + run);
         events.push(at(
             event(
                 root,
@@ -189,7 +191,7 @@ fn root_history(
             seq,
             live_run,
             base + 40 * turn as i64,
-            runs + turn,
+            first_run + runs + turn,
         );
     }
     events
@@ -294,7 +296,7 @@ async fn scenario(with_descendants: bool) {
 
     let run_id = RunId::new_v7();
     let mut seq = Seq(0);
-    let history = root_history(root, runs, live_turns, run_id, &mut seq);
+    let history = root_history(root, runs, live_turns, run_id, &mut seq, 0);
     let start = Instant::now();
     assert!(app.store.rebuild_session(root, 0, history));
     if with_descendants {
@@ -508,6 +510,37 @@ async fn scenario(with_descendants: bool) {
         })
         .collect();
     report("switch back + redraw", samples, &app, before);
+
+    // Scrolling up a page at a time from the bottom.
+    let before = passes(&app);
+    let samples = (0..repeat.min(20))
+        .map(|_| {
+            app.conversation_scroll.up(usize::from(HEIGHT));
+            draw(&mut terminal, &mut app)
+        })
+        .collect();
+    report("page up + redraw", samples, &app, before);
+    app.conversation_scroll.bottom();
+
+    // A long session never viewed before, with code of its own.
+    let before = passes(&app);
+    let samples = (0..repeat.min(4))
+        .map(|index| {
+            let unseen = SessionId::new_v7();
+            let history = root_history(
+                unseen,
+                runs,
+                live_turns,
+                RunId::new_v7(),
+                &mut Seq(0),
+                (index + 1) * 10_000,
+            );
+            assert!(app.store.rebuild_session(unseen, 0, history));
+            app.selected = Some(unseen);
+            draw(&mut terminal, &mut app)
+        })
+        .collect();
+    report("switch to unseen + redraw", samples, &app, before);
 }
 
 /// What keeping only the markdown source in the shared state would add:

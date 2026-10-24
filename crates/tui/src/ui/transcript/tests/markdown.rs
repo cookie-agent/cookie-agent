@@ -196,3 +196,103 @@ fn user_messages_render_markdown_and_keep_typed_newlines() {
         ]
     );
 }
+
+/// A long transcript lays its code out plain and highlights only what is
+/// within a viewport of the visible rows, before the frame draws it; code
+/// scrolled into view is highlighted in the frame that shows it, on the
+/// rows it already had.
+#[tokio::test]
+async fn code_highlights_as_it_comes_into_view() {
+    use cookie_agent_protocol::{AttemptId, EventPayload, RunId, SessionId};
+
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    let mut events = vec![session_created(session, 1)];
+    let mut seq = 1;
+    for turn in 0..40 {
+        let run = RunId::new_v7();
+        let attempt = AttemptId::new_v7();
+        seq += 1;
+        events.push(event(
+            session,
+            seq,
+            run,
+            EventPayload::UserInputSubmitted {
+                content: format!("step {turn}").into(),
+            },
+        ));
+        seq += 1;
+        events.push(attempt_started(session, seq, run, attempt, None));
+        seq += 1;
+        let code = (0..6)
+            .map(|line| format!("    let value_{turn}_{line} = compute({line});\n"))
+            .collect::<String>();
+        events.push(turn_committed(
+            session,
+            seq,
+            run,
+            attempt,
+            seq,
+            vec![text_part(&format!("Turn {turn}:\n\n```rust\n{code}```\n"))],
+            Vec::new(),
+            None,
+        ));
+    }
+    assert!(app.store.rebuild_session(session, 0, events));
+    app.selected = Some(session);
+
+    let code_rows = |app: &App| {
+        let width = app.layout_cache.key.expect("laid out").width;
+        let reference = transcript_layout(&app.store.sessions[&session], None, width)
+            .lines
+            .into_iter()
+            .filter(|line| line.to_string().contains("let value_"))
+            .map(|line| (line.to_string(), line))
+            .collect::<std::collections::HashMap<_, _>>();
+        // Every code row, with whether it is highlighted as a full layout
+        // would highlight it.
+        let rows = app
+            .layout_cache
+            .layout
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.to_string().contains("let value_"))
+            .map(|(index, line)| (index, reference[&line.to_string()] == *line))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), reference.len());
+        rows
+    };
+    let visible = |app: &App| {
+        let offset = app.conversation_scroll.offset;
+        let height = usize::from(app.hit_map.conversation.expect("drawn").height);
+        offset..offset + height
+    };
+
+    frame_rows(&mut app, 100, 30);
+    let rows = code_rows(&app);
+    let view = visible(&app);
+    assert!(view.start > 0, "the transcript overflows the view");
+    for (index, highlighted) in &rows {
+        if view.contains(index) {
+            assert!(highlighted, "visible code row {index} is highlighted");
+        }
+    }
+    assert!(
+        rows.iter().any(|(_, highlighted)| !highlighted),
+        "code far out of view stays plain"
+    );
+
+    app.conversation_scroll.top();
+    frame_rows(&mut app, 100, 30);
+    let view = visible(&app);
+    assert_eq!(view.start, 0);
+    for (index, highlighted) in code_rows(&app) {
+        if view.contains(&index) {
+            assert!(
+                highlighted,
+                "code row {index} scrolled into view is highlighted"
+            );
+        }
+    }
+}

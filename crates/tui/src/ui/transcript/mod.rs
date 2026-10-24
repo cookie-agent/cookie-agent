@@ -616,6 +616,42 @@ impl LayoutCache {
             .map(|(point, line)| (point, offset - line))
     }
 
+    /// Ask for the code rendered plain on `lines` (of the assembled layout)
+    /// to be highlighted, marking each item holding some for its next
+    /// layout. True when any was asked for.
+    fn request_highlights(&mut self, lines: std::ops::Range<usize>) -> bool {
+        let total = self.layout.lines.len();
+        let first = self
+            .item_offsets
+            .partition_point(|offset| offset.lines <= lines.start)
+            .saturating_sub(1);
+        let mut requested = false;
+        for index in first..self.items.len().min(self.item_offsets.len()) {
+            let start = self.item_offsets[index].lines;
+            if start >= lines.end {
+                break;
+            }
+            let item = &mut self.items[index];
+            if item.deferred.is_empty() {
+                continue;
+            }
+            let end = self
+                .item_offsets
+                .get(index + 1)
+                .map_or(total, |next| next.lines);
+            // The item's rows end the span its separator opens.
+            let body = end.saturating_sub(item.layout.lines.len());
+            for (rows, highlight) in &item.deferred {
+                if body + rows.start < lines.end && body + rows.end > lines.start {
+                    highlight.request();
+                    item.highlight_requested = true;
+                    requested = true;
+                }
+            }
+        }
+        requested
+    }
+
     fn anchor_line(&self, point: ScrollAnchorPoint) -> Option<usize> {
         match point {
             ScrollAnchorPoint::Item(id) => self
@@ -762,6 +798,10 @@ impl From<ItemLayout> for ChunkedItem {
 #[derive(Clone)]
 struct CachedItemLayout {
     key: ItemLayoutKey,
+    /// The layout asked for some of `deferred`: render the item again.
+    highlight_requested: bool,
+    /// Rows of `layout` whose code renders plain, highlighting deferred.
+    deferred: Vec<DeferredRows>,
     layout: ChunkedItem,
     /// For an assistant item, one line per child: where that child's rows
     /// (with the gutter row separating it from a different kind) begin in
@@ -790,10 +830,16 @@ struct CachedAssistantPartLayout {
     blocks: Vec<WrappedBlock>,
     /// A thinking part's counted rows, carried to its next render.
     thinking_rows: ThinkingRows,
+    /// Rows rendering code plain, highlighting deferred.
+    deferred: Vec<DeferredRows>,
 }
 
 /// One rendered markdown block and the rows it wrapped to.
 type WrappedBlock = (std::sync::Arc<[MarkdownLine]>, Chunk);
+
+/// Rows of a part or item rendering a block's code plain, and the handle
+/// that asks for it highlighted.
+type DeferredRows = (std::ops::Range<usize>, crate::markdown::DeferredHighlight);
 
 /// Everything one tool row renders from beyond the cache-wide inputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -827,6 +873,11 @@ struct TranscriptRenderContext<'a> {
     assistant_part_layout_passes: &'a mut u64,
     tool_cache: &'a mut HashMap<BlockId, CachedToolLayout>,
     assistant_child_lines: &'a mut Vec<usize>,
+    /// Render settled code plain unless its highlighting is at hand; the
+    /// cached layout highlights what comes into view.
+    defer_highlights: bool,
+    /// The item's rows rendering code plain.
+    deferred_highlights: &'a mut Vec<DeferredRows>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -951,14 +1002,15 @@ pub(super) fn ensure_cached_transcript_layout(
             .enumerate()
             .find_map(|(index, item)| {
                 (!cache.items.get(index).is_some_and(|cached| {
-                    item_layout_key_matches(
-                        &cached.key,
-                        state,
-                        item,
-                        expanded,
-                        clock_bucket,
-                        model_names,
-                    )
+                    !cached.highlight_requested
+                        && item_layout_key_matches(
+                            &cached.key,
+                            state,
+                            item,
+                            expanded,
+                            clock_bucket,
+                            model_names,
+                        )
                 }))
                 .then_some(index)
             })
@@ -995,20 +1047,22 @@ pub(super) fn ensure_cached_transcript_layout(
             .item_offsets
             .push(ItemAssemblyOffset::at_end(&cache.layout));
         let reusable = previous.remove(&item.id()).filter(|cached| {
-            item_layout_key_matches(
-                &cached.key,
-                state,
-                item,
-                expanded,
-                clock_bucket,
-                model_names,
-            )
+            !cached.highlight_requested
+                && item_layout_key_matches(
+                    &cached.key,
+                    state,
+                    item,
+                    expanded,
+                    clock_bucket,
+                    model_names,
+                )
         });
         if let Some(cached) = reusable {
             cache.items.push(cached);
         } else {
             let item_key = item_layout_key(state, item, expanded, clock_bucket, model_names);
             let mut assistant_child_lines = Vec::new();
+            let mut deferred = Vec::new();
             let mut context = TranscriptRenderContext {
                 expanded,
                 width,
@@ -1021,12 +1075,17 @@ pub(super) fn ensure_cached_transcript_layout(
                 assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
                 tool_cache: &mut cache.tool_rows,
                 assistant_child_lines: &mut assistant_child_lines,
+                defer_highlights: true,
+                deferred_highlights: &mut deferred,
             };
             // Unchanged parts and tool rows come back from their caches by
             // reference, so this re-renders only what changed.
+            let layout = chunked_item_layout(state, item, &mut context);
             let cached = CachedItemLayout {
                 key: item_key,
-                layout: chunked_item_layout(state, item, &mut context),
+                highlight_requested: false,
+                deferred,
+                layout,
                 child_lines: assistant_child_lines,
             };
             cache.items.push(cached);
@@ -1641,29 +1700,11 @@ impl App {
         if let Some(session_id) = viewed {
             self.select_layout_cache(session_id);
         }
-        if let Some((session_id, state)) = viewed.and_then(|session_id| {
-            self.store
-                .sessions
-                .get(&session_id)
-                .map(|state| (session_id, state))
-        }) {
-            layout_changed = !ensure_cached_transcript_layout(
-                &mut self.layout_cache,
-                session_id,
-                state,
-                draft_agent.as_ref(),
-                self.expanded_blocks.get(&session_id),
-                width,
-                &self.theme,
-                self.highlighter.as_ref(),
-                self.tui_config.minimum_event_level,
-                clock_bucket,
-                self.runtime.model_names(),
-            );
-            // A fresh session greets with guidance instead of a blank pane;
-            // a filtered-down transcript (lines hidden by the event level)
-            // keeps its own rows, empty-looking or not.
-            cached_layout = !(state.transcript.is_empty() && state.run_snapshot.is_none());
+        if let Some((changed, cached)) =
+            self.ensure_viewed_layout(viewed, width, clock_bucket, draft_agent.as_ref())
+        {
+            layout_changed = changed;
+            cached_layout = cached;
         }
         let layout = if cached_layout {
             &self.layout_cache.layout
@@ -1683,7 +1724,6 @@ impl App {
         let spliced = &splice.rows;
         let splice_shifts = spliced.shifts.as_slice();
         let layout_len = spliced.len(layout.lines.len());
-        let line_at = |index: usize| spliced.line(&layout.lines, index);
         let viewport = Rect::new(
             area.x.saturating_add(1),
             area.y.saturating_add(1),
@@ -1711,6 +1751,31 @@ impl App {
             .extend_from_slice(splice_shifts);
         self.conversation_scroll
             .clamp(content_height, viewport.height);
+        // Code rendered plain while out of view is highlighted as it comes
+        // within a viewport of the visible rows, before this frame draws
+        // it. Highlighting moves no row, so the scroll position holds.
+        let (visible, _) = unsplice_line(
+            self.conversation_scroll.offset,
+            &self.conversation_splice_shifts,
+        );
+        let height = usize::from(viewport.height.max(1));
+        if cached_layout
+            && self
+                .layout_cache
+                .request_highlights(visible.saturating_sub(height)..visible + 2 * height)
+        {
+            self.ensure_viewed_layout(viewed, width, clock_bucket, draft_agent.as_ref());
+            self.refresh_splice(&mut splice, &self.layout_cache.layout, true, width);
+        }
+        let layout = if cached_layout {
+            &self.layout_cache.layout
+        } else {
+            &empty_layout
+        };
+        let spliced = &splice.rows;
+        let line_at = |index: usize| spliced.line(&layout.lines, index);
+        let layout_len = spliced.len(layout.lines.len());
+        let content_height = layout_len + notice_lines.len();
         self.hit_map.conversation = Some(viewport);
         self.hit_map.scrollbar = (scrollbar_track.width > 0).then_some(scrollbar_track);
         self.hit_map.blocks.clear();
@@ -1808,6 +1873,44 @@ impl App {
             render_scrollbar_track(frame, geometry, &self.theme);
         }
         self.splice_cache = splice;
+    }
+
+    /// Lay out the viewed session in its layout cache: whether the layout
+    /// changed, and whether it shows the cached layout rather than the
+    /// empty-session guidance. `None` without a viewed session.
+    fn ensure_viewed_layout(
+        &mut self,
+        viewed: Option<SessionId>,
+        width: u16,
+        clock_bucket: u8,
+        draft_agent: Option<&AgentId>,
+    ) -> Option<(bool, bool)> {
+        let (session_id, state) = viewed.and_then(|session_id| {
+            self.store
+                .sessions
+                .get(&session_id)
+                .map(|state| (session_id, state))
+        })?;
+        let changed = !ensure_cached_transcript_layout(
+            &mut self.layout_cache,
+            session_id,
+            state,
+            draft_agent,
+            self.expanded_blocks.get(&session_id),
+            width,
+            &self.theme,
+            self.highlighter.as_ref(),
+            self.tui_config.minimum_event_level,
+            clock_bucket,
+            self.runtime.model_names(),
+        );
+        // A fresh session greets with guidance instead of a blank pane; a
+        // filtered-down transcript (lines hidden by the event level) keeps
+        // its own rows, empty-looking or not.
+        Some((
+            changed,
+            !(state.transcript.is_empty() && state.run_snapshot.is_none()),
+        ))
     }
 
     /// Make `session_id`'s layout cache current, parking the current one,
@@ -2028,6 +2131,7 @@ fn transcript_layout_at_clock(
     }
     for item in &state.transcript {
         let mut assistant_child_lines = Vec::new();
+        let mut deferred_highlights = Vec::new();
         let item_layout = transcript_item_layout(
             state,
             item,
@@ -2043,6 +2147,8 @@ fn transcript_layout_at_clock(
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
                 tool_cache: &mut tool_rows,
                 assistant_child_lines: &mut assistant_child_lines,
+                defer_highlights: false,
+                deferred_highlights: &mut deferred_highlights,
             },
         );
         append_item_layout(&mut layout, item_layout);

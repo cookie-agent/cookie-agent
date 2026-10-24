@@ -5,7 +5,10 @@ use std::{
     collections::{BTreeMap, HashMap},
     hash::BuildHasher,
     mem::{size_of, size_of_val},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
 };
 
 #[cfg(test)]
@@ -174,10 +177,33 @@ pub(crate) struct BlockRenderCache {
     /// block ordinal, so a re-render at a new width never re-highlights —
     /// whatever the shared highlight cache has evicted meanwhile.
     highlights: Mutex<Vec<BlockHighlight>>,
+    /// The layout asked for this block's code, rendered plain while it was
+    /// out of view, to be highlighted on its next render.
+    highlight_requested: AtomicBool,
 }
 
 fn block_cache(block: &MarkdownBlock) -> Arc<BlockRenderCache> {
     block.renderer_cache().get_or_default::<BlockRenderCache>()
+}
+
+/// A settled block whose code was rendered plain, highlighting deferred
+/// until it comes into view (see [`render_markdown_blocks_width`]). Plain
+/// and highlighted code wrap to the same rows, since highlighting only
+/// styles the text, so upgrading a block never moves what follows it.
+#[derive(Clone, Debug)]
+pub(crate) struct DeferredHighlight(Arc<BlockRenderCache>);
+
+impl DeferredHighlight {
+    /// Highlight this block's code the next time it renders.
+    pub(crate) fn request(&self) {
+        self.0
+            .highlight_requested
+            .store(true, AtomicOrdering::Relaxed);
+    }
+
+    pub(crate) fn is_requested(&self) -> bool {
+        self.0.highlight_requested.load(AtomicOrdering::Relaxed)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -203,6 +229,8 @@ struct RenderedBlockCacheEntry {
     key: RenderedBlockCacheKey,
     source: Arc<str>,
     lines: Arc<[MarkdownLine]>,
+    /// Some code was rendered plain, its highlighting deferred.
+    deferred: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -227,6 +255,18 @@ pub trait Highlighter: Send + Sync + 'static {
 
     fn highlight_stable(&self, language: &str, code: &str, theme: &Theme) -> Arc<[Line<'static>]> {
         self.highlight(language, code, theme)
+    }
+
+    /// [`Self::highlight_stable`] when it is cheap — already cached, or
+    /// nothing to highlight — else `None`, so a layout can render the code
+    /// plain until it comes into view.
+    fn cached_stable(
+        &self,
+        language: &str,
+        code: &str,
+        theme: &Theme,
+    ) -> Option<Arc<[Line<'static>]>> {
+        Some(self.highlight_stable(language, code, theme))
     }
 
     fn cache_key(&self) -> u64 {
@@ -455,6 +495,37 @@ impl Highlighter for SyntectHighlighter {
         cache.set_theme(theme.key());
         cache.insert(key, code, Arc::clone(&lines));
         lines
+    }
+
+    fn cached_stable(
+        &self,
+        language: &str,
+        code: &str,
+        theme: &Theme,
+    ) -> Option<Arc<[Line<'static>]>> {
+        let normalized = normalized_language(language);
+        let known = self
+            .syntaxes()
+            .find_syntax_by_token(&normalized)
+            .or_else(|| self.syntaxes().find_syntax_by_extension(&normalized))
+            .is_some()
+            && self.themes().themes.contains_key(syntect_theme_name(theme));
+        if !known {
+            return Some(self.plain.highlight(&normalized, code, theme));
+        }
+        let key = HighlightCacheKey {
+            content_hash: foldhash::fast::FixedState::default().hash_one((language, code)),
+            code_len: code.len(),
+            language: language.to_owned(),
+            theme: theme.key(),
+            syntect_theme: syntect_theme_name(theme),
+        };
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.set_theme(theme.key());
+        cache.get(&key, code)
     }
 }
 
@@ -988,7 +1059,7 @@ pub(crate) fn render_markdown_lines_width(
     width: u16,
 ) -> Vec<MarkdownLine> {
     let mut lines = Vec::new();
-    for block in render_markdown_blocks_width(document, theme, highlighter, width) {
+    for (block, _) in render_markdown_blocks_width(document, theme, highlighter, width, false) {
         if !lines.is_empty() {
             lines.push(MarkdownLine::default());
         }
@@ -1005,12 +1076,17 @@ pub(crate) fn render_markdown_lines_width(
 /// A settled block comes back as the very allocation its block cache holds,
 /// so a caller can recognize an unchanged block by pointer and reuse what it
 /// derived from it.
+///
+/// With `defer`, a settled block whose code is not highlighted yet renders
+/// it plain and comes back with its [`DeferredHighlight`], so a long
+/// transcript highlights only what scrolls into view.
 pub(crate) fn render_markdown_blocks_width(
     document: &MarkdownDocument,
     theme: &Theme,
     highlighter: &dyn Highlighter,
     width: u16,
-) -> Vec<Arc<[MarkdownLine]>> {
+    defer: bool,
+) -> Vec<(Arc<[MarkdownLine]>, Option<DeferredHighlight>)> {
     let highlighter_key = highlighter.cache_key();
     let stable_tail = if document.is_finished() {
         document.tail_blocks()
@@ -1021,19 +1097,17 @@ pub(crate) fn render_markdown_blocks_width(
         .stable_blocks()
         .iter()
         .chain(stable_tail)
-        .map(|block| render_stable_block(block, theme, highlighter, highlighter_key, width))
+        .map(|block| render_stable_block(block, theme, highlighter, highlighter_key, width, defer))
         .collect::<Vec<_>>();
     // The streaming tail renders block by block like the stable prefix, so a
     // block looks the same before and after it settles.
     if !document.is_finished() {
-        blocks.extend(
-            document
-                .tail_blocks()
-                .iter()
-                .map(|block| render_block(block, false, theme, highlighter, width).into()),
-        );
+        blocks.extend(document.tail_blocks().iter().map(|block| {
+            let (lines, _) = render_block(block, false, theme, highlighter, width, false);
+            (lines.into(), None)
+        }));
     }
-    blocks.retain(|block| !block.is_empty());
+    blocks.retain(|(block, _)| !block.is_empty());
     blocks
 }
 
@@ -1045,7 +1119,8 @@ fn render_stable_block(
     highlighter: &dyn Highlighter,
     highlighter_key: u64,
     width: u16,
-) -> Arc<[MarkdownLine]> {
+    defer: bool,
+) -> (Arc<[MarkdownLine]>, Option<DeferredHighlight>) {
     let key = RenderedBlockCacheKey {
         content_hash: block.content_hash(),
         code_len: block.content_len(),
@@ -1055,16 +1130,19 @@ fn render_stable_block(
         highlighter: highlighter_key,
     };
     let cache = block_cache(block);
+    let defer = defer && !cache.highlight_requested.load(AtomicOrdering::Relaxed);
     let cached = cache
         .rendered
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
-        .filter(|entry| entry.key == key && entry.source == *block.source())
-        .map(|entry| Arc::clone(&entry.lines));
-    cached.unwrap_or_else(|| {
-        let rendered: Arc<[MarkdownLine]> =
-            render_block(block, true, theme, highlighter, width).into();
+        .filter(|entry| {
+            entry.key == key && entry.source == *block.source() && (defer || !entry.deferred)
+        })
+        .map(|entry| (Arc::clone(&entry.lines), entry.deferred));
+    let (lines, deferred) = cached.unwrap_or_else(|| {
+        let (rendered, deferred) = render_block(block, true, theme, highlighter, width, defer);
+        let rendered: Arc<[MarkdownLine]> = rendered.into();
         *cache
             .rendered
             .lock()
@@ -1072,22 +1150,33 @@ fn render_stable_block(
             key,
             source: Arc::clone(block.source()),
             lines: Arc::clone(&rendered),
+            deferred,
         });
-        rendered
-    })
+        if !deferred {
+            cache
+                .highlight_requested
+                .store(false, AtomicOrdering::Relaxed);
+        }
+        (rendered, deferred)
+    });
+    (lines, deferred.then_some(DeferredHighlight(cache)))
 }
 
+/// One block's lines, and whether any of its code was left plain because
+/// `defer` held and its highlighting was not cached.
 fn render_block(
     block: &MarkdownBlock,
     stable: bool,
     theme: &Theme,
     highlighter: &dyn Highlighter,
     width: u16,
-) -> Vec<MarkdownLine> {
+    defer: bool,
+) -> (Vec<MarkdownLine>, bool) {
     let cache = stable.then(|| block_cache(block));
     let mut renderer = MarkdownRenderer::new(theme, highlighter);
     renderer.width = usize::from(width);
     renderer.begin_block(stable);
+    renderer.defer_highlight = defer;
     if let Some(cache) = &cache {
         renderer.block_highlights = Some((&cache.highlights, highlighter.cache_key()));
     }
@@ -1098,7 +1187,7 @@ fn render_block(
     // intentionally a block boundary, so trailing HTML/footnote text cannot
     // merge into the following paragraph as it did before block caching.
     renderer.flush();
-    renderer.lines
+    (renderer.lines, renderer.deferred_highlight)
 }
 
 pub(crate) fn normalized_language(language: &str) -> String {
@@ -1149,6 +1238,10 @@ struct MarkdownRenderer<'a> {
     /// block within it.
     block_highlights: Option<(&'a Mutex<Vec<BlockHighlight>>, u64)>,
     code_ordinal: usize,
+    /// Render settled code plain unless its highlighting is cached...
+    defer_highlight: bool,
+    /// ...and whether any was.
+    deferred_highlight: bool,
 }
 
 /// In-progress table capture. Cell inline markup uses a nested renderer so
@@ -1191,6 +1284,8 @@ impl<'a> MarkdownRenderer<'a> {
             stable_block: false,
             block_highlights: None,
             code_ordinal: 0,
+            defer_highlight: false,
+            deferred_highlight: false,
         }
     }
 
@@ -1571,8 +1666,14 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     /// A settled code block's highlighted lines: from the block's own memo,
-    /// else highlighted (through the shared cache) and memoized.
-    fn stable_highlight(&self, ordinal: usize, label: &str, code: &str) -> Arc<[Line<'static>]> {
+    /// else highlighted (through the shared cache) and memoized — or, when
+    /// deferring and not cached, its plain lines, not memoized.
+    fn stable_highlight(
+        &mut self,
+        ordinal: usize,
+        label: &str,
+        code: &str,
+    ) -> Arc<[Line<'static>]> {
         let Some((memo, highlighter)) = self.block_highlights else {
             return self.highlighter.highlight_stable(label, code, self.theme);
         };
@@ -1585,7 +1686,17 @@ impl<'a> MarkdownRenderer<'a> {
         }) {
             return Arc::clone(&entry.lines);
         }
-        let lines = self.highlighter.highlight_stable(label, code, self.theme);
+        let lines = if self.defer_highlight {
+            match self.highlighter.cached_stable(label, code, self.theme) {
+                Some(lines) => lines,
+                None => {
+                    self.deferred_highlight = true;
+                    return plain_code_lines(code).into();
+                }
+            }
+        } else {
+            self.highlighter.highlight_stable(label, code, self.theme)
+        };
         memo.retain(|entry| entry.ordinal != ordinal);
         memo.push(BlockHighlight {
             ordinal,

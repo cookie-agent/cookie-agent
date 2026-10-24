@@ -34,22 +34,36 @@ pub(super) fn assistant_item_layout(
         match child {
             AssistantChild::Text { .. } | AssistantChild::Thinking { .. } => {
                 let key = assistant_part_layout_key(state, item_id, child, context);
+                // A part with code left plain renders again once the code
+                // is asked for, or wherever highlighting is not deferred.
+                let defer = context.defer_highlights;
                 let cached = context
                     .assistant_part_cache
                     .get(&child.id())
-                    .filter(|cached| cached.key == key);
+                    .filter(|cached| {
+                        cached.key == key
+                            && cached
+                                .deferred
+                                .iter()
+                                .all(|(_, deferred)| defer && !deferred.is_requested())
+                    });
+                let start = layout.lines.len();
                 if let Some(cached) = cached {
                     layout.push_chunks(&cached.lines, &cached.regions);
+                    context
+                        .deferred_highlights
+                        .extend(shifted_deferred(&cached.deferred, start));
                 } else {
                     let previous = context.assistant_part_cache.remove(&child.id());
                     let cached = match child {
                         AssistantChild::Text { markdown, .. } => {
-                            let (lines, blocks) = text_part_lines(
+                            let (lines, blocks, deferred) = text_part_lines(
                                 markdown,
                                 previous.as_ref().map_or(&[], |previous| &previous.blocks),
                                 context.width,
                                 context.theme,
                                 context.highlighter,
+                                defer,
                             );
                             CachedAssistantPartLayout {
                                 key,
@@ -57,6 +71,7 @@ pub(super) fn assistant_item_layout(
                                 regions: Vec::new(),
                                 blocks,
                                 thinking_rows: ThinkingRows::default(),
+                                deferred,
                             }
                         }
                         _ => {
@@ -79,10 +94,14 @@ pub(super) fn assistant_item_layout(
                                 regions: part_layout.regions,
                                 blocks: Vec::new(),
                                 thinking_rows,
+                                deferred: Vec::new(),
                             }
                         }
                     };
                     layout.push_chunks(&cached.lines, &cached.regions);
+                    context
+                        .deferred_highlights
+                        .extend(shifted_deferred(&cached.deferred, start));
                     context.assistant_part_cache.insert(child.id(), cached);
                     *context.assistant_part_layout_passes =
                         context.assistant_part_layout_passes.wrapping_add(1);
@@ -141,6 +160,16 @@ pub(super) fn assistant_item_layout(
         layout.lines.push_lines(footer);
     }
     layout
+}
+
+/// `deferred` rows moved down by `start`.
+fn shifted_deferred(
+    deferred: &[DeferredRows],
+    start: usize,
+) -> impl Iterator<Item = DeferredRows> + '_ {
+    deferred
+        .iter()
+        .map(move |(rows, highlight)| (rows.start + start..rows.end + start, highlight.clone()))
 }
 
 /// One tool row, from the tool-row cache unless the call, its expansion, or
@@ -233,25 +262,30 @@ pub(super) fn assistant_part_layout_key(
 
 /// A reply's rows, one chunk per markdown block. A block rendered from the
 /// same settled allocation as last time (`previous`, by position) keeps its
-/// wrapped rows, so a streaming reply re-wraps only its open tail.
+/// wrapped rows, so a streaming reply re-wraps only its open tail. With
+/// `defer`, code not highlighted yet renders plain, and the rows of each such
+/// block come back with its handle.
 pub(super) fn text_part_lines(
     markdown: &crate::markdown::MarkdownDocument,
     previous: &[WrappedBlock],
     width: u16,
     theme: &Theme,
     highlighter: &dyn Highlighter,
-) -> (LineChunks, Vec<WrappedBlock>) {
+    defer: bool,
+) -> (LineChunks, Vec<WrappedBlock>, Vec<DeferredRows>) {
     let blocks = crate::markdown::render_markdown_blocks_width(
         markdown,
         theme,
         highlighter,
         markdown_body_width(width),
+        defer,
     );
     let body_line = |line: MarkdownLine| markdown_body_line(line, width, theme.assistant());
     let mut lines = LineChunks::default();
     let mut wrapped_blocks = Vec::with_capacity(blocks.len());
     let mut separator: Option<Chunk> = None;
-    for (index, block) in blocks.into_iter().enumerate() {
+    let mut deferred_rows = Vec::new();
+    for (index, (block, deferred)) in blocks.into_iter().enumerate() {
         if !lines.is_empty() {
             let separator =
                 separator.get_or_insert_with(|| body_line(MarkdownLine::default()).into());
@@ -269,13 +303,16 @@ pub(super) fn text_part_lines(
                     .collect::<Vec<_>>()
                     .into()
             });
+        if let Some(deferred) = deferred {
+            deferred_rows.push((lines.len()..lines.len() + wrapped.len(), deferred));
+        }
         lines.push_chunk(Chunk::clone(&wrapped));
         wrapped_blocks.push((block, wrapped));
     }
     if lines.is_empty() {
         lines.push_lines(body_line(MarkdownLine::default()));
     }
-    (lines, wrapped_blocks)
+    (lines, wrapped_blocks, deferred_rows)
 }
 
 pub(super) fn assistant_child_layout(
@@ -288,7 +325,7 @@ pub(super) fn assistant_child_layout(
 ) -> ItemLayout {
     match child {
         AssistantChild::Text { markdown, .. } => ItemLayout {
-            lines: text_part_lines(markdown, &[], width, theme, highlighter)
+            lines: text_part_lines(markdown, &[], width, theme, highlighter, false)
                 .0
                 .to_vec(),
             regions: Vec::new(),

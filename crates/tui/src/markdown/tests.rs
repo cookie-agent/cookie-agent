@@ -1231,3 +1231,63 @@ fn inline_code_is_marked_by_colour_a_tint_or_backticks() {
         );
     }
 }
+
+/// Code deferred while out of view renders plain on exactly the rows its
+/// highlighting takes, at every width, so highlighting it later moves
+/// nothing below it.
+#[test]
+fn deferred_code_renders_plain_on_the_rows_it_highlights_to() {
+    let source = "Intro paragraph.\n\n```rust\nfn main() {\n\tlet name = \"名前と絵文字 👩‍💻\"; // a comment long enough to wrap at narrow widths\n    println!(\"{name}\");\n}\n```\n\n- list\n\n  ```python\n  def f(x):\n  \treturn x  # tab\n  ```\n\n> ```json\n> {\"key\": [1, 2, 3], \"nested\": {\"deep\": true}}\n> ```\n\n```\nplain fence\n```\n";
+    let theme = Theme::default();
+    for width in [12, 20, 37, 80, u16::MAX] {
+        let deferred_document = MarkdownDocument::new(source.to_owned()).finished();
+        let deferred = super::render_markdown_blocks_width(
+            &deferred_document,
+            &theme,
+            &SyntectHighlighter::default(),
+            width,
+            true,
+        );
+        let highlighted_document = MarkdownDocument::new(source.to_owned()).finished();
+        let highlighted = super::render_markdown_blocks_width(
+            &highlighted_document,
+            &theme,
+            &SyntectHighlighter::default(),
+            width,
+            false,
+        );
+        assert_eq!(deferred.len(), highlighted.len());
+        assert!(deferred.iter().any(|(_, handle)| handle.is_some()));
+        for ((plain, handle), (styled, none)) in deferred.iter().zip(&highlighted) {
+            assert!(none.is_none());
+            let text = |lines: &[super::MarkdownLine]| {
+                lines
+                    .iter()
+                    .map(|line| (line.line.to_string(), line.kind))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(text(plain), text(styled), "width {width}");
+            if handle.is_none() {
+                assert_eq!(plain, styled, "width {width}");
+            }
+        }
+
+        // Asked for, a deferred block renders highlighted from then on.
+        for (_, handle) in &deferred {
+            if let Some(handle) = handle {
+                handle.request();
+            }
+        }
+        let upgraded = super::render_markdown_blocks_width(
+            &deferred_document,
+            &theme,
+            &SyntectHighlighter::default(),
+            width,
+            true,
+        );
+        for ((lines, handle), (styled, _)) in upgraded.iter().zip(&highlighted) {
+            assert!(handle.is_none());
+            assert_eq!(lines, styled, "width {width}");
+        }
+    }
+}
