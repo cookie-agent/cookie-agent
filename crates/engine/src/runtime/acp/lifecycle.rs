@@ -165,7 +165,23 @@ pub(crate) fn revert_removed(events: &[Arc<StoredEvent>], cut: u64) -> Vec<AcpSe
             _ => None,
         })
         .collect::<std::collections::HashSet<_>>();
-    let inherited = events
+    let inherited = inherited_ids(events);
+    distinct_records(events.iter().filter(|event| event.seq > cut), |id| {
+        !kept.contains(id) && !inherited.contains(id)
+    })
+}
+
+/// The agent sessions `events` record that are the cookie session's own,
+/// each once: every one but those a fork left behind, which stay their
+/// source's. Deleting the cookie session deletes them.
+pub(crate) fn own_records(events: &[Arc<StoredEvent>]) -> Vec<AcpSessionRecord> {
+    let inherited = inherited_ids(events);
+    distinct_records(events.iter(), |id| !inherited.contains(id))
+}
+
+/// The IDs of the agent sessions a fork left behind in `events`.
+fn inherited_ids(events: &[Arc<StoredEvent>]) -> std::collections::HashSet<&str> {
+    events
         .iter()
         .filter_map(|event| match &event.payload {
             Event::AcpSessionUpdated { update } => update
@@ -175,20 +191,27 @@ pub(crate) fn revert_removed(events: &[Arc<StoredEvent>], cut: u64) -> Vec<AcpSe
                 .map(|marker| marker.acp_session_id.as_str()),
             _ => None,
         })
-        .collect::<std::collections::HashSet<_>>();
-    let mut removed: Vec<AcpSessionRecord> = Vec::new();
-    for event in events.iter().filter(|event| event.seq > cut) {
+        .collect()
+}
+
+/// The first record of each agent session `events` record whose ID
+/// `keep` accepts.
+fn distinct_records<'a>(
+    events: impl Iterator<Item = &'a Arc<StoredEvent>>,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<AcpSessionRecord> {
+    let mut records: Vec<AcpSessionRecord> = Vec::new();
+    for event in events {
         if let Event::AcpSessionStarted { record } = &event.payload
-            && !kept.contains(record.acp_session_id.as_str())
-            && !inherited.contains(record.acp_session_id.as_str())
-            && !removed
+            && keep(&record.acp_session_id)
+            && !records
                 .iter()
                 .any(|known| known.acp_session_id == record.acp_session_id)
         {
-            removed.push(record.clone());
+            records.push(record.clone());
         }
     }
-    removed
+    records
 }
 
 /// The latest record of each agent in `events`, in the order the agents
@@ -503,9 +526,9 @@ impl super::super::Engine {
     }
 
     /// Ends the agent's session `acp_session_id`, which a revert left
-    /// behind and the turn replaced: the live one of `session` closes as a
-    /// deleted session's does, and the agent deletes it
-    /// (`session/delete`, else `session/close`).
+    /// behind and the turn replaced: the live one of `session` closes
+    /// (`session/close`) as a deleted session's does, and the agent deletes
+    /// it when it offers `session/delete`.
     pub(super) async fn retire_acp_session(
         &self,
         session: SessionId,
@@ -579,9 +602,9 @@ impl super::super::Engine {
 /// How long the agent gets to answer `session/close` and `session/delete`.
 const END_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Asks the agent to close (`close`, when it offers it) and then delete
-/// (`delete`, when it offers it; else a close) its session
-/// `acp_session_id`. What it answers changes nothing.
+/// Asks the agent to close its session `acp_session_id` (`close`, when it
+/// offers `session/close`) and then to delete it (`delete`, when it offers
+/// `session/delete`). What it answers changes nothing.
 pub(super) async fn end_agent_session(
     process: &AgentProcess,
     acp_session_id: &str,
@@ -589,7 +612,6 @@ pub(super) async fn end_agent_session(
     delete: bool,
 ) {
     let caps = &process.init().agent_capabilities;
-    let deletes = delete && caps.session("delete");
     let reference = wire::SessionRef {
         session_id: acp_session_id,
     };
@@ -601,10 +623,10 @@ pub(super) async fn end_agent_session(
                 .request::<_, serde_json::Value>(method, &reference),
         )
     };
-    if (close || (delete && !deletes)) && caps.session("close") {
+    if close && caps.session("close") {
         let _ = request(wire::method::SESSION_CLOSE).await;
     }
-    if deletes {
+    if delete && caps.session("delete") {
         let _ = request(wire::method::SESSION_DELETE).await;
     }
 }

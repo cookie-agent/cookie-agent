@@ -336,3 +336,80 @@ async fn reverting_a_fork_into_its_sources_turns_leaves_the_sources_session_alon
     let outcome = turn(engine, parent, "parent", "recall").await;
     assert_eq!(final_text(&outcome), "remembers: say one, say two");
 }
+
+async fn delete(engine: &Engine, session: SessionId) {
+    let tip = engine.inner.store.get(session).unwrap().meta.last_event_seq;
+    engine.delete_session(session, tip).await.expect("deleted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_session_deletes_its_agents_sessions_but_not_its_sources() {
+    let acp = acp_fixture(
+        &[
+            ("ACP_FIXTURE_FORK", "1"),
+            ("ACP_FIXTURE_DELETE", "1"),
+            ("ACP_FIXTURE_RESUME", "1"),
+        ],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    // A live session closes, then goes.
+    let live = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, live, "one", "say one").await;
+    let live_id = session_starts(engine, live)[0].acp_session_id.clone();
+    delete(engine, live).await;
+    let methods = acp.received_methods();
+    let close_at = methods.iter().position(|method| method == "session/close");
+    let delete_at = methods.iter().position(|method| method == "session/delete");
+    assert!(close_at.is_some() && close_at < delete_at, "{methods:?}");
+    assert_eq!(
+        requests(&acp, "session/delete")[0]["sessionId"],
+        live_id.as_str()
+    );
+
+    // A fork's deletion takes its own session, not its source's, even
+    // when no process runs.
+    let parent = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, parent, "parent", "say two").await;
+    let source = session_starts(engine, parent)[0].acp_session_id.clone();
+    let tip = engine.inner.store.get(parent).unwrap().meta.last_event_seq;
+    let child = fork(engine, parent, tip).await;
+    turn(engine, child, "child", "say three").await;
+    let own = session_starts(engine, child)
+        .last()
+        .unwrap()
+        .acp_session_id
+        .clone();
+    super::stop_process(engine).await;
+    delete(engine, child).await;
+    let deleted = requests(&acp, "session/delete");
+    assert_eq!(deleted.len(), 2, "{deleted:?}");
+    assert_eq!(deleted[1]["sessionId"], own.as_str());
+    assert!(
+        deleted
+            .iter()
+            .all(|request| request["sessionId"] != source.as_str())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paging_a_session_out_closes_its_agents_session_without_deleting_it() {
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_DELETE", "1"), ("ACP_FIXTURE_RESUME", "1")],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "one", "say one").await;
+    let evicted = engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("idle janitor pass");
+    assert_eq!(evicted, vec![session]);
+    assert_eq!(requests(&acp, "session/close").len(), 1);
+    assert!(requests(&acp, "session/delete").is_empty());
+    let outcome = turn(engine, session, "recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one");
+}

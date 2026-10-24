@@ -7,6 +7,12 @@ use cookie_agent_protocol::SessionId;
 use super::{Engine, EngineError};
 use crate::session::SessionError;
 
+/// The sessions a tree deletion deleted, and the ACP sessions each owned.
+type DeletedTree = (
+    Vec<SessionId>,
+    Vec<(SessionId, Vec<cookie_agent_protocol::AcpSessionRecord>)>,
+);
+
 impl Engine {
     /// Deletes the tree rooted at `session_id` (events, metadata, artifacts,
     /// and every delegated session) and returns the deleted sessions, the
@@ -44,18 +50,26 @@ impl Engine {
             let engine = self.clone();
             crate::blocking::off_worker(move || engine.delete_tree_direct(root, expected_last_seq))?
         };
+        let (deleted, acp_sessions) = deleted;
         self.forget_deleted_tree(root, &deleted);
+        // The agents' own transcripts go with the sessions: each session's
+        // ACP sessions are closed and deleted where the agent can.
+        for (session, records) in acp_sessions {
+            self.delete_acp_sessions(session, records).await;
+        }
         for session in &deleted {
             self.close_acp_session(*session).await;
         }
         Ok(deleted)
     }
 
+    /// Deletes the tree rooted at `root`; returns the deleted sessions and
+    /// the ACP sessions each of them owned.
     fn delete_tree_direct(
         &self,
         root: SessionId,
         expected_last_seq: u64,
-    ) -> Result<Vec<SessionId>, EngineError> {
+    ) -> Result<DeletedTree, EngineError> {
         // Serializes with an adoption of the tree, which would otherwise be
         // caught halfway.
         let adoption_lock = self.inner.store.adoption_lock(root);
@@ -90,7 +104,16 @@ impl Engine {
         self.kill_deleted_background_jobs(&members);
         self.inner.uploads.forget_tree(root);
         self.inner.artifacts.forget_tree(root);
-        Ok(deletion.commit()?)
+        let acp_sessions = deletion
+            .members()
+            .iter()
+            .filter_map(|member| {
+                let projection = self.inner.store.get(*member).ok()?;
+                let records = super::acp::lifecycle::own_records(&projection.log.event_snapshot());
+                (!records.is_empty()).then_some((*member, records))
+            })
+            .collect();
+        Ok((deletion.commit()?, acp_sessions))
     }
 
     /// Whether a session of the tree rooted at `root` has an active run, a
