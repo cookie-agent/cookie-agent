@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use cookie_agent_engine::Engine;
 use cookie_agent_protocol::{RuntimeId, ServerContext, SessionId};
 
@@ -378,33 +380,45 @@ impl Server {
     }
 
     /// Sends the current background calls of a subscribed session whenever
-    /// they change. A connection that falls behind gets every subscribed
-    /// session's list again.
+    /// they change. A change that leaves a session's list as this connection
+    /// was last sent it sends nothing. A connection that falls behind gets
+    /// every subscribed session's list again.
     pub(super) fn start_background_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_background_changes();
         let engine = self.engine.clone();
         tokio::spawn(async move {
             let shutdown = context.shutdown();
+            // The list last sent for each subscribed session.
+            let mut sent = HashMap::<SessionId, Vec<cookie_agent_protocol::BackgroundCall>>::new();
             loop {
                 let sessions = tokio::select! {
                     _ = shutdown.cancelled() => return,
                     changed = receiver.recv() => match changed {
-                        Ok(session) => context
-                            .subscribed_sessions()
-                            .into_iter()
-                            .filter(|subscribed| *subscribed == session)
-                            .collect::<Vec<_>>(),
+                        Ok(session) => {
+                            let subscribed = context.subscribed_sessions();
+                            // A session subscribed again starts from what it
+                            // is sent next.
+                            sent.retain(|session, _| subscribed.contains(session));
+                            subscribed
+                                .into_iter()
+                                .filter(|subscribed| *subscribed == session)
+                                .collect::<Vec<_>>()
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            sent.clear();
                             context.subscribed_sessions()
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
                 };
                 for session_id in sessions {
-                    let notification = cookie_agent_protocol::BackgroundChangedNotification {
-                        session_id,
-                        calls: engine.background_calls(session_id),
-                    };
+                    let calls = engine.background_calls(session_id);
+                    if sent.get(&session_id) == Some(&calls) {
+                        continue;
+                    }
+                    sent.insert(session_id, calls.clone());
+                    let notification =
+                        cookie_agent_protocol::BackgroundChangedNotification { session_id, calls };
                     if context
                         .notify(
                             cookie_agent_protocol::BACKGROUND_CHANGED_METHOD,

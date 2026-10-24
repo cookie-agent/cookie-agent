@@ -22,7 +22,7 @@ use std::{
 
 use cookie_agent_protocol::{
     PersistedToolResult, ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerOwner,
-    ProducerSendParams, RetainedToolOutput, SessionId, ToolBackground, ToolBackgroundState,
+    ProducerSendParams, RetainedToolOutput, RunId, SessionId, ToolBackground, ToolBackgroundState,
     ToolCallId, ToolCallTermination, ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
@@ -360,40 +360,17 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Vec<cookie_agent_protocol::BackgroundCall> {
-        let running = self
-            .inner
-            .sessions
-            .active
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|(run, active)| (*run, active.session, active.started_at))
-            .collect::<Vec<_>>();
-        running
+        self.child_runs_of(session)
             .into_iter()
             .filter_map(|(run, child, started_at)| {
-                let projection = self.inner.store.get(child).ok()?;
+                let projection = self.subagent_turn_running(child, run)?;
                 let cookie_agent_protocol::SessionOrigin::Delegated {
-                    parent_session_id,
                     parent_tool_call_id,
                     ..
                 } = projection.meta.origin
                 else {
                     return None;
                 };
-                // A run whose end is appended no longer counts, though its
-                // task has yet to drop it from the active runs: the parent
-                // refreshes on that append, not on the drop.
-                let ended = projection.runs.get(&run).is_some_and(|run| {
-                    !matches!(
-                        run.status,
-                        cookie_agent_protocol::SessionStatus::Running
-                            | cookie_agent_protocol::SessionStatus::Idle
-                    )
-                });
-                if parent_session_id != session || ended || self.foreground_waits_for(child, run) {
-                    return None;
-                }
                 Some(cookie_agent_protocol::BackgroundCall {
                     job: projection
                         .meta
@@ -416,6 +393,41 @@ impl Engine {
             .collect()
     }
 
+    /// The active runs of `session`'s direct children, with when each
+    /// started.
+    fn child_runs_of(&self, session: SessionId) -> Vec<(RunId, SessionId, jiff::Timestamp)> {
+        self.inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|(_, active)| active.parent == Some(session))
+            .map(|(run, active)| (*run, active.session, active.started_at))
+            .collect()
+    }
+
+    /// The projection of `child`, when its active `run` is a turn it runs
+    /// on its own.
+    fn subagent_turn_running(
+        &self,
+        child: SessionId,
+        run: RunId,
+    ) -> Option<std::sync::Arc<crate::session::SessionProjection>> {
+        let projection = self.inner.store.get(child).ok()?;
+        // A run whose end is appended no longer counts, though its task has
+        // yet to drop it from the active runs: the parent refreshes on that
+        // append, not on the drop.
+        let ended = projection.runs.get(&run).is_some_and(|run| {
+            !matches!(
+                run.status,
+                cookie_agent_protocol::SessionStatus::Running
+                    | cookie_agent_protocol::SessionStatus::Idle
+            )
+        });
+        (!ended && !self.foreground_waits_for(child, run)).then_some(projection)
+    }
+
     /// Tells subscribers `session`'s background calls changed, and the
     /// store what the session now waits on.
     pub(super) fn notify_background_changed(&self, session: SessionId) {
@@ -426,7 +438,9 @@ impl Engine {
     /// Whether a direct child of `session` is running a turn on its own,
     /// one [`Self::background_calls`] lists.
     pub(super) fn has_running_subagent_turn(&self, session: SessionId) -> bool {
-        !self.running_subagent_turns(session).is_empty()
+        self.child_runs_of(session)
+            .into_iter()
+            .any(|(run, child, _)| self.subagent_turn_running(child, run).is_some())
     }
 
     /// The sessions whose background calls change, as they change.

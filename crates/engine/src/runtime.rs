@@ -389,6 +389,9 @@ impl EngineError {
 #[derive(Debug)]
 struct ActiveRun {
     session: SessionId,
+    /// The direct parent of a delegated session, whose subagent turn the
+    /// run is (see `Engine::background_calls`).
+    parent: Option<SessionId>,
     policy: Arc<FrozenRunPolicy>,
     cancellation: CancellationToken,
     cancelled_committed: Mutex<bool>,

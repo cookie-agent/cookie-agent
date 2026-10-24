@@ -651,8 +651,15 @@ impl Engine {
                         | cookie_agent_protocol::GoalStatus::Paused
                 )
             });
+        let parent = match session.meta.origin {
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => Some(parent_session_id),
+            SessionOrigin::Root => None,
+        };
         let active = Arc::new(ActiveRun {
             session: params.session_id,
+            parent,
             policy: Arc::new(run_policy),
             cancellation: CancellationToken::new(),
             cancelled_committed: Mutex::new(false),
