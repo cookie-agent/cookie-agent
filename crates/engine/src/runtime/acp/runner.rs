@@ -764,6 +764,11 @@ impl Turn<'_> {
             })
             .await?;
         let claim = engine.prompt_events(session, run).await?;
+        // A cancel that arrived while the input was taken stops the turn
+        // instead: the round's loop forwards it next.
+        if self.active.cancellation.is_cancelled() {
+            return Ok(None);
+        }
         let images = self
             .live
             .process
@@ -1547,6 +1552,13 @@ impl Engine {
             turn.last_turn_seq = None;
             turn.usage_update = None;
             let end = self.acp_round(&mut turn, prompt).await?;
+            // A cancel accepted while the agent was finishing its turn ends
+            // the run as cancelled, as it does a model run's, rather than
+            // completing it or taking more input.
+            let end = match end {
+                RoundEnd::Completed(_) if active.cancellation.is_cancelled() => RoundEnd::Cancelled,
+                end => end,
+            };
             match end {
                 RoundEnd::Completed(final_text) => {
                     // Input the agent did not take into its turn goes with
@@ -1622,16 +1634,26 @@ impl Engine {
             .then(|| self.inner.acp.processes.watch_steering(turn.session()));
         let mut pending_steer: Option<PendingSteer> = None;
         let answer = loop {
+            // Biased, cancellation first: an agent that streams without a
+            // pause keeps the update branch ready, and a cancel accepted
+            // meanwhile must still reach it at the next turn of the loop.
             tokio::select! {
-                answer = &mut request => break Some(answer),
+                biased;
+                () = turn.active.cancellation.cancelled(), if cancel_deadline.is_none() => {
+                    cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_GRACE);
+                    let _ = process.peer.notify(
+                        wire::method::SESSION_CANCEL,
+                        &wire::SessionRef { session_id: &session_id },
+                    ).await;
+                }
                 () = async {
-                    match &steer_wake {
-                        Some(wake) => wake.notified().await,
+                    match cancel_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
                         None => std::future::pending().await,
                     }
-                }, if cancel_deadline.is_none() && pending_steer.is_none() => {
-                    pending_steer = turn.begin_steer().await?;
-                }
+                } => break None,
+                () = process.exited.cancelled() => break None,
+                answer = &mut request => break Some(answer),
                 answer = async {
                     match pending_steer.as_mut() {
                         Some(pending) => (&mut pending.answer).await,
@@ -1658,20 +1680,14 @@ impl Engine {
                     }
                     None => break None,
                 },
-                () = turn.active.cancellation.cancelled(), if cancel_deadline.is_none() => {
-                    cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_GRACE);
-                    let _ = process.peer.notify(
-                        wire::method::SESSION_CANCEL,
-                        &wire::SessionRef { session_id: &session_id },
-                    ).await;
-                }
                 () = async {
-                    match cancel_deadline {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    match &steer_wake {
+                        Some(wake) => wake.notified().await,
                         None => std::future::pending().await,
                     }
-                } => break None,
-                () = process.exited.cancelled() => break None,
+                }, if cancel_deadline.is_none() && pending_steer.is_none() => {
+                    pending_steer = turn.begin_steer().await?;
+                }
             }
         };
         // Updates the agent sent before its answer may still be on their way.

@@ -30,7 +30,7 @@ Each prompt's last text block is a command:
                          summary
   steer-wait [<s>]       says "waiting", then waits (up to <s>, else 10 s) for a message
                          steered into the turn and answers "steered: <texts>",
-                         or "no steer"
+                         or "no steer"; session/cancel ends it as cancelled
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
 
@@ -299,8 +299,15 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     elif word == "steer-wait":
         say(session_id, "waiting")
         with state_lock:
-            state_lock.wait_for(lambda: steered[session_id], timeout=float(rest or "10"))
+            state_lock.wait_for(
+                lambda: steered[session_id] or cancelled[session_id],
+                timeout=float(rest or "10"),
+            )
             got = list(steered[session_id])
+            stopped = cancelled[session_id]
+        if stopped:
+            respond(request_id, {"stopReason": "cancelled"})
+            return
         say(session_id, "steered: " + " | ".join(got) if got else "no steer")
     elif word == "stop":
         say(session_id, "stopping")

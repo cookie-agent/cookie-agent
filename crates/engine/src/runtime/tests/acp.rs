@@ -1774,3 +1774,43 @@ async fn an_engine_shutdown_leaves_no_agent_process_behind() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_while_a_steer_is_being_taken_still_cancels_the_agents_turn() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_STEERING", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "wait", "steer-wait").await;
+    await_event(engine, session, "the agent waiting", |event| {
+        matches!(&event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    // The steer wakes the round, which stops while it takes the input; the
+    // run is cancelled meanwhile.
+    let (reached, release) = engine.install_prompt_before_claim_hook_for_test();
+    engine.steer(run, "go on".into(), origin()).await.unwrap();
+    with_watchdog("the round taking the steer", async {
+        reached.await.expect("the round reached the claim");
+    })
+    .await;
+    engine.cancel_run(run, origin()).await.expect("cancel");
+    release.notify_one();
+    let outcome = finished(engine, session, run).await;
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
+    let received = acp.received();
+    assert!(
+        received
+            .iter()
+            .any(|message| message["method"] == "session/cancel"),
+        "the cancel reached the agent"
+    );
+    assert!(
+        !received
+            .iter()
+            .any(|message| message["method"] == "_session/steering"),
+        "no steer went out once the run was cancelled"
+    );
+}
