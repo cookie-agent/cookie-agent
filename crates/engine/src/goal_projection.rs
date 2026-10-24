@@ -3,6 +3,7 @@
 use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet},
+    sync::Arc,
 };
 
 use cookie_agent_protocol::{
@@ -97,259 +98,316 @@ impl GoalProducerProjection {
 
     #[must_use]
     pub(crate) fn from_events<E: Borrow<StoredEvent>>(events: &[E]) -> Self {
-        let mut projection = Self::default();
-        let mut goals = GoalFold::default();
-        let mut message_indexes = HashMap::<ProducerMessageId, usize>::new();
-        let mut dedup_indexes = HashMap::<(ProducerOwner, ProducerIdempotencyKey), usize>::new();
-        let mut terminal_runs = HashSet::<RunId>::new();
-
+        let mut fold = GoalProducerFold::default();
         for event in events {
-            let event: &StoredEvent = event.borrow();
-            match &event.payload {
-                EventPayload::GoalActivated { selection, .. } => match goals.observe(event) {
-                    Ok(()) => projection.selection = selection.clone(),
-                    Err(reason) => projection.reject(event.seq, reason),
-                },
-                EventPayload::GoalChecklistRevised { .. } => {
-                    if let Err(reason) = goals.observe(event) {
-                        projection.reject(event.seq, reason);
-                    }
-                }
-                EventPayload::GoalLifecycleChanged { selection, .. } => {
-                    match goals.observe(event) {
-                        Ok(()) => {
-                            if let Some(selection) = selection {
-                                projection.selection = Some(selection.clone());
-                            }
-                        }
-                        Err(reason) => projection.reject(event.seq, reason),
-                    }
-                }
-                EventPayload::ProducerMessageAccepted {
-                    message_id,
-                    producer_owner,
-                    mode,
-                    idempotency_key,
-                    description,
-                    body,
-                    reminder,
-                    agent_hop,
-                    ..
-                } => {
-                    if !valid_reminder_owner(producer_owner, reminder.as_ref()) {
-                        projection.reject(event.seq, "invalid producer reminder ownership");
-                        continue;
-                    }
-                    if !valid_hop_owner(producer_owner, *agent_hop) {
-                        projection.reject(event.seq, "invalid producer hop ownership");
-                        continue;
-                    }
-                    let dedup_key = (producer_owner.clone(), idempotency_key.clone());
-                    if let Some(index) = dedup_indexes.get(&dedup_key).copied() {
-                        let prior = &projection.messages[index];
-                        // `agent_hop` is guard metadata, not payload: a replayed
-                        // acceptance for the same key stays idempotent even when
-                        // the stamped depth differs from the stored record.
-                        let exact = prior.message_id == *message_id
-                            && prior.mode == *mode
-                            && prior.description == *description
-                            && prior.body == *body
-                            && prior.reminder == *reminder;
-                        if exact {
-                            continue;
-                        }
-                        projection.reject(event.seq, "conflicting producer idempotency key");
-                        continue;
-                    }
-                    if message_indexes.contains_key(message_id) {
-                        projection.reject(event.seq, "conflicting producer message id");
-                        continue;
-                    }
-                    let index = projection.messages.len();
-                    projection.messages.push(ProducerMessageRecord {
-                        message_id: *message_id,
-                        producer_owner: producer_owner.clone(),
-                        mode: *mode,
-                        idempotency_key: idempotency_key.clone(),
-                        description: description.clone(),
-                        body: body.clone(),
-                        reminder: *reminder,
-                        agent_hop: *agent_hop,
-                        accepted_seq: event.seq,
-                        admission: None,
-                        claims: HashSet::new(),
-                        consumed: false,
-                        discarded: false,
-                        discarded_seq: None,
-                        consumption_recorded: false,
-                        consumed_run: None,
-                    });
-                    message_indexes.insert(*message_id, index);
-                    dedup_indexes.insert(dedup_key, index);
-                }
-                EventPayload::ProducerMessageAdmitted { message_id } => {
-                    let Some(run_id) = event.run_id else {
-                        projection.reject(event.seq, "producer admission is missing run id");
-                        continue;
-                    };
-                    if terminal_runs.contains(&run_id) {
-                        projection.reject(event.seq, "producer admission targets a terminal run");
-                        continue;
-                    }
-                    let Some(index) = message_indexes.get(message_id).copied() else {
-                        projection.reject(event.seq, "producer admission has no accepted message");
-                        continue;
-                    };
-                    let message = &projection.messages[index];
-                    let replaceable = message.admission.is_some_and(|(prior_run, _)| {
-                        prior_run != run_id && terminal_runs.contains(&prior_run)
-                    });
-                    if message.consumed
-                        || message.discarded_seq.is_some()
-                        || (message.admission.is_some() && !replaceable)
-                    {
-                        projection.reject(event.seq, "invalid producer admission");
-                        continue;
-                    }
-                    projection.messages[index].admission = Some((run_id, event.seq));
-                }
-                EventPayload::ProducerMessagesClaimed { message_ids } => {
-                    let Some(run_id) = event.run_id else {
-                        projection.reject(event.seq, "producer claim is missing run id");
-                        continue;
-                    };
-                    let unique = message_ids.iter().copied().collect::<HashSet<_>>();
-                    let indexes = message_ids
-                        .iter()
-                        .filter_map(|message_id| message_indexes.get(message_id).copied())
-                        .collect::<Vec<_>>();
-                    let valid = !message_ids.is_empty()
-                        && unique.len() == message_ids.len()
-                        && indexes.len() == message_ids.len()
-                        && !projection.claims.contains_key(&event.seq)
-                        && indexes.iter().all(|index| {
-                            let message = &projection.messages[*index];
-                            message.accepted_seq < event.seq
-                                && !message.consumed
-                                && message.discarded_seq.is_none()
-                                && message.admission.is_some_and(
-                                    |(admission_run, admission_seq)| {
-                                        admission_run == run_id && admission_seq < event.seq
-                                    },
-                                )
-                        });
-                    if !valid {
-                        projection.reject(event.seq, "invalid producer claim");
-                        continue;
-                    }
-                    for index in indexes {
-                        projection.messages[index].claims.insert(event.seq);
-                    }
-                    projection.claims.insert(
-                        event.seq,
-                        ProducerClaimRecord {
-                            run_id,
-                            message_ids: message_ids.clone(),
-                        },
-                    );
-                }
-                EventPayload::ProducerMessagesReleased { claim_seq } => {
-                    let Some(run_id) = event.run_id else {
-                        projection.reject(event.seq, "producer release is missing run id");
-                        continue;
-                    };
-                    let Some(claim) = projection.claims.get(claim_seq) else {
-                        projection.reject(event.seq, "producer release has no claim");
-                        continue;
-                    };
-                    if *claim_seq == 0 || claim.run_id != run_id {
-                        projection.reject(event.seq, "producer release ownership is invalid");
-                        continue;
-                    }
-                    let message_ids = claim.message_ids.clone();
-                    for message_id in &message_ids {
-                        if let Some(index) = message_indexes.get(message_id) {
-                            projection.messages[*index].claims.remove(claim_seq);
-                        }
-                    }
-                    projection.claims.remove(claim_seq);
-                }
-                EventPayload::ModelTurnCommitted {
-                    input_through_seq, ..
-                } => {
-                    let Some(run_id) = event.run_id else { continue };
-                    for message in &mut projection.messages {
-                        if !message.consumed
-                            && message
-                                .admission
-                                .is_some_and(|(admission_run, admission_seq)| {
-                                    admission_run == run_id && admission_seq <= *input_through_seq
-                                })
-                            && message
-                                .discarded_seq
-                                .is_none_or(|discarded_seq| discarded_seq > *input_through_seq)
-                        {
-                            message.discarded = false;
-                            message.discarded_seq = None;
-                            message.consumed = true;
-                            message.consumed_run = Some(run_id);
-                        }
-                    }
-                }
-                EventPayload::ProducerMessageConsumed { message_id, run_id } => {
-                    let Some(index) = message_indexes.get(message_id).copied() else {
-                        projection
-                            .reject(event.seq, "producer consumption has no accepted message");
-                        continue;
-                    };
-                    let message = &projection.messages[index];
-                    if event.run_id != Some(*run_id)
-                        || message.admission.map(|(run, _)| run) != Some(*run_id)
-                        || message.consumed_run != Some(*run_id)
-                        || message.consumption_recorded
-                    {
-                        projection.reject(event.seq, "invalid producer consumption marker");
-                        continue;
-                    }
-                    projection.messages[index].consumption_recorded = true;
-                }
-                EventPayload::ProducerMessageDiscarded {
-                    message_id,
-                    reminder,
-                    producer_owner,
-                } => {
-                    let Some(index) = message_indexes.get(message_id).copied() else {
-                        projection.reject(event.seq, "producer discard has no accepted message");
-                        continue;
-                    };
-                    let message = &projection.messages[index];
-                    let identity_matches = producer_owner == &message.producer_owner
-                        && reminder
-                            .as_ref()
-                            .is_none_or(|identity| message.reminder.as_ref() == Some(identity));
-                    if !identity_matches || message.consumed || !message.claims.is_empty() {
-                        projection.reject(event.seq, "invalid producer message discard");
-                        continue;
-                    }
-                    if message.discarded_seq.is_none() {
-                        projection.messages[index].discarded = true;
-                        projection.messages[index].discarded_seq = Some(event.seq);
-                    }
-                }
-                EventPayload::RunFinished { .. } => {
-                    if let Some(run_id) = event.run_id {
-                        terminal_runs.insert(run_id);
-                    }
-                }
-                _ => {}
-            }
+            fold.observe(event.borrow());
         }
-        projection.goal = goals.goal;
-        projection
+        Arc::unwrap_or_clone(fold.projection)
     }
 
     fn reject(&mut self, seq: u64, reason: &str) {
         self.invalid.push((seq, reason.to_owned()));
+    }
+}
+
+/// [`GoalProducerProjection`] folded one event at a time, so a log that
+/// grew is folded only through what it gained.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GoalProducerFold {
+    /// Shared with the readers handed it; copied only when an event changes
+    /// it while one still holds it.
+    projection: Arc<GoalProducerProjection>,
+    goals: GoalFold,
+    message_indexes: HashMap<ProducerMessageId, usize>,
+    dedup_indexes: HashMap<(ProducerOwner, ProducerIdempotencyKey), usize>,
+    terminal_runs: HashSet<RunId>,
+}
+
+impl GoalProducerFold {
+    /// The projection through the events observed so far.
+    #[must_use]
+    pub(crate) fn projection(&self) -> Arc<GoalProducerProjection> {
+        Arc::clone(&self.projection)
+    }
+
+    fn projection_mut(&mut self) -> &mut GoalProducerProjection {
+        Arc::make_mut(&mut self.projection)
+    }
+
+    /// Folds the next event of the log.
+    pub(crate) fn observe(&mut self, event: &StoredEvent) {
+        match &event.payload {
+            EventPayload::GoalActivated { selection, .. } => match self.goals.observe(event) {
+                Ok(()) => {
+                    let goal = self.goals.goal.clone();
+                    let projection = self.projection_mut();
+                    projection.selection = selection.clone();
+                    projection.goal = goal;
+                }
+                Err(reason) => self.projection_mut().reject(event.seq, reason),
+            },
+            EventPayload::GoalChecklistRevised { .. } => match self.goals.observe(event) {
+                Ok(()) => self.projection_mut().goal = self.goals.goal.clone(),
+                Err(reason) => self.projection_mut().reject(event.seq, reason),
+            },
+            EventPayload::GoalLifecycleChanged { selection, .. } => {
+                match self.goals.observe(event) {
+                    Ok(()) => {
+                        let goal = self.goals.goal.clone();
+                        let projection = self.projection_mut();
+                        if let Some(selection) = selection {
+                            projection.selection = Some(selection.clone());
+                        }
+                        projection.goal = goal;
+                    }
+                    Err(reason) => self.projection_mut().reject(event.seq, reason),
+                }
+            }
+            EventPayload::ProducerMessageAccepted {
+                message_id,
+                producer_owner,
+                mode,
+                idempotency_key,
+                description,
+                body,
+                reminder,
+                agent_hop,
+                ..
+            } => {
+                if !valid_reminder_owner(producer_owner, reminder.as_ref()) {
+                    self.projection_mut()
+                        .reject(event.seq, "invalid producer reminder ownership");
+                    return;
+                }
+                if !valid_hop_owner(producer_owner, *agent_hop) {
+                    self.projection_mut()
+                        .reject(event.seq, "invalid producer hop ownership");
+                    return;
+                }
+                let dedup_key = (producer_owner.clone(), idempotency_key.clone());
+                if let Some(index) = self.dedup_indexes.get(&dedup_key).copied() {
+                    let prior = &self.projection.messages[index];
+                    // `agent_hop` is guard metadata, not payload: a replayed
+                    // acceptance for the same key stays idempotent even when
+                    // the stamped depth differs from the stored record.
+                    let exact = prior.message_id == *message_id
+                        && prior.mode == *mode
+                        && prior.description == *description
+                        && prior.body == *body
+                        && prior.reminder == *reminder;
+                    if exact {
+                        return;
+                    }
+                    self.projection_mut()
+                        .reject(event.seq, "conflicting producer idempotency key");
+                    return;
+                }
+                if self.message_indexes.contains_key(message_id) {
+                    self.projection_mut()
+                        .reject(event.seq, "conflicting producer message id");
+                    return;
+                }
+                let index = self.projection.messages.len();
+                self.projection_mut().messages.push(ProducerMessageRecord {
+                    message_id: *message_id,
+                    producer_owner: producer_owner.clone(),
+                    mode: *mode,
+                    idempotency_key: idempotency_key.clone(),
+                    description: description.clone(),
+                    body: body.clone(),
+                    reminder: *reminder,
+                    agent_hop: *agent_hop,
+                    accepted_seq: event.seq,
+                    admission: None,
+                    claims: HashSet::new(),
+                    consumed: false,
+                    discarded: false,
+                    discarded_seq: None,
+                    consumption_recorded: false,
+                    consumed_run: None,
+                });
+                self.message_indexes.insert(*message_id, index);
+                self.dedup_indexes.insert(dedup_key, index);
+            }
+            EventPayload::ProducerMessageAdmitted { message_id } => {
+                let Some(run_id) = event.run_id else {
+                    self.projection_mut()
+                        .reject(event.seq, "producer admission is missing run id");
+                    return;
+                };
+                if self.terminal_runs.contains(&run_id) {
+                    self.projection_mut()
+                        .reject(event.seq, "producer admission targets a terminal run");
+                    return;
+                }
+                let Some(index) = self.message_indexes.get(message_id).copied() else {
+                    self.projection_mut()
+                        .reject(event.seq, "producer admission has no accepted message");
+                    return;
+                };
+                let message = &self.projection.messages[index];
+                let replaceable = message.admission.is_some_and(|(prior_run, _)| {
+                    prior_run != run_id && self.terminal_runs.contains(&prior_run)
+                });
+                if message.consumed
+                    || message.discarded_seq.is_some()
+                    || (message.admission.is_some() && !replaceable)
+                {
+                    self.projection_mut()
+                        .reject(event.seq, "invalid producer admission");
+                    return;
+                }
+                self.projection_mut().messages[index].admission = Some((run_id, event.seq));
+            }
+            EventPayload::ProducerMessagesClaimed { message_ids } => {
+                let Some(run_id) = event.run_id else {
+                    self.projection_mut()
+                        .reject(event.seq, "producer claim is missing run id");
+                    return;
+                };
+                let unique = message_ids.iter().copied().collect::<HashSet<_>>();
+                let indexes = message_ids
+                    .iter()
+                    .filter_map(|message_id| self.message_indexes.get(message_id).copied())
+                    .collect::<Vec<_>>();
+                let valid = !message_ids.is_empty()
+                    && unique.len() == message_ids.len()
+                    && indexes.len() == message_ids.len()
+                    && !self.projection.claims.contains_key(&event.seq)
+                    && indexes.iter().all(|index| {
+                        let message = &self.projection.messages[*index];
+                        message.accepted_seq < event.seq
+                            && !message.consumed
+                            && message.discarded_seq.is_none()
+                            && message
+                                .admission
+                                .is_some_and(|(admission_run, admission_seq)| {
+                                    admission_run == run_id && admission_seq < event.seq
+                                })
+                    });
+                if !valid {
+                    self.projection_mut()
+                        .reject(event.seq, "invalid producer claim");
+                    return;
+                }
+                for index in indexes {
+                    self.projection_mut().messages[index]
+                        .claims
+                        .insert(event.seq);
+                }
+                self.projection_mut().claims.insert(
+                    event.seq,
+                    ProducerClaimRecord {
+                        run_id,
+                        message_ids: message_ids.clone(),
+                    },
+                );
+            }
+            EventPayload::ProducerMessagesReleased { claim_seq } => {
+                let Some(run_id) = event.run_id else {
+                    self.projection_mut()
+                        .reject(event.seq, "producer release is missing run id");
+                    return;
+                };
+                let Some(claim) = self.projection.claims.get(claim_seq) else {
+                    self.projection_mut()
+                        .reject(event.seq, "producer release has no claim");
+                    return;
+                };
+                if *claim_seq == 0 || claim.run_id != run_id {
+                    self.projection_mut()
+                        .reject(event.seq, "producer release ownership is invalid");
+                    return;
+                }
+                let message_ids = claim.message_ids.clone();
+                for message_id in &message_ids {
+                    if let Some(index) = self.message_indexes.get(message_id).copied() {
+                        self.projection_mut().messages[index]
+                            .claims
+                            .remove(claim_seq);
+                    }
+                }
+                self.projection_mut().claims.remove(claim_seq);
+            }
+            EventPayload::ModelTurnCommitted {
+                input_through_seq, ..
+            } => {
+                let Some(run_id) = event.run_id else { return };
+                let covered = |message: &ProducerMessageRecord| {
+                    !message.consumed
+                        && message
+                            .admission
+                            .is_some_and(|(admission_run, admission_seq)| {
+                                admission_run == run_id && admission_seq <= *input_through_seq
+                            })
+                        && message
+                            .discarded_seq
+                            .is_none_or(|discarded_seq| discarded_seq > *input_through_seq)
+                };
+                // Most turns consume nothing; they leave a shared projection
+                // unshared.
+                if !self.projection.messages.iter().any(covered) {
+                    return;
+                }
+                for message in &mut self.projection_mut().messages {
+                    if covered(message) {
+                        message.discarded = false;
+                        message.discarded_seq = None;
+                        message.consumed = true;
+                        message.consumed_run = Some(run_id);
+                    }
+                }
+            }
+            EventPayload::ProducerMessageConsumed { message_id, run_id } => {
+                let Some(index) = self.message_indexes.get(message_id).copied() else {
+                    self.projection_mut()
+                        .reject(event.seq, "producer consumption has no accepted message");
+                    return;
+                };
+                let message = &self.projection.messages[index];
+                if event.run_id != Some(*run_id)
+                    || message.admission.map(|(run, _)| run) != Some(*run_id)
+                    || message.consumed_run != Some(*run_id)
+                    || message.consumption_recorded
+                {
+                    self.projection_mut()
+                        .reject(event.seq, "invalid producer consumption marker");
+                    return;
+                }
+                self.projection_mut().messages[index].consumption_recorded = true;
+            }
+            EventPayload::ProducerMessageDiscarded {
+                message_id,
+                reminder,
+                producer_owner,
+            } => {
+                let Some(index) = self.message_indexes.get(message_id).copied() else {
+                    self.projection_mut()
+                        .reject(event.seq, "producer discard has no accepted message");
+                    return;
+                };
+                let message = &self.projection.messages[index];
+                let identity_matches = producer_owner == &message.producer_owner
+                    && reminder
+                        .as_ref()
+                        .is_none_or(|identity| message.reminder.as_ref() == Some(identity));
+                if !identity_matches || message.consumed || !message.claims.is_empty() {
+                    self.projection_mut()
+                        .reject(event.seq, "invalid producer message discard");
+                    return;
+                }
+                if message.discarded_seq.is_none() {
+                    self.projection_mut().messages[index].discarded = true;
+                    self.projection_mut().messages[index].discarded_seq = Some(event.seq);
+                }
+            }
+            EventPayload::RunFinished { .. } => {
+                if let Some(run_id) = event.run_id {
+                    self.terminal_runs.insert(run_id);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

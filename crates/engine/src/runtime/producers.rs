@@ -540,12 +540,14 @@ impl Engine {
             return Ok(());
         }
         let events = projection.log.event_snapshot();
-        let goal = GoalProducerProjection::from_events(&events);
+        let goal = self
+            .goal_producer_projection(session)
+            .unwrap_or_else(|_| Arc::new(GoalProducerProjection::from_events(&events)));
         let goal_selection = goal
             .goal
             .as_ref()
             .filter(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Paused))
-            .and(goal.selection);
+            .and(goal.selection.clone());
         let selection = goal_selection.unwrap_or_else(|| {
             cookie_agent_protocol::SessionModelState::from_events(&events)
                 .selection
@@ -927,44 +929,42 @@ impl Engine {
         .await
     }
 
-    /// The session's producer/goal fold, recomputed only when the log gained
-    /// an event since the last fold: an actor handler that reads it several
-    /// times between appends folds the log once.
+    /// The session's producer/goal fold. The latest fold is kept and only
+    /// what the log gained since is folded onto it; a log that lost or
+    /// replaced what was folded (a revert, a reload) is folded again whole.
     pub(crate) fn goal_producer_projection(
         &self,
         session: SessionId,
     ) -> Result<Arc<GoalProducerProjection>, EngineError> {
-        let log = self.inner.store.log(session)?;
-        // Holding the tip's `Arc` keeps its allocation alive, so pointer
-        // equality means no append, truncation, or reload happened since.
-        let tip = log.last_event();
-        let same_tip = |cached: &Option<Arc<StoredEvent>>| match (cached, &tip) {
-            (Some(cached), Some(tip)) => Arc::ptr_eq(cached, tip),
-            (None, None) => true,
-            _ => false,
-        };
-        if let Some((cached_tip, projection)) = self
+        let events = self.inner.store.log(session)?.event_snapshot();
+        let cached = self
             .inner
             .sessions
             .producer_projections
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&session)
-            && same_tip(cached_tip)
-        {
-            return Ok(Arc::clone(projection));
+            .remove(&session);
+        let (mut fold, folded) = match cached {
+            Some(cached) if cached.is_prefix_of(&events) => (cached.fold, cached.folded),
+            _ => (crate::goal_projection::GoalProducerFold::default(), 0),
+        };
+        for event in &events[folded..] {
+            fold.observe(event);
         }
-        let projection = Arc::new(GoalProducerProjection::from_events(&log.event_snapshot()));
-        // An append that raced the fold leaves the fold unkeyed rather than
-        // filing a newer state under an older tip.
-        if same_tip(&log.last_event()) {
-            self.inner
-                .sessions
-                .producer_projections
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(session, (tip, Arc::clone(&projection)));
-        }
+        let projection = fold.projection();
+        self.inner
+            .sessions
+            .producer_projections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                session,
+                super::mailbox::CachedProducerProjection {
+                    folded: events.len(),
+                    last: events.last().cloned(),
+                    fold,
+                },
+            );
         Ok(projection)
     }
 
@@ -1163,7 +1163,8 @@ impl Engine {
         }
         let events = projection.log.event_snapshot();
         Ok(super::residency::has_runless_pending_inputs(&events)
-            || GoalProducerProjection::from_events(&events)
+            || self
+                .goal_producer_projection(session)?
                 .messages
                 .iter()
                 .any(|message| pending(message) && message.reminder.is_none()))
@@ -2131,7 +2132,8 @@ pub(crate) fn producer_state_pending(events: &[Arc<cookie_agent_protocol::Stored
             .any(|message| pending(message) || (message.consumed && !message.consumption_recorded))
 }
 
-/// Whether accepted-but-unconsumed producer mail is addressed to this session.
+/// Whether a message is accepted but neither consumed nor discarded: mail
+/// addressed to the session that it still owes a wake.
 ///
 /// This is the race-free "a wake is owed" signal: `ProducerMessageAccepted` is
 /// durable before a send reports success, and a message stays pending through
@@ -2139,16 +2141,7 @@ pub(crate) fn producer_state_pending(events: &[Arc<cookie_agent_protocol::Stored
 /// `Running` (it clears only when a committed model turn has actually consumed
 /// it). Liveness checks therefore cannot miss a steered finished child in the
 /// gap between acceptance and run admission.
-pub(super) fn has_pending_producer_message(
-    events: &[Arc<cookie_agent_protocol::StoredEvent>],
-) -> bool {
-    GoalProducerProjection::from_events(events)
-        .messages
-        .iter()
-        .any(pending)
-}
-
-fn pending(message: &ProducerMessageRecord) -> bool {
+pub(super) fn pending(message: &ProducerMessageRecord) -> bool {
     !message.consumed && !message.discarded
 }
 

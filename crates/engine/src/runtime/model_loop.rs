@@ -338,16 +338,17 @@ impl Engine {
         let result_limits = policy::ResultLimits::from_config(&self.inner.config.load().runtime);
         let is_root = matches!(session.meta.origin, SessionOrigin::Root);
         let memory_variables = self.memory_variables(params.session_id);
+        let remembered =
+            cookie_agent_protocol::SessionModelState::from_events(&session.log.event_snapshot());
         let mut run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
                 // A selection equal to the session's own history (an engine
                 // wake-up, or a client continuing where the session left off)
                 // falls back best-effort when what it names is gone.
-                let history = cookie_agent_protocol::SessionModelState::from_events(
-                    &session.log.event_snapshot(),
-                )
-                .selection
-                .unwrap_or_else(|| session.meta.creation_selection.clone());
+                let history = remembered
+                    .selection
+                    .clone()
+                    .unwrap_or_else(|| session.meta.creation_selection.clone());
                 let (policy, selection) = self.freeze_root_selection(
                     &params.selection,
                     params.selection == history,
@@ -368,8 +369,6 @@ impl Engine {
                 policy
             }
         };
-        let remembered =
-            cookie_agent_protocol::SessionModelState::from_events(&session.log.event_snapshot());
         let effective = remembered.continuation(
             &params.selection,
             &run_policy

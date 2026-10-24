@@ -3122,3 +3122,83 @@ async fn producer_projection_folds_once_per_log_tip() {
         Some(goal.goal_id)
     );
 }
+
+/// The kept fold is carried over what the log gains and folded again when
+/// a revert takes away what it went through: either way it matches a fold
+/// of the whole log.
+#[tokio::test]
+async fn producer_projection_follows_appends_and_reverts() {
+    let (fixture, selection) = custom_fixture();
+    let engine = &fixture.engine;
+    let session_id = engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let whole_log = || {
+        crate::goal_projection::GoalProducerProjection::from_events(
+            &engine
+                .inner
+                .store
+                .log(session_id)
+                .expect("log")
+                .event_snapshot(),
+        )
+    };
+    let activate = |objective: &str| {
+        let goal_id = cookie_agent_protocol::GoalId::new_v7();
+        engine
+            .append_direct(
+                session_id,
+                None,
+                client_origin(),
+                EventPayload::GoalActivated {
+                    goal_id,
+                    objective: objective.into(),
+                    revision: 1,
+                    selection: None,
+                },
+            )
+            .expect("goal activation");
+        goal_id
+    };
+    let goal_of = |projection: &crate::goal_projection::GoalProducerProjection| {
+        projection.goal.as_ref().map(|goal| goal.goal_id)
+    };
+    let before = engine.get_session(session_id).expect("meta").last_event_seq;
+    assert_eq!(
+        goal_of(&engine.goal_producer_projection(session_id).expect("fold")),
+        None
+    );
+
+    let first = activate("First objective");
+    let carried = engine.goal_producer_projection(session_id).expect("fold");
+    assert_eq!(goal_of(&carried), Some(first));
+    assert_eq!(*carried, whole_log());
+
+    engine
+        .inner
+        .store
+        .truncate(session_id, before)
+        .expect("revert");
+    let reverted = engine.goal_producer_projection(session_id).expect("fold");
+    assert_eq!(goal_of(&reverted), None, "{reverted:?}");
+    assert_eq!(*reverted, whole_log());
+
+    let second = activate("Second objective");
+    let carried = engine.goal_producer_projection(session_id).expect("fold");
+    assert_eq!(goal_of(&carried), Some(second));
+    assert_eq!(*carried, whole_log());
+
+    // A revert and an append between two reads leave the log as long as
+    // it was, ending in a different event.
+    engine
+        .inner
+        .store
+        .truncate(session_id, before)
+        .expect("second revert");
+    let third = activate("Third objective");
+    let refolded = engine.goal_producer_projection(session_id).expect("fold");
+    assert_eq!(goal_of(&refolded), Some(third));
+    assert_eq!(*refolded, whole_log());
+    fixture.engine.shutdown().await;
+}

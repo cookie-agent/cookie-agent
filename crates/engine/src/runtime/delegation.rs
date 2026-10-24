@@ -2515,7 +2515,11 @@ impl Engine {
             // mail (and an in-flight/scheduled wake) covers that gap so a
             // same-turn read cannot return the previous turn's text.
             let running = matches!(child.status, SessionStatus::Running | SessionStatus::Idle)
-                || super::producers::has_pending_producer_message(&child.log.event_snapshot())
+                || self
+                    .goal_producer_projection(child_session_id)?
+                    .messages
+                    .iter()
+                    .any(super::producers::pending)
                 || self.producer_wake_in_flight(child_session_id);
             if !running {
                 let text = last_assistant_message(&child);

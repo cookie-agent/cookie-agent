@@ -431,7 +431,9 @@ async fn bench(target: u64) {
         mean(&grower.tail),
     );
 
-    // Run start on the long log, through to the model request.
+    // Run start on the long log, through to the model request: the
+    // records' own times split admission from building the request.
+    let started_at = jiff::Timestamp::now();
     let started = Instant::now();
     let run = engine
         .start_run(
@@ -467,9 +469,22 @@ async fn bench(target: u64) {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     };
+    let since_start = |kind: fn(&EventPayload) -> bool| {
+        let log = engine.inner.store.log(session).expect("log");
+        let snapshot = log.event_snapshot();
+        let event = snapshot
+            .iter()
+            .rev()
+            .find(|event| event.run_id == Some(run) && kind(&event.payload))
+            .expect("run record");
+        Duration::try_from(event.timestamp.duration_since(started_at)).unwrap_or_default()
+    };
     println!(
-        "[{target}] start_run admitted in {admitted:?}; first request prepared after {:?}",
-        started.elapsed()
+        "[{target}] start_run returned after {admitted:?}: RunStarted recorded after {:?}, \
+         ModelAttemptStarted after {:?}, ModelRequestPrepared after {:?}",
+        since_start(|payload| matches!(payload, EventPayload::RunStarted { .. })),
+        since_start(|payload| matches!(payload, EventPayload::ModelAttemptStarted { .. })),
+        since_start(|payload| matches!(payload, EventPayload::ModelRequestPrepared { .. })),
     );
 
     // Model steps against the active run: the appends a step makes, then
