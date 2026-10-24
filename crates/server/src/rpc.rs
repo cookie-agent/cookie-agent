@@ -368,6 +368,9 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         | EngineError::CompactionCancelled(reason) => errors::PLUGIN_REJECTED
             .error()
             .field("reason", reason_text(reason)),
+        EngineError::AcpUnsupported(reason) => errors::ACP_AGENT_UNSUPPORTED
+            .error()
+            .field("reason", reason_text(reason)),
         EngineError::Runtime(reason) => errors::RUNTIME_REJECTED
             .error()
             .field("reason", reason_text(reason)),

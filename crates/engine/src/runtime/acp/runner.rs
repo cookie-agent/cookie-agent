@@ -67,10 +67,6 @@ pub(crate) struct LiveSession {
     /// Whether the next prompt is the session's first, which carries the
     /// agent document's body.
     pub first_prompt: bool,
-    /// Whether that first prompt also carries the cookie transcript: the
-    /// session is new but continues a conversation a fork or a revert
-    /// left behind.
-    pub seed: bool,
     /// What the process routes to the session.
     pub events: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SessionEvent>>>,
 }
@@ -1867,7 +1863,6 @@ impl Engine {
                     &active.policy,
                     &claim.events,
                     &document,
-                    turn.live.seed,
                 )?
             } else {
                 Vec::new()
@@ -1888,6 +1883,11 @@ impl Engine {
             };
             match end {
                 RoundEnd::Completed(final_text) => {
+                    // Once the agent has replied in a session, its process
+                    // can be asked whether its fork takes a fork point.
+                    let engine = self.clone();
+                    let live = turn.live.clone();
+                    tokio::spawn(async move { engine.probe_fork_point(&live).await });
                     // Input the agent did not take into its turn goes with
                     // the next round.
                     let unsteered = std::mem::take(&mut turn.unsteered);
@@ -2147,16 +2147,13 @@ impl Engine {
     /// left out when empty: the tool instruction sections cookie would
     /// compose for a model run, for exactly the tools the agent is offered
     /// over the bridge; the session's memory snapshot as a model run sees
-    /// it; the agent document's body; and, for a new session that
-    /// continues a conversation a fork or a revert left behind (`seed`),
-    /// the cookie transcript.
+    /// it; and the agent document's body.
     fn acp_first_prompt_context(
         &self,
         session: SessionId,
         policy: &crate::policy::FrozenRunPolicy,
         events: &crate::events::EventSnapshot,
         document: &cookie_agent_config::AgentDocument,
-        seed: bool,
     ) -> Result<Vec<String>, EngineError> {
         let hide = document
             .frontmatter
@@ -2179,9 +2176,6 @@ impl Engine {
         );
         if !document.body.trim().is_empty() {
             context.push(document.body.clone());
-        }
-        if seed {
-            context.extend(super::lifecycle::transcript(events));
         }
         Ok(context)
     }
@@ -2378,9 +2372,6 @@ impl Engine {
                 delete,
             } => (None, Some((from, message_id, delete))),
         };
-        // A new session continues a conversation it does not remember:
-        // its first prompt carries the cookie transcript.
-        let mut seed = false;
         // The agent keeps its sessions on the machine that runs it: one
         // recorded on another runtime cannot be resumed or forked here.
         if let Some(elsewhere) = prior
@@ -2400,7 +2391,6 @@ impl Engine {
                 ),
             )
             .await;
-            seed = branch.is_some();
             prior = None;
             branch = None;
         }
@@ -2419,14 +2409,11 @@ impl Engine {
                     &cwd,
                     &mcp_servers,
                 )
-                .await;
-            match forked {
-                Some((id, response)) => {
-                    let receiver = process.route(&id);
-                    forked_from = Some(from.acp_session_id.clone());
-                    opened = Some((id, response, AcpSessionStart::Forked, receiver));
-                }
-                None => seed = true,
+                .await?;
+            if let Some((id, response)) = forked {
+                let receiver = process.route(&id);
+                forked_from = Some(from.acp_session_id.clone());
+                opened = Some((id, response, AcpSessionStart::Forked, receiver));
             }
         }
         if let Some(prior) = &prior {
@@ -2534,8 +2521,8 @@ impl Engine {
                     how,
                     steering: process.init().steering(),
                     forked_from,
-                    fork: None,
-                    fork_point: None,
+                    fork: Some(caps.session("fork")),
+                    fork_point: process.fork_point.get().copied(),
                 },
             },
         )
@@ -2558,7 +2545,6 @@ impl Engine {
             options,
             modes_as_option,
             first_prompt: matches!(how, AcpSessionStart::New),
-            seed: seed && matches!(how, AcpSessionStart::New),
             events: Arc::new(tokio::sync::Mutex::new(receiver)),
         };
         if matches!(how, AcpSessionStart::New) {

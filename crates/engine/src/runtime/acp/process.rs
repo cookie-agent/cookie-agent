@@ -102,6 +102,11 @@ pub(crate) struct AgentProcess {
     /// Bumped whenever the process is used, so an idle timer that started
     /// before knows it is stale.
     used: AtomicU64,
+    /// Whether the agent's `session/fork` takes a fork point, once asked
+    /// (`Engine::probe_fork_point`).
+    pub fork_point: std::sync::OnceLock<bool>,
+    /// Whether that question was asked or is being asked.
+    pub fork_probe: std::sync::atomic::AtomicBool,
 }
 
 impl AgentProcess {
@@ -347,6 +352,8 @@ impl Processes {
             exit_reason: Mutex::default(),
             busy: AtomicUsize::new(0),
             used: AtomicU64::new(0),
+            fork_point: std::sync::OnceLock::new(),
+            fork_probe: std::sync::atomic::AtomicBool::new(false),
         });
         lock(&self.running).insert(key.clone(), Arc::clone(&pending));
         let initialized = tokio::time::timeout(

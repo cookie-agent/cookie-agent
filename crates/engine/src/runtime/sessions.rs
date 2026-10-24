@@ -641,6 +641,21 @@ impl Engine {
         expected_last_seq: Option<u64>,
     ) -> Result<SessionRevertResult, EngineError> {
         self.ensure_appendable(session_id)?;
+        // An ACP agent must be able to fork its conversation at the revert
+        // point, or the revert is refused before anything changes.
+        {
+            let events = self.inner.store.get(session_id)?.log.event_snapshot();
+            let known = |record: &cookie_agent_protocol::AcpSessionRecord| {
+                self.fork_knowledge(&events, record)
+            };
+            if let Some(reason) = crate::runtime::acp::lifecycle::rewind_refusal(
+                &events,
+                revert_cut(&events, through_seq),
+                &known,
+            ) {
+                return Err(EngineError::AcpUnsupported(reason));
+            }
+        }
         let context_id = crate::plugin::plugin_context_id();
         let mut instructions = self
             .inner
@@ -935,6 +950,19 @@ impl Engine {
             } else {
                 Err(EngineError::ForkIdempotencyConflict)
             };
+        }
+        // An ACP agent must be able to fork its conversation there, or the
+        // fork is refused before anything changes.
+        {
+            let events = self.inner.store.get(session_id)?.log.event_snapshot();
+            let known = |record: &cookie_agent_protocol::AcpSessionRecord| {
+                self.fork_knowledge(&events, record)
+            };
+            if let Some(reason) =
+                crate::runtime::acp::lifecycle::fork_refusal(&events, through_seq, &known)
+            {
+                return Err(EngineError::AcpUnsupported(reason));
+            }
         }
         let context_id = crate::plugin::plugin_context_id();
         for hooked in self.inner.plugins.interception_plugins(

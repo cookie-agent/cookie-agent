@@ -68,7 +68,11 @@ Environment:
   ACP_FIXTURE_FORK       "1": offers session/fork, which copies the source's
                          history, up to and including the agent message the
                          JetBrains AIR fork point (`_meta.jetbrains.air.fork`)
-                         names when there is one
+                         names when there is one (an unknown message is
+                         invalid params, -32602)
+  ACP_FIXTURE_FORK_WHOLE "1" with ACP_FIXTURE_FORK: session/fork ignores the
+                         fork point and copies the whole history
+  ACP_FIXTURE_FORK_DELAY seconds session/fork takes to answer
   ACP_FIXTURE_DELETE     "1": offers session/delete
   ACP_FIXTURE_STEERING   "1": advertises the steering extension
                          (`_meta.steering.supported`) and serves
@@ -500,6 +504,31 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     respond(request_id, {"stopReason": "end_turn", "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}})
 
 
+def fork(request_id, params):
+    delay = os.environ.get("ACP_FIXTURE_FORK_DELAY")
+    if delay:
+        import time
+        time.sleep(float(delay))
+    source = sessions.get(params["sessionId"])
+    if source is None:
+        fail(request_id, -32002, "Resource not found: no such session")
+        return
+    history = list(source.get("history", []))
+    point = (((params.get("_meta") or {}).get("jetbrains") or {}).get("air") or {}).get("fork")
+    if point and point.get("version") == 1 and not env("ACP_FIXTURE_FORK_WHOLE"):
+        found = [index for index, entry in enumerate(history) if entry.get("messageId") == point.get("messageId")]
+        if not found:
+            fail(request_id, -32602, f"Fork point message {point.get('messageId')} was not found")
+            return
+        history = history[:found[-1] + 1]
+    session_id = new_session_id()
+    sessions[session_id] = {
+        "mode": source.get("mode", "default"), "model": source.get("model", "small"),
+        "mcpServers": params.get("mcpServers"), "cwd": params.get("cwd"), "history": history,
+    }
+    respond(request_id, session_result(session_id, True))
+
+
 def handle(message):
     method = message.get("method")
     request_id = message.get("id")
@@ -595,24 +624,7 @@ def handle(message):
         sessions.pop(params["sessionId"], None)
         respond(request_id, {})
     elif method == "session/fork" and env("ACP_FIXTURE_FORK"):
-        source = sessions.get(params["sessionId"])
-        if source is None:
-            fail(request_id, -32002, "Resource not found: no such session")
-            return
-        history = list(source.get("history", []))
-        point = (((params.get("_meta") or {}).get("jetbrains") or {}).get("air") or {}).get("fork")
-        if point and point.get("version") == 1:
-            found = [index for index, entry in enumerate(history) if entry.get("messageId") == point.get("messageId")]
-            if not found:
-                fail(request_id, -32602, f"Fork point message {point.get('messageId')} was not found")
-                return
-            history = history[:found[-1] + 1]
-        session_id = new_session_id()
-        sessions[session_id] = {
-            "mode": source.get("mode", "default"), "model": source.get("model", "small"),
-            "mcpServers": params.get("mcpServers"), "cwd": params.get("cwd"), "history": history,
-        }
-        respond(request_id, session_result(session_id, True))
+        threading.Thread(target=fork, args=(request_id, params), daemon=True).start()
     elif request_id is not None:
         fail(request_id, -32601, f"unsupported fixture method {method}")
 

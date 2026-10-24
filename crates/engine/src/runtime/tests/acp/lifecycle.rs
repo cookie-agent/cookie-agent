@@ -1,11 +1,23 @@
-//! A cookie session's ACP sessions across forks and reverts
+//! A cookie session's ACP sessions across forks, reverts, and deletes
 //! (`docs/site/specs/acp-agents.md` section 15, lifecycle), against the
 //! scripted agent, whose `recall` says which prompts its session
-//! remembers.
+//! remembers. Its three ways of forking: `ACP_FIXTURE_FORK` alone forks at
+//! the fork point and refuses an unknown one as invalid params; with
+//! `ACP_FIXTURE_FORK_WHOLE` it ignores the fork point; without either it
+//! offers no `session/fork`.
 
 use cookie_agent_protocol::{AcpDetachReason, AcpSessionStart, EventPayload, SessionId};
 
 use super::*;
+use crate::EngineError;
+
+const AT_MESSAGE: &[(&str, &str)] = &[("ACP_FIXTURE_FORK", "1"), ("ACP_FIXTURE_DELETE", "1")];
+const WHOLE: &[(&str, &str)] = &[
+    ("ACP_FIXTURE_FORK", "1"),
+    ("ACP_FIXTURE_FORK_WHOLE", "1"),
+    ("ACP_FIXTURE_DELETE", "1"),
+];
+const NO_FORK: &[(&str, &str)] = &[("ACP_FIXTURE_DELETE", "1")];
 
 /// The sequence number of the end of `session`'s `index`th run.
 fn run_end_seq(engine: &Engine, session: SessionId, index: usize) -> u64 {
@@ -17,12 +29,30 @@ fn run_end_seq(engine: &Engine, session: SessionId, index: usize) -> u64 {
         .seq
 }
 
-/// The methods the agent was asked, with the session each named.
+fn tip(engine: &Engine, session: SessionId) -> u64 {
+    engine.inner.store.get(session).unwrap().meta.last_event_seq
+}
+
+/// The requests of `method` the agent received, by their params.
 fn requests(acp: &AcpFixture, method: &str) -> Vec<serde_json::Value> {
     acp.received()
         .into_iter()
         .filter(|message| message["method"] == method)
         .map(|message| message["params"].clone())
+        .collect()
+}
+
+fn fork_point_of(request: &serde_json::Value) -> Option<&str> {
+    request["_meta"]["jetbrains"]["air"]["fork"]["messageId"].as_str()
+}
+
+/// The `session/fork` requests that were not the engine's probe.
+fn forks(acp: &AcpFixture) -> Vec<serde_json::Value> {
+    requests(acp, "session/fork")
+        .into_iter()
+        .filter(|request| {
+            !fork_point_of(request).is_some_and(|id| id.starts_with("cookie-fork-probe-"))
+        })
         .collect()
 }
 
@@ -36,6 +66,18 @@ fn diagnostics(engine: &Engine, session: SessionId) -> Vec<String> {
         .collect()
 }
 
+/// Waits for `session` to record what the probe found.
+async fn probed(engine: &Engine, session: SessionId) -> bool {
+    let event = await_event(engine, session, "the fork point probe", |event| {
+        matches!(&event.payload, EventPayload::AcpSessionUpdated { update } if update.fork_point.is_some())
+    })
+    .await;
+    match event.payload {
+        EventPayload::AcpSessionUpdated { update } => update.fork_point.unwrap(),
+        _ => unreachable!(),
+    }
+}
+
 async fn fork(engine: &Engine, session: SessionId, through_seq: u64) -> SessionId {
     engine
         .fork_session(session, through_seq, origin(), None)
@@ -44,112 +86,18 @@ async fn fork(engine: &Engine, session: SessionId, through_seq: u64) -> SessionI
         .session_id
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_fork_forks_the_agents_session_at_its_fork_point_and_the_source_keeps_its_own() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_FORK", "1")], &[]).await;
-    let engine = acp.engine();
-    let parent = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, parent, "one", "say one").await;
-    turn(engine, parent, "two", "say two").await;
-    let parent_session = session_starts(engine, parent)[0].acp_session_id.clone();
-    // Forked after the first turn, while the agent's session holds both.
-    let child = fork(engine, parent, run_end_seq(engine, parent, 0)).await;
-    let detached = events(engine, child)
-        .into_iter()
-        .find_map(|event| match event.payload {
-            EventPayload::AcpSessionUpdated { update } => update.detached,
-            _ => None,
-        })
-        .expect("the fork leaves the source's session behind");
-    assert_eq!(detached.acp_session_id, parent_session);
-    assert_eq!(detached.reason, AcpDetachReason::Forked);
-
-    let outcome = turn(engine, child, "child-recall", "recall").await;
-    assert_eq!(final_text(&outcome), "remembers: say one");
-    let forks = requests(&acp, "session/fork");
-    assert_eq!(forks.len(), 1);
-    assert_eq!(forks[0]["sessionId"], parent_session.as_str());
-    assert_eq!(
-        forks[0]["_meta"]["jetbrains"]["air"]["fork"]["messageId"],
-        detached.message_id.clone().expect("the fork point")
-    );
-    let started = session_starts(engine, child);
-    let forked = started.last().expect("the fork's own session");
-    assert_eq!(forked.how, AcpSessionStart::Forked);
-    assert_eq!(forked.forked_from.as_deref(), Some(parent_session.as_str()));
-    assert_ne!(forked.acp_session_id, parent_session);
-
-    // The fork goes on in its own session; the source in its own.
-    let outcome = turn(engine, child, "child-again", "recall").await;
-    assert_eq!(final_text(&outcome), "remembers: say one, recall");
-    let outcome = turn(engine, parent, "parent-recall", "recall").await;
-    assert_eq!(final_text(&outcome), "remembers: say one, say two");
-    assert_eq!(session_starts(engine, parent).len(), 1);
-    assert!(requests(&acp, "session/delete").is_empty());
-    assert!(requests(&acp, "session/close").is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn without_session_fork_a_fork_starts_a_new_session_given_the_transcript() {
-    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";
-    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
-    let engine = acp.engine();
-    let parent = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, parent, "one", "say one").await;
-    turn(engine, parent, "two", "work").await;
-    let tip = engine.inner.store.get(parent).unwrap().meta.last_event_seq;
-    let child = fork(engine, parent, tip).await;
-
-    let outcome = turn(engine, child, "child", "echo").await;
-    let text = final_text(&outcome);
-    let started = session_starts(engine, child);
-    let own = started.last().expect("the fork's own session");
-    assert_eq!(own.how, AcpSessionStart::New);
-    assert_ne!(own.acp_session_id, started[0].acp_session_id);
-    // The first prompt: the memory, the body, the transcript, then the
-    // input.
-    let prompt = prompts(&acp).last().cloned().expect("the fork's prompt");
-    let [memory, body, transcript, input] = prompt.as_slice() else {
-        panic!("{prompt:?}");
-    };
-    assert!(memory.contains("# Memory"), "{memory}");
-    assert_eq!(body, "You review changes.\n");
-    assert_eq!(input, "echo");
-    assert!(
-        transcript.starts_with("<cookie_transcript>"),
-        "{transcript}"
-    );
-    for entry in [
-        "User: say one",
-        "Assistant: one",
-        "User: work",
-        "Assistant: Editing.",
-        "Tool `acp.edit` {\"path\":\"/work/notes.txt\"}: edited /work/notes.txt",
-        "Assistant: Done.",
-    ] {
-        assert!(transcript.contains(entry), "{entry} in {transcript}");
-    }
-    assert!(text.ends_with(" | echo"), "{text}");
-    assert!(
-        diagnostics(engine, child)
-            .iter()
-            .any(|message| message.contains("does not offer `session/fork`")),
-        "{:?}",
-        diagnostics(engine, child)
-    );
-    // The next prompt is the input alone; the source keeps its session.
-    let outcome = turn(engine, child, "child-again", "say more").await;
-    assert_eq!(final_text(&outcome), "more");
-    let outcome = turn(engine, parent, "parent-recall", "recall").await;
-    assert_eq!(final_text(&outcome), "remembers: say one, work");
-    assert_eq!(session_starts(engine, parent).len(), 1);
-}
-
 async fn revert(engine: &Engine, session: SessionId, through_seq: u64) {
     engine
         .revert_session(session, through_seq, origin(), None)
         .await
         .expect("reverted");
+}
+
+fn refusal(result: Result<impl std::fmt::Debug, EngineError>) -> String {
+    match result {
+        Err(EngineError::AcpUnsupported(reason)) => reason,
+        other => panic!("not refused: {other:?}"),
+    }
 }
 
 /// Waits for the agent to have been asked `method` `count` times.
@@ -167,22 +115,165 @@ async fn asked(acp: &AcpFixture, method: &str, count: usize) -> Vec<serde_json::
     .unwrap_or_else(|_| panic!("the agent was not asked {method}"))
 }
 
+/// A session of the agent with `turns` completed, the probe done.
+async fn session_with(engine: &Engine, turns: &[&str]) -> SessionId {
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for (index, text) in turns.iter().enumerate() {
+        turn(engine, session, &format!("turn-{index}"), text).await;
+    }
+    session
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_probe_finds_whether_the_agents_fork_takes_a_fork_point() {
+    // At a message: refused as invalid params, so nothing to clean up.
+    let acp = acp_fixture(AT_MESSAGE, &[]).await;
+    let session = session_with(acp.engine(), &["say one"]).await;
+    assert!(probed(acp.engine(), session).await);
+    let probes = requests(&acp, "session/fork");
+    assert_eq!(probes.len(), 1);
+    assert!(
+        fork_point_of(&probes[0])
+            .unwrap()
+            .starts_with("cookie-fork-probe-")
+    );
+    assert!(requests(&acp, "session/delete").is_empty());
+    // A later session of the process records it at once.
+    let other = session_with(acp.engine(), &["say two"]).await;
+    assert_eq!(
+        session_starts(acp.engine(), other)[0].fork_point,
+        Some(true)
+    );
+    assert_eq!(session_starts(acp.engine(), other)[0].fork, Some(true));
+    assert_eq!(
+        requests(&acp, "session/fork").len(),
+        1,
+        "asked once per process"
+    );
+
+    // Whole: the probe's fork succeeds and is deleted.
+    let acp = acp_fixture(WHOLE, &[]).await;
+    let session = session_with(acp.engine(), &["say one"]).await;
+    assert!(!probed(acp.engine(), session).await);
+    let deleted = asked(&acp, "session/delete", 1).await;
+    assert_ne!(
+        deleted[0]["sessionId"],
+        session_starts(acp.engine(), session)[0]
+            .acp_session_id
+            .as_str()
+    );
+
+    // No fork: nothing asked.
+    let acp = acp_fixture(NO_FORK, &[]).await;
+    let session = session_with(acp.engine(), &["say one"]).await;
+    assert_eq!(session_starts(acp.engine(), session)[0].fork, Some(false));
+    turn(acp.engine(), session, "again", "say again").await;
+    assert!(requests(&acp, "session/fork").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_forks_the_agents_session_at_its_fork_point_and_the_source_keeps_its_own() {
+    let acp = acp_fixture(AT_MESSAGE, &[]).await;
+    let engine = acp.engine();
+    let parent = session_with(engine, &["say one", "say two"]).await;
+    assert!(probed(engine, parent).await);
+    let parent_session = session_starts(engine, parent)[0].acp_session_id.clone();
+    // Forked after the first turn, while the agent's session holds both.
+    let child = fork(engine, parent, run_end_seq(engine, parent, 0)).await;
+    let detached = events(engine, child)
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.detached,
+            _ => None,
+        })
+        .expect("the fork leaves the source's session behind");
+    assert_eq!(detached.acp_session_id, parent_session);
+    assert_eq!(detached.reason, AcpDetachReason::Forked);
+
+    let outcome = turn(engine, child, "child-recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one");
+    let forks = forks(&acp);
+    assert_eq!(forks.len(), 1);
+    assert_eq!(forks[0]["sessionId"], parent_session.as_str());
+    assert_eq!(fork_point_of(&forks[0]), detached.message_id.as_deref());
+    let started = session_starts(engine, child);
+    let forked = started.last().expect("the fork's own session");
+    assert_eq!(forked.how, AcpSessionStart::Forked);
+    assert_eq!(forked.forked_from.as_deref(), Some(parent_session.as_str()));
+    assert_ne!(forked.acp_session_id, parent_session);
+
+    // The fork goes on in its own session; the source in its own.
+    let outcome = turn(engine, child, "child-again", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one, recall");
+    let outcome = turn(engine, parent, "parent-recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one, say two");
+    assert_eq!(session_starts(engine, parent).len(), 1);
+    assert!(requests(&acp, "session/delete").is_empty());
+    assert!(requests(&acp, "session/close").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_whole_fork_forks_only_at_the_end_of_the_agents_conversation() {
+    let acp = acp_fixture(WHOLE, &[]).await;
+    let engine = acp.engine();
+    let parent = session_with(engine, &["say one", "say two"]).await;
+    assert!(!probed(engine, parent).await);
+    let reason = refusal(
+        engine
+            .fork_session(parent, run_end_seq(engine, parent, 0), origin(), None)
+            .await,
+    );
+    assert_eq!(
+        reason,
+        "`fixture` on `local` can't fork its own conversation at an earlier point, so the \
+         session can only be forked at the end of the agent's conversation or before its \
+         first reply"
+    );
+    // At the end: the whole conversation.
+    let child = fork(engine, parent, tip(engine, parent)).await;
+    let outcome = turn(engine, child, "child-recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one, say two");
+    assert_eq!(
+        session_starts(engine, child).last().unwrap().how,
+        AcpSessionStart::Forked
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_session_fork_a_fork_after_the_agents_first_reply_is_refused() {
+    let acp = acp_fixture(NO_FORK, &[]).await;
+    let engine = acp.engine();
+    let parent = session_with(engine, &["say one", "say two"]).await;
+    let reason = refusal(
+        engine
+            .fork_session(parent, tip(engine, parent), origin(), None)
+            .await,
+    );
+    assert_eq!(
+        reason,
+        "`fixture` on `local` can't fork its own conversation, so the session can't be forked \
+         after the agent's first reply"
+    );
+    // Before its first reply: the fork starts fresh.
+    let first_input = events(engine, parent)
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+        .expect("the first input")
+        .seq;
+    let child = fork(engine, parent, first_input).await;
+    let outcome = turn(engine, child, "child-recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: ");
+    let started = session_starts(engine, child);
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].how, AcpSessionStart::New);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_revert_forks_the_agents_session_at_the_revert_point_and_deletes_the_old_one() {
-    let acp = acp_fixture(
-        &[("ACP_FIXTURE_FORK", "1"), ("ACP_FIXTURE_DELETE", "1")],
-        &[],
-    )
-    .await;
+    let acp = acp_fixture(AT_MESSAGE, &[]).await;
     let engine = acp.engine();
-    let session = engine.create_session(selection()).unwrap().session_id;
-    for (key, text) in [
-        ("one", "say one"),
-        ("two", "say two"),
-        ("three", "say three"),
-    ] {
-        turn(engine, session, key, text).await;
-    }
+    let session = session_with(engine, &["say one", "say two", "say three"]).await;
+    assert!(probed(engine, session).await);
     let old = session_starts(engine, session)[0].acp_session_id.clone();
     revert(engine, session, run_end_seq(engine, session, 1)).await;
     let detached = events(engine, session)
@@ -198,20 +289,17 @@ async fn a_revert_forks_the_agents_session_at_the_revert_point_and_deletes_the_o
     // The agent forgot the reverted turn.
     let outcome = turn(engine, session, "recall", "recall").await;
     assert_eq!(final_text(&outcome), "remembers: say one, say two");
-    let forks = requests(&acp, "session/fork");
+    let forks = forks(&acp);
     assert_eq!(forks.len(), 1);
     assert_eq!(forks[0]["sessionId"], old.as_str());
-    assert_eq!(
-        forks[0]["_meta"]["jetbrains"]["air"]["fork"]["messageId"],
-        detached.message_id.clone().expect("the fork point")
-    );
+    assert_eq!(fork_point_of(&forks[0]), detached.message_id.as_deref());
     let started = session_starts(engine, session);
     let forked = started.last().expect("the forked session");
     assert_eq!(forked.how, AcpSessionStart::Forked);
     assert_eq!(forked.forked_from.as_deref(), Some(old.as_str()));
     // The old session is closed and deleted, after the fork.
     let methods = acp.received_methods();
-    let fork_at = methods.iter().position(|method| method == "session/fork");
+    let fork_at = methods.iter().rposition(|method| method == "session/fork");
     let delete_at = methods.iter().position(|method| method == "session/delete");
     assert!(fork_at < delete_at, "{methods:?}");
     assert_eq!(
@@ -230,57 +318,75 @@ async fn a_revert_forks_the_agents_session_at_the_revert_point_and_deletes_the_o
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_session_fork_a_revert_starts_a_new_session_given_the_kept_transcript() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_DELETE", "1")], &[]).await;
-    let engine = acp.engine();
-    let session = engine.create_session(selection()).unwrap().session_id;
-    for (key, text) in [
-        ("one", "say one"),
-        ("two", "say two"),
-        ("three", "say three"),
+async fn a_revert_the_agent_cannot_fork_to_is_refused_and_changes_nothing() {
+    for (env, expected) in [
+        (
+            WHOLE,
+            "`fixture` on `local` can't rewind its own conversation",
+        ),
+        (
+            NO_FORK,
+            "`fixture` on `local` can't rewind its own conversation",
+        ),
     ] {
-        turn(engine, session, key, text).await;
+        let acp = acp_fixture(env, &[]).await;
+        let engine = acp.engine();
+        let session = session_with(engine, &["say one", "say two"]).await;
+        if env == WHOLE {
+            assert!(!probed(engine, session).await);
+        }
+        let before = tip(engine, session);
+        let reason = refusal(
+            engine
+                .revert_session(session, run_end_seq(engine, session, 0), origin(), None)
+                .await,
+        );
+        assert_eq!(
+            reason,
+            format!("{expected}, so the session can't be reverted past the agent's first reply")
+        );
+        assert_eq!(tip(engine, session), before);
+        // After the end of the agent's conversation nothing is cut.
+        revert(engine, session, tip(engine, session)).await;
     }
-    let old = session_starts(engine, session)[0].acp_session_id.clone();
-    revert(engine, session, run_end_seq(engine, session, 1)).await;
-
-    let outcome = turn(engine, session, "echo", "echo").await;
-    assert!(final_text(&outcome).ends_with(" | echo"));
-    let prompt = prompts(&acp).last().cloned().expect("the prompt");
-    let transcript = prompt
-        .iter()
-        .find(|block| block.starts_with("<cookie_transcript>"))
-        .unwrap_or_else(|| panic!("{prompt:?}"));
-    assert!(
-        transcript.contains("User: say two\n\nAssistant: two"),
-        "{transcript}"
-    );
-    assert!(!transcript.contains("three"), "{transcript}");
-    let started = session_starts(engine, session);
-    assert_eq!(started.last().unwrap().how, AcpSessionStart::New);
-    assert_ne!(started.last().unwrap().acp_session_id, old);
-    let deleted = asked(&acp, "session/delete", 1).await;
-    assert_eq!(deleted[0]["sessionId"], old.as_str());
-    assert!(
-        diagnostics(engine, session).iter().any(|message| message
-            .contains("cannot continue from the revert point (it does not offer `session/fork`)")),
-        "{:?}",
-        diagnostics(engine, session)
-    );
-    let outcome = turn(engine, session, "recall", "recall").await;
-    assert_eq!(final_text(&outcome), "remembers: echo");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_revert_before_the_agents_first_turn_deletes_its_session_and_starts_fresh() {
+async fn a_revert_before_the_agent_was_asked_is_refused_until_it_is() {
+    // The probe's answer takes a while.
     let acp = acp_fixture(
-        &[("ACP_FIXTURE_FORK", "1"), ("ACP_FIXTURE_DELETE", "1")],
+        &[
+            ("ACP_FIXTURE_FORK", "1"),
+            ("ACP_FIXTURE_DELETE", "1"),
+            ("ACP_FIXTURE_FORK_DELAY", "2"),
+        ],
         &[],
     )
     .await;
     let engine = acp.engine();
-    let session = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, session, "one", "say one").await;
+    let session = session_with(engine, &["say one", "say two"]).await;
+    let reason = refusal(
+        engine
+            .revert_session(session, run_end_seq(engine, session, 0), origin(), None)
+            .await,
+    );
+    assert_eq!(
+        reason,
+        "cookie has not yet checked whether `fixture` on `local` can rewind its own \
+         conversation (it checks after the agent's next reply), so the session can't be \
+         reverted past the agent's first reply yet"
+    );
+    assert!(probed(engine, session).await);
+    revert(engine, session, run_end_seq(engine, session, 0)).await;
+    let outcome = turn(engine, session, "recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revert_before_the_agents_first_reply_deletes_its_session_and_starts_fresh() {
+    let acp = acp_fixture(NO_FORK, &[]).await;
+    let engine = acp.engine();
+    let session = session_with(engine, &["say one"]).await;
     let old = session_starts(engine, session)[0].acp_session_id.clone();
     let first_input = events(engine, session)
         .iter()
@@ -297,23 +403,16 @@ async fn a_revert_before_the_agents_first_turn_deletes_its_session_and_starts_fr
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].how, AcpSessionStart::New);
     assert_ne!(started[0].acp_session_id, old);
-    assert!(requests(&acp, "session/fork").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn reverting_a_fork_into_its_sources_turns_leaves_the_sources_session_alone() {
-    let acp = acp_fixture(
-        &[("ACP_FIXTURE_FORK", "1"), ("ACP_FIXTURE_DELETE", "1")],
-        &[],
-    )
-    .await;
+    let acp = acp_fixture(AT_MESSAGE, &[]).await;
     let engine = acp.engine();
-    let parent = engine.create_session(selection()).unwrap().session_id;
-    turn(engine, parent, "one", "say one").await;
-    turn(engine, parent, "two", "say two").await;
+    let parent = session_with(engine, &["say one", "say two"]).await;
+    assert!(probed(engine, parent).await);
     let source = session_starts(engine, parent)[0].acp_session_id.clone();
-    let tip = engine.inner.store.get(parent).unwrap().meta.last_event_seq;
-    let child = fork(engine, parent, tip).await;
+    let child = fork(engine, parent, tip(engine, parent)).await;
     turn(engine, child, "three", "say three").await;
     let own = session_starts(engine, child)
         .last()
@@ -330,8 +429,7 @@ async fn reverting_a_fork_into_its_sources_turns_leaves_the_sources_session_alon
     assert_eq!(deleted[0]["sessionId"], own.as_str());
     let outcome = turn(engine, child, "recall", "recall").await;
     assert_eq!(final_text(&outcome), "remembers: say one");
-    let forks = requests(&acp, "session/fork");
-    assert_eq!(forks.last().unwrap()["sessionId"], source.as_str());
+    assert_eq!(forks(&acp).last().unwrap()["sessionId"], source.as_str());
     assert_eq!(requests(&acp, "session/delete").len(), 1);
     let outcome = turn(engine, parent, "parent", "recall").await;
     assert_eq!(final_text(&outcome), "remembers: say one, say two");

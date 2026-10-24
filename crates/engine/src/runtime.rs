@@ -281,6 +281,10 @@ pub enum EngineError {
     /// An ACP agent could not take a run, with the reason.
     #[error("{0}")]
     Acp(String),
+    /// A revert or a fork would cut into an ACP agent's conversation where
+    /// the agent cannot fork it, with the reason.
+    #[error("{0}")]
+    AcpUnsupported(String),
     #[error("tool prompt composition failed: {0}")]
     ToolPrompt(String),
     #[error("session actor for {0} is unavailable")]
