@@ -133,18 +133,23 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| &mut reads.runtimes);
         spawn_local(async move {
-            match client.list_runtimes().await {
+            let runtimes = client.list_runtimes().await;
+            let machines = client
+                .list_machines()
+                .await
+                .map_err(|error| crate::errors::describe_full(&error));
+            if !self.read_is_current(|reads| &mut reads.runtimes, read) {
+                return;
+            }
+            match runtimes {
                 Ok(listing) => self.runtimes.set(Some(listing)),
                 Err(error) => self.status.set(format!(
                     "runtimes unavailable: {}",
                     crate::errors::describe(&error)
                 )),
             }
-            let machines = client
-                .list_machines()
-                .await
-                .map_err(|error| crate::errors::describe_full(&error));
             self.machines.set(Some(machines));
         });
         // The MCP servers each runtime hosts, which its rows list.
@@ -386,6 +391,7 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| &mut reads.mcp);
         spawn_local(async move {
             let result = client
                 .list_mcp_servers()
@@ -396,7 +402,9 @@ impl Workspace {
                     servers
                 })
                 .map_err(|error| crate::errors::describe_full(&error));
-            self.mcp_servers.set(Some(result));
+            if self.read_is_current(|reads| &mut reads.mcp, read) {
+                self.mcp_servers.set(Some(result));
+            }
         });
     }
 
@@ -675,16 +683,24 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| &mut reads.config);
+        let status_read = self.begin_read(|reads| &mut reads.config_status);
         spawn_local(async move {
             let result = client
                 .get_config()
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
-            match &result {
-                Ok(config) => self.note_config_status(&config.status),
-                Err(error) => self
-                    .status
-                    .set(format!("configuration unavailable: {error}")),
+            if let Ok(config) = &result
+                && self.read_is_current(|reads| &mut reads.config_status, status_read)
+            {
+                self.note_config_status(&config.status);
+            }
+            if !self.read_is_current(|reads| &mut reads.config, read) {
+                return;
+            }
+            if let Err(error) = &result {
+                self.status
+                    .set(format!("configuration unavailable: {error}"));
             }
             self.config.set(Some(result));
         });
@@ -861,12 +877,15 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| &mut reads.memory);
         spawn_local(async move {
             let result = client
                 .list_memory(MemoryListParams::default())
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
-            self.memory.set(Some(result));
+            if self.read_is_current(|reads| &mut reads.memory, read) {
+                self.memory.set(Some(result));
+            }
         });
     }
 
@@ -1089,12 +1108,16 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| &mut reads.plugins);
         spawn_local(async move {
             let result = client
                 .list_plugins()
                 .await
                 .map(|listing| listing.plugins)
                 .map_err(|error| crate::errors::describe_full(&error));
+            if !self.read_is_current(|reads| &mut reads.plugins, read) {
+                return;
+            }
             if let Err(error) = &result {
                 self.status.set(format!("plugin refresh failed: {error}"));
             }

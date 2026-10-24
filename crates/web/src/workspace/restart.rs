@@ -21,9 +21,11 @@ impl Workspace {
             return;
         };
         let connection = self.connection.get_value();
+        let read = self.begin_read(|reads| &mut reads.config_status);
         spawn_local(async move {
             if let Ok(config) = client.get_config().await
                 && self.is_current(connection)
+                && self.read_is_current(|reads| &mut reads.config_status, read)
             {
                 self.config_status.set(Some(config.status));
             }

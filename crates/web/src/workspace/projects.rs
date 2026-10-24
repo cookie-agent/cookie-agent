@@ -125,8 +125,13 @@ impl Workspace {
         if !self.has_projects.get_untracked() {
             return;
         }
+        let read = self.begin_read(|reads| &mut reads.projects);
         spawn_local(async move {
-            match client.list_projects().await {
+            let result = client.list_projects().await;
+            if !self.read_is_current(|reads| &mut reads.projects, read) {
+                return;
+            }
+            match result {
                 Ok(result) => self.projects.set(result.projects),
                 Err(error) => self.status.set(format!(
                     "projects unavailable: {}",

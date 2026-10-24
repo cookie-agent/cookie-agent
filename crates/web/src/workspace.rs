@@ -45,6 +45,7 @@ mod oauth;
 mod onboarding;
 mod permissions;
 mod projects;
+mod reads;
 mod rename;
 mod restart;
 mod skills;
@@ -184,6 +185,9 @@ pub struct Workspace {
     pub tree_expanded: RwSignal<bool>,
     pub collapsed: RwSignal<HashSet<SessionId>>,
     tree_request: StoredValue<u64>,
+    /// The reads change notices start, so only the newest one's answer is
+    /// installed.
+    reads: StoredValue<reads::Reads>,
     pub user_menu: RwSignal<Option<UserMenu>>,
     pub goal_draft: RwSignal<String>,
     pub skills: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
@@ -398,6 +402,7 @@ impl Workspace {
             tree_expanded: RwSignal::new(false),
             collapsed: RwSignal::new(HashSet::new()),
             tree_request: StoredValue::new(0),
+            reads: StoredValue::new(reads::Reads::default()),
             user_menu: RwSignal::new(None),
             goal_draft: RwSignal::new(String::new()),
             skills: RwSignal::new(None),
@@ -912,8 +917,12 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        // Each rejected notification asks for one; the newest wins.
+        let read = self.begin_read(|reads| &mut reads.runtime);
         spawn_local(async move {
-            if let Ok(result) = client.runtime_snapshot().await {
+            if let Ok(result) = client.runtime_snapshot().await
+                && self.read_is_current(|reads| &mut reads.runtime, read)
+            {
                 self.runtime.update_value(|runtime| {
                     runtime.install_current(result.snapshot);
                 });
@@ -1926,14 +1935,21 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| reads.approvals.entry(root_session_id).or_default());
         spawn_local(async move {
-            match client
+            let result = client
                 .list_approvals(ApprovalListParams {
                     root_session_id,
                     status: Some(ApprovalStatus::Escalated),
                 })
-                .await
-            {
+                .await;
+            if !self.read_is_current(
+                |reads| reads.approvals.entry(root_session_id).or_default(),
+                read,
+            ) {
+                return;
+            }
+            match result {
                 Ok(result) => {
                     self.update_store(|store| {
                         store.apply_approval_list(&[root_session_id], result)

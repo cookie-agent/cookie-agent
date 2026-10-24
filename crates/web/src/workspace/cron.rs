@@ -37,12 +37,15 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| &mut reads.crons);
         spawn_local(async move {
             let result = client
                 .list_crons()
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
-            self.crons.set(Some(result));
+            if self.read_is_current(|reads| &mut reads.crons, read) {
+                self.crons.set(Some(result));
+            }
         });
     }
 

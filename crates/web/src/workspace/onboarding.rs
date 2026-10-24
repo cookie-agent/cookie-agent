@@ -66,8 +66,19 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| &mut reads.onboarding);
         spawn_local(async move {
-            match client.get_onboarding().await {
+            let answer = client.get_onboarding().await;
+            // An `onboarding.changed` since the read was asked for is newer
+            // than its answer: on connecting, the sheet opens by that.
+            let answer = if self.read_is_current(|reads| &mut reads.onboarding, read) {
+                answer
+            } else if let Some(status) = self.onboarding.status.get_untracked() {
+                Ok(status)
+            } else {
+                return;
+            };
+            match answer {
                 Ok(status) => {
                     let opens = on_connect
                         && opens_on_connect(&status, browser::load(NOT_NOW_KEY).is_some());
@@ -85,6 +96,7 @@ impl Workspace {
     /// `onboarding.changed`: the new answer. Finishing in another tab closes
     /// the sheet here.
     pub(super) fn apply_onboarding_change(self, status: OnboardingStatus) {
+        self.supersede_reads(|reads| &mut reads.onboarding);
         let closes = closes_on_change(
             &status,
             self.onboarding.running.get_untracked(),
