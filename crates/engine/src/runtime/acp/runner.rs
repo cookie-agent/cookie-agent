@@ -2016,6 +2016,10 @@ impl Engine {
             let _ = call.await;
         }
         let cancelled = turn.active.cancellation.is_cancelled();
+        let answered_usage = match &answer {
+            Some(Ok(response)) => response.usage.clone(),
+            _ => None,
+        };
         let end = match answer {
             Some(Ok(response)) => match response.stop_reason.as_str() {
                 "end_turn" => {
@@ -2072,6 +2076,9 @@ impl Engine {
                 )
                 .await?;
             }
+            // What the agent used before it stopped counts too.
+            let usage = usage_of(answered_usage.as_ref(), turn.usage_update.as_ref());
+            self.record_acp_usage(turn, usage).await?;
         }
         turn.end_open_calls(matches!(end, RoundEnd::Cancelled))
             .await?;

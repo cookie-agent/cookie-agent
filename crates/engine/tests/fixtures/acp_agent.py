@@ -9,7 +9,8 @@ Each prompt's last text block is a command:
                          as it does any prompt that is not a command
   work                   a thought, an edit tool call with a diff, a plan, usage
                          (the same usage_update twice)
-  stop <reason>          answers with stop reason <reason>
+  stop <reason>          answers with stop reason <reason> and usage (40 input
+                         and 2 output tokens)
   permission <kind> <r>  asks permission for a call of ACP kind <kind> on <r>
                          (a path, a command, or a URL) and says the outcome
   permission-tool <kind> <title>
@@ -19,7 +20,8 @@ Each prompt's last text block is a command:
                          asks permission as Codex does for an MCP tool: kind
                          other, titled "Tool: <server>/<tool>", raw input
                          {server, tool, arguments}
-  wait                   says "waiting" and waits for session/cancel
+  wait                   says "waiting", reports usage (555 tokens used), and
+                         waits for session/cancel
   ask-wait <kind> <r>    asks permission and waits for session/cancel
   exit                   exits with status 3 after writing to stderr
   error                  fails the prompt with an authentication error
@@ -415,7 +417,7 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         say(session_id, "steered: " + " | ".join(got) if got else "no steer")
     elif word == "stop":
         say(session_id, "stopping")
-        respond(request_id, {"stopReason": rest})
+        respond(request_id, {"stopReason": rest, "usage": {"inputTokens": 40, "outputTokens": 2, "totalTokens": 42}})
         return
     elif word == "permission":
         kind, _, resource = rest.partition(" ")
@@ -442,6 +444,8 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         say(session_id, f"permission: {outcome}")
     elif word in ("wait", "ask-wait"):
         say(session_id, "waiting")
+        if word == "wait":
+            update(session_id, {"sessionUpdate": "usage_update", "used": 555, "size": 200000})
         if word == "ask-wait":
             kind, _, resource = rest.partition(" ")
             outcome = permission(session_id, f"call-{session['turn']}", kind, resource)

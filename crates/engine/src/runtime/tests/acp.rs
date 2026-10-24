@@ -18,6 +18,7 @@ use cookie_agent_protocol::{
 use super::support::*;
 
 mod lifecycle;
+mod rounds;
 use crate::{Engine, EngineOptions};
 
 fn origin() -> EventOrigin {
