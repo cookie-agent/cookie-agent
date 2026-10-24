@@ -22,6 +22,10 @@
         "id": {
           "type": "string"
         },
+        "kind": {
+          "$ref": "#/$defs/AcpConfigOptionKind",
+          "description": "The option's control: a select (the default, left out) or a boolean\n(client protocol 1.23.0)."
+        },
         "name": {
           "type": "string"
         },
@@ -39,6 +43,22 @@
         "current_value"
       ],
       "type": "object"
+    },
+    "AcpConfigOptionKind": {
+      "description": "The control an [`AcpConfigOption`] is (client protocol 1.23.0). An\nunknown kind reads as a select, whose `values` a client lists.",
+      "oneOf": [
+        {
+          "const": "select",
+          "description": "One of `values`.",
+          "type": "string"
+        },
+        {
+          "const": "boolean",
+          "description": "On or off: `current_value` is `true` or `false`, and `values`\nlists both (`true`, named On, and `false`, named Off), so a\nclient that reads every option as a select can still set it.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     },
     "AcpConfigValue": {
       "description": "One value an [`AcpConfigOption`] can take.",

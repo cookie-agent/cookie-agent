@@ -11,6 +11,7 @@
       "type": "string"
     },
     "value": {
+      "description": "One of the option's `values`: `true` or `false` for a boolean\noption.",
       "type": "string"
     }
   },

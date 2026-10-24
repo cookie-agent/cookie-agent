@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.23.0
+
+- ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,
+  display round): `acp_session_updated` has the optional `context`
+  (`used`, optional `size`), the agent's context use from its latest
+  `usage_update`, which clients show as the session's context; an older
+  client shows no context for an ACP session, as before.
+- `AcpConfigOption` has the optional `kind` (`select`, left out, or
+  `boolean`). A boolean option's `current_value` is `true` or `false`, and
+  its `values` are `true` (On) and `false` (Off), so an older client shows
+  it as a two-value select that still sets it; `session.agent_option.set`
+  takes `"true"` or `"false"` for it.
+
 ## 1.22.0
 
 - Onboarding ([default models and onboarding spec](../specs/default-models-and-onboarding.md)):

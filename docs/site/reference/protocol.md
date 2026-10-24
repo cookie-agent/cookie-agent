@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.22.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.23.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.22.0",
+    "protocol_version": "1.23.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
