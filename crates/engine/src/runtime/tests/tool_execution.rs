@@ -110,6 +110,29 @@ async fn normalized_tool_call_name_is_refused_before_execution() {
         !executed.is_set(),
         "the real tool behind the normalized alias must never execute"
     );
+    // The hub its start declared ends with it, kept for a late reader like
+    // a hub of a call that ran.
+    let call = termination.tool_call_id;
+    assert!(
+        fixture
+            .engine
+            .inner
+            .output
+            .finalized_hubs
+            .lock()
+            .unwrap()
+            .hubs
+            .iter()
+            .any(|(kept, _)| *kept == call)
+    );
+    let (_, mut late) = fixture
+        .engine
+        .subscribe_tool_output(call, cookie_agent_protocol::OutputStream::Stdout)
+        .expect("the refused call's hub");
+    assert!(
+        late.recv().await.is_none(),
+        "a finalized hub has no live tail"
+    );
     fixture.engine.shutdown().await;
 }
 

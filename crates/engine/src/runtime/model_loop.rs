@@ -2679,6 +2679,20 @@ struct ToolOutputPublication {
 
 impl Drop for ToolOutputPublication {
     fn drop(&mut self) {
+        // A call refused before it ran never finalized the hub its start
+        // declared: it ends here, kept for a late reader like any other.
+        let hub = self
+            .engine
+            .inner
+            .output
+            .hubs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&self.call_id)
+            .cloned();
+        if hub.is_some_and(|hub| hub.finalize_once()) {
+            self.engine.retain_finalized_output_hub(self.call_id);
+        }
         if let Some(capture) = self
             .engine
             .inner

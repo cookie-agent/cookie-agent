@@ -4457,6 +4457,20 @@ impl OutputHub {
             .sum()
     }
 
+    /// [`Self::finalize`], answering whether this call finalized the hub
+    /// rather than an earlier one.
+    pub(crate) fn finalize_once(&self) -> bool {
+        let finalized = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .finalized;
+        !finalized && {
+            self.finalize();
+            true
+        }
+    }
+
     /// Prevents late producer clones from publishing after the owning call has
     /// been committed as complete and closes every live subscription.
     pub fn finalize(&self) {
