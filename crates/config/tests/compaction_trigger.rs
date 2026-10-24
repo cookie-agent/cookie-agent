@@ -388,6 +388,38 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
 }
 
 #[test]
+fn server_session_idle_eviction_is_a_duration() {
+    let temp = TempDir::new().unwrap();
+    let authored = temp.path().join("session-eviction-authored");
+    for (value, expected) in [
+        ("45m", std::time::Duration::from_secs(45 * 60)),
+        ("0s", std::time::Duration::ZERO),
+        ("2d", std::time::Duration::from_secs(2 * 86_400)),
+    ] {
+        write_config(
+            &authored,
+            &format!("[server]\nsession_idle_eviction_after = \"{value}\"\n"),
+        );
+        let loaded = load_from_user_root(Some(&authored)).unwrap();
+        assert_eq!(
+            loaded.runtime.server.session_idle_eviction_after, expected,
+            "{value}"
+        );
+    }
+
+    let invalid = temp.path().join("session-eviction-invalid");
+    for value in ["\"soon\"", "\"30\"", "\"-1m\"", "1800"] {
+        write_config(
+            &invalid,
+            &format!("[server]\nsession_idle_eviction_after = {value}\n"),
+        );
+        assert!(load_from_user_root(Some(&invalid)).is_err(), "{value}");
+    }
+    write_config(&invalid, "[server]\nidle_eviction_after = \"30m\"\n");
+    assert!(load_from_user_root(Some(&invalid)).is_err());
+}
+
+#[test]
 fn pricing_defaults_empty_and_rejects_invalid_rates() {
     let temp = TempDir::new().unwrap();
     let defaults = temp.path().join("pricing-defaults");

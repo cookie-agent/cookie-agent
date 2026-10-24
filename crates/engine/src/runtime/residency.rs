@@ -9,9 +9,6 @@ use super::helpers::root_id;
 use super::{Engine, EngineError, SessionCommand, delegation::DelegationState};
 
 const JANITOR_INTERVAL: Duration = Duration::from_secs(60);
-/// How long a root session tree sits unused before the janitor pages it out.
-/// Viewing it again, or any command, reloads it from disk.
-const ROOT_IDLE_EVICTION_AFTER: Duration = Duration::from_secs(30 * 60);
 
 impl Engine {
     pub(super) fn start_subagent_janitor(&self) {
@@ -37,7 +34,16 @@ impl Engine {
                 if let Err(error) = engine.evict_idle_subagents().await {
                     eprintln!("subagent session janitor failed: {error}");
                 }
-                if let Err(error) = engine.evict_idle_roots_with(ROOT_IDLE_EVICTION_AFTER).await {
+                // How long a root session tree sits unused before the janitor
+                // pages it out. Viewing it again, or any command, reloads it.
+                let idle_after = engine
+                    .inner
+                    .config
+                    .load()
+                    .runtime
+                    .server
+                    .session_idle_eviction_after;
+                if let Err(error) = engine.evict_idle_roots_with(idle_after).await {
                     eprintln!("root session janitor failed: {error}");
                 }
                 let sweeper = engine.clone();

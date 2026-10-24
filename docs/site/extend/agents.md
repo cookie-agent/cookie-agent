@@ -366,7 +366,8 @@ children. This is a soft trigger: running,
 queued, recently active, pending-input, pending-approval, and not-yet-notified
 children remain resident even above the configured count. Eligible children
 are selected oldest-idle first. A root session's whole tree pages out once
-nobody has used or watched it for 30 minutes. Waiting on a producer alone
+nobody has used or watched it for `server.session_idle_eviction_after`
+(30 minutes unless set). Waiting on a producer alone
 (a background call, a subagent, an external producer, or a goal) keeps no
 session in memory: when the producer sends, the session reloads and the send
 is accepted as if it had stayed. A scheduled wake or a message not yet

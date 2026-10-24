@@ -558,6 +558,14 @@ pub struct ServerConfig {
     /// or `wss://` URL ending in `/ws`. The daemon itself ignores it.
     #[serde(default)]
     pub url: Option<String>,
+    /// How long a root session's tree sits unused (no event, no live tail,
+    /// no pending work) before the daemon pages it out of memory. Using it
+    /// again reloads it from disk.
+    #[serde(
+        default = "default_session_idle_eviction_after",
+        deserialize_with = "deserialize_duration"
+    )]
+    pub session_idle_eviction_after: Duration,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -566,8 +574,12 @@ impl Default for ServerConfig {
             port: default_port(),
             token: None,
             url: None,
+            session_idle_eviction_after: default_session_idle_eviction_after(),
         }
     }
+}
+const fn default_session_idle_eviction_after() -> Duration {
+    Duration::from_secs(30 * 60)
 }
 
 impl ServerConfig {
@@ -609,6 +621,10 @@ impl std::fmt::Debug for ServerConfig {
             .field("port", &self.port)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("url", &self.url)
+            .field(
+                "session_idle_eviction_after",
+                &self.session_idle_eviction_after,
+            )
             .finish()
     }
 }
