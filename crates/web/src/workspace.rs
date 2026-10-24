@@ -119,6 +119,12 @@ pub struct Workspace {
     /// The shared reducer's projections; `revision` changes whenever it does.
     store: StoredValue<StateStore>,
     pub revision: RwSignal<u64>,
+    /// Store changes held back while a batch of deliveries applies, so the
+    /// batch bumps `revision` once.
+    deferred: StoredValue<Option<bool>>,
+    /// What the page shows of the viewed session besides its transcript,
+    /// read once a store change.
+    pub viewed: Memo<Viewed>,
     runtime: StoredValue<RuntimeState>,
     pub runtime_revision: RwSignal<u64>,
     /// Notified whenever the user sends a message (or steers or queues one):
@@ -311,17 +317,54 @@ impl Default for Workspace {
     }
 }
 
+/// What the page shows of the viewed session's projection besides its
+/// transcript. Its readers (the composer's buttons, the working spinner,
+/// the context size) hear of a store change only when one of these moved.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Viewed {
+    /// A run, or a call still running.
+    pub running: bool,
+    /// A run or a compaction to stop.
+    pub stoppable: bool,
+    pub context_tokens: Option<u64>,
+}
+
 impl Workspace {
     pub fn new() -> Self {
+        let store = StoredValue::new(StateStore::default());
+        let revision = RwSignal::new(0);
+        let selected = RwSignal::new(None::<SessionId>);
+        let viewed = Memo::new(move |_| {
+            let Some(session_id) = selected.get() else {
+                return Viewed::default();
+            };
+            revision.track();
+            store.with_value(|store: &StateStore| {
+                store
+                    .sessions
+                    .get(&session_id)
+                    .map(|state| Viewed {
+                        running: state.active_run.is_some()
+                            || state.tools.values().any(|tool| {
+                                tool.status == cookie_agent_client_state::ToolStatus::Running
+                            }),
+                        stoppable: state.active_run.is_some() || state.is_compacting(),
+                        context_tokens: state.context_tokens,
+                    })
+                    .unwrap_or_default()
+            })
+        });
         Self {
             client: StoredValue::new(None),
-            store: StoredValue::new(StateStore::default()),
-            revision: RwSignal::new(0),
+            store,
+            revision,
+            deferred: StoredValue::new(None),
+            viewed,
             runtime: StoredValue::new(RuntimeState::default()),
             runtime_revision: RwSignal::new(0),
             sent: Trigger::new(),
             sessions: RwSignal::new(Vec::new()),
-            selected: RwSignal::new(None),
+            selected,
             new_session: RwSignal::new(true),
             lists_attachments: RwSignal::new(false),
             selection: RwSignal::new(crate::cards::Selection::global_only()),
@@ -436,9 +479,26 @@ impl Workspace {
             .store
             .try_update_value(update)
             .expect("the store lives");
-        self.revision
-            .update(|revision| *revision = revision.wrapping_add(1));
+        let deferred = self
+            .deferred
+            .try_update_value(|deferred| deferred.as_mut().map(|changed| *changed = true))
+            .flatten();
+        if deferred.is_none() {
+            self.revision
+                .update(|revision| *revision = revision.wrapping_add(1));
+        }
         result
+    }
+
+    /// Applies a batch of deliveries (`apply`) with one store change for
+    /// the page to hear of, however many of them changed the store.
+    pub fn batch(self, apply: impl FnOnce()) {
+        self.deferred.set_value(Some(false));
+        apply();
+        if self.deferred.try_update_value(Option::take).flatten() == Some(true) {
+            self.revision
+                .update(|revision| *revision = revision.wrapping_add(1));
+        }
     }
 
     /// Reads the runtime snapshot; tracks `runtime_revision`.
@@ -1826,15 +1886,7 @@ impl Workspace {
     /// Whether the viewed session has a run or a compaction to stop, as
     /// the composer's Stop and Escape do.
     pub fn stoppable(self) -> bool {
-        let Some(session_id) = self.selected.get() else {
-            return false;
-        };
-        self.with_store(|store| {
-            store
-                .sessions
-                .get(&session_id)
-                .is_some_and(|state| state.active_run.is_some() || state.is_compacting())
-        })
+        self.viewed.with(|viewed| viewed.stoppable)
     }
 
     /// Whether the viewed session runs an ACP agent that cannot take a

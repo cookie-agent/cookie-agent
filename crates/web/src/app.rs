@@ -159,13 +159,30 @@ impl Connection {
         };
         spawn_local(async move {
             let reason = loop {
-                match deliveries.recv().await {
-                    Some(ClientDelivery::Disconnected { error }) => break error.to_string(),
-                    Some(delivery) if self.is_current(generation) => {
-                        self.workspace.handle(delivery);
+                let Some(first) = deliveries.recv().await else {
+                    break "the connection closed".to_owned();
+                };
+                // Everything already delivered applies as one batch: the
+                // page hears of the store once, not once a delivery.
+                let mut next = Some(first);
+                let mut ended = None;
+                self.workspace.batch(|| {
+                    while let Some(delivery) = next.take() {
+                        match delivery {
+                            ClientDelivery::Disconnected { error } => {
+                                ended = Some(error.to_string());
+                                return;
+                            }
+                            delivery if self.is_current(generation) => {
+                                self.workspace.handle(delivery);
+                            }
+                            _ => {}
+                        }
+                        next = deliveries.try_recv().ok();
                     }
-                    Some(_) => {}
-                    None => break "the connection closed".to_owned(),
+                });
+                if let Some(reason) = ended {
+                    break reason;
                 }
             };
             if self.is_current(generation) {

@@ -2200,17 +2200,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
 
 /// Whether the viewed session runs: a run, or a call still running.
 fn running(workspace: Workspace) -> bool {
-    workspace.selected.get().is_some_and(|session_id| {
-        workspace.with_store(|store| {
-            store.sessions.get(&session_id).is_some_and(|state| {
-                state.active_run.is_some()
-                    || state
-                        .tools
-                        .values()
-                        .any(|tool| tool.status == ToolStatus::Running)
-            })
-        })
-    })
+    workspace.viewed.with(|viewed| viewed.running)
 }
 
 fn approvals_label(count: usize) -> String {
@@ -2236,16 +2226,7 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 .with(|costs| costs.get(&session_id).copied())
         })
     };
-    let context = move || {
-        workspace.selected.get().and_then(|session_id| {
-            workspace.with_store(|store| {
-                store
-                    .sessions
-                    .get(&session_id)
-                    .and_then(|state| state.context_tokens)
-            })
-        })
-    };
+    let context = move || workspace.viewed.with(|viewed| viewed.context_tokens);
     let agent = move || {
         workspace
             .draft
@@ -2892,14 +2873,9 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
                 Err(error) => view! { <p class="text-sm">{error.clone()}</p> }.into_any(),
             };
             // The bottom bar of a phone has no room for the context size.
-            let context = workspace.selected.get_untracked().and_then(|session_id| {
-                workspace.with_store(|store| {
-                    store
-                        .sessions
-                        .get(&session_id)
-                        .and_then(|state| state.context_tokens)
-                })
-            });
+            let context = workspace
+                .viewed
+                .with_untracked(|viewed| viewed.context_tokens);
             view! {
                 {context.map(|tokens| view! {
                     <p class="flex items-center gap-2 text-sm" id="usage-context">
