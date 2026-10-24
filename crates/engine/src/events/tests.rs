@@ -4127,6 +4127,101 @@ fn a_rewrite_copies_every_line_it_read_as_it_was_read() {
     assert_eq!(reopened.physical_tip_seq(), 7);
 }
 
+/// A read keeps in memory only the lines no record reproduces; a rewrite
+/// reads the others from the file again, and writes a record as it
+/// serializes once the file no longer holds its line. A log written whole
+/// reads its lines from its own file from then on.
+#[test]
+fn a_log_keeps_only_unreproducible_lines_and_reads_the_rest_again() {
+    let (mut records, mut start, termination) = tool_call_records();
+    let session = records[0].session_id;
+    if let EventPayload::ToolCallStarted { start } = &mut start.payload {
+        start.owner.content_index = 7;
+    }
+    records.push(start);
+    records.push(termination);
+    let mut values = records
+        .iter()
+        .map(|record| serde_json::to_value(record).expect("record"))
+        .collect::<Vec<_>>();
+    values[3]["payload"]["turn"]["usage"]["input_tokens"] = serde_json::json!("many");
+    values[5]["payload"]["error"]["future"] = serde_json::json!({"kept": true});
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(&path, &values);
+    let source = EventLog::open(path.clone(), session).expect("open");
+    // The degraded turn and the quarantined start: no record reproduces them.
+    assert_eq!(source.kept_raw_seqs_for_test(), vec![4, 5]);
+
+    let unknown_members = |log: &EventLog| {
+        let mut found = Vec::new();
+        log.visit_json(.., |value| {
+            if value["payload"]["error"].get("future").is_some() {
+                found.push(value["seq"].as_u64().unwrap());
+            }
+        })
+        .expect("visit");
+        found
+    };
+    assert_eq!(unknown_members(&source), vec![6]);
+
+    let authority = WriteAuthority::new();
+    let fork = |id: u128| {
+        let fork_id = SessionId(Uuid::from_u128(id));
+        let fork_path = directory.path().join(format!("fork-{id}.jsonl"));
+        let fork = EventLog::fork_buffered(
+            fork_path.clone(),
+            fork_id,
+            &source,
+            6,
+            authority.capability(),
+        )
+        .expect("fork");
+        let layout = fork.write_whole(&fork_path).expect("write the fork");
+        fork.mark_written(layout);
+        let written = fs::read_to_string(&fork_path)
+            .expect("read the fork")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("line"))
+            .collect::<Vec<_>>();
+        (fork_id, fork, written)
+    };
+    let (_, whole, _) = fork(4343);
+    assert_eq!(unknown_members(&whole), vec![6]);
+
+    // The source's file changes: a line no longer where it was read is
+    // written from its record, without the member this build does not know.
+    let mut changed = fs::read(&path).expect("read the source");
+    changed.insert(0, b'\n');
+    fs::write(&path, &changed).expect("move the source's lines");
+    assert!(unknown_members(&source).is_empty());
+    let (fork_id, _, written) = fork(4344);
+    assert_eq!(written.len(), 6);
+    for (line, original) in written.iter().zip(&values) {
+        let mut expected = original.clone();
+        expected["session_id"] = serde_json::json!(fork_id);
+        if line["seq"] == 6 {
+            expected["payload"]["error"]
+                .as_object_mut()
+                .unwrap()
+                .remove("future");
+        }
+        if matches!(line["seq"].as_u64(), Some(4 | 5)) {
+            assert_eq!(line, &expected);
+        } else {
+            let decoded = |value: &Value| {
+                StoredEvent::decode_strict(serde_json::to_string(value).unwrap().as_bytes())
+                    .expect("a record")
+            };
+            assert_eq!(decoded(line), decoded(&expected));
+        }
+    }
+    // Written whole, a log reads its lines from its own file: the first
+    // fork still sees the member.
+    fs::write(&path, b"").expect("empty the source");
+    assert_eq!(unknown_members(&whole), vec![6]);
+}
+
 /// Adds a member no build knows to `value` and to every object inside it,
 /// except inside opaque values and maps (`free_form`), whose members are
 /// data.

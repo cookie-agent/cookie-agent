@@ -258,38 +258,105 @@ impl LineIndex {
     }
 }
 
-/// The lines a log was read from, as the bytes that were read: a rewrite of
-/// the log (a fork) copies them, so what a newer build wrote survives it,
-/// whether this build skipped the line or read it without some member, and
-/// artifact liveness sees every member of every record, known or not.
-/// The buffer is the one the file was read into, shared and never copied.
+/// The lines a log was read from: a rewrite of the log (a fork) copies them,
+/// so what a newer build wrote survives it, whether this build skipped the
+/// line or read it without some member, and artifact liveness sees every
+/// member of every record, known or not.
+///
+/// A line read into its record stays in the file only, which those rare
+/// readers read again ([`Self::read`]); a line no record reproduces (one this
+/// build skipped, quarantined, or repaired, or one of a log converted in
+/// memory) is kept here.
 #[derive(Clone, Default)]
 pub(crate) struct RawLines {
-    buffer: Arc<Vec<u8>>,
+    /// The file the lines left in a file were read from.
+    file: Option<Arc<Path>>,
     /// Every sequenced line read, ascending by sequence.
     lines: Vec<RawLine>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct RawLine {
     seq: u64,
-    start: usize,
-    end: usize,
+    bytes: RawBytes,
+}
+
+#[derive(Clone, Debug)]
+enum RawBytes {
+    /// A line read into the record of its sequence, at `start..end` of the
+    /// file, newline excluded.
+    InFile { start: u64, end: u64 },
+    /// A line no record reproduces.
+    Kept(Arc<[u8]>),
 }
 
 impl std::fmt::Debug for RawLines {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kept = self
+            .lines
+            .iter()
+            .filter(|line| matches!(line.bytes, RawBytes::Kept(_)))
+            .count();
         formatter
             .debug_struct("RawLines")
-            .field("bytes", &self.buffer.len())
+            .field("file", &self.file)
             .field("lines", &self.lines.len())
+            .field("kept", &kept)
             .finish()
     }
 }
 
+/// The lines a load read, with the buffer they were read into, until the
+/// log's records are validated and [`RawLines::from_loaded`] keeps what it
+/// has to.
+struct LoadedRaw {
+    buffer: Vec<u8>,
+    lines: Vec<LoadedLine>,
+    /// The buffer is not the file's bytes: an older history format was
+    /// converted in memory.
+    converted: bool,
+}
+
+struct LoadedLine {
+    seq: u64,
+    start: usize,
+    end: usize,
+    /// The line decoded into its record as it is, with no repair.
+    strict: bool,
+}
+
 impl RawLines {
-    fn bytes(&self, line: &RawLine) -> &[u8] {
-        &self.buffer[line.start..line.end]
+    /// The lines of a load from `path`: a line that decoded as it is into a
+    /// record the validation accepted stays in the file, every other line is
+    /// kept.
+    fn from_loaded(loaded: LoadedRaw, records: &[Arc<StoredEvent>], path: &Path) -> Self {
+        let has_record = |seq: u64| {
+            records
+                .binary_search_by_key(&seq, |record| record.seq)
+                .is_ok()
+        };
+        let lines = loaded
+            .lines
+            .into_iter()
+            .map(|line| RawLine {
+                seq: line.seq,
+                bytes: if line.strict && !loaded.converted && has_record(line.seq) {
+                    RawBytes::InFile {
+                        start: line.start as u64,
+                        end: line.end as u64,
+                    }
+                } else {
+                    RawBytes::Kept(Arc::from(&loaded.buffer[line.start..line.end]))
+                },
+            })
+            .collect::<Vec<_>>();
+        let in_file = lines
+            .iter()
+            .any(|line| matches!(line.bytes, RawBytes::InFile { .. }));
+        Self {
+            file: in_file.then(|| Arc::from(path)),
+            lines,
+        }
     }
 
     fn get(&self, seq: u64) -> Option<&RawLine> {
@@ -299,11 +366,11 @@ impl RawLines {
             .map(|index| &self.lines[index])
     }
 
-    /// The lines through `through_seq`, sharing the buffer.
+    /// The lines through `through_seq`.
     fn through(&self, through_seq: u64) -> Self {
         let kept = self.lines.partition_point(|line| line.seq <= through_seq);
         Self {
-            buffer: Arc::clone(&self.buffer),
+            file: self.file.clone(),
             lines: self.lines[..kept].to_vec(),
         }
     }
@@ -318,6 +385,114 @@ impl RawLines {
         if !seqs.is_empty() {
             self.lines
                 .retain(|line| seqs.binary_search(&line.seq).is_err());
+        }
+    }
+
+    /// Points the lines left in a file at `file`, the log written whole
+    /// with the layout `layout`, which holds a line for every one of them.
+    fn rebase(&mut self, file: &Path, layout: &LineIndex) {
+        let mut in_file = false;
+        for line in &mut self.lines {
+            let RawBytes::InFile { start, end } = &mut line.bytes else {
+                continue;
+            };
+            let Ok(index) = layout
+                .starts
+                .binary_search_by_key(&line.seq, |(seq, _)| *seq)
+            else {
+                continue;
+            };
+            let next = layout
+                .starts
+                .get(index + 1)
+                .map_or(layout.len, |(_, start)| *start);
+            *start = layout.starts[index].1;
+            *end = next.saturating_sub(1);
+            in_file = true;
+        }
+        self.file = in_file.then(|| Arc::from(file));
+    }
+
+    /// The lines with a sequence in `seqs`, with the stretch of the file that
+    /// holds those of them left there. A file that cannot be read leaves
+    /// them without bytes ([`ReadRawLines::bytes`]).
+    fn read(&self, seqs: &impl std::ops::RangeBounds<u64>) -> ReadRawLines<'_> {
+        let (from, to) = self
+            .lines
+            .iter()
+            .filter(|line| seqs.contains(&line.seq))
+            .filter_map(|line| match line.bytes {
+                RawBytes::InFile { start, end } => Some((start, end)),
+                RawBytes::Kept(_) => None,
+            })
+            .fold((u64::MAX, 0), |(from, to), (start, end)| {
+                (from.min(start), to.max(end))
+            });
+        let window = self
+            .file
+            .as_deref()
+            .filter(|_| from <= to)
+            .and_then(|file| FileWindow::read(file, from.saturating_sub(1), to + 1).ok());
+        ReadRawLines { raw: self, window }
+    }
+}
+
+/// A stretch of a file, from `offset`.
+struct FileWindow {
+    offset: u64,
+    bytes: Vec<u8>,
+}
+
+impl FileWindow {
+    /// Bytes `from..to` of `file`, or fewer when it is shorter.
+    fn read(file: &Path, from: u64, to: u64) -> io::Result<Self> {
+        use std::io::{Read as _, Seek as _};
+        let mut opened = fs::File::open(file)?;
+        opened.seek(io::SeekFrom::Start(from))?;
+        let mut bytes = Vec::new();
+        opened.take(to - from).read_to_end(&mut bytes)?;
+        Ok(Self {
+            offset: from,
+            bytes,
+        })
+    }
+
+    /// The line at `start..end`, when the file still has a whole line there.
+    fn line(&self, start: u64, end: u64) -> Option<&[u8]> {
+        let at = |offset: u64| {
+            offset
+                .checked_sub(self.offset)
+                .and_then(|index| usize::try_from(index).ok())
+        };
+        let (first, last) = (at(start)?, at(end)?);
+        let line = self.bytes.get(first..last)?;
+        let opens = start == 0
+            || first.checked_sub(1).and_then(|index| self.bytes.get(index)) == Some(&b'\n');
+        (opens && self.bytes.get(last) == Some(&b'\n')).then_some(line)
+    }
+}
+
+/// [`RawLines`] in a range of sequences, with the file read for them.
+struct ReadRawLines<'a> {
+    raw: &'a RawLines,
+    window: Option<FileWindow>,
+}
+
+impl ReadRawLines<'_> {
+    /// The bytes of `line`: those kept, or those the file holds, when they
+    /// still decode into `record`, the line's record (a fork's under another
+    /// session ID). `None` when the file no longer holds the line, so the
+    /// record is written as it serializes.
+    fn bytes<'b>(&'b self, line: &'b RawLine, record: Option<&StoredEvent>) -> Option<&'b [u8]> {
+        match &line.bytes {
+            RawBytes::Kept(bytes) => Some(bytes),
+            RawBytes::InFile { start, end } => {
+                let bytes = self.window.as_ref()?.line(*start, *end)?;
+                let record = record?;
+                let mut read = StoredEvent::decode_strict(bytes)?;
+                read.session_id = record.session_id;
+                (read == *record).then_some(bytes)
+            }
         }
     }
 }
@@ -679,7 +854,9 @@ impl EventLog {
         let mut taint = loaded.validation_taint;
         let (records, validation) =
             validate_loaded(&path, session_id, records, &mut taint, &mut diagnostics)?;
-        let raw = loaded.raw;
+        // The read's buffer goes here: only the lines no record reproduces
+        // stay in memory.
+        let raw = RawLines::from_loaded(loaded.raw, &records, &path);
         Ok(Arc::new(Self {
             path,
             session_id,
@@ -992,7 +1169,9 @@ impl EventLog {
             (storage.snapshot(), Arc::clone(&storage.raw))
         };
         crate::blocking::off_worker(|| {
-            write_event_jsonl_in_place(path, self.session_id, &events, &raw)
+            cookie_agent_protocol::read_stored_history(|| {
+                write_event_jsonl_in_place(path, self.session_id, &events, &raw.read(&..))
+            })
         })
     }
 
@@ -1013,13 +1192,32 @@ impl EventLog {
             path: self.path.clone(),
             source,
         };
-        for line in raw.lines.iter().filter(|line| seqs.contains(&line.seq)) {
-            visit(&serde_json::from_slice::<Value>(raw.bytes(line)).map_err(json_error)?);
-        }
-        for event in events
-            .iter()
-            .filter(|event| seqs.contains(&event.seq) && raw.get(event.seq).is_none())
-        {
+        let record = |seq: u64| {
+            events
+                .binary_search_by_key(&seq, |event| event.seq)
+                .ok()
+                .map(|index| events[index].as_ref())
+        };
+        let read = crate::blocking::off_worker(|| {
+            cookie_agent_protocol::read_stored_history(|| {
+                let read = raw.read(&seqs);
+                let mut unread = HashSet::new();
+                for line in raw.lines.iter().filter(|line| seqs.contains(&line.seq)) {
+                    match read.bytes(line, record(line.seq)) {
+                        Some(bytes) => visit(&serde_json::from_slice::<Value>(bytes)?),
+                        None => {
+                            unread.insert(line.seq);
+                        }
+                    }
+                }
+                Ok::<_, serde_json::Error>(unread)
+            })
+        });
+        let unread = read.map_err(json_error)?;
+        for event in events.iter().filter(|event| {
+            seqs.contains(&event.seq)
+                && (raw.get(event.seq).is_none() || unread.contains(&event.seq))
+        }) {
             visit(&serde_json::to_value(event.as_ref()).map_err(json_error)?);
         }
         Ok(())
@@ -1247,8 +1445,23 @@ impl EventLog {
             .append
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.storage().lines = Some(lines);
+        let mut storage = self.storage();
+        Arc::make_mut(&mut storage.raw).rebase(&self.path, &lines);
+        storage.lines = Some(lines);
+        drop(storage);
         self.mark_persisted();
+    }
+
+    /// Test-only: the sequences of the lines the log keeps in memory.
+    #[cfg(test)]
+    pub(crate) fn kept_raw_seqs_for_test(&self) -> Vec<u64> {
+        self.storage()
+            .raw
+            .lines
+            .iter()
+            .filter(|line| matches!(line.bytes, RawBytes::Kept(_)))
+            .map(|line| line.seq)
+            .collect()
     }
 
     /// Closes the append handle; the next append reopens it.
@@ -3165,7 +3378,7 @@ struct LoadedEvents {
     records: Vec<StoredEvent>,
     /// Why the log is render-only, if it is.
     render_only: Option<RenderOnly>,
-    raw: RawLines,
+    raw: LoadedRaw,
     lines: LineIndex,
     /// The file ended in a partial record, cut or ignored per [`TornTail`].
     torn_tail: bool,
@@ -3299,12 +3512,13 @@ fn load_event_jsonl_in_place(
         len: bytes.len() as u64,
     };
     let line_start = |line: &[u8]| (line.as_ptr() as usize - bytes.as_ptr() as usize) as u64;
-    let raw_line = |seq: u64, line: &[u8]| {
+    let raw_line = |seq: u64, line: &[u8], strict: bool| {
         let start = line.as_ptr() as usize - bytes.as_ptr() as usize;
-        RawLine {
+        LoadedLine {
             seq,
             start,
             end: start + line.len(),
+            strict,
         }
     };
     let mut raw = Vec::new();
@@ -3332,7 +3546,7 @@ fn load_event_jsonl_in_place(
                 break;
             }
             lines.starts.push((event.seq, line_start(line)));
-            raw.push(raw_line(event.seq, line));
+            raw.push(raw_line(event.seq, line, true));
             records.push(event);
             continue;
         }
@@ -3390,7 +3604,7 @@ fn load_event_jsonl_in_place(
                 break;
             }
             lines.starts.push((seq, line_start(line)));
-            raw.push(raw_line(seq, line));
+            raw.push(raw_line(seq, line, false));
         }
         // Envelope members this build does not know are ignored, on the
         // first line too: they carry what a newer build added.
@@ -3541,9 +3755,10 @@ fn load_event_jsonl_in_place(
     Ok(LoadedEvents {
         records,
         render_only,
-        raw: RawLines {
-            buffer: Arc::new(bytes),
+        raw: LoadedRaw {
+            buffer: bytes,
             lines: raw,
+            converted,
         },
         lines,
         torn_tail: torn,
@@ -3921,7 +4136,7 @@ fn write_event_jsonl_in_place(
     path: &Path,
     session_id: SessionId,
     events: &[Arc<StoredEvent>],
-    raw: &RawLines,
+    raw: &ReadRawLines<'_>,
 ) -> Result<LineIndex, EventLogError> {
     let io_error = |source| EventLogError::Io {
         path: path.to_owned(),
@@ -3941,7 +4156,7 @@ fn write_event_jsonl_in_place(
     let mut writer = io::BufWriter::new(options.open(path).map_err(io_error)?);
     let mut lines = LineIndex::default();
     let mut record = Vec::new();
-    let mut copied = raw.lines.iter().peekable();
+    let mut copied = raw.raw.lines.iter().peekable();
     let mut events = events.iter().peekable();
     loop {
         let next_copied = copied.peek().map(|line| line.seq);
@@ -3952,11 +4167,18 @@ fn write_event_jsonl_in_place(
             (Some(seq), None) | (None, Some(seq)) => seq,
         };
         record.clear();
-        if next_copied == Some(seq) {
-            let line = copied.next().expect("peeked line");
-            copy_raw_line(raw.bytes(line), session_id, &mut record).map_err(json_error)?;
-            // The record read from this line, if any, is written as read.
+        let line = copied.next_if(|line| line.seq == seq);
+        // The record read from this line, if any, is written as read.
+        let read = line.and_then(|line| {
+            let event = events.peek().filter(|event| event.seq == seq);
+            raw.bytes(line, event.map(AsRef::as_ref))
+        });
+        if let Some(bytes) = read {
+            copy_raw_line(bytes, session_id, &mut record).map_err(json_error)?;
             events.next_if(|event| event.seq == seq);
+        } else if line.is_some() && events.peek().is_none_or(|event| event.seq != seq) {
+            // A line with neither its bytes nor a record: nothing to write.
+            continue;
         } else {
             let event = events.next().expect("peeked event");
             cookie_agent_protocol::write_stored_history(|| {
