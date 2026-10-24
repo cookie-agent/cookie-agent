@@ -291,3 +291,46 @@ async fn a_runtime_notification_during_a_resync_resyncs_again() {
     })
     .await;
 }
+
+/// `onboarding.changed` while `onboarding.get` is on its way: the answer
+/// may have been read before the change, so it does not replace it.
+#[tokio::test]
+async fn an_onboarding_answer_older_than_its_change_is_dropped() {
+    use crate::ui::app::onboarding::sample_status;
+    use cookie_agent_protocol::OnboardingRequirement;
+
+    let (mut app, recorded, incoming) = held_app().await;
+    app.poll_onboarding();
+    let asked = wait_for_recorded_request(&recorded, "onboarding.get", 1).await;
+    // Another client finishes setting up the daemon.
+    app.handle_delivery(ClientDelivery::OnboardingChanged(sample_status(&[])))
+        .await;
+    // The answer, read before that, says a model is missing.
+    answer(
+        &incoming,
+        asked,
+        sample_status(&[OnboardingRequirement::DefaultModel]),
+    );
+    let update = tokio::time::timeout(std::time::Duration::from_secs(5), app.rpc_updates_rx.recv())
+        .await
+        .expect("rpc update timeout")
+        .expect("rpc update");
+    app.handle_rpc_update(update);
+    assert!(
+        app.onboarding
+            .status
+            .as_ref()
+            .is_some_and(|status| status.ready)
+    );
+    assert!(!app.onboarding_notice_visible());
+
+    // A read asked after the change is installed.
+    app.poll_onboarding();
+    let asked = wait_for_recorded_request(&recorded, "onboarding.get", 2).await;
+    answer(
+        &incoming,
+        asked,
+        sample_status(&[OnboardingRequirement::SmallModel]),
+    );
+    updates_until(&mut app, |app| app.onboarding_notice_visible()).await;
+}

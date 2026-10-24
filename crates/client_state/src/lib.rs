@@ -27,6 +27,7 @@ pub mod plugins;
 pub mod projects;
 pub mod providers;
 mod reduce;
+pub mod refresh;
 pub mod restart;
 pub mod rows;
 mod runtime;

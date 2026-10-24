@@ -12,6 +12,7 @@ use cookie_agent_client_state::onboarding::{
     self as rules, OnboardingStep, archive_source, default_model_variant, finish_refusal,
     first_step, kit_file_status, model_input, model_label, run_summary, small_model_variant,
 };
+use cookie_agent_client_state::refresh::{Latest, Ticket};
 use cookie_agent_protocol::{
     AgentId, ModelKey, OnboardingFileAction, OnboardingKitSource, OnboardingPreviewResult,
     OnboardingRequirement, OnboardingRunParams, OnboardingRunResult, OnboardingStatus, VariantId,
@@ -121,6 +122,9 @@ pub(in crate::ui) struct OnboardingState {
     /// `onboarding.get` or the last `onboarding.changed`; `None` before the
     /// daemon answers, and from a daemon without onboarding.
     pub(in crate::ui) status: Option<OnboardingStatus>,
+    /// The `onboarding.get` reads: an answer older than another read, or
+    /// than an `onboarding.changed`, is not installed.
+    status_reads: Latest,
     /// Where "Not now" is remembered; `None` keeps it in memory only.
     pub(in crate::ui) state_file: Option<PathBuf>,
     /// What the daemon missed when "Not now" was chosen.
@@ -205,13 +209,27 @@ impl App {
 
     /// Asks the daemon whether it is set up.
     pub(in crate::ui) fn poll_onboarding(&mut self) {
+        let read = self.onboarding.status_reads.begin();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             // A daemon without onboarding leaves the status unknown.
             let status = client.get_onboarding().await.ok();
-            let _ = updates.send(RpcUpdate::OnboardingStatus { status });
+            let _ = updates.send(RpcUpdate::OnboardingStatus { read, status });
         });
+    }
+
+    /// `onboarding.get`'s answer to `read`, unless a later read or an
+    /// `onboarding.changed` superseded it: the daemon answers requests
+    /// concurrently, and the answer may have been read before the change.
+    pub(in crate::ui) fn install_onboarding_read(
+        &mut self,
+        read: Ticket,
+        status: Option<OnboardingStatus>,
+    ) {
+        if self.onboarding.status_reads.is_current(read) {
+            self.install_onboarding_status(status);
+        }
     }
 
     /// The daemon's answer, from `onboarding.get` or `onboarding.changed`.
@@ -221,12 +239,20 @@ impl App {
         }
     }
 
+    /// `onboarding.changed`: newer than any `onboarding.get` on its way.
+    pub(in crate::ui) fn note_onboarding_changed(&mut self, status: OnboardingStatus) {
+        self.onboarding.status_reads.supersede();
+        self.install_onboarding_status(Some(status));
+    }
+
     pub(super) fn open_onboarding_panel(&mut self) {
         let status = self.onboarding.status.clone();
+        let status_reads = self.onboarding.status_reads;
         let state_file = self.onboarding.state_file.take();
         let not_now = self.onboarding.not_now.take();
         self.onboarding = OnboardingState {
             status,
+            status_reads,
             state_file,
             not_now,
             install_kit: true,

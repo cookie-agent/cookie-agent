@@ -676,7 +676,9 @@ impl App {
             }
             RpcUpdate::PluginsRefreshed { result } => self.install_plugins(result),
             RpcUpdate::ConfigLoaded { result } => self.install_config(result),
-            RpcUpdate::OnboardingStatus { status } => self.install_onboarding_status(status),
+            RpcUpdate::OnboardingStatus { read, status } => {
+                self.install_onboarding_read(read, status)
+            }
             RpcUpdate::OnboardingPreview { result } => self.install_onboarding_preview(result),
             RpcUpdate::OnboardingRun { result } => self.install_onboarding_run(result),
             RpcUpdate::ConfigApplied {
@@ -1084,7 +1086,7 @@ impl App {
             self.poll_crons();
         }
         if let ClientDelivery::OnboardingChanged(status) = &delivery {
-            self.install_onboarding_status(Some(status.clone()));
+            self.note_onboarding_changed(status.clone());
         }
         if matches!(delivery, ClientDelivery::PluginsChanged(_)) {
             self.poll_plugins();

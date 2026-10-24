@@ -1182,6 +1182,7 @@ pub(in crate::ui) enum RpcUpdate {
     },
     /// `onboarding.get` answered; `None` from a daemon without onboarding.
     OnboardingStatus {
+        read: cookie_agent_client_state::refresh::Ticket,
         status: Option<cookie_agent_protocol::OnboardingStatus>,
     },
     OnboardingPreview {
