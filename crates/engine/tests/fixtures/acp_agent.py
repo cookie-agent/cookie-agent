@@ -73,6 +73,8 @@ Environment:
   ACP_FIXTURE_FORK_WHOLE "1" with ACP_FIXTURE_FORK: session/fork ignores the
                          fork point and copies the whole history
   ACP_FIXTURE_FORK_DELAY seconds session/fork takes to answer
+  ACP_FIXTURE_FORK_FAIL  "1": session/fork fails, except cookie's probe (whose
+                         fork point is `cookie-fork-probe-...`)
   ACP_FIXTURE_DELETE     "1": offers session/delete
   ACP_FIXTURE_NO_COMPACT "1": announces no `compact` command
   ACP_FIXTURE_STEERING   "1": advertises the steering extension
@@ -513,6 +515,9 @@ def fork(request_id, params):
         return
     history = list(source.get("history", []))
     point = (((params.get("_meta") or {}).get("jetbrains") or {}).get("air") or {}).get("fork")
+    if env("ACP_FIXTURE_FORK_FAIL") and not str((point or {}).get("messageId", "")).startswith("cookie-fork-probe-"):
+        fail(request_id, -32603, "Internal error: the fork failed")
+        return
     if point and point.get("version") == 1 and not env("ACP_FIXTURE_FORK_WHOLE"):
         found = [index for index, entry in enumerate(history) if entry.get("messageId") == point.get("messageId")]
         if not found:

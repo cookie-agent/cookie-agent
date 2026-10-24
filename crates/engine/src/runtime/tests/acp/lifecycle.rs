@@ -240,6 +240,65 @@ async fn a_whole_fork_forks_only_at_the_end_of_the_agents_conversation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_whole_fork_is_taken_when_the_session_forks_not_at_its_first_turn() {
+    let acp = acp_fixture(WHOLE, &[]).await;
+    let engine = acp.engine();
+    let parent = session_with(engine, &["say one", "say two"]).await;
+    assert!(!probed(engine, parent).await);
+    let child = fork(engine, parent, tip(engine, parent)).await;
+    // The agent forked as the session did.
+    assert_eq!(forks(&acp).len(), 1);
+    let started = session_starts(engine, child);
+    let forked = started.last().expect("the fork's own session");
+    assert_eq!(forked.how, AcpSessionStart::Forked);
+    // The source goes on before the fork's first turn; the fork does not
+    // see it.
+    turn(engine, parent, "three", "say three").await;
+    let outcome = turn(engine, child, "child-recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one, say two");
+    assert_eq!(forks(&acp).len(), 1);
+    assert_eq!(
+        session_starts(engine, child).last().unwrap().acp_session_id,
+        forked.acp_session_id
+    );
+    let outcome = turn(engine, parent, "parent-recall", "recall").await;
+    assert_eq!(
+        final_text(&outcome),
+        "remembers: say one, say two, say three"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_the_agent_fails_to_take_at_once_is_refused_and_leaves_no_session() {
+    let acp = acp_fixture(
+        &[
+            ("ACP_FIXTURE_FORK", "1"),
+            ("ACP_FIXTURE_FORK_WHOLE", "1"),
+            ("ACP_FIXTURE_FORK_FAIL", "1"),
+        ],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    let parent = session_with(engine, &["say one"]).await;
+    assert!(!probed(engine, parent).await);
+    let sessions = engine.list_sessions().len();
+    let reason = refusal(
+        engine
+            .fork_session(parent, tip(engine, parent), origin(), None)
+            .await,
+    );
+    assert!(
+        reason.starts_with(
+            "`fixture` on `local` could not fork its own conversation for the new session: "
+        ),
+        "{reason}"
+    );
+    assert!(reason.contains("the fork failed"), "{reason}");
+    assert_eq!(engine.list_sessions().len(), sessions);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn without_session_fork_a_fork_after_the_agents_first_reply_is_refused() {
     let acp = acp_fixture(NO_FORK, &[]).await;
     let engine = acp.engine();

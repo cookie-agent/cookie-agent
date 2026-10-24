@@ -868,16 +868,25 @@ protocol 1.24.0, plugin protocol 1.12.0; history format unchanged):
     after the agent's first reply`), and a fork whose point cuts into the
     agent's conversation when its fork takes no fork point (`... can't fork
     its own conversation at an earlier point, ...`). A fork at the end of
-    the conversation is a plain whole-session fork. Revert or fork before
+    the conversation is a plain whole-session fork, taken as the cookie
+    fork is made (see below). Revert or fork before
     the agent's first reply always works. Gemini CLI (no `session/fork`)
     therefore refuses both past its first reply.
   - *Superseded the same day:* a first version started a new session given
     a condensed cookie transcript when the agent could not fork; dropped
     for the refusals above.
-  - Not covered: a fork of a cookie session whose agent's fork takes no
-    fork point, made at the end of the conversation, whose source runs
-    more turns before the fork's first turn: the fork's `session/fork`
-    then copies those turns too.
+  - *Eager whole forks* (2026-10-24, closing a gap the first version
+    left): a fork of a cookie session at the end of the agent's
+    conversation, when the agent's fork takes no fork point or the engine
+    has not asked yet, calls `session/fork` while `session.fork` runs
+    (starting the agent's process when needed) and records the fork's own
+    session then, so turns the source runs before the fork's first turn
+    stay out of it. When the agent cannot fork there, or the session is on
+    a runtime that does not run the agent for the fork, the cookie fork is
+    deleted and refused with `acp_agent_unsupported` (`` `claude` on
+    `local` could not fork its own conversation for the new session: ...
+    ``). A fork that takes a fork point still forks at the fork's first
+    turn, at the recorded message.
 - **Deleting a session** closes its live ACP session and deletes every ACP
   session it owns with `session/delete` when the agent offers it, starting
   the agent's process for it when needed (one a fork left behind stays its
@@ -918,7 +927,10 @@ mode, recorded once per process and on later records, and the deleted
 probe fork; a fork at its fork point remembering only the turns before
 it, the source keeping its own; a whole fork allowed at the end and
 refused earlier; a fork refused without `session/fork` and a fork before
-the first reply starting fresh; a revert forking at the revert point and
+the first reply starting fresh; a whole fork taken as the cookie fork is
+made, so a turn the source runs before the fork's first turn stays out of
+it, and a cookie fork the agent fails to take refused and deleted; a
+revert forking at the revert point and
 deleting the old session, refused for whole and no-fork agents and while
 not asked yet; a revert before the first reply deleting the session and
 starting fresh; a revert of a fork into its source's turns leaving the

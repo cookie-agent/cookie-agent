@@ -1031,6 +1031,17 @@ impl Engine {
                     &referenced,
                 )
             })?;
+        // An ACP agent whose fork takes no fork point forks now, while its
+        // conversation still ends at the fork point; when it cannot, the
+        // fork is undone and refused.
+        let source_events = self.inner.store.get(session_id)?.log.event_snapshot();
+        if let Err(error) = self
+            .fork_acp_sessions_now(&source_events, through_seq, forked)
+            .await
+        {
+            self.discard_fork(forked).await;
+            return Err(error);
+        }
         let producer_state = self.goal_producer_projection(forked)?;
         if producer_state.goal.is_some()
             || producer_state
@@ -1050,6 +1061,35 @@ impl Engine {
         }
         Ok(SessionForkResult { session_id: forked })
     }
+    /// Deletes `forked`, a fork just made that is refused after all, and
+    /// the ACP sessions it opened. A failure leaves it behind as a
+    /// session of its own.
+    async fn discard_fork(&self, forked: SessionId) {
+        match self.inner.store.root_of(forked) {
+            Ok(root) if root == forked => {
+                if let Ok(projection) = self.inner.store.get(forked) {
+                    let tip = projection.meta.last_event_seq;
+                    if let Err(error) = self.delete_session(forked, tip).await {
+                        eprintln!("refused fork {forked} could not be deleted: {error}");
+                    }
+                }
+            }
+            Ok(_) => {
+                let records = self.inner.store.get(forked).ok().map(|projection| {
+                    crate::runtime::acp::lifecycle::own_records(&projection.log.event_snapshot())
+                });
+                self.delete_acp_sessions(forked, records.unwrap_or_default())
+                    .await;
+                self.close_acp_session(forked).await;
+                self.forget_deleted_sessions(&HashSet::from([forked]));
+                if let Err(error) = self.inner.store.delete_children(&[forked]) {
+                    eprintln!("refused fork {forked} could not be deleted: {error}");
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
     /// Sets the tree's permission mode and tells every connection,
     /// naming `origin` as who changed it.
     pub fn set_permission_mode(

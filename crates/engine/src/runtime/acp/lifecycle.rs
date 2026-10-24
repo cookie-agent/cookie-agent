@@ -357,6 +357,30 @@ pub(crate) fn rewind_refusal(
         })
 }
 
+/// The source's ACP sessions a fork of `events` through `through_seq`
+/// forks at once, as the cookie fork is made: those with an agent reply
+/// to keep whose fork takes no fork point (or that the engine has not
+/// asked yet). [`fork_refusal`] lets such a fork through only at the end
+/// of the agent's conversation, where the agent's whole-session fork is
+/// exact now but would take in whatever the source runs before the fork's
+/// first turn. A fork that takes a fork point waits for that turn.
+pub(crate) fn eager_forks(
+    events: &[Arc<StoredEvent>],
+    through_seq: u64,
+    known: ForkKnowledge<'_>,
+) -> Vec<AcpSessionRecord> {
+    let kept = events
+        .iter()
+        .take_while(|event| event.seq <= through_seq)
+        .cloned()
+        .collect::<Vec<_>>();
+    latest_records(&kept)
+        .into_iter()
+        .filter(|record| last_message_id(&kept, record).is_some())
+        .filter(|record| known(record).1 != Some(true))
+        .collect()
+}
+
 /// Why a fork of `events` through `through_seq` is refused, if it is: the
 /// agent replied before the fork point but offers no `session/fork`, or
 /// the fork point cuts into its conversation and its fork does not take a
@@ -525,6 +549,70 @@ impl super::super::Engine {
                     },
                 )
                 .await;
+        }
+    }
+
+    /// Forks, for the cookie fork `forked` just made, each of its source's
+    /// ACP sessions [`eager_forks`] names, starting the agent's process
+    /// when it is not running: the fork's agent session then holds exactly
+    /// the conversation up to the fork point. Refused, naming the agent,
+    /// when the agent cannot.
+    pub(crate) async fn fork_acp_sessions_now(
+        &self,
+        source_events: &[Arc<StoredEvent>],
+        through_seq: u64,
+        forked: SessionId,
+    ) -> Result<(), super::super::EngineError> {
+        let known = |record: &AcpSessionRecord| self.fork_knowledge(source_events, record);
+        for record in eager_forks(source_events, through_seq, &known) {
+            if let Err(error) = self.fork_acp_session_now(forked, &record).await {
+                return Err(super::super::EngineError::AcpUnsupported(format!(
+                    "{} could not fork its own conversation for the new session: {}",
+                    agent_label(&record),
+                    error.user_message().trim_end_matches('.')
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Opens `forked`'s ACP session for the agent of `record` now, which
+    /// branches off `record`'s session as the fork's first turn would.
+    async fn fork_acp_session_now(
+        &self,
+        forked: SessionId,
+        record: &AcpSessionRecord,
+    ) -> Result<(), super::super::EngineError> {
+        let runtime = self.current_runtime();
+        let resolved = runtime
+            .agents
+            .get(&record.agent)
+            .filter(|agent| agent.acp.is_some())
+            .ok_or_else(|| {
+                super::super::EngineError::Acp("no runtime offers the agent now".to_owned())
+            })?;
+        let offers = resolved.acp.clone().expect("filtered to ACP agents");
+        let agent = self.place_acp_agent(forked, &offers)?;
+        let (process, _use) = self
+            .inner
+            .acp
+            .processes
+            .acquire(&self.inner, &agent)
+            .await
+            .map_err(super::super::EngineError::Acp)?;
+        self.acp_session(forked, None, &agent, &resolved.document, &process)
+            .await?;
+        // A session on another runtime than the one that runs it now
+        // starts anew there, which forks nothing.
+        match plan(
+            &self.inner.store.get(forked)?.log.event_snapshot(),
+            &record.agent,
+        ) {
+            Plan::Resume(started) if started.how == AcpSessionStart::Forked => Ok(()),
+            _ => Err(super::super::EngineError::Acp(format!(
+                "its session is on runtime `{}`, which does not run it for the new session",
+                record.runtime_id
+            ))),
         }
     }
 

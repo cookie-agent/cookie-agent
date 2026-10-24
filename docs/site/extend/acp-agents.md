@@ -269,7 +269,10 @@ change the session's:
   CLI) cannot be forked after its first reply; the fork is refused with
   `` `gemini` on `local` can't fork its own conversation ``. A fork at an
   earlier point than the end of the agent's conversation also needs its
-  fork to start at a given message (below).
+  fork to start at a given message (below). An agent whose fork cannot
+  start at a given message is asked to fork as you fork the session, so
+  the fork holds the conversation as it was then; if the agent cannot, the
+  fork is refused.
 - **Revert.** After a revert the agent's next turn forks its conversation
   at its last reply the session keeps, then deletes the old conversation,
   and the transcript says *the agent continues from the revert point*. The
