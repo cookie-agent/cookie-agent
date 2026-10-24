@@ -685,7 +685,7 @@ impl Workspace {
                 .try_update_value(|subscriptions| subscriptions.release(session_id))
                 .unwrap_or(false)
         {
-            self.send_unsubscribe(session_id);
+            self.release(session_id);
         }
         if let Some(session_id) = replay_ended {
             let owned = self.owned(session_id);
@@ -1153,7 +1153,7 @@ impl Workspace {
             })
             .unwrap_or_default();
         for session in released {
-            self.send_unsubscribe(session);
+            self.release(session);
         }
     }
 
@@ -1300,7 +1300,13 @@ impl Workspace {
         });
     }
 
-    fn send_unsubscribe(self, session_id: SessionId) {
+    /// Ends the live tail of a session whose subscription was released,
+    /// and drops its projection: nothing shows it, and opening it again
+    /// replays it from the start.
+    fn release(self, session_id: SessionId) {
+        self.store.update_value(|store| {
+            store.evict_session(session_id);
+        });
         if let Some(client) = self.client() {
             spawn_local(async move {
                 let _ = client.unsubscribe_events(session_id).await;

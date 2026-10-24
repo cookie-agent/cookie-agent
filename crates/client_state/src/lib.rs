@@ -1270,9 +1270,9 @@ fn push_unknown_event_row(state: &mut SessionState, event: &cookie_agent_protoco
 pub struct StateStore {
     pub sessions: HashMap<SessionId, SessionState>,
     quarantined_sessions: HashSet<SessionId>,
-    /// Sessions whose projection only a full replay can bring up to date: a
-    /// revert cut their log. Live events for them are left to that replay,
-    /// which the client runs next.
+    /// Sessions whose projection only a full replay can bring up to date:
+    /// a revert cut their log, or they were evicted. Live events for them
+    /// are left to that replay, which the client runs next.
     awaiting_rebuild: HashSet<SessionId>,
     replays: HashMap<SessionId, ReplayProgress>,
 }
@@ -1806,6 +1806,26 @@ impl StateStore {
         if self.sessions.contains_key(&session_id) {
             self.awaiting_rebuild.insert(session_id);
         }
+    }
+
+    /// Drops `session_id`'s projection once nothing shows it and its
+    /// subscription is released, so a client that browses many sessions
+    /// does not keep every one it opened. Opening it again replays it from
+    /// the start; until then what still arrives for it is dropped. A
+    /// session with a replay staged, or with a run or input still owed to
+    /// its view, is kept. Returns whether it was dropped.
+    pub fn evict_session(&mut self, session_id: SessionId) -> bool {
+        if self.replays.contains_key(&session_id)
+            || self
+                .sessions
+                .get(&session_id)
+                .is_some_and(|state| !state.is_settled())
+        {
+            return false;
+        }
+        self.quarantined_sessions.remove(&session_id);
+        self.awaiting_rebuild.insert(session_id);
+        self.sessions.remove(&session_id).is_some()
     }
 
     /// Drop a session projection before a full cursor-zero rebuild.

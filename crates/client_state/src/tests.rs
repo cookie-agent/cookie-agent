@@ -3535,6 +3535,56 @@ fn a_replay_from_the_cursor_changes_the_projection_only_when_it_is_complete() {
 }
 
 #[test]
+fn an_evicted_session_drops_what_still_arrives_until_it_is_replayed_again() {
+    let session_id = SessionId::new_v7();
+    let mut store = StateStore::default();
+    assert!(store.apply_event(submitted(session_id, 1, "first")));
+    assert!(store.evict_session(session_id));
+    assert!(!store.sessions.contains_key(&session_id));
+    // A message in flight when the subscription was released does not
+    // bring back a projection missing the start of the log.
+    assert_eq!(
+        store.apply_delivery(live(EventSubscriptionMessage::Event {
+            event: std::sync::Arc::new(submitted(session_id, 2, "second")),
+        })),
+        DeliveryOutcome::Applied
+    );
+    assert!(!store.sessions.contains_key(&session_id));
+    let outcomes = replay(
+        &mut store,
+        session_id,
+        true,
+        2,
+        vec![
+            submitted(session_id, 1, "first"),
+            submitted(session_id, 2, "second"),
+        ],
+    );
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| *outcome == DeliveryOutcome::Applied)
+    );
+    assert_eq!(user_texts(&store, session_id), ["first", "second"]);
+    assert!(store.apply_event(submitted(session_id, 3, "third")));
+    assert_eq!(user_texts(&store, session_id), ["first", "second", "third"]);
+}
+
+#[test]
+fn a_session_still_owed_to_its_view_is_not_evicted() {
+    let session_id = SessionId::new_v7();
+    let mut store = StateStore::default();
+    assert!(store.apply_event(submitted(session_id, 1, "first")));
+    store
+        .sessions
+        .get_mut(&session_id)
+        .expect("session")
+        .active_run = Some(RunId::new_v7());
+    assert!(!store.evict_session(session_id));
+    assert!(store.sessions.contains_key(&session_id));
+}
+
+#[test]
 fn delegation_hinted_tool_starts_update_agent_activity() {
     let session_id = SessionId::new_v7();
     let mut state = SessionState::default();

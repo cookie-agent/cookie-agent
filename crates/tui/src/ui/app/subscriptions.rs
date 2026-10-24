@@ -134,8 +134,8 @@ impl App {
         self.subscriptions.recovery_failed(session_id);
     }
 
-    /// Ends this connection's live tail for `session_id`, keeping its
-    /// projection: reopening it later catches up from its cursor. A session
+    /// Ends this connection's live tail for `session_id` and drops its
+    /// projection: reopening it later replays it from the start. A session
     /// with a tail cannot be evicted by the daemon, so a TUI that has browsed
     /// many sessions releases the ones it no longer shows.
     pub(super) fn release_subscription(&mut self, session_id: SessionId) {
@@ -145,6 +145,12 @@ impl App {
     }
 
     fn send_unsubscribe(&mut self, session_id: SessionId) {
+        // Its replay from the start lays it out afresh: a rebuilt item can
+        // repeat a live one's ID and version with other content.
+        if self.store.evict_session(session_id) {
+            self.parked_layout_caches
+                .retain(|cache| cache.key.is_none_or(|key| key.session_id != session_id));
+        }
         let client = self.client.clone();
         self.spawn_rpc(async move {
             // Best effort: a failure leaves a tail the connection's end drops.
