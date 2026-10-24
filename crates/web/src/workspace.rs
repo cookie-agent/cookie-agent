@@ -629,22 +629,24 @@ impl Workspace {
         let own_origin = self.client().and_then(|client| client.origin());
         let selected = self.selected.get_untracked();
         let foreign_pick = is_foreign_model_pick(&delivery, selected, own_origin.as_ref());
+        // What the rest needs to know of the event, read before the store
+        // takes it: the store reduces the event it is handed without a copy.
         let event = match &delivery {
             ClientDelivery::Live { message, .. } => match message.as_ref() {
                 cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                    Some(event.as_ref().clone())
+                    Some(event.as_ref())
                 }
                 _ => None,
             },
-            ClientDelivery::ReplayEvent { event, .. } => Some(event.as_ref().clone()),
+            ClientDelivery::ReplayEvent { event, .. } => Some(event.as_ref()),
             _ => None,
         };
         let live = matches!(&delivery, ClientDelivery::Live { .. });
-        let run_ended = event.as_ref().and_then(|event| {
+        let run_ended = event.and_then(|event| {
             (live && matches!(&event.payload, EventPayload::RunFinished { .. }))
                 .then_some(event.session_id)
         });
-        let cost_changed = event.as_ref().and_then(|event| {
+        let cost_changed = event.and_then(|event| {
             matches!(
                 event.payload,
                 EventPayload::ModelUsageRecorded { .. }
@@ -659,7 +661,7 @@ impl Workspace {
         // A delegation's lifecycle is how a child's status reaches the
         // tree; a link, a run end, or a finished replay can change it too.
         let tree_changed = replay_ended.is_some_and(|session_id| self.in_viewed_tree(session_id))
-            || event.as_ref().is_some_and(|event| {
+            || event.is_some_and(|event| {
                 matches!(
                     &event.payload,
                     EventPayload::ToolCallLinked { .. }
