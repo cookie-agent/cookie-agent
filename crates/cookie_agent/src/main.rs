@@ -582,7 +582,34 @@ struct Launch {
     relaunch_now: bool,
 }
 
+/// The most async runtime worker threads: the daemon waits on models,
+/// tools, and clients far more than it computes, and every worker, with the
+/// malloc arena it ends up with, costs memory on a many-core machine while
+/// more of them only add scheduling overhead. `TOKIO_WORKER_THREADS`
+/// overrides it.
+const MAX_WORKER_THREADS: usize = 8;
+
+/// The most glibc malloc arenas, where glibc would make up to eight per
+/// core: each holds on to what its threads freed. `MALLOC_ARENA_MAX`
+/// overrides it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const MALLOC_ARENA_MAX: libc::c_int = 2;
+
+/// Caps glibc's malloc arenas, unless `MALLOC_ARENA_MAX` already did. Runs
+/// before any thread exists, which an arena limit needs to apply to all of
+/// them.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn limit_malloc_arenas() {
+    if env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: `mallopt` only sets an allocator parameter; no other
+        // thread exists yet to allocate concurrently.
+        unsafe { libc::mallopt(libc::M_ARENA_MAX, MALLOC_ARENA_MAX) };
+    }
+}
+
 fn main() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    limit_malloc_arenas();
     let cli = Cli::parse();
     // Before anything changes the environment: how to start this command
     // again.
@@ -602,10 +629,12 @@ fn main() {
     // anything else that starts a thread exists; argument parsing starts
     // none.
     unsafe { env::remove_var(DAEMON_TOKEN_ENV) };
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if env::var_os("TOKIO_WORKER_THREADS").is_none() {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        builder.worker_threads(cores.min(MAX_WORKER_THREADS));
+    }
+    let runtime = match builder.enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("cookie: cannot start the async runtime: {error}");

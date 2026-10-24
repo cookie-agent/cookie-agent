@@ -147,6 +147,15 @@ on their own; no session is lost.
 Only `cookie daemon` can restart itself; a daemon embedded in another
 program refuses with `restart_unsupported`.
 
+## Threads and memory
+
+cookie runs its work on at most 8 async worker threads, fewer on a machine
+with fewer cores: it waits on models, tools, and clients far more than it
+computes. On Linux with glibc it also keeps at most 2 malloc arenas, so a
+many-core machine does not hold memory in an arena per thread. The
+`TOKIO_WORKER_THREADS` and `MALLOC_ARENA_MAX` environment variables override
+either limit.
+
 ## Running as a service
 
 The daemon runs until stopped, so a service manager can keep it up: start it
