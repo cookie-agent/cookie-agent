@@ -54,6 +54,9 @@ use crate::acp_bridge::{BridgeListener, BridgeStream};
 /// protocol frame.
 const MAX_LINE_BYTES: usize = cookie_agent_runtime_api::protocol::MAX_FRAME_BYTES;
 
+/// How long stopping an agent waits for its process group to be gone.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -87,6 +90,8 @@ struct AgentProcess {
     input: mpsc::UnboundedSender<String>,
     /// Kills it.
     kill: CancellationToken,
+    /// Cancelled once it has ended and been reaped, killed or not.
+    ended: CancellationToken,
     /// The bridges opened for it, closed with it.
     bridges: Mutex<Vec<String>>,
 }
@@ -142,7 +147,7 @@ impl AcpHost {
             stale
         };
         for agent in stale {
-            self.stop_agent(&agent);
+            self.stop_agent(&agent).await;
         }
         let _ = self
             .peer
@@ -168,7 +173,7 @@ impl AcpHost {
             },
             method::AGENT_STOP => match request.params::<AgentRef>() {
                 Ok(agent) => {
-                    self.stop_agent(&agent.agent);
+                    self.stop_agent(&agent.agent).await;
                     Ok(json_empty())
                 }
                 Err(error) => Err(error),
@@ -278,9 +283,11 @@ impl AcpHost {
         };
         let (input, input_rx) = mpsc::unbounded_channel();
         let kill = self.stop.child_token();
+        let ended = CancellationToken::new();
         let process = Arc::new(AgentProcess {
             input,
             kill: kill.clone(),
+            ended: ended.clone(),
             bridges: Mutex::default(),
         });
         processes.insert(agent.to_owned(), Arc::clone(&process));
@@ -294,6 +301,7 @@ impl AcpHost {
         tokio::spawn(async move {
             host.relay_output(&name, stdout, &tail).await;
             let (status, message) = wait_for(child, &kill).await;
+            ended.cancel();
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(2), stderr_done.cancelled())
                     .await;
@@ -390,9 +398,31 @@ impl AcpHost {
             .await;
     }
 
-    fn stop_agent(&self, agent: &str) {
-        if let Some(process) = lock(&self.processes).get(agent) {
+    /// Kills the agent's process group and answers once it is gone, so a
+    /// daemon that stops its agents and then exits leaves none behind.
+    async fn stop_agent(&self, agent: &str) {
+        let ended = lock(&self.processes).get(agent).map(|process| {
             process.kill.cancel();
+            process.ended.clone()
+        });
+        if let Some(ended) = ended {
+            let _ = tokio::time::timeout(STOP_WAIT, ended.cancelled()).await;
+        }
+    }
+
+    /// Kills every agent's process group and waits until each is gone, as
+    /// the runtime stops: a runtime process that returned before its
+    /// agents were killed would leave them running.
+    pub(crate) async fn stop_all(&self) {
+        let ended = lock(&self.processes)
+            .values()
+            .map(|process| {
+                process.kill.cancel();
+                process.ended.clone()
+            })
+            .collect::<Vec<_>>();
+        for ended in ended {
+            let _ = tokio::time::timeout(STOP_WAIT, ended.cancelled()).await;
         }
     }
 

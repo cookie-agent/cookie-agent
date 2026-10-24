@@ -43,6 +43,9 @@ Environment:
   ACP_FIXTURE_MODES      "1": offers modes instead of a mode config option
   ACP_FIXTURE_NO_AUTO    "1": offers no `auto` mode
   ACP_FIXTURE_PID_FILE   a file the process ID is written to
+  ACP_FIXTURE_CHILD_PID_FILE
+                         starts a child process that sleeps, and writes its
+                         process ID to this file
   ACP_FIXTURE_EAGER_MCP  "1": connects cookie's MCP server and lists its tools
                          before answering session/new, as Claude Code does
   ACP_FIXTURE_STEERING   "1": advertises the steering extension
@@ -448,6 +451,13 @@ def handle(message):
 
 
 def main():
+    child_pid_file = os.environ.get("ACP_FIXTURE_CHILD_PID_FILE")
+    if child_pid_file:
+        import subprocess
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+        with open(child_pid_file + ".tmp", "w", encoding="utf-8") as file:
+            file.write(str(child.pid))
+        os.replace(child_pid_file + ".tmp", child_pid_file)
     pid_file = os.environ.get("ACP_FIXTURE_PID_FILE")
     if pid_file:
         with open(pid_file + ".tmp", "w", encoding="utf-8") as file:

@@ -1721,3 +1721,56 @@ async fn a_daemon_document_without_an_acp_block_shadows_a_declaration() {
         ]
     );
 }
+
+/// Whether process `pid` is still running (a zombie is not).
+#[cfg(unix)]
+fn running(pid: &str) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat
+            .rsplit_once(") ")
+            .is_none_or(|(_, rest)| !rest.starts_with('Z')),
+        Err(_) if Path::new("/proc/self/stat").exists() => false,
+        Err(_) => std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success()),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_engine_shutdown_leaves_no_agent_process_behind() {
+    let markers = private_tempdir();
+    let agent = markers.path().join("agent.pid");
+    let child = markers.path().join("child.pid");
+    let acp = acp_fixture(
+        &[
+            ("ACP_FIXTURE_PID_FILE", &agent.to_string_lossy()),
+            ("ACP_FIXTURE_CHILD_PID_FILE", &child.to_string_lossy()),
+        ],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    assert_eq!(
+        final_text(&turn(engine, session, "hi", "say hi").await),
+        "hi"
+    );
+    let pids = [agent, child].map(|file| std::fs::read_to_string(file).expect("a pid"));
+    for pid in &pids {
+        assert!(running(pid), "process {pid} runs before the shutdown");
+    }
+    // The daemon's SIGTERM, its shutdown, and `daemon.restart` all end here.
+    engine.shutdown().await;
+    // The agent is reaped before the shutdown returns; its child, killed
+    // with its process group, is gone a moment later.
+    assert!(!running(&pids[0]), "the agent outlived the shutdown");
+    with_watchdog("the agent's processes to be gone", async {
+        while pids.iter().any(|pid| running(pid)) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}

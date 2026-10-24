@@ -255,6 +255,8 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> Stri
     // `runtime/shutdown`.
     let shut_down = stopped && !server.options.stop.is_cancelled();
     server.stop.cancel();
+    // The agents go with the runtime, before it returns.
+    server.acp.stop_all().await;
     lock(&server.prepared).clear();
     let instances = lock(&server.instances).drain().collect::<Vec<_>>();
     for (_, instance) in instances {
