@@ -487,7 +487,10 @@ impl DelegationEventStore {
         let mut revisions = RevisionFold::default();
         for envelope in parent.log.event_snapshot().iter() {
             revisions.observe(&envelope.payload);
-            if parent.log.delegation_event_tainted(envelope) {
+            // Only delegation records fold; the rest are not copied.
+            if delegation_invocation_of(&envelope.payload).is_none()
+                || parent.log.delegation_event_tainted(envelope)
+            {
                 continue;
             }
             rebuilt.apply_stored(
