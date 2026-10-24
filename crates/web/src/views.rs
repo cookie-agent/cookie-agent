@@ -29,7 +29,7 @@ use crate::{
     render::{
         blocks::{BlockPlace, display_html},
         transcript::{
-            Delegate, PartHtml, RowCache, RowHtml, Rows, TranscriptView, transcript_rows,
+            Delegate, Expanded, PartHtml, RowCache, RowHtml, Rows, TranscriptView, transcript_rows,
         },
     },
     workspace::{Panel, Workspace},
@@ -1210,6 +1210,33 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// The subagent `child` a delegate call started, as its row shows it: what
+/// it does comes from its own projection.
+fn delegate(
+    store: &cookie_agent_client_state::StateStore,
+    child: &cookie_agent_protocol::SessionMeta,
+) -> Delegate {
+    let activity = store.sessions.get(&child.session_id).and_then(|child| {
+        Activity::of(
+            child.active_run.is_some(),
+            child
+                .tools
+                .values()
+                .any(|tool| tool.status == ToolStatus::Running),
+            child
+                .approvals
+                .iter()
+                .any(|approval| approval.is_visible_user_escalation()),
+        )
+    });
+    Delegate {
+        session_id: child.session_id,
+        agent: child.creation_selection.agent.to_string(),
+        handle: child.short_id.clone(),
+        activity,
+    }
+}
+
 #[component]
 fn Transcript(workspace: Workspace) -> impl IntoView {
     let cache = StoredValue::new(RowCache::default());
@@ -1231,6 +1258,9 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             }
         });
     });
+    let homes = Memo::new(move |_| workspace.homes());
+    // Everything a pass reads it borrows where it lies: a frame copies
+    // neither the expanded set, the model names, nor the tree.
     let rows = Memo::new(move |_| {
         let Some(session_id) = workspace
             .selected
@@ -1241,73 +1271,59 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         };
         store_frame.track();
         let level = workspace.level.get();
-        // What the user opened in this session: its own, as in the TUI.
-        let expanded = workspace
-            .expanded
-            .with(|expanded| expanded.get(&session_id).cloned().unwrap_or_default());
-        let names = workspace.with_runtime(|runtime| runtime.model_names().clone());
-        let homes = workspace.homes();
         let draft_agent = workspace
             .draft
             .with(|draft| draft.as_ref().map(|draft| draft.agent.clone()));
-        let delegates = workspace.tree.with(|tree| {
-            tree.as_ref()
-                .map(|tree| delegates_of(tree, session_id))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(call, child)| (call, child.clone()))
-                .collect::<Vec<_>>()
-        });
-        untrack(|| {
-            workspace.with_store(|store| {
-                let Some(state) = store.sessions.get(&session_id) else {
-                    return Rows::default();
-                };
-                // What each running subagent does, from its own projection
-                // (the page follows a tree's live sessions).
-                let delegates = delegates
-                    .into_iter()
-                    .map(|(call, child)| {
-                        let activity = store.sessions.get(&child.session_id).and_then(|child| {
-                            Activity::of(
-                                child.active_run.is_some(),
-                                child
-                                    .tools
-                                    .values()
-                                    .any(|tool| tool.status == ToolStatus::Running),
-                                child
-                                    .approvals
-                                    .iter()
-                                    .any(|approval| approval.is_visible_user_escalation()),
-                            )
-                        });
-                        let delegate = Delegate {
-                            session_id: child.session_id,
-                            agent: child.creation_selection.agent.to_string(),
-                            handle: child.short_id.clone(),
-                            activity,
-                        };
-                        (call, delegate)
+        let nothing_open = Expanded::default();
+        workspace
+            .expanded
+            .with(|expanded| {
+                // What the user opened in this session: its own, as in the TUI.
+                let expanded = expanded.get(&session_id).unwrap_or(&nothing_open);
+                homes.with(|homes| {
+                    workspace.with_runtime(|runtime| {
+                        workspace.tree.with(|tree| {
+                            let delegates = tree
+                                .as_ref()
+                                .map(|tree| delegates_of(tree, session_id))
+                                .unwrap_or_default();
+                            untrack(|| {
+                                workspace.with_store(|store| {
+                                    let state = store.sessions.get(&session_id)?;
+                                    // What each running subagent does, from its
+                                    // own projection (the page follows a tree's
+                                    // live sessions).
+                                    let delegates = delegates
+                                        .into_iter()
+                                        .map(|(call, child)| (call, delegate(store, child)))
+                                        .collect::<HashMap<_, _>>();
+                                    let view = TranscriptView {
+                                        session_id,
+                                        state,
+                                        names: runtime.model_names(),
+                                        minimum_level: level,
+                                        expanded,
+                                        delegates: &delegates,
+                                        homes,
+                                    };
+                                    // The system prompt and the tools, pinned at
+                                    // the top.
+                                    let pinned = crate::render::transcript::pinned_rows(
+                                        state,
+                                        expanded,
+                                        draft_agent.as_ref(),
+                                    )
+                                    .map(|(_, html)| html);
+                                    cache.try_update_value(|cache| {
+                                        transcript_rows(&view, pinned, cache)
+                                    })
+                                })
+                            })
+                        })
                     })
-                    .collect::<HashMap<_, _>>();
-                let view = TranscriptView {
-                    session_id,
-                    state,
-                    names: &names,
-                    minimum_level: level,
-                    expanded: &expanded,
-                    delegates: &delegates,
-                    homes: &homes,
-                };
-                // The system prompt and the tools, pinned at the top.
-                let pinned =
-                    crate::render::transcript::pinned_rows(state, &expanded, draft_agent.as_ref())
-                        .map(|(_, html)| html);
-                cache
-                    .try_update_value(|cache| transcript_rows(&view, pinned, cache))
-                    .unwrap_or_default()
+                })
             })
-        })
+            .unwrap_or_default()
     });
     let container = NodeRef::<html::Div>::new();
     let content = NodeRef::<html::Div>::new();

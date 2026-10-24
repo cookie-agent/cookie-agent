@@ -166,7 +166,7 @@ pub struct Workspace {
     /// What the user opened in each session's transcript: tool calls by
     /// ID, other rows by their block key. It outlives a switch to another
     /// session, not a reload.
-    pub expanded: RwSignal<HashMap<SessionId, HashSet<String>>>,
+    pub expanded: RwSignal<HashMap<SessionId, crate::render::transcript::Expanded>>,
     pub composer: RwSignal<String>,
     pub status: RwSignal<String>,
     pub panel: RwSignal<Option<Panel>>,
@@ -1819,10 +1819,7 @@ impl Workspace {
             return;
         };
         self.expanded.update(|expanded| {
-            let opened = expanded.entry(session_id).or_default();
-            if !opened.remove(&key) {
-                opened.insert(key);
-            }
+            expanded.entry(session_id).or_default().toggle(&key);
         });
     }
 

@@ -19,7 +19,9 @@ use cookie_agent_client_state::{
         producer_owner_label, producer_summary, system_prompt_source, system_prompt_summary,
     },
 };
-use cookie_agent_protocol::{ContextCheckpoint, ExtensionMessageRole, PersistedFileSource};
+use cookie_agent_protocol::{
+    ContextCheckpoint, ExtensionMessageRole, PersistedFileSource, ToolCallId,
+};
 
 use super::{
     blocks::{BlockPlace, display_html, media_html},
@@ -37,10 +39,10 @@ pub struct TranscriptView<'a> {
     pub names: &'a ModelDisplayNames,
     /// Diagnostic rows below this level are hidden (`/events`).
     pub minimum_level: EventLevel,
-    /// Tool calls the user expanded.
-    pub expanded: &'a HashSet<String>,
+    /// What the user opened.
+    pub expanded: &'a Expanded,
     /// The subagents this session's delegate calls started, by call.
-    pub delegates: &'a HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
+    pub delegates: &'a HashMap<ToolCallId, Delegate>,
     /// Every runtime's home: a tool row shows its runtime's paths as
     /// `~/…`.
     pub homes: &'a cookie_agent_client_state::paths::RuntimeHomes,
@@ -49,6 +51,113 @@ pub struct TranscriptView<'a> {
 /// A fingerprint of `homes`, which every cached row depends on.
 pub fn homes_key(homes: &cookie_agent_client_state::paths::RuntimeHomes) -> u64 {
     foldhash::fast::FixedState::default().hash_one(format!("{homes:?}"))
+}
+
+/// What the user opened in one session's transcript: tool calls, the full
+/// output of calls, thinking blocks, and other rows' blocks, each under its
+/// own kind of key, so a pass looks a call up by its ID.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Expanded {
+    tools: FastSet<ToolCallId>,
+    all_output: FastSet<ToolCallId>,
+    thinking: FastSet<u64>,
+    blocks: FastSet<String>,
+}
+
+impl Expanded {
+    /// Opens or closes what `key`, a row's `data-call` or
+    /// `data-block-key`, names: a call, a call's full output (its ID and
+    /// `:all`), a thinking block (`thinking:` and its segment), or another
+    /// row's block.
+    pub fn toggle(&mut self, key: &str) {
+        fn flip<T: Eq + Hash>(set: &mut FastSet<T>, key: T) {
+            if !set.remove(&key) {
+                set.insert(key);
+            }
+        }
+        if let Some(id) = key.strip_prefix("thinking:").and_then(|id| id.parse().ok()) {
+            flip(&mut self.thinking, id);
+        } else if let Some(call) = key.strip_suffix(":all").and_then(|call| call.parse().ok()) {
+            flip(&mut self.all_output, call);
+        } else if let Ok(call) = key.parse() {
+            flip(&mut self.tools, call);
+        } else {
+            flip(&mut self.blocks, key.to_owned());
+        }
+    }
+
+    /// Whether the call is open.
+    pub fn tool(&self, call: &ToolCallId) -> bool {
+        self.tools.contains(call)
+    }
+
+    /// Whether the call shows its output past the row budget.
+    pub fn all_output(&self, call: &ToolCallId) -> bool {
+        self.all_output.contains(call)
+    }
+
+    /// Whether the thinking segment that starts at `id` is open.
+    pub fn thinking(&self, id: u64) -> bool {
+        self.thinking.contains(&id)
+    }
+
+    /// Whether the row whose block key is `key` is open.
+    pub fn block(&self, key: &str) -> bool {
+        self.blocks.contains(key)
+    }
+}
+
+/// The keys opened, each as [`Expanded::toggle`] takes it.
+impl<S: AsRef<str>> FromIterator<S> for Expanded {
+    fn from_iter<I: IntoIterator<Item = S>>(keys: I) -> Self {
+        let mut expanded = Self::default();
+        for key in keys {
+            expanded.toggle(key.as_ref());
+        }
+        expanded
+    }
+}
+
+/// What every key of one pass over the transcript depends on, worked out
+/// once for the pass.
+struct Pass<'a, 'v> {
+    view: &'a TranscriptView<'v>,
+    homes: u64,
+    /// The calls waiting for the user's approval.
+    waiting: FastSet<ToolCallId>,
+}
+
+impl<'a, 'v> Pass<'a, 'v> {
+    fn new(view: &'a TranscriptView<'v>) -> Self {
+        Self {
+            view,
+            homes: homes_key(view.homes),
+            waiting: view
+                .state
+                .approvals
+                .iter()
+                .filter(|approval| approval.is_visible_user_escalation())
+                .map(|approval| approval.tool_call_id)
+                .collect(),
+        }
+    }
+
+    /// Hashes what a call's row shows besides the call's own revision.
+    fn hash_tool(&self, call_id: &ToolCallId, hasher: &mut impl std::hash::Hasher) {
+        let view = self.view;
+        call_id.hash(hasher);
+        view.expanded.tool(call_id).hash(hasher);
+        view.expanded.all_output(call_id).hash(hasher);
+        // Raw arguments show only at `info` and below.
+        (view.minimum_level <= EventLevel::Info).hash(hasher);
+        view.state
+            .tools
+            .get(call_id)
+            .map(|tool| tool.revision)
+            .hash(hasher);
+        self.waiting.contains(call_id).hash(hasher);
+        view.delegates.get(call_id).hash(hasher);
+    }
 }
 
 impl TranscriptView<'_> {
@@ -72,12 +181,26 @@ pub struct Delegate {
 
 const NOTE: &str = "text-xs text-ink dark:text-sand";
 
+/// The maps and sets a pass fills, under a fast fixed hash: their keys are
+/// hashes and IDs already, and a pass looks up every part of every row.
+pub type FastMap<K, V> = HashMap<K, V, foldhash::fast::FixedState>;
+type FastSet<T> = HashSet<T, foldhash::fast::FixedState>;
+
+fn fast_map<K, V>(capacity: usize) -> FastMap<K, V> {
+    HashMap::with_capacity_and_hasher(capacity, foldhash::fast::FixedState::default())
+}
+
 /// A key that changes whenever the item's HTML would: its version, the
 /// revisions of the tool calls it shows, and their expansion.
 pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
+    item_key_in(&Pass::new(view), item)
+}
+
+fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
+    let view = pass.view;
     let mut hasher = foldhash::fast::FixedState::default().build_hasher();
     view.session_id.hash(&mut hasher);
-    homes_key(view.homes).hash(&mut hasher);
+    pass.homes.hash(&mut hasher);
     item.id().hash(&mut hasher);
     item.version().hash(&mut hasher);
     std::mem::discriminant(item).hash(&mut hasher);
@@ -85,27 +208,17 @@ pub fn item_key(view: &TranscriptView<'_>, item: &TranscriptItem) -> u64 {
         children.len().hash(&mut hasher);
         for child in children {
             child.version().hash(&mut hasher);
-            if let AssistantChild::Thinking { id, .. } = child {
-                view.expanded.contains(&thinking_key(*id)).hash(&mut hasher);
-            }
-            if let AssistantChild::Tool { call_id } = child {
-                let id = call_id.to_string();
-                view.expanded.contains(&id).hash(&mut hasher);
-                view.expanded
-                    .contains(&all_output_key(&id))
-                    .hash(&mut hasher);
-                // Raw arguments show only at `info` and below.
-                (view.minimum_level <= EventLevel::Info).hash(&mut hasher);
-                if let Some(tool) = view.state.tools.get(call_id) {
-                    tool.revision.hash(&mut hasher);
-                    view.waiting_approval(tool).hash(&mut hasher);
+            match child {
+                AssistantChild::Thinking { id, .. } => {
+                    view.expanded.thinking(*id).hash(&mut hasher);
                 }
-                view.delegates.get(call_id).hash(&mut hasher);
+                AssistantChild::Tool { call_id } => pass.hash_tool(call_id, &mut hasher),
+                _ => {}
             }
         }
     }
     if let Some(key) = block_key(item) {
-        view.expanded.contains(&key).hash(&mut hasher);
+        view.expanded.block(&key).hash(&mut hasher);
     }
     if let TranscriptItem::ProducerMessage { .. } = item {
         (view.minimum_level == EventLevel::Debug).hash(&mut hasher);
@@ -206,7 +319,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 }
             };
             collapsible(
-                view,
+                view.expanded.block(&key),
                 &key,
                 icondata::FaBroomSolid,
                 "compacting context…",
@@ -238,7 +351,14 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 "context compacted ({kind}, {}→{} tokens)",
                 commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
             );
-            collapsible(view, &key, icondata::FaBroomSolid, &header, None, &body)
+            collapsible(
+                view.expanded.block(&key),
+                &key,
+                icondata::FaBroomSolid,
+                &header,
+                None,
+                &body,
+            )
         }
         TranscriptItem::PluginMessage { role, input, .. } => {
             let key = block_key(item).unwrap_or_default();
@@ -253,7 +373,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 display_line_count(input)
             );
             collapsible(
-                view,
+                view.expanded.block(&key),
                 &key,
                 icondata::FaPuzzlePieceSolid,
                 &header,
@@ -283,7 +403,14 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 .collect::<Vec<_>>()
                 .join("\n");
             let header = format!("AGENTS.md · {files} ({lines} lines)");
-            collapsible(view, &key, icondata::FaBookSolid, &header, None, &body)
+            collapsible(
+                view.expanded.block(&key),
+                &key,
+                icondata::FaBookSolid,
+                &header,
+                None,
+                &body,
+            )
         }
         // A model's memory change: one line that opens the Memory view at
         // the memory (memory spec section 16.9.10).
@@ -312,7 +439,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 detail.push_str(&format!("\narguments: {args}"));
             }
             collapsible(
-                view,
+                view.expanded.block(&key),
                 &key,
                 icondata::FaWandMagicSparklesSolid,
                 &header,
@@ -433,7 +560,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                     producer_mode_label(*mode)
                 );
                 collapsible(
-                    view,
+                    view.expanded.block(&key),
                     &key,
                     icondata::FaInboxSolid,
                     &producer_summary(producer_owner, *mode, summary.as_deref()),
@@ -486,15 +613,15 @@ pub enum RowHtml {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Rows {
     pub order: Arc<[u64]>,
-    pub html: Arc<HashMap<u64, RowHtml>>,
+    pub html: Arc<FastMap<u64, RowHtml>>,
 }
 
 /// What the last pass drew, by content key, so a row or part whose key did
 /// not change is not drawn again. Each pass keeps only what it used.
 #[derive(Debug, Default)]
 pub struct RowCache {
-    rows: HashMap<u64, CachedRow>,
-    parts: HashMap<u64, Arc<str>>,
+    rows: FastMap<u64, CachedRow>,
+    parts: FastMap<u64, PartHtml>,
     /// Rows and parts drawn anew since the cache was made, for tests that
     /// check what a change draws again.
     pub drawn: u64,
@@ -545,34 +672,24 @@ fn part_id(child: &AssistantChild, index: usize) -> u64 {
 }
 
 /// A key that changes whenever the part's HTML would.
-fn part_key(view: &TranscriptView<'_>, child: &AssistantChild) -> u64 {
+fn part_key(pass: &Pass<'_, '_>, child: &AssistantChild) -> u64 {
+    let view = pass.view;
     let mut hasher = foldhash::fast::FixedState::default().build_hasher();
-    homes_key(view.homes).hash(&mut hasher);
+    // Segment and turn numbers repeat across sessions.
+    view.session_id.hash(&mut hasher);
+    pass.homes.hash(&mut hasher);
     std::mem::discriminant(child).hash(&mut hasher);
     match child {
         // A folded thinking block shows only its header, whatever streams
         // into it.
         AssistantChild::Thinking { id, version, .. } => {
-            let open = view.expanded.contains(&thinking_key(*id));
+            let open = view.expanded.thinking(*id);
             (id, open).hash(&mut hasher);
             if open {
                 version.hash(&mut hasher);
             }
         }
-        AssistantChild::Tool { call_id } => {
-            let id = call_id.to_string();
-            id.hash(&mut hasher);
-            view.expanded.contains(&id).hash(&mut hasher);
-            view.expanded
-                .contains(&all_output_key(&id))
-                .hash(&mut hasher);
-            (view.minimum_level <= EventLevel::Info).hash(&mut hasher);
-            if let Some(tool) = view.state.tools.get(call_id) {
-                tool.revision.hash(&mut hasher);
-                view.waiting_approval(tool).hash(&mut hasher);
-            }
-            view.delegates.get(call_id).hash(&mut hasher);
-        }
+        AssistantChild::Tool { call_id } => pass.hash_tool(call_id, &mut hasher),
         // The rest show what they hold, which does not change.
         AssistantChild::Text { id, version, .. } => (id, version).hash(&mut hasher),
         AssistantChild::CommittedTool {
@@ -603,22 +720,23 @@ pub fn transcript_rows(
     pinned: Option<String>,
     cache: &mut RowCache,
 ) -> Rows {
-    let mut rows = HashMap::new();
-    let mut parts = HashMap::new();
-    let mut order = Vec::new();
-    let mut html = HashMap::new();
+    let pass = Pass::new(view);
+    let mut rows = fast_map(cache.rows.len());
+    let mut parts = fast_map(cache.parts.len());
+    let mut order = Vec::with_capacity(view.state.transcript.len() + 1);
+    let mut html = fast_map(view.state.transcript.len() + 1);
     if let Some(pinned) = pinned {
         let id = pinned_row_id(view.session_id);
         order.push(id);
         html.insert(id, RowHtml::Html(Arc::from(pinned)));
     }
     for item in &view.state.transcript {
-        let key = item_key(view, item);
+        let key = item_key_in(&pass, item);
         let row = match cache.rows.remove(&key) {
             Some(row) => {
                 for key in &row.parts {
                     if let Some(part) = cache.parts.get(key) {
-                        parts.insert(*key, Arc::clone(part));
+                        parts.insert(*key, part.clone());
                     }
                 }
                 row
@@ -630,7 +748,7 @@ pub fn transcript_rows(
                         children,
                         ..
                     } => {
-                        let (reply, keys) = reply_parts(view, children, cache, &mut parts);
+                        let (reply, keys) = reply_parts(&pass, children, cache, &mut parts);
                         CachedRow {
                             html: RowHtml::Reply {
                                 header: Arc::from(format!(
@@ -671,13 +789,14 @@ pub fn transcript_rows(
 /// A reply's parts, each under its ID, and their content keys. Parts whose
 /// key is in `cache` reuse its HTML; every part drawn lands in `used`.
 fn reply_parts(
-    view: &TranscriptView<'_>,
+    pass: &Pass<'_, '_>,
     children: &[AssistantChild],
     cache: &mut RowCache,
-    used: &mut HashMap<u64, Arc<str>>,
+    used: &mut FastMap<u64, PartHtml>,
 ) -> (Arc<[(u64, PartHtml)]>, Vec<u64>) {
-    let mut seen = HashSet::new();
-    let mut keys = Vec::new();
+    let mut seen: FastSet<u64> =
+        HashSet::with_capacity_and_hasher(children.len(), foldhash::fast::FixedState::default());
+    let mut keys = Vec::with_capacity(children.len());
     let parts = children
         .iter()
         .enumerate()
@@ -687,24 +806,22 @@ fn reply_parts(
                 id = foldhash::fast::FixedState::default().hash_one((id, index));
                 seen.insert(id);
             }
-            let html = match child {
-                AssistantChild::Text { markdown, .. } => {
-                    PartHtml::Markdown(markdown.blocks().map(block_html).collect())
-                }
-                _ => {
-                    let key = part_key(view, child);
-                    let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
-                        Some(html) => Arc::clone(html),
-                        None => {
-                            cache.drawn += 1;
-                            Arc::from(child_html(view, child))
-                        }
-                    };
-                    used.insert(key, Arc::clone(&html));
-                    keys.push(key);
-                    PartHtml::Html(html)
-                }
+            let key = part_key(pass, child);
+            let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
+                Some(html) => html.clone(),
+                None => match child {
+                    // Each block is drawn once, and kept with its block.
+                    AssistantChild::Text { markdown, .. } => {
+                        PartHtml::Markdown(markdown.blocks().map(block_html).collect())
+                    }
+                    _ => {
+                        cache.drawn += 1;
+                        PartHtml::Html(Arc::from(child_html(pass.view, child)))
+                    }
+                },
             };
+            used.insert(key, html.clone());
+            keys.push(key);
             (id, html)
         })
         .collect();
@@ -737,7 +854,7 @@ pub const MODEL_TOOLS_KEY: &str = "model-tools";
 /// its HTML, which changes with what it shows.
 pub fn pinned_rows(
     state: &SessionState,
-    expanded: &HashSet<String>,
+    expanded: &Expanded,
     draft_agent: Option<&cookie_agent_protocol::AgentId>,
 ) -> Option<(u64, String)> {
     let (snapshot, from_run) = system_prompt_source(state)?;
@@ -802,10 +919,10 @@ fn pinned_row(
     key: &str,
     icon: Icon,
     header: &str,
-    expanded: &HashSet<String>,
+    expanded: &Expanded,
     body: impl FnOnce() -> String,
 ) -> String {
-    let open = expanded.contains(key);
+    let open = expanded.block(key);
     let chevron = if open {
         icondata::FaChevronDownSolid
     } else {
@@ -834,16 +951,16 @@ fn thinking_key(id: u64) -> String {
     format!("thinking:{id}")
 }
 
-/// A row that shows `header` and, once clicked open, `detail` and `body`.
+/// A row that shows `header` and, once clicked open (`expanded`), `detail`
+/// and `body`; `key` is its block key.
 fn collapsible(
-    view: &TranscriptView<'_>,
+    expanded: bool,
     key: &str,
     icon: Icon,
     header: &str,
     detail: Option<&str>,
     body: &str,
 ) -> String {
-    let expanded = view.expanded.contains(key);
     let chevron = if expanded {
         icondata::FaChevronDownSolid
     } else {
@@ -883,7 +1000,7 @@ fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
         // Open or folded like any other block, in the page's expanded set:
         // a native <details> forgot it whenever the item drew again.
         AssistantChild::Thinking { id, text, .. } => collapsible(
-            view,
+            view.expanded.thinking(*id),
             &thinking_key(*id),
             icondata::FaLightbulbRegular,
             "thinking",
@@ -973,7 +1090,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         svg(mark.icon, if mark.spins { "animate-spin" } else { "" }),
         mark.label
     );
-    let expanded = view.expanded.contains(&id);
+    let expanded = view.expanded.tool(&tool.id);
     let progress = tool
         .progress
         .as_ref()
@@ -1075,7 +1192,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
             ));
         }
         let all_key = all_output_key(&id);
-        let all = view.expanded.contains(&all_key);
+        let all = view.expanded.all_output(&tool.id);
         let budget = if all { ALL_OUTPUT_LINES } else { OUTPUT_LINES };
         let (shown, omitted) = within_budget(tool.shown_display(), budget);
         html.push_str(&display_html(&shown, |index| BlockPlace {
@@ -1134,13 +1251,11 @@ fn delegate_html(delegate: &Delegate, running: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use cookie_agent_client_state::{
         EventLevel, ModelDisplayNames, ProducerMessageStatus, SessionState, TranscriptItem,
     };
 
-    use super::{Delegate, TranscriptView, child_html, item_html, item_key, tool_html};
+    use super::{Delegate, Expanded, TranscriptView, child_html, item_html, item_key, tool_html};
 
     static NO_HOMES: std::sync::LazyLock<cookie_agent_client_state::paths::RuntimeHomes> =
         std::sync::LazyLock::new(Default::default);
@@ -1203,10 +1318,7 @@ mod tests {
         tool(presentation, "{}")
     }
 
-    fn rendered(
-        tool: &cookie_agent_client_state::ToolCallState,
-        expanded: &HashSet<String>,
-    ) -> String {
+    fn rendered(tool: &cookie_agent_client_state::ToolCallState, expanded: &Expanded) -> String {
         let state = SessionState::default();
         let names = ModelDisplayNames::default();
         let view = TranscriptView {
@@ -1236,7 +1348,7 @@ mod tests {
             version: 0,
             text: "weighing the options".into(),
         };
-        let draw = |expanded: &HashSet<String>| {
+        let draw = |expanded: &Expanded| {
             let view = TranscriptView {
                 session_id: cookie_agent_protocol::SessionId::new_v7(),
                 state: &state,
@@ -1248,11 +1360,11 @@ mod tests {
             };
             child_html(&view, &thinking)
         };
-        let folded = draw(&HashSet::new());
+        let folded = draw(&Expanded::default());
         assert!(folded.contains("data-block-key=\"thinking:7\""), "{folded}");
         assert!(folded.contains("aria-expanded=\"false\""), "{folded}");
         assert!(!folded.contains("weighing the options"), "{folded}");
-        let open = draw(&HashSet::from(["thinking:7".to_owned()]));
+        let open = draw(&Expanded::from_iter(["thinking:7".to_owned()]));
         assert!(open.contains("aria-expanded=\"true\""), "{open}");
         assert!(open.contains("weighing the options"), "{open}");
     }
@@ -1260,11 +1372,11 @@ mod tests {
     #[test]
     fn the_collapsed_header_shows_the_title_and_the_argument_it_does_not_name() {
         let named = run("Run `cargo test`", "cargo test");
-        let html = rendered(&named, &HashSet::new());
+        let html = rendered(&named, &Expanded::default());
         assert_eq!(header(&html), "Run `cargo test`");
         let unnamed = run("Run a command", "cargo test");
         assert_eq!(
-            header(&rendered(&unnamed, &HashSet::new())),
+            header(&rendered(&unnamed, &Expanded::default())),
             "Run a command cargo test"
         );
         // Collapsed: no arguments and no output.
@@ -1276,7 +1388,7 @@ mod tests {
     #[test]
     fn the_open_row_shows_arguments_without_the_one_the_header_shows() {
         let call = run("Run a command", "cargo test");
-        let html = rendered(&call, &HashSet::from([call.id.to_string()]));
+        let html = rendered(&call, &Expanded::from_iter([call.id.to_string()]));
         assert!(html.contains("aria-expanded=\"true\""), "{html}");
         assert!(html.contains("data-arguments>arguments<"), "{html}");
         assert!(html.contains("timeout"), "{html}");
@@ -1292,7 +1404,7 @@ mod tests {
         let mut call = run("Run a command", "sleep 8");
         call.status = cookie_agent_client_state::ToolStatus::Running;
         call.progress = Some("compiling\n12 of 40".into());
-        let html = rendered(&call, &HashSet::new());
+        let html = rendered(&call, &Expanded::default());
         assert!(
             html.contains("data-progress>· compiling 12 of 40<"),
             "{html}"
@@ -1311,12 +1423,12 @@ mod tests {
             cookie_agent_protocol::DisplayBlock::text(lines),
         )];
         let id = call.id.to_string();
-        let open = rendered(&call, &HashSet::from([id.clone()]));
+        let open = rendered(&call, &Expanded::from_iter([id.clone()]));
         assert!(open.contains("… 36 more lines (click to expand)"), "{open}");
         assert!(!open.contains("\n65"), "{open}");
         let all = rendered(
             &call,
-            &HashSet::from([id.clone(), super::all_output_key(&id)]),
+            &Expanded::from_iter([id.clone(), super::all_output_key(&id)]),
         );
         assert!(all.contains("\n100"), "{all}");
         assert!(all.contains("click to collapse"), "{all}");
@@ -1341,7 +1453,7 @@ mod tests {
             .with_preview([cookie_agent_protocol::DisplayBlock::text("the preview")]),
             r#"{"filePath":"a.rs","newString":"raw-marker"}"#,
         );
-        let expanded = HashSet::from([plain.id.to_string(), previewed.id.to_string()]);
+        let expanded = Expanded::from_iter([plain.id.to_string(), previewed.id.to_string()]);
         let view = |minimum_level| TranscriptView {
             session_id: cookie_agent_protocol::SessionId::new_v7(),
             state: &state,
@@ -1361,7 +1473,7 @@ mod tests {
     fn rows_below_the_event_level_are_hidden_and_text_is_escaped() {
         let state = SessionState::default();
         let names = ModelDisplayNames::default();
-        let expanded = HashSet::new();
+        let expanded = Expanded::default();
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let view = |minimum_level| TranscriptView {
             session_id,
@@ -1414,8 +1526,8 @@ mod tests {
             reminder: None,
             status,
         };
-        let collapsed = HashSet::new();
-        let opened = HashSet::from([format!("producer:{message_id}")]);
+        let collapsed = Expanded::default();
+        let opened = Expanded::from_iter([format!("producer:{message_id}")]);
         let view = |expanded| TranscriptView {
             session_id: cookie_agent_protocol::SessionId::new_v7(),
             state: &state,
@@ -1445,7 +1557,7 @@ mod tests {
     fn a_memory_change_is_a_line_that_opens_the_memory_whatever_the_level() {
         let state = SessionState::default();
         let names = ModelDisplayNames::default();
-        let expanded = HashSet::new();
+        let expanded = Expanded::default();
         let view = TranscriptView {
             session_id: cookie_agent_protocol::SessionId::new_v7(),
             state: &state,
@@ -1482,7 +1594,7 @@ mod tests {
     fn the_system_prompt_and_tools_rows_fold_and_open() {
         use super::{MODEL_TOOLS_KEY, SYSTEM_PROMPT_KEY, pinned_rows};
         let mut state = SessionState::default();
-        let mut expanded = HashSet::new();
+        let mut expanded = Expanded::default();
         // Nothing to pin before the session's agent is known.
         assert!(pinned_rows(&state, &expanded, None).is_none());
         let primary = cookie_agent_protocol::AgentId::new("primary").unwrap();
@@ -1513,8 +1625,8 @@ mod tests {
         assert_eq!(folded.matches("min-w-0 max-w-full").count(), 2);
         let (_, same) = pinned_rows(&state, &expanded, Some(&primary)).unwrap();
         assert!(!same.contains("next:"));
-        expanded.insert(SYSTEM_PROMPT_KEY.to_owned());
-        expanded.insert(MODEL_TOOLS_KEY.to_owned());
+        expanded.toggle(SYSTEM_PROMPT_KEY);
+        expanded.toggle(MODEL_TOOLS_KEY);
         let (open_key, open) = pinned_rows(&state, &expanded, None).unwrap();
         // The prompt keeps its whitespace, escaped; the tools are chips.
         assert!(
@@ -1622,7 +1734,7 @@ mod tests {
     fn a_streaming_reply_draws_again_only_its_open_tail() {
         let (mut state, _) = streaming_reply();
         let names = ModelDisplayNames::default();
-        let expanded = HashSet::new();
+        let expanded = Expanded::default();
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let mut cache = super::RowCache::default();
         let draw = |state: &SessionState, cache: &mut super::RowCache| {
@@ -1675,21 +1787,20 @@ mod tests {
         let names = ModelDisplayNames::default();
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let mut cache = super::RowCache::default();
-        let draw =
-            |state: &SessionState, expanded: &HashSet<String>, cache: &mut super::RowCache| {
-                let view = TranscriptView {
-                    session_id,
-                    state,
-                    names: &names,
-                    minimum_level: EventLevel::Warning,
-                    expanded,
-                    delegates: &NO_DELEGATES,
-                    homes: &NO_HOMES,
-                };
-                super::transcript_rows(&view, None, cache)
+        let draw = |state: &SessionState, expanded: &Expanded, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
             };
-        let folded = HashSet::new();
-        let open = HashSet::from([call_id.to_string()]);
+            super::transcript_rows(&view, None, cache)
+        };
+        let folded = Expanded::default();
+        let open = Expanded::from_iter([call_id.to_string()]);
         let first = draw(&state, &folded, &mut cache);
         stream(&mut state, " more", " more");
         draw(&state, &folded, &mut cache);
@@ -1717,7 +1828,7 @@ mod tests {
         let mut state = SessionState::default();
         state.acp.steered.insert(7);
         let names = ModelDisplayNames::default();
-        let expanded = HashSet::new();
+        let expanded = Expanded::default();
         let view = TranscriptView {
             session_id: cookie_agent_protocol::SessionId::new_v7(),
             state: &state,
@@ -1765,7 +1876,7 @@ mod tests {
     fn a_late_presentation_draws_its_call_again_with_the_new_title() {
         let (mut state, call_id) = streaming_reply();
         let names = ModelDisplayNames::default();
-        let expanded = HashSet::new();
+        let expanded = Expanded::default();
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let mut cache = super::RowCache::default();
         let draw = |state: &SessionState, cache: &mut super::RowCache| {
@@ -1854,7 +1965,7 @@ mod tests {
             .tools
             .extend(calls.into_iter().map(|call| (call.id, call)));
         let names = ModelDisplayNames::default();
-        let expanded = HashSet::new();
+        let expanded = Expanded::default();
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let mut cache = super::RowCache::default();
         let draw = |state: &SessionState, cache: &mut super::RowCache| {
