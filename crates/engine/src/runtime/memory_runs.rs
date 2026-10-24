@@ -62,6 +62,13 @@ impl SeenMemories {
         self.with(|seen| seen.get(&session)?.get(url).cloned())
     }
 
+    /// Forgets what `sessions` saw, as they are deleted or paged out: a
+    /// session reloaded later reads a memory again before it replaces it
+    /// whole, as after a restart.
+    pub(crate) fn forget_sessions(&self, sessions: &std::collections::HashSet<SessionId>) {
+        self.with(|seen| seen.retain(|session, _| !sessions.contains(session)));
+    }
+
     /// Forgets what `session` saw of `url`, which it deleted.
     pub(crate) fn forget(&self, session: SessionId, url: &MemoryUrl) {
         self.with(|seen| {

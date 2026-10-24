@@ -1205,6 +1205,144 @@ async fn idle_root_trees_page_out_when_unwatched_and_reload_on_view() {
     fixture.engine.shutdown().await;
 }
 
+/// A tree paged out whole leaves nothing of its sessions behind: its
+/// delegation records and registry, what its sessions saw of memory, and its
+/// fork and steer bookkeeping. Using the tree again loads it again, which
+/// brings back its delegation records and registry.
+#[tokio::test]
+async fn an_evicted_tree_leaves_no_session_state_and_reloads_its_delegations() {
+    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    for response in [
+        MatchedScriptedResponse::last_message_contains(
+            "delegate before paging out",
+            scripted_tool_body(
+                "evicted-tree-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker", "description": "Paged child", "prompt": "paged child work"
+                }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "paged child work",
+            scripted_text_body("paged child report"),
+        ),
+        MatchedScriptedResponse::last_message_role("tool", scripted_text_body("root done")),
+    ] {
+        responses.send(response).expect("scripted response");
+    }
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }),
+    );
+    let engine = &fixture.engine;
+    let root = engine
+        .create_session(selection.clone())
+        .expect("root session")
+        .session_id;
+    engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: root,
+                client_run_id: ClientRunId::new("evicted-tree").expect("run ID"),
+                selection,
+                content: "delegate before paging out".to_owned().into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("root run");
+    await_projection(engine, root, "root run completion", |projection| {
+        projection.status == SessionStatus::Completed
+    })
+    .await;
+    with_watchdog("evicted tree server", captured)
+        .await
+        .expect("scripted server");
+    let child = engine.children(root).expect("children")[0].session_id;
+    let tree = [root, child];
+
+    let in_tree = |engine: &crate::Engine| {
+        let delegations = engine
+            .inner
+            .delegation_events
+            .entries()
+            .into_iter()
+            .filter(|entry| {
+                tree.contains(&entry.reservation.parent_session_id)
+                    || tree.contains(&entry.reservation.child_session_id)
+            })
+            .count();
+        let registry = engine
+            .inner
+            .delegation
+            .by_session
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|session| tree.contains(session))
+            .count();
+        (delegations, registry)
+    };
+    assert_eq!(in_tree(engine), (1, 1));
+    let url = crate::memory::url::MemoryUrl::parse("user://profile").unwrap();
+    for session in tree {
+        engine.inner.memory_seen.saw(
+            session,
+            url.clone(),
+            crate::memory::file::MemoryRevision::of(b"profile"),
+        );
+        engine
+            .inner
+            .sessions
+            .steer_order
+            .lock()
+            .unwrap()
+            .entry(session)
+            .or_default();
+    }
+    engine.inner.sessions.forks.lock().unwrap().insert(
+        (
+            root,
+            cookie_agent_protocol::ClientForkId::new("paged-fork").unwrap(),
+        ),
+        (1, cookie_agent_protocol::SessionId::new_v7()),
+    );
+
+    let evicted = engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("idle janitor pass");
+    assert_eq!(evicted, vec![child, root]);
+    assert_eq!(in_tree(engine), (0, 0));
+    for session in tree {
+        assert_eq!(engine.inner.memory_seen.seen(session, &url), None);
+        assert!(
+            !engine
+                .inner
+                .sessions
+                .steer_order
+                .lock()
+                .unwrap()
+                .contains_key(&session)
+        );
+    }
+    assert!(engine.inner.sessions.forks.lock().unwrap().is_empty());
+
+    // Viewing the tree loads it again, delegation records and all.
+    let (_page, _tail) = engine.subscribe(root, None).await.expect("reload on view");
+    assert_eq!(
+        engine.get_session(child).expect("child reloads").status,
+        SessionStatus::Completed
+    );
+    assert_eq!(in_tree(engine), (1, 1));
+    fixture.engine.shutdown().await;
+}
+
 /// Whether the parent's model was told that `child` finished: its
 /// delegation finished and the completion's producer message was accepted.
 fn delegation_notified(

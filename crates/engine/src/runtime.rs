@@ -1814,10 +1814,15 @@ impl Engine {
         &self,
         key: &PreparedSerializationKey,
     ) -> Arc<tokio::sync::Mutex<()>> {
-        self.inner
+        let mut locks = self
+            .inner
             .mutation_locks
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Keyed by the file a call writes, so the map would grow with every
+        // file the daemon ever edits: a lock nobody holds or waits on goes.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks
             .entry(key.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()

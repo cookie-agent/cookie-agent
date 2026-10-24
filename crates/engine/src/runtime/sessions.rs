@@ -648,6 +648,7 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|child| !deleted.contains(child));
         self.inner.delegation_events.forget_sessions(deleted);
+        self.inner.memory_seen.forget_sessions(deleted);
         self.forget_live_waiting(deleted);
         self.delete_crons_targeting(deleted);
         // A wait on a deleted subagent ends now rather than at its recheck.

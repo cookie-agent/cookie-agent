@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use cookie_agent_protocol::{EventPayload as Event, SessionId, SessionOrigin, SessionStatus};
 use jiff::Timestamp;
@@ -415,7 +415,7 @@ impl Engine {
                 continue;
             }
             // Children first, root last.
-            let mut ordered = members;
+            let mut ordered = members.clone();
             ordered.sort_by_key(|member| *member == root);
             for member in ordered {
                 let Some(session) = self.inner.store.get_resident(member) else {
@@ -448,8 +448,47 @@ impl Engine {
                 }
                 evicted.push(member);
             }
+            if members
+                .iter()
+                .all(|member| !self.inner.store.is_resident(*member))
+            {
+                self.forget_evicted_tree(root, &members);
+            }
         }
         Ok(evicted)
+    }
+
+    /// Drops what the engine keeps for the sessions of a tree paged out
+    /// whole. What the tree's load handed over (its delegation records and
+    /// the registry built from them) goes with the tree's load, so the next
+    /// use loads the tree again and hands it over anew.
+    fn forget_evicted_tree(&self, root: SessionId, members: &[SessionId]) {
+        let members = members.iter().copied().collect::<HashSet<_>>();
+        self.inner.store.unload_tree(root, || {
+            self.inner.delegation_events.forget_sessions(&members);
+            self.inner
+                .delegation
+                .by_session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|child, record| {
+                    !members.contains(child) && !members.contains(&record.parent_session_id)
+                });
+        });
+        self.inner.memory_seen.forget_sessions(&members);
+        self.inner
+            .sessions
+            .forks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|(source, _), _| !members.contains(source));
+        // A steer holding its session's order keeps it.
+        self.inner
+            .sessions
+            .steer_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|session, order| !members.contains(session) || Arc::strong_count(order) > 1);
     }
 
     /// Whether `session` is a root whose whole resident tree has been unused
@@ -547,6 +586,21 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session_id);
+        self.inner
+            .memory_seen
+            .forget_sessions(&HashSet::from([session_id]));
+        let mut steer_order = self
+            .inner
+            .sessions
+            .steer_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if steer_order
+            .get(&session_id)
+            .is_some_and(|order| Arc::strong_count(order) == 1)
+        {
+            steer_order.remove(&session_id);
+        }
     }
 }
 

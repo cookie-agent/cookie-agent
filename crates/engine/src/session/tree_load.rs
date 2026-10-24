@@ -654,6 +654,34 @@ impl SessionStore {
             .loaded = true;
     }
 
+    /// Marks the loaded tree of `root` unloaded, for a tree paged out whole,
+    /// after `forget` dropped what the engine kept from its load: the next
+    /// use folds the tree again and hands that over anew. `forget` runs
+    /// under the tree's load gate, so no load of the tree can start, and
+    /// hand over again what it is dropping, until it returns. A tree being
+    /// loaded, or not loaded, is left as it is, and `forget` does not run.
+    pub(crate) fn unload_tree(&self, root: SessionId, forget: impl FnOnce()) -> bool {
+        let gate = self.tree_gate(root);
+        let mut status = gate
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *status != TreeLoadStatus::Loaded {
+            return false;
+        }
+        forget();
+        if let Some(state) = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&root)
+        {
+            state.loaded = false;
+        }
+        *status = TreeLoadStatus::Unloaded;
+        true
+    }
+
     /// Reads and folds every child log of `root` exactly once per process
     /// (§3.3), harvesting what the engine singletons need — delegation records,
     /// restart-stable grants, producer state, manifest bindings, artifact
