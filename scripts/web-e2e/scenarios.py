@@ -347,8 +347,6 @@ def answers(browser):
 # The open session's row marked running in the sessions list, which follows
 # the daemon's own session status.
 RUNNING_ROW = "aside [data-session-row]:has([aria-current=true]) [data-session-activity=running]"
-# What the daemon says to a command that needs the session idle.
-RUN_ACTIVE = "Another run is already active"
 
 
 def idle(browser, what="the run's end", text=None, timeout=90):
@@ -364,37 +362,6 @@ def idle(browser, what="the run's end", text=None, timeout=90):
         and count(browser, RUNNING_ROW) == 0,
         timeout=timeout,
     )
-
-
-def poll(check, timeout):
-    """Whether `check` holds within `timeout` seconds."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            if check():
-                return True
-        except RuntimeError:
-            pass
-        time.sleep(0.2)
-    return False
-
-
-def until_accepted(browser, what, act, done, timeout=30):
-    """Runs `act`, a command that needs the session idle, and waits until
-    `done` holds. The daemon lets a run go a moment after its end reaches
-    the page (and the sessions list), so a command [`idle`] let through may
-    still meet the run: refused naming it, it runs once more."""
-    stale = RUN_ACTIVE in browser.text("#status")
-    act()
-    if (
-        not stale
-        and poll(lambda: done() or RUN_ACTIVE in browser.text("#status"), timeout)
-        and not done()
-    ):
-        print("%s: refused while the run let go; again" % what)
-        time.sleep(1)
-        act()
-    browser.wait(what, done, timeout=timeout)
 
 
 def clear_composer(browser):
@@ -983,25 +950,23 @@ def session_depth(browser):
     )
     print("forked the session at its first message")
     browser.shot("fork")
+    # The fork already holds the first message's answer.
+    sent = answers(browser)
     send(browser, "third message")
-    browser.wait("the third answer", lambda: answers(browser) >= 1)
+    browser.wait("the third answer", lambda: answers(browser) > sent)
     idle(browser, "the third run's end")
 
-    def revert():
-        close_sheet(browser)
-        browser.script(
-            "const menus = document.querySelectorAll('#transcript [data-action=user-menu]');"
-            "menus[menus.length - 1].click()"
-        )
-        browser.wait("the message menu", lambda: "Revert" in browser.text("#sheet"))
-        browser.click("#message-revert")
-        browser.wait("the revert guard", lambda: "Revert to before" in browser.text("#sheet"))
-        browser.click("#revert-confirm")
-
-    until_accepted(
-        browser,
+    close_sheet(browser)
+    browser.script(
+        "const menus = document.querySelectorAll('#transcript [data-action=user-menu]');"
+        "menus[menus.length - 1].click()"
+    )
+    browser.wait("the message menu", lambda: "Revert" in browser.text("#sheet"))
+    browser.click("#message-revert")
+    browser.wait("the revert guard", lambda: "Revert to before" in browser.text("#sheet"))
+    browser.click("#revert-confirm")
+    browser.wait(
         "the revert",
-        revert,
         lambda: "third message" not in browser.text("#transcript")
         and browser.script("return document.querySelector('#composer').value") == "third message",
     )
@@ -1581,10 +1546,9 @@ def management(browser):
     idle(browser)
     menu(browser, "runtime")
     browser.wait("the attachments", lambda: "local/coding" in browser.text("#sheet"))
-    until_accepted(
-        browser,
+    click_row_button(browser, "#sheet .runtime-row", "local/coding", "[data-detach]")
+    browser.wait(
         "the detached runtime",
-        lambda: click_row_button(browser, "#sheet .runtime-row", "local/coding", "[data-detach]"),
         lambda: "local/coding" not in browser.text("#sheet .runtime-row:last-of-type") and "detached" in browser.text("#status"),
     )
     browser.click("#runtime-attach")
