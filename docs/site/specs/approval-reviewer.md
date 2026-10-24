@@ -103,7 +103,8 @@ Discussed 2026-10-24:
    verdicts stay in it as assistant turns.
 3. **Caching.** A rolling cache breakpoint at the end of each request. The
    reviewer's cache TTL has its own setting, `[approval] cache_ttl`, which
-   defaults to the 1-hour TTL (section 5).
+   defaults to the 1-hour TTL where the reviewer model's provider uses TTL
+   markers (section 5).
 4. **Bounded by budgets and epochs.**
    - Two budgets (user messages, and the agent's trajectory), with
      per-entry caps.
@@ -123,7 +124,10 @@ Discussed 2026-10-24:
    stand.
 2. Tool-call outcomes are shown (section 4.4).
 3. A scheduled prompt carries user authority (section 4.2).
-4. The reviewer's cache TTL gets its own setting (section 5).
+4. The reviewer's cache TTL gets its own setting (section 5). It applies to
+   the reviewer model's own provider, which may differ from the session's.
+   It has no `provider` value: providers without TTL markers cache
+   automatically, and the setting has no effect on them.
 5. No reviewer variant is set in the starter kit:
    - The `approval` agent already runs `${small_model}` with its variant.
    - The kit's `explore` agent moves from `${small_model}` to
@@ -274,18 +278,41 @@ strings. The current flow does not escape the user message (section 10, d).
 - **Current behaviour to remove:** `internal_cache_strategies`
   (`internal_agents.rs`) currently sets `rolling = None` for the approval
   agent.
-- **The reviewer's chain** uses the run's provider cache configuration with
-  rolling on, and with the TTL set by its own knob:
+- **Which provider's settings apply.** The reviewer's cache settings come
+  from the reviewer model's own provider, never the session's.
+  `internal_cache_strategies` already resolves each reviewer binding through
+  that binding's provider configuration. It reuses the parent's only when the
+  reviewer runs the very same model. A session on one provider with a
+  reviewer on another works without special handling. The reviewer's chain
+  is a different prompt from the session's anyway, so the two never share a
+  cache.
+- **The knob.** The reviewer's own setting:
 
   ```toml
   [approval]
-  cache_ttl = "1h"    # "1h" (the default), "5m", or "provider" for the provider's configured TTL
+  cache_ttl = "1h"    # "1h" (the default), "5m", or "off"
   ```
 
-  - **`1h`** asks for the provider's extended TTL (Anthropic). A provider
-    without one uses its default.
-  - **`5m`** asks for the short TTL.
-  - **`provider`** follows the run's own cache configuration.
+  - **Providers with TTL markers (Anthropic, Bedrock):** `cache_ttl` sets
+    the reviewer's rolling marker, and its system marker is raised to at
+    least the same TTL, as the ordering rule requires (a one-hour marker
+    cannot follow a five-minute one).
+    - **`1h` without the beta flag:** when the reviewer model's authored
+      Anthropic `beta` options lack `extended-cache-ttl-2025-04-11`, `1h`
+      falls back to `5m`, and config status reports it. Cookie never adds
+      the beta flag itself.
+    - **The provider config:** today `rolling` accepts only `"5m"` or
+      `"off"`, so the strategy type gains a one-hour rolling marker for
+      internal agents. Authored provider config keeps its current values.
+  - **Providers with automatic caching** (OpenAI and Azure,
+    OpenAI-compatible, Gemini, Cohere): `cache_ttl` has no effect, and config
+    status says so when the reviewer runs on one. The append-only chain gets
+    their automatic prefix discount anyway. OpenAI's `24h` retention is a
+    different mechanism, so it is not mapped.
+  - **`off`:** no reviewer markers.
+  - **Fallback:** a reviewer that falls back from `${small_model}` to
+    `${parent_model}` on another provider follows the same rules for that
+    model's provider.
 
   The knob is read at each review, so a config apply takes effect at the
   next one. The title agent keeps `rolling = None`.
@@ -436,8 +463,10 @@ All additive. Client and plugin minors are bumped together in one commit.
   readers skip it.
 - **Tool-denial `source: "approval_reviewer"`:** this is model-facing text,
   not a wire schema.
-- **`[approval] cache_ttl`:** `"1h"` (the default), `"5m"`, or `"provider"`.
-  Unknown values fail, as for every config key.
+- **`[approval] cache_ttl`:** `"1h"` (the default), `"5m"`, or `"off"`.
+  It applies to the reviewer model's own provider when that provider uses TTL
+  markers (section 5). Unknown values fail, as for every config key.
+- **Internal agents' cache strategy:** gains a one-hour rolling marker.
 - **The starter kit's `explore`** uses `${default_model}` (already done,
   with this spec).
 - **No change to `ApprovalRequest`.** Moving `expires_at` (section 10, b)
