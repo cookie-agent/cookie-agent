@@ -1,6 +1,12 @@
 //! Helpers shared by tool providers: argument parsing, parameter schemas,
 //! result titles, and prepared-operation identities.
 
+use std::{
+    any::TypeId,
+    collections::HashMap,
+    sync::{OnceLock, RwLock},
+};
+
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
     PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
@@ -16,19 +22,52 @@ fn tool_error(error: impl std::fmt::Display) -> ToolError {
     ToolError::execution(error.to_string())
 }
 
-/// The JSON Schema of a tool's parameters type.
+/// The JSON Schema of a tool's parameters type. Generated once per type:
+/// providers publish their tools at every model step.
 #[must_use]
-pub fn schema<T: JsonSchema>() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
+pub fn schema<T: JsonSchema + 'static>() -> serde_json::Value {
+    memoized::<T>(false, || {
+        serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
+    })
 }
 
 /// The schema of arguments [`parse_args_strict`] reads: every object that
 /// lists its properties refuses others, including types history also stores,
 /// which ignore them there.
-pub fn strict_schema<T: JsonSchema>() -> serde_json::Value {
-    let mut schema = schema::<T>();
-    close_objects(&mut schema);
-    schema
+#[must_use]
+pub fn strict_schema<T: JsonSchema + 'static>() -> serde_json::Value {
+    memoized::<T>(true, || {
+        let mut schema = schema::<T>();
+        close_objects(&mut schema);
+        schema
+    })
+}
+
+/// The schema `build` makes for `T`, `strict` or not, built on first use and
+/// cloned from then on.
+fn memoized<T: 'static>(
+    strict: bool,
+    build: impl FnOnce() -> serde_json::Value,
+) -> serde_json::Value {
+    type Schemas = HashMap<(TypeId, bool), serde_json::Value>;
+    static SCHEMAS: OnceLock<RwLock<Schemas>> = OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(RwLock::default);
+    let key = (TypeId::of::<T>(), strict);
+    if let Some(schema) = schemas
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+    {
+        return schema.clone();
+    }
+    // Built outside the lock; two first uses may both build it.
+    let schema = build();
+    schemas
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(key)
+        .or_insert(schema)
+        .clone()
 }
 fn close_objects(schema: &mut serde_json::Value) {
     let Some(object) = schema.as_object_mut() else {

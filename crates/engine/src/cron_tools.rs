@@ -246,8 +246,14 @@ fn spec(
     }
 }
 
-/// The cron tools as the `global` runtime publishes them.
+/// The cron tools as the `global` runtime publishes them, built once:
+/// they are published at every model step.
 pub(crate) fn specs() -> Vec<ToolSpec> {
+    static SPECS: std::sync::OnceLock<Vec<ToolSpec>> = std::sync::OnceLock::new();
+    SPECS.get_or_init(build_specs).clone()
+}
+
+fn build_specs() -> Vec<ToolSpec> {
     let cron = Some(PermissionAction::CRON.as_str());
     let delivery = serde_json::json!({"type": "string", "enum": ["queue", "steer"]});
     let id =

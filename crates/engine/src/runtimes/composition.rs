@@ -84,9 +84,9 @@ pub(crate) fn compose(
         *counts.entry(&spec.name).or_default() += 1;
     }
     let count = |counts: &HashMap<&str, usize>, name: &str| counts.get(name).copied().unwrap_or(0);
-    let mut tools = Vec::with_capacity(candidates.len());
+    let mut names = Vec::with_capacity(candidates.len());
     let mut overridden = Vec::new();
-    for ((source, spec), label) in candidates.iter().zip(&labels) {
+    for ((_, spec), label) in candidates.iter().zip(&labels) {
         let name = spec.name.as_str();
         let published = match (label, spec.collision) {
             (None, _) => name.to_owned(),
@@ -115,6 +115,7 @@ pub(crate) fn compose(
                     || count(&regular, name) > 0
                     || count(&overriding, name) > 0
                 {
+                    names.push(None);
                     continue;
                 }
                 if count(&fallback, name) > 1 {
@@ -124,17 +125,19 @@ pub(crate) fn compose(
                 }
             }
         };
-        tools.push(ComposedTool {
-            name: published,
-            source: source.clone(),
-            spec: spec.clone(),
-        });
+        names.push(Some(published));
     }
     let mut diagnostics = overridden
         .into_iter()
         .map(|name| {
             format!("several tools override `{name}`; each is published under its source's prefix")
         })
+        .collect::<Vec<_>>();
+    // Hidden fallback tools have no name; the others move into the set.
+    let mut tools = candidates
+        .into_iter()
+        .zip(names)
+        .filter_map(|((source, spec), name)| name.map(|name| ComposedTool { name, source, spec }))
         .collect::<Vec<_>>();
     let mut published = HashSet::new();
     tools.retain(|tool| {
