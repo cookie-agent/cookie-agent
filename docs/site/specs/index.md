@@ -39,6 +39,7 @@ Drafts and preserved proposals, and records of finished refactors.
 
 | Specification | Status |
 |---|---|
+| [Approval reviewer: context, caching, and verdicts](approval-reviewer.md) | Draft (2026-10-24), awaiting approval; the reviewer sees every user message, the agent's recent tool calls, and AGENTS.md in one cached append-only conversation per session, bounded by budgets and epochs, and answers with a reason; fixes `auto_approve_y` failing open, the reviewer's latency eating the approval window, unescaped tags, reviewer denials reading as the user's, and the permission mode resetting on restart |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
 | [Refactor phase 1: test layout and build hygiene](refactor-phase-1-test-layout.md) | Implemented; split test monoliths, collapse engine test hooks, dev-profile debuginfo |
