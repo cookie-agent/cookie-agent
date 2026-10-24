@@ -2,7 +2,6 @@
 description: Read-only explorer that searches the workspace and documentation and reports what it found, with file paths.
 mode: subagent
 models:
-  - ${small_model}
   - ${default_model}
 permissions:
   read: allow                     # read every file; explore never writes, so no write key

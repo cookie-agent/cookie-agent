@@ -417,7 +417,7 @@ holding three agents to start from or replace:
 | Agent | Mode | `models` | What it does |
 |---|---|---|---|
 | `primary` | `primary` | `${default_model}` | Runs sessions: reads, writes, fetches, uses skills and memory, and delegates to `explore` and `worker` |
-| `explore` | `subagent` | `${small_model}`, then `${default_model}` | Reads and searches, never writes, and reports what it found |
+| `explore` | `subagent` | `${default_model}` | Reads and searches, never writes, and reports what it found |
 | `worker` | `subagent` | `${default_model}` | Carries out one delegated task with `primary`'s tools |
 
 Their `permissions` name every action explicitly, defaults included, each

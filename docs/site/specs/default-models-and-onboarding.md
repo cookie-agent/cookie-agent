@@ -116,7 +116,7 @@ models:
   defaults/
     config.toml        # commented: default_model, small_model, [server], [memory], [cron], an MCP example
     agents/primary.md  # mode primary, models: [${default_model}]
-    agents/explore.md  # mode subagent, read-only exploring, models: [${small_model}, ${default_model}]
+    agents/explore.md  # mode subagent, read-only exploring, models: [${default_model}] (changed 2026-10-24: `${small_model}` is left to the approval and title agents)
     agents/worker.md   # mode subagent, does a delegated task, models: [${default_model}]
     manifest.json      # kit version, the cookie version it was built for, each file's sha256
                        # skills are not in the kit (section 13)

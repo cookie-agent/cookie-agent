@@ -97,10 +97,7 @@ fn the_kit_agents_are_the_root_and_its_two_subagents() {
             .collect::<Vec<_>>()
     };
     assert_eq!(models("primary"), [AgentModelRef::DefaultModel]);
-    assert_eq!(
-        models("explore"),
-        [AgentModelRef::SmallModel, AgentModelRef::DefaultModel]
-    );
+    assert_eq!(models("explore"), [AgentModelRef::DefaultModel]);
     assert_eq!(models("worker"), [AgentModelRef::DefaultModel]);
     let write: PermissionKey = "write".parse().expect("key");
     assert!(

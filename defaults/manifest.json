@@ -1,7 +1,7 @@
 {
   "kit_version": 1,
   "files": {
-    "agents/explore.md": "001f9946ce1d9d0df77a573001d15509675cb5b2bcfc5c96485e3a14d33eb335",
+    "agents/explore.md": "50c64fd2f8fe071077384eb49cce41152413f54b018a9828d3a6b7f998eb44e3",
     "agents/primary.md": "c68b57282888fe3400b9eae0c23532dd5c930b3257d1ac1a7a3043516e01d983",
     "agents/worker.md": "c9a817906c55fbe3c80c8c0a3ed70289fa07db3c87ea7ef00e89132e498aae63",
     "config.toml": "4fd0ed16352668595b27c606799867e22e845bc5c9e5a9dff61a7682509e8fc7"
