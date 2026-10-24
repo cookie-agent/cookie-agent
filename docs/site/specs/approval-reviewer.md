@@ -1,6 +1,6 @@
 # Approval reviewer: context, caching, and verdicts
 
-Status: **draft** (2026-10-24), awaiting approval. Revises the built-in
+Status: **draft** (2026-10-24); open questions answered, awaiting the go-ahead. Revises the built-in
 `approval` internal agent ([Agents: internal agents](../extend/agents.md))
 and the approval flow of the [permission consolidation](permission-consolidation.md)
 spec, which left approvals out of scope.
@@ -101,8 +101,9 @@ Discussed 2026-10-24:
 2. **One cached, append-only reviewer conversation per session.** Each
    review appends only what happened since the previous one, and earlier
    verdicts stay in it as assistant turns.
-3. **Caching.** A rolling cache breakpoint at the end of each request, with
-   the 1-hour TTL where the provider offers it.
+3. **Caching.** A rolling cache breakpoint at the end of each request. The
+   reviewer's cache TTL has its own setting, `[approval] cache_ttl`, which
+   defaults to the 1-hour TTL (section 5).
 4. **Bounded by budgets and epochs.**
    - Two budgets (user messages, and the agent's trajectory), with
      per-entry caps.
@@ -115,6 +116,21 @@ Discussed 2026-10-24:
 6. **Earlier thinking blocks stay in the chain** where the provider keeps them
    valid for the same conversation. They count toward the trajectory budget.
 7. **Fix the defects** in section 10 in the same work.
+
+**Answers to the open questions, 2026-10-24:**
+
+1. The budgets (30% user messages, 50% trajectory) and the per-entry caps
+   stand.
+2. Tool-call outcomes are shown (section 4.4).
+3. A scheduled prompt carries user authority (section 4.2).
+4. The reviewer's cache TTL gets its own setting (section 5).
+5. No reviewer variant is set in the starter kit:
+   - The `approval` agent already runs `${small_model}` with its variant.
+   - The kit's `explore` agent moves from `${small_model}` to
+     `${default_model}`. By default `small_model` then serves only the
+     approval and title agents.
+   - The variant chosen for `small_model` during onboarding or in settings is
+     the reviewer's effort (section 9).
 
 ## 4. The reviewer conversation
 
@@ -258,12 +274,21 @@ strings. The current flow does not escape the user message (section 10, d).
 - **Current behaviour to remove:** `internal_cache_strategies`
   (`internal_agents.rs`) currently sets `rolling = None` for the approval
   agent.
-- **The reviewer's chain** uses the run's provider cache configuration with:
-  - rolling on;
-  - the 1-hour TTL where the provider offers it (Anthropic's extended TTL);
-  - else the provider's default.
+- **The reviewer's chain** uses the run's provider cache configuration with
+  rolling on, and with the TTL set by its own knob:
 
-  The title agent keeps `rolling = None`.
+  ```toml
+  [approval]
+  cache_ttl = "1h"    # "1h" (the default), "5m", or "provider" for the provider's configured TTL
+  ```
+
+  - **`1h`** asks for the provider's extended TTL (Anthropic). A provider
+    without one uses its default.
+  - **`5m`** asks for the short TTL.
+  - **`provider`** follows the run's own cache configuration.
+
+  The knob is read at each review, so a config apply takes effect at the
+  next one. The title agent keeps `rolling = None`.
 - **Cost per review on Anthropic:**
 
   | Part | Price |
@@ -352,10 +377,19 @@ expanding to the new prompt.
 
 ## 9. Reasoning
 
-The reviewer runs with its agent's variant. The documentation recommends a
-low-effort or non-reasoning variant for the approval agent. As decided
-2026-10-03, reasoning output dominates the reviewer's cost, and caching only
-reduces the input side.
+The built-in `approval` agent runs `${small_model}` → `${parent_model}`, and
+`${small_model}` carries the variant chosen for `small_model`.
+- **Today** that model also runs the starter kit's `explore` agent. The kit
+  moves `explore` to `${default_model}`, so by default `small_model` serves
+  only the approval and title agents.
+- **The effort setting** is the variant of `small_model`, chosen during
+  onboarding (which preselects the first, usually lowest, variant the model
+  lists) or in settings.
+- **No reviewer variant** is pinned in the kit or in the built-in agent. A
+  user who authors `approval.md` can still name a variant there.
+- **Why the variant matters:** as decided 2026-10-03, reasoning output
+  dominates the reviewer's cost, and caching only reduces the input side.
+  The docs say so where they describe `small_model`.
 
 ## 10. Defects fixed alongside
 
@@ -390,7 +424,7 @@ because it lives only in memory.
 The stale line in `acp-agents.md` §15, which says an ACP agent's reviewer
 always escalates, is corrected: it uses `${small_model}`.
 
-## 11. Protocol and history changes
+## 11. Protocol, history, and configuration changes
 
 All additive. Client and plugin minors are bumped together in one commit.
 
@@ -402,6 +436,10 @@ All additive. Client and plugin minors are bumped together in one commit.
   readers skip it.
 - **Tool-denial `source: "approval_reviewer"`:** this is model-facing text,
   not a wire schema.
+- **`[approval] cache_ttl`:** `"1h"` (the default), `"5m"`, or `"provider"`.
+  Unknown values fail, as for every config key.
+- **The starter kit's `explore`** uses `${default_model}` (already done,
+  with this spec).
 - **No change to `ApprovalRequest`.** Moving `expires_at` (section 10, b)
   changes when it is set, not its shape.
 
@@ -457,14 +495,4 @@ the reviewer, and the title agent's stays off.
 
 ## 14. Open questions
 
-1. **Budgets:** are 30% for user messages, 50% for the trajectory and the
-   per-entry caps right?
-2. **Outcomes:** should tool-call outcomes (`completed`/`failed`) be shown?
-   They are not output, but they tell the reviewer when a step failed and is
-   being retried.
-3. **Cron authority:** should a scheduled prompt carry user authority (as
-   proposed), or only the user's messages from a client?
-4. **The reviewer's cache TTL:** always the 1-hour TTL, or follow the run's
-   configured TTL?
-5. **Reasoning default:** should the starter kit's `approval` agent ship with
-   a low-effort variant, given the recommendation in section 9?
+None. All were answered 2026-10-24 (section 3).
