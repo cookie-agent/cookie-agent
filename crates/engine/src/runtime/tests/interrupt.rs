@@ -412,3 +412,88 @@ async fn interrupt_ends_a_foreground_delegation_at_once_and_leaves_the_child_run
     server.abort();
     fixture.engine.shutdown().await;
 }
+
+/// An interrupt that lands after a foreground delegation's child run went
+/// live, while the child still sets its run up, leaves the child running:
+/// the parent's cancellation abandons only an admission whose child has
+/// no run yet.
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupt_while_a_foreground_delegations_child_sets_up_leaves_the_child_running() {
+    let (endpoint, responses, server) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "start the call",
+            scripted_tool_body(
+                "delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "description": "Waiting child",
+                    "prompt": "child waits on its model"
+                }),
+            ),
+        ))
+        .unwrap();
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    let (started, release) = fixture
+        .engine
+        .install_delegate_child_run_started_hook_for_test();
+    let run = start_tool_run(&fixture.engine, selection, session).await;
+    with_watchdog("the child's run going live", started)
+        .await
+        .expect("child run started hook");
+    let child = await_child(&fixture.engine, session, "the running child", |child| {
+        child.status == SessionStatus::Running
+    })
+    .await
+    .session_id;
+    // The parent's cancellation lands while the child is held mid-setup.
+    fixture
+        .engine
+        .cancel_run(run, origin())
+        .await
+        .expect("cancel run");
+    release.notify_one();
+    await_event(
+        &fixture.engine,
+        session,
+        "the parent's cancellation",
+        |event| {
+            event.run_id == Some(run)
+                && matches!(
+                    &event.payload,
+                    EventPayload::RunFinished {
+                        outcome: cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                        )
+                    }
+                )
+        },
+    )
+    .await;
+    await_event(
+        &fixture.engine,
+        child,
+        "the child's model request",
+        |event| matches!(event.payload, EventPayload::ModelRequestPrepared { .. }),
+    )
+    .await;
+    assert_eq!(
+        fixture.engine.inner.store.get(child).unwrap().status,
+        SessionStatus::Running,
+        "the child keeps running"
+    );
+    server.abort();
+    fixture.engine.shutdown().await;
+}

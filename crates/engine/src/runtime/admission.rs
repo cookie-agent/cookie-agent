@@ -628,6 +628,24 @@ impl Engine {
         Ok(())
     }
 
+    /// Takes back `child_run_id` from an admission it was published to when
+    /// the run never went live, so the admission reads as having no run.
+    pub(super) fn retract_admission_run(
+        &self,
+        invocation_id: InvocationId,
+        generation: u64,
+        child_run_id: RunId,
+    ) {
+        if let Ok(mut admissions) = self.inner.delegation.inflight.lock()
+            && let Some(admission) = admissions
+                .get_mut(&invocation_id)
+                .and_then(|entries| entries.get_mut(&generation))
+                .filter(|admission| admission.child_run_id == Some(child_run_id))
+        {
+            admission.child_run_id = None;
+        }
+    }
+
     pub(super) fn publish_resume_admission_target(
         &self,
         invocation_id: InvocationId,

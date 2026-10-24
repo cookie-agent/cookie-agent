@@ -617,15 +617,52 @@ impl Engine {
             internal_agents: run_policy.internal_agents.clone(),
             input_through_seq,
         };
-        if producer_start {
+        // A delegate admission learns its child's run before the run goes
+        // live. The parent's cancellation abandons only an admission whose
+        // child has no run yet, so once the run is live it is never
+        // abandoned (and the child cancelled) for want of an id published
+        // later. A cancellation that came first is seen here, before the
+        // run exists.
+        if let Some((invocation_id, generation)) = admission {
+            self.publish_admission_run(invocation_id, generation, params.session_id, run_id)?;
+            if !self.admission_generation_live(invocation_id, generation) {
+                self.retract_admission_run(invocation_id, generation, run_id);
+                return Err(EngineError::ToolFailed(
+                    "delegate admission was abandoned or superseded".into(),
+                ));
+            }
+        }
+        let appended = if producer_start {
             let session = params.session_id;
             self.on_actor_unreconciled(session, move |engine| {
                 engine.commit_producer_start(session, run_id, run_started)
             })
-            .await?;
+            .await
         } else {
             self.append(params.session_id, Some(run_id), origin.clone(), run_started)
-                .await?;
+                .await
+        };
+        if let Err(error) = appended {
+            if let Some((invocation_id, generation)) = admission {
+                self.retract_admission_run(invocation_id, generation, run_id);
+            }
+            return Err(error);
+        }
+        #[cfg(test)]
+        if admission.is_some()
+            && let Some(hook) = {
+                self.inner
+                    .test_hooks
+                    .delegate_child_run_started_hook
+                    .lock()
+                    .expect("child run started hook lock")
+                    .take()
+            }
+        {
+            if let Some(reached) = hook.reached.lock().expect("reached lock").take() {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
         }
         let admission_events = self
             .inner
@@ -792,19 +829,6 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&run_id);
             return Ok(RunStartResult { run_id });
-        }
-        if let Some((invocation_id, generation)) = admission
-            && let Err(error) =
-                self.publish_admission_run(invocation_id, generation, params.session_id, run_id)
-        {
-            self.cancel_run_durably(run_id, Some("delegate admission publication failed".into()))?;
-            self.inner
-                .sessions
-                .active
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&run_id);
-            return Err(error);
         }
         if self.run_cancelled_recorded(params.session_id, run_id)? {
             self.inner

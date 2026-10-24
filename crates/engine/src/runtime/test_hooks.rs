@@ -144,6 +144,9 @@ pub(crate) struct TestHooks {
     /// Holds a delegation between its child's run going live and the
     /// delegation recording the run's id.
     pub(crate) delegate_run_unrecorded_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
+    /// Holds a delegated child's run start right after its `RunStarted`
+    /// is appended, before the rest of its setup.
+    pub(crate) delegate_child_run_started_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
     pub(crate) janitor_before_barrier_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     pub(crate) compaction_execution_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     pub(crate) read_only_reopen_hook: Mutex<Option<ReadOnlyReopenHook>>,

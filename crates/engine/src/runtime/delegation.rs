@@ -1431,6 +1431,27 @@ impl Engine {
         (receiver, release)
     }
 
+    /// Holds the next delegated child's run start right after its
+    /// `RunStarted` is appended, until the returned notify fires.
+    #[cfg(test)]
+    pub(crate) fn install_delegate_child_run_started_hook_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .test_hooks
+            .delegate_child_run_started_hook
+            .lock()
+            .expect("child run started hook lock") =
+            Some(Arc::new(super::test_hooks::PromptSnapshotHook {
+                reached: Mutex::new(Some(reached)),
+                release: release.clone(),
+            }));
+        (receiver, release)
+    }
+
     /// Whether a foreground call still waits for `run` of `child`. Until
     /// the delegation records the run it started, a run of a child it is
     /// still starting is that run: the child's turn is live (its
