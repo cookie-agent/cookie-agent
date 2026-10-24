@@ -16,6 +16,10 @@ pub(crate) struct ArtifactPage {
 const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 const VERIFIED_FILE_CACHE_CAPACITY: usize = 32;
 const VERIFIED_BYTES_CACHE_CAPACITY: usize = 8;
+/// What the cached attachments of one tree hold at most together, the newest
+/// kept whatever its size: an attachment can be 25 MB, and every model
+/// request of the tree sends its history's attachments again.
+const VERIFIED_BYTES_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 struct VerifiedFileCache {
@@ -114,10 +118,20 @@ impl VerifiedBytesCache {
 
     fn insert(&mut self, digest: String, bytes: Bytes) {
         self.evict(&digest);
-        if self.entries.len() == VERIFIED_BYTES_CACHE_CAPACITY {
-            self.entries.pop_front();
-        }
         self.entries.push_back((digest, bytes));
+        let mut total = self
+            .entries
+            .iter()
+            .map(|(_, bytes)| bytes.len())
+            .sum::<usize>();
+        while self.entries.len() > 1
+            && (self.entries.len() > VERIFIED_BYTES_CACHE_CAPACITY
+                || total > VERIFIED_BYTES_CACHE_MAX_BYTES)
+        {
+            if let Some((_, oldest)) = self.entries.pop_front() {
+                total -= oldest.len();
+            }
+        }
     }
 
     fn evict(&mut self, digest: &str) {
@@ -142,6 +156,23 @@ mod verified_bytes_cache_tests {
         let cached = cache.get(&"a".repeat(64)).expect("cached bytes");
         assert_eq!(cached, bytes);
         assert_eq!(cached.as_ptr(), bytes.as_ptr());
+    }
+
+    #[test]
+    fn cache_keeps_the_newest_attachments_within_its_byte_bound() {
+        let mut cache = VerifiedBytesCache::default();
+        let blob = |megabytes: usize| Bytes::from(vec![0_u8; megabytes * 1024 * 1024]);
+        cache.insert("a".repeat(64), blob(30));
+        cache.insert("b".repeat(64), blob(30));
+        // 90 MiB would pass the 64 MiB bound: the oldest goes.
+        cache.insert("c".repeat(64), blob(30));
+        assert!(cache.get(&"a".repeat(64)).is_none());
+        assert!(cache.get(&"b".repeat(64)).is_some());
+        assert!(cache.get(&"c".repeat(64)).is_some());
+        // One larger than the bound is still kept, alone.
+        cache.insert("d".repeat(64), blob(70));
+        assert_eq!(cache.entries.len(), 1);
+        assert!(cache.get(&"d".repeat(64)).is_some());
     }
 }
 
