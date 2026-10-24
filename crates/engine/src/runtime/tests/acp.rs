@@ -2006,3 +2006,133 @@ async fn a_cancel_while_a_steer_is_being_taken_still_cancels_the_agents_turn() {
         "no steer went out once the run was cancelled"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_commands_terminal_output_streams_into_the_call_and_is_retained() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let live = record_live_messages(engine, session).await;
+    let outcome = turn(engine, session, "terminal", "terminal").await;
+    assert_eq!(final_text(&outcome), "ran");
+    // Cookie asks for the output and runs no terminal itself.
+    let initialize = acp
+        .received()
+        .into_iter()
+        .find(|message| message["method"] == "initialize")
+        .unwrap();
+    let capabilities = &initialize["params"]["clientCapabilities"];
+    assert_eq!(capabilities["_meta"]["terminal_output"], true);
+    assert_eq!(capabilities["terminal"], false);
+
+    let events = events(engine, session);
+    let call_of = |title: &str| {
+        events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ToolCallStarted { start }
+                    if start.presentation.title.as_str() == title =>
+                {
+                    Some(start.tool_call_id)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let termination_of = |call| {
+        events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ToolCallTerminated { termination }
+                    if termination.tool_call_id == call =>
+                {
+                    Some(termination.clone())
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let terminal = |result: &cookie_agent_protocol::PersistedToolResult| {
+        result
+            .display
+            .iter()
+            .find_map(|block| match block {
+                Open::Known(DisplayBlock::Terminal {
+                    segments,
+                    exit_code,
+                    ..
+                }) => Some((
+                    segments
+                        .iter()
+                        .map(|segment| segment.text.as_str())
+                        .collect::<String>(),
+                    *exit_code,
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("a terminal block: {result:?}"))
+    };
+
+    // Codex's way: chunks, then a failing exit.
+    let codex = call_of("make test");
+    let failed = termination_of(codex);
+    assert_eq!(failed.outcome, ToolTerminationOutcome::Failed);
+    assert_eq!(
+        failed.error.as_ref().unwrap().message.as_str(),
+        "the command exited with code 3"
+    );
+    let partial = failed.result.expect("the output it printed");
+    assert_eq!(
+        terminal(&partial),
+        (
+            "building\n\u{1b}[31mFAILED\u{1b}[0m 1 test\n".to_owned(),
+            Some(3)
+        )
+    );
+    assert_eq!(
+        partial.output,
+        "building\n\u{1b}[31mFAILED\u{1b}[0m 1 test\n"
+    );
+    let retained = partial.retained_output.expect("the retained output");
+    assert_eq!(retained.streams[0].byte_length, partial.output.len() as u64);
+    assert!(!retained.streams[0].truncated);
+    // The first chunk replaced the live display with the terminal; the
+    // next one appended to it.
+    let messages = live.lock().unwrap().clone();
+    let progress = messages
+        .iter()
+        .filter_map(|message| match message {
+            cookie_agent_protocol::EventSubscriptionMessage::Transient { event } => {
+                match &event.payload {
+                    EventPayload::ToolCallProgress {
+                        tool_call_id,
+                        display: Some(Open::Known(delta)),
+                        ..
+                    } if *tool_call_id == codex => Some(delta.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(progress.iter().any(|delta| matches!(
+        delta,
+        cookie_agent_protocol::DisplayDelta::Replace { blocks }
+            if matches!(blocks.first(), Some(Open::Known(DisplayBlock::Terminal { segments, .. }))
+                if segments.len() == 1 && segments[0].text == "building\n")
+    )));
+    assert!(progress.iter().any(|delta| matches!(
+        delta,
+        cookie_agent_protocol::DisplayDelta::Append { index: 0, text, stream: Some(_) }
+            if text == "\u{1b}[31mFAILED\u{1b}[0m 1 test\n"
+    )));
+
+    // Claude Code's way: the whole output once, its terminal replacing the
+    // description, then the exit.
+    let claude = termination_of(call_of("ls"));
+    assert_eq!(claude.outcome, ToolTerminationOutcome::Completed);
+    let result = claude.result.unwrap();
+    assert_eq!(terminal(&result), ("notes.txt\n".to_owned(), Some(0)));
+    assert_eq!(result.display.len(), 1, "{:?}", result.display);
+    assert_eq!(result.output, "notes.txt\n");
+}

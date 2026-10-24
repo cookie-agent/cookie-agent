@@ -437,7 +437,8 @@ Where the spec left a detail open, or where the code differs:
   keeps the default security descriptor, not one limited to the user.
 - **ACP client.** Hand-written JSON-RPC types over the protocol crate's peer
   (the `agent-client-protocol` crate was not needed); `initialize`
-  advertises no `fs` and no `terminal`. A runtime that cannot start an
+  advertises no `fs` and no `terminal` (it asks for terminal output, see
+  the display round below). A runtime that cannot start an
   agent answers the new error `agent_failed`.
 
 **Revisions of 2026-10-23** (user decisions; client protocol 1.18.0):
@@ -736,3 +737,23 @@ unchanged):
   or the agent offers its own mode option beside them, as Claude Code's
   adapter does; before, only the made-up option followed, and Claude Code
   leaving plan mode by itself left the chip on `plan`.
+- **Terminal output.** `initialize` declares
+  `clientCapabilities._meta.terminal_output: true` (and still `terminal:
+  false`: cookie runs no `terminal/*`). Claude Code's and Codex's adapters
+  then report an execute call's output in `_meta`: `terminal_info`
+  (`terminal_id`) names the call's terminal, `terminal_output` or
+  `terminal_output_delta` (`terminal_id`, `data`) carry output, which cookie
+  appends in both cases (Codex sends chunks under either key, Claude Code
+  the whole output once), and `terminal_exit` (`exit_code`, `signal`) the
+  end. The runner (`acp/terminal.rs`) treats them as cookie's `bash` tool
+  treats a command: the output goes to an output capture (retained, an
+  artifact past the preview, `retained_output` on the result) and the
+  call's output hub, and the live display gets a `terminal` block, replaced
+  once with the display and then grown by appends to it, up to the display
+  budget. A `terminal` content item renders that block, with the exit code,
+  where it stands (first when no item names it), plus a line for a signal;
+  the old `[terminal <id>]` placeholder is gone. The result's output is the
+  capture's preview. A failed call keeps its output as the termination's
+  partial result, marked incomplete like every failed call's, and says
+  `the command exited with code <n>` when its content says nothing; calls
+  left open when the round ends keep theirs the same way.

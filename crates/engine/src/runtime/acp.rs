@@ -27,6 +27,7 @@ pub(crate) mod mcp;
 pub(crate) mod permissions;
 pub(crate) mod process;
 pub(crate) mod runner;
+mod terminal;
 pub(crate) mod wire;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

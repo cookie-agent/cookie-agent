@@ -4733,7 +4733,8 @@ def acp_agents(browser):
     declares the scripted fixture, and a disabled one, for this group):
     the agent picker lists both with their runtime, the disabled one dimmed
     and not pickable; the agent's turn shows its plan as a checklist and its
-    tool call with the agent as its source; its commands are offered in the
+    tool call with the agent as its source; the commands it runs show their
+    output; its commands are offered in the
     composer; and the model chip opens its options, which change on the
     agent."""
     new_session(browser)
@@ -4762,6 +4763,18 @@ def acp_agents(browser):
         lambda: "fixture on local" in browser.text("#transcript [data-tool-source]"),
     )
     print("the agent's turn shows its plan and names it on its tool call")
+
+    send(browser, "terminal")
+    browser.wait("the commands' output", lambda: "ran" in browser.text("#transcript"), timeout=60)
+    browser.script(
+        "document.querySelectorAll('#transcript [data-tool][data-expanded=false] [data-action=toggle-tool]')"
+        ".forEach(toggle => toggle.click())"
+    )
+    browser.wait(
+        "the output in the calls' terminals",
+        lambda: "FAILED 1 test" in browser.text("#transcript") and "notes.txt" in browser.text("#transcript"),
+    )
+    print("the agent's commands show their output")
 
     browser.type("#composer", "/re")
     browser.wait("the agent's commands", lambda: count(browser, '#agent-commands [data-agent-command="review"]') == 1)

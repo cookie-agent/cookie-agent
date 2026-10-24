@@ -32,6 +32,7 @@ use super::super::{
 use super::{
     permissions,
     process::{AgentProcess, SessionEvent, agent_error_message},
+    terminal::{self, Terminal},
     wire::{self, ToolCallFields},
 };
 use crate::runtime_snapshot::RuntimeAgent;
@@ -338,12 +339,17 @@ fn diff_block(path: &str, old: Option<&str>, new: &str) -> DisplayBlock {
 impl Engine {
     /// The display blocks and text of a tool call's content: text as
     /// Markdown, images as media, resource links as links, embedded
-    /// resources as code, diffs as diff blocks, and locations as file links.
+    /// resources as code, diffs as diff blocks, the call's terminal as its
+    /// output (where the content names it, else first), and locations as
+    /// file links.
     fn call_content(
         &self,
         session: SessionId,
         call: &ToolCallFields,
+        terminal: Option<&Terminal>,
     ) -> (Vec<DisplayBlock>, String) {
+        let terminal = terminal.filter(|terminal| terminal.shows());
+        let mut terminal_shown = false;
         let mut blocks = Vec::new();
         let mut text = String::new();
         let say = |text: &mut String, line: &str| {
@@ -376,15 +382,22 @@ impl Engine {
                     }
                     say(&mut text, &wire::content_text(&block));
                 }
+                // The output the agent streamed for it; a terminal with none
+                // yet shows nothing.
                 Some("terminal") => {
-                    let id = content
-                        .get("terminalId")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    blocks.push(DisplayBlock::text(format!("[terminal {id}]")));
+                    let id = content.get("terminalId").and_then(Value::as_str);
+                    if let Some(terminal) = terminal
+                        .filter(|terminal| !terminal_shown && id.is_none_or(|id| id == terminal.id))
+                    {
+                        blocks.extend(terminal.blocks());
+                        terminal_shown = true;
+                    }
                 }
                 _ => {}
             }
+        }
+        if let Some(terminal) = terminal.filter(|_| !terminal_shown) {
+            blocks.splice(0..0, terminal.blocks());
         }
         for location in call.locations.iter().flatten() {
             blocks.push(DisplayBlock::Link {
@@ -573,6 +586,11 @@ struct ShownCall {
     /// The presentation the session last recorded for it.
     presented: PreparedPresentation,
     terminated: bool,
+    /// The output it streams, when the agent runs a command for it.
+    terminal: Option<Terminal>,
+    /// Where the call's live display shows the terminal, which output
+    /// appends to; `None` until a replacement of the display shows it.
+    terminal_index: Option<u32>,
 }
 
 /// What the runner keeps of one model turn being written.
@@ -1098,10 +1116,19 @@ impl Turn<'_> {
         .await
     }
 
-    async fn tool_call(&mut self, update: ToolCallFields) -> Result<(), EngineError> {
+    async fn tool_call(&mut self, mut update: ToolCallFields) -> Result<(), EngineError> {
         if update.tool_call_id.is_empty() {
             return Ok(());
         }
+        let terminal_meta = terminal::take_meta(&mut update.meta);
+        // Nothing but output: the live display grows by appends.
+        let output_only = update.title.is_none()
+            && update.kind.is_none()
+            && update.status.is_none()
+            && update.content.is_none()
+            && update.locations.is_none()
+            && update.raw_input.is_none()
+            && update.raw_output.is_none();
         if let Some(shown) = self.calls.get_mut(&update.tool_call_id) {
             if shown.terminated {
                 return Ok(());
@@ -1123,7 +1150,18 @@ impl Turn<'_> {
                 })
                 .await?;
             }
-            return self.progress_or_end(tool_call_id, &fields).await;
+            let appends = self
+                .feed_terminal(&fields.tool_call_id, terminal_meta)
+                .await;
+            let index = self
+                .calls
+                .get(&fields.tool_call_id)
+                .and_then(|shown| shown.terminal_index);
+            if output_only && let Some(index) = index {
+                self.append_output(tool_call_id, &fields, index, appends);
+                return Ok(());
+            }
+            return self.progress_or_end(&fields.tool_call_id).await;
         }
         let fields = permissions::merge(None, &update);
         let mut call_id = fields.tool_call_id.clone();
@@ -1203,22 +1241,89 @@ impl Turn<'_> {
                 fields: fields.clone(),
                 presented,
                 terminated: false,
+                terminal: None,
+                terminal_index: None,
             },
         );
-        self.progress_or_end(tool_call_id, &fields).await
+        self.feed_terminal(&fields.tool_call_id, terminal_meta)
+            .await;
+        self.progress_or_end(&fields.tool_call_id).await
     }
 
-    /// Shows a call's new state, or ends it once it completed or failed.
-    async fn progress_or_end(
-        &mut self,
+    /// Applies what an update says of call `acp_id`'s terminal, opening the
+    /// terminal on its first mention; returns the appends its new output
+    /// makes to the live display.
+    async fn feed_terminal(&mut self, acp_id: &str, meta: terminal::TerminalMeta) -> Vec<String> {
+        if meta.is_empty() {
+            return Vec::new();
+        }
+        let session = self.active.session;
+        let limits = self.active.policy.result_limits.tool_output;
+        let Some(shown) = self.calls.get_mut(acp_id) else {
+            return Vec::new();
+        };
+        if shown.terminal.is_none() {
+            let id = meta.id.clone().unwrap_or_else(|| acp_id.to_owned());
+            shown.terminal =
+                Some(Terminal::open(self.engine, session, shown.tool_call_id, id, limits).await);
+        }
+        let terminal = shown.terminal.as_mut().expect("opened above");
+        let appends = match &meta.output {
+            Some(output) => terminal.write(output).await,
+            None => Vec::new(),
+        };
+        if let Some(exit) = meta.exit {
+            terminal.exit = Some(exit);
+        }
+        appends
+    }
+
+    /// Appends output to the terminal at `index` of the call's live display.
+    fn append_output(
+        &self,
         tool_call_id: ToolCallId,
         fields: &ToolCallFields,
-    ) -> Result<(), EngineError> {
-        match fields.status.as_deref() {
-            Some("completed") => self.end_call(&fields.tool_call_id, true).await,
-            Some("failed") => self.end_call(&fields.tool_call_id, false).await,
+        index: u32,
+        appends: Vec<String>,
+    ) {
+        let message = display_text(fields.title.as_deref().unwrap_or("ACP tool call"));
+        for text in appends {
+            self.engine.publish_transient(
+                self.session(),
+                self.run,
+                Event::ToolCallProgress {
+                    tool_call_id,
+                    message: message.clone(),
+                    display: Some(Open::Known(cookie_agent_protocol::DisplayDelta::Append {
+                        index,
+                        text,
+                        stream: Some(cookie_agent_protocol::TerminalStream::Stdout),
+                    })),
+                },
+            );
+        }
+    }
+
+    /// Shows the new state of the call the agent knows as `acp_id`, or ends
+    /// it once it completed or failed.
+    async fn progress_or_end(&mut self, acp_id: &str) -> Result<(), EngineError> {
+        let session = self.session();
+        let Some(shown) = self.calls.get_mut(acp_id) else {
+            return Ok(());
+        };
+        match shown.fields.status.as_deref() {
+            Some("completed") => self.end_call(acp_id, true).await,
+            Some("failed") => self.end_call(acp_id, false).await,
             _ => {
-                let (blocks, _) = self.engine.call_content(self.session(), fields);
+                let fields = &shown.fields;
+                let tool_call_id = shown.tool_call_id;
+                let (blocks, _) =
+                    self.engine
+                        .call_content(session, fields, shown.terminal.as_ref());
+                shown.terminal_index = blocks
+                    .iter()
+                    .position(|block| matches!(block, DisplayBlock::Terminal { .. }))
+                    .and_then(|index| u32::try_from(index).ok());
                 let message = display_text(fields.title.as_deref().unwrap_or("ACP tool call"));
                 self.engine.publish_transient(
                     self.session(),
@@ -1249,7 +1354,10 @@ impl Turn<'_> {
         }
         shown.terminated = true;
         let session = self.active.session;
-        let (mut blocks, mut text) = self.engine.call_content(session, &shown.fields);
+        let (mut blocks, mut text) =
+            self.engine
+                .call_content(session, &shown.fields, shown.terminal.as_ref());
+        let terminal = shown.terminal.take();
         if let Some(output) = &shown.fields.raw_output {
             if text.is_empty() {
                 text = match output {
@@ -1263,7 +1371,7 @@ impl Turn<'_> {
         }
         let title = display_text(shown.fields.title.as_deref().unwrap_or("ACP tool call"));
         let tool_call_id = shown.tool_call_id;
-        let result = PersistedToolResult {
+        let mut result = PersistedToolResult {
             title,
             output: truncate(&text, PersistedToolResult::MAX_OUTPUT_BYTES),
             display: cookie_agent_protocol::fit_result_display(
@@ -1282,17 +1390,31 @@ impl Turn<'_> {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         };
+        // A command's output is the call's output, retained as a native
+        // command's is; a failed call keeps it too.
+        let mut failure = None;
+        let mut partial = false;
+        if let Some(terminal) = terminal {
+            failure = terminal.failure();
+            partial = true;
+            // A failed call's output counts as incomplete, as the session
+            // records every failed call's (and so keeps showing it).
+            result = terminal.finish(self.engine, result, !succeeded).await;
+            if result.output.is_empty() && !text.is_empty() {
+                result.output = truncate(&text, PersistedToolResult::MAX_OUTPUT_BYTES);
+            }
+        }
         let outcome = if succeeded {
             Ok(result)
         } else {
             Err(ToolFailure {
                 code: ToolCallFailureCode::ExecutionFailed,
-                message: if text.is_empty() {
-                    "the agent's tool call failed".to_owned()
-                } else {
-                    truncate(&text, 4096)
+                message: match failure {
+                    _ if !text.is_empty() => truncate(&text, 4096),
+                    Some(failure) => failure,
+                    None => "the agent's tool call failed".to_owned(),
                 },
-                partial_output: None,
+                partial_output: partial.then(|| Box::new(result)),
             })
         };
         self.engine
@@ -1310,8 +1432,28 @@ impl Turn<'_> {
             .map(|(id, call)| (id.clone(), call.tool_call_id))
             .collect::<Vec<_>>();
         for (acp_id, tool_call_id) in open {
+            let mut partial_output = None;
             if let Some(call) = self.calls.get_mut(&acp_id) {
                 call.terminated = true;
+                // The output a command streamed before the round ended.
+                if let Some(terminal) = call.terminal.take() {
+                    let result = PersistedToolResult {
+                        title: display_text(
+                            call.fields.title.as_deref().unwrap_or("ACP tool call"),
+                        ),
+                        output: String::new(),
+                        display: cookie_agent_protocol::fit_result_display(
+                            terminal.blocks().into_iter().map(Open::Known).collect(),
+                        ),
+                        background: None,
+                        retained_output: None,
+                        metadata: serde_json::json!({"acp": {"kind": call.fields.kind}}),
+                        attachments: Vec::new(),
+                        additional_messages: Vec::new(),
+                    };
+                    partial_output =
+                        Some(Box::new(terminal.finish(self.engine, result, true).await));
+                }
             }
             self.engine
                 .submit_tool_result_status(
@@ -1325,7 +1467,7 @@ impl Turn<'_> {
                         } else {
                             "the agent ended its turn without finishing the call".to_owned()
                         },
-                        partial_output: None,
+                        partial_output,
                     }),
                     cancelled,
                 )

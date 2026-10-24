@@ -364,6 +364,12 @@ impl Processes {
                         // RFDs, which Claude Code's and Codex's adapters
                         // follow).
                         "session": {"notices": {}, "compaction": {}},
+                        // The output of the commands the agent runs, as
+                        // `_meta` keys of their tool calls (the terminal
+                        // extension of Claude Code's and Codex's adapters).
+                        // It asks the client to run nothing: `terminal`
+                        // stays `false`.
+                        "_meta": {"terminal_output": true},
                     }),
                     client_info: serde_json::json!({
                         "name": "cookie-agent",

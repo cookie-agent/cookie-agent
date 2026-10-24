@@ -335,6 +335,13 @@ each call decided by the rules as a model's would be.
   content as text, images, and links; edits as diffs; the files it touched
   as links; and its raw output when it sends no content. With Claude Code,
   the call's tool name (`Read`, `Bash`) is the name it was called by.
+- **Command output.** A command the agent runs shows its output as cookie's
+  own `bash` calls do: in a terminal block that grows while the command
+  runs (Codex streams it; Claude Code sends it when the command ends), with
+  the exit code once it ends. The output is kept with the call, and what
+  does not fit the preview is kept as an artifact. Cookie asks Claude Code's
+  and Codex's adapters for it (`clientCapabilities._meta.terminal_output`);
+  the agent still runs its commands itself.
 - **Notices.** What the agent flags for you (a rate limit, a retry, a
   compaction of its conversation with its summary) shows as a notice in the
   transcript, colored by how much it matters. Cookie asks agents for

@@ -24,6 +24,11 @@ Each prompt's last text block is a command:
   exit                   exits with status 3 after writing to stderr
   error                  fails the prompt with an authentication error
   title <text>           reports session title <text>
+  terminal               two execute calls with terminal output when the client
+                         advertised `_meta.terminal_output` (else the output as
+                         text content): one as Codex sends it (chunks, then
+                         exit 3, failed), one as Claude Code does (the whole
+                         output once, then exit 0, completed)
   mode-switch <mode>     switches its own mode to <mode> (current_mode_update),
                          as Claude Code does when it leaves plan mode
   late-input             a tool call whose title, kind, and raw input arrive in a
@@ -70,6 +75,8 @@ sessions = {}
 cancelled = {}
 running = {}
 steered = {}
+# What the client advertised in `initialize`.
+client_capabilities = {}
 
 
 def log(message):
@@ -227,6 +234,57 @@ def permission(session_id, call_id, kind, resource, title=None, raw=None):
     return "cancelled"
 
 
+def terminal_calls(session_id):
+    streams = client_capabilities.get("_meta", {}).get("terminal_output") is True
+    # As Codex: the terminal named from the start, output in chunks.
+    meta = {"terminal_info": {"terminal_id": "term-codex", "cwd": "/work"}} if streams else None
+    call = {
+        "sessionUpdate": "tool_call", "toolCallId": "call-codex", "title": "make test",
+        "kind": "execute", "status": "in_progress", "rawInput": {"command": "make test"},
+        "content": [{"type": "terminal", "terminalId": "term-codex"}] if streams else [],
+    }
+    if meta:
+        call["_meta"] = meta
+    update(session_id, call)
+    if streams:
+        for chunk in ["building\n", "\u001b[31mFAILED\u001b[0m 1 test\n"]:
+            update(session_id, {
+                "sessionUpdate": "tool_call_update", "toolCallId": "call-codex",
+                "_meta": {"terminal_output": {"terminal_id": "term-codex", "data": chunk}},
+            })
+        update(session_id, {
+            "sessionUpdate": "tool_call_update", "toolCallId": "call-codex", "status": "failed",
+            "_meta": {"terminal_exit": {"terminal_id": "term-codex", "exit_code": 3, "signal": None}},
+        })
+    else:
+        update(session_id, {
+            "sessionUpdate": "tool_call_update", "toolCallId": "call-codex", "status": "failed",
+            "content": [{"type": "content", "content": {"type": "text", "text": "building\nFAILED 1 test\n"}}],
+        })
+    # As Claude Code: the description first, the whole output once with the
+    # result, then the exit with the status.
+    call = {
+        "sessionUpdate": "tool_call", "toolCallId": "call-claude", "title": "ls",
+        "kind": "execute", "status": "pending", "rawInput": {"command": "ls"},
+        "content": [{"type": "content", "content": {"type": "text", "text": "List the files"}}],
+    }
+    if streams:
+        call["_meta"] = {"terminal_info": {"terminal_id": "call-claude"}}
+    update(session_id, call)
+    if streams:
+        update(session_id, {
+            "sessionUpdate": "tool_call_update", "toolCallId": "call-claude",
+            "_meta": {"terminal_output": {"terminal_id": "call-claude", "data": "notes.txt\n"}},
+        })
+    update(session_id, {
+        "sessionUpdate": "tool_call_update", "toolCallId": "call-claude", "status": "completed",
+        "content": [{"type": "terminal", "terminalId": "call-claude"}] if streams
+        else [{"type": "content", "content": {"type": "text", "text": "notes.txt"}}],
+        "_meta": {"terminal_info": {"terminal_id": "call-claude"},
+                  "terminal_exit": {"terminal_id": "call-claude", "exit_code": 0, "signal": None}} if streams else {},
+    })
+
+
 def prompt(request_id, params):
     session_id = params["sessionId"]
     session = sessions.setdefault(session_id, {"mode": "default", "model": "small", "turn": 0})
@@ -359,6 +417,9 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     elif word == "error":
         fail(request_id, -32000, "Authentication required")
         return
+    elif word == "terminal":
+        terminal_calls(session_id)
+        say(session_id, "ran")
     elif word == "mode-switch":
         session["mode"] = rest
         update(session_id, {"sessionUpdate": "current_mode_update", "currentModeId": rest})
@@ -397,6 +458,7 @@ def handle(message):
             state_lock.notify_all()
         return
     if method == "initialize":
+        client_capabilities.update(params.get("clientCapabilities") or {})
         capabilities = {
             "loadSession": env("ACP_FIXTURE_LOAD"),
             "promptCapabilities": {"image": True, "audio": False, "embeddedContext": False},
