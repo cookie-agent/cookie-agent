@@ -76,11 +76,24 @@ pub fn detect_startup_theme(preference: Option<ThemePreference>) -> ThemeDetecti
     )
 }
 
-/// Resolve themes for headless and test app construction without terminal I/O.
+/// Resolve themes for headless app construction without terminal I/O. Test
+/// apps use the default theme instead, whatever runs the tests.
+#[cfg(not(test))]
 pub(crate) fn theme_without_terminal_detection(preference: Option<ThemePreference>) -> Theme {
     let cookie_theme = env::var("COOKIE_THEME").ok();
-    let detection = detect_with_query(preference, cookie_theme.as_deref(), None, &mut NoOsc11Query);
-    Theme::with_kind_from_env(detection.kind)
+    Theme::with_kind_from_env(kind_without_terminal_detection(
+        preference,
+        cookie_theme.as_deref(),
+    ))
+}
+
+/// The theme kind the configured `preference` and `COOKIE_THEME` pick with
+/// no terminal to ask.
+fn kind_without_terminal_detection(
+    preference: Option<ThemePreference>,
+    cookie_theme: Option<&str>,
+) -> ThemeKind {
+    detect_with_query(preference, cookie_theme, None, &mut NoOsc11Query).kind
 }
 
 struct NoOsc11Query;
@@ -525,6 +538,24 @@ mod tests {
         assert_eq!(theme_for_rgb((1.0, 1.0, 1.0)), ThemeKind::Default);
         assert_eq!(theme_for_rgb((0.735, 0.735, 0.735)), ThemeKind::Dark);
         assert_eq!(theme_for_rgb((0.736, 0.736, 0.736)), ThemeKind::Default);
+    }
+
+    /// With no terminal to ask, the configured preference wins, then
+    /// `COOKIE_THEME`, else the default theme.
+    #[test]
+    fn themes_without_a_terminal_come_from_preference_then_cookie_theme() {
+        assert_eq!(
+            kind_without_terminal_detection(Some(ThemePreference::HighContrast), Some("mono")),
+            ThemeKind::HighContrast
+        );
+        assert_eq!(
+            kind_without_terminal_detection(None, Some("dark")),
+            ThemeKind::Dark
+        );
+        assert_eq!(
+            kind_without_terminal_detection(Some(ThemePreference::Auto), None),
+            ThemeKind::Default
+        );
     }
 
     #[test]

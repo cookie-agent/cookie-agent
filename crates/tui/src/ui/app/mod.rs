@@ -1454,6 +1454,11 @@ impl App {
         create_new_session: bool,
     ) -> Result<Self, crate::config::TuiConfigError> {
         let tui_config = crate::config::load(None)?;
+        // A test app never takes its colours from the terminal running the
+        // tests; a test that wants another theme sets `theme` itself.
+        #[cfg(test)]
+        let theme = Theme::default();
+        #[cfg(not(test))]
         let theme = crate::terminal_detect::theme_without_terminal_detection(tui_config.theme);
         Self::new_with_config(
             client,
