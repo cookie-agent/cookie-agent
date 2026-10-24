@@ -27,8 +27,9 @@ use crate::crons::{
     StoredTarget, StoredTemplate,
 };
 
-/// The longest the scheduler sleeps before it looks again, so that a clock
-/// change or a suspended host is noticed.
+/// The longest the scheduler sleeps before a fire before it looks again, so
+/// that a clock change or a suspended host is noticed. With no fire ahead it
+/// sleeps until the jobs change.
 const SCHEDULER_MAX_SLEEP: Duration = Duration::from_secs(60);
 /// The most fires a `daemon was down` entry counts.
 const MISSED_COUNT_LIMIT: u64 = 1_000_000;
@@ -37,8 +38,9 @@ const FIRE_PRODUCER_NAME: &str = "scheduled";
 
 /// The scheduler's state.
 pub(crate) struct CronSchedulerState {
-    /// Wakes the scheduler: the jobs changed.
-    pub(crate) wake: tokio::sync::Notify,
+    /// Wakes the scheduler: the jobs changed. Shared with the scheduler, which
+    /// waits on it without holding the engine.
+    pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
     task: Mutex<Option<JoinHandle<()>>>,
     /// When the engine opened: a fire due before it was missed while the
     /// daemon was down.
@@ -48,7 +50,7 @@ pub(crate) struct CronSchedulerState {
 impl Default for CronSchedulerState {
     fn default() -> Self {
         Self {
-            wake: tokio::sync::Notify::new(),
+            wake: std::sync::Arc::new(tokio::sync::Notify::new()),
             task: Mutex::new(None),
             started_at: Timestamp::now(),
         }
@@ -268,23 +270,22 @@ impl Engine {
                     break;
                 }
                 let now = Timestamp::now();
-                let sleep =
-                    engine
-                        .inner
-                        .crons
-                        .earliest_fire()
-                        .map_or(SCHEDULER_MAX_SLEEP, |next| {
-                            let millis = next.as_millisecond().saturating_sub(now.as_millisecond());
-                            Duration::from_millis(u64::try_from(millis).unwrap_or(0))
-                                .min(SCHEDULER_MAX_SLEEP)
-                        });
-                let wake = std::sync::Arc::clone(&engine.inner);
+                let sleep = engine.inner.crons.earliest_fire().map(|next| {
+                    let millis = next.as_millisecond().saturating_sub(now.as_millisecond());
+                    Duration::from_millis(u64::try_from(millis).unwrap_or(0))
+                        .min(SCHEDULER_MAX_SLEEP)
+                });
+                let wake = std::sync::Arc::clone(&engine.inner.cron_scheduler.wake);
                 drop(engine);
-                tokio::select! {
-                    () = tokio::time::sleep(sleep) => {}
-                    () = wake.cron_scheduler.wake.notified() => {}
+                // A change between reading the earliest fire and waiting is
+                // not lost: `notify_one` keeps a permit for the next wait.
+                match sleep {
+                    Some(sleep) => tokio::select! {
+                        () = tokio::time::sleep(sleep) => {}
+                        () = wake.notified() => {}
+                    },
+                    None => wake.notified().await,
                 }
-                drop(wake);
                 let Some(inner) = weak.upgrade() else {
                     break;
                 };
@@ -460,18 +461,7 @@ impl Engine {
 
     /// Fires every enabled job due at `now`.
     pub(crate) async fn cron_tick(&self, now: Timestamp) {
-        let due = self
-            .inner
-            .crons
-            .jobs()
-            .into_iter()
-            .filter(|job| job.enabled)
-            .filter_map(|job| {
-                job.next_fire
-                    .filter(|next| *next <= now)
-                    .map(|next| (job.id, next))
-            })
-            .collect::<Vec<_>>();
+        let due = self.inner.crons.due(now);
         let fires = due
             .into_iter()
             .map(|(id, scheduled)| self.fire_scheduled(id, scheduled, now));

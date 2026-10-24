@@ -574,6 +574,20 @@ impl CronStore {
             .min()
     }
 
+    /// The enabled jobs whose next fire is at or before `now`, with that
+    /// fire.
+    pub(crate) fn due(&self, now: Timestamp) -> Vec<(CronJobId, Timestamp)> {
+        lock(&self.jobs)
+            .iter()
+            .filter(|job| job.enabled)
+            .filter_map(|job| {
+                job.next_fire
+                    .filter(|next| *next <= now)
+                    .map(|next| (job.id.clone(), next))
+            })
+            .collect()
+    }
+
     /// Signals every change to the jobs.
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changes.subscribe()
