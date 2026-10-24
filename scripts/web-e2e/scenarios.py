@@ -668,10 +668,13 @@ def streaming_scroll(browser):
     # A wheel up stops following at once, whatever streams in below.
     wheel(browser, -100)
     stays_put(browser, "a wheel up")
-    # Back at the end, following resumes.
-    for _ in range(5):
+    # Back at the end, following resumes: wheeled down until it is there,
+    # however far the stream got meanwhile.
+    for _ in range(30):
         wheel(browser, 4000)
         time.sleep(0.2)
+        if browser.script(SCROLL_STATE)["gap"] <= 2:
+            break
     browser.wait("the end", lambda: browser.script(SCROLL_STATE)["gap"] <= 2)
     follows(browser, "back at the end")
     # A small scroll up, as the scrollbar or a flick's momentum makes it.
@@ -687,6 +690,9 @@ def streaming_scroll(browser):
     follows(browser, "the message sent")
     print("a message sent while scrolled up follows the end again")
     idle(browser, "the long reply's end", text="alpha 599 ")
+    # The turn's end draws the reply's text anew; the view stays at the end.
+    end = browser.script(SCROLL_STATE)
+    assert end["gap"] <= 2 and not end["jump"], "the reply's end left the end: %s" % end
 
     # A folded call at the end gets progress: nothing grows, nothing pins.
     send(browser, "stream long, label beta")
