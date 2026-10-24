@@ -83,9 +83,12 @@ pub(super) fn model_picker_row(
     selected: bool,
     theme: &Theme,
 ) -> Line<'static> {
-    // The variant is chosen in its own step or with ctrl+t, not here.
+    // The variant is chosen in its own step or with ctrl+t, not here. A
+    // display name that is the key shows once.
     let canonical = selection.model.to_string();
-    let Some(display_name) = display_name else {
+    let Some(display_name) = display_name
+        .filter(|name| cookie_agent_client_state::document_id(name, &canonical).is_some())
+    else {
         let style = if selected {
             theme.body().patch(theme.selected())
         } else {
@@ -115,6 +118,42 @@ pub(super) fn model_picker_row(
         spans.push(Span::styled(
             truncate_with_ellipsis(&format!(" {canonical}"), width - display_width),
             key_style,
+        ));
+    }
+    Line::from(spans)
+}
+
+/// A picker row for a variant or an ACP option value: its name and
+/// `suffix` (` (default)`, ` (current)`), then, dimmed, the ID an agent
+/// document's `models` entry writes for it, unless the name is that ID. The
+/// ID is truncated first.
+pub(super) fn document_id_row(
+    name: &str,
+    suffix: &str,
+    id: &str,
+    width: usize,
+    selected: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let label = truncate_with_ellipsis(&format!("{name}{suffix}"), width);
+    let label_width = UnicodeWidthStr::width(label.as_str());
+    let label_style = if selected {
+        theme.body().patch(theme.selected())
+    } else {
+        theme.body()
+    };
+    let mut spans = vec![Span::styled(label, label_style)];
+    if let Some(id) = cookie_agent_client_state::document_id(name, id)
+        && label_width + 1 < width
+    {
+        let id_style = if selected {
+            theme.internal().patch(theme.selected_overlay())
+        } else {
+            theme.internal()
+        };
+        spans.push(Span::styled(
+            truncate_with_ellipsis(&format!(" {id}"), width - label_width),
+            id_style,
         ));
     }
     Line::from(spans)
@@ -710,34 +749,44 @@ impl App {
         }
     }
 
-    pub(super) fn variant_step_labels(&self) -> Vec<String> {
+    /// The rows of the variant step: each variant's name, ` (default)` for
+    /// the model's default, and its ID dimmed (`base` for the base).
+    pub(super) fn variant_step_rows(&self, width: usize) -> Vec<Line<'static>> {
         let descriptor = self
             .variant_step_model
             .as_ref()
             .and_then(|model| self.model_descriptor(model));
         let default = descriptor.and_then(|descriptor| descriptor.default_variant.as_ref());
+        let selected = self.picker_state.selected();
         self.variant_step_options()
             .iter()
-            .map(|variant| {
-                let name = match variant {
-                    None => "base".to_owned(),
-                    Some(id) => descriptor
-                        .and_then(|descriptor| {
-                            descriptor
-                                .variants
-                                .iter()
-                                .find(|candidate| &candidate.id == id)
-                        })
-                        .map_or_else(
-                            || id.to_string(),
-                            |candidate| format!("{id} — {}", candidate.display_name),
-                        ),
-                };
-                if variant.as_ref() == default {
-                    format!("{name} (default)")
+            .enumerate()
+            .map(|(index, variant)| {
+                let id = variant
+                    .as_ref()
+                    .map_or_else(|| "base".to_owned(), ToString::to_string);
+                let name = variant
+                    .as_ref()
+                    .and_then(|id| {
+                        descriptor?
+                            .variants
+                            .iter()
+                            .find(|candidate| &candidate.id == id)
+                    })
+                    .map_or_else(|| id.clone(), |candidate| candidate.display_name.clone());
+                let suffix = if variant.as_ref() == default {
+                    " (default)"
                 } else {
-                    name
-                }
+                    ""
+                };
+                document_id_row(
+                    &name,
+                    suffix,
+                    &id,
+                    width,
+                    selected == Some(index),
+                    &self.theme,
+                )
             })
             .collect()
     }
@@ -1086,5 +1135,43 @@ impl App {
             Modal::AgentOptions => self.choose_agent_option(index),
             Modal::None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod document_id_tests {
+    use super::*;
+
+    fn text(line: &Line<'_>) -> Vec<String> {
+        line.spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_model_row_shows_its_key_once_when_its_name_is_the_key() {
+        let theme = Theme::default();
+        let selection = ModelSelection {
+            model: "openai/gpt-5".parse().unwrap(),
+            variant: None,
+        };
+        let row = model_picker_row(&selection, Some("GPT-5"), 40, false, &theme);
+        assert_eq!(text(&row), ["GPT-5", " openai/gpt-5"]);
+        assert_eq!(row.spans[1].style, theme.internal());
+        let row = model_picker_row(&selection, Some("openai/gpt-5"), 40, false, &theme);
+        assert_eq!(text(&row), ["openai/gpt-5"]);
+    }
+
+    #[test]
+    fn a_value_row_dims_its_id_and_truncates_it_first() {
+        let theme = Theme::default();
+        let row = document_id_row("Opus", " (current)", "opus", 40, false, &theme);
+        assert_eq!(text(&row), ["Opus (current)", " opus"]);
+        assert_eq!(row.spans[1].style, theme.internal());
+        let row = document_id_row("high", "", "high", 40, false, &theme);
+        assert_eq!(text(&row), ["high"]);
+        let row = document_id_row("Opus", "", "claude-opus-4-1", 10, false, &theme);
+        assert_eq!(text(&row), ["Opus", " clau…"]);
     }
 }

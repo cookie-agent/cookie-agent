@@ -215,32 +215,58 @@ impl App {
             .find(|option| option.id == id)
     }
 
-    /// The title and rows of `/options`: the options, or the values of the
-    /// option being changed, the current one marked.
-    pub(super) fn agent_option_rows(&self) -> (String, Vec<String>) {
+    /// The title and rows of `/options`, `width` columns wide: the
+    /// options, or the values of the option being changed, the current one
+    /// marked and each with its ID dimmed (what an agent document's
+    /// `models` entry writes for a model or effort).
+    pub(super) fn agent_option_rows(&self, width: usize) -> (String, Vec<Line<'static>>) {
         let agent = self
             .draft_acp_agent()
             .map(|agent| &agent.id)
             .or_else(|| self.viewed_acp().and_then(|acp| acp.agent.as_ref()))
             .map_or_else(String::new, ToString::to_string);
+        let selected = self.picker_state.selected();
         match self.agent_option_in_step() {
             Some(option) => (
                 format!("{} — {agent}", option.name),
                 option
                     .values
                     .iter()
-                    .map(|value| {
-                        if value.value == option.current_value {
-                            format!("{} (current)", value.name)
+                    .enumerate()
+                    .map(|(index, value)| {
+                        let suffix = if value.value == option.current_value {
+                            " (current)"
                         } else {
-                            value.name.clone()
-                        }
+                            ""
+                        };
+                        super::pickers::document_id_row(
+                            &value.name,
+                            suffix,
+                            &value.value,
+                            width,
+                            selected == Some(index),
+                            &self.theme,
+                        )
                     })
                     .collect(),
             ),
             None => (
                 format!("Agent options — {agent}"),
-                self.agent_options().iter().map(option_label).collect(),
+                self.agent_options()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, option)| {
+                        let style = if selected == Some(index) {
+                            self.theme.body().patch(self.theme.selected())
+                        } else {
+                            self.theme.body()
+                        };
+                        Line::from(Span::styled(
+                            truncate_with_ellipsis(&option_label(option), width),
+                            style,
+                        ))
+                    })
+                    .collect(),
             ),
         }
     }

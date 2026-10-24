@@ -184,3 +184,87 @@ async fn an_acp_draft_attaches_what_its_agent_takes() {
     app.agents[1].runtimes[0].input_media.clear();
     assert!(!app.attachments_offered());
 }
+
+/// The text of each picker row, with its rectangle.
+fn picker_rows(app: &mut App, width: u16, height: u16) -> Vec<(String, ratatui::layout::Rect)> {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("terminal");
+    terminal
+        .draw(|frame| app.draw_for_test(frame))
+        .expect("picker render");
+    let buffer = terminal.backend().buffer().clone();
+    app.hit_map
+        .picker_rows
+        .iter()
+        .map(|row| {
+            let text = (row.rect.x..row.rect.right())
+                .map(|x| buffer[(x, row.rect.y)].symbol())
+                .collect::<String>();
+            (text.trim_end().to_owned(), row.rect)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_agents_model_and_effort_pickers_show_each_values_id_dimmed() {
+    let (mut app, _) = acp_session_app().await;
+    let mut claude = acp_descriptor("claude", "local", true);
+    let mut options = model_and_effort();
+    // A value whose name is its ID shows it once.
+    options[2].values[1].name = "high".into();
+    claude.runtimes[0].options = options;
+    claude.runtime = claude.runtimes.first().cloned();
+    app.agents[1] = claude;
+    app.run_command(SlashCommand::New).await;
+    let index = app
+        .filtered_agent_picker_candidates()
+        .iter()
+        .position(|agent| agent.id.as_str() == "claude")
+        .unwrap();
+    app.choose_picker_entry(index).await;
+
+    app.open_selection_modal(Modal::Models);
+    assert_eq!(app.modal, Modal::AgentOptions);
+    let rows = picker_rows(&mut app, 100, 30);
+    let texts = rows.iter().map(|(text, _)| text.trim()).collect::<Vec<_>>();
+    assert_eq!(texts, ["> sonnet! (current) sonnet", "opus! opus"]);
+    // The ID is dimmed, and hovering or clicking it is its row's.
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).expect("terminal");
+    terminal
+        .draw(|frame| app.draw_for_test(frame))
+        .expect("picker render");
+    let buffer = terminal.backend().buffer();
+    let (_, opus) = &rows[1];
+    let name_column = opus.x + 2;
+    let id_column = name_column + "opus! ".len() as u16;
+    assert_eq!(buffer[(id_column, opus.y)].symbol(), "o");
+    assert_eq!(
+        buffer[(id_column, opus.y)].style().fg,
+        app.theme.internal().fg
+    );
+    assert_ne!(
+        buffer[(id_column, opus.y)].style(),
+        buffer[(name_column, opus.y)].style()
+    );
+    assert_eq!(
+        app.pointer_target_at(id_column, opus.y),
+        Some(PointerTarget::PickerRow(1))
+    );
+    app.modal = Modal::None;
+
+    // The effort's values, from `/options`.
+    app.run_command(SlashCommand::Options).await;
+    assert_eq!(app.modal, Modal::AgentOptions);
+    app.choose_picker_entry(2).await;
+    let rows = picker_rows(&mut app, 100, 30);
+    let texts = rows.iter().map(|(text, _)| text.trim()).collect::<Vec<_>>();
+    assert_eq!(texts, ["> low! (current) low", "high"]);
+
+    // A narrow picker truncates the ID first, with an ellipsis.
+    app.modal = Modal::None;
+    app.open_selection_modal(Modal::Models);
+    let rows = picker_rows(&mut app, 44, 30);
+    assert!(rows[0].0.contains("sonnet! (current) s"), "{rows:?}");
+    assert!(rows[0].0.ends_with('…'), "{rows:?}");
+}

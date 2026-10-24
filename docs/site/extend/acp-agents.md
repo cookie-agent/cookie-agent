@@ -188,7 +188,8 @@ You review changes for this project before they are committed.
   Code, `models: [{ model: "opus", variant: "high" }, "sonnet"]`. The
   first entry whose model the agent offers applies when its session
   starts; when none does, the session says so and the agent keeps its own.
-  `models` beats `acp.config` for the model and effort
+  The model and variant pickers show each value's ID, dimmed beside its
+  name: the ID to write here. `models` beats `acp.config` for the model and effort
   (the configuration status says so when both set one), and a draft's or
   session's own choice beats `models`. `${default_model}` and the other
   variables name cookie's models, so an entry naming one is skipped with a
@@ -402,8 +403,9 @@ each call decided by the rules as a model's would be.
   picker (the TUI's `/model` or the title's model, the web client's model
   chip) lists the model option's values, and the variant (the TUI's
   bracketed variant or ctrl+t, the efforts in the web client's model sheet)
-  the effort option's. Claude Code offers `model` and `effort`; Codex
-  `model` and `reasoning_effort`.
+  the effort option's, each value with its ID dimmed beside its name: the
+  ID an agent document's `models` names it by. Claude Code offers `model`
+  and `effort`; Codex `model` and `reasoning_effort`.
 - **A new session's draft** offers the options the agent last started a
   session with on the runtime the draft would run it on, with the
   document's `acp.mode`, `acp.config`, and `models` applied: what its new
@@ -517,8 +519,8 @@ note.
 
 - **"The agent document's `models` was skipped there".** The agent offers
   none of the entries' models, or not the entry's variant, on that
-  runtime: the session runs on the agent's own choice. The model picker
-  lists the models the agent takes, and the variant its efforts.
+  runtime: the session runs on the agent's own choice. The model and
+  variant pickers show the IDs the agent takes, dimmed beside each name.
 
 - **An authentication error ends the turn.** The run fails with what the
   agent said, typically that authentication is required. Log in to the agent on the

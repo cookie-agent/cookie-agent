@@ -931,11 +931,25 @@ async fn model_command_continues_to_a_variant_step_that_applies_both_together() 
     let rendered = rendered_frame(&mut app, 120, 36);
     assert!(rendered.contains("Variant — other/model-b"), "{rendered}");
     assert!(rendered.contains("base"), "{rendered}");
-    assert!(
-        rendered.contains("low — Variant low (default)"),
-        "{rendered}"
+    // Each variant's name, then the ID an agent document writes, dimmed;
+    // `base` is both.
+    assert!(rendered.contains("Variant low (default) low"), "{rendered}");
+    assert!(rendered.contains("Variant high high"), "{rendered}");
+    assert!(!rendered.contains("base base"), "{rendered}");
+    let high = app.hit_map.picker_rows[2].rect;
+    let id_column = high.x + 2 + "Variant high ".len() as u16;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).expect("terminal");
+    terminal
+        .draw(|frame| app.draw_for_test(frame))
+        .expect("variant picker render");
+    let cell = &terminal.backend().buffer()[(id_column, high.y)];
+    assert_eq!(cell.symbol(), "h");
+    assert_eq!(cell.style().fg, app.theme.internal().fg);
+    assert_eq!(
+        app.pointer_target_at(id_column, high.y),
+        Some(PointerTarget::PickerRow(2))
     );
-    assert!(rendered.contains("high — Variant high"), "{rendered}");
 
     // Esc goes back to the model list, still with nothing applied.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))

@@ -288,13 +288,16 @@ impl App {
                 }
             }
             Modal::AgentOptions => {
-                let (title, entries) = self.agent_option_rows();
-                self.render_picker(
+                let area = centered(frame.area(), 56, 44);
+                self.clamp_picker_selection();
+                let width = usize::from(inner_rect(area).width.saturating_sub(2));
+                let (title, entries) = self.agent_option_rows(width);
+                self.render_picker_lines(
                     frame,
                     &title,
                     entries,
                     Some("The agent offers no options."),
-                    centered(frame.area(), 56, 44),
+                    area,
                     Some("↑↓ move · enter: select · esc: close"),
                 );
             }
@@ -319,13 +322,16 @@ impl App {
                     || "Variant".to_owned(),
                     |model| format!("Variant — {model}"),
                 );
-                let entries = self.variant_step_labels();
-                self.render_picker(
+                let area = centered(frame.area(), 48, 40);
+                self.clamp_picker_selection();
+                let width = usize::from(inner_rect(area).width.saturating_sub(2));
+                let entries = self.variant_step_rows(width);
+                self.render_picker_lines(
                     frame,
                     &title,
                     entries,
                     None,
-                    centered(frame.area(), 48, 40),
+                    area,
                     Some("↑↓ move · enter: select · esc: back"),
                 );
             }
@@ -963,6 +969,37 @@ impl App {
             area,
             &mut self.picker_state,
             &self.theme,
+        )
+        .into_iter()
+        .map(|(rect, index)| PickerRowHit { rect, index })
+        .collect();
+    }
+
+    /// A picker of styled rows, which style their own selection (as
+    /// `pickers::document_id_row` does).
+    pub(in crate::ui) fn render_picker_lines(
+        &mut self,
+        frame: &mut ratatui::Frame,
+        title: &str,
+        entries: Vec<Line<'static>>,
+        empty_message: Option<&str>,
+        area: Rect,
+        hint: Option<&str>,
+    ) {
+        self.clamp_picker_selection();
+        self.hit_map.picker = Some(area);
+        self.hit_map.picker_rows = crate::ui::pickers::render_lines(
+            frame,
+            crate::ui::pickers::PickerChrome {
+                title,
+                empty_message,
+                hint,
+            },
+            entries,
+            area,
+            &mut self.picker_state,
+            &self.theme,
+            self.theme.selected_overlay(),
         )
         .into_iter()
         .map(|(rect, index)| PickerRowHit { rect, index })

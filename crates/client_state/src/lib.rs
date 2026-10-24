@@ -44,7 +44,7 @@ pub mod usage;
 pub use reduce::approval_state_from_record;
 use reduce::*;
 
-pub use model_names::{ModelDisplayNames, variant_label};
+pub use model_names::{ModelDisplayNames, document_id, variant_label};
 pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 
 use std::{

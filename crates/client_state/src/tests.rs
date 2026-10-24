@@ -4524,3 +4524,15 @@ fn a_question_waits_until_it_is_resolved_or_its_run_ends() {
             .is_empty()
     );
 }
+
+#[test]
+fn pickers_show_the_document_id_only_when_it_differs_from_the_name() {
+    use crate::document_id;
+    // A native model's full key, an ACP option value, a variant ID.
+    assert_eq!(document_id("GPT-5", "openai/gpt-5"), Some("openai/gpt-5"));
+    assert_eq!(document_id("Opus", "opus"), Some("opus"));
+    assert_eq!(document_id("Variant low", "low"), Some("low"));
+    // The name is the ID: once.
+    assert_eq!(document_id("high", "high"), None);
+    assert_eq!(document_id("base", "base"), None);
+}

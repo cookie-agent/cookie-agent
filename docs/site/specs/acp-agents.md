@@ -364,7 +364,7 @@ Where the spec left a detail open, or where the code differs:
 - **The agent document.** Its `acp` block marks it as an ACP agent's (`acp:
   {}` is enough); such a document is an agent only while a runtime declares
   the id. It names no `agent_md`, `limits`, or mode `internal` (nor
-  `models`, until **Document models** below),
+  `models`, until **Document models and picker IDs** below),
   and its body may be empty. `models` and `enabled` became optional for
   every document (`enabled` defaults to `true`). A delegation target
   needs no document *(user decision of 2026-10-23)*: a named target no agent
@@ -1132,7 +1132,7 @@ Blue, each with its description, titled "Color") and `question_0_custom`
 `{"question_0": "Blue"}` ended the call and the agent replied "You chose
 Blue."; declining another made it reply "You skipped.".
 
-**Document models** (2026-10-24; no wire change, history format
+**Document models and picker IDs** (2026-10-24; no wire change, history format
 unchanged):
 
 - **`models` in an ACP document.** The top-level `models` of a document
@@ -1166,3 +1166,17 @@ unchanged):
   `models` name a value gives *... `models` takes precedence ...*. The
   option IDs are those the agent last offered on any runtime; before it
   offered any, only `model` is known to be the model option.
+- **IDs in the pickers** (no wire change: the IDs are the descriptors'
+  model keys, variant IDs, and option `values[].value`). Every model and
+  variant picker shows, dimmed after each row's name, the ID a `models`
+  entry writes (`cookie_agent_client_state::document_id`, `None` when the
+  name is the ID, which then shows once): a native model's full key, a
+  native variant's ID (`base` for the base), and an ACP agent's model and
+  effort values. The TUI's rows (`pickers::document_id_row`: the name and
+  its `(current)` or `(default)`, then the ID in the theme's `internal`
+  style, the model picker's key style, truncated first with an ellipsis)
+  stay `PickerRow` targets, so hover and click cover the ID; `/model`'s
+  variant step and `/options`' value step now render styled rows. The web
+  client's rows put the ID on a muted line under the name, its chips
+  beside the name, each `data-doc-id`, truncated so a phone's sheet does
+  not scroll sideways.

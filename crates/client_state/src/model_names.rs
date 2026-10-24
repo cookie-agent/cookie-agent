@@ -56,6 +56,14 @@ impl ModelDisplayNames {
     }
 }
 
+/// The ID an agent document's `models` entry writes for a choice a picker
+/// names `name` (a native model's full key, a variant's ID, or an ACP
+/// agent's option value), which pickers show dimmed beside the name; `None`
+/// when the name already is that ID, so it shows once.
+pub fn document_id<'a>(name: &str, id: &'a str) -> Option<&'a str> {
+    (name != id).then_some(id)
+}
+
 /// The variant retained in a selection, rendered as `base` when the
 /// selection is exact base behavior.
 pub fn variant_label(selection: &ModelSelection) -> String {

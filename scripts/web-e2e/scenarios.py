@@ -3133,6 +3133,14 @@ def phone_layout():
         # A picker rises from the bottom.
         phone.click("#model-chip")
         phone.wait("the model sheet", lambda: "Scripted Model" in phone.text("#sheet"))
+        # The model's full key, as an agent document writes it, muted under
+        # its name, and within the sheet.
+        assert "custom.local/test" in phone.script(
+            "return [...document.querySelectorAll('#sheet [data-doc-id]')].map((e) => e.textContent)"
+        )
+        assert phone.script(
+            "const sheet = document.querySelector('#sheet'); return sheet.scrollWidth <= sheet.clientWidth + 1"
+        ), "the model sheet scrolls sideways"
         rect = phone.script(
             "const r = document.querySelector('#sheet').getBoundingClientRect(); return [r.top, r.bottom, innerHeight]"
         )
@@ -4753,7 +4761,8 @@ def acp_agents(browser):
     tool call with the agent as its source, and the status bar its context;
     the commands it runs show their output, and an image in its reply shows
     as media; its commands are offered in the composer; the model chip
-    shows its model and effort options and its sheet picks them, with the
+    shows its model and effort options and its sheet picks them, each with
+    its ID muted beside its name (within a phone's width), with the
     other options a tap away, a boolean one as a switch; and a new
     session's draft picks the model and effort the agent last offered,
     which its first turn starts with."""
@@ -4824,6 +4833,12 @@ def acp_agents(browser):
     large = '#sheet [data-acp-model="large"]'
     browser.wait("the agent's models", lambda: count(browser, large) == 1)
     assert count(browser, '#sheet [data-acp-effort="high"]') == 1
+    # Beside each name, muted, the ID an agent document's `models` writes.
+    assert browser.text(large + " [data-doc-id]") == "large", browser.text(large)
+    assert browser.text('#sheet [data-acp-effort="high"] [data-doc-id]') == "high", browser.text("#sheet")
+    assert "text-ink" in browser.script(
+        "return document.querySelector(arguments[0]).className", large + " [data-doc-id]"
+    )
     settle(browser)
     browser.shot("acp-agent-models")
     browser.click(large)
@@ -4879,6 +4894,25 @@ def acp_agents(browser):
         timeout=40,
     )
     print("a draft picks the agent's model and effort before its session exists")
+
+    # On a phone, the sheet's IDs fit: nothing scrolls sideways.
+    browser.phone(390, 844)
+    # The bottom bar gives way to the keyboard while the composer has focus.
+    browser.script("document.activeElement.blur()")
+    browser.wait("the phone's bottom bar", lambda: shown(browser, "#model-chip"))
+    browser.click("#model-chip")
+    browser.wait("the agent's models", lambda: count(browser, large) == 1)
+    fits = browser.script(
+        "const sheet = document.querySelector('#sheet'); const box = sheet.getBoundingClientRect();"
+        "return [sheet.scrollWidth <= sheet.clientWidth + 1, document.documentElement.scrollWidth <= innerWidth + 1,"
+        " [...sheet.querySelectorAll('[data-doc-id]')].every((e) => e.getBoundingClientRect().right <= box.right + 1)]"
+    )
+    assert fits == [True, True, True], fits
+    browser.shot("phone-acp-agent-models")
+    close_sheet(browser)
+    # Back to the desktop the next scenario of the group expects.
+    browser.cdp("Emulation.clearDeviceMetricsOverride", {})
+    print("the model sheet shows each value's ID muted, within a phone's width")
 
 
 def acp_questions(browser):

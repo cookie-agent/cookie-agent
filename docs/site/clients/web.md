@@ -498,7 +498,10 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     would run them on; one that cannot run there (no attached runtime
     offers it, two do, or its runtime is away) is dimmed with why and
     cannot be picked. For an ACP agent the model chip shows the agent's
-    own model and effort (`Opus • High`) and opens their values, a click
+    own model and effort (`Opus • High`) and opens their values, each
+    with its value ID muted beside its name (as for cookie's models, whose
+    rows show the `provider/model` key and whose variant chips the variant
+    ID: what an agent document's `models` writes), a click
     changing them on the agent (on a new session's draft, the values its
     session starts with; a draft offers what the agent last started a
     session with); **All agent options** there lists every option the

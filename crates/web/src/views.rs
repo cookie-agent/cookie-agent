@@ -2719,6 +2719,24 @@ fn choice_line(label: String, current: bool, class: &'static str) -> impl IntoVi
     }
 }
 
+/// The ID an agent document's `models` entry writes for a choice named
+/// `name` (a model's full key, a variant's ID, an ACP agent's option
+/// value), muted and truncated, unless the name is that ID; `class` places
+/// it (`DOC_ID_ROW` under a row's name, `DOC_ID_CHIP` in a chip).
+fn document_id(name: &str, id: &str, class: &'static str) -> Option<impl IntoView + use<>> {
+    cookie_agent_client_state::document_id(name, id).map(|id| {
+        let id = id.to_owned();
+        view! { <span class=class data-doc-id title=id.clone()>{id.clone()}</span> }
+    })
+}
+
+/// A row's document ID: one muted line under its name, cut with an
+/// ellipsis where the sheet is narrow.
+const DOC_ID_ROW: &str = "block w-full truncate font-mono text-xs text-ink dark:text-sand";
+/// A chip's document ID, beside its name.
+const DOC_ID_CHIP: &str =
+    "min-w-0 max-w-[10rem] truncate font-mono text-xs text-ink dark:text-sand";
+
 fn agents_sheet(workspace: Workspace) -> impl IntoView {
     let current = workspace.draft.get_untracked().map(|draft| draft.agent);
     let agents = workspace.picker_agents();
@@ -2898,6 +2916,7 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                             on:click=choose(&option, value)
                         >
                             {choice_line(value.name.clone(), chosen, "text-sm font-bold")}
+                            {document_id(&value.name, &value.value, DOC_ID_ROW)}
                             {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
                         </button>
                     }
@@ -2921,7 +2940,8 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                             title=value.description.clone().unwrap_or_default()
                             on:click=choose(&option, value)
                         >
-                            {value.name.clone()}
+                            <span class="min-w-0 truncate">{value.name.clone()}</span>
+                            {document_id(&value.name, &value.value, DOC_ID_CHIP)}
                         </button>
                     }
                 })
@@ -3008,12 +3028,14 @@ fn models_sheet(workspace: Workspace) -> impl IntoView {
                             class:bg-toasted=chosen
                             class:dark:bg-ember=chosen
                             aria-pressed=chosen.to_string()
+                            data-variant=variant.id.to_string()
                             on:click=move |_| {
                                 workspace.pick_model(selection.clone());
                                 workspace.panel.set(None);
                             }
                         >
-                            {variant.display_name.clone()}
+                            <span class="min-w-0 truncate">{variant.display_name.clone()}</span>
+                            {document_id(&variant.display_name, variant.id.as_str(), DOC_ID_CHIP)}
                         </button>
                     }
                 })
@@ -3032,7 +3054,7 @@ fn models_sheet(workspace: Workspace) -> impl IntoView {
                         }
                     >
                         {choice_line(model.display_name.to_string(), chosen, "text-sm font-bold")}
-                        <span class=format!("font-mono {NOTE}")>{key.to_string()}</span>
+                        {document_id(model.display_name.as_str(), &key.to_string(), DOC_ID_ROW)}
                     </button>
                     <div class="flex flex-wrap gap-2 px-3">{variants}</div>
                 </div>

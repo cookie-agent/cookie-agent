@@ -217,8 +217,10 @@ You review changes for this project before they are committed.
   option of category `model`, else the option `model`), such as Claude
   Code's `opus`, and its `variant` a value of its effort option (category
   `thought_level`), such as `high`, or `null` (or no `variant`) for the
-  agent's default effort; a plain string is an entry with no variant. When
-  the agent's session
+  agent's default effort; a plain string is an entry with no variant. The
+  model and variant pickers show each value's ID dimmed beside its name,
+  as they show a native model's `provider/model` key and a variant's ID.
+  When the agent's session
   starts, the first entry whose model the agent offers applies, then its
   variant; when the agent offers none of them, or not the variant, the
   session says so and the agent keeps its own. Entries are 1–256 bytes
