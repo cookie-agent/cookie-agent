@@ -2371,42 +2371,24 @@ impl Engine {
         let mut lost = false;
         let mut forked_from = None;
         if let Some((from, message_id, delete)) = &branch {
-            match self
-                .fork_acp_session(process, from, message_id.as_deref(), &cwd, &mcp_servers)
-                .await
-            {
-                Ok((id, response)) => {
+            let forked = self
+                .branch_acp_session(
+                    session,
+                    process,
+                    from,
+                    message_id.as_deref(),
+                    *delete,
+                    &cwd,
+                    &mcp_servers,
+                )
+                .await;
+            match forked {
+                Some((id, response)) => {
                     let receiver = process.route(&id);
                     forked_from = Some(from.acp_session_id.clone());
                     opened = Some((id, response, AcpSessionStart::Forked, receiver));
-                    if *delete {
-                        self.acp_notice(
-                            session,
-                            run,
-                            "The agent continues from the revert point: its conversation after \
-                             it is gone."
-                                .to_owned(),
-                        )
-                        .await;
-                    }
                 }
-                Err(reason) => {
-                    seed = true;
-                    let what = if *delete {
-                        "continue from the revert point"
-                    } else {
-                        "fork the conversation this session was forked from"
-                    };
-                    self.acp_notice(
-                        session,
-                        run,
-                        format!(
-                            "The agent cannot {what} ({reason}), so this turn starts a new session \
-                             given the conversation so far."
-                        ),
-                    )
-                    .await;
-                }
+                None => seed = true,
             }
         }
         if let Some(prior) = &prior {
@@ -2704,7 +2686,12 @@ impl Engine {
     }
 
     /// Records a notice about the session's ACP agent.
-    async fn acp_notice(&self, session: SessionId, _run: Option<RunId>, message: String) {
+    pub(super) async fn acp_notice(
+        &self,
+        session: SessionId,
+        _run: Option<RunId>,
+        message: String,
+    ) {
         let _ = self
             .append(
                 session,

@@ -117,6 +117,80 @@ pub(crate) fn fork_detached(events: &[Arc<StoredEvent>], through_seq: u64) -> Ve
         .collect()
 }
 
+/// The ACP sessions a revert of `events` (the whole log before it) to
+/// `cut` leaves behind: for each agent, the latest session recorded at or
+/// before the cut whose conversation reaches past it. The reason is
+/// `forked` for a session a fork already left behind, which stays the
+/// source's, else `reverted`.
+pub(crate) fn revert_detached(events: &[Arc<StoredEvent>], cut: u64) -> Vec<AcpDetached> {
+    let kept = events
+        .iter()
+        .take_while(|event| event.seq <= cut)
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed = &events[kept.len()..];
+    latest_records(&kept)
+        .into_iter()
+        .filter(|record| reaches(removed, record))
+        .map(|record| {
+            let forked = events.iter().any(|event| {
+                matches!(&event.payload, Event::AcpSessionUpdated { update }
+                if update.detached.as_ref().is_some_and(|marker| {
+                    marker.acp_session_id == record.acp_session_id
+                        && marker.reason != AcpDetachReason::Reverted
+                }))
+            });
+            AcpDetached {
+                message_id: last_message_id(&kept, &record),
+                acp_session_id: record.acp_session_id,
+                reason: if forked {
+                    AcpDetachReason::Forked
+                } else {
+                    AcpDetachReason::Reverted
+                },
+            }
+        })
+        .collect()
+}
+
+/// The agent sessions a revert of `events` to `cut` removes every record
+/// of, and that are the cookie session's own (no fork left them behind):
+/// gone with the turns the revert removes.
+pub(crate) fn revert_removed(events: &[Arc<StoredEvent>], cut: u64) -> Vec<AcpSessionRecord> {
+    let kept = events
+        .iter()
+        .take_while(|event| event.seq <= cut)
+        .filter_map(|event| match &event.payload {
+            Event::AcpSessionStarted { record } => Some(record.acp_session_id.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let inherited = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Event::AcpSessionUpdated { update } => update
+                .detached
+                .as_ref()
+                .filter(|marker| marker.reason != AcpDetachReason::Reverted)
+                .map(|marker| marker.acp_session_id.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let mut removed: Vec<AcpSessionRecord> = Vec::new();
+    for event in events.iter().filter(|event| event.seq > cut) {
+        if let Event::AcpSessionStarted { record } = &event.payload
+            && !kept.contains(record.acp_session_id.as_str())
+            && !inherited.contains(record.acp_session_id.as_str())
+            && !removed
+                .iter()
+                .any(|known| known.acp_session_id == record.acp_session_id)
+        {
+            removed.push(record.clone());
+        }
+    }
+    removed
+}
+
 /// The latest record of each agent in `events`, in the order the agents
 /// first appear.
 fn latest_records(events: &[Arc<StoredEvent>]) -> Vec<AcpSessionRecord> {
@@ -134,6 +208,21 @@ fn latest_records(events: &[Arc<StoredEvent>]) -> Vec<AcpSessionRecord> {
         .into_iter()
         .filter_map(|agent| latest.remove(&agent))
         .collect()
+}
+
+/// Whether `removed`, the events a revert cuts, held turns of `record`'s
+/// agent or a later session of it: what the agent remembers and the cookie
+/// session no longer has.
+fn reaches(removed: &[Arc<StoredEvent>], record: &AcpSessionRecord) -> bool {
+    let model = cookie_agent_protocol::acp_model_selection(&record.agent).model;
+    removed.iter().any(|event| match &event.payload {
+        Event::ModelAttemptStarted { resolved_model, .. }
+        | Event::ModelTurnCommitted { resolved_model, .. } => {
+            resolved_model.selection.model == model
+        }
+        Event::AcpSessionStarted { record: later } => later.agent == record.agent,
+        _ => false,
+    })
 }
 
 /// The ACP `messageId` of the agent's last message in `events` within the
@@ -298,23 +387,86 @@ fn cut(text: &str, max: usize) -> String {
 }
 
 impl super::super::Engine {
-    /// `session/fork` of `from` at the agent message `message_id`, as the
-    /// next turn branches off a session a fork or a revert left behind:
-    /// the new session's ID and the agent's answer, or why it could not.
-    pub(super) async fn fork_acp_session(
+    /// The agent's `session/fork` of `from`, a session a fork or a revert
+    /// left behind (`delete`: a revert), at `message_id`, with a notice
+    /// for the cookie session `session` saying how its agent goes on: the
+    /// new session's ID and the agent's answer, or `None` when the turn
+    /// starts a new session given the cookie transcript instead.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn branch_acp_session(
         &self,
+        session: SessionId,
         process: &AgentProcess,
         from: &AcpSessionRecord,
         message_id: Option<&str>,
+        delete: bool,
+        cwd: &str,
+        mcp_servers: &[wire::McpServer],
+    ) -> Option<(String, wire::SessionResponse)> {
+        let notice = match message_id {
+            None if delete => Err(
+                "The revert point is before the agent's first message, so this turn starts a new \
+                 session."
+                    .to_owned(),
+            ),
+            None => Err(
+                "The session was forked before the agent's first message, so this turn starts a \
+                 new session given the conversation so far."
+                    .to_owned(),
+            ),
+            Some(message_id) => match self
+                .fork_acp_session(process, from, message_id, cwd, mcp_servers)
+                .await
+            {
+                Ok(forked) => Ok(forked),
+                Err(reason) => {
+                    let what = if delete {
+                        "continue from the revert point"
+                    } else {
+                        "fork the conversation this session was forked from"
+                    };
+                    Err(format!(
+                        "The agent cannot {what} ({reason}), so this turn starts a new session \
+                         given the conversation so far."
+                    ))
+                }
+            },
+        };
+        match notice {
+            Ok(forked) => {
+                if delete {
+                    self.acp_notice(
+                        session,
+                        None,
+                        "The agent continues from the revert point: its conversation after it \
+                         is gone."
+                            .to_owned(),
+                    )
+                    .await;
+                }
+                Some(forked)
+            }
+            Err(message) => {
+                self.acp_notice(session, None, message).await;
+                None
+            }
+        }
+    }
+
+    /// `session/fork` of `from` at the agent message `message_id`, as the
+    /// next turn branches off a session a fork or a revert left behind:
+    /// the new session's ID and the agent's answer, or why it could not.
+    async fn fork_acp_session(
+        &self,
+        process: &AgentProcess,
+        from: &AcpSessionRecord,
+        message_id: &str,
         cwd: &str,
         mcp_servers: &[wire::McpServer],
     ) -> Result<(String, wire::SessionResponse), String> {
         if !process.init().agent_capabilities.session("fork") {
             return Err("it does not offer `session/fork`".to_owned());
         }
-        let Some(message_id) = message_id else {
-            return Err("the session keeps none of its messages to fork at".to_owned());
-        };
         let response = tokio::time::timeout(
             SESSION_TIMEOUT,
             process.peer.request::<_, wire::SessionResponse>(
@@ -376,6 +528,50 @@ impl super::super::Engine {
         match live {
             Some(live) => self.end_live_session(live, true).await,
             None => end_agent_session(process, acp_session_id, false, true).await,
+        }
+    }
+
+    /// Deletes the agent's sessions `records`, which were `session`'s own
+    /// and no longer are: its live one closes first, and the others go to
+    /// the agent's process on the runtime that holds them, started for it
+    /// when it is not running. An agent its runtime no longer offers keeps
+    /// them.
+    pub(crate) async fn delete_acp_sessions(
+        &self,
+        session: SessionId,
+        records: Vec<AcpSessionRecord>,
+    ) {
+        for record in records {
+            let live = {
+                let mut sessions = self
+                    .inner
+                    .acp
+                    .processes
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match sessions.get(&session) {
+                    Some(live) if live.acp_session_id == record.acp_session_id => {
+                        sessions.remove(&session)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(live) = live {
+                self.end_live_session(live, true).await;
+                continue;
+            }
+            let Some(agent) = self.inner.acp.runtime_agents().into_iter().find(|agent| {
+                agent.runtime == record.runtime_id
+                    && agent.agent == record.runtime_agent
+                    && agent.available()
+            }) else {
+                continue;
+            };
+            if let Ok((process, _use)) = self.inner.acp.processes.acquire(&self.inner, &agent).await
+            {
+                end_agent_session(&process, &record.acp_session_id, false, true).await;
+            }
         }
     }
 }

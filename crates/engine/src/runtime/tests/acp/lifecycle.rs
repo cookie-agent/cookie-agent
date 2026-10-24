@@ -144,3 +144,195 @@ async fn without_session_fork_a_fork_starts_a_new_session_given_the_transcript()
     assert_eq!(final_text(&outcome), "remembers: say one, work");
     assert_eq!(session_starts(engine, parent).len(), 1);
 }
+
+async fn revert(engine: &Engine, session: SessionId, through_seq: u64) {
+    engine
+        .revert_session(session, through_seq, origin(), None)
+        .await
+        .expect("reverted");
+}
+
+/// Waits for the agent to have been asked `method` `count` times.
+async fn asked(acp: &AcpFixture, method: &str, count: usize) -> Vec<serde_json::Value> {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let asked = requests(acp, method);
+            if asked.len() >= count {
+                return asked;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the agent was not asked {method}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revert_forks_the_agents_session_at_the_revert_point_and_deletes_the_old_one() {
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_FORK", "1"), ("ACP_FIXTURE_DELETE", "1")],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for (key, text) in [
+        ("one", "say one"),
+        ("two", "say two"),
+        ("three", "say three"),
+    ] {
+        turn(engine, session, key, text).await;
+    }
+    let old = session_starts(engine, session)[0].acp_session_id.clone();
+    revert(engine, session, run_end_seq(engine, session, 1)).await;
+    let detached = events(engine, session)
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.detached,
+            _ => None,
+        })
+        .expect("the revert leaves the agent's session behind");
+    assert_eq!(detached.acp_session_id, old);
+    assert_eq!(detached.reason, AcpDetachReason::Reverted);
+
+    // The agent forgot the reverted turn.
+    let outcome = turn(engine, session, "recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one, say two");
+    let forks = requests(&acp, "session/fork");
+    assert_eq!(forks.len(), 1);
+    assert_eq!(forks[0]["sessionId"], old.as_str());
+    assert_eq!(
+        forks[0]["_meta"]["jetbrains"]["air"]["fork"]["messageId"],
+        detached.message_id.clone().expect("the fork point")
+    );
+    let started = session_starts(engine, session);
+    let forked = started.last().expect("the forked session");
+    assert_eq!(forked.how, AcpSessionStart::Forked);
+    assert_eq!(forked.forked_from.as_deref(), Some(old.as_str()));
+    // The old session is closed and deleted, after the fork.
+    let methods = acp.received_methods();
+    let fork_at = methods.iter().position(|method| method == "session/fork");
+    let delete_at = methods.iter().position(|method| method == "session/delete");
+    assert!(fork_at < delete_at, "{methods:?}");
+    assert_eq!(
+        requests(&acp, "session/delete")[0]["sessionId"],
+        old.as_str()
+    );
+    assert!(
+        diagnostics(engine, session)
+            .iter()
+            .any(|message| message.contains("continues from the revert point")),
+        "{:?}",
+        diagnostics(engine, session)
+    );
+    let outcome = turn(engine, session, "again", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one, say two, recall");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_session_fork_a_revert_starts_a_new_session_given_the_kept_transcript() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_DELETE", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for (key, text) in [
+        ("one", "say one"),
+        ("two", "say two"),
+        ("three", "say three"),
+    ] {
+        turn(engine, session, key, text).await;
+    }
+    let old = session_starts(engine, session)[0].acp_session_id.clone();
+    revert(engine, session, run_end_seq(engine, session, 1)).await;
+
+    let outcome = turn(engine, session, "echo", "echo").await;
+    assert!(final_text(&outcome).ends_with(" | echo"));
+    let prompt = prompts(&acp).last().cloned().expect("the prompt");
+    let transcript = prompt
+        .iter()
+        .find(|block| block.starts_with("<cookie_transcript>"))
+        .unwrap_or_else(|| panic!("{prompt:?}"));
+    assert!(
+        transcript.contains("User: say two\n\nAssistant: two"),
+        "{transcript}"
+    );
+    assert!(!transcript.contains("three"), "{transcript}");
+    let started = session_starts(engine, session);
+    assert_eq!(started.last().unwrap().how, AcpSessionStart::New);
+    assert_ne!(started.last().unwrap().acp_session_id, old);
+    let deleted = asked(&acp, "session/delete", 1).await;
+    assert_eq!(deleted[0]["sessionId"], old.as_str());
+    assert!(
+        diagnostics(engine, session).iter().any(|message| message
+            .contains("cannot continue from the revert point (it does not offer `session/fork`)")),
+        "{:?}",
+        diagnostics(engine, session)
+    );
+    let outcome = turn(engine, session, "recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: echo");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revert_before_the_agents_first_turn_deletes_its_session_and_starts_fresh() {
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_FORK", "1"), ("ACP_FIXTURE_DELETE", "1")],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "one", "say one").await;
+    let old = session_starts(engine, session)[0].acp_session_id.clone();
+    let first_input = events(engine, session)
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+        .expect("the first input")
+        .seq;
+    revert(engine, session, first_input - 1).await;
+    let deleted = asked(&acp, "session/delete", 1).await;
+    assert_eq!(deleted[0]["sessionId"], old.as_str());
+
+    let outcome = turn(engine, session, "recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: ");
+    let started = session_starts(engine, session);
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].how, AcpSessionStart::New);
+    assert_ne!(started[0].acp_session_id, old);
+    assert!(requests(&acp, "session/fork").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reverting_a_fork_into_its_sources_turns_leaves_the_sources_session_alone() {
+    let acp = acp_fixture(
+        &[("ACP_FIXTURE_FORK", "1"), ("ACP_FIXTURE_DELETE", "1")],
+        &[],
+    )
+    .await;
+    let engine = acp.engine();
+    let parent = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, parent, "one", "say one").await;
+    turn(engine, parent, "two", "say two").await;
+    let source = session_starts(engine, parent)[0].acp_session_id.clone();
+    let tip = engine.inner.store.get(parent).unwrap().meta.last_event_seq;
+    let child = fork(engine, parent, tip).await;
+    turn(engine, child, "three", "say three").await;
+    let own = session_starts(engine, child)
+        .last()
+        .unwrap()
+        .acp_session_id
+        .clone();
+    assert_ne!(own, source);
+
+    // Back into the turns the fork copied: the fork's own session goes,
+    // the source's stays.
+    revert(engine, child, run_end_seq(engine, child, 0)).await;
+    let deleted = asked(&acp, "session/delete", 1).await;
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0]["sessionId"], own.as_str());
+    let outcome = turn(engine, child, "recall", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one");
+    let forks = requests(&acp, "session/fork");
+    assert_eq!(forks.last().unwrap()["sessionId"], source.as_str());
+    assert_eq!(requests(&acp, "session/delete").len(), 1);
+    let outcome = turn(engine, parent, "parent", "recall").await;
+    assert_eq!(final_text(&outcome), "remembers: say one, say two");
+}

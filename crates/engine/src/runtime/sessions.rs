@@ -756,6 +756,13 @@ impl Engine {
                     let events = projection.log.event_snapshot();
                     let cut = revert_cut(&events, through_seq);
                     let deleted = engine.reverted_children(&events, cut)?;
+                    // The ACP agent remembers what the cut removes: the
+                    // session it talks in is left behind (its next turn
+                    // branches off it at the revert point), and one whose
+                    // every record is cut is deleted.
+                    let acp_detached =
+                        crate::runtime::acp::lifecycle::revert_detached(&events, cut);
+                    let acp_removed = crate::runtime::acp::lifecycle::revert_removed(&events, cut);
                     // What the cut events and deleted children referenced is all a
                     // revert can orphan; the sweep below keeps what is still used.
                     let mut dropped = HashSet::new();
@@ -777,6 +784,19 @@ impl Engine {
                     // The cut can fall inside a run, with its tool calls, internal
                     // agents or approvals still open: close them as a restart would.
                     engine.reconcile_session_with(session, "session reverted")?;
+                    for detached in acp_detached {
+                        engine.append_direct(
+                            session,
+                            None,
+                            super::event_origin("engine:acp"),
+                            Event::AcpSessionUpdated {
+                                update: cookie_agent_protocol::AcpSessionUpdate {
+                                    detached: Some(detached),
+                                    ..Default::default()
+                                },
+                            },
+                        )?;
+                    }
                     engine
                         .inner
                         .compaction
@@ -797,13 +817,20 @@ impl Engine {
                             session: engine.inner.store.get(session)?.metadata(),
                             instructions_override,
                         },
-                        dropped,
+                        (dropped, acp_removed),
                     ))
                 })();
                 engine.release_compaction_direct(session).await;
                 result
             })
             .await?;
+        let (dropped, acp_removed) = dropped;
+        if !acp_removed.is_empty() {
+            let engine = self.clone();
+            tokio::spawn(async move {
+                engine.delete_acp_sessions(session, acp_removed).await;
+            });
+        }
         self.collect_reverted_artifacts(session, dropped).await;
         Ok(result)
     }
