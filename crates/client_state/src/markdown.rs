@@ -140,7 +140,92 @@ impl MarkdownDocument {
     pub fn append(&mut self, delta: &str) {
         self.source.push_str(delta);
         self.finished = false;
-        self.reparse_open_tail();
+        if !self.extend_open_fence(delta.len()) {
+            self.reparse_open_tail();
+        }
+    }
+
+    /// Append the last `appended` bytes of the source to an open tail that
+    /// is one unclosed fenced code block, without parsing it again: its
+    /// events are the opening tag, every byte after the opening line as one
+    /// text event, and the closing tag, exactly as a parse would give while
+    /// no line can close the fence. Reparsing instead would make a long
+    /// streamed code block quadratic. False, changing nothing, whenever the
+    /// appended text could do more than extend the code: a line that may
+    /// close the fence, a carriage return or NUL, an unfinished last line
+    /// of blanks, or an opening line still being written. The block gets a
+    /// fresh renderer cache, as a parse would give it.
+    fn extend_open_fence(&mut self, appended: usize) -> bool {
+        let [block] = self.tail_blocks.as_mut_slice() else {
+            return false;
+        };
+        let tail = &self.source[self.stable_prefix_len..];
+        let previous_len = tail.len() - appended;
+        if block.kind != MarkdownBlockKind::Code || block.content_len != previous_len {
+            return false;
+        }
+        let fence = match tail.as_bytes().first() {
+            Some(b'`') => '`',
+            Some(b'~') => '~',
+            _ => return false,
+        };
+        let Some(opening_end) = tail[..previous_len].find('\n') else {
+            return false;
+        };
+        // Still open: the code runs to the end of the source, where a
+        // closed block's code would stop before its closing line.
+        let code_len = match block.events.as_slice() {
+            [
+                Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(_))),
+                Event::End(pulldown_cmark::TagEnd::CodeBlock),
+            ] => 0,
+            [
+                Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(_))),
+                Event::Text(code),
+                Event::End(pulldown_cmark::TagEnd::CodeBlock),
+            ] => code.len(),
+            _ => return false,
+        };
+        if opening_end + 1 + code_len != previous_len {
+            return false;
+        }
+        // Every line the appended bytes touch, from the start of the line
+        // they continue.
+        let touched = tail[..previous_len]
+            .rfind('\n')
+            .map_or(previous_len, |index| index + 1);
+        let may_close = tail[touched..].split_inclusive('\n').any(|line| {
+            line.contains(['\r', '\0']) || line.trim_start_matches([' ', '\t']).starts_with(fence)
+        });
+        // A parse leaves out an unfinished last line of blanks.
+        let blank_end = !tail.ends_with('\n')
+            && tail[touched..]
+                .rsplit('\n')
+                .next()
+                .is_some_and(|line| line.trim_start_matches([' ', '\t']).is_empty());
+        if may_close || blank_end {
+            return false;
+        }
+        let code = &tail[opening_end + 1..];
+        let start = block.events[0].clone();
+        let end = block.events[block.events.len() - 1].clone();
+        block.events.clear();
+        block.events.push(start);
+        if !code.is_empty() {
+            block
+                .events
+                .push(Event::Text(pulldown_cmark::CowStr::from(code.to_owned())));
+        }
+        block.events.push(end);
+        block.source = Arc::from(tail);
+        block.content_hash = foldhash::fast::FixedState::default().hash_one(tail);
+        block.content_len = tail.len();
+        block.renderer_cache = RendererCache::default();
+        self.parse_passes = self.parse_passes.wrapping_add(1);
+        self.parsed_bytes = self
+            .parsed_bytes
+            .wrapping_add((tail.len() - touched) as u64);
+        true
     }
 
     /// Mark the document complete, so its last block — never promoted to
@@ -178,8 +263,7 @@ impl MarkdownDocument {
     }
 
     fn reparse_open_tail(&mut self) {
-        let tail = self.source[self.stable_prefix_len..].to_owned();
-        let parsed = self.parse(&tail);
+        let parsed = self.parse_from(self.stable_prefix_len);
         let effective_definitions = self.effective_definitions(&parsed.definitions);
         let references_changed = self
             .stable_reference_dependencies
@@ -193,17 +277,18 @@ impl MarkdownDocument {
             self.stable_reference_definitions.clear();
             self.reference_definitions.clear();
             self.stable_reference_dependencies.clear();
-            let source = self.source.clone();
-            let parsed = self.parse(&source);
+            let parsed = self.parse_from(0);
             self.reference_definitions = self.effective_definitions(&parsed.definitions);
-            self.apply_parsed(&source, parsed);
+            self.apply_parsed(parsed);
             return;
         }
         self.reference_definitions = effective_definitions;
-        self.apply_parsed(&tail, parsed);
+        self.apply_parsed(parsed);
     }
 
-    fn parse(&mut self, source: &str) -> ParsedDocument {
+    /// Parse the source from byte `start` on, in place.
+    fn parse_from(&mut self, start: usize) -> ParsedDocument {
+        let source = &self.source[start..];
         self.parse_passes = self.parse_passes.wrapping_add(1);
         self.parsed_bytes = self.parsed_bytes.wrapping_add(source.len() as u64);
         parse_document(source, self.hard_breaks)
@@ -222,8 +307,9 @@ impl MarkdownDocument {
         definitions
     }
 
-    fn apply_parsed(&mut self, source: &str, parsed: ParsedDocument) {
-        let split = settled_split(source, &parsed.blocks);
+    /// Settle the blocks of `parsed`, a parse of the open tail.
+    fn apply_parsed(&mut self, parsed: ParsedDocument) {
+        let split = settled_split(&self.source[self.stable_prefix_len..], &parsed.blocks);
         self.stable_reference_dependencies.extend(
             parsed
                 .blocks
@@ -508,6 +594,64 @@ mod tests {
                 assert_eq!(blocks(&streamed), whole, "{sample:?} in chunks of {chunk}");
             }
         }
+    }
+
+    /// A fenced code block streamed in pieces, through every way its lines
+    /// can end or close the fence, ends each step with the blocks and events
+    /// a whole parse gives — and a long open block extends without parsing
+    /// its code again.
+    #[test]
+    fn streamed_code_blocks_match_a_whole_parse() {
+        let samples = [
+            "```rust\nfn a() {}\n\tlet b = 1;\n\n  c\n```\nafter\n",
+            "Intro\n\n```\na\n``\n`x`\n ```\nb\n",
+            "~~~~ py\n~~~\nx = 1\n~~~~\n\n```\nopen",
+            "```\nline\r\nnext\r\n```\n",
+            "```\na\u{0}b\n    ```\n",
+            "```\n```\n```\nsecond\n",
+            "- item\n\n  ```\n  code\n  ```\n",
+        ];
+        let blocks = |document: &MarkdownDocument| {
+            document
+                .blocks()
+                .map(|block| {
+                    (
+                        block.kind(),
+                        block.source().to_string(),
+                        block.content_hash(),
+                        block.content_len(),
+                        block.events().to_vec(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for sample in samples {
+            for chunk in [1, 2, 3, 5, 11] {
+                let mut streamed = MarkdownDocument::default();
+                let mut source = String::new();
+                let characters = sample.chars().collect::<Vec<_>>();
+                for piece in characters.chunks(chunk) {
+                    let piece = piece.iter().collect::<String>();
+                    source.push_str(&piece);
+                    streamed.append(&piece);
+                    assert_eq!(
+                        blocks(&streamed),
+                        blocks(&MarkdownDocument::new(source.clone())),
+                        "{source:?} in chunks of {chunk}"
+                    );
+                }
+            }
+        }
+
+        let mut document = MarkdownDocument::new("Intro\n\n```rust\n".to_owned());
+        let parsed = document.parsed_bytes();
+        for line in 0..2_000 {
+            document.append(&format!("let value_{line} = {line};\n"));
+        }
+        let code = &document.tail_blocks()[0];
+        assert_eq!(code.kind(), MarkdownBlockKind::Code);
+        assert!(code.source().ends_with("let value_1999 = 1999;\n"));
+        assert!(document.parsed_bytes() - parsed < 2 * code.content_len() as u64);
     }
 
     #[test]

@@ -569,6 +569,24 @@ fn markdown_parse_cost() {
         deltas.len(),
         median(whole).as_secs_f64() * 1000.0
     );
+    // One long code block streaming in a line at a time stays open the
+    // whole time.
+    let code_lines = 5_000;
+    let fence = (0..repeat.min(5))
+        .map(|_| {
+            let start = Instant::now();
+            let mut document = MarkdownDocument::new("Here it is:\n\n```rust\n".to_owned());
+            for line in 0..code_lines {
+                document.append(&format!("    let value_{line} = compute({line});\n"));
+            }
+            std::hint::black_box(document);
+            start.elapsed()
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "  stream a {code_lines}-line code block     median {:>9.3} ms",
+        median(fence).as_secs_f64() * 1000.0
+    );
 }
 
 #[tokio::test]
