@@ -1046,6 +1046,36 @@ pub(super) fn reduce_event_from(
             };
             push_event(state, EventLevel::Info, message.to_lowercase(), timestamp);
         }
+        EventPayload::ElicitationRequested { request } => {
+            state
+                .questions
+                .retain(|question| question.request.elicitation_id != request.elicitation_id);
+            state.questions.push(crate::elicitation::QuestionState {
+                session_id,
+                run_id,
+                request,
+            });
+        }
+        EventPayload::ElicitationResolved { resolution } => {
+            let asked = state
+                .questions
+                .iter()
+                .position(|question| question.request.elicitation_id == resolution.elicitation_id)
+                .map(|index| state.questions.remove(index));
+            let message = asked.map_or_else(
+                || "a question".to_owned(),
+                |question| format!("{}: “{}”", question.heading(), question.request.message),
+            );
+            push_event(
+                state,
+                EventLevel::Info,
+                format!(
+                    "{message} {}",
+                    crate::elicitation::resolution_text(&resolution)
+                ),
+                timestamp,
+            );
+        }
         EventPayload::TreeApprovalGrantCommitted { grant } => push_event(
             state,
             EventLevel::Debug,
@@ -1074,6 +1104,7 @@ pub(super) fn reduce_event_from(
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
+            state.questions.clear();
             if let Some(run_id) = run_id {
                 state.terminal_runs.insert(run_id);
             }

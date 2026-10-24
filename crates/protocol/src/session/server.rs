@@ -468,6 +468,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: ApprovalListParams,
     ) -> Result<ApprovalListResult, ServerFault>;
+    /// Answers a question an agent asked the user.
+    async fn respond_elicitation(
+        &self,
+        params: crate::ElicitationRespondParams,
+    ) -> Result<crate::ElicitationRespondResult, ServerFault>;
     async fn begin_mcp_auth(
         &self,
         params: McpAuthBeginParams,
@@ -1154,6 +1159,9 @@ async fn dispatch<S: ServerProtocol>(
             value(page)
         }
         "approval.respond" => value(server.respond_approval(decode(params)?, context).await?),
+        crate::ELICITATION_RESPOND_METHOD => {
+            value(server.respond_elicitation(decode(params)?).await?)
+        }
         "approval.list" => value(server.list_approvals(decode(params)?).await?),
         "mcp.auth.begin" => value(server.begin_mcp_auth(decode(params)?).await?),
         "mcp.auth.complete" => value(server.complete_mcp_auth(decode(params)?).await?),

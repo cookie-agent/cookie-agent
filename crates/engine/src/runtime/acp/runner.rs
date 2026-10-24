@@ -22,7 +22,10 @@ use cookie_agent_protocol::{
     RunId, SafeCode, SafeDisplayText, SessionId, StreamedOutputKind, ToolCallId, ToolCallStart,
     ToolIdentity, ToolOutputDeclaration, ToolPresentation, ToolSource, Usage, UserContentPart,
 };
-use cookie_agent_runtime_api::protocol::{AgentMcpOpenResult, AgentRef, method};
+use cookie_agent_runtime_api::{
+    protocol::{AgentMcpOpenResult, AgentRef, method},
+    rpc::IncomingRequest,
+};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -30,7 +33,7 @@ use super::super::{
     ActiveRun, Engine, EngineError, SessionCommand, ToolCallFailureCode, ToolFailure, event_origin,
 };
 use super::{
-    permissions,
+    elicitation, permissions,
     process::{AgentProcess, SessionEvent, agent_error_message},
     terminal::{self, Terminal},
     wire::{self, ToolCallFields},
@@ -686,7 +689,7 @@ struct Turn<'a> {
     /// The context use the session last recorded in this run.
     context: Option<cookie_agent_protocol::AcpContextUsage>,
     home: Option<String>,
-    /// Calls through the bridge still running.
+    /// Calls through the bridge, and questions to the user, still running.
     bridged: Vec<tokio::task::JoinHandle<()>>,
     /// The agent takes input into its running turn (`_session/steering`).
     steering: bool,
@@ -1741,6 +1744,24 @@ impl Turn<'_> {
         Ok(())
     }
 
+    /// Asks the user an `elicitation/create` of the agent's.
+    fn elicitation(&mut self, create: elicitation::Create, incoming: IncomingRequest) {
+        let tool_call_id = create
+            .tool_call_id()
+            .and_then(|id| self.calls.get(id))
+            .map(|call| call.tool_call_id);
+        let asked = self.engine.ask_acp_question(
+            Arc::clone(self.active),
+            self.run,
+            self.live.agent.id.clone(),
+            tool_call_id,
+            &self.live.process,
+            create,
+            incoming,
+        );
+        self.bridged.push(asked);
+    }
+
     /// Answers a permission request, by the agent's rules and approvals.
     fn permission(
         &self,
@@ -1950,6 +1971,7 @@ impl Engine {
                 SessionEvent::BridgeCall { reply, .. } => {
                     let _ = reply.send(bridge_refusal());
                 }
+                SessionEvent::Elicitation(_, request) => elicitation::cancel(request),
             }
         }
         let process = Arc::clone(&turn.live.process);
@@ -2013,6 +2035,13 @@ impl Engine {
                     Some(SessionEvent::BridgeCall { name, arguments, reply }) => {
                         turn.bridge_call(name, arguments, reply).await?;
                     }
+                    Some(SessionEvent::Elicitation(create, incoming)) => {
+                        if cancel_deadline.is_some() {
+                            elicitation::cancel(incoming);
+                        } else {
+                            turn.elicitation(*create, incoming);
+                        }
+                    }
                     None => break None,
                 },
                 () = async {
@@ -2036,6 +2065,7 @@ impl Engine {
                 SessionEvent::BridgeCall { reply, .. } => {
                     let _ = reply.send(bridge_refusal());
                 }
+                SessionEvent::Elicitation(_, incoming) => elicitation::cancel(incoming),
             }
         }
         drop(events);
@@ -2050,7 +2080,9 @@ impl Engine {
                 .unwrap_or_else(|| Err("the agent did not answer the steering request".to_owned()));
             turn.end_steer(pending, answer).await?;
         }
-        // A call through the bridge ends before the turn does.
+        // A call through the bridge, or a question to the user, ends before
+        // the turn does.
+        self.end_acp_questions(turn.run);
         for call in std::mem::take(&mut turn.bridged) {
             let _ = call.await;
         }

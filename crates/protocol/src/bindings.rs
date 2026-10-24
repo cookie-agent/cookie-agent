@@ -317,6 +317,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!("events.subscribe", ToDaemon, EventsSubscribeParams => EventsSubscribeResult),
         request!("approval.respond", ToDaemon, ApprovalRespondParams => ApprovalRespondResult),
         request!("approval.list", ToDaemon, ApprovalListParams => ApprovalListResult),
+        request!(ELICITATION_RESPOND_METHOD, ToDaemon, ElicitationRespondParams => ElicitationRespondResult),
         request!("mcp.auth.begin", ToDaemon, McpAuthBeginParams => McpAuthBeginResult),
         request!("mcp.auth.complete", ToDaemon, McpAuthCompleteParams => McpAuthCompleteResult),
         request!("mcp.auth.cancel", ToDaemon, McpAuthCancelParams => McpAuthCancelResult),

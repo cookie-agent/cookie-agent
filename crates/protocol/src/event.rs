@@ -2952,6 +2952,18 @@ pub enum EventPayload {
         #[serde(flatten)]
         update: crate::AcpSessionUpdate,
     },
+    /// An agent of the run asks the user a question: a form or a URL
+    /// (client protocol 1.25.0). The run waits for `elicitation_resolved`.
+    ElicitationRequested {
+        #[serde(flatten)]
+        request: crate::ElicitationRequest,
+    },
+    /// The question `elicitation_id` was answered (client protocol
+    /// 1.25.0).
+    ElicitationResolved {
+        #[serde(flatten)]
+        resolution: crate::ElicitationResolution,
+    },
 }
 
 // Plugins receive events as `Open<EventPayload>`: an event type a plugin
@@ -2972,6 +2984,8 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "delegation_progressed",
     "delegation_reserved",
     "diagnostic",
+    "elicitation_requested",
+    "elicitation_resolved",
     "goal_activated",
     "goal_checklist_revised",
     "goal_lifecycle_changed",
@@ -3154,6 +3168,8 @@ impl EventPayload {
             Self::SessionCreated { .. }
             | Self::AcpSessionStarted { .. }
             | Self::AcpSessionUpdated { .. }
+            | Self::ElicitationRequested { .. }
+            | Self::ElicitationResolved { .. }
             | Self::SessionPermissionOverlaySet { .. }
             | Self::RuntimeAttached { .. }
             | Self::RuntimeDetached { .. }
@@ -3298,6 +3314,17 @@ impl EventPayload {
                 {
                     return Err(EventSchemaError::InvalidAcpSession);
                 }
+            }
+            Self::ElicitationRequested { request } if !request.is_valid() => {
+                return Err(EventSchemaError::InvalidElicitation);
+            }
+            Self::ElicitationResolved { resolution }
+                if resolution
+                    .reason
+                    .as_ref()
+                    .is_some_and(|reason| reason.len() > crate::MAX_ELICITATION_TEXT_BYTES) =>
+            {
+                return Err(EventSchemaError::InvalidElicitation);
             }
             Self::GoalActivated { objective, .. } if objective.trim().is_empty() => {
                 return Err(EventSchemaError::InvalidGoalEvent);
@@ -4712,6 +4739,7 @@ impl crate::RetainedToolOutput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventSchemaError {
     InvalidAcpSession,
+    InvalidElicitation,
     InvalidGoalEvent,
     InvalidProducerMessage,
     InvalidOrigin,
@@ -4774,6 +4802,9 @@ impl fmt::Display for EventSchemaError {
         f.write_str(match self {
             Self::InvalidAcpSession => {
                 "acp session ID and cwd must be nonempty bounded control-free text"
+            }
+            Self::InvalidElicitation => {
+                "an elicitation has at most one of a form and a URL, bounded text, and distinct field names"
             }
             Self::InvalidGoalEvent => "goal objective/items must be nonblank",
             Self::InvalidProducerMessage => {

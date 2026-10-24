@@ -14,6 +14,7 @@ pub mod activity;
 pub mod badges;
 pub mod config;
 pub mod cron;
+pub mod elicitation;
 pub mod markdown;
 pub mod mcp;
 pub mod memory;
@@ -1068,6 +1069,9 @@ pub struct SessionState {
     pub producer_claims: HashMap<u64, ProducerClaimProjection>,
     pub terminal_runs: HashSet<RunId>,
     pub approvals: Vec<ApprovalState>,
+    /// The questions an agent asked the user that still wait for an
+    /// answer, oldest first.
+    pub questions: Vec<elicitation::QuestionState>,
     /// AGENTS.md entries loaded by the latest run and by the run before it,
     /// per attachment (events without one count as `local`). A run loads
     /// one event per coding attachment that returned a file. A row appears

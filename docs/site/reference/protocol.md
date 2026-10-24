@@ -297,6 +297,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `events.unsubscribe` | Session ID | Whether this connection had a live tail for it |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
+| `elicitation.respond` | Session ID, `elicitation_id`, `action` (`accept`, `decline`, or `cancel`), and `content`, the form's values by field name, for `accept` of a form | Empty object, once the answer is handed to the agent; `elicitation_not_pending` or `elicitation_answer_invalid` otherwise (see [Questions](#questions)) |
 | `mcp.server.list` | Empty object | Every MCP server the daemon and its runtimes host: its `runtime_id`, `workspace`, `name`, `source`, `definition`, `state`, `tool_count`, and `message` (see [MCP servers](#mcp-servers)) |
 | `mcp.server.add` | `name`, `definition` | The new server as `mcp.server.list` reports it |
 | `mcp.server.edit` | `name`, `definition` | The server afterwards |
@@ -824,6 +825,41 @@ over the Agent Client Protocol (see the
 - The display block `plan` (`entries`, each `content`, `status`
   `pending`/`in_progress`/`completed`, optional `priority`
   `high`/`medium`/`low`) reaches a client older than 1.17.0 as its text.
+
+### Questions
+
+Since 1.25.0 an agent of a run can ask the user a question: an ACP agent's
+`elicitation/create` (see the [ACP agents spec](../specs/acp-agents.md)).
+The run waits on it, and clients show it as waiting on the user.
+
+- `elicitation_requested` (run-bound) carries `elicitation_id`, `agent` (who
+  asks), the optional `tool_call_id` it belongs to, `message`, and exactly
+  one of `form` and `url`. A `form` has an optional `title` and
+  `description` and `fields`, each with `name` (its member in the answer),
+  optional `title` and `description`, `required`, and `input`, tagged by
+  `type`: `text` (`min_length`, `max_length`, `pattern`, which is shown but
+  not checked, `format` `email`/`uri`/`date`/`date-time`, `default`),
+  `choice` (`choices`, each `value`, `title`, optional `description`;
+  `default`), `multi_choice` (`choices`, `min_items`, `max_items`,
+  `default`), `number` and `integer` (`minimum`, `maximum`, `default`), and
+  `boolean` (`default`). An input of a type a client does not know cannot be
+  filled in; a question with neither `form` nor `url` can only be declined
+  or cancelled. A `url` question asks the user to open the page (show the
+  whole URL and its host first); accepting means the user agreed to open
+  it.
+- `elicitation.respond` answers it: `accept` with `content`, the form's
+  values by field name (text and choices as strings, multi-choices as
+  arrays of strings, numbers, booleans), `decline`, or `cancel`. The daemon
+  checks an accepted form against its fields and refuses a value that does
+  not fit with `elicitation_answer_invalid`, leaving the question waiting.
+- `elicitation_resolved` records the answer: `elicitation_id`, `action`,
+  `content` for an accepted form, `answered_by` (`user`; `unattended`, a
+  decline for a session whose permission mode is `auto_approve_n` or a
+  headless run; `run_ended`, a cancel as the run was cancelled or ended;
+  `completed`, an accept when the agent reported that the URL's interaction
+  finished; `unsupported`, a decline of a form with a required input this
+  daemon cannot show), and the daemon's `reason` when it answered. Clients
+  stop showing a question when it is resolved or its run finishes.
 
 ### The catalog view
 

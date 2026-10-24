@@ -839,6 +839,14 @@ impl Client {
         self.call("approval.list", &params).await
     }
 
+    /// Answers question `params.elicitation_id` an agent asked the user.
+    pub async fn respond_elicitation(
+        &self,
+        params: crate::ElicitationRespondParams,
+    ) -> Result<crate::ElicitationRespondResult, ClientError> {
+        self.call(crate::ELICITATION_RESPOND_METHOD, &params).await
+    }
+
     pub async fn begin_mcp_auth(
         &self,
         params: McpAuthBeginParams,

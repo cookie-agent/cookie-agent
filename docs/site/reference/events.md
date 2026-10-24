@@ -169,6 +169,8 @@ never stored.
 | `session_project_set` | state | runless | The root session's [project](#projects) |
 | `acp_session_started` | state | either | The ACP session the session's [ACP agent](../specs/acp-agents.md) talks in: new, resumed, or loaded |
 | `acp_session_updated` | state | either | What the ACP agent reported of its session: its commands, options, or plan; a notice; input steered into its turn; or a tool call's new presentation |
+| `elicitation_requested` | state | run | An agent of the run asks the user a question, a form or a URL (see [Questions](protocol.md#questions)) |
+| `elicitation_resolved` | state | run | How the question was answered: accept, decline, or cancel, by whom, and an accepted form's values |
 | `delegated_attachments_added` | state | runless | The attachments a root's subagent brought that the root did not record yet ([delegated attachments](#delegated-attachments)) |
 | `agent_md_loaded` | state | run | The `AGENTS.md` context of one attachment, or of the session's project |
 | `memory_loaded` | state | run | The [memory snapshot](#memory-snapshots) the model sees from this run on |

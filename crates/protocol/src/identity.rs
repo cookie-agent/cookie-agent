@@ -597,6 +597,7 @@ uuid_id!(GoalId);
 uuid_id!(ProducerId);
 uuid_id!(ProducerMessageId);
 uuid_id!(ClientInstanceId);
+uuid_id!(ElicitationId);
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Sha256Digest(String);

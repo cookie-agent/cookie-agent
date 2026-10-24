@@ -826,6 +826,25 @@ error_codes! {
         hint: Some("Review the request again and answer it."),
         description: "A response whose operation fingerprint does not match the approval.",
     }
+    ELICITATION_NOT_PENDING {
+        code: "elicitation_not_pending",
+        rpc: APPLICATION_ERROR,
+        fields: [required("elicitation_id", "The question.")],
+        message: "The question was already answered, or its run ended.",
+        hint: None,
+        description: "An `elicitation.respond` for a question the session is not waiting on: answered already, by the user or the daemon, or never asked.",
+    }
+    ELICITATION_ANSWER_INVALID {
+        code: "elicitation_answer_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("elicitation_id", "The question."),
+            required("reason", "What is wrong with the answer."),
+        ],
+        message: "The answer does not fit the form: {reason}.",
+        hint: Some("Correct the field and answer again; the question is still waiting."),
+        description: "An `elicitation.respond` that accepts a form with values its fields do not take: a required field left out, a value of the wrong type, out of bounds, or not among the choices, or a field the form lacks.",
+    }
     OPERATION_CHANGED {
         code: "operation_changed",
         rpc: APPLICATION_ERROR,

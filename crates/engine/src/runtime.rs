@@ -264,6 +264,12 @@ pub enum EngineError {
         session_id: SessionId,
         approval_id: ApprovalId,
     },
+    /// An `elicitation.respond` for a question no run waits on.
+    #[error("question `{0}` is not waiting for an answer")]
+    ElicitationNotPending(cookie_agent_protocol::ElicitationId),
+    /// An accepted form whose values do not fit its fields.
+    #[error("the answer does not fit the form: {1}")]
+    ElicitationAnswerInvalid(cookie_agent_protocol::ElicitationId, String),
     #[error("approval response conflicts with durable approval state")]
     ApprovalConflict,
     #[error("approval response was rejected: {0:?}")]

@@ -395,6 +395,15 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::ApprovalNotPending { approval_id, .. } => errors::APPROVAL_NOT_PENDING
             .error()
             .field("approval_id", approval_id),
+        EngineError::ElicitationNotPending(elicitation_id) => errors::ELICITATION_NOT_PENDING
+            .error()
+            .field("elicitation_id", elicitation_id),
+        EngineError::ElicitationAnswerInvalid(elicitation_id, reason) => {
+            errors::ELICITATION_ANSWER_INVALID
+                .error()
+                .field("elicitation_id", elicitation_id)
+                .field("reason", reason)
+        }
         _ => errors::ENGINE_FAILED.error(),
     };
     RpcFault::of(builder.detail(detail))

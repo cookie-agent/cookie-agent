@@ -24,6 +24,7 @@ use super::Engine;
 use crate::runtime_snapshot::RuntimeAgent;
 
 pub(crate) mod compaction;
+pub(crate) mod elicitation;
 pub(crate) mod lifecycle;
 pub(crate) mod mcp;
 pub(crate) mod permissions;
@@ -47,6 +48,8 @@ pub(crate) struct AcpState {
     reported: Mutex<HashSet<String>>,
     /// The agents' processes and sessions.
     pub(crate) processes: process::Processes,
+    /// The agents' questions waiting on the user.
+    pub(crate) questions: elicitation::Questions,
 }
 
 impl AcpState {
@@ -82,6 +85,7 @@ impl AcpState {
             agents: Mutex::new(agents),
             reported,
             processes: process::Processes::default(),
+            questions: elicitation::Questions::default(),
         }
     }
 

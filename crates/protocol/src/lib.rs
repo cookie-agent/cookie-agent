@@ -189,6 +189,7 @@ pub mod diagnostics;
 mod display;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod editor;
+mod elicitation;
 pub mod errors;
 mod event;
 mod extension;
@@ -243,6 +244,7 @@ pub use cookie_agent_identity::{
 pub use cron::*;
 pub use daemon::*;
 pub use display::*;
+pub use elicitation::*;
 pub use event::*;
 pub use extension::*;
 pub use goal::*;

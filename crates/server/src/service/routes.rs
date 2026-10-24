@@ -552,6 +552,16 @@ impl ServerProtocol for Server {
             .list_approvals(params.root_session_id, params.status))
     }
 
+    async fn respond_elicitation(
+        &self,
+        params: cookie_agent_protocol::ElicitationRespondParams,
+    ) -> Result<cookie_agent_protocol::ElicitationRespondResult> {
+        self.engine
+            .respond_elicitation(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn begin_mcp_auth(&self, params: McpAuthBeginParams) -> Result<McpAuthBeginResult> {
         let authorization_url = self
             .engine

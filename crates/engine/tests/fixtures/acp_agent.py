@@ -45,6 +45,12 @@ Each prompt's last text block is a command:
   recall                 answers "remembers: " and the commands of the session's
                          earlier prompts, joined by ", " (a forked session
                          remembers its source's up to the fork point)
+  elicit <kind>          asks the user a question and says "elicitation: <action>
+                         <content as sorted JSON>": kind `form` (an AskUserQuestion
+                         form tied to a tool call), `url` (a URL question), or
+                         `url-complete` (a URL question the agent reports complete
+                         after a second); `elicit-wait <kind>` then waits for
+                         session/cancel
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
 
@@ -330,6 +336,52 @@ def terminal_calls(session_id):
                   "terminal_exit": {"terminal_id": "call-claude", "exit_code": 0, "signal": None}} if streams else {},
     })
 
+FORM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "question_0": {"type": "string", "title": "Plan", "oneOf": [
+            {"const": "safe", "title": "Safe", "description": "Small steps"},
+            {"const": "fast", "title": "Fast"},
+        ]},
+        "question_0_custom": {"type": "string", "title": "Other", "description": "Your own answer"},
+        "tags": {"type": "array", "title": "Tags", "items": {"anyOf": [
+            {"const": "x", "title": "X"}, {"const": "y", "title": "Y"},
+        ]}},
+        "count": {"type": "integer", "minimum": 1, "default": 2},
+        "ok": {"type": "boolean"},
+    },
+    "required": ["question_0"],
+}
+
+
+def elicit(session_id, session, kind):
+    if kind == "form":
+        call_id = f"call-ask-{session['turn']}"
+        update(session_id, {
+            "sessionUpdate": "tool_call", "toolCallId": call_id, "title": "AskUserQuestion",
+            "kind": "other", "status": "pending",
+        })
+        params = {"sessionId": session_id, "toolCallId": call_id, "mode": "form",
+                  "message": "How should I go?", "requestedSchema": FORM_SCHEMA}
+    else:
+        elicitation_id = f"url-{session['turn']}"
+        params = {"sessionId": session_id, "mode": "url", "elicitationId": elicitation_id,
+                  "url": "https://example.com/connect?id=" + elicitation_id,
+                  "message": "Sign in to Example."}
+        if kind == "url-complete":
+            def complete():
+                import time
+                time.sleep(1)
+                send({"method": "elicitation/complete", "params": {"elicitationId": "unknown"}})
+                send({"method": "elicitation/complete", "params": {"elicitationId": elicitation_id}})
+            threading.Thread(target=complete, daemon=True).start()
+    answer = request("elicitation/create", params)
+    if "error" in answer:
+        return f"error {answer['error'].get('code')}"
+    result = answer.get("result", {})
+    content = json.dumps(result.get("content"), sort_keys=True, separators=(",", ":"))
+    return f"{result.get('action')} {content}"
+
 
 def prompt(request_id, params):
     session_id = params["sessionId"]
@@ -454,6 +506,16 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             kind, _, resource = rest.partition(" ")
             outcome = permission(session_id, f"call-{session['turn']}", kind, resource)
             log({"fixture": "permission outcome", "outcome": outcome})
+        with state_lock:
+            while not cancelled[session_id]:
+                state_lock.wait()
+        respond(request_id, {"stopReason": "cancelled"})
+        return
+    elif word == "elicit":
+        say(session_id, "elicitation: " + elicit(session_id, session, rest))
+    elif word == "elicit-wait":
+        outcome = elicit(session_id, session, rest)
+        log({"fixture": "elicitation outcome", "outcome": outcome})
         with state_lock:
             while not cancelled[session_id]:
                 state_lock.wait()

@@ -2260,3 +2260,279 @@ async fn an_image_in_the_agents_message_is_media_of_its_turn() {
         .expect("the image");
     assert_eq!(&bytes[..], b"\x89PNG\r\n\x1a\n");
 }
+
+/// The question `elicitation_requested` of `session` records next after
+/// `after` such questions.
+async fn question(
+    engine: &Engine,
+    session: SessionId,
+    after: usize,
+) -> cookie_agent_protocol::ElicitationRequest {
+    await_event(engine, session, "a question", |event| {
+        matches!(event.payload, EventPayload::ElicitationRequested { .. })
+            && questions(engine, session).len() > after
+    })
+    .await;
+    questions(engine, session).remove(after)
+}
+
+fn questions(
+    engine: &Engine,
+    session: SessionId,
+) -> Vec<cookie_agent_protocol::ElicitationRequest> {
+    events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ElicitationRequested { request } => Some(request),
+            _ => None,
+        })
+        .collect()
+}
+
+fn resolutions(
+    engine: &Engine,
+    session: SessionId,
+) -> Vec<cookie_agent_protocol::ElicitationResolution> {
+    events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ElicitationResolved { resolution } => Some(resolution),
+            _ => None,
+        })
+        .collect()
+}
+
+fn respond(
+    session: SessionId,
+    question: &cookie_agent_protocol::ElicitationRequest,
+    action: cookie_agent_protocol::ElicitationAction,
+    content: Option<serde_json::Value>,
+) -> cookie_agent_protocol::ElicitationRespondParams {
+    cookie_agent_protocol::ElicitationRespondParams {
+        session_id: session,
+        elicitation_id: question.elicitation_id,
+        action,
+        content: content.map(|content| serde_json::from_value(content).expect("content")),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_form_question_waits_for_the_users_answer() {
+    use cookie_agent_protocol::{ElicitationAction, ElicitationAnsweredBy, ElicitationInput};
+
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "ask", "elicit form").await;
+    let asked = question(engine, session, 0).await;
+    assert_eq!(asked.agent.as_str(), "fixture");
+    assert_eq!(asked.message, "How should I go?");
+    assert!(asked.url.is_none());
+    // The question belongs to the call the agent announced it with.
+    let call = events(engine, session)
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::ToolCallStarted { start } => Some(start.tool_call_id),
+            _ => None,
+        });
+    assert_eq!(asked.tool_call_id, call);
+    let form = asked.form.clone().expect("a form");
+    let fields = form
+        .fields
+        .iter()
+        .map(|field| (field.name.as_str(), field.required))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fields,
+        [
+            ("count", false),
+            ("ok", false),
+            ("question_0", true),
+            ("question_0_custom", false),
+            ("tags", false),
+        ]
+    );
+    assert!(matches!(
+        form.fields[2].input.known(),
+        Some(ElicitationInput::Choice { choices, .. }) if choices.len() == 2
+    ));
+
+    // An answer that leaves out the required field is refused, and the
+    // question still waits.
+    let refused = engine
+        .respond_elicitation(respond(
+            session,
+            &asked,
+            ElicitationAction::Accept,
+            Some(serde_json::json!({"count": 3})),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "the answer does not fit the form: Plan is required"
+    );
+    engine
+        .respond_elicitation(respond(
+            session,
+            &asked,
+            ElicitationAction::Accept,
+            Some(serde_json::json!({"question_0": "fast", "tags": ["y"], "count": 3, "ok": true})),
+        ))
+        .await
+        .expect("answered");
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(
+        final_text(&outcome),
+        r#"elicitation: accept {"count":3,"ok":true,"question_0":"fast","tags":["y"]}"#
+    );
+    let resolved = resolutions(engine, session);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].elicitation_id, asked.elicitation_id);
+    assert_eq!(resolved[0].action, ElicitationAction::Accept);
+    assert_eq!(resolved[0].answered_by, ElicitationAnsweredBy::User);
+    assert_eq!(resolved[0].content.len(), 4);
+    // A second answer finds nothing waiting.
+    let again = engine
+        .respond_elicitation(respond(session, &asked, ElicitationAction::Decline, None))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(again, crate::EngineError::ElicitationNotPending(id) if id == asked.elicitation_id)
+    );
+    // `initialize` declared both modes.
+    let initialize = acp
+        .received()
+        .into_iter()
+        .find(|message| message["method"] == "initialize")
+        .expect("initialize");
+    assert_eq!(
+        initialize["params"]["clientCapabilities"]["elicitation"],
+        serde_json::json!({"form": {}, "url": {}})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declined_url_question_and_one_the_agent_completes() {
+    use cookie_agent_protocol::{ElicitationAction, ElicitationAnsweredBy};
+
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "url", "elicit url").await;
+    let asked = question(engine, session, 0).await;
+    assert_eq!(asked.message, "Sign in to Example.");
+    assert_eq!(
+        asked.url.as_deref(),
+        Some("https://example.com/connect?id=url-1")
+    );
+    assert!(asked.form.is_none());
+    engine
+        .respond_elicitation(respond(session, &asked, ElicitationAction::Decline, None))
+        .await
+        .expect("declined");
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "elicitation: decline null");
+    wait_for_session_not_running(engine, session).await;
+
+    // The agent reports the page's interaction finished (after an unknown
+    // ID, which is ignored) before the user answers: that accepts it.
+    let run = start(engine, session, "complete", "elicit url-complete").await;
+    question(engine, session, 1).await;
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "elicitation: accept null");
+    let resolved = resolutions(engine, session);
+    assert_eq!(
+        resolved
+            .iter()
+            .map(|resolution| (resolution.action, resolution.answered_by))
+            .collect::<Vec<_>>(),
+        [
+            (ElicitationAction::Decline, ElicitationAnsweredBy::User),
+            (ElicitationAction::Accept, ElicitationAnsweredBy::Completed),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_answers_a_waiting_question_cancel() {
+    use cookie_agent_protocol::{ElicitationAction, ElicitationAnsweredBy};
+
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let run = start(engine, session, "ask", "elicit-wait form").await;
+    let asked = question(engine, session, 0).await;
+    engine.cancel_run(run, origin()).await.expect("cancel");
+    let outcome = finished(engine, session, run).await;
+    assert!(
+        matches!(outcome, RunOutcome::Cancelled { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        acp.received()
+            .iter()
+            .any(|message| message["outcome"] == "cancel null")
+    );
+    let resolved = resolutions(engine, session);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].elicitation_id, asked.elicitation_id);
+    assert_eq!(resolved[0].action, ElicitationAction::Cancel);
+    assert_eq!(resolved[0].answered_by, ElicitationAnsweredBy::RunEnded);
+    assert_eq!(resolved[0].reason.as_deref(), Some("the run was cancelled"));
+    // The question was resolved before the run finished.
+    let kinds = events(engine, session)
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ElicitationResolved { .. } => Some("resolved"),
+            EventPayload::RunFinished { .. } => Some("finished"),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["resolved", "finished"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unattended_session_declines_a_question_at_once() {
+    use cookie_agent_protocol::{ElicitationAction, ElicitationAnsweredBy, PermissionMode};
+
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    engine
+        .set_permission_mode(session, PermissionMode::AutoApproveN, origin())
+        .expect("mode");
+    let outcome = turn(engine, session, "ask", "elicit form").await;
+    assert_eq!(final_text(&outcome), "elicitation: decline null");
+    assert_eq!(questions(engine, session).len(), 1);
+    let resolved = resolutions(engine, session);
+    assert_eq!(resolved[0].action, ElicitationAction::Decline);
+    assert_eq!(resolved[0].answered_by, ElicitationAnsweredBy::Unattended);
+    assert!(
+        resolved[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("auto_approve_n")),
+        "{:?}",
+        resolved[0].reason
+    );
+
+    // A headless driver declines what waits in a tree it runs.
+    engine
+        .set_permission_mode(session, PermissionMode::Ask, origin())
+        .expect("mode");
+    let run = start(engine, session, "headless", "elicit url").await;
+    question(engine, session, 1).await;
+    assert_eq!(
+        engine.decline_unattended_questions(session, "a headless run has no one to answer"),
+        1
+    );
+    let outcome = finished(engine, session, run).await;
+    assert_eq!(final_text(&outcome), "elicitation: decline null");
+    let resolved = resolutions(engine, session);
+    assert_eq!(resolved[1].answered_by, ElicitationAnsweredBy::Unattended);
+    assert_eq!(
+        resolved[1].reason.as_deref(),
+        Some("a headless run has no one to answer")
+    );
+}

@@ -66,6 +66,8 @@ pub(crate) enum SessionEvent {
         arguments: Value,
         reply: tokio::sync::oneshot::Sender<Value>,
     },
+    /// An `elicitation/create` to ask the user.
+    Elicitation(Box<super::elicitation::Create>, IncomingRequest),
 }
 
 /// A process by runtime and the agent's ID on it.
@@ -97,6 +99,8 @@ pub(crate) struct AgentProcess {
     /// arrived before.
     barriers: mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>,
     barrier_queue: Mutex<Option<mpsc::UnboundedReceiver<tokio::sync::oneshot::Sender<()>>>>,
+    /// URL questions waiting on the user, by the agent's elicitation ID.
+    pub(crate) url_completions: super::elicitation::UrlCompletions,
     /// Runs in progress.
     busy: AtomicUsize,
     /// Bumped whenever the process is used, so an idle timer that started
@@ -350,6 +354,7 @@ impl Processes {
             early: Mutex::default(),
             exited: closed,
             exit_reason: Mutex::default(),
+            url_completions: Default::default(),
             busy: AtomicUsize::new(0),
             used: AtomicU64::new(0),
             fork_point: std::sync::OnceLock::new(),
@@ -384,6 +389,7 @@ impl Processes {
                         // It asks the client to run nothing: `terminal`
                         // stays `false`.
                         "_meta": {"terminal_output": true},
+                        "elicitation": super::elicitation::capabilities(),
                     }),
                     client_info: serde_json::json!({
                         "name": "cookie-agent",
@@ -579,7 +585,9 @@ async fn dispatch(
         };
         match message {
             Incoming::Notification(notification) => {
-                if notification.method != wire::method::SESSION_UPDATE {
+                if super::elicitation::completed(&process, &notification)
+                    || notification.method != wire::method::SESSION_UPDATE
+                {
                     continue;
                 }
                 if let Ok(update) = notification.params::<wire::SessionNotification>() {
@@ -588,6 +596,9 @@ async fn dispatch(
                 }
             }
             Incoming::Request(request) => {
+                let Some(request) = super::elicitation::route(&process, request) else {
+                    continue;
+                };
                 if request.method != wire::method::SESSION_REQUEST_PERMISSION {
                     let method = request.method.clone();
                     tokio::spawn(async move {

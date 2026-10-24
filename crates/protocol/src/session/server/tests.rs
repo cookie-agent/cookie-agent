@@ -436,6 +436,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SessionAgentOptionSetResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn respond_elicitation(
+        &self,
+        _: crate::ElicitationRespondParams,
+    ) -> Result<crate::ElicitationRespondResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_crons(
         &self,
         _: crate::CronsListParams,

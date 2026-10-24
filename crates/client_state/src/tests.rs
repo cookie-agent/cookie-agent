@@ -4429,3 +4429,80 @@ fn an_acp_agents_context_use_is_the_sessions_context_across_its_turns() {
     assert_eq!(state.context_tokens, None);
     assert_eq!(state.context_window, None);
 }
+
+#[test]
+fn a_question_waits_until_it_is_resolved_or_its_run_ends() {
+    use cookie_agent_protocol::{
+        ElicitationAction, ElicitationAnsweredBy, ElicitationId, ElicitationRequest,
+        ElicitationResolution,
+    };
+
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let ask = |message: &str| ElicitationRequest {
+        elicitation_id: ElicitationId::new_v7(),
+        agent: cookie_agent_protocol::AgentId::new("claude").unwrap(),
+        tool_call_id: None,
+        message: message.to_owned(),
+        form: None,
+        url: Some("https://example.com/connect".to_owned()),
+    };
+    let first = ask("Sign in?");
+    let second = ask("Again?");
+    let events = vec![
+        stored_event(
+            session,
+            Some(run),
+            1,
+            EventPayload::ElicitationRequested {
+                request: first.clone(),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            2,
+            EventPayload::ElicitationRequested {
+                request: second.clone(),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            3,
+            EventPayload::ElicitationResolved {
+                resolution: ElicitationResolution {
+                    elicitation_id: first.elicitation_id,
+                    action: ElicitationAction::Decline,
+                    content: Default::default(),
+                    answered_by: ElicitationAnsweredBy::Unattended,
+                    reason: Some("no one is here".to_owned()),
+                },
+            },
+        ),
+    ];
+    let state = reduce_session_events(session, 0, &events);
+    assert_eq!(state.questions.len(), 1);
+    assert_eq!(state.questions[0].request, second);
+    assert_eq!(state.questions[0].run_id, Some(run));
+    assert!(state.transcript.iter().any(|item| matches!(
+        item,
+        TranscriptItem::Event { level: EventLevel::Info, text, .. }
+            if text == "claude asks: “Sign in?” declined (no one attends the session): no one is here"
+    )));
+
+    let mut events = events;
+    events.push(stored_event(
+        session,
+        Some(run),
+        4,
+        EventPayload::RunFinished {
+            outcome: cookie_agent_protocol::RunOutcome::Cancelled { reason: None }.into(),
+        },
+    ));
+    assert!(
+        reduce_session_events(session, 0, &events)
+            .questions
+            .is_empty()
+    );
+}

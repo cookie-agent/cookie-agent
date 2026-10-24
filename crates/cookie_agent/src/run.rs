@@ -730,6 +730,9 @@ async fn apply_allowed_tools(
     Ok(())
 }
 
+/// Why a headless run declines an agent's question to the user.
+const HEADLESS_QUESTION_REASON: &str = "a headless `cookie run` has no one to answer";
+
 fn headless_origin() -> cookie_agent_protocol::EventOrigin {
     cookie_agent_protocol::EventOrigin::new("client:headless")
         .expect("static event origin is valid")
@@ -806,6 +809,12 @@ where
                 }
             }
             _ = approvals.tick(), if !state.cancellation_requested => {
+                if engine.decline_unattended_questions(
+                    prepared.root_session_id,
+                    HEADLESS_QUESTION_REASON,
+                ) > 0 {
+                    progress(args, stderr, "declined the agent's question: no one is here to answer");
+                }
                 if reject_escalated(engine, prepared.root_session_id, &mut state).await? {
                     progress(args, stderr, "escalated approval rejected; cancelling run");
                     request_cancel(
