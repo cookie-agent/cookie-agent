@@ -847,9 +847,15 @@ impl Workspace {
                 root_session_id,
                 mode,
                 ..
-            } => self.permission_modes.update(|modes| {
-                modes.insert(root_session_id, mode);
-            }),
+            } => {
+                // Newer than a `session.permission.get` on its way.
+                self.supersede_reads(|reads| {
+                    reads.permission_modes.entry(root_session_id).or_default()
+                });
+                self.permission_modes.update(|modes| {
+                    modes.insert(root_session_id, mode);
+                });
+            }
             SessionsChangedNotification::Resync => {
                 let selected = self.selected.get_untracked();
                 spawn_local(async move {
@@ -2035,11 +2041,16 @@ impl Workspace {
         let Some(client) = self.client() else {
             return;
         };
+        let read = self.begin_read(|reads| reads.permission_modes.entry(session_id).or_default());
         spawn_local(async move {
             if let Ok(result) = client
                 .get_session_permissions(SessionPermissionGetParams { session_id })
                 .await
                 && let Some(mode) = result.current_mode
+                && self.read_is_current(
+                    |reads| reads.permission_modes.entry(session_id).or_default(),
+                    read,
+                )
             {
                 self.permission_modes.update(|modes| {
                     modes.insert(session_id, mode);
@@ -2077,6 +2088,8 @@ impl Workspace {
         let previous = self
             .permission_modes
             .with_untracked(|modes| modes.get(&session_id).copied());
+        // The mode picked here is newer than a read on its way.
+        self.supersede_reads(|reads| reads.permission_modes.entry(session_id).or_default());
         self.permission_modes.update(|modes| {
             modes.insert(session_id, mode);
         });

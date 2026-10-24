@@ -28,6 +28,8 @@ pub(super) struct Reads {
     pub onboarding: Latest,
     /// The escalated approvals, by root session.
     pub approvals: HashMap<SessionId, Latest>,
+    /// The permission modes, by session.
+    pub permission_modes: HashMap<SessionId, Latest>,
 }
 
 impl Workspace {
