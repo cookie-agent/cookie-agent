@@ -1275,7 +1275,15 @@ pub struct StateStore {
     /// are left to that replay, which the client runs next.
     awaiting_rebuild: HashSet<SessionId>,
     replays: HashMap<SessionId, ReplayProgress>,
+    /// How many `background.changed` notifications each session had, which
+    /// a `session.background.list` answer checks before it is installed.
+    background_changes: HashMap<SessionId, u64>,
 }
+
+/// The `background.changed` notifications a session had when its
+/// background calls were asked for: see [`StateStore::background_mark`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackgroundMark(u64);
 
 #[derive(Clone, Debug)]
 struct ReplayProgress {
@@ -1315,6 +1323,38 @@ pub enum DeliveryOutcome {
 const REPLAY_END_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl StateStore {
+    /// Taken before `session.background.list` is asked for `session_id`,
+    /// for [`Self::install_background_listing`].
+    #[must_use]
+    pub fn background_mark(&self, session_id: SessionId) -> BackgroundMark {
+        BackgroundMark(
+            self.background_changes
+                .get(&session_id)
+                .copied()
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Installs `session.background.list`'s answer for `session_id`, asked
+    /// for at `mark`, unless a `background.changed` came since: that
+    /// notification is as new as the answer or newer, and the answer may
+    /// have been read before it. Returns whether it was installed.
+    pub fn install_background_listing(
+        &mut self,
+        session_id: SessionId,
+        mark: BackgroundMark,
+        calls: Vec<cookie_agent_protocol::BackgroundCall>,
+    ) -> bool {
+        if self.background_mark(session_id) != mark {
+            return false;
+        }
+        self.sessions
+            .entry(session_id)
+            .or_default()
+            .background_calls = calls;
+        true
+    }
+
     /// Reduce every delivery variant from the single client stream. Replay
     /// events reduce into a per-session scratch projection. The visible
     /// projection changes only through a validated `ReplayEnd` swap or live
@@ -1458,6 +1498,12 @@ impl StateStore {
                             // A replay is durable history, not a live run
                             // termination, so it never restores unsent input.
                             scratch.voided_inputs.clear();
+                            // Background calls are not in the event log:
+                            // the rebuilt projection keeps the ones known.
+                            if let Some(previous) = self.sessions.get_mut(&session_id) {
+                                scratch.background_calls =
+                                    std::mem::take(&mut previous.background_calls);
+                            }
                             scratch.version = self
                                 .sessions
                                 .get(&session_id)
@@ -1567,6 +1613,10 @@ impl StateStore {
                 DeliveryOutcome::Applied
             }
             ClientDelivery::BackgroundChanged(changed) => {
+                *self
+                    .background_changes
+                    .entry(changed.session_id)
+                    .or_default() += 1;
                 if let Some(state) = self.sessions.get_mut(&changed.session_id) {
                     state.background_calls = changed.calls;
                 } else if !self.awaiting_rebuild.contains(&changed.session_id) {

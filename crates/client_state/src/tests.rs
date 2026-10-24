@@ -4281,3 +4281,89 @@ fn an_acp_sessions_steering_notices_and_late_tool_presentations_fold_from_its_ev
     );
     assert_ne!(tool.revision, revision);
 }
+
+fn background_call(job: &str) -> cookie_agent_protocol::BackgroundCall {
+    serde_json::from_value(serde_json::json!({
+        "job": job,
+        "tool": "bash",
+        "tool_call_id": ToolCallId::new_v7(),
+        "started_at": "2026-10-23T10:00:00Z",
+        "detached_at": "2026-10-23T10:00:01Z",
+        "by": "user",
+    }))
+    .expect("background call")
+}
+
+fn background_jobs(store: &StateStore, session_id: SessionId) -> Vec<String> {
+    store.sessions[&session_id]
+        .background_calls
+        .iter()
+        .map(|call| call.job.clone())
+        .collect()
+}
+
+/// A `background.changed` that lands while `session.background.list` is on
+/// its way is at least as new as the listing, which may have been read
+/// before the change: the listing landing after it is dropped.
+#[test]
+fn a_background_listing_older_than_a_background_change_is_dropped() {
+    let session_id = SessionId::new_v7();
+    let mut store = StateStore::default();
+    assert!(store.apply_event(submitted(session_id, 1, "first")));
+
+    // Nothing changed while the listing was on its way: it is installed.
+    let mark = store.background_mark(session_id);
+    assert!(store.install_background_listing(session_id, mark, vec![background_call("job-1")]));
+    assert_eq!(background_jobs(&store, session_id), ["job-1"]);
+
+    // The listing is asked for, the call ends, and only then does the
+    // listing, read before the end, land.
+    let mark = store.background_mark(session_id);
+    assert_eq!(
+        store.apply_delivery(ClientDelivery::BackgroundChanged(
+            cookie_agent_protocol::BackgroundChangedNotification {
+                session_id,
+                calls: Vec::new(),
+            }
+        )),
+        DeliveryOutcome::Applied
+    );
+    assert!(!store.install_background_listing(session_id, mark, vec![background_call("job-1")]));
+    assert!(background_jobs(&store, session_id).is_empty());
+
+    // Another session's change leaves this session's listing alone.
+    let mark = store.background_mark(session_id);
+    store.apply_delivery(ClientDelivery::BackgroundChanged(
+        cookie_agent_protocol::BackgroundChangedNotification {
+            session_id: SessionId::new_v7(),
+            calls: vec![background_call("elsewhere")],
+        },
+    ));
+    assert!(store.install_background_listing(session_id, mark, vec![background_call("job-2")]));
+    assert_eq!(background_jobs(&store, session_id), ["job-2"]);
+}
+
+/// The background calls are not in the event log: a full replay keeps the
+/// ones a `background.changed` brought while it ran.
+#[test]
+fn a_rebuilding_replay_keeps_the_background_calls() {
+    let session_id = SessionId::new_v7();
+    let mut store = StateStore::default();
+    assert!(store.apply_event(submitted(session_id, 1, "first")));
+    store.apply_delivery(ClientDelivery::BackgroundChanged(
+        cookie_agent_protocol::BackgroundChangedNotification {
+            session_id,
+            calls: vec![background_call("job-1")],
+        },
+    ));
+    let outcomes = replay(
+        &mut store,
+        session_id,
+        true,
+        1,
+        vec![submitted(session_id, 1, "first")],
+    );
+    assert_eq!(outcomes.last(), Some(&DeliveryOutcome::Applied));
+    assert_eq!(user_texts(&store, session_id), ["first"]);
+    assert_eq!(background_jobs(&store, session_id), ["job-1"]);
+}

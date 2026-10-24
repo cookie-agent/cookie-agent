@@ -59,6 +59,7 @@ impl App {
         };
         let (finished, done) = tokio::sync::watch::channel(false);
         self.subscription_done.insert(session_id, done);
+        let background = self.store.background_mark(session_id);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -69,6 +70,7 @@ impl App {
                     if let Ok(listed) = client.list_background(session_id).await {
                         let _ = updates.send(RpcUpdate::BackgroundCalls {
                             session_id,
+                            mark: background,
                             calls: listed.calls,
                         });
                     }

@@ -484,12 +484,13 @@ impl App {
                 attempt,
                 outcome,
             } => self.finish_subscription(session_id, attempt, outcome),
-            RpcUpdate::BackgroundCalls { session_id, calls } => {
+            RpcUpdate::BackgroundCalls {
+                session_id,
+                mark,
+                calls,
+            } => {
                 self.store
-                    .sessions
-                    .entry(session_id)
-                    .or_default()
-                    .background_calls = calls;
+                    .install_background_listing(session_id, mark, calls);
             }
             RpcUpdate::SteerFailed {
                 session_id,

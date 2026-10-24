@@ -1326,14 +1326,14 @@ impl Workspace {
             let outcome = match client.subscribe_events(session_id, cursor).await {
                 Ok(()) => {
                     // Background calls are not in the event log: read them
-                    // once subscribed; `background.changed` follows.
+                    // once subscribed; `background.changed` follows, and one
+                    // that lands first is newer than this answer.
+                    let mark = self
+                        .store
+                        .with_value(|store| store.background_mark(session_id));
                     if let Ok(listed) = client.list_background(session_id).await {
                         self.update_store(|store| {
-                            store
-                                .sessions
-                                .entry(session_id)
-                                .or_default()
-                                .background_calls = listed.calls;
+                            store.install_background_listing(session_id, mark, listed.calls)
                         });
                     }
                     SubscriptionOutcome::Established

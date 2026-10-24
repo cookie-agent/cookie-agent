@@ -993,9 +993,11 @@ pub(in crate::ui) enum RpcUpdate {
         session_id: SessionId,
     },
     /// A session's background calls, fetched when it was subscribed; later
-    /// changes arrive as `background.changed`.
+    /// changes arrive as `background.changed`. `mark` is the store's when
+    /// the subscription began: a change since then is newer.
     BackgroundCalls {
         session_id: SessionId,
+        mark: cookie_agent_client_state::BackgroundMark,
         calls: Vec<cookie_agent_protocol::BackgroundCall>,
     },
     /// A failure: shown in the status line and recorded among the errors
