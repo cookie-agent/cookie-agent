@@ -387,3 +387,82 @@ async fn an_agent_without_additional_directories_gets_only_its_cwd() {
     let new = new_sessions(&acp).pop().expect("session/new");
     assert!(new.get("additionalDirectories").is_none(), "{new}");
 }
+
+/// A session of the agent whose `local` workspace holds the project skill
+/// `review`.
+async fn session_with_a_skill(acp: &AcpFixture) -> cookie_agent_protocol::SessionId {
+    let project = acp.workspace().join("project");
+    let skill = project.join(".cookie-agent/skills/review");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: review\ndescription: Review a change\n---\nRead the diff.\n",
+    )
+    .unwrap();
+    acp.engine()
+        .create_session_with_permissions(
+            selection(),
+            None,
+            Vec::new(),
+            SessionRuntimes {
+                runtimes: Some(vec![crate::SessionRuntimeRequest {
+                    runtime_id: "local".to_owned(),
+                    capability: Some("coding".to_owned()),
+                    workspace: Some(project),
+                }]),
+                global: true,
+                cwd: None,
+            },
+        )
+        .await
+        .expect("a session with a skill")
+        .session_id
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
+    let document =
+        "---\ndescription: Fixture\nmode: all\nacp: {}\npermissions:\n  skill: allow\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = session_with_a_skill(&acp).await;
+    turn(engine, session, "first", "say hi").await;
+    turn(engine, session, "second", "say again").await;
+    let prompts = prompts(&acp);
+    let listing = prompts[0]
+        .iter()
+        .find(|part| part.starts_with("<available_skills>"))
+        .expect("the skill listing");
+    assert!(listing.contains("<name>review</name>"), "{listing}");
+    assert!(listing.contains("Review a change"), "{listing}");
+    // It follows the tool instructions, and only the first prompt has it.
+    let tools = prompts[0]
+        .iter()
+        .position(|part| part.starts_with("<tool_instructions"));
+    let skills = prompts[0]
+        .iter()
+        .position(|part| part.starts_with("<available_skills>"));
+    assert!(
+        tools.is_none_or(|tools| Some(tools) < skills),
+        "{prompts:?}"
+    );
+    assert!(
+        !prompts[1]
+            .iter()
+            .any(|part| part.starts_with("<available_skills>"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hidden_skill_tool_lists_no_skills() {
+    let document = "---\ndescription: Fixture\nmode: all\nacp:\n  hide_tools: [read, write, edit, bash, webfetch, skill]\npermissions:\n  skill: allow\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = session_with_a_skill(&acp).await;
+    turn(engine, session, "first", "say hi").await;
+    assert!(
+        !prompts(&acp)[0]
+            .iter()
+            .any(|part| part.contains("<available_skills>"))
+    );
+}

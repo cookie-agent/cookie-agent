@@ -21,6 +21,8 @@ pub(crate) struct OfferedTools {
     /// A memory tool is offered, and one that writes.
     pub(crate) memory: bool,
     pub(crate) memory_write: bool,
+    /// The `skill` tool is offered.
+    pub(crate) skill: bool,
 }
 
 impl OfferedTools {

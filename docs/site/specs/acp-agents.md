@@ -428,7 +428,9 @@ Where the spec left a detail open, or where the code differs:
   user names the session, and an untitled session gets cookie's generated
   title after a round; see the lifecycle round below.)*
 - **Not run for ACP agents:** `AGENTS.md` loading, the skill listing and tool
-  prompt sections, the `agent_before_start` hook, and input media admission
+  prompt sections in a system prompt (round 3 and **Input and pickers**
+  put them in the first prompt), the `agent_before_start` hook, and input
+  media admission
   (files go to the agent as its prompt capabilities allow, others become a
   note; see **Input and pickers** below).
 - **The bridge.** The daemon's MCP server is hand-written (`initialize`,
@@ -774,6 +776,15 @@ protocol 1.14.0; history format unchanged):
   workspace to a live ACP session reaches the agent with its next new,
   resumed, or loaded session. *(ACP has no request that changes a live
   session's roots.)*
+- **Skills.** When the agent is offered cookie's `skill` tool over the
+  bridge (after `hide_tools` and the merged rules), the first prompt's
+  context carries the `<available_skills>` listing a model run's system
+  prompt would, right after the tool instruction sections: the session's
+  skills with the native visibility rules (`Engine::skill_listing`, which
+  `compose_skill_listing` now uses too), sized for a 200k-token context
+  since the agent's own is unknown. Without the tool the agent could not
+  load a skill, so nothing is listed. `acp_first_prompt_context` keeps its
+  signature.
 - **Protocol shape.** `session.create` rather than the first `run.start`:
   the draft becomes a session there in both clients (attachments are
   uploaded into it first), the choices are the session's like its

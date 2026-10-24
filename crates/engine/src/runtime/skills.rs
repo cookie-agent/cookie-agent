@@ -855,12 +855,17 @@ impl Engine {
             .remove(&session);
     }
 
-    pub(crate) fn compose_skill_listing(
+    /// The `<available_skills>` listing of the skills a run of `policy` in
+    /// `session` may see, sized for a context of `context_tokens`; `None`
+    /// when it sees none. The model loop puts it in the system prompt, and
+    /// an ACP agent's first prompt carries it.
+    pub(crate) fn skill_listing(
         &self,
         session: SessionId,
-        policy: &mut FrozenRunPolicy,
+        policy: &FrozenRunPolicy,
         prospective_grants: Option<&SessionPermissionOverlay>,
-    ) -> Result<(), EngineError> {
+        context_tokens: u64,
+    ) -> Result<Option<String>, EngineError> {
         let projection = self.inner.store.get(session)?;
         let view = self.session_skills(session)?;
         let merged = skill_rules(&policy.agent, &projection.permission_overlay);
@@ -873,16 +878,30 @@ impl Engine {
             })
             .collect::<Vec<_>>();
         if visible.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
+        cookie_agent_config::render_available_skills(visible, context_tokens)
+            .map(Some)
+            .map_err(|error| EngineError::Config(Box::new(error)))
+    }
+
+    pub(crate) fn compose_skill_listing(
+        &self,
+        session: SessionId,
+        policy: &mut FrozenRunPolicy,
+        prospective_grants: Option<&SessionPermissionOverlay>,
+    ) -> Result<(), EngineError> {
         let context_tokens = policy.selected_suffix[0]
             .descriptor
             .capabilities
             .limits
             .context
             .unwrap_or(8_192);
-        let listing = cookie_agent_config::render_available_skills(visible, context_tokens)
-            .map_err(|error| EngineError::Config(Box::new(error)))?;
+        let Some(listing) =
+            self.skill_listing(session, policy, prospective_grants, context_tokens)?
+        else {
+            return Ok(());
+        };
         push_prompt_block(&mut policy.agent.composed_prompt, &listing);
         policy.agent.prompt_fingerprint =
             Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());

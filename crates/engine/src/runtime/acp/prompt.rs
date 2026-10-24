@@ -10,6 +10,11 @@ use serde_json::{Value, json};
 
 use super::wire::{self, PromptCapabilities};
 
+/// The context window the first prompt's skill listing is sized for: the
+/// agent's own is unknown, and Claude Code's and Codex's models have at
+/// least this.
+pub(crate) const SKILL_LISTING_CONTEXT_TOKENS: u64 = 200_000;
+
 /// The most files of one kind the clients attach to one message for an
 /// ACP agent.
 const MAX_FILES_PER_KIND: u32 = 20;

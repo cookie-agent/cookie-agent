@@ -2183,8 +2183,9 @@ impl Engine {
     /// (`docs/site/specs/acp-agents.md` section 15, 2026-10-23), each part
     /// left out when empty: the tool instruction sections cookie would
     /// compose for a model run, for exactly the tools the agent is offered
-    /// over the bridge; the session's memory snapshot as a model run sees
-    /// it; and the agent document's body.
+    /// over the bridge; the listing of the skills a model run would see,
+    /// when the `skill` tool is offered; the session's memory snapshot as a
+    /// model run sees it; and the agent document's body.
     fn acp_first_prompt_context(
         &self,
         session: SessionId,
@@ -2201,6 +2202,14 @@ impl Engine {
         let offered = self.offered_tools(session, policy, &hide)?;
         let mut context = Vec::new();
         context.extend(self.tool_prompt_block(policy, session, Some(&offered))?);
+        if offered.skill {
+            context.extend(self.skill_listing(
+                session,
+                policy,
+                None,
+                super::prompt::SKILL_LISTING_CONTEXT_TOKENS,
+            )?);
+        }
         context.extend(
             events
                 .iter()

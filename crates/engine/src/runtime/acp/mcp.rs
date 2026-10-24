@@ -205,6 +205,7 @@ impl Engine {
             .filter(|tool| !hidden(&tool.name, hide))
         {
             let provider = tool.source.provider.provider_id();
+            offered.skill |= tool.spec.permission_name.as_deref() == Some("skill");
             if provider == crate::memory_tools::PROVIDER_ID {
                 offered.memory = true;
                 offered.memory_write |=

@@ -254,9 +254,13 @@ message and in this order, each part left out when it is empty:
    after `hide_tools` and the rules (`<tool_instructions provider=...>`
    sections, such as memory's: how memory is included, and the rubric for
    writing it when a write tool is offered);
-2. the session's memory as a model would see it at the start of a session
+2. the skills a model would see (`<available_skills>`: each skill's name,
+   description, and file), when the agent is offered cookie's `skill` tool
+   over the bridge, with the same rules a model's listing follows (a
+   denied skill, or one that opts out of model invocation, is left out);
+3. the session's memory as a model would see it at the start of a session
    (the `# Memory` reminder);
-3. the agent document's body.
+4. the agent document's body.
 
 `AGENTS.md` is not sent: the agents read it themselves. The prompt carries
 these again when cookie has to start a new ACP session because the agent
