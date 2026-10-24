@@ -47,7 +47,6 @@ pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    sync::Arc,
     time::Duration,
 };
 
@@ -1222,6 +1221,36 @@ impl SessionState {
     }
 }
 
+/// Reduces what a replay from the view's cursor read onto the visible
+/// projection, as one change. A replay is durable history: an open reply
+/// it continues is closed first, and it never restores unsent input.
+fn catch_up(state: &mut SessionState, events: Vec<Replayed>) {
+    close_open_assistant(state, jiff::Timestamp::now());
+    for replayed in events {
+        match replayed {
+            Replayed::Event(event) if event.seq > state.last_seq => {
+                state.last_seq = event.seq;
+                reduce_event_from(
+                    state,
+                    event.session_id,
+                    event.run_id,
+                    event.seq,
+                    event.timestamp,
+                    event.origin,
+                    event.payload,
+                );
+            }
+            Replayed::Unknown(event) if event.seq > state.last_seq => {
+                state.last_seq = event.seq;
+                push_unknown_event_row(state, &event);
+            }
+            Replayed::Event(_) | Replayed::Unknown(_) => {}
+        }
+    }
+    state.voided_inputs.clear();
+    state.version = state.version.wrapping_add(1);
+}
+
 /// An event a newer daemon wrote that this build cannot read changes
 /// nothing; the debug view shows a dim row naming its type.
 fn push_unknown_event_row(state: &mut SessionState, event: &cookie_agent_protocol::UnknownEvent) {
@@ -1240,10 +1269,11 @@ fn push_unknown_event_row(state: &mut SessionState, event: &cookie_agent_protoco
 #[derive(Clone, Debug, Default)]
 pub struct StateStore {
     pub sessions: HashMap<SessionId, SessionState>,
-    /// Each session's durable log, shared with replay scratch copies: a
-    /// staged replay starts from the visible log without copying it.
-    physical_events: HashMap<SessionId, Vec<Arc<StoredEvent>>>,
     quarantined_sessions: HashSet<SessionId>,
+    /// Sessions whose projection only a full replay can bring up to date: a
+    /// revert cut their log. Live events for them are left to that replay,
+    /// which the client runs next.
+    awaiting_rebuild: HashSet<SessionId>,
     replays: HashMap<SessionId, ReplayProgress>,
 }
 
@@ -1251,9 +1281,27 @@ pub struct StateStore {
 struct ReplayProgress {
     generation: u64,
     final_seq: u64,
-    scratch: SessionState,
-    physical_events: Vec<Arc<StoredEvent>>,
+    /// The sequence of the last event the replay read.
+    last_seq: u64,
+    staged: Staged,
     deadline: Instant,
+}
+
+/// What a replay holds until its `ReplayEnd`.
+#[derive(Clone, Debug)]
+enum Staged {
+    /// A full replay reduces into a projection of its own, which replaces
+    /// the visible one.
+    Rebuild(Box<SessionState>),
+    /// A replay from the view's cursor keeps the events it reads, which
+    /// reduce onto the visible projection once the replay is complete.
+    CatchUp(Vec<Replayed>),
+}
+
+#[derive(Clone, Debug)]
+enum Replayed {
+    Event(Box<StoredEvent>),
+    Unknown(Box<cookie_agent_protocol::UnknownEvent>),
 }
 
 /// Result of reducing one item from the client's ordered delivery stream.
@@ -1322,34 +1370,29 @@ impl StateStore {
                 final_seq,
                 rebuild,
             } => {
-                let mut scratch = if rebuild {
-                    SessionState {
+                let (staged, last_seq) = if rebuild {
+                    self.awaiting_rebuild.remove(&session_id);
+                    let scratch = SessionState {
                         generation,
                         ..SessionState::default()
-                    }
+                    };
+                    (Staged::Rebuild(Box::new(scratch)), 0)
                 } else if let Some(state) = self.sessions.get(&session_id)
                     && state.generation == generation
+                    && !self.awaiting_rebuild.contains(&session_id)
                 {
-                    state.clone()
+                    (Staged::CatchUp(Vec::new()), state.last_seq)
                 } else {
                     self.quarantined_sessions.insert(session_id);
                     return DeliveryOutcome::ReplayFailed { session_id };
                 };
-                close_open_assistant(&mut scratch, jiff::Timestamp::now());
                 self.replays.insert(
                     session_id,
                     ReplayProgress {
                         generation,
                         final_seq,
-                        scratch,
-                        physical_events: if rebuild {
-                            Vec::new()
-                        } else {
-                            self.physical_events
-                                .get(&session_id)
-                                .cloned()
-                                .unwrap_or_default()
-                        },
+                        last_seq,
+                        staged,
                         deadline: Instant::now() + REPLAY_END_TIMEOUT,
                     },
                 );
@@ -1361,28 +1404,33 @@ impl StateStore {
                 final_seq,
                 event,
             } => {
-                let event = *event;
                 let valid = self.replays.get_mut(&session_id).is_some_and(|replay| {
                     if replay.generation != generation || replay.final_seq != final_seq {
                         return false;
                     }
                     // A replay is durable history; live-only output has no
                     // place in it.
-                    if event.seq <= replay.scratch.last_seq || event.payload.is_transient() {
+                    if event.seq <= replay.last_seq || event.payload.is_transient() {
                         return true;
                     }
-                    replay.physical_events.push(Arc::new(event.clone()));
-                    replay.scratch.last_seq = event.seq;
-                    reduce_event_from(
-                        &mut replay.scratch,
-                        event.session_id,
-                        event.run_id,
-                        event.seq,
-                        event.timestamp,
-                        event.origin,
-                        event.payload,
-                    );
-                    replay.scratch.version = replay.scratch.version.wrapping_add(1);
+                    replay.last_seq = event.seq;
+                    match &mut replay.staged {
+                        Staged::Rebuild(scratch) => {
+                            let event = *event;
+                            scratch.last_seq = event.seq;
+                            reduce_event_from(
+                                scratch,
+                                event.session_id,
+                                event.run_id,
+                                event.seq,
+                                event.timestamp,
+                                event.origin,
+                                event.payload,
+                            );
+                            scratch.version = scratch.version.wrapping_add(1);
+                        }
+                        Staged::CatchUp(events) => events.push(Replayed::Event(event)),
+                    }
                     true
                 });
                 if !valid {
@@ -1401,26 +1449,38 @@ impl StateStore {
                 let valid = replay.as_ref().is_some_and(|replay| {
                     replay.generation == generation
                         && replay.final_seq == final_seq
-                        && replay.scratch.last_seq == final_seq
+                        && replay.last_seq == final_seq
                 });
                 match replay {
-                    Some(mut replay) if valid => {
-                        self.quarantined_sessions.remove(&session_id);
-                        // A replay is durable history, not a live run
-                        // termination, so it never restores unsent input.
-                        replay.scratch.voided_inputs.clear();
-                        replay.scratch.version = self
-                            .sessions
-                            .get(&session_id)
-                            .map(|previous| {
-                                previous.version.max(replay.scratch.version).wrapping_add(1)
-                            })
-                            .unwrap_or(replay.scratch.version);
-                        self.physical_events
-                            .insert(session_id, replay.physical_events);
-                        self.sessions.insert(session_id, replay.scratch);
-                        DeliveryOutcome::Applied
-                    }
+                    Some(replay) if valid => match replay.staged {
+                        Staged::Rebuild(mut scratch) => {
+                            self.quarantined_sessions.remove(&session_id);
+                            // A replay is durable history, not a live run
+                            // termination, so it never restores unsent input.
+                            scratch.voided_inputs.clear();
+                            scratch.version = self
+                                .sessions
+                                .get(&session_id)
+                                .map(|previous| {
+                                    previous.version.max(scratch.version).wrapping_add(1)
+                                })
+                                .unwrap_or(scratch.version);
+                            self.sessions.insert(session_id, *scratch);
+                            DeliveryOutcome::Applied
+                        }
+                        Staged::CatchUp(events) => {
+                            let Some(state) = self
+                                .sessions
+                                .get_mut(&session_id)
+                                .filter(|state| state.generation == generation)
+                            else {
+                                return DeliveryOutcome::ReplayFailed { session_id };
+                            };
+                            self.quarantined_sessions.remove(&session_id);
+                            catch_up(state, events);
+                            DeliveryOutcome::Applied
+                        }
+                    },
                     _ => DeliveryOutcome::ReplayFailed { session_id },
                 }
             }
@@ -1434,10 +1494,16 @@ impl StateStore {
                     if replay.generation != generation || replay.final_seq != final_seq {
                         return false;
                     }
-                    if event.seq > replay.scratch.last_seq {
-                        replay.scratch.last_seq = event.seq;
-                        push_unknown_event_row(&mut replay.scratch, &event);
-                        replay.scratch.version = replay.scratch.version.wrapping_add(1);
+                    if event.seq > replay.last_seq {
+                        replay.last_seq = event.seq;
+                        match &mut replay.staged {
+                            Staged::Rebuild(scratch) => {
+                                scratch.last_seq = event.seq;
+                                push_unknown_event_row(scratch, &event);
+                                scratch.version = scratch.version.wrapping_add(1);
+                            }
+                            Staged::CatchUp(events) => events.push(Replayed::Unknown(event)),
+                        }
                     }
                     true
                 });
@@ -1453,7 +1519,9 @@ impl StateStore {
                 generation,
                 replay_final_seq: None,
             } => {
-                if !self.quarantined_sessions.contains(&event.session_id) {
+                if !self.quarantined_sessions.contains(&event.session_id)
+                    && !self.awaiting_rebuild.contains(&event.session_id)
+                {
                     let state = self.sessions.entry(event.session_id).or_default();
                     if state.generation == generation && event.seq > state.last_seq {
                         state.last_seq = event.seq;
@@ -1499,10 +1567,14 @@ impl StateStore {
                 DeliveryOutcome::Applied
             }
             ClientDelivery::BackgroundChanged(changed) => {
-                self.sessions
-                    .entry(changed.session_id)
-                    .or_default()
-                    .background_calls = changed.calls;
+                if let Some(state) = self.sessions.get_mut(&changed.session_id) {
+                    state.background_calls = changed.calls;
+                } else if !self.awaiting_rebuild.contains(&changed.session_id) {
+                    self.sessions
+                        .entry(changed.session_id)
+                        .or_default()
+                        .background_calls = changed.calls;
+                }
                 DeliveryOutcome::Applied
             }
             ClientDelivery::RuntimeChanged(_)
@@ -1616,6 +1688,10 @@ impl StateStore {
         if self.quarantined_sessions.contains(&event.session_id) {
             return false;
         }
+        // The full replay on its way covers it.
+        if self.awaiting_rebuild.contains(&event.session_id) {
+            return true;
+        }
         if event.payload.is_transient() {
             // Live-only output is never stored; treat a record of it as
             // output following the durable tip this view has reached.
@@ -1642,10 +1718,6 @@ impl StateStore {
         if event.seq <= state.last_seq {
             return true;
         }
-        self.physical_events
-            .entry(event.session_id)
-            .or_default()
-            .push(Arc::new(event.clone()));
         state.last_seq = event.seq;
         reduce_event_from(
             state,
@@ -1669,6 +1741,7 @@ impl StateStore {
     /// view attached mid-reply shows the reply from its first live delta on.
     pub fn apply_transient_for_generation(&mut self, event: TransientEvent, generation: u64) {
         if self.quarantined_sessions.contains(&event.session_id)
+            || self.awaiting_rebuild.contains(&event.session_id)
             || self.replays.contains_key(&event.session_id)
         {
             return;
@@ -1725,24 +1798,14 @@ impl StateStore {
         }
     }
 
-    /// A revert cut `session_id`'s log after `through_seq`. The projection
-    /// drops what followed at once, so the appends that reuse those sequences
-    /// apply in order; the client's full replay then confirms it. A session
-    /// mid-replay is left to that replay.
-    fn rewind_session(&mut self, session_id: SessionId, through_seq: u64) {
-        if self.replays.contains_key(&session_id) {
-            return;
+    /// A revert cut `session_id`'s log after `through_seq`. The client
+    /// follows with a full replay, which rebuilds the projection; until it
+    /// starts, the projection stays as it was and the appends that reuse
+    /// the cut sequences are left to that replay.
+    fn rewind_session(&mut self, session_id: SessionId, _through_seq: u64) {
+        if self.sessions.contains_key(&session_id) {
+            self.awaiting_rebuild.insert(session_id);
         }
-        let (Some(events), Some(state)) = (
-            self.physical_events.get_mut(&session_id),
-            self.sessions.get_mut(&session_id),
-        ) else {
-            return;
-        };
-        events.retain(|event| event.seq <= through_seq);
-        let previous_version = state.version;
-        *state = reduce_session_events(session_id, state.generation, events);
-        state.version = previous_version.max(state.version).wrapping_add(1);
     }
 
     /// Drop a session projection before a full cursor-zero rebuild.
@@ -1762,7 +1825,7 @@ impl StateStore {
                 ..SessionState::default()
             },
         );
-        self.physical_events.remove(&session_id);
+        self.awaiting_rebuild.remove(&session_id);
         true
     }
 
@@ -1790,9 +1853,8 @@ impl StateStore {
         {
             return false;
         }
-        let events = events.into_iter().map(Arc::new).collect::<Vec<_>>();
         let state = reduce_session_events(session_id, generation, &events);
-        self.physical_events.insert(session_id, events);
+        self.awaiting_rebuild.remove(&session_id);
         self.sessions.insert(session_id, state);
         true
     }

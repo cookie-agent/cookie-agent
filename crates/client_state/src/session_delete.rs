@@ -69,7 +69,7 @@ impl StateStore {
     /// Drops everything this store holds for a session the daemon removed.
     pub fn forget_session(&mut self, session_id: SessionId) {
         self.sessions.remove(&session_id);
-        self.physical_events.remove(&session_id);
+        self.awaiting_rebuild.remove(&session_id);
         self.quarantined_sessions.remove(&session_id);
         self.replays.remove(&session_id);
     }

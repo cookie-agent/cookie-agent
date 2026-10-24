@@ -3346,57 +3346,192 @@ fn thinking_duration_transfers_to_the_committed_child_on_rebuild() {
     );
 }
 
-#[test]
-fn rewound_cuts_the_projection_and_reused_sequences_follow_on() {
-    let session_id = SessionId::new_v7();
-    let run_id = RunId::new_v7();
-    let event = |seq, input: &str| StoredEvent {
-        engine_version: None,
-        origin: None,
+/// The user messages of `session_id`'s transcript, in order.
+fn user_texts(store: &StateStore, session_id: SessionId) -> Vec<String> {
+    store.sessions[&session_id]
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::User { markdown, .. } => Some(markdown.as_str().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn submitted(session_id: SessionId, seq: u64, input: &str) -> StoredEvent {
+    stored_event(
         session_id,
-        run_id: Some(run_id),
+        None,
         seq,
-        timestamp: jiff::Timestamp::now(),
-        payload: EventPayload::UserInputSubmitted {
+        EventPayload::UserInputSubmitted {
             content: input.into(),
         },
-    };
-    let mut store = StateStore::default();
-    for (seq, input) in [(1, "kept"), (2, "removed"), (3, "also removed")] {
-        assert!(store.apply_event(event(seq, input)));
-    }
-    let live = |message| ClientDelivery::Live {
+    )
+}
+
+/// Delivers a replay of `events` that ends at `final_seq`.
+fn replay(
+    store: &mut StateStore,
+    session_id: SessionId,
+    rebuild: bool,
+    final_seq: u64,
+    events: Vec<StoredEvent>,
+) -> Vec<DeliveryOutcome> {
+    let mut deliveries = vec![ClientDelivery::ReplayStart {
+        session_id,
+        generation: 0,
+        final_seq,
+        rebuild,
+    }];
+    deliveries.extend(events.into_iter().map(|event| ClientDelivery::ReplayEvent {
+        session_id,
+        generation: 0,
+        final_seq,
+        event: Box::new(event),
+    }));
+    deliveries.push(ClientDelivery::ReplayEnd {
+        session_id,
+        generation: 0,
+        final_seq,
+    });
+    deliveries
+        .into_iter()
+        .map(|delivery| store.apply_delivery(delivery))
+        .collect()
+}
+
+fn live(message: EventSubscriptionMessage) -> ClientDelivery {
+    ClientDelivery::Live {
         message: Box::new(message),
         generation: 0,
-    };
-    assert!(matches!(
+    }
+}
+
+#[test]
+fn rewound_keeps_the_projection_until_the_full_replay_rebuilds_it() {
+    let session_id = SessionId::new_v7();
+    let mut store = StateStore::default();
+    for (seq, input) in [(1, "kept"), (2, "removed"), (3, "also removed")] {
+        assert!(store.apply_event(submitted(session_id, seq, input)));
+    }
+    assert_eq!(
         store.apply_delivery(live(EventSubscriptionMessage::Rewound {
             session_id,
             through_seq: 1,
         })),
         DeliveryOutcome::Applied
-    ));
-    let users = |store: &StateStore| {
-        store.sessions[&session_id]
-            .transcript
-            .iter()
-            .filter_map(|item| match item {
-                TranscriptItem::User { markdown, .. } => Some(markdown.as_str().to_owned()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(users(&store), ["kept"]);
-    assert_eq!(store.sessions[&session_id].last_seq, 1);
-    // The next append reuses sequence 2 and is applied, not dropped as a
-    // duplicate of the event it replaced.
-    assert!(matches!(
+    );
+    // An append that reuses a cut sequence is left to the full replay the
+    // client runs next, and so is a replay from the view's cursor.
+    assert_eq!(
         store.apply_delivery(live(EventSubscriptionMessage::Event {
-            event: std::sync::Arc::new(event(2, "edited")),
+            event: std::sync::Arc::new(submitted(session_id, 2, "edited")),
         })),
         DeliveryOutcome::Applied
-    ));
-    assert_eq!(users(&store), ["kept", "edited"]);
+    );
+    assert_eq!(
+        user_texts(&store, session_id),
+        ["kept", "removed", "also removed"]
+    );
+    assert_eq!(
+        replay(&mut store, session_id, false, 3, Vec::new())[0],
+        DeliveryOutcome::ReplayFailed { session_id }
+    );
+    let outcomes = replay(
+        &mut store,
+        session_id,
+        true,
+        2,
+        vec![
+            submitted(session_id, 1, "kept"),
+            submitted(session_id, 2, "edited"),
+        ],
+    );
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| *outcome == DeliveryOutcome::Applied)
+    );
+    assert_eq!(user_texts(&store, session_id), ["kept", "edited"]);
+    // Live events follow on again.
+    assert!(store.apply_event(submitted(session_id, 3, "next")));
+    assert_eq!(user_texts(&store, session_id), ["kept", "edited", "next"]);
+}
+
+#[test]
+fn a_replay_from_the_cursor_changes_the_projection_only_when_it_is_complete() {
+    let session_id = SessionId::new_v7();
+    let mut store = StateStore::default();
+    assert!(store.apply_event(submitted(session_id, 1, "first")));
+    store
+        .sessions
+        .get_mut(&session_id)
+        .expect("session")
+        .background_calls = vec![
+        serde_json::from_value(serde_json::json!({
+            "job": "job-1",
+            "tool": "bash",
+            "tool_call_id": ToolCallId::new_v7(),
+            "started_at": "2026-10-23T10:00:00Z",
+            "detached_at": "2026-10-23T10:00:01Z",
+            "by": "user",
+        }))
+        .expect("background call"),
+    ];
+    let version = store.sessions[&session_id].version;
+    for delivery in [
+        ClientDelivery::ReplayStart {
+            session_id,
+            generation: 0,
+            final_seq: 3,
+            rebuild: false,
+        },
+        ClientDelivery::ReplayEvent {
+            session_id,
+            generation: 0,
+            final_seq: 3,
+            event: Box::new(submitted(session_id, 2, "second")),
+        },
+    ] {
+        assert_eq!(store.apply_delivery(delivery), DeliveryOutcome::Applied);
+    }
+    // Staged: the visible projection has not moved.
+    assert_eq!(user_texts(&store, session_id), ["first"]);
+    assert_eq!(store.sessions[&session_id].version, version);
+    for delivery in [
+        ClientDelivery::ReplayEvent {
+            session_id,
+            generation: 0,
+            final_seq: 3,
+            event: Box::new(submitted(session_id, 3, "third")),
+        },
+        ClientDelivery::ReplayEnd {
+            session_id,
+            generation: 0,
+            final_seq: 3,
+        },
+    ] {
+        assert_eq!(store.apply_delivery(delivery), DeliveryOutcome::Applied);
+    }
+    let state = &store.sessions[&session_id];
+    assert_eq!(user_texts(&store, session_id), ["first", "second", "third"]);
+    assert_eq!(state.last_seq, 3);
+    assert_ne!(state.version, version);
+    // What the log does not hold stays.
+    assert_eq!(state.background_calls.len(), 1);
+    // A replay that ends short changes nothing.
+    let outcomes = replay(
+        &mut store,
+        session_id,
+        false,
+        5,
+        vec![submitted(session_id, 4, "fourth")],
+    );
+    assert_eq!(
+        outcomes.last(),
+        Some(&DeliveryOutcome::ReplayFailed { session_id })
+    );
+    assert_eq!(user_texts(&store, session_id), ["first", "second", "third"]);
 }
 
 #[test]
