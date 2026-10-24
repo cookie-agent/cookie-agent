@@ -313,7 +313,7 @@ impl Engine {
             .list_roots()
             .into_iter()
             .filter(|meta| matches!(meta.origin, SessionOrigin::Root))
-            .map(|meta| self.client_session_meta(meta, &known))
+            .map(|meta| self.client_session_meta(meta, |project| known.contains(project)))
             .collect()
     }
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
@@ -343,7 +343,7 @@ impl Engine {
                 .recv();
         }
         // A delegated session shows its root's project.
-        Ok(self.client_session_meta(session.metadata(), &self.project_ids()))
+        Ok(self.client_session_meta(session.metadata(), |project| self.project_exists(project)))
     }
 
     #[cfg(test)]

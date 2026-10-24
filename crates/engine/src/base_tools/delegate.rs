@@ -541,10 +541,7 @@ impl PreparedExecutor for DelegateExecutor {
                         })
                         .await
                         .map_err(|error| ToolError::execution(error.to_string()))?;
-                    let short_id = engine
-                        .get_session(handle.child_session_id)
-                        .ok()
-                        .and_then(|meta| meta.short_id);
+                    let short_id = engine.session_short_id(handle.child_session_id);
                     // The subagent reports its own turns once the call stops
                     // waiting for it.
                     context

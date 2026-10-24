@@ -380,13 +380,28 @@ impl ProjectStore {
         )
     }
 
-    /// The IDs of the projects that read, without reporting the others:
-    /// what a session's project is checked against whenever one is listed.
+    /// The IDs of the projects there are: the folders with a project's name
+    /// and a `project.toml`, which is not read. What a session's project is
+    /// checked against whenever sessions are listed.
     pub(crate) fn ids(&self) -> Vec<ProjectId> {
-        self.read_all().map_or_else(
-            |_| Vec::new(),
-            |(projects, _)| projects.into_iter().map(|project| project.id).collect(),
-        )
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            // Folders being built or removed start with a dot.
+            .filter_map(|entry| {
+                ProjectId::new(entry.file_name().to_string_lossy().into_owned()).ok()
+            })
+            .filter(|id| self.exists(id))
+            .collect()
+    }
+
+    /// Whether project `id` exists: its folder has a `project.toml`, which
+    /// is not read.
+    pub(crate) fn exists(&self, id: &ProjectId) -> bool {
+        self.project_dir(id).join(PROJECT_FILE).is_file()
     }
 
     /// One project.

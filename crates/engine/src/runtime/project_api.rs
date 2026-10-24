@@ -287,7 +287,7 @@ impl Engine {
     pub(crate) fn client_session_meta(
         &self,
         meta: SessionMeta,
-        known: &[ProjectId],
+        known: impl Fn(&ProjectId) -> bool,
     ) -> SessionMeta {
         let mut meta = self.inner.store.with_live_waiting(meta);
         if let SessionOrigin::Delegated {
@@ -301,11 +301,7 @@ impl Engine {
                 .ok()
                 .and_then(|root| root.meta.project.clone());
         }
-        if meta
-            .project
-            .as_ref()
-            .is_some_and(|project| !known.contains(project))
-        {
+        if meta.project.as_ref().is_some_and(|project| !known(project)) {
             meta.project = None;
         }
         meta
@@ -314,6 +310,11 @@ impl Engine {
     /// The IDs of the projects there are.
     pub(crate) fn project_ids(&self) -> Vec<ProjectId> {
         self.inner.projects.ids()
+    }
+
+    /// Whether project `project` exists.
+    pub(crate) fn project_exists(&self, project: &ProjectId) -> bool {
+        self.inner.projects.exists(project)
     }
 
     /// The defaults a new session in `project` attaches when its creation
@@ -370,8 +371,7 @@ impl Engine {
             .await?;
         let engine = self.clone();
         Ok(crate::blocking::off_worker(move || {
-            let known = engine.project_ids();
-            engine.client_session_meta(meta, &known)
+            engine.client_session_meta(meta, |project| engine.project_exists(project))
         }))
     }
 

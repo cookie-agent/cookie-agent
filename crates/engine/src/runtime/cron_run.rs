@@ -169,10 +169,7 @@ impl Engine {
                 .await
                 .map_err(refused)?;
         }
-        let short_id = self
-            .get_session(handle.child_session_id)
-            .ok()
-            .and_then(|meta| meta.short_id);
+        let short_id = self.session_short_id(handle.child_session_id);
         context
             .detach
             .reached_with(crate::base_tools::delegate::subagent_detachable(
