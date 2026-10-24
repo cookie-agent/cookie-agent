@@ -30,6 +30,12 @@ pub(super) struct Reads {
     pub approvals: HashMap<SessionId, Latest>,
     /// The permission modes, by session.
     pub permission_modes: HashMap<SessionId, Latest>,
+    /// `/skills`'s listing, of the session it opened on.
+    pub skills: Latest,
+    /// The `/usage` panel's figures, of the session it opened on.
+    pub usage: Latest,
+    /// The estimated costs, by session.
+    pub costs: HashMap<SessionId, Latest>,
 }
 
 impl Workspace {

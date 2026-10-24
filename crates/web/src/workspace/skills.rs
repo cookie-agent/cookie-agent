@@ -21,6 +21,9 @@ impl Workspace {
         self.skill_args.set(String::new());
         self.skills.set(None);
         self.panel.set(Some(Panel::Skills));
+        // Opened again, maybe on another session: the earlier listing,
+        // landing later, is dropped.
+        let read = self.begin_read(|reads| &mut reads.skills);
         spawn_local(async move {
             let result = client
                 .list_skills(SkillsListParams {
@@ -29,7 +32,9 @@ impl Workspace {
                 .await
                 .map(|result| result.skills)
                 .map_err(|error| crate::errors::describe_full(&error));
-            self.skills.set(Some(result));
+            if self.read_is_current(|reads| &mut reads.skills, read) {
+                self.skills.set(Some(result));
+            }
         });
     }
 

@@ -2130,11 +2130,16 @@ impl Workspace {
                 let Some(client) = self.client().filter(|_| current) else {
                     return;
                 };
+                let read = self.begin_read(|reads| reads.costs.entry(session_id).or_default());
                 spawn_local(async move {
                     if let Ok(result) = client
                         .session_usage(SessionUsageParams { session_id })
                         .await
                         && let Some(cost) = result.usage.estimated_cost_usd
+                        && self.read_is_current(
+                            |reads| reads.costs.entry(session_id).or_default(),
+                            read,
+                        )
                     {
                         self.costs.update(|costs| {
                             costs.insert(session_id, cost);
@@ -2148,6 +2153,8 @@ impl Workspace {
 
     /// Reads the `/usage` panel's figures for the viewed session.
     pub fn load_usage(self) {
+        // A load for the session viewed before, landing later, is dropped.
+        let read = self.begin_read(|reads| &mut reads.usage);
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {
             self.usage.set(None);
@@ -2164,7 +2171,9 @@ impl Workspace {
                 .await
                 .map(|result| (result.usage, result.session_count))
                 .map_err(|error| crate::errors::describe_full(&error));
-            self.usage.set(Some(UsageView { session, tree }));
+            if self.read_is_current(|reads| &mut reads.usage, read) {
+                self.usage.set(Some(UsageView { session, tree }));
+            }
         });
     }
 
