@@ -676,6 +676,221 @@ async fn scenario(with_descendants: bool) {
     );
 }
 
+/// A session of many short tool calls: `PERF_TOOLS` (5000) of them, ten to
+/// a turn, one turn to a run, with a live run streaming at the end. Each
+/// frame's passes over every item and region show here.
+async fn tool_heavy_scenario() {
+    let tools: usize = env_or("PERF_TOOLS", 5_000);
+    let repeat: usize = env_or("PERF_REPEAT", 30);
+    let root = SessionId::new_v7();
+    let mut app = test_app().await;
+    app.tree_root = Some(root);
+    app.selected = Some(root);
+    let mut seq = Seq(0);
+    let mut events = vec![at(session_created(root, seq.next()), 0)];
+    let runs = tools.div_ceil(10);
+    for run in 0..runs {
+        let base = 1_000 + (run as i64) * 100;
+        let run_id = RunId::new_v7();
+        events.push(user_input(
+            root,
+            &mut seq,
+            run_id,
+            base,
+            &format!("step {run}"),
+        ));
+        let attempt = AttemptId::new_v7();
+        events.push(at(
+            attempt_started(root, seq.next(), run_id, attempt, None),
+            base + 1,
+        ));
+        let commit = seq.next();
+        let calls = (0..10)
+            .map(|call| (ToolCallId::new_v7(), format!("call-{run}-{call}")))
+            .collect::<Vec<_>>();
+        let mut parts = vec![text_part("Running the checks.")];
+        parts.extend(calls.iter().map(|(_, name)| tool_part(name)));
+        events.push(at(
+            turn_committed(
+                root,
+                commit,
+                run_id,
+                attempt,
+                commit,
+                parts,
+                Vec::new(),
+                None,
+            ),
+            base + 2,
+        ));
+        for (index, (call, name)) in calls.iter().enumerate() {
+            events.push(at(
+                tool_started_at(
+                    root,
+                    seq.next(),
+                    run_id,
+                    *call,
+                    commit,
+                    name,
+                    1,
+                    name,
+                    Some("ls"),
+                ),
+                base + 3 + index as i64,
+            ));
+            events.push(at(
+                tool_terminated(
+                    root,
+                    seq.next(),
+                    run_id,
+                    *call,
+                    commit,
+                    name,
+                    ToolTerminationOutcome::Completed,
+                ),
+                base + 4 + index as i64,
+            ));
+        }
+        events.push(at(
+            event(
+                root,
+                seq.next(),
+                run_id,
+                EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                    final_text: None,
+                }),
+            ),
+            base + 30,
+        ));
+    }
+    let live_run = RunId::new_v7();
+    let base = 1_000 + (runs as i64) * 100;
+    events.push(user_input(root, &mut seq, live_run, base, "live"));
+    let attempt = AttemptId::new_v7();
+    events.push(at(
+        attempt_started(root, seq.next(), live_run, attempt, None),
+        base + 1,
+    ));
+    events.push(at(
+        event(
+            root,
+            seq.next(),
+            live_run,
+            EventPayload::ModelOutputStarted {
+                attempt_id: attempt,
+                kind: StreamedOutputKind::Text,
+            },
+        ),
+        base + 2,
+    ));
+    assert!(app.store.rebuild_session(root, 0, events));
+
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("terminal");
+    let first = draw(&mut terminal, &mut app);
+    eprintln!(
+        "tool-heavy: tools={tools} items={} lines={} regions={}\n  {:<34} {:>9.3} ms",
+        app.store.sessions[&root].transcript.len(),
+        app.layout_cache.layout.lines.len(),
+        app.layout_cache.layout.regions.len(),
+        "first draw",
+        first.as_secs_f64() * 1000.0
+    );
+    let before = passes(&app);
+    let samples = (0..repeat).map(|_| draw(&mut terminal, &mut app)).collect();
+    report("unchanged redraw", samples, &app, before);
+    let width = app.layout_cache.key.expect("laid out").width;
+    let before = passes(&app);
+    let samples = (0..repeat)
+        .map(|_| {
+            let clock = app.clock_bucket();
+            let start = Instant::now();
+            assert!(crate::ui::transcript::ensure_cached_transcript_layout(
+                &mut app.layout_cache,
+                root,
+                &app.store.sessions[&root],
+                None,
+                app.expanded_blocks.get(&root),
+                width,
+                &app.theme,
+                app.highlighter.as_ref(),
+                app.tui_config.minimum_event_level,
+                clock,
+                app.runtime.model_names(),
+            ));
+            start.elapsed()
+        })
+        .collect();
+    report("unchanged layout check", samples, &app, before);
+    // Any expanded block makes every item's check look its blocks up.
+    let first_tool = *app.store.sessions[&root]
+        .tools
+        .keys()
+        .next()
+        .expect("a tool");
+    app.expanded_blocks
+        .entry(root)
+        .or_default()
+        .insert(crate::ui::transcript::BlockId::Tool(first_tool));
+    draw(&mut terminal, &mut app);
+    let before = passes(&app);
+    let samples = (0..repeat)
+        .map(|_| {
+            let clock = app.clock_bucket();
+            let start = Instant::now();
+            assert!(crate::ui::transcript::ensure_cached_transcript_layout(
+                &mut app.layout_cache,
+                root,
+                &app.store.sessions[&root],
+                None,
+                app.expanded_blocks.get(&root),
+                width,
+                &app.theme,
+                app.highlighter.as_ref(),
+                app.tui_config.minimum_event_level,
+                clock,
+                app.runtime.model_names(),
+            ));
+            start.elapsed()
+        })
+        .collect();
+    report("unchanged layout check, expanded", samples, &app, before);
+    let before = passes(&app);
+    let samples = (0..repeat).map(|_| draw(&mut terminal, &mut app)).collect();
+    report("unchanged redraw, expanded", samples, &app, before);
+    let before = passes(&app);
+    let samples = (0..repeat)
+        .map(|index| {
+            let start = Instant::now();
+            assert!(app.store.apply_event(at(
+                text_delta(root, seq.0, live_run, attempt, &format!("word {index} ")),
+                base + 3
+            )));
+            terminal
+                .draw(|frame| app.draw_for_test(frame))
+                .expect("draw");
+            start.elapsed()
+        })
+        .collect();
+    report("text delta + redraw", samples, &app, before);
+    app.conversation_scroll.up(usize::from(HEIGHT) * 20);
+    draw(&mut terminal, &mut app);
+    let before = passes(&app);
+    let samples = (0..repeat)
+        .map(|index| {
+            let start = Instant::now();
+            assert!(app.store.apply_event(at(
+                text_delta(root, seq.0, live_run, attempt, &format!("more {index} ")),
+                base + 3
+            )));
+            terminal
+                .draw(|frame| app.draw_for_test(frame))
+                .expect("draw");
+            start.elapsed()
+        })
+        .collect();
+    report("text delta + redraw, scrolled up", samples, &app, before);
+}
+
 /// What keeping only the markdown source in the shared state would add:
 /// parsing every reply of the long session again, as a client rebuilding a
 /// view with no parse at hand must, and a streamed reply parsed whole after
@@ -769,5 +984,6 @@ async fn transcript_perf() {
     );
     scenario(false).await;
     scenario(true).await;
+    tool_heavy_scenario().await;
     markdown_parse_cost();
 }
