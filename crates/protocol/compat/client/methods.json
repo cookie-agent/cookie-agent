@@ -154,6 +154,14 @@
       "result": null
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "elicitation.respond",
+      "params": "ElicitationRespondParams",
+      "params_role": "command",
+      "result": "ElicitationRespondResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "events.plugin",

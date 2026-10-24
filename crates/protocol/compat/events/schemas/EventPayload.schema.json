@@ -2011,6 +2011,374 @@
       ],
       "x-open": true
     },
+    "ElicitationAction": {
+      "description": "How a question was answered. An unknown action reads as `Unknown`,\nwhich a client shows as answered.",
+      "oneOf": [
+        {
+          "const": "accept",
+          "description": "The user submitted the form, or agreed to open the URL.",
+          "type": "string"
+        },
+        {
+          "const": "decline",
+          "description": "The user said no.",
+          "type": "string"
+        },
+        {
+          "const": "cancel",
+          "description": "The question was dismissed without an answer.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "ElicitationAnsweredBy": {
+      "description": "Who answered a question.",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "The user, with `elicitation.respond`.",
+          "type": "string"
+        },
+        {
+          "const": "unattended",
+          "description": "The daemon, for a session no one attends: one whose permission\nmode is `auto_approve_n` (a cron run's default), or a headless\n`cookie run`. Always `decline`.",
+          "type": "string"
+        },
+        {
+          "const": "run_ended",
+          "description": "The daemon, as the run was cancelled or ended. Always `cancel`.",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "The agent reported that the URL's interaction finished\n(`elicitation/complete`) before the user answered. Always\n`accept`.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "The daemon, for a form it cannot show: a required field of a\nkind it does not know. Always `decline`.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "ElicitationChoice": {
+      "description": "One choice of a choice field: the value the answer carries and the\nlabel shown.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "title"
+      ],
+      "type": "object"
+    },
+    "ElicitationField": {
+      "description": "One field of a form.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "$ref": "#/$defs/ElicitationInput",
+          "description": "What the field takes. A kind this build does not know cannot be\nfilled in."
+        },
+        "name": {
+          "description": "The member of the answer that carries the field's value.",
+          "type": "string"
+        },
+        "required": {
+          "description": "An accepted answer must give it a value.",
+          "type": "boolean"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "input"
+      ],
+      "type": "object"
+    },
+    "ElicitationForm": {
+      "description": "A form: fields in the order the agent gave them.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ElicitationField"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ElicitationInput": {
+      "description": "What a field takes, and its default.",
+      "oneOf": [
+        {
+          "description": "A line of text.",
+          "properties": {
+            "default": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "format": {
+              "description": "`email`, `uri`, `date`, or `date-time`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max_length": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "min_length": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pattern": {
+              "description": "A regular expression the agent wants the text to match; shown,\nnot checked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One of the choices.",
+          "properties": {
+            "choices": {
+              "items": {
+                "$ref": "#/$defs/ElicitationChoice"
+              },
+              "type": "array"
+            },
+            "default": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "choice",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "choices"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Any number of the choices, in their order.",
+          "properties": {
+            "choices": {
+              "items": {
+                "$ref": "#/$defs/ElicitationChoice"
+              },
+              "type": "array"
+            },
+            "default": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "min_items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "multi_choice",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "choices"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A number.",
+          "properties": {
+            "default": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "maximum": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "minimum": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A whole number.",
+          "properties": {
+            "default": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "maximum": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "minimum": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Yes or no.",
+          "properties": {
+            "default": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "boolean",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
+    "ElicitationValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "One field's value in an answer."
+    },
     "ExtensionMessageRole": {
       "description": "The role of a model message. Closed by design: a role is a part of the\nmodel's history every reader must place, so a new one is a breaking\nchange. Session history stores it too (`message_injected`).",
       "enum": [
@@ -8169,6 +8537,103 @@
       },
       "required": [
         "type"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "An agent of the run asks the user a question: a form or a URL\n(client protocol 1.25.0). The run waits for `elicitation_resolved`.",
+      "properties": {
+        "agent": {
+          "description": "The agent that asks.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "elicitation_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "form": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ElicitationForm"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A form to fill in."
+        },
+        "message": {
+          "description": "What the agent asks, and why.",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "description": "The tool call the question belongs to, when the agent named one.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "elicitation_requested",
+          "type": "string"
+        },
+        "url": {
+          "description": "A page to open, such as a sign-in. Accepting means the user agreed\nto open it, not that what happens there is done.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "elicitation_id",
+        "agent",
+        "message"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The question `elicitation_id` was answered (client protocol\n1.25.0).",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ElicitationAction"
+        },
+        "answered_by": {
+          "$ref": "#/$defs/ElicitationAnsweredBy"
+        },
+        "content": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ElicitationValue"
+          },
+          "description": "The form's values, for an accepted form.",
+          "type": "object"
+        },
+        "elicitation_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the daemon answered, when it did.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "elicitation_resolved",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "elicitation_id",
+        "action",
+        "answered_by"
       ],
       "type": "object"
     }

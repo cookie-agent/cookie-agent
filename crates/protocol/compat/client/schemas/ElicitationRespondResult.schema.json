@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The answer was handed to the agent; `elicitation_resolved` records it.",
+  "title": "ElicitationRespondResult",
+  "type": "object"
+}

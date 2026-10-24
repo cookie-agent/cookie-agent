@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "ElicitationAction": {
+      "description": "How a question was answered. An unknown action reads as `Unknown`,\nwhich a client shows as answered.",
+      "oneOf": [
+        {
+          "const": "accept",
+          "description": "The user submitted the form, or agreed to open the URL.",
+          "type": "string"
+        },
+        {
+          "const": "decline",
+          "description": "The user said no.",
+          "type": "string"
+        },
+        {
+          "const": "cancel",
+          "description": "The question was dismissed without an answer.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "ElicitationValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "One field's value in an answer."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`elicitation.respond`: the user's answer to a question still waiting.",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ElicitationAction"
+    },
+    "content": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ElicitationValue"
+      },
+      "description": "The form's values, for `accept` of a form; ignored otherwise.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "elicitation_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "elicitation_id",
+    "action"
+  ],
+  "title": "ElicitationRespondParams",
+  "type": "object"
+}

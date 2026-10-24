@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.25.0
+
+- Questions an agent asks the user ([ACP agents spec](../specs/acp-agents.md)
+  section 15, elicitation; [Questions](protocol.md#questions)):
+  - New events `elicitation_requested` (`elicitation_id`, `agent`, optional
+    `tool_call_id`, `message`, and a `form` of typed `fields` or a `url`)
+    and `elicitation_resolved` (`action` `accept`/`decline`/`cancel`, an
+    accepted form's `content`, `answered_by`, and the daemon's `reason`).
+    Plugin protocol 1.13.0 carries them too; an older reader skips them.
+  - New method `elicitation.respond` (`session_id`, `elicitation_id`,
+    `action`, and `content` for an accepted form), with the new errors
+    `elicitation_not_pending` and `elicitation_answer_invalid`.
+
 ## 1.24.0
 
 - ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,
