@@ -381,6 +381,34 @@ async fn scenario(with_descendants: bool) {
     let samples = (0..repeat).map(|_| draw(&mut terminal, &mut app)).collect();
     report("unchanged redraw", samples, &app, before);
 
+    if with_descendants {
+        // What the descendant splice costs apart from drawing: checking its
+        // rows are current, and building it again over a changed layout.
+        let width = app.layout_cache.key.expect("laid out").width;
+        let samples = (0..repeat)
+            .map(|_| {
+                let start = Instant::now();
+                std::hint::black_box(
+                    app.descendant_events_key(root, app.tui_config.minimum_event_level),
+                );
+                start.elapsed()
+            })
+            .collect();
+        report("descendant rows check", samples, &app, passes(&app));
+        let samples = (0..repeat)
+            .map(|_| {
+                let mut splice = std::mem::take(&mut app.splice_cache);
+                app.layout_cache.revision += 1;
+                let start = Instant::now();
+                app.refresh_splice(&mut splice, &app.layout_cache.layout, true, width);
+                let elapsed = start.elapsed();
+                app.splice_cache = splice;
+                elapsed
+            })
+            .collect();
+        report("splice over a changed layout", samples, &app, passes(&app));
+    }
+
     // The layout cache's own check of an unchanged transcript, apart from
     // drawing.
     let before = passes(&app);
@@ -452,6 +480,54 @@ async fn scenario(with_descendants: bool) {
         })
         .collect();
     report("text delta + redraw", samples, &app, before);
+
+    if with_descendants {
+        // A child streams its reply while the parent is viewed.
+        let child = children[0];
+        let child_run = RunId::new_v7();
+        let child_attempt = AttemptId::new_v7();
+        let mut child_seq = app.store.sessions[&child].last_seq;
+        child_seq += 1;
+        assert!(app.store.apply_event(at(
+            attempt_started(child, child_seq, child_run, child_attempt, None),
+            base + 1
+        )));
+        child_seq += 1;
+        assert!(app.store.apply_event(at(
+            event(
+                child,
+                child_seq,
+                child_run,
+                EventPayload::ModelOutputStarted {
+                    attempt_id: child_attempt,
+                    kind: StreamedOutputKind::Text,
+                },
+            ),
+            base + 2,
+        )));
+        draw(&mut terminal, &mut app);
+        let before = passes(&app);
+        let samples = (0..repeat)
+            .map(|index| {
+                let start = Instant::now();
+                assert!(app.store.apply_event(at(
+                    text_delta(
+                        child,
+                        child_seq,
+                        child_run,
+                        child_attempt,
+                        &format!("child words {index} "),
+                    ),
+                    base + 3
+                )));
+                terminal
+                    .draw(|frame| app.draw_for_test(frame))
+                    .expect("draw");
+                start.elapsed()
+            })
+            .collect();
+        report("child text delta + redraw", samples, &app, before);
+    }
 
     // The turn commits with a tool call that keeps running.
     let commit = seq.next();

@@ -1212,11 +1212,34 @@ pub(in crate::ui) struct SpliceCache {
     /// The aggregated descendant rows and the state they were read from.
     events_key: Option<u64>,
     events: Vec<DescendantEvent>,
+    /// Each descendant row rendered apart from where it lands.
+    row_layouts: EventRowLayouts,
     rows: SplicedRows,
     /// The layout's regions shifted into spliced coordinates, then the
     /// spliced rows' own.
     block_regions: Vec<BlockRegion>,
     user_regions: Vec<UserRegion>,
+}
+
+/// Descendant rows rendered apart from where they land, by owning session
+/// and item, so a splice over a changed layout places rows again without
+/// rendering them again.
+pub(super) type EventRowLayouts = HashMap<(SessionId, u64), CachedEventRow>;
+
+/// One descendant row's layout and everything it renders from.
+pub(super) struct CachedEventRow {
+    key: EventRowKey,
+    text: String,
+    layout: ItemLayout,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EventRowKey {
+    level: crate::state::EventLevel,
+    repeat: u32,
+    expanded: bool,
+    width: u16,
+    theme: ThemeKey,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1349,6 +1372,7 @@ impl App {
         width: u16,
         layout_lines: &(impl LineSource + ?Sized),
         events: &[DescendantEvent],
+        row_layouts: &mut EventRowLayouts,
     ) -> Option<SplicedRows> {
         let state = self
             .selected
@@ -1365,6 +1389,7 @@ impl App {
             width,
             &self.theme,
             self.runtime.model_names(),
+            row_layouts,
         ))
     }
 
@@ -1419,8 +1444,16 @@ impl App {
         }
         cache.key = key.filter(|_| cacheable);
         cache.rows = self
-            .spliced_conversation_rows(width, &base.lines, &cache.events)
+            .spliced_conversation_rows(width, &base.lines, &cache.events, &mut cache.row_layouts)
             .unwrap_or_default();
+        if cache.row_layouts.len() > cache.events.len() {
+            let shown = cache
+                .events
+                .iter()
+                .map(|row| (row.session, row.item))
+                .collect::<HashSet<_>>();
+            cache.row_layouts.retain(|row, _| shown.contains(row));
+        }
         cache.block_regions.clear();
         cache.user_regions.clear();
         if !cache.rows.is_empty() {
@@ -1477,6 +1510,7 @@ impl App {
         width: u16,
         theme: &Theme,
         model_names: &ModelDisplayNames,
+        row_layouts: &mut EventRowLayouts,
     ) -> SplicedRows {
         let mut placements: Vec<Placement<'_>> = Vec::with_capacity(events.len());
         let mut next = 0;
@@ -1567,27 +1601,43 @@ impl App {
                 if needs_separator {
                     spliced.rows.push(Line::default());
                 }
-                let row_layout = event_row_layout(
-                    BlockId::DescendantEvent {
-                        session: row.session,
-                        item: row.item,
-                    },
-                    row.level,
-                    &row.text,
-                    row.repeat,
-                    expanded,
+                let block_id = BlockId::DescendantEvent {
+                    session: row.session,
+                    item: row.item,
+                };
+                let key = EventRowKey {
+                    level: row.level,
+                    repeat: row.repeat,
+                    expanded: expanded.is_some_and(|blocks| blocks.contains(&block_id)),
                     width,
-                    theme,
-                );
+                    theme: theme.key(),
+                };
+                let cached = match row_layouts.entry((row.session, row.item)) {
+                    std::collections::hash_map::Entry::Occupied(entry)
+                        if entry.get().key == key && entry.get().text == row.text =>
+                    {
+                        entry.into_mut()
+                    }
+                    entry => entry
+                        .insert_entry(CachedEventRow {
+                            key,
+                            text: row.text.clone(),
+                            layout: event_row_layout(
+                                block_id, row.level, &row.text, row.repeat, expanded, width, theme,
+                            ),
+                        })
+                        .into_mut(),
+                };
+                let row_layout = &cached.layout;
                 let row_start = position + spliced.rows.len();
                 spliced
                     .regions
-                    .extend(row_layout.regions.into_iter().map(|region| BlockRegion {
+                    .extend(row_layout.regions.iter().map(|region| BlockRegion {
                         start_line: row_start + region.start_line,
                         end_line: row_start + region.end_line,
-                        ..region
+                        ..*region
                     }));
-                spliced.rows.extend(row_layout.lines);
+                spliced.rows.extend(row_layout.lines.iter().cloned());
                 if let Some((_, row, row_resume)) =
                     placements.next_if(|(next, _, _)| (*next).min(lines.line_count()) == position)
                 {
@@ -1632,7 +1682,12 @@ impl App {
         } else {
             empty_conversation_lines(session_present, width, &self.theme)
         };
-        let mut lines = match self.spliced_conversation_rows(width, &base, &descendant_events) {
+        let mut lines = match self.spliced_conversation_rows(
+            width,
+            &base,
+            &descendant_events,
+            &mut EventRowLayouts::new(),
+        ) {
             Some(spliced) => spliced.materialize(&base),
             None => base,
         };

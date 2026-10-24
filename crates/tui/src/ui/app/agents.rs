@@ -1014,24 +1014,41 @@ impl App {
     }
 
     /// A fingerprint of everything [`Self::descendant_events`] reads for
-    /// `viewed`: each strict descendant's projection version and the label
-    /// its rows carry. Equal fingerprints mean equal rows, so the view keeps
-    /// them instead of re-walking every descendant transcript per frame.
+    /// `viewed`: each strict descendant's rows at or above the level — their
+    /// identity, level, text, repeats, and time — and the label they carry.
+    /// Equal fingerprints mean equal rows, so the view keeps them instead of
+    /// rebuilding them whenever a descendant streams a reply.
     pub(in crate::ui) fn descendant_events_key(
         &self,
         viewed: SessionId,
         minimum_level: EventLevel,
     ) -> u64 {
         use std::hash::{Hash, Hasher};
-        fn walk(app: &App, node: &SessionTree, viewed: SessionId, hasher: &mut impl Hasher) {
+        fn walk(
+            app: &App,
+            node: &SessionTree,
+            viewed: SessionId,
+            minimum_level: EventLevel,
+            hasher: &mut impl Hasher,
+        ) {
             let meta = &node.session;
             if meta.session_id != viewed {
                 meta.session_id.hash(hasher);
-                app.store
-                    .sessions
-                    .get(&meta.session_id)
-                    .map(|state| state.version)
-                    .hash(hasher);
+                if let Some(state) = app.store.sessions.get(&meta.session_id) {
+                    for item in &state.transcript {
+                        if let TranscriptItem::Event {
+                            id,
+                            level,
+                            text,
+                            repeat,
+                            ..
+                        } = item
+                            && *level >= minimum_level
+                        {
+                            (id, *level as u8, text, repeat, state.item_time(*id)).hash(hasher);
+                        }
+                    }
+                }
                 match &meta.title {
                     Some(title) => title.to_string().hash(hasher),
                     None => meta.creation_selection.agent.to_string().hash(hasher),
@@ -1039,13 +1056,14 @@ impl App {
                 short_id(meta).hash(hasher);
             }
             for child in &node.children {
-                walk(app, child, viewed, hasher);
+                walk(app, child, viewed, minimum_level, hasher);
             }
         }
+        let minimum_level = minimum_level.max(EventLevel::Warning);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (viewed, minimum_level.max(EventLevel::Warning) as u8).hash(&mut hasher);
+        (viewed, minimum_level as u8).hash(&mut hasher);
         if let Some(node) = self.tree.as_ref().and_then(|tree| find_node(tree, viewed)) {
-            walk(self, node, viewed, &mut hasher);
+            walk(self, node, viewed, minimum_level, &mut hasher);
         }
         hasher.finish()
     }

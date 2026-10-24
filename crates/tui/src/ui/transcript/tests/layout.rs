@@ -347,6 +347,92 @@ async fn descendant_warnings_aggregate_with_attribution_without_duplication() {
     assert_eq!(warnings[0].time, event_time);
 }
 
+/// The descendant rows' fingerprint follows what the rows show: a child
+/// streaming its reply leaves it alone, a new warning changes it.
+#[tokio::test]
+async fn descendant_rows_key_ignores_a_streaming_child() {
+    let mut app = test_app().await;
+    let root = SessionId::new_v7();
+    let child = SessionId::new_v7();
+    app.tree = Some(SessionTree {
+        session: titled_meta(root, "root session", 1),
+        children: vec![SessionTree {
+            session: titled_meta(child, "child session", 1),
+            children: Vec::new(),
+        }],
+    });
+    push_model_warning(&mut app.store, child, "child warning");
+    let key = |app: &App| app.descendant_events_key(root, EventLevel::Warning);
+    let before = key(&app);
+
+    let run = run_id();
+    let attempt = AttemptId::new_v7();
+    assert!(
+        app.store
+            .apply_event(attempt_started(child, 3, run, attempt, None))
+    );
+    assert!(
+        app.store
+            .apply_event(text_delta(child, 4, run, attempt, "streaming words"))
+    );
+    assert_eq!(key(&app), before);
+
+    assert!(app.store.apply_event(turn_committed(
+        child,
+        5,
+        run,
+        attempt,
+        2,
+        vec![text_part("streaming words")],
+        vec!["second warning"],
+        None,
+    )));
+    assert_ne!(key(&app), before);
+}
+
+/// A descendant row rendered for one splice is reused by the next, and
+/// rendered again once what it shows changes.
+#[test]
+fn spliced_rows_rerender_when_their_text_changes() {
+    let state = crate::state::SessionState::default();
+    let lines = vec![Line::from("system")];
+    let session = SessionId::new_v7();
+    let row = |text: &str| DescendantEvent {
+        time: Timestamp::new(1, 0).unwrap(),
+        session,
+        item: 7,
+        level: EventLevel::Warning,
+        text: text.to_owned(),
+        repeat: 1,
+    };
+    let mut rows = EventRowLayouts::new();
+    let splice = |events: &[DescendantEvent], rows: &mut EventRowLayouts| {
+        App::splice_descendant_events(
+            &lines,
+            &[],
+            &[],
+            &state,
+            events,
+            None,
+            80,
+            &Theme::default(),
+            &crate::state::ModelDisplayNames::default(),
+            rows,
+        )
+        .materialize(&lines)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+    };
+    let first = splice(&[row("first text")], &mut rows);
+    assert!(first.contains("first text"));
+    assert_eq!(splice(&[row("first text")], &mut rows), first);
+    assert_eq!(rows.len(), 1);
+    let second = splice(&[row("second text")], &mut rows);
+    assert!(second.contains("second text") && !second.contains("first text"));
+}
+
 #[test]
 fn item_times_are_durable_and_replay_deterministic() {
     let session = SessionId::new_v7();
@@ -510,6 +596,7 @@ fn descendant_warnings_splice_at_chronological_position() {
         80,
         &Theme::default(),
         &crate::state::ModelDisplayNames::default(),
+        &mut EventRowLayouts::new(),
     );
     let spliced = spliced_rows.materialize(&lines);
     let shifts = &spliced_rows.shifts;
@@ -567,6 +654,7 @@ fn descendant_warnings_splice_at_chronological_position() {
         80,
         &Theme::default(),
         &crate::state::ModelDisplayNames::default(),
+        &mut EventRowLayouts::new(),
     );
     assert_eq!(untouched.materialize(&lines), lines);
     assert!(untouched.shifts.is_empty());
