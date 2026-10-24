@@ -13,7 +13,7 @@ use std::{
     sync::Mutex,
 };
 
-use cookie_agent_config::AcpDocumentSettings;
+use cookie_agent_config::{AcpDocumentSettings, AcpModelChoice};
 use cookie_agent_protocol::{AcpConfigOption, AcpOptionChoice, AgentId, RuntimeId};
 use serde::{Deserialize, Serialize};
 
@@ -158,6 +158,119 @@ pub(crate) fn wanted_mode(
     })
 }
 
+/// The option an agent's model lives in: category `model`, else ID `model`.
+pub(crate) fn model_option(options: &[AcpConfigOption]) -> Option<&AcpConfigOption> {
+    options
+        .iter()
+        .find(|option| option.category.as_deref() == Some("model"))
+        .or_else(|| options.iter().find(|option| option.id == "model"))
+}
+
+/// The option an agent's reasoning effort lives in: category
+/// `thought_level`.
+pub(crate) fn effort_option(options: &[AcpConfigOption]) -> Option<&AcpConfigOption> {
+    options
+        .iter()
+        .find(|option| option.category.as_deref() == Some("thought_level"))
+}
+
+/// The document's `models` entries that name a model value: those naming a
+/// variable are skipped (a configuration diagnostic says so).
+pub(crate) fn document_models(settings: &AcpDocumentSettings) -> Vec<&AcpModelChoice> {
+    settings
+        .models
+        .iter()
+        .filter(|choice| choice.variable().is_none())
+        .collect()
+}
+
+/// Whether the document's `models` decide option `id` of `options` rather
+/// than its `acp.config`: the model and effort options, when it has
+/// entries.
+pub(crate) fn models_decide(
+    settings: &AcpDocumentSettings,
+    options: &[AcpConfigOption],
+    id: &str,
+) -> bool {
+    !document_models(settings).is_empty()
+        && (model_option(options).is_some_and(|option| option.id == id)
+            || effort_option(options).is_some_and(|option| option.id == id))
+}
+
+/// Which `models` entry a session of the document starts with.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ModelPick<'a> {
+    /// The document has no entries with a model value.
+    Unset,
+    /// The agent offers no model option.
+    NoModelOption,
+    /// The agent's model option takes none of the entries' models.
+    NoneOffered,
+    /// The first entry whose model the agent offers, with the ID of its
+    /// model option.
+    Chosen {
+        option: String,
+        choice: &'a AcpModelChoice,
+    },
+}
+
+impl ModelPick<'_> {
+    /// Why no entry applies, for a session notice; `None` when one does or
+    /// the document has none.
+    pub(crate) fn problem(&self, settings: &AcpDocumentSettings) -> Option<String> {
+        match self {
+            Self::Unset | Self::Chosen { .. } => None,
+            Self::NoModelOption => Some("the agent offers no model option".to_owned()),
+            Self::NoneOffered => Some(format!(
+                "the agent's model option takes none of {}",
+                document_models(settings)
+                    .iter()
+                    .map(|choice| format!("`{}`", choice.model))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+}
+
+/// The first of the document's `models` whose model `options` offer.
+pub(crate) fn pick_model<'a>(
+    options: &[AcpConfigOption],
+    settings: &'a AcpDocumentSettings,
+) -> ModelPick<'a> {
+    let models = document_models(settings);
+    if models.is_empty() {
+        return ModelPick::Unset;
+    }
+    let Some(option) = model_option(options) else {
+        return ModelPick::NoModelOption;
+    };
+    models
+        .into_iter()
+        .find(|choice| {
+            option
+                .values
+                .iter()
+                .any(|value| value.value == choice.model)
+        })
+        .map_or(ModelPick::NoneOffered, |choice| ModelPick::Chosen {
+            option: option.id.clone(),
+            choice,
+        })
+}
+
+/// The effort option's ID and `variant`, when `options` take it: else why
+/// not.
+pub(crate) fn pick_variant(options: &[AcpConfigOption], variant: &str) -> Result<String, String> {
+    let option = effort_option(options)
+        .ok_or_else(|| "the agent offers no effort option (category `thought_level`)".to_owned())?;
+    if option.values.iter().any(|value| value.value == variant) {
+        Ok(option.id.clone())
+    } else {
+        Err(format!("option `{}` takes no value `{variant}`", option.id))
+    }
+}
+
 /// Whether `option_id` of `options` takes `value`: `None` when there is no
 /// such option.
 pub(crate) fn takes(options: &[AcpConfigOption], option_id: &str, value: &str) -> Option<bool> {
@@ -186,8 +299,9 @@ fn choose(options: &mut [AcpConfigOption], option_id: &str, value: &str) {
 }
 
 /// What a new session starts with, as a draft shows it: `options`, the
-/// agent's own starting values, with the document's mode and `acp.config`
-/// applied where the agent takes them.
+/// agent's own starting values, with the document's mode, `acp.config`,
+/// and `models` applied where the agent takes them (`models` before
+/// `acp.config` for the model and effort options).
 pub(crate) fn starting_view(
     options: &[AcpConfigOption],
     settings: &AcpDocumentSettings,
@@ -199,7 +313,17 @@ pub(crate) fn starting_view(
         choose(&mut options, &id, &mode);
     }
     for (id, value) in &settings.config {
-        choose(&mut options, id, value);
+        if !models_decide(settings, &options, id) {
+            choose(&mut options, id, value);
+        }
+    }
+    if let ModelPick::Chosen { option, choice } = pick_model(&options, settings) {
+        choose(&mut options, &option, &choice.model);
+        if let Some(variant) = &choice.variant
+            && let Ok(option) = pick_variant(&options, variant)
+        {
+            choose(&mut options, &option, variant);
+        }
     }
     options
 }
@@ -415,6 +539,56 @@ mod tests {
             starting_view(&options, &settings)[0].current_value,
             "default"
         );
+    }
+
+    #[test]
+    fn a_draft_sees_the_documents_models_over_its_config() {
+        let options = [
+            option("model", Some("model"), "sonnet", &["sonnet", "opus"]),
+            option("effort", Some("thought_level"), "low", &["low", "high"]),
+        ];
+        let entry = |model: &str, variant: Option<&str>| AcpModelChoice {
+            model: model.to_owned(),
+            variant: variant.map(str::to_owned),
+        };
+        let settings = AcpDocumentSettings {
+            config: BTreeMap::from([
+                ("model".to_owned(), "sonnet".to_owned()),
+                ("effort".to_owned(), "high".to_owned()),
+            ]),
+            models: vec![
+                entry("${default_model}", Some("high")),
+                entry("haiku", Some("high")),
+                entry("opus", None),
+            ],
+            ..AcpDocumentSettings::default()
+        };
+        let current = |view: Vec<AcpConfigOption>| {
+            view.into_iter()
+                .map(|option| option.current_value)
+                .collect::<Vec<_>>()
+        };
+        // `opus` is the first offered; its null variant keeps the agent's
+        // `low`, though `acp.config` says `high`.
+        assert_eq!(current(starting_view(&options, &settings)), ["opus", "low"]);
+        assert!(models_decide(&settings, &options, "effort"));
+        assert!(!models_decide(&settings, &options, "mode"));
+        let settings = AcpDocumentSettings {
+            models: vec![entry("opus", Some("high"))],
+            ..AcpDocumentSettings::default()
+        };
+        assert_eq!(
+            current(starting_view(&options, &settings)),
+            ["opus", "high"]
+        );
+        // Only variables: `acp.config` decides.
+        let settings = AcpDocumentSettings {
+            config: BTreeMap::from([("model".to_owned(), "opus".to_owned())]),
+            models: vec![entry("${small_model}", None)],
+            ..AcpDocumentSettings::default()
+        };
+        assert_eq!(pick_model(&options, &settings), ModelPick::Unset);
+        assert_eq!(current(starting_view(&options, &settings)), ["opus", "low"]);
     }
 
     #[test]

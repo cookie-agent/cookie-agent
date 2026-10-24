@@ -140,9 +140,9 @@ You review changes for this project before they are committed.
 - **Optional.** Without it, `<runtime_id>-<agent_id>` is an agent of mode
   `all` with the runtime's description, the defaults every agent gets for
   actions it names no key for, and the default `hide_tools`.
-- **No `models`, no `acp.command`:** the runtime launches the agent and the
-  agent chooses its own model (set through `acp.config` when it offers a
-  model option).
+- **No `acp.command`:** the runtime launches the agent. *(Revised
+  2026-10-24: `models` names the agent's own model and effort values; see
+  **Document models** in section 15.)*
 - **`acp.hide_tools`:** patterns with `*` and `?` over the tool names cookie
   publishes (`read`, `bash`, `memory_*`, `exa_*`). Default: cookie's coding
   runtime tools (`read`, `write`, `edit`, `bash`, `webfetch`), since the agent
@@ -363,7 +363,8 @@ Where the spec left a detail open, or where the code differs:
   `agent/configure` was needed.
 - **The agent document.** Its `acp` block marks it as an ACP agent's (`acp:
   {}` is enough); such a document is an agent only while a runtime declares
-  the id. It names no `models`, `agent_md`, `limits`, or mode `internal`,
+  the id. It names no `agent_md`, `limits`, or mode `internal` (nor
+  `models`, until **Document models** below),
   and its body may be empty. `models` and `enabled` became optional for
   every document (`enabled` defaults to `true`). A delegation target
   needs no document *(user decision of 2026-10-23)*: a named target no agent
@@ -1130,3 +1131,38 @@ Blue, each with its description, titled "Color") and `question_0_custom`
 ("Other", text), with the question as the message. Accepting
 `{"question_0": "Blue"}` ended the call and the agent replied "You chose
 Blue."; declining another made it reply "You skipped.".
+
+**Document models** (2026-10-24; no wire change, history format
+unchanged):
+
+- **`models` in an ACP document.** The top-level `models` of a document
+  with an `acp` block is a fallback chain over the agent's own values:
+  each entry's `model` is a value of its model option (category `model`,
+  else ID `model`), its `variant` a value of its effort option (category
+  `thought_level`), `null` or absent for the agent's default effort, and
+  a plain string an entry without a variant. The loader reads it into
+  `AcpDocumentSettings::models` (`AcpModelChoice`), so
+  `AgentFrontmatter::models` stays empty and no native code sees it;
+  entries are ACP labels (1–256 bytes, no control characters), each model
+  once, at most 256, with no `cache` (strict, so a hard error).
+- **At session start** (`apply_starting_options`): the mode, then
+  `acp.config` without the model and effort options when `models` has an
+  entry naming a value, then the first entry whose model the agent offers
+  (`options::pick_model`), then its variant against the effort option as
+  the model change left it, then the session's starting options. No
+  offered model, no model option, or a variant the effort option does not
+  take is a session notice (*The agent document's `models` was skipped
+  there: ...*), as an unknown `acp.config` value is, and the agent keeps
+  its own value. `AgentRuntime.options` (a draft's) applies the same
+  choice (`options::starting_view`), so the chip shows what the session
+  starts with.
+- **Configuration diagnostics** (`ResolvedAgents::diagnostics`, recomputed
+  from the published agents like the delegation ones): an entry naming a
+  variable (`${default_model}`, `${small_model}`, `${parent_model}`, any
+  `${...}`) is skipped, with *agent `<id>` skips a `models` entry:
+  `<variable>` names one of cookie's models, ...*, rather than failing the
+  load, as an entry naming an unset `default_model` does; and an
+  `acp.config` key for the model or effort option of a document whose
+  `models` name a value gives *... `models` takes precedence ...*. The
+  option IDs are those the agent last offered on any runtime; before it
+  offered any, only `model` is known to be the model option.

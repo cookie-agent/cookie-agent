@@ -54,7 +54,7 @@ Review the requested change and report concrete findings.
 | `description` | string | *(required)* | 1–512 bytes, no control characters. Shown in the TUI and snapshots. |
 | `mode` | string | *(required)* | `primary`, `subagent`, `all`, or `internal`. |
 | `enabled` | boolean | `true` | Disabled agents are never runnable as roots, delegation targets, or internal backends. |
-| `models` | array | `[]` | Ordered model chain; must be nonempty for `primary` (unless the document has an `acp` block). Other modes may omit it. |
+| `models` | array | `[]` | Ordered model chain; must be nonempty for `primary` (unless the document has an `acp` block). Other modes may omit it. In an ACP agent's document, the agent's own model and effort values; see [ACP agent documents](#acp-agent-documents). |
 | `limits` | table | defaults below | Timeouts and token bounds. |
 | `permissions` | table | `{}` | Ordered action permission map; see [Permissions](#permissions). At most 256 rules. |
 | `agent_md` | boolean | *(unset)* | Load [AGENTS.md context](#agentsmd-context) for this agent's root runs. Unset follows `[agent_md] enabled`; a value overrides it. Rejected on `subagent` and `internal` agents, which never load AGENTS.md. |
@@ -194,9 +194,9 @@ configuration status says so).
 ---
 description: Codex on labpc, for refactors
 mode: all
+models: [{ model: "gpt-5", variant: "high" }, "gpt-5-mini"]
 acp:
   mode: auto
-  config: { model: "gpt-5" }
   hide_tools: [read, write, edit, bash, webfetch]
 permissions:
   read: allow
@@ -207,13 +207,35 @@ You review changes for this project before they are committed.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `models` | array | `[]` | The model and effort the agent's sessions start with, a fallback chain over the agent's own values; see below. |
 | `acp.mode` | string | the agent's `auto`, else its default | The mode the agent starts its sessions in, by mode ID. |
 | `acp.config` | table of strings | `{}` | Initial values of the agent's config options, by option ID (`"true"` or `"false"`, quoted, for an on/off option such as Claude Code's `fast`); an unknown option or value is reported in the session and skipped. |
 | `acp.hide_tools` | array of patterns | `[read, write, edit, bash, webfetch]` | Cookie's tools the agent does not get through the MCP bridge, with `*` and `?`; `[]` offers every tool the rules offer. |
 
-- The agent chooses its own model, so the document names no `models`; nor
-  `agent_md` (the agent reads its own context files), nor `limits`, nor mode
-  `internal`. Its body may be empty; a nonempty body is sent with the
+- `models` names values of the agent's own options, not cookie's model
+  keys. Each entry's `model` is a value of the agent's model option (the
+  option of category `model`, else the option `model`), such as Claude
+  Code's `opus`, and its `variant` a value of its effort option (category
+  `thought_level`), such as `high`, or `null` (or no `variant`) for the
+  agent's default effort; a plain string is an entry with no variant. When
+  the agent's session
+  starts, the first entry whose model the agent offers applies, then its
+  variant; when the agent offers none of them, or not the variant, the
+  session says so and the agent keeps its own. Entries are 1–256 bytes
+  without control characters, each model once, at most 256 entries, and
+  take no `cache`.
+- `models` decide the model and effort options: `acp.config` values for
+  either are ignored, and the configuration status (`cookie config
+  status`, the TUI's `/config`, the web's configuration page) says
+  `models` takes precedence. A draft's or session's own choices still
+  apply after `models`, and a draft shows what `models` picks.
+- `${default_model}`, `${small_model}`, and `${parent_model}` name cookie's
+  models, which an ACP agent does not run on: such an entry is skipped
+  with a configuration diagnostic (``agent `claude` skips a `models` entry:
+  `${default_model}` names one of cookie's models, ...``), and the document
+  still loads.
+- The document names no `agent_md` (the agent reads its own context
+  files), nor `limits`, nor mode `internal`. Its body may be empty; a nonempty body is sent with the
   session's first prompt to the agent, after the tool instructions and the
   memory snapshot ([What the first prompt carries](acp-agents.md#what-the-first-prompt-carries)).
 - `permissions` decide the calls the agent makes of cookie's tools, as for a

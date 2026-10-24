@@ -158,9 +158,9 @@ itself permissions. Every runtime that offers the agent shares it:
 ---
 description: Codex on labpc, for refactors
 mode: all
+models: [{ model: "gpt-5", variant: "high" }]
 acp:
   mode: auto
-  config: { model: "gpt-5" }
   hide_tools: [read, write, edit, bash, webfetch]
 permissions:
   read: allow
@@ -178,11 +178,21 @@ You review changes for this project before they are committed.
   key for, and the default `hide_tools`.
 - **`acp`** marks the document as the agent's; `acp: {}` is enough. `mode`
   picks the mode its sessions start in (else the agent's `auto` mode, else
-  its default), and `config` sets its config options by ID, such as its
-  `model` or reasoning `effort`; an unknown option or value is reported in
-  the session and skipped.
-- **No `models`.** The agent chooses its own model; set it through
-  `acp.config` when the agent offers a model option.
+  its default), and `config` sets its other config options by ID, such as
+  Claude Code's `fast`; an unknown option or value is reported in the
+  session and skipped.
+- **`models`** picks the agent's model and effort, as a fallback chain
+  over the agent's own values (not cookie's model keys): each entry's
+  `model` is a value of the agent's model option and its `variant` one of
+  its effort option, or `null` for the agent's default effort. For Claude
+  Code, `models: [{ model: "opus", variant: "high" }, "sonnet"]`. The
+  first entry whose model the agent offers applies when its session
+  starts; when none does, the session says so and the agent keeps its own.
+  `models` beats `acp.config` for the model and effort
+  (the configuration status says so when both set one), and a draft's or
+  session's own choice beats `models`. `${default_model}` and the other
+  variables name cookie's models, so an entry naming one is skipped with a
+  configuration diagnostic.
 - **A document without an `acp` block** of the same ID is the daemon's own
   agent: it keeps the ID, the runtimes' declarations are ignored, and the
   configuration status (`cookie config status`, the TUI's `/config`, the
@@ -207,6 +217,7 @@ another agent:
 ---
 description: Claude Code
 mode: all
+models: [{ model: "opus", variant: "high" }]
 acp: {}
 permissions:
   read: allow
@@ -395,11 +406,11 @@ each call decided by the rules as a model's would be.
   `model` and `reasoning_effort`.
 - **A new session's draft** offers the options the agent last started a
   session with on the runtime the draft would run it on, with the
-  document's `acp.mode` and `acp.config` applied: what its new session
-  would start with. The daemon remembers them per agent and runtime in
+  document's `acp.mode`, `acp.config`, and `models` applied: what its new
+  session would start with. The daemon remembers them per agent and runtime in
   `acp-agents.json` in its data folder, across restarts. Your choices go
   with the new session and apply when its agent session starts, after the
-  document's `acp.config`; one the agent no longer takes is skipped with a
+  document's `acp.config` and `models`; one the agent no longer takes is skipped with a
   note in the transcript. Before the agent has started a session on that
   runtime, there is nothing to offer yet: send a first message.
 - **Attachments.** Files go to the agent as it takes them: images to an
@@ -503,6 +514,11 @@ the agent is a target. Delegating to it before then is refused with
 note.
 
 ## Troubleshooting
+
+- **"The agent document's `models` was skipped there".** The agent offers
+  none of the entries' models, or not the entry's variant, on that
+  runtime: the session runs on the agent's own choice. The model picker
+  lists the models the agent takes, and the variant its efforts.
 
 - **An authentication error ends the turn.** The run fails with what the
   agent said, typically that authentication is required. Log in to the agent on the

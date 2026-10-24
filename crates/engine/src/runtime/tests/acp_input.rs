@@ -7,7 +7,7 @@ use cookie_agent_protocol::{AcpOptionChoice, EventPayload};
 use super::acp::*;
 use crate::SessionRuntimes;
 
-fn choice(option_id: &str, value: &str) -> AcpOptionChoice {
+pub(super) fn choice(option_id: &str, value: &str) -> AcpOptionChoice {
     AcpOptionChoice {
         option_id: option_id.to_owned(),
         value: value.to_owned(),
@@ -15,7 +15,7 @@ fn choice(option_id: &str, value: &str) -> AcpOptionChoice {
 }
 
 /// The options the agent's descriptor offers a draft on `local`.
-fn draft_options(acp: &AcpFixture) -> Vec<cookie_agent_protocol::AcpConfigOption> {
+pub(super) fn draft_options(acp: &AcpFixture) -> Vec<cookie_agent_protocol::AcpConfigOption> {
     acp.engine()
         .current_runtime()
         .result
@@ -28,7 +28,10 @@ fn draft_options(acp: &AcpFixture) -> Vec<cookie_agent_protocol::AcpConfigOption
         .unwrap_or_default()
 }
 
-fn current(options: &[cookie_agent_protocol::AcpConfigOption], id: &str) -> Option<String> {
+pub(super) fn current(
+    options: &[cookie_agent_protocol::AcpConfigOption],
+    id: &str,
+) -> Option<String> {
     options
         .iter()
         .find(|option| option.id == id)
@@ -37,7 +40,7 @@ fn current(options: &[cookie_agent_protocol::AcpConfigOption], id: &str) -> Opti
 
 /// The `session/set_config_option` requests the agent received, as
 /// `(option, value)`.
-fn options_set(acp: &AcpFixture) -> Vec<(String, String)> {
+pub(super) fn options_set(acp: &AcpFixture) -> Vec<(String, String)> {
     acp.received()
         .into_iter()
         .filter(|message| message["method"] == "session/set_config_option")

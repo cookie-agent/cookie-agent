@@ -60,8 +60,7 @@ pub(crate) fn parse_agent(
     reject_renamed_models_field(&yaml_value, &id)?;
     reject_removed_tools_field(&yaml_value, &id)?;
     validate_permission_expressions(&yaml_value, &id)?;
-    let frontmatter: AgentFrontmatter =
-        serde_yaml::from_str(yaml).map_err(|error| yaml_error(path, &error))?;
+    let frontmatter = parse_frontmatter(yaml, yaml_value, path)?;
     let mut body = format!("{}\n", raw_body.trim_end_matches('\n'));
     if !body.chars().any(|character| !character.is_whitespace()) {
         // An ACP agent's body is sent with its session's first prompt, and
@@ -85,6 +84,35 @@ pub(crate) fn parse_agent(
         document_fingerprint,
         prompt_fingerprint,
     })
+}
+
+/// The frontmatter of `yaml`. An ACP agent's document (one with an `acp`
+/// block) names the agent's own model and effort values in `models`, not
+/// cookie's model keys: those are read into `acp.models`.
+fn parse_frontmatter(
+    yaml: &str,
+    mut value: serde_yaml::Value,
+    path: &Path,
+) -> Result<AgentFrontmatter, ConfigError> {
+    let acp = serde_yaml::Value::String("acp".to_owned());
+    let models = serde_yaml::Value::String("models".to_owned());
+    let Some(mapping) = value
+        .as_mapping_mut()
+        .filter(|mapping| mapping.get(&acp).is_some_and(|acp| !acp.is_null()))
+    else {
+        return serde_yaml::from_str(yaml).map_err(|error| yaml_error(path, &error));
+    };
+    let choices = match mapping.remove(&models) {
+        Some(models) => serde_yaml::from_value::<Vec<crate::AcpModelChoice>>(models)
+            .map_err(|error| yaml_error(path, &error))?,
+        None => Vec::new(),
+    };
+    let mut frontmatter: AgentFrontmatter =
+        serde_yaml::from_value(value).map_err(|error| yaml_error(path, &error))?;
+    if let Some(settings) = &mut frontmatter.acp {
+        settings.models = choices;
+    }
+    Ok(frontmatter)
 }
 
 fn reject_schema_field(

@@ -486,6 +486,11 @@ impl AgentRegistry {
                 format!("agent `{id}` skips a `models` entry: {fields} {verb} not set")
             });
         }
+        for (id, agent) in &self.agents {
+            if let (Some(offers), Some(settings)) = (&agent.acp, &agent.document.frontmatter.acp) {
+                diagnostics.extend(acp_document_diagnostics(id, offers, settings));
+            }
+        }
         diagnostics
     }
 
@@ -528,6 +533,51 @@ impl AgentRegistry {
         }
         diagnostics
     }
+}
+
+/// The diagnostics of an ACP agent's document: `models` entries naming a
+/// variable, which name cookie's models, and `acp.config` setting the
+/// model or effort option, which `models` decide. The option IDs are those
+/// the agent last offered on a runtime; before it has offered any, the
+/// model option is `model`.
+fn acp_document_diagnostics(
+    id: &AgentId,
+    offers: &AcpOffers,
+    settings: &cookie_agent_config::AcpDocumentSettings,
+) -> Vec<String> {
+    use crate::runtime::acp::options::{document_models, effort_option, model_option};
+
+    let mut diagnostics = settings
+        .models
+        .iter()
+        .filter_map(cookie_agent_config::AcpModelChoice::variable)
+        .map(|variable| {
+            format!(
+                "agent `{id}` skips a `models` entry: `{variable}` names one of cookie's models, \
+                 and an ACP agent's entries name values of its own model option"
+            )
+        })
+        .collect::<Vec<_>>();
+    if document_models(settings).is_empty() {
+        return diagnostics;
+    }
+    let mut decided = std::collections::BTreeSet::new();
+    let mut known = false;
+    for offer in &offers.offers {
+        known |= !offer.known.options.is_empty();
+        decided.extend(model_option(&offer.known.options).map(|option| option.id.clone()));
+        decided.extend(effort_option(&offer.known.options).map(|option| option.id.clone()));
+    }
+    if !known {
+        decided.insert("model".to_owned());
+    }
+    for option in settings.config.keys().filter(|key| decided.contains(*key)) {
+        diagnostics.push(format!(
+            "agent `{id}` sets `{option}` in `acp.config` and names `models`: `models` takes \
+             precedence for the agent's model and effort, so `acp.config.{option}` is ignored"
+        ));
+    }
+    diagnostics
 }
 
 fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelection> {

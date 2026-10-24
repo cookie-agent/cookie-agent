@@ -17,8 +17,8 @@ mod writer;
 
 pub use agent_document::{AgentDocument, AgentDocumentSource};
 pub use agents::{
-    AcpDocumentSettings, AgentFrontmatter, AgentLimits, AgentMaterializationInput, AgentMode,
-    AgentModelFallback, AgentModelRef, AgentRegistry, BUILT_IN_APPROVAL_AGENT_ID,
+    AcpDocumentSettings, AcpModelChoice, AgentFrontmatter, AgentLimits, AgentMaterializationInput,
+    AgentMode, AgentModelFallback, AgentModelRef, AgentRegistry, BUILT_IN_APPROVAL_AGENT_ID,
     BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_DEFAULT_AGENT_ID, BUILT_IN_TITLE_AGENT_ID,
     DEFAULT_MODEL_EXPRESSION, PARENT_MODEL_EXPRESSION, PermissionAction, PermissionEffect,
     PermissionKey, PermissionRule, PermissionValue, SMALL_MODEL_EXPRESSION,

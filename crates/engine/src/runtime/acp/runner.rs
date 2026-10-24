@@ -2619,7 +2619,10 @@ impl Engine {
     }
 
     /// The starting mode (section 5): the document's `acp.mode`, else the
-    /// agent's `auto`, else its default; then the document's `acp.config`.
+    /// agent's `auto`, else its default; then the document's `acp.config`,
+    /// except the model and effort options when the document names
+    /// `models`; then the first `models` entry the agent offers, and its
+    /// variant.
     async fn apply_starting_options(
         &self,
         session: SessionId,
@@ -2644,6 +2647,9 @@ impl Engine {
             }
         }
         for (id, value) in &settings.config {
+            if super::options::models_decide(&settings, &live.options, id) {
+                continue;
+            }
             let known = live
                 .options
                 .iter()
@@ -2667,6 +2673,62 @@ impl Engine {
                 )
                 .await;
             }
+        }
+        self.apply_document_models(session, run, live, &settings)
+            .await;
+    }
+
+    /// The first of the document's `models` whose model the agent offers,
+    /// then its variant when it names one; an entry that cannot apply is
+    /// reported in the session and the agent keeps its default.
+    async fn apply_document_models(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        live: &mut LiveSession,
+        settings: &cookie_agent_config::AcpDocumentSettings,
+    ) {
+        let pick = super::options::pick_model(&live.options, settings);
+        let chosen = match &pick {
+            super::options::ModelPick::Chosen { option, choice } => {
+                Some((option.clone(), (*choice).clone()))
+            }
+            _ => None,
+        };
+        let mut problem = pick.problem(settings);
+        if let Some((option, choice)) = chosen {
+            let current = super::options::model_option(&live.options)
+                .is_some_and(|model| model.current_value == choice.model);
+            if !current {
+                problem = self
+                    .set_live_option(live, &option, &choice.model)
+                    .await
+                    .err();
+            }
+            if problem.is_none()
+                && let Some(variant) = &choice.variant
+            {
+                problem = match super::options::pick_variant(&live.options, variant) {
+                    Err(problem) => Some(problem),
+                    Ok(option) => {
+                        let current = super::options::effort_option(&live.options)
+                            .is_some_and(|effort| &effort.current_value == variant);
+                        if current {
+                            None
+                        } else {
+                            self.set_live_option(live, &option, variant).await.err()
+                        }
+                    }
+                };
+            }
+        }
+        if let Some(problem) = problem {
+            self.acp_notice(
+                session,
+                run,
+                format!("The agent document's `models` was skipped there: {problem}"),
+            )
+            .await;
         }
     }
 

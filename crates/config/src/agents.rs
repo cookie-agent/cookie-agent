@@ -347,7 +347,8 @@ pub struct AgentFrontmatter {
     #[serde(default)]
     pub agent_md: Option<bool>,
     /// Present on the document of a runtime-hosted ACP agent
-    /// (`docs/site/specs/acp-agents.md` section 4), which names no models.
+    /// (`docs/site/specs/acp-agents.md` section 4), whose `models` are read
+    /// into it (`AcpDocumentSettings::models`), leaving `models` empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp: Option<AcpDocumentSettings>,
 }
@@ -367,6 +368,79 @@ pub struct AcpDocumentSettings {
     /// cookie's coding runtime tools when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_tools: Option<Vec<String>>,
+    /// The document's top-level `models`, a fallback chain over the values
+    /// of the agent's model option, each with a value of its effort
+    /// (`thought_level`) option. Read from `models`, never from the `acp`
+    /// block.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<AcpModelChoice>,
+}
+
+/// One `models` entry of an ACP agent's document: a value of the agent's
+/// model option and, optionally, one of its effort (`thought_level`)
+/// option; a plain string is the model with the agent's default effort.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AcpModelChoice {
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+}
+
+impl AcpModelChoice {
+    /// The variable an entry names instead of a model value
+    /// (`${default_model}`, `${small_model}`, `${parent_model}`, or any
+    /// other `${...}`): those name cookie's models, which an ACP agent does
+    /// not run on, so the entry is skipped with a configuration diagnostic.
+    #[must_use]
+    pub fn variable(&self) -> Option<&str> {
+        (self.model.starts_with("${") && self.model.ends_with('}')).then_some(self.model.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AcpModelChoice {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Entry {
+            model: String,
+            #[serde(default)]
+            variant: Option<String>,
+        }
+
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = AcpModelChoice;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a model value or a mapping { model, variant }")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(AcpModelChoice {
+                    model: value.to_owned(),
+                    variant: None,
+                })
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let entry = Entry::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(AcpModelChoice {
+                    model: entry.model,
+                    variant: entry.variant,
+                })
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 impl AcpDocumentSettings {
@@ -516,15 +590,25 @@ fn authored_root_eligible(document: &AgentDocument) -> bool {
         && !document.frontmatter.models.is_empty()
 }
 
-/// An ACP agent's document: the runtime launches the agent and the agent
-/// picks its model, so it names no models, and it reads its own context
-/// files.
+/// An ACP agent's document: the runtime launches the agent, its `models`
+/// name the agent's own model and effort values, and it reads its own
+/// context files.
 fn validate_acp_settings(
     document: &AgentDocument,
     acp: &AcpDocumentSettings,
 ) -> Result<(), ConfigError> {
     let frontmatter = &document.frontmatter;
-    let field = if !frontmatter.models.is_empty() {
+    let mut models = BTreeSet::new();
+    let field = if !frontmatter.models.is_empty()
+        || acp.models.len() > MAX_LIST
+        || acp.models.iter().any(|choice| {
+            !valid_acp_label(&choice.model)
+                || choice
+                    .variant
+                    .as_deref()
+                    .is_some_and(|variant| !valid_acp_label(variant))
+                || !models.insert(choice.model.as_str())
+        }) {
         Some("models")
     } else if frontmatter.agent_md.is_some() {
         Some("agent_md")

@@ -829,7 +829,7 @@ over the Agent Client Protocol (see the
 - Since 1.26.0 each entry of an agent's `runtimes` (and `runtime`) has
   `options`, the config options a new ACP session of the agent starts with
   on that runtime, as the daemon last saw them with the agent document's
-  `acp.mode` and `acp.config` applied, and `input_media`, the files the
+  `acp.mode`, `acp.config`, and `models` applied, and `input_media`, the files the
   agent takes in a prompt (`image`, `audio`, and `text` entries, as
   `input_media` on a model); both are empty until the agent has started
   there. A draft offers those options, the `model`-category one as its
@@ -837,7 +837,8 @@ over the Agent Client Protocol (see the
   as `session.create`'s `agent_options` (`[{ option_id, value }]`, at most
   64, each option once; refused for an agent that is not an ACP agent).
   The session records them as `acp_session_updated.starting_options`, and
-  each new ACP session of the session applies them after `acp.config`;
+  each new ACP session of the session applies them after `acp.config`
+  and the document's `models`;
   one the agent does not offer then is skipped with a diagnostic.
 - The display block `plan` (`entries`, each `content`, `status`
   `pending`/`in_progress`/`completed`, optional `priority`

@@ -135,7 +135,7 @@ command = ["y"]
 }
 
 #[test]
-fn an_acp_document_names_no_models_and_may_have_an_empty_body() {
+fn an_acp_document_may_have_an_empty_body() {
     let document = "---\ndescription: Codex on labpc\nmode: all\nacp:\n  mode: auto\n  config: { model: gpt-5 }\n  hide_tools: [read, \"exa_*\"]\npermissions:\n  bash: { \"git *\": allow }\n---\n";
     let loaded = load(
         "[runtimes.local.acp.agents.claude]\ncommand = [\"x\"]\n",
@@ -157,7 +157,6 @@ fn an_acp_document_names_no_models_and_may_have_an_empty_body() {
     );
 
     for (frontmatter, field) in [
-        ("models: [{ model: \"openai/gpt\" }]\nacp: {}\n", "models"),
         ("agent_md: true\nacp: {}\n", "agent_md"),
         ("acp: { mode: \"\" }\n", "acp"),
         ("acp: { hide_tools: [\"\"] }\n", "acp.hide_tools"),
@@ -204,4 +203,89 @@ fn the_global_runtime_hosts_no_agents() {
         &[],
     );
     assert!(error.contains("global"), "{error}");
+}
+
+fn acp_models(models: &str) -> Result<Vec<cookie_agent_config::AcpModelChoice>, String> {
+    let document =
+        format!("---\ndescription: Claude\nmode: all\nmodels: {models}\nacp: {{}}\n---\n");
+    load(
+        "[runtimes.local.acp.agents.claude]\ncommand = [\"x\"]\n",
+        &[("claude.md", &document)],
+    )
+    .map(|loaded| {
+        let document = &loaded.agents[&AgentId::new("claude").unwrap()];
+        assert!(document.frontmatter.models.is_empty());
+        document.frontmatter.acp.clone().expect("acp").models
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[test]
+fn an_acp_documents_models_name_the_agents_own_values() {
+    let choice = |model: &str, variant: Option<&str>| cookie_agent_config::AcpModelChoice {
+        model: model.to_owned(),
+        variant: variant.map(str::to_owned),
+    };
+    // The agent's own values, with no provider: a mapping, a null variant,
+    // and a plain string.
+    assert_eq!(
+        acp_models("[{ model: opus, variant: high }, { model: sonnet, variant: null }, haiku]")
+            .unwrap(),
+        [
+            choice("opus", Some("high")),
+            choice("sonnet", None),
+            choice("haiku", None),
+        ]
+    );
+    // A variable loads, kept for the engine's diagnostic.
+    let models = acp_models("[\"${default_model}\", opus]").unwrap();
+    assert_eq!(models[0].variable(), Some("${default_model}"));
+    assert_eq!(models[1].variable(), None);
+
+    for (models, needle) in [
+        (
+            "[{ model: opus, cache: { anthropic: {} } }]",
+            "unknown field `cache`",
+        ),
+        ("[{ model: opus, effort: high }]", "unknown field `effort`"),
+        ("[opus, opus]", "models"),
+        ("[\"\"]", "models"),
+        ("[{ model: opus, variant: \"\" }]", "models"),
+        ("opus", "malformed"),
+    ] {
+        let error = acp_models(models).expect_err(models);
+        assert!(error.contains(needle), "{models}: {error}");
+    }
+    let long = format!(
+        "[{}]",
+        (0..257)
+            .map(|n| format!("m{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert!(acp_models(&long).is_err());
+    assert_eq!(
+        acp_models(&format!(
+            "[{}]",
+            (0..256)
+                .map(|n| format!("m{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+        .unwrap()
+        .len(),
+        256
+    );
+}
+
+#[test]
+fn a_document_without_an_acp_block_still_names_cookies_model_keys() {
+    let error = rejected(
+        "",
+        &[(
+            "plain.md",
+            "---\ndescription: Plain\nmode: subagent\nmodels: [opus]\nacp: null\n---\nBody\n",
+        )],
+    );
+    assert!(error.contains("malformed"), "{error}");
 }
