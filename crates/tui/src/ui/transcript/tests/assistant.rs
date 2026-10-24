@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 #[cfg(unix)]
 use std::fs;
 
@@ -416,11 +414,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
         cookie_agent_engine::session::SessionStore::open(&data_dir, directory.path()).unwrap();
     let session_cost = format_cost_usd(
         engine_sessions
-            .session_usage(
-                session,
-                &cookie_agent_config::PricingConfig::default(),
-                &BTreeMap::new(),
-            )
+            .session_usage(session)
             .unwrap()
             .usage
             .estimated_cost_usd

@@ -3177,11 +3177,6 @@ impl SessionStore {
     pub fn session_usage(
         &self,
         id: SessionId,
-        pricing: &cookie_agent_config::PricingConfig,
-        catalog: &BTreeMap<
-            cookie_agent_protocol::ModelKey,
-            cookie_agent_models::catalog::CatalogModelCost,
-        >,
     ) -> Result<cookie_agent_protocol::SessionUsageResult, SessionError> {
         // Terminal run records are the source of truth once the tree is complete
         // and every run has closed (§3.4.1, review L14); before that the durable
@@ -3201,7 +3196,7 @@ impl SessionStore {
         }
         Ok(cookie_agent_protocol::SessionUsageResult {
             session_id: id,
-            usage: crate::usage::with_pricing(usage, pricing, catalog),
+            usage: crate::usage::with_pricing(usage),
         })
     }
 

@@ -210,11 +210,9 @@ pub(crate) fn merge(target: &mut UsageRollup, source: &UsageRollup) {
     }
 }
 
-pub(crate) fn with_pricing(
-    mut rollup: UsageRollup,
-    _pricing: &PricingConfig,
-    _catalog: &BTreeMap<ModelKey, CatalogModelCost>,
-) -> UsageRollup {
+/// `rollup` with its cache hit rates and the cost its observations were
+/// stamped with when they were recorded.
+pub(crate) fn with_pricing(mut rollup: UsageRollup) -> UsageRollup {
     rollup.cache_hit_rate = (!rollup.arithmetic_overflow)
         .then(|| {
             hit_rate(
@@ -255,18 +253,40 @@ pub(crate) fn with_pricing(
     rollup
 }
 
+/// Where a model's catalog cost comes from: the compiled runtime's models,
+/// looked up one at a time, or a map.
+pub(crate) trait CatalogCosts {
+    fn catalog_cost(&self, model: &ModelKey) -> Option<&CatalogModelCost>;
+}
+
+impl CatalogCosts for BTreeMap<ModelKey, CatalogModelCost> {
+    fn catalog_cost(&self, model: &ModelKey) -> Option<&CatalogModelCost> {
+        self.get(model)
+    }
+}
+
+impl CatalogCosts for cookie_agent_models::CompiledModelRuntime {
+    fn catalog_cost(&self, model: &ModelKey) -> Option<&CatalogModelCost> {
+        self.model(model)?.model.cost.as_ref()
+    }
+}
+
 pub(crate) fn estimated_cost_pico_usd(
     model: &ResolvedModelRef,
     usage: &Usage,
     pricing: &PricingConfig,
-    catalog: &BTreeMap<ModelKey, CatalogModelCost>,
+    catalog: &impl CatalogCosts,
 ) -> Option<u64> {
     let model_key = ModelKey::new(model.provider_id.clone(), model.model_id.clone()).ok()?;
     let rates = if let Some(rates) = pricing.models.get(&model_key) {
         *rates
     } else {
         let input_tokens = usage.input_tokens?;
-        catalog_rates(catalog.get(&model_key)?.rates_for_input(input_tokens))
+        catalog_rates(
+            catalog
+                .catalog_cost(&model_key)?
+                .rates_for_input(input_tokens),
+        )
     };
     let numerator = request_cost(usage, rates)?;
     let rounded_pico_usd = numerator
@@ -484,7 +504,7 @@ mod tests {
             &missing_usage,
             missing_cost,
         );
-        let missing = super::with_pricing(missing, &pricing, &BTreeMap::new());
+        let missing = super::with_pricing(missing);
         assert_eq!(missing.cache_hit_rate, None);
         assert_eq!(missing.estimated_cost_usd, None);
 
@@ -502,7 +522,7 @@ mod tests {
             &observed_usage,
             observed_cost,
         );
-        let observed_zero = super::with_pricing(observed_zero, &pricing, &BTreeMap::new());
+        let observed_zero = super::with_pricing(observed_zero);
         assert_eq!(observed_zero.cache_hit_rate, Some(0.0));
         assert_eq!(observed_zero.estimated_cost_usd, Some(0.00012));
 
@@ -521,7 +541,7 @@ mod tests {
             );
             super::record_stamped(&mut mixed, &model("fallback-zero"), &usage, cost);
         }
-        let mixed = super::with_pricing(mixed, &pricing, &BTreeMap::new());
+        let mixed = super::with_pricing(mixed);
         assert_eq!(mixed.cache_read_tokens, 800);
         assert_eq!(mixed.cache_hit_rate, Some(0.8));
     }
@@ -613,15 +633,10 @@ mod tests {
             );
         }
         assert_eq!(
-            super::with_pricing(fully_stamped, &PricingConfig::default(), &BTreeMap::new(),)
-                .estimated_cost_usd,
+            super::with_pricing(fully_stamped).estimated_cost_usd,
             Some(0.75)
         );
 
-        let key = "custom.test/fallback-zero".parse::<ModelKey>().unwrap();
-        let pricing = PricingConfig {
-            models: BTreeMap::from([(key, flat_rates("1", "2"))]),
-        };
         let mut stamped_unpriced = UsageRollup::default();
         super::record_stamped(
             &mut stamped_unpriced,
@@ -630,7 +645,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            super::with_pricing(stamped_unpriced, &pricing, &BTreeMap::new()).estimated_cost_usd,
+            super::with_pricing(stamped_unpriced).estimated_cost_usd,
             None
         );
     }
@@ -652,7 +667,7 @@ mod tests {
             );
             super::record_stamped(&mut rollup, &model("fallback-zero"), &usage, cost);
         }
-        let priced = super::with_pricing(rollup, &pricing, &BTreeMap::new());
+        let priced = super::with_pricing(rollup);
         assert_eq!(priced.estimated_cost_usd, Some(0.000000999999));
     }
 
@@ -671,23 +686,12 @@ mod tests {
             &BTreeMap::new(),
         );
         super::record_stamped(&mut rollup, &model("fallback-zero"), &usage, cost);
-        let priced = super::with_pricing(rollup, &pricing, &BTreeMap::new());
+        let priced = super::with_pricing(rollup);
         assert_eq!(priced.estimated_cost_usd, Some(0.000000000001));
     }
 
     #[test]
     fn token_and_currency_overflow_return_no_cost() {
-        let key = "custom.test/fallback-zero".parse::<ModelKey>().unwrap();
-        let pricing = PricingConfig {
-            models: BTreeMap::from([(
-                key,
-                ModelPricing {
-                    input_per_million_usd: Some(PicoUsdPerMillion::new(u128::MAX)),
-                    output_per_million_usd: Some(rate("1")),
-                    ..ModelPricing::default()
-                },
-            )]),
-        };
         let mut currency = UsageRollup::default();
         super::record_stamped(
             &mut currency,
@@ -695,10 +699,7 @@ mod tests {
             &reported(Some(2), Some(0), Some(0)),
             None,
         );
-        assert_eq!(
-            super::with_pricing(currency, &pricing, &BTreeMap::new()).estimated_cost_usd,
-            None
-        );
+        assert_eq!(super::with_pricing(currency).estimated_cost_usd, None);
 
         let mut tokens = UsageRollup::default();
         super::record_stamped(
@@ -714,10 +715,6 @@ mod tests {
             None,
         );
         assert!(tokens.arithmetic_overflow);
-        assert_eq!(
-            super::with_pricing(tokens, &PricingConfig::default(), &BTreeMap::new())
-                .estimated_cost_usd,
-            None
-        );
+        assert_eq!(super::with_pricing(tokens).estimated_cost_usd, None);
     }
 }

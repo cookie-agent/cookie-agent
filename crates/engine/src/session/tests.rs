@@ -19,7 +19,6 @@ use std::{
     },
 };
 
-use cookie_agent_config::{ModelPricing, PicoUsdPerMillion, PricingConfig};
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentRevision, AttemptId, CatalogRevision, ClientRunId, EventPayload,
     InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind,
@@ -3138,7 +3137,6 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
     let selection = crate::test_support::run_selection("test");
     let binding = agent.fallback_chain[0].decode().expect("test binding");
     let resolved_model = crate::model_history::wire_model(&binding);
-    let model_key = resolved_model.selection.model.clone();
     let runtime_revision = RuntimeRevision::new(format!("sha256:{}", "1".repeat(64))).unwrap();
     let catalog_revision = CatalogRevision::new(format!("sha256:{}", "2".repeat(64))).unwrap();
     let provider_state_revision =
@@ -3297,24 +3295,9 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
     assert_eq!(rebuilt.usage_rollup.output_tokens, 30);
     assert_eq!(rebuilt.usage_rollup.cache_read_tokens, 40);
     assert_eq!(rebuilt.usage_rollup.cache_write_tokens, 10);
-    let changed_pricing = PricingConfig {
-        models: BTreeMap::from([(
-            model_key.clone(),
-            ModelPricing {
-                input_per_million_usd: Some(PicoUsdPerMillion::from_decimal_str("999").unwrap()),
-                output_per_million_usd: Some(PicoUsdPerMillion::from_decimal_str("999").unwrap()),
-                ..ModelPricing::default()
-            },
-        )]),
-    };
     let expected = Some(footer_pico_usd as f64 / 1_000_000_000_000.0);
     assert_eq!(
-        crate::usage::with_pricing(
-            rebuilt.usage_rollup.clone(),
-            &PricingConfig::default(),
-            &BTreeMap::new(),
-        )
-        .estimated_cost_usd,
+        crate::usage::with_pricing(rebuilt.usage_rollup.clone()).estimated_cost_usd,
         expected
     );
 
@@ -3353,26 +3336,17 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
         )
         .unwrap();
     assert_eq!(
-        crate::usage::with_pricing(
-            store.get(stamped_fork).unwrap().usage_rollup.clone(),
-            &changed_pricing,
-            &BTreeMap::new(),
-        )
-        .estimated_cost_usd,
+        crate::usage::with_pricing(store.get(stamped_fork).unwrap().usage_rollup.clone())
+            .estimated_cost_usd,
         expected
     );
     assert_eq!(
-        crate::usage::with_pricing(
-            store.get(unpriced_fork).unwrap().usage_rollup.clone(),
-            &changed_pricing,
-            &BTreeMap::new(),
-        )
-        .estimated_cost_usd,
+        crate::usage::with_pricing(store.get(unpriced_fork).unwrap().usage_rollup.clone())
+            .estimated_cost_usd,
         None
     );
     assert_eq!(
-        crate::usage::with_pricing(rebuilt.usage_rollup, &changed_pricing, &BTreeMap::new(),)
-            .estimated_cost_usd,
+        crate::usage::with_pricing(rebuilt.usage_rollup).estimated_cost_usd,
         expected
     );
 }
@@ -3617,30 +3591,8 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
     let rebuilt = projection(reopened).unwrap();
     assert_eq!(rebuilt.usage_rollup.request_count, 5);
     assert_eq!(rebuilt.usage_rollup.input_tokens, 503);
-    let rate = PicoUsdPerMillion::from_decimal_str("1").unwrap();
-    let pricing = PricingConfig {
-        models: BTreeMap::from([
-            (
-                resolved_model.selection.model,
-                ModelPricing {
-                    input_per_million_usd: Some(rate),
-                    output_per_million_usd: Some(rate),
-                    ..ModelPricing::default()
-                },
-            ),
-            (
-                fallback_model.selection.model,
-                ModelPricing {
-                    input_per_million_usd: Some(rate),
-                    output_per_million_usd: Some(rate),
-                    ..ModelPricing::default()
-                },
-            ),
-        ]),
-    };
     assert_eq!(
-        crate::usage::with_pricing(rebuilt.usage_rollup, &pricing, &BTreeMap::new())
-            .estimated_cost_usd,
+        crate::usage::with_pricing(rebuilt.usage_rollup).estimated_cost_usd,
         None
     );
 }
@@ -4251,11 +4203,7 @@ fn aborted_commit_without_usage_does_not_poison_the_usage_rollup() {
     );
     assert_eq!(rebuilt.usage_rollup.input_tokens, 120);
     assert_eq!(rebuilt.usage_rollup.output_tokens, 30);
-    let priced = crate::usage::with_pricing(
-        rebuilt.usage_rollup,
-        &PricingConfig::default(),
-        &BTreeMap::new(),
-    );
+    let priced = crate::usage::with_pricing(rebuilt.usage_rollup);
     assert_eq!(
         priced.estimated_cost_usd,
         Some(1.0),
@@ -4269,11 +4217,7 @@ fn completed_commit_without_usage_still_counts_as_an_unpriced_request() {
     // reporting usage leaves the session cost unknown rather than understated.
     let rebuilt = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Stop);
     assert_eq!(rebuilt.usage_rollup.request_count, 2);
-    let priced = crate::usage::with_pricing(
-        rebuilt.usage_rollup,
-        &PricingConfig::default(),
-        &BTreeMap::new(),
-    );
+    let priced = crate::usage::with_pricing(rebuilt.usage_rollup);
     assert_eq!(priced.estimated_cost_usd, None);
 }
 

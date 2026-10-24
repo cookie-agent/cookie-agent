@@ -2265,7 +2265,7 @@ impl Engine {
                             &resolved_model,
                             &turn.usage,
                             &self.inner.config.load().runtime.pricing,
-                            &self.catalog_pricing(),
+                            &*self.inner.model_manager.current(),
                         );
                         let model_turn_seq = self.next_model_turn_seq(session)?;
                         self.append(

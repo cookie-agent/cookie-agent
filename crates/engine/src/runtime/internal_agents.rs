@@ -237,7 +237,7 @@ impl Engine {
                         &resolved_model,
                         &usage,
                         &self.inner.config.load().runtime.pricing,
-                        &self.catalog_pricing(),
+                        &*self.inner.model_manager.current(),
                     );
                     self.append_internal_agent_event(
                         session,

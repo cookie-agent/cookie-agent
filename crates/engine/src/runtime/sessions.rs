@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 
@@ -367,12 +367,7 @@ impl Engine {
         (receiver, release)
     }
     pub fn session_usage(&self, id: SessionId) -> Result<SessionUsageResult, EngineError> {
-        let catalog = self.catalog_pricing();
-        Ok(self.inner.store.session_usage(
-            id,
-            &self.inner.config.load().runtime.pricing,
-            &catalog,
-        )?)
+        Ok(self.inner.store.session_usage(id)?)
     }
     pub fn session_tree_usage(&self, id: SessionId) -> Result<SessionTreeUsageResult, EngineError> {
         // A cold root's index is only a cache. Complete the tree before using
@@ -402,31 +397,9 @@ impl Engine {
         let session_count = merge_session_tree_usage(id, &children, &rollups, &mut usage)?;
         Ok(SessionTreeUsageResult {
             session_id: id,
-            usage: crate::usage::with_pricing(
-                usage,
-                &self.inner.config.load().runtime.pricing,
-                &self.catalog_pricing(),
-            ),
+            usage: crate::usage::with_pricing(usage),
             session_count,
         })
-    }
-    pub(super) fn catalog_pricing(
-        &self,
-    ) -> BTreeMap<cookie_agent_protocol::ModelKey, cookie_agent_models::catalog::CatalogModelCost>
-    {
-        self.inner
-            .model_manager
-            .current()
-            .models()
-            .iter()
-            .filter_map(|(model, runtime)| {
-                runtime
-                    .model
-                    .cost
-                    .as_ref()
-                    .map(|cost| (model.clone(), cost.clone()))
-            })
-            .collect()
     }
     pub fn delegate_targets(&self, id: SessionId) -> Result<Vec<AgentId>, EngineError> {
         let session = self.inner.store.get(id)?;
