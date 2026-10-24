@@ -18,7 +18,9 @@ permissions:
   "contents": "read"
 
 # Publishing is called by CI only after every required check passes for the
-# same commit. Pull requests still get the cargo-dist plan preview.
+# same commit: for a published stable release, and for the nightly, which
+# CI's daily schedule publishes from main's head at most once a day (see
+# RELEASING.md). Pull requests still get the cargo-dist plan preview.
 on:
   pull_request:
   workflow_call:
@@ -28,7 +30,8 @@ on:
 
 concurrency:
   group: release-${{ github.event.pull_request.number || github.ref }}
-  # Publication has external effects; a newer push must not interrupt it.
+  # Publication has external effects; a later run must not interrupt it.
+  # Nightlies come once a day, so nothing queues behind one in practice.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -199,8 +202,15 @@ jobs:
       - name: Build artifacts
         # Hand-maintained (allow-dirty = ["ci"]): bash on every runner — the
         # cargo metadata pre-step below uses /dev/null, which pwsh misreads.
+        # A stable release builds `profile.dist` as Cargo.toml has it (fat
+        # LTO, one codegen unit); a nightly overrides it with thin LTO and 16
+        # codegen units, which builds about twice as fast for a binary about
+        # 30% larger (RELEASING.md has the measurements).
         shell: bash
         run: |
+          if [[ "$GITHUB_EVENT_NAME" != release ]]; then
+            export CARGO_PROFILE_DIST_LTO=thin CARGO_PROFILE_DIST_CODEGEN_UNITS=16
+          fi
           cargo metadata --locked --format-version=1 > /dev/null
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json

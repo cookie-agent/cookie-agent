@@ -45,7 +45,8 @@ for your platform, verify its checksum, extract it, and place `cookie` or
 
 ## Nightly builds
 
-Every push to `main` creates a timestamped `v*-alpha.<timestamp>` prerelease with
+Once a day, when `main` changed since the last nightly and passes every check,
+CI publishes it as a timestamped `v*-alpha.<timestamp>` prerelease with
 archives for all seven targets. Nightly prereleases are retained for about two
 weeks, with at least the newest three always kept. They are intended for
 testing; run `cookie --version` to see the source commit hash embedded in the

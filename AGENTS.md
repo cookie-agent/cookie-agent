@@ -78,8 +78,8 @@ Rust than 1.88, or release metadata.
 
 Pushes that change only `docs/**`, Markdown files, or `mkdocs.yml` skip the
 CI workflow (the Documentation workflow still builds the site), except for
-the pages the tests above keep in step with the code. A documentation-only
-commit on `main` therefore publishes no prerelease.
+the pages the tests above keep in step with the code. Pushes publish no
+prerelease: the nightly comes from CI's daily run on `main` (`RELEASING.md`).
 
 ## Gates
 

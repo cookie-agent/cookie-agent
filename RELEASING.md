@@ -48,11 +48,40 @@ at the first missing crate.
 
 ## Nightly release
 
-The cargo-dist release workflow runs in release-branch mode. Every push to
-`main` builds all seven targets and creates a timestamped
-`vX.Y.Z-alpha.<timestamp>` prerelease with shell and PowerShell installers. Each
-binary includes the source commit in `cookie --version`, and superseded
-in-progress runs are cancelled.
+The cargo-dist release workflow runs in release-branch mode. CI publishes at
+most one nightly a day: its schedule (`.github/workflows/ci.yml`, 05:30 UTC)
+runs every check on `main`'s head, and when they pass and that commit is not
+already the newest nightly's, it calls the release workflow, which builds all
+seven targets and creates a timestamped `vX.Y.Z-alpha.<timestamp>` prerelease
+with shell and PowerShell installers. Each binary includes the source commit
+in `cookie --version`.
+
+Pushes to `main` run the same checks and publish nothing, so a commit is
+published only by a run that checked it. A day without new commits publishes
+nothing (the `Nightly due` job says why). To publish `main` sooner, dispatch
+the CI workflow on `main` by hand (`gh workflow run ci.yml --ref main`); it
+publishes under the same rules. A dispatch on any other branch runs the checks
+only.
+
+Nightlies trade binary size for build time. A stable release builds the
+`dist` profile as `Cargo.toml` has it, fat LTO with one codegen unit; a
+nightly overrides it with `CARGO_PROFILE_DIST_LTO=thin` and
+`CARGO_PROFILE_DIST_CODEGEN_UNITS=16` in the `Build artifacts` step.
+
+Measured on 2026-10-24 with `cargo build --profile dist -p cookie_agent`
+(Linux x86_64, dependencies already built, as with CI's warm cache; the
+workspace crates rebuilt with `-j 4` on four cores, about a CI runner):
+
+| `lto` | `codegen-units` | Build | Binary |
+| --- | --- | --- | --- |
+| `fat` | 1 (stable releases) | 1008 s | 68.0 MB |
+| `fat` | 16 | 968 s | 75.7 MB |
+| `thin` | 1 | 609 s | 72.6 MB |
+| `thin` | 16 (nightlies) | 468 s | 88.5 MB |
+
+Fat LTO's single-threaded link is the cost, whatever the codegen units; thin
+LTO with 16 units halves the build. A nightly is for testing and pruned
+within two weeks, so its extra 20 MB is the cheaper side of that trade.
 
 `.github/workflows/nightly-prune.yml` runs each Sunday at 04:00 UTC and can be
 dispatched manually. It deletes nightly alpha releases and their tags after 14
@@ -66,11 +95,12 @@ protects the maintained edits. Move the workflow aside, temporarily remove the
 `allow-dirty` entry, run `dist generate --mode=ci`, restore `allow-dirty`, then
 reapply and review these edits:
 
-- Plan published `release` events with `--tag=<release tag>` and branch
-  pushes with `--tag=timestamp --force-tag`.
+- Plan published `release` events with `--tag=<release tag>` and every
+  other call (CI's daily nightly) with `--tag=timestamp --force-tag`.
 - In the `host` job, upload to the existing release for `release` events and
-  keep `gh release create` for branch nightlies.
-- Set generated workflow concurrency to `cancel-in-progress: true`.
+  keep `gh release create` for nightlies.
+- Keep the workflow concurrency group, cancelling in progress for pull
+  requests only: a publishing run is never interrupted.
 - Keep root `contents: read` permissions and grant `contents: write` only to the
   `host` job that creates or fills the GitHub release.
 - Install the pinned `dtolnay/rust-toolchain` action with toolchain `1.88.0`
@@ -80,7 +110,9 @@ reapply and review these edits:
 - Set `retention-days: 2` on every dist scratch `upload-artifact` step: the dist
   cache, plan manifest, local artifacts, global artifacts, and final manifest.
 - Set `COOKIE_GIT_HASH: ${{ github.sha }}` in `build-local-artifacts`.
-- Run `cargo metadata --locked --format-version=1` before `dist build`.
+- Run `cargo metadata --locked --format-version=1` before `dist build`, and
+  before it, outside `release` events, export `CARGO_PROFILE_DIST_LTO=thin`
+  and `CARGO_PROFILE_DIST_CODEGEN_UNITS=16` (the nightly profile above).
 - Keep the secret scan step after `Build artifacts`: on the
   `x86_64-unknown-linux-gnu` build it unpacks that archive and runs
   `release_binary_contains_no_secret_material` on the `cookie` binary inside

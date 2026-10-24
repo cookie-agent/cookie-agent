@@ -22,13 +22,20 @@ on:
     paths: *code-paths
   release:
     types: [published]
+  # The nightly: at most one prerelease a day, from main's head once this
+  # run passed every check (see the `nightly` and `release` jobs and
+  # RELEASING.md). Pushes to main run the checks but publish nothing. A
+  # manual dispatch on main publishes the same way, outside the schedule.
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # A newer push to a branch other than main, or to a pull request, stops the
-# run it supersedes. Runs on main and stable releases each get a group of
-# their own and always finish.
+# run it supersedes. Runs on main, scheduled and dispatched ones included,
+# and stable releases each get a group of their own and always finish.
 concurrency:
   group: ci-${{ github.event_name }}-${{ (github.ref == 'refs/heads/main' || github.event_name == 'release') && github.run_id || github.ref }}
   cancel-in-progress: true
@@ -241,10 +248,47 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
+  # Whether the scheduled or dispatched run publishes a nightly: only when
+  # main's head is not already the newest nightly's commit. The schedule
+  # fires once a day, so at most one nightly a day publishes on its own.
+  nightly:
+    name: Nightly due
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      due: ${{ steps.due.outputs.due }}
+    steps:
+      - id: due
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Nightly tags as nightly-prune.yml matches them; the releases API
+          # lists the newest first.
+          last=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" --jq \
+            '[.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-alpha\\.[0-9]+$"))][0].tag_name // empty')
+          commit=
+          if [[ -n "$last" ]]; then
+            commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$last" --jq .sha)
+          fi
+          if [[ "$commit" == "$GITHUB_SHA" ]]; then
+            echo "::notice::No nightly: $last already publishes ${GITHUB_SHA:0:9}."
+            echo due=false >> "$GITHUB_OUTPUT"
+          else
+            echo "Newest nightly: ${last:-none} (${commit:0:9}); main is at ${GITHUB_SHA:0:9}."
+            echo due=true >> "$GITHUB_OUTPUT"
+          fi
+
+  # A stable release, or the day's nightly, once every check passed for
+  # this commit.
   release:
     name: Release validated commit
-    needs: [stable, msrv, wasm, web, windows]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
+    needs: [stable, msrv, wasm, web, windows, nightly]
+    if: >-
+      !cancelled()
+      && needs.stable.result == 'success' && needs.msrv.result == 'success'
+      && needs.wasm.result == 'success' && needs.web.result == 'success'
+      && needs.windows.result == 'success'
+      && (github.event_name == 'release' || needs.nightly.outputs.due == 'true')
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml

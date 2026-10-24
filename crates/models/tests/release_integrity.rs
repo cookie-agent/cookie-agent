@@ -476,7 +476,7 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "cargo test --doc --workspace --locked",
         "cargo clippy --locked --target wasm32-unknown-unknown -p cookie_agent_web --all-targets -- -D warnings",
         "scripts/build-web.sh",
-        "needs: [stable, msrv, wasm, web, windows]",
+        "needs: [stable, msrv, wasm, web, windows, nightly]",
     ] {
         assert!(
             workflow.contains(required),
