@@ -1037,11 +1037,11 @@ pub struct ModelMutationResult<P> {
     pub publication: Option<P>,
 }
 
-/// Atomic manager for current and retained exact compiled model runtimes.
+/// Atomic manager for the current exact compiled model runtime. A run keeps
+/// the runtime it resolved against alive itself, through its `Arc`.
 pub struct ModelManager {
     store: ProviderStore,
     current: ArcSwap<CompiledModelRuntime>,
-    retained: ArcSwap<BTreeMap<ModelRevision, Vec<Arc<CompiledModelRuntime>>>>,
     mutation: Mutex<()>,
 }
 
@@ -1068,14 +1068,9 @@ impl ModelManager {
             catalog,
             store_snapshot,
         )?);
-        let retained = Arc::new(BTreeMap::from([(
-            initial.model_revision.clone(),
-            vec![Arc::clone(&initial)],
-        )]));
         Ok(Self {
             store,
             current: ArcSwap::from(initial),
-            retained: ArcSwap::from(retained),
             mutation: Mutex::new(()),
         })
     }
@@ -1083,24 +1078,6 @@ impl ModelManager {
     #[must_use]
     pub fn current(&self) -> Arc<CompiledModelRuntime> {
         self.current.load_full()
-    }
-
-    #[must_use]
-    pub fn retained(&self, revision: &ModelRevision) -> Option<Arc<CompiledModelRuntime>> {
-        self.retained
-            .load()
-            .get(revision)
-            .and_then(|snapshots| snapshots.last())
-            .cloned()
-    }
-
-    #[must_use]
-    pub fn retained_all(&self, revision: &ModelRevision) -> Vec<Arc<CompiledModelRuntime>> {
-        self.retained
-            .load()
-            .get(revision)
-            .cloned()
-            .unwrap_or_default()
     }
 
     pub fn connect<P>(
@@ -1137,10 +1114,8 @@ impl ModelManager {
                 )?);
                 let mutation = proposal.mutation().clone();
                 let publication = prepare_publication(&candidate, &mutation)?;
-                let retained = prepared_retained(&self.retained.load_full(), &candidate);
                 let effective_auth = effective_auth_for(&candidate, mutation_provider(&mutation));
                 transaction.commit(*proposal).map_err(map_commit_error)?;
-                self.retained.store(retained);
                 self.current.store(Arc::clone(&candidate));
                 Ok(ModelMutationResult {
                     mutation,
@@ -1201,10 +1176,8 @@ impl ModelManager {
                 )?);
                 let mutation = proposal.mutation().clone();
                 let publication = prepare_publication(&candidate, &mutation)?;
-                let retained = prepared_retained(&self.retained.load_full(), &candidate);
                 let effective_auth = effective_auth_for(&candidate, mutation_provider(&mutation));
                 transaction.commit(*proposal).map_err(map_commit_error)?;
-                self.retained.store(retained);
                 self.current.store(Arc::clone(&candidate));
                 Ok(ModelMutationResult {
                     mutation,
@@ -1235,8 +1208,6 @@ impl ModelManager {
             store,
         )?);
         let publication = prepare_publication(&candidate)?;
-        let retained = prepared_retained(&self.retained.load_full(), &candidate);
-        self.retained.store(retained);
         self.current.store(Arc::clone(&candidate));
         Ok(Some((candidate, publication)))
     }
@@ -1277,8 +1248,6 @@ impl ModelManager {
             store,
         )?);
         let publication = prepare_publication(&candidate)?;
-        let retained = prepared_retained(&self.retained.load_full(), &candidate);
-        self.retained.store(retained);
         self.current.store(Arc::clone(&candidate));
         Ok((candidate, publication))
     }
@@ -1289,7 +1258,6 @@ impl fmt::Debug for ModelManager {
         formatter
             .debug_struct("ModelManager")
             .field("current", &self.current())
-            .field("retained", &self.retained.load().len())
             .finish_non_exhaustive()
     }
 }
@@ -2640,18 +2608,6 @@ fn oven_capabilities(
                 && value.native_replay != crate::ReplayCapability::Unsupported,
         },
     })
-}
-
-fn prepared_retained(
-    current: &Arc<BTreeMap<ModelRevision, Vec<Arc<CompiledModelRuntime>>>>,
-    candidate: &Arc<CompiledModelRuntime>,
-) -> Arc<BTreeMap<ModelRevision, Vec<Arc<CompiledModelRuntime>>>> {
-    let mut retained = current.as_ref().clone();
-    retained
-        .entry(candidate.model_revision.clone())
-        .or_default()
-        .push(Arc::clone(candidate));
-    Arc::new(retained)
 }
 
 #[cfg(test)]

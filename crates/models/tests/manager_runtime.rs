@@ -1343,7 +1343,6 @@ fn same_id_replays_and_secret_rotation_preserves_safe_model_revision_and_snapsho
         .connect(connect_request("rotate", "two", &catalog), |_, _| Ok(()))
         .unwrap();
     assert_eq!(manager.current().model_revision(), &safe_revision);
-    assert_eq!(manager.retained_all(&safe_revision).len(), 2);
     let new_handle = Arc::clone(manager.current().resolve(&selection).unwrap().model());
     assert!(!Arc::ptr_eq(&old_handle, &new_handle));
     assert!(Arc::ptr_eq(
