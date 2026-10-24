@@ -424,10 +424,11 @@ format unchanged: the frozen `ParentModel` fallback gained an optional
   kit, since nightlies are tagged `v<version>-alpha.<n>` while the crate
   version is a plain `<version>`; then `<releases>/latest/download/…`, the
   latest stable release. A rate limit or any other failure of the list
-  moves on to the next step; when every step fails the kit is unavailable,
+  moves on to the next step, and the list is not asked for again for a
+  minute; a list over 4 MiB is a failure. When every step fails the kit is unavailable,
   with each step's reason. The base URL is injectable
   (`Engine::set_releases_url`; a non-GitHub base serves its list at
-  `<base>/api`) and tests serve kits and lists from a local HTTP server. A downloaded kit is kept ten minutes for the run after a preview.
+  `<base>/api`) and tests serve kits and lists from a local HTTP server. A downloaded kit is kept ten minutes for the run after a preview, then dropped.
 - **Deviation:** an uploaded archive travels inline, base64 in the
   `source` (`{"type": "archive", "data": …}`, at most 1 MiB), not through
   an upload lease: upload leases belong to a session's tree and accept only

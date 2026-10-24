@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use cookie_agent_config::{ConfigPath, ConfigTree, load_from_tree};
 use sha2::{Digest as _, Sha256};
@@ -499,7 +503,16 @@ async fn serve(routes: BTreeMap<String, Vec<u8>>) -> String {
 /// [`serve`] with routes built from the server's own origin
 /// (`http://127.0.0.1:<port>`), each with its status.
 async fn serve_with(build: impl FnOnce(&str) -> BTreeMap<String, (u16, Vec<u8>)>) -> String {
+    serve_logged(build).await.0
+}
+
+/// [`serve_with`], and the paths requested, in order.
+async fn serve_logged(
+    build: impl FnOnce(&str) -> BTreeMap<String, (u16, Vec<u8>)>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let requested = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&requested);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener");
@@ -511,6 +524,7 @@ async fn serve_with(build: impl FnOnce(&str) -> BTreeMap<String, (u16, Vec<u8>)>
                 return;
             };
             let routes = routes.clone();
+            let log = Arc::clone(&log);
             tokio::spawn(async move {
                 let mut request = Vec::new();
                 let mut buffer = [0; 1024];
@@ -522,6 +536,7 @@ async fn serve_with(build: impl FnOnce(&str) -> BTreeMap<String, (u16, Vec<u8>)>
                 }
                 let request = String::from_utf8_lossy(&request);
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                log.lock().unwrap().push(path.clone());
                 let response = match routes.get(&path) {
                     Some((status, body)) => {
                         let mut response = format!(
@@ -541,7 +556,7 @@ async fn serve_with(build: impl FnOnce(&str) -> BTreeMap<String, (u16, Vec<u8>)>
             });
         }
     });
-    format!("http://{address}/releases")
+    (format!("http://{address}/releases"), requested)
 }
 
 #[tokio::test]
@@ -733,6 +748,77 @@ async fn a_rate_limited_release_list_falls_back_to_the_latest_release() {
         panic!("{error:?}");
     };
     assert!(reason.contains("HTTP 403"), "{reason}");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_release_list_that_failed_is_not_asked_for_again_at_once() {
+    let fixture = fixture();
+    let (base, requested) = serve_logged(|_| {
+        BTreeMap::from([
+            (
+                "/releases/api".to_owned(),
+                (403, br#"{"message":"API rate limit exceeded"}"#.to_vec()),
+            ),
+            (
+                "/releases/latest/download/cookie-agent-defaults.tar.gz".to_owned(),
+                (200, archive()),
+            ),
+        ])
+    })
+    .await;
+    for _ in 0..2 {
+        // Setting the URL drops the kit kept, so each preview downloads.
+        fixture.engine.set_releases_url(&base);
+        let preview = fixture
+            .engine
+            .preview_kit(KitSource::Release)
+            .await
+            .expect("the latest release's kit");
+        assert!(
+            preview
+                .origin
+                .ends_with("/latest/download/cookie-agent-defaults.tar.gz")
+        );
+    }
+    let requested = requested.lock().unwrap().clone();
+    assert_eq!(
+        requested
+            .iter()
+            .filter(|path| path.as_str() == "/releases/api")
+            .count(),
+        1,
+        "{requested:?}"
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_release_list_over_the_size_limit_is_not_read() {
+    let fixture = fixture();
+    let base = serve_with(|_| {
+        BTreeMap::from([(
+            "/releases/api".to_owned(),
+            (200, vec![b' '; super::MAX_RELEASE_LIST_BYTES + 1]),
+        )])
+    })
+    .await;
+    fixture.engine.set_releases_url(&base);
+    let error = fixture
+        .engine
+        .preview_kit(KitSource::Release)
+        .await
+        .expect_err("no kit anywhere");
+    let EngineError::OnboardingKit(KitError::Unavailable(reason)) = error else {
+        panic!("{error:?}");
+    };
+    assert!(
+        reason.contains(&format!(
+            "the release list is larger than {} bytes",
+            super::MAX_RELEASE_LIST_BYTES
+        )),
+        "{reason}"
+    );
     fixture.engine.shutdown().await;
 }
 

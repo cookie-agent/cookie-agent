@@ -28,6 +28,10 @@ use crate::{Engine, EngineError};
 pub const RELEASES_URL: &str = "https://github.com/cookie-agent/cookie-agent/releases";
 /// How long a downloaded kit is kept for the run that follows its preview.
 const KIT_CACHE: Duration = Duration::from_secs(10 * 60);
+/// How long a release list that could not be read is not asked for again.
+const RELEASE_LIST_FAILURE_CACHE: Duration = Duration::from_secs(60);
+/// The largest release list read.
+const MAX_RELEASE_LIST_BYTES: usize = 4 * 1024 * 1024;
 
 /// What onboarding still needs.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -103,16 +107,27 @@ pub struct OnboardingOutcome {
 /// The kit fetching state of the engine.
 pub(crate) struct OnboardingRuntimeState {
     releases_url: Mutex<String>,
-    cached: Mutex<Option<CachedKit>>,
+    /// Shared with the timer that drops it once it expires.
+    cached: Arc<Mutex<Option<CachedKit>>>,
+    /// The last release list that could not be read, so a retry within
+    /// [`RELEASE_LIST_FAILURE_CACHE`] does not ask again.
+    list_failure: Mutex<Option<ListFailure>>,
 }
 
 impl Default for OnboardingRuntimeState {
     fn default() -> Self {
         Self {
             releases_url: Mutex::new(RELEASES_URL.to_owned()),
-            cached: Mutex::new(None),
+            cached: Arc::default(),
+            list_failure: Mutex::new(None),
         }
     }
+}
+
+struct ListFailure {
+    at: Instant,
+    api: String,
+    error: String,
 }
 
 struct CachedKit {
@@ -335,34 +350,57 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        if let Some(cached) = self
-            .inner
-            .onboarding
-            .cached
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .filter(|cached| {
-                cached.releases_url == releases_url && cached.fetched.elapsed() < KIT_CACHE
-            })
         {
-            return Ok((cached.origin.clone(), Arc::clone(&cached.kit)));
+            let mut cached = self
+                .inner
+                .onboarding
+                .cached
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if cached
+                .as_ref()
+                .is_some_and(|cached| cached.fetched.elapsed() >= KIT_CACHE)
+            {
+                *cached = None;
+            }
+            if let Some(cached) = cached
+                .as_ref()
+                .filter(|cached| cached.releases_url == releases_url)
+            {
+                return Ok((cached.origin.clone(), Arc::clone(&cached.kit)));
+            }
         }
-        let (origin, bytes) = download_release_kit(&releases_url).await?;
+        let (origin, bytes) =
+            download_release_kit(&releases_url, &self.inner.onboarding.list_failure).await?;
         let kit = super::blocking_io::run(move || Kit::from_archive(&bytes))
             .await
             .map_err(|error| EngineError::Runtime(error.to_string()))??;
         let kit = Arc::new(kit);
+        let fetched = Instant::now();
         *self
             .inner
             .onboarding
             .cached
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(CachedKit {
-            fetched: Instant::now(),
+            fetched,
             releases_url,
             origin: origin.clone(),
             kit: Arc::clone(&kit),
+        });
+        // The kit is large: it goes once it expires rather than staying until
+        // the next download replaces it.
+        let cached = Arc::downgrade(&self.inner.onboarding.cached);
+        tokio::spawn(async move {
+            tokio::time::sleep(KIT_CACHE).await;
+            if let Some(cached) = cached.upgrade() {
+                let mut cached = cached
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if cached.as_ref().is_some_and(|kit| kit.fetched == fetched) {
+                    *cached = None;
+                }
+            }
         });
         Ok((origin, kit))
     }
@@ -378,7 +416,10 @@ impl Engine {
 ///
 /// The list is one unauthenticated page of the GitHub API; a rate limit or
 /// any other failure there moves on to the next step.
-async fn download_release_kit(releases_url: &str) -> Result<(String, Vec<u8>), KitError> {
+async fn download_release_kit(
+    releases_url: &str,
+    list_failure: &Mutex<Option<ListFailure>>,
+) -> Result<(String, Vec<u8>), KitError> {
     let unavailable = |reason: String| KitError::Unavailable(reason);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(5))
@@ -400,7 +441,7 @@ async fn download_release_kit(releases_url: &str) -> Result<(String, Vec<u8>), K
         Err(KitError::TooLarge) => return Err(KitError::TooLarge),
         Err(error) => failures.push(error.to_string()),
     }
-    match prerelease_kit_url(&client, &releases_api_url(base), env!("CARGO_PKG_VERSION")).await {
+    match cached_prerelease_kit_url(&client, &releases_api_url(base), list_failure).await {
         Ok(Some(url)) => match download(&client, &url).await {
             Ok(Some(bytes)) => return Ok((url, bytes)),
             Ok(None) => failures.push(format!("{url}: not found")),
@@ -441,6 +482,34 @@ fn releases_api_url(base: &str) -> String {
     }
 }
 
+/// [`prerelease_kit_url`] for this build's version, unless the list at `api`
+/// could not be read within the last [`RELEASE_LIST_FAILURE_CACHE`]: then
+/// that failure again, without asking.
+async fn cached_prerelease_kit_url(
+    client: &reqwest::Client,
+    api: &str,
+    list_failure: &Mutex<Option<ListFailure>>,
+) -> Result<Option<String>, String> {
+    let lock = || {
+        list_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    };
+    if let Some(failure) = lock()
+        .as_ref()
+        .filter(|failure| failure.api == api && failure.at.elapsed() < RELEASE_LIST_FAILURE_CACHE)
+    {
+        return Err(failure.error.clone());
+    }
+    let found = prerelease_kit_url(client, api, env!("CARGO_PKG_VERSION")).await;
+    *lock() = found.as_ref().err().map(|error| ListFailure {
+        at: Instant::now(),
+        api: api.to_owned(),
+        error: error.clone(),
+    });
+    found
+}
+
 /// The download URL of the kit of the newest release in the list at `api`
 /// whose tag is `version`, or a pre-release of it, and which carries the
 /// kit; `None` when no release does.
@@ -464,7 +533,7 @@ async fn prerelease_kit_url(
         name: String,
         browser_download_url: String,
     }
-    let response = client
+    let mut response = client
         .get(api)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
@@ -473,10 +542,25 @@ async fn prerelease_kit_url(
     if !response.status().is_success() {
         return Err(format!("{api}: HTTP {}", response.status()));
     }
-    let body = response
-        .bytes()
+    let too_large =
+        || format!("{api}: the release list is larger than {MAX_RELEASE_LIST_BYTES} bytes");
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RELEASE_LIST_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| format!("{api}: {error}"))?;
+        .map_err(|error| format!("{api}: {error}"))?
+    {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_RELEASE_LIST_BYTES {
+            return Err(too_large());
+        }
+    }
     let mut releases = serde_json::from_slice::<Vec<Release>>(&body)
         .map_err(|error| format!("{api}: the release list does not read: {error}"))?;
     // Newest first, as the API lists them; published_at settles it when the
