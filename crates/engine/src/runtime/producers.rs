@@ -475,6 +475,7 @@ impl Engine {
                 .entry(session)
                 .or_default()
                 .wake_scheduled = false;
+            self.subagent_changed(session);
         }
         Ok(())
     }
@@ -537,6 +538,7 @@ impl Engine {
                 .entry(session)
                 .or_default()
                 .wake_scheduled = false;
+            self.subagent_changed(session);
             return Ok(());
         }
         let events = projection.log.event_snapshot();
@@ -607,6 +609,7 @@ impl Engine {
                         state.preempted = false;
                         preempted
                     };
+                    engine.subagent_changed(session);
                     if successful || preempted {
                         engine.reconcile_producers_direct(session, None)
                     } else {

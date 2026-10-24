@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+    sync::{Arc, LockResult, Mutex, MutexGuard, PoisonError},
+};
 
 use cookie_agent_protocol::{
     ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult,
@@ -10,6 +14,81 @@ use super::{
     approval_projection::{approval_records, approval_run_id},
     helpers::safe_error,
 };
+
+/// The runs whose tasks are live, by run. A run taken out signals
+/// [`Self::subscribe_released`], so a wait for a run to wind down needs no
+/// polling.
+pub(super) struct ActiveRuns {
+    runs: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
+    released: tokio::sync::watch::Sender<()>,
+}
+
+impl Default for ActiveRuns {
+    fn default() -> Self {
+        Self {
+            runs: Mutex::new(HashMap::new()),
+            released: tokio::sync::watch::channel(()).0,
+        }
+    }
+}
+
+impl ActiveRuns {
+    /// Locks the runs, like [`Mutex::lock`].
+    pub(super) fn lock(&self) -> LockResult<ActiveRunsGuard<'_>> {
+        self.runs
+            .lock()
+            .map(|runs| self.guard(runs))
+            .map_err(|poisoned| PoisonError::new(self.guard(poisoned.into_inner())))
+    }
+
+    fn guard<'a>(
+        &'a self,
+        runs: MutexGuard<'a, HashMap<RunId, Arc<ActiveRun>>>,
+    ) -> ActiveRunsGuard<'a> {
+        ActiveRunsGuard {
+            held: runs.len(),
+            runs,
+            released: &self.released,
+        }
+    }
+
+    /// A receiver signalled whenever a run leaves; subscribe before checking
+    /// the runs, so a run that leaves in between still wakes the wait.
+    pub(super) fn subscribe_released(&self) -> tokio::sync::watch::Receiver<()> {
+        self.released.subscribe()
+    }
+}
+
+/// The locked runs; unlocking signals the runs' release when it took one
+/// out.
+pub(super) struct ActiveRunsGuard<'a> {
+    runs: MutexGuard<'a, HashMap<RunId, Arc<ActiveRun>>>,
+    /// How many runs there were when locked.
+    held: usize,
+    released: &'a tokio::sync::watch::Sender<()>,
+}
+
+impl Deref for ActiveRunsGuard<'_> {
+    type Target = HashMap<RunId, Arc<ActiveRun>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runs
+    }
+}
+
+impl DerefMut for ActiveRunsGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runs
+    }
+}
+
+impl Drop for ActiveRunsGuard<'_> {
+    fn drop(&mut self) {
+        if self.runs.len() < self.held {
+            self.released.send_replace(());
+        }
+    }
+}
 
 impl Engine {
     pub async fn start_run(

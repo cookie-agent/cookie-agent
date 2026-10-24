@@ -71,6 +71,36 @@ pub(crate) struct DelegationRuntimeState {
     /// children, by the call's ID, while the child is admitted
     /// (`docs/site/specs/cron.md` section 8.2).
     pub(crate) cron_runs: Mutex<HashMap<ToolCallId, super::cron_run::CronDelegation>>,
+    /// A signal per session a subagent wait watches, sent when something it
+    /// reads may have changed (see [`Engine::watch_subagent`]). An entry
+    /// lives while a wait holds its receiver.
+    pub(super) subagent_changes: Mutex<HashMap<SessionId, tokio::sync::watch::Sender<()>>>,
+}
+
+/// How long a subagent wait goes without a signal before it rechecks what it
+/// waits for anyway: a safety net, should a change ever slip past
+/// [`Engine::subagent_changed`].
+const SUBAGENT_WAIT_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Waits for `changes` to signal, or [`SUBAGENT_WAIT_RECHECK`] at most.
+pub(super) async fn subagent_changed_or_recheck(changes: &mut tokio::sync::watch::Receiver<()>) {
+    if let Ok(Err(_)) = tokio::time::timeout(SUBAGENT_WAIT_RECHECK, changes.changed()).await {
+        // No sender: nothing will signal, so only the recheck is left.
+        tokio::time::sleep(SUBAGENT_WAIT_RECHECK).await;
+    }
+}
+
+/// Whether appending `event` to a session may change what a wait on it as a
+/// subagent reads: its status, its pending mail, or whether it ended.
+pub(super) fn changes_subagent_waits(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::RunStarted { .. }
+            | Event::RunFinished { .. }
+            | Event::DelegateChildTerminated { .. }
+            | Event::ProducerMessageAccepted { .. }
+            | Event::ProducerMessageDiscarded { .. }
+    )
 }
 
 impl Default for DelegationRuntimeState {
@@ -92,11 +122,48 @@ impl Default for DelegationRuntimeState {
             cron_runs: Mutex::new(HashMap::new()),
             recovery_pending: Mutex::new(HashMap::new()),
             recovery_settled: tokio::sync::Notify::new(),
+            subagent_changes: Mutex::new(HashMap::new()),
         }
     }
 }
 
 impl Engine {
+    /// A receiver that is signalled whenever `session` may have changed in
+    /// a way a wait on it as a subagent reads: a run started or ended, mail
+    /// arrived or was discarded, a producer wake settled, or the session was
+    /// deleted. Subscribe before reading the state waited on, so no change
+    /// between the read and the wait is missed.
+    pub(super) fn watch_subagent(&self, session: SessionId) -> tokio::sync::watch::Receiver<()> {
+        let mut changes = self
+            .inner
+            .delegation
+            .subagent_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        changes.retain(|_, sender| sender.receiver_count() > 0);
+        changes
+            .entry(session)
+            .or_insert_with(|| tokio::sync::watch::channel(()).0)
+            .subscribe()
+    }
+
+    /// Signals the waits watching `session`; see [`Self::watch_subagent`].
+    pub(super) fn subagent_changed(&self, session: SessionId) {
+        let mut changes = self
+            .inner
+            .delegation
+            .subagent_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(sender) = changes.get(&session) {
+            if sender.receiver_count() == 0 {
+                changes.remove(&session);
+            } else {
+                sender.send_replace(());
+            }
+        }
+    }
+
     pub(crate) fn validate_resume_target(
         &self,
         parent_session_id: SessionId,
@@ -1198,7 +1265,13 @@ impl Engine {
         &self,
         handle: DelegateHandle,
     ) -> Result<ToolResult, EngineError> {
+        let mut changes = self.watch_subagent(handle.child_session_id);
         loop {
+            #[cfg(test)]
+            self.inner
+                .test_hooks
+                .subagent_wait_checks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let child = match self.inner.store.get(handle.child_session_id) {
                 Ok(child) => child,
                 Err(_) => {
@@ -1231,17 +1304,17 @@ impl Engine {
                             .cloned()
                     };
                     if let Some(active) = active {
-                        // Event-driven terminal-state wakeups are post-MVP; this
-                        // bounded cancellation-aware wait keeps the MVP responsive.
-                        // Once cancelled, the token is always ready: keep the
-                        // sleep so the wait yields while the child winds down.
+                        // The child's run ending signals `changes`. Once
+                        // cancelled, the token is always ready, so the wait
+                        // goes on on `changes` alone while the child winds
+                        // down.
                         tokio::select! {
                             () = active.cancellation.cancelled(),
                                 if !active.cancellation.is_cancelled() => {},
-                            () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {},
+                            () = subagent_changed_or_recheck(&mut changes) => {},
                         }
                     } else {
-                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        subagent_changed_or_recheck(&mut changes).await;
                     }
                 }
                 SessionStatus::Completed
@@ -2507,7 +2580,13 @@ impl Engine {
         )?;
         self.ensure_subagent_owned(caller_session_id, child_session_id)
             .await?;
+        let mut changes = self.watch_subagent(child_session_id);
         loop {
+            #[cfg(test)]
+            self.inner
+                .test_hooks
+                .subagent_wait_checks
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let child = self.inner.store.get(child_session_id)?;
             // Liveness is the session's own state *plus* an owed producer wake.
             // A `send_message` to a finished child is durably accepted before it
@@ -2544,7 +2623,7 @@ impl Engine {
                 () = cancellation.cancelled() => {
                     return Err(EngineError::ToolFailed("subagent result wait cancelled".into()));
                 }
-                () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+                () = subagent_changed_or_recheck(&mut changes) => {}
             }
         }
     }
@@ -2628,6 +2707,9 @@ impl Engine {
                     .unwrap_or_else(|| child_session_id.to_string())
             )));
         };
+        // Subscribed before the check, so a run leaving between the check
+        // and the wait still wakes it.
+        let mut released = self.inner.sessions.active.subscribe_released();
         self.cancel_run_durably(run, reason)?;
         while self
             .inner
@@ -2637,7 +2719,7 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains_key(&run)
         {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            subagent_changed_or_recheck(&mut released).await;
         }
         Ok(())
     }

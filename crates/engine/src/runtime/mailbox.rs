@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{actor::SessionActor, blocking::off_worker, events, session::SessionError};
 
-use super::{ActiveRun, producers};
+use super::producers;
 
 /// A session's producer/goal fold and how far into its log it folded.
 pub(super) struct CachedProducerProjection {
@@ -50,7 +50,7 @@ impl CachedProducerProjection {
 #[derive(Default)]
 pub(crate) struct SessionRuntimeState {
     pub(super) actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
-    pub(super) active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
+    pub(super) active: super::runs::ActiveRuns,
     pub(super) producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
     /// Each session's latest producer/goal fold, carried forward over what
     /// its log gains.
@@ -522,6 +522,9 @@ impl Engine {
             self.settle_background_job(tool_call_id, completed && envelope.is_ok());
         }
         let envelope = envelope?;
+        if super::delegation::changes_subagent_waits(&envelope.payload) {
+            self.subagent_changed(session);
+        }
         if steers {
             self.inner.acp.processes.steering_input(session);
         }
@@ -1168,6 +1171,7 @@ impl Engine {
         {
             state.starting = false;
         }
+        self.subagent_changed(session);
         self.inner
             .compaction
             .in_progress

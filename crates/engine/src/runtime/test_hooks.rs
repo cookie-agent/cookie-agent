@@ -166,4 +166,7 @@ pub(crate) struct TestHooks {
     pub(crate) adoption_reconcile_failures: AtomicU64,
     /// Counts `reconcile_producers_direct` passes.
     pub(crate) producer_reconciles: AtomicU64,
+    /// Counts the checks the waits on a subagent (a foreground delegation's,
+    /// `get_subagent_result`'s) make of the child.
+    pub(crate) subagent_wait_checks: AtomicU64,
 }

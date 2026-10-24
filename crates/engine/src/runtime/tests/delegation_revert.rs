@@ -375,3 +375,72 @@ async fn surviving_background_reservation_publishes_completion_once() {
     assert_eq!(requests.len(), 4, "surviving completion should wake once");
     fixture.engine.shutdown().await;
 }
+
+/// A wait for a running subagent's result sleeps until the child's run
+/// ends and wakes on that end, rather than checking the child on a timer.
+#[tokio::test]
+async fn a_subagent_result_wait_wakes_on_the_run_end_without_polling() {
+    let (fixture, parent_id, release, server) = start_held_background_delegation(true).await;
+    let child_id = fixture
+        .engine
+        .inner
+        .store
+        .get(parent_id)
+        .expect("parent projection")
+        .log
+        .event_snapshot()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::DelegationReserved { reservation, .. } => {
+                Some(reservation.child_session_id)
+            }
+            _ => None,
+        })
+        .expect("delegation reservation");
+    let checks = || {
+        fixture
+            .engine
+            .inner
+            .test_hooks
+            .subagent_wait_checks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let engine = fixture.engine.clone();
+    let wait = tokio::spawn(async move {
+        engine
+            .get_subagent_result(
+                parent_id,
+                child_id,
+                true,
+                0,
+                20,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    });
+
+    // The held child changes nothing, so the wait checks it once and sleeps;
+    // a check every 25 ms would have made about twenty.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!wait.is_finished(), "the child is still running");
+    let idle_checks = checks();
+    assert!((1..=2).contains(&idle_checks), "{idle_checks} checks");
+
+    // Its run's end wakes it well before the wait would recheck on its own.
+    let released = std::time::Instant::now();
+    release.notify_waiters();
+    let result = tokio::time::timeout(test_timeout(10), wait)
+        .await
+        .expect("the wait ends with the child")
+        .expect("wait task")
+        .expect("subagent result");
+    assert!(
+        released.elapsed() < std::time::Duration::from_secs(4),
+        "woke after {:?}",
+        released.elapsed()
+    );
+    assert!(!result.output.contains("running"), "{}", result.output);
+    server.await.expect("held delegation server");
+    wait_for_session_not_running(&fixture.engine, parent_id).await;
+    fixture.engine.shutdown().await;
+}
