@@ -3655,7 +3655,8 @@ def restart_daemon(browser):
     """A change that needs a restart shows the banner; its button and
     Settings → Configuration's both open the confirmation, which offers a
     restart when idle or now; when idle restarts the daemon, the page
-    reconnects, and the banner is gone."""
+    reconnects, reads the section opened meanwhile again, and the banner
+    is gone."""
     config = os.path.join(HOME, ".cookie-agent", "config.toml")
     with open(config, "a") as file:
         file.write('\n[runtimes.later]\ncommand = ["false"]\n')
@@ -3712,9 +3713,14 @@ def restart_daemon(browser):
         "the daemon restarting",
         lambda: count(browser, "#reconnecting") == 1 or count(browser, "#restart-banner[data-restarting]") == 1,
     )
+    # The banner says so until the connection closes; the page then waits
+    # at least half a second before it redials.
+    browser.wait("the connection closed", lambda: count(browser, "#reconnecting") == 1, timeout=60)
+    # Configuration opened while the page reconnects reads on the closed
+    # connection; the reconnect reads it again.
+    open_section(browser, "settings", "configuration")
     browser.wait("the reconnected page", lambda: count(browser, "#reconnecting") == 0 and browser.text("#connected") != "", timeout=60)
     browser.wait("the banner gone", lambda: count(browser, "#restart-banner") == 0)
-    open_section(browser, "settings", "configuration")
     browser.wait(
         "the plain restart button",
         lambda: count(browser, "#restart-daemon") == 1 and count(browser, "#restart-daemon[data-restart-needed]") == 0,

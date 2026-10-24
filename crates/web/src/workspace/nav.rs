@@ -50,6 +50,25 @@ impl Workspace {
         self.settings_section.set(section);
     }
 
+    /// Reads again what the open view lists, keeping what is open in it,
+    /// for a redialed connection: a read made while the page reconnected
+    /// failed on the closed connection, and the daemon may have changed
+    /// meanwhile. [`Workspace::refresh_lists`] reads the runtimes (the
+    /// Machines view, Settings → Providers) and the cron jobs.
+    pub(super) fn reread_view(self) {
+        match self.view.get_untracked() {
+            View::Agents => self.poll_config(),
+            View::Settings => match untrack(|| self.shown_section()) {
+                None | Some(SettingsSection::Configuration) => self.poll_config(),
+                Some(SettingsSection::Mcp) => self.poll_mcp(),
+                Some(SettingsSection::Plugins) => self.poll_plugins(),
+                Some(SettingsSection::Providers | SettingsSection::Browser) => {}
+            },
+            View::Memory => self.poll_memory(),
+            View::Chat | View::Machines | View::Cron => {}
+        }
+    }
+
     /// The Settings section a window shows: a phone's list shows none, a
     /// wider window always shows one.
     pub fn shown_section(self) -> Option<SettingsSection> {

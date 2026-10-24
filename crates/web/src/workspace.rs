@@ -570,6 +570,9 @@ impl Workspace {
         self.finish_waiting_sign_in();
         let selected = self.selected.get_untracked();
         self.refresh_onboarding(!reconnected);
+        if reconnected {
+            self.reread_view();
+        }
         spawn_local(async move {
             self.refresh_lists().await;
             if reconnected && let Some(session_id) = selected {
