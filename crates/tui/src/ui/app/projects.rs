@@ -24,19 +24,21 @@ impl App {
     }
 
     /// Reads `projects.list` in the background, from a daemon that keeps
-    /// projects.
-    pub(in crate::ui) fn poll_projects(&self) {
-        if !self.daemon_has_projects() {
+    /// projects; a change announced while it is on its way reads it again
+    /// once it lands.
+    pub(in crate::ui) fn poll_projects(&mut self) {
+        if !self.daemon_has_projects() || !self.projects_refresh.start() {
             return;
         }
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            if let Ok(listed) = client.list_projects().await {
-                let _ = updates.send(RpcUpdate::ProjectsRefreshed {
-                    projects: listed.projects,
-                });
-            }
+            let projects = client
+                .list_projects()
+                .await
+                .ok()
+                .map(|listed| listed.projects);
+            let _ = updates.send(RpcUpdate::ProjectsRefreshed { projects });
         });
     }
 

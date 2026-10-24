@@ -28,7 +28,7 @@ pub(in crate::ui) struct RestartState {
     pub(in crate::ui) running: usize,
     /// The panel the confirmation opened over, which it returns to.
     pub(in crate::ui) return_to: Option<Modal>,
-    status_in_flight: bool,
+    status_refresh: super::ListingRefresh,
 }
 
 /// The banner's button.
@@ -59,12 +59,13 @@ impl App {
             .and_then(shared::restart_banner)
     }
 
-    /// Fetches the configuration status for the banner.
-    pub(super) fn poll_config_status(&mut self) {
-        if self.restart.status_in_flight || self.daemon_too_old_to_restart() {
+    /// Fetches the configuration status for the banner; a configuration
+    /// change announced while it is on its way fetches it again once it
+    /// lands.
+    pub(in crate::ui) fn poll_config_status(&mut self) {
+        if self.daemon_too_old_to_restart() || !self.restart.status_refresh.start() {
             return;
         }
-        self.restart.status_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -74,9 +75,12 @@ impl App {
     }
 
     pub(super) fn install_config_status(&mut self, status: Option<ConfigStatus>) {
-        self.restart.status_in_flight = false;
+        let again = self.restart.status_refresh.landed();
         if status.is_some() {
             self.restart.config_status = status;
+        }
+        if again {
+            self.poll_config_status();
         }
     }
 

@@ -97,19 +97,20 @@ impl App {
     /// Fetches the runtimes' homes in the background, from a daemon that
     /// reports them (client protocol 1.7.0). A failure keeps the homes
     /// known so far: paths then show as they did.
-    pub(in crate::ui) fn poll_runtime_homes(&self) {
+    pub(in crate::ui) fn poll_runtime_homes(&mut self) {
         if !cookie_agent_client_state::paths::daemon_reports_runtime_homes(
             self.client.daemon_version(),
-        ) {
+        ) || !self.runtime_homes_refresh.start()
+        {
             return;
         }
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            if let Ok(listing) = client.list_runtimes().await {
-                let homes = cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing);
-                let _ = updates.send(RpcUpdate::RuntimeHomesRefreshed { homes });
-            }
+            let homes = client.list_runtimes().await.ok().map(|listing| {
+                cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing)
+            });
+            let _ = updates.send(RpcUpdate::RuntimeHomesRefreshed { homes });
         });
     }
 
@@ -266,10 +267,9 @@ impl App {
     }
 
     pub(in crate::ui) fn request_runtime_resync(&mut self) {
-        if self.runtime_resync_in_flight {
+        if !self.runtime_resync.start() {
             return;
         }
-        self.runtime_resync_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -408,7 +408,7 @@ impl App {
                 }
             }
             RpcUpdate::RuntimeResynced { result } => {
-                self.runtime_resync_in_flight = false;
+                let again = self.runtime_resync.landed();
                 match result {
                     Ok(snapshot) => {
                         if self.runtime.install_current((*snapshot).clone()) {
@@ -416,6 +416,9 @@ impl App {
                         }
                     }
                     Err(error) => self.status = format!("runtime refresh failed: {error}"),
+                }
+                if again {
+                    self.request_runtime_resync();
                 }
             }
             RpcUpdate::FullContentLoaded {
@@ -720,8 +723,25 @@ impl App {
                     self.poll_runtime_listing();
                 }
             }
-            RpcUpdate::RuntimeHomesRefreshed { homes } => self.install_runtime_homes(homes),
-            RpcUpdate::ProjectsRefreshed { projects } => self.install_projects(projects),
+            RpcUpdate::RuntimeHomesRefreshed { homes } => {
+                let again = self.runtime_homes_refresh.landed();
+                // A failure keeps the homes known so far.
+                if let Some(homes) = homes {
+                    self.install_runtime_homes(homes);
+                }
+                if again {
+                    self.poll_runtime_homes();
+                }
+            }
+            RpcUpdate::ProjectsRefreshed { projects } => {
+                let again = self.projects_refresh.landed();
+                if let Some(projects) = projects {
+                    self.install_projects(projects);
+                }
+                if again {
+                    self.poll_projects();
+                }
+            }
             RpcUpdate::SessionProjectSet { label, result } => {
                 self.finish_session_project_set(label, *result);
             }

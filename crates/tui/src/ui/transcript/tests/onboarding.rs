@@ -122,7 +122,7 @@ async fn a_daemon_that_is_not_set_up_is_set_up_from_the_panel() {
     // `primary` runs on the default model now: the summary offers a first
     // session on it.
     app.request_runtime_resync();
-    pump_until(&mut app, |app| !app.runtime_resync_in_flight).await;
+    pump_until(&mut app, |app| !app.runtime_resync.in_flight()).await;
     assert!(
         app.onboarding_actions()
             .contains(&OnboardingAction::StartSession)

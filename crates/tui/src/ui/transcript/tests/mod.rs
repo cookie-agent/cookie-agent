@@ -31,6 +31,7 @@ mod producers;
 mod projects;
 mod providers;
 mod queue;
+mod refresh_races;
 mod render_preview;
 mod runtimes;
 mod scrolling;

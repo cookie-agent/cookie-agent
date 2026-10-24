@@ -1243,7 +1243,7 @@ async fn out_of_chain_runtime_notification_refetches_the_current_snapshot() {
             .iter()
             .any(|agent| agent.id.as_str() == "reviewer")
     );
-    assert!(!app.runtime_resync_in_flight);
+    assert!(!app.runtime_resync.in_flight());
 }
 
 #[tokio::test]

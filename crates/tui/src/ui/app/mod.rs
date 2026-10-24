@@ -727,9 +727,12 @@ pub struct App {
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
     pub(super) rpc_updates_rx: tokio::sync::mpsc::UnboundedReceiver<RpcUpdate>,
-    /// A `runtime.snapshot` refetch is in flight after a notification fell
-    /// outside the revision chain.
-    pub(super) runtime_resync_in_flight: bool,
+    /// The `runtime.snapshot` refetch after a notification fell outside the
+    /// revision chain: another such notification while it is on its way
+    /// may be newer than what it read, so it reads once more.
+    pub(super) runtime_resync: ListingRefresh,
+    /// `runtimes.list` read for the runtimes' homes alone.
+    pub(super) runtime_homes_refresh: ListingRefresh,
     /// Redials the daemon when its connection drops (`cookie attach`);
     /// `None` when the daemon lives and dies with this process.
     pub(super) reconnector: Option<Reconnector>,
@@ -877,6 +880,7 @@ pub struct App {
     /// `projects.list`, in name order (empty from a daemon without
     /// projects).
     pub(super) projects: Vec<cookie_agent_protocol::ProjectInfo>,
+    pub(super) projects_refresh: ListingRefresh,
     /// The project picker's new-project field, while it is open.
     pub(super) project_create: Option<crate::ui::input::InputState>,
     /// The session picker's project filter (Ctrl+P); `None` lists all.
@@ -1147,9 +1151,9 @@ pub(in crate::ui) enum RpcUpdate {
     RuntimeMcpRefreshed {
         result: Result<cookie_agent_protocol::McpServerListResult, String>,
     },
-    /// `projects.list` answered.
+    /// `projects.list` answered; `None` when it failed.
     ProjectsRefreshed {
-        projects: Vec<cookie_agent_protocol::ProjectInfo>,
+        projects: Option<Vec<cookie_agent_protocol::ProjectInfo>>,
     },
     /// `session.project.set` answered; `label` names the project.
     SessionProjectSet {
@@ -1160,9 +1164,10 @@ pub(in crate::ui) enum RpcUpdate {
     ProjectCreated {
         result: Box<Result<cookie_agent_protocol::ProjectInfo, ClientError>>,
     },
-    /// `runtimes.list` answered for the runtimes' homes alone.
+    /// `runtimes.list` answered for the runtimes' homes alone; `None` when
+    /// it failed.
     RuntimeHomesRefreshed {
-        homes: cookie_agent_client_state::paths::RuntimeHomes,
+        homes: Option<cookie_agent_client_state::paths::RuntimeHomes>,
     },
     MachinesRefreshed {
         result: Result<cookie_agent_protocol::MachinesListResult, String>,
@@ -1495,7 +1500,8 @@ impl App {
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,
-            runtime_resync_in_flight: false,
+            runtime_resync: ListingRefresh::default(),
+            runtime_homes_refresh: ListingRefresh::default(),
             reconnector: None,
             reconnecting: false,
             draft_publish: Default::default(),
@@ -1593,6 +1599,7 @@ impl App {
             session_delete: None,
             session_rename: None,
             projects: Vec::new(),
+            projects_refresh: ListingRefresh::default(),
             project_create: None,
             session_project_filter: None,
             agent_search: SearchPickerState::default(),
