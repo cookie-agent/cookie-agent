@@ -3412,13 +3412,16 @@ def reconnects():
 def suspended_tab(browser):
     """A phone suspends a background tab; when it shows again the page
     checks its connection. A daemon that stopped answering (here, paused)
-    is reconnected to once it answers again."""
+    is reconnected to once it answers again. Removing the focused composer
+    with the page does not panic."""
     with open(os.path.join(HOME, "daemon.pid")) as file:
         daemon = int(file.read())
     visibility = (
         "Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => arguments[0]});"
         "document.dispatchEvent(new Event('visibilitychange'))"
     )
+    # The reconnect remounts the page, the focused composer with it.
+    browser.script("document.querySelector('#composer').focus()")
     os.kill(daemon, signal.SIGSTOP)
     try:
         browser.script(visibility, "hidden")

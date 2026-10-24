@@ -2263,8 +2263,15 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         // Later, so a tap on a button lands before the bar
                         // reappears and moves it. The tap may take the
                         // composer away (New session), `blurred` with it.
-                        blurred.update_value(|blurred| *blurred += 1);
-                        let current = blurred.get_value();
+                        // Removing the focused composer with its view (a
+                        // reconnect remounts the page) blurs it once
+                        // `blurred` is gone.
+                        let Some(current) = blurred.try_update_value(|blurred| {
+                            *blurred += 1;
+                            *blurred
+                        }) else {
+                            return;
+                        };
                         set_timeout(
                             move || {
                                 if blurred.try_get_value() == Some(current) {
