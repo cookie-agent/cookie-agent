@@ -43,7 +43,7 @@ const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 /// How long the agent gets to answer `session/new`, `session/load`, and
 /// `session/resume`.
-const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn origin() -> cookie_agent_protocol::EventOrigin {
     event_origin("engine:acp")
@@ -67,6 +67,10 @@ pub(crate) struct LiveSession {
     /// Whether the next prompt is the session's first, which carries the
     /// agent document's body.
     pub first_prompt: bool,
+    /// Whether that first prompt also carries the cookie transcript: the
+    /// session is new but continues a conversation a fork or a revert
+    /// left behind.
+    pub seed: bool,
     /// What the process routes to the session.
     pub events: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SessionEvent>>>,
 }
@@ -626,6 +630,8 @@ struct Step {
     attempt_id: AttemptId,
     parts: Vec<PersistedAssistantPart>,
     streaming: Option<StreamedOutputKind>,
+    /// The ACP `messageId`s of the agent messages in the turn, in order.
+    message_ids: Vec<String>,
 }
 
 /// The state of a run's prompt rounds.
@@ -707,6 +713,7 @@ impl Turn<'_> {
             attempt_id,
             parts: Vec::new(),
             streaming: None,
+            message_ids: Vec::new(),
         });
         Ok(())
     }
@@ -810,6 +817,13 @@ impl Turn<'_> {
             })
             .collect();
         let binding = &self.active.policy.agent.fallback_chain[0];
+        let mut response_metadata = cookie_agent_protocol::SafeModelMetadata::default();
+        if !step.message_ids.is_empty() {
+            response_metadata.insert(
+                super::lifecycle::MESSAGE_IDS.to_owned(),
+                Value::from(step.message_ids),
+            );
+        }
         self.engine
             .append(
                 self.session(),
@@ -825,7 +839,7 @@ impl Turn<'_> {
                         provider_options: Default::default(),
                         finish_reason: finish,
                         usage: Usage::default(),
-                        response_metadata: Default::default(),
+                        response_metadata,
                         provider_metadata: Default::default(),
                         native_replay: None,
                     },
@@ -1000,7 +1014,16 @@ impl Turn<'_> {
                 } else {
                     StreamedOutputKind::Reasoning
                 };
-                self.stream(kind, text).await
+                self.stream(kind, text).await?;
+                // The message's ID names it as a fork point later.
+                if kind == StreamedOutputKind::Text
+                    && let Some(id) = update.get("messageId").and_then(Value::as_str)
+                    && let Some(step) = self.step.as_mut()
+                    && step.message_ids.last().map(String::as_str) != Some(id)
+                {
+                    step.message_ids.push(id.to_owned());
+                }
+                Ok(())
             }
             // Subagents stay flat on purpose: Claude Code's Task subagents
             // arrive as ordinary tool calls whose
@@ -1813,6 +1836,7 @@ impl Engine {
                     &active.policy,
                     &claim.events,
                     &document,
+                    turn.live.seed,
                 )?
             } else {
                 Vec::new()
@@ -2085,13 +2109,16 @@ impl Engine {
     /// left out when empty: the tool instruction sections cookie would
     /// compose for a model run, for exactly the tools the agent is offered
     /// over the bridge; the session's memory snapshot as a model run sees
-    /// it; and the agent document's body.
+    /// it; the agent document's body; and, for a new session that
+    /// continues a conversation a fork or a revert left behind (`seed`),
+    /// the cookie transcript.
     fn acp_first_prompt_context(
         &self,
         session: SessionId,
         policy: &crate::policy::FrozenRunPolicy,
         events: &crate::events::EventSnapshot,
         document: &cookie_agent_config::AgentDocument,
+        seed: bool,
     ) -> Result<Vec<String>, EngineError> {
         let hide = document
             .frontmatter
@@ -2114,6 +2141,9 @@ impl Engine {
         );
         if !document.body.trim().is_empty() {
             context.push(document.body.clone());
+        }
+        if seed {
+            context.extend(super::lifecycle::transcript(events));
         }
         Ok(context)
     }
@@ -2237,8 +2267,10 @@ impl Engine {
     }
 
     /// The ACP session `session` talks to `agent` in: the live one, else the
-    /// one its log records resumed or loaded, else a new one. Starting,
-    /// resuming, or loading one records it.
+    /// one its log records resumed or loaded, else, when a fork or a revert
+    /// left that one behind, one branched off it
+    /// ([`super::lifecycle::Plan`]), else a new one. Starting, resuming,
+    /// loading, or forking one records it.
     pub(crate) async fn acp_session(
         &self,
         session: SessionId,
@@ -2247,10 +2279,18 @@ impl Engine {
         document: &cookie_agent_config::AgentDocument,
         process: &Arc<AgentProcess>,
     ) -> Result<LiveSession, EngineError> {
+        let plan = super::lifecycle::plan(
+            &self.inner.store.get(session)?.log.event_snapshot(),
+            &agent.id,
+        );
+        // The live session serves while the log still makes it the
+        // session's: a fork or a revert since detached it.
         if let Some(live) = self.live_session(session)
             && Arc::ptr_eq(&live.process, process)
             && live.is_live()
             && live.agent.id == agent.id
+            && matches!(&plan, super::lifecycle::Plan::Resume(record)
+                if record.acp_session_id == live.acp_session_id)
         {
             return Ok(live);
         }
@@ -2291,12 +2331,25 @@ impl Engine {
                 Vec::new()
             }
         };
+        let (mut prior, mut branch) = match plan {
+            super::lifecycle::Plan::New => (None, None),
+            super::lifecycle::Plan::Resume(record) => (Some(record), None),
+            super::lifecycle::Plan::Branch {
+                from,
+                message_id,
+                delete,
+            } => (None, Some((from, message_id, delete))),
+        };
+        // A new session continues a conversation it does not remember:
+        // its first prompt carries the cookie transcript.
+        let mut seed = false;
         // The agent keeps its sessions on the machine that runs it: one
-        // recorded on another runtime cannot be resumed here.
-        let mut prior = self.recorded_acp_session(session, agent)?;
+        // recorded on another runtime cannot be resumed or forked here.
         if let Some(elsewhere) = prior
             .as_ref()
+            .or(branch.as_ref().map(|(from, _, _)| from))
             .filter(|record| record.runtime_id != agent.runtime)
+            .cloned()
         {
             self.acp_notice(
                 session,
@@ -2309,11 +2362,53 @@ impl Engine {
                 ),
             )
             .await;
+            seed = branch.is_some();
             prior = None;
+            branch = None;
         }
         let caps = &process.init().agent_capabilities;
         let mut opened = None;
         let mut lost = false;
+        let mut forked_from = None;
+        if let Some((from, message_id, delete)) = &branch {
+            match self
+                .fork_acp_session(process, from, message_id.as_deref(), &cwd, &mcp_servers)
+                .await
+            {
+                Ok((id, response)) => {
+                    let receiver = process.route(&id);
+                    forked_from = Some(from.acp_session_id.clone());
+                    opened = Some((id, response, AcpSessionStart::Forked, receiver));
+                    if *delete {
+                        self.acp_notice(
+                            session,
+                            run,
+                            "The agent continues from the revert point: its conversation after \
+                             it is gone."
+                                .to_owned(),
+                        )
+                        .await;
+                    }
+                }
+                Err(reason) => {
+                    seed = true;
+                    let what = if *delete {
+                        "continue from the revert point"
+                    } else {
+                        "fork the conversation this session was forked from"
+                    };
+                    self.acp_notice(
+                        session,
+                        run,
+                        format!(
+                            "The agent cannot {what} ({reason}), so this turn starts a new session \
+                             given the conversation so far."
+                        ),
+                    )
+                    .await;
+                }
+            }
+        }
         if let Some(prior) = &prior {
             let receiver = process.route(&prior.acp_session_id);
             let request = wire::ExistingSessionRequest {
@@ -2418,13 +2513,19 @@ impl Engine {
                     agent_info: process.init().agent_info.clone(),
                     how,
                     steering: process.init().steering(),
-                    forked_from: None,
+                    forked_from,
                     fork: None,
                     fork_point: None,
                 },
             },
         )
         .await?;
+        // The session a revert left behind is the cookie session's own: gone
+        // once this one replaced it.
+        if let Some((from, _, true)) = &branch {
+            self.retire_acp_session(session, process, &from.acp_session_id)
+                .await;
+        }
         let (options, modes_as_option) =
             options_of(response.config_options.as_ref(), response.modes.as_ref());
         let mut live = LiveSession {
@@ -2437,6 +2538,7 @@ impl Engine {
             options,
             modes_as_option,
             first_prompt: matches!(how, AcpSessionStart::New),
+            seed: seed && matches!(how, AcpSessionStart::New),
             events: Arc::new(tokio::sync::Mutex::new(receiver)),
         };
         if matches!(how, AcpSessionStart::New) {
@@ -2713,19 +2815,6 @@ impl Engine {
             .map_err(EngineError::Acp)
     }
 
-    /// The ACP session the log of `session` records last for `agent`.
-    fn recorded_acp_session(
-        &self,
-        session: SessionId,
-        agent: &RuntimeAgent,
-    ) -> Result<Option<AcpSessionRecord>, EngineError> {
-        let events = self.inner.store.get(session)?.log.event_snapshot();
-        Ok(events.iter().rev().find_map(|event| match &event.payload {
-            Event::AcpSessionStarted { record } if record.agent == agent.id => Some(record.clone()),
-            _ => None,
-        }))
-    }
-
     /// The live ACP session of `session`, if any.
     pub(crate) fn live_session(&self, session: SessionId) -> Option<LiveSession> {
         self.inner
@@ -2786,7 +2875,7 @@ impl Engine {
         }
     }
 
-    /// Ends the ACP session of `session`, as the session is deleted:
+    /// Ends the ACP session of `session`, as the session is unloaded:
     /// `session/close` when the agent offers it, and its bridge closes.
     pub(crate) async fn close_acp_session(&self, session: SessionId) {
         let live = self
@@ -2797,9 +2886,15 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session);
-        let Some(live) = live else {
-            return;
-        };
+        if let Some(live) = live {
+            self.end_live_session(live, false).await;
+        }
+    }
+
+    /// Closes the bridge of `live`, which no longer serves its session,
+    /// and ends it with the agent: `session/close`, and with `delete` also
+    /// `session/delete` when the agent offers it.
+    pub(super) async fn end_live_session(&self, live: LiveSession, delete: bool) {
         if let Some(bridge) = &live.bridge {
             self.inner
                 .acp
@@ -2822,18 +2917,8 @@ impl Engine {
         if !live.is_live() {
             return;
         }
-        if live.process.init().agent_capabilities.session("close") {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(10),
-                live.process.peer.request::<_, Value>(
-                    wire::method::SESSION_CLOSE,
-                    &wire::SessionRef {
-                        session_id: &live.acp_session_id,
-                    },
-                ),
-            )
+        super::lifecycle::end_agent_session(&live.process, &live.acp_session_id, true, delete)
             .await;
-        }
         live.process.unroute(&live.acp_session_id);
     }
 

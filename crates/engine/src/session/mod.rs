@@ -2434,6 +2434,24 @@ impl SessionStore {
                 )?;
                 fork_projection.observe_appended(&event)?;
             }
+            // The source's ACP sessions stay its own: the fork's agent
+            // branches off them at its first turn.
+            for detached in
+                crate::runtime::acp::lifecycle::fork_detached(&source_events, through_seq)
+            {
+                let event = log.append_owned(
+                    &capability,
+                    None,
+                    origin.clone(),
+                    EventPayload::AcpSessionUpdated {
+                        update: cookie_agent_protocol::AcpSessionUpdate {
+                            detached: Some(detached),
+                            ..Default::default()
+                        },
+                    },
+                )?;
+                fork_projection.observe_appended(&event)?;
+            }
             let title = fork_title(fork_projection.meta.title.as_ref())?;
             let event = log.append_owned(
                 &capability,

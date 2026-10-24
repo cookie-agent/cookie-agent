@@ -40,6 +40,9 @@ Each prompt's last text block is a command:
   steer-wait [<s>]       says "waiting", then waits (up to <s>, else 10 s) for a message
                          steered into the turn and answers "steered: <texts>",
                          or "no steer"; session/cancel ends it as cancelled
+  recall                 answers "remembers: " and the commands of the session's
+                         earlier prompts, joined by ", " (a forked session
+                         remembers its source's up to the fork point)
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
 
@@ -60,6 +63,11 @@ Environment:
                          process ID to this file
   ACP_FIXTURE_EAGER_MCP  "1": connects cookie's MCP server and lists its tools
                          before answering session/new, as Claude Code does
+  ACP_FIXTURE_FORK       "1": offers session/fork, which copies the source's
+                         history, up to and including the agent message the
+                         JetBrains AIR fork point (`_meta.jetbrains.air.fork`)
+                         names when there is one
+  ACP_FIXTURE_DELETE     "1": offers session/delete
   ACP_FIXTURE_STEERING   "1": advertises the steering extension
                          (`_meta.steering.supported`) and serves
                          `_session/steering` as Claude Code's adapter does
@@ -81,6 +89,8 @@ running = {}
 steered = {}
 # What the client advertised in `initialize`.
 client_capabilities = {}
+session_count = [0]
+message_count = [0]
 
 
 def log(message):
@@ -121,7 +131,22 @@ def update(session_id, body):
 
 
 def say(session_id, text):
-    update(session_id, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}})
+    with state_lock:
+        message_count[0] += 1
+        message_id = f"msg-{message_count[0]}"
+    session = sessions.get(session_id)
+    if session is not None:
+        session.setdefault("history", []).append({"role": "agent", "text": text, "messageId": message_id})
+    update(session_id, {
+        "sessionUpdate": "agent_message_chunk", "messageId": message_id,
+        "content": {"type": "text", "text": text},
+    })
+
+
+def new_session_id():
+    with state_lock:
+        session_count[0] += 1
+        return f"sess-{os.getpid()}-{session_count[0]}"
 
 
 def env(name):
@@ -308,6 +333,7 @@ def prompt(request_id, params):
     kinds = [block.get("type") for block in params.get("prompt", [])]
     command = texts[-1] if texts else ""
     word, _, rest = command.partition(" ")
+    session.setdefault("history", []).append({"role": "user", "text": command})
     with state_lock:
         cancelled[session_id] = False
         running[session_id] = True
@@ -443,6 +469,9 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
         session["mode"] = rest
         update(session_id, {"sessionUpdate": "current_mode_update", "currentModeId": rest})
         say(session_id, f"mode: {rest}")
+    elif word == "recall":
+        earlier = [entry["text"] for entry in session.get("history", [])[:-1] if entry["role"] == "user"]
+        say(session_id, "remembers: " + ", ".join(earlier))
     elif word == "title":
         update(session_id, {"sessionUpdate": "session_info_update", "title": rest})
         say(session_id, "titled")
@@ -485,6 +514,10 @@ def handle(message):
         }
         if env("ACP_FIXTURE_RESUME"):
             capabilities["sessionCapabilities"]["resume"] = {}
+        if env("ACP_FIXTURE_FORK"):
+            capabilities["sessionCapabilities"]["fork"] = {}
+        if env("ACP_FIXTURE_DELETE"):
+            capabilities["sessionCapabilities"]["delete"] = {}
         result = {
             "protocolVersion": 1,
             "agentCapabilities": capabilities,
@@ -495,8 +528,8 @@ def handle(message):
             result["_meta"] = {"steering": {"supported": True}}
         respond(request_id, result)
     elif method == "session/new":
-        session_id = f"sess-{os.getpid()}-{len(sessions) + 1}"
-        sessions[session_id] = {"mode": "default", "model": "small", "mcpServers": params.get("mcpServers"), "cwd": params.get("cwd")}
+        session_id = new_session_id()
+        sessions[session_id] = {"mode": "default", "model": "small", "mcpServers": params.get("mcpServers"), "cwd": params.get("cwd"), "history": []}
         if env("ACP_FIXTURE_EAGER_MCP") and mcp_open(sessions[session_id]):
             reply = mcp(sessions[session_id], "tools/list", {}, 2)
             sessions[session_id]["eager_tools"] = "error" not in reply
@@ -550,8 +583,32 @@ def handle(message):
             cancelled[params["sessionId"]] = True
             state_lock.notify_all()
     elif method == "session/close":
+        session = sessions.get(params["sessionId"])
+        if session is not None:
+            session["closed"] = True
+        respond(request_id, {})
+    elif method == "session/delete" and env("ACP_FIXTURE_DELETE"):
         sessions.pop(params["sessionId"], None)
         respond(request_id, {})
+    elif method == "session/fork" and env("ACP_FIXTURE_FORK"):
+        source = sessions.get(params["sessionId"])
+        if source is None:
+            fail(request_id, -32002, "Resource not found: no such session")
+            return
+        history = list(source.get("history", []))
+        point = (((params.get("_meta") or {}).get("jetbrains") or {}).get("air") or {}).get("fork")
+        if point and point.get("version") == 1:
+            found = [index for index, entry in enumerate(history) if entry.get("messageId") == point.get("messageId")]
+            if not found:
+                fail(request_id, -32602, f"Fork point message {point.get('messageId')} was not found")
+                return
+            history = history[:found[-1] + 1]
+        session_id = new_session_id()
+        sessions[session_id] = {
+            "mode": source.get("mode", "default"), "model": source.get("model", "small"),
+            "mcpServers": params.get("mcpServers"), "cwd": params.get("cwd"), "history": history,
+        }
+        respond(request_id, session_result(session_id, True))
     elif request_id is not None:
         fail(request_id, -32601, f"unsupported fixture method {method}")
 

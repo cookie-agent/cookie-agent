@@ -17,6 +17,9 @@ pub(crate) mod method {
     pub(crate) const SESSION_LOAD: &str = "session/load";
     pub(crate) const SESSION_RESUME: &str = "session/resume";
     pub(crate) const SESSION_CLOSE: &str = "session/close";
+    /// Unstable: gated by `sessionCapabilities.fork`.
+    pub(crate) const SESSION_FORK: &str = "session/fork";
+    pub(crate) const SESSION_DELETE: &str = "session/delete";
     pub(crate) const SESSION_PROMPT: &str = "session/prompt";
     pub(crate) const SESSION_CANCEL: &str = "session/cancel";
     pub(crate) const SESSION_SET_MODE: &str = "session/set_mode";
@@ -107,7 +110,31 @@ pub(crate) struct ExistingSessionRequest<'a> {
     pub mcp_servers: &'a [McpServer],
 }
 
-/// What `session/new`, `session/load`, and `session/resume` answer.
+/// `session/fork` (unstable): a new session with the context of
+/// `session_id`. `_meta` may name the fork point (the JetBrains AIR
+/// extension, [`air_fork_point`]).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ForkSessionRequest<'a> {
+    pub session_id: &'a str,
+    pub cwd: &'a str,
+    pub mcp_servers: &'a [McpServer],
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
+}
+
+/// The `_meta` of a `session/fork` that forks at the agent message
+/// `message_id`: the JetBrains AIR extension
+/// (`jetbrains.air.fork`, version 1), which Claude Code's and Codex's
+/// adapters read; an agent without it forks the whole session.
+pub(crate) fn air_fork_point(message_id: &str) -> Value {
+    serde_json::json!({
+        "jetbrains": {"air": {"fork": {"version": 1, "messageId": message_id}}}
+    })
+}
+
+/// What `session/new`, `session/load`, `session/resume`, and
+/// `session/fork` answer.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct SessionResponse {
