@@ -5,7 +5,7 @@
 use super::*;
 
 use cookie_agent_client_state::AcpSessionView;
-use cookie_agent_protocol::{AcpCommand, AcpConfigOption};
+use cookie_agent_protocol::{AcpCommand, AcpConfigOption, AcpConfigOptionKind};
 
 /// A palette row for one of the agent's commands.
 pub(super) fn agent_command_label(command: &AcpCommand) -> String {
@@ -36,7 +36,8 @@ pub(crate) fn agent_command_prompt_for_test(name: &str, input: &str) -> String {
     agent_command_prompt(name, input)
 }
 
-/// A row of `/options`: the option and its current value's name.
+/// A row of `/options`: the option and its current value's name (`On` or
+/// `Off` for a boolean).
 fn option_label(option: &AcpConfigOption) -> String {
     let current = option
         .values
@@ -168,8 +169,8 @@ impl App {
         }
     }
 
-    /// Row `index` of `/options`: an option opens its values; a value sets
-    /// it on the agent.
+    /// Row `index` of `/options`: an option opens its values, and a boolean
+    /// one toggles; a value sets it on the agent.
     pub(super) fn choose_agent_option(&mut self, index: usize) {
         if let Some(option) = self.agent_option_in_step() {
             let Some(value) = option.values.get(index) else {
@@ -185,6 +186,14 @@ impl App {
         let Some(option) = self.agent_options().get(index) else {
             return;
         };
+        // A boolean toggles at once; the picker stays open on it.
+        if option.kind == AcpConfigOptionKind::Boolean {
+            let on = option.current_value != "true";
+            let label = format!("{}: {}", option.name, if on { "on" } else { "off" });
+            let option_id = option.id.clone();
+            self.set_agent_option(option_id, on.to_string(), label);
+            return;
+        }
         if option.values.is_empty() {
             self.status = format!("the agent lists no values for {}", option.name);
             return;

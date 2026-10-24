@@ -4072,6 +4072,7 @@ fn an_acp_sessions_commands_options_and_plan_fold_from_its_events() {
                 options: Some(vec![AcpConfigOption {
                     id: "mode".into(),
                     name: "Mode".into(),
+                    kind: Default::default(),
                     description: None,
                     category: Some("mode".into()),
                     current_value: "auto".into(),

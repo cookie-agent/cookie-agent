@@ -363,7 +363,14 @@ impl Processes {
                         // tool call (the session notices and compaction
                         // RFDs, which Claude Code's and Codex's adapters
                         // follow).
-                        "session": {"notices": {}, "compaction": {}},
+                        // Boolean config options (`type: boolean`, such as
+                        // Claude Code's fast mode) as toggles rather than an
+                        // on/off select.
+                        "session": {
+                            "notices": {},
+                            "compaction": {},
+                            "configOptions": {"boolean": {}},
+                        },
                         // The output of the commands the agent runs, as
                         // `_meta` keys of their tool calls (the terminal
                         // extension of Claude Code's and Codex's adapters).

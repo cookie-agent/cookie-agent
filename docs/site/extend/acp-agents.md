@@ -316,7 +316,9 @@ each call decided by the rules as a model's would be.
 - **Agent options.** The agent's options, such as its model, mode, and
   effort, are the session's agent options: `/options` in the TUI (or the
   title's model, which opens them for an ACP agent), and the model chip in
-  the web client, which shows the agent's model. Choosing a value changes
+  the web client, which shows the agent's model. An on/off option, such as
+  Claude Code's fast mode, is a switch in the web client and toggles from
+  its row in `/options`. Choosing a value changes
   it on the agent at once, and a mode the agent switches to by itself
   (Claude Code leaving plan mode) shows at once too. They appear once the
   agent's session has started, with the first message.

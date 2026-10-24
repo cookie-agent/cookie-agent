@@ -1611,10 +1611,9 @@ async fn notices_and_compactions_are_recorded_as_the_agents_notices() {
         .into_iter()
         .find(|message| message["method"] == "initialize")
         .unwrap();
-    assert_eq!(
-        initialize["params"]["clientCapabilities"]["session"],
-        serde_json::json!({"notices": {}, "compaction": {}})
-    );
+    let session_capabilities = &initialize["params"]["clientCapabilities"]["session"];
+    assert_eq!(session_capabilities["notices"], serde_json::json!({}));
+    assert_eq!(session_capabilities["compaction"], serde_json::json!({}));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2135,4 +2134,68 @@ async fn a_commands_terminal_output_streams_into_the_call_and_is_retained() {
     assert_eq!(terminal(&result), ("notes.txt\n".to_owned(), Some(0)));
     assert_eq!(result.display.len(), 1, "{:?}", result.display);
     assert_eq!(result.output, "notes.txt\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_boolean_option_is_a_toggle_set_with_a_boolean() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say hello").await;
+    let initialize = acp
+        .received()
+        .into_iter()
+        .find(|message| message["method"] == "initialize")
+        .unwrap();
+    assert_eq!(
+        initialize["params"]["clientCapabilities"]["session"]["configOptions"]["boolean"],
+        serde_json::json!({})
+    );
+    let fast = |options: &[cookie_agent_protocol::AcpConfigOption]| {
+        options
+            .iter()
+            .find(|option| option.id == "fast")
+            .cloned()
+            .expect("the boolean option")
+    };
+    let recorded = events(engine, session)
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.options.clone(),
+            _ => None,
+        })
+        .unwrap();
+    let option = fast(&recorded);
+    assert_eq!(
+        option.kind,
+        cookie_agent_protocol::AcpConfigOptionKind::Boolean
+    );
+    assert_eq!(option.current_value, "false");
+    assert_eq!(
+        option
+            .values
+            .iter()
+            .map(|value| (value.value.as_str(), value.name.as_str()))
+            .collect::<Vec<_>>(),
+        [("true", "On"), ("false", "Off")]
+    );
+    let set = |value: &str| {
+        engine.set_session_agent_option(cookie_agent_protocol::SessionAgentOptionSetParams {
+            session_id: session,
+            option_id: "fast".to_owned(),
+            value: value.to_owned(),
+        })
+    };
+    let result = set("true").await.expect("the toggle set");
+    assert_eq!(fast(&result.options).current_value, "true");
+    let request = acp
+        .received()
+        .into_iter()
+        .rfind(|message| message["method"] == "session/set_config_option")
+        .unwrap();
+    assert_eq!(request["params"]["type"], "boolean");
+    assert_eq!(request["params"]["value"], true);
+    let refused = set("on").await.expect_err("not a boolean's value");
+    assert!(refused.to_string().contains("no value `on`"), "{refused}");
 }

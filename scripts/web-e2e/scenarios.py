@@ -4736,7 +4736,7 @@ def acp_agents(browser):
     tool call with the agent as its source; the commands it runs show their
     output; its commands are offered in the
     composer; and the model chip opens its options, which change on the
-    agent."""
+    agent, a boolean one as a switch."""
     new_session(browser)
     browser.click("#agent-chip")
     fixture = '#sheet [data-agent="fixture"]'
@@ -4792,8 +4792,17 @@ def acp_agents(browser):
     browser.shot("acp-agent-options")
     browser.click(large)
     browser.wait("the changed option", lambda: "Large" in browser.text("#model-chip"), timeout=40)
+    fast = '#sheet [data-agent-option="fast"] [role="switch"]'
+    browser.wait("the boolean option", lambda: count(browser, fast) == 1)
+    assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-checked')", fast) == "false"
+    browser.click(fast)
+    browser.wait(
+        "the toggled option",
+        lambda: browser.script("return document.querySelector(arguments[0])?.getAttribute('aria-checked')", fast) == "true",
+        timeout=40,
+    )
     close_sheet(browser)
-    print("the model chip opens the agent's options and sets one")
+    print("the model chip opens the agent's options, sets one, and toggles a boolean one")
 
 
 def runtime_mcp(browser):

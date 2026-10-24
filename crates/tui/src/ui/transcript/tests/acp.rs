@@ -67,6 +67,7 @@ async fn acp_session_app() -> (App, SessionId) {
     state.acp.options = vec![AcpConfigOption {
         id: "mode".into(),
         name: "Mode".into(),
+        kind: Default::default(),
         description: None,
         category: Some("mode".into()),
         current_value: "auto".into(),
@@ -309,4 +310,49 @@ async fn the_status_line_shows_the_agents_context_of_its_own_window() {
     state.context_window = Some(120_000);
     let bar = rendered_row(&mut app, 100, 24, 23);
     assert!(bar.contains("ctx 30.0K (25%)"), "{bar}");
+}
+
+#[tokio::test]
+async fn options_toggles_a_boolean_option_in_place() {
+    let (mut app, session) = acp_session_app().await;
+    app.store
+        .sessions
+        .get_mut(&session)
+        .unwrap()
+        .acp
+        .options
+        .push(AcpConfigOption {
+            id: "fast".into(),
+            name: "Fast mode".into(),
+            kind: cookie_agent_protocol::AcpConfigOptionKind::Boolean,
+            description: None,
+            category: Some("model_config".into()),
+            current_value: "false".into(),
+            values: [("true", "On"), ("false", "Off")]
+                .into_iter()
+                .map(|(value, name)| AcpConfigValue {
+                    value: value.into(),
+                    name: name.into(),
+                    description: None,
+                })
+                .collect(),
+        });
+    let (client, recorded, incoming_guard) = live_recording_client();
+    app.client = client;
+    run_palette_command(&mut app, "options").await;
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(
+        rendered.contains("Fast mode: Off (model_config)"),
+        "{rendered}"
+    );
+    app.choose_picker_entry(1).await;
+    // No values step: the toggle is sent, and the options stay open.
+    assert_eq!(app.modal, Modal::AgentOptions);
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(rendered.contains("Agent options — claude"), "{rendered}");
+    wait_for_method(&recorded, "session.agent_option.set", 1).await;
+    let params = last_request_params(&recorded, "session.agent_option.set");
+    assert_eq!(params["option_id"], "fast");
+    assert_eq!(params["value"], "true");
+    drop(incoming_guard);
 }

@@ -2765,6 +2765,40 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
         acp.options
             .into_iter()
             .map(|option| {
+                // A boolean is a switch that sets the other value.
+                if option.kind == cookie_agent_protocol::AcpConfigOptionKind::Boolean {
+                    let on = option.current_value == "true";
+                    let option_id = option.id.clone();
+                    let label = format!("{}: {}", option.name, if on { "off" } else { "on" });
+                    return view! {
+                        <div class="flex items-center gap-2 border-b border-toasted px-3 pb-2 dark:border-ember" data-agent-option=option.id.clone()>
+                            <span class="flex min-w-0 flex-1 flex-col">
+                                <span class="text-sm font-bold">{option.name.clone()}</span>
+                                {option.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
+                            </span>
+                            <button
+                                type="button"
+                                role="switch"
+                                class=BUTTON
+                                class:bg-toasted=on
+                                class:dark:bg-ember=on
+                                aria-checked=on.to_string()
+                                aria-label=option.name.clone()
+                                data-option-toggle=on.to_string()
+                                on:click=move |_| {
+                                    workspace.set_agent_option(
+                                        option_id.clone(),
+                                        (!on).to_string(),
+                                        label.clone(),
+                                    );
+                                }
+                            >
+                                {if on { "On" } else { "Off" }}
+                            </button>
+                        </div>
+                    }
+                    .into_any();
+                }
                 let values = option
                     .values
                     .iter()
@@ -2803,6 +2837,7 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
                         <div class="flex flex-wrap gap-2 px-3">{values}</div>
                     </div>
                 }
+                .into_any()
             })
             .collect_view()
             .into_any()

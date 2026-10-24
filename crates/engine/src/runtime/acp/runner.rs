@@ -15,12 +15,12 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use cookie_agent_protocol::{
-    AcpConfigOption, AcpConfigValue, AcpNotice, AcpNoticeSeverity, AcpSessionRecord,
-    AcpSessionStart, AcpSessionUpdate, AssistantToolCallRef, AttemptId, DisplayBlock, ModelCallId,
-    ModelFinishReason, Open, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
-    PlanEntry, PlanEntryPriority, PlanEntryStatus, PreparedPresentation, RunId, SafeCode,
-    SafeDisplayText, SessionId, StreamedOutputKind, ToolCallId, ToolCallStart, ToolIdentity,
-    ToolOutputDeclaration, ToolPresentation, ToolSource, Usage, UserContentPart,
+    AcpConfigOption, AcpConfigOptionKind, AcpConfigValue, AcpNotice, AcpNoticeSeverity,
+    AcpSessionRecord, AcpSessionStart, AcpSessionUpdate, AssistantToolCallRef, AttemptId,
+    DisplayBlock, ModelCallId, ModelFinishReason, Open, PersistedAssistantPart, PersistedModelTurn,
+    PersistedToolResult, PlanEntry, PlanEntryPriority, PlanEntryStatus, PreparedPresentation,
+    RunId, SafeCode, SafeDisplayText, SessionId, StreamedOutputKind, ToolCallId, ToolCallStart,
+    ToolIdentity, ToolOutputDeclaration, ToolPresentation, ToolSource, Usage, UserContentPart,
 };
 use cookie_agent_runtime_api::protocol::{AgentMcpOpenResult, AgentRef, method};
 use serde_json::Value;
@@ -101,6 +101,7 @@ fn options_of(
         options.push(AcpConfigOption {
             id: "mode".to_owned(),
             name: "Mode".to_owned(),
+            kind: AcpConfigOptionKind::Select,
             description: None,
             category: Some("mode".to_owned()),
             current_value: modes.current_mode_id.clone(),
@@ -118,11 +119,37 @@ fn options_of(
     (options, modes_as_option)
 }
 
-/// A `select` config option as the session shows it; grouped values are
-/// flattened.
+/// A config option as the session shows it: a `select`, its grouped values
+/// flattened, or a `boolean`, whose values are `true` (On) and `false`
+/// (Off). An option of another type is left out, as ACP asks of a client
+/// that does not know it.
 fn config_option(option: &Value) -> Option<AcpConfigOption> {
     let text =
         |value: &Value, name: &str| value.get(name).and_then(Value::as_str).map(str::to_owned);
+    match option.get("type").and_then(Value::as_str) {
+        None | Some("select") => {}
+        Some("boolean") => {
+            let on = |value: bool, name: &str| AcpConfigValue {
+                value: value.to_string(),
+                name: name.to_owned(),
+                description: None,
+            };
+            return Some(AcpConfigOption {
+                id: text(option, "id")?,
+                name: text(option, "name").unwrap_or_default(),
+                kind: AcpConfigOptionKind::Boolean,
+                description: text(option, "description"),
+                category: text(option, "category"),
+                current_value: option
+                    .get("currentValue")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    .to_string(),
+                values: vec![on(true, "On"), on(false, "Off")],
+            });
+        }
+        Some(_) => return None,
+    }
     let mut values = Vec::new();
     for entry in option
         .get("options")
@@ -139,6 +166,7 @@ fn config_option(option: &Value) -> Option<AcpConfigOption> {
     Some(AcpConfigOption {
         id: text(option, "id")?,
         name: text(option, "name").unwrap_or_default(),
+        kind: AcpConfigOptionKind::Select,
         description: text(option, "description"),
         category: text(option, "category"),
         current_value: option
@@ -2456,16 +2484,33 @@ impl Engine {
                 }
             }
         } else {
+            // A boolean option takes a boolean (`type: boolean`); a select
+            // the value's ID, as ACP v1 sends it.
+            let boolean = live
+                .options
+                .iter()
+                .any(|option| option.id == id && option.kind == AcpConfigOptionKind::Boolean);
+            let request = if boolean {
+                wire::SetConfigOptionRequest {
+                    session_id: &live.acp_session_id,
+                    config_id: id,
+                    value_type: Some("boolean"),
+                    value: Value::Bool(value == "true"),
+                }
+            } else {
+                wire::SetConfigOptionRequest {
+                    session_id: &live.acp_session_id,
+                    config_id: id,
+                    value_type: None,
+                    value: Value::from(value),
+                }
+            };
             let response = live
                 .process
                 .peer
                 .request::<_, wire::SetConfigOptionResponse>(
                     wire::method::SESSION_SET_CONFIG_OPTION,
-                    &wire::SetConfigOptionRequest {
-                        session_id: &live.acp_session_id,
-                        config_id: id,
-                        value,
-                    },
+                    &request,
                 )
                 .await
                 .map_err(|error| agent_error_message(&error))?;

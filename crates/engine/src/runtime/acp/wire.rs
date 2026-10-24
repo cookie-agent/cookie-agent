@@ -163,7 +163,11 @@ pub(crate) struct SetModeRequest<'a> {
 pub(crate) struct SetConfigOptionRequest<'a> {
     pub session_id: &'a str,
     pub config_id: &'a str,
-    pub value: &'a str,
+    /// `boolean` for a boolean option's value; left out for a select's,
+    /// whose value is the chosen value's ID.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub value_type: Option<&'a str>,
+    pub value: Value,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

@@ -1,7 +1,7 @@
 //! What the client protocol and session history say about ACP agents
 //! (`docs/site/specs/acp-agents.md` sections 5, 10, and 11; client protocol
 //! 1.17.0, notices, steering, and tool presentations 1.20.0, context use
-//! 1.23.0).
+//! and boolean options 1.23.0).
 //!
 //! The daemon records the ACP session a cookie session talks to
 //! (`acp_session_started`) and what the agent reports about it
@@ -51,6 +51,28 @@ pub struct AcpCommand {
     pub input_hint: Option<String>,
 }
 
+crate::open_enum! {
+    /// The control an [`AcpConfigOption`] is (client protocol 1.23.0). An
+    /// unknown kind reads as a select, whose `values` a client lists.
+    #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum AcpConfigOptionKind {
+        /// One of `values`.
+        #[default]
+        Select,
+        /// On or off: `current_value` is `true` or `false`, and `values`
+        /// lists both (`true`, named On, and `false`, named Off), so a
+        /// client that reads every option as a select can still set it.
+        Boolean,
+    }
+}
+
+impl AcpConfigOptionKind {
+    fn is_select(&self) -> bool {
+        *self == Self::Select
+    }
+}
+
 /// One config option an ACP agent offers in a session, such as its model,
 /// mode, or reasoning effort. An agent that offers modes but no mode option
 /// is shown as an option `mode` of category `mode`.
@@ -58,6 +80,10 @@ pub struct AcpCommand {
 pub struct AcpConfigOption {
     pub id: String,
     pub name: String,
+    /// The option's control: a select (the default, left out) or a boolean
+    /// (client protocol 1.23.0).
+    #[serde(default, skip_serializing_if = "AcpConfigOptionKind::is_select")]
+    pub kind: AcpConfigOptionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// The agent's label for what the option is, such as `model`, `mode`,
@@ -208,6 +234,8 @@ impl AcpSessionUpdate {
 pub struct SessionAgentOptionSetParams {
     pub session_id: SessionId,
     pub option_id: String,
+    /// One of the option's `values`: `true` or `false` for a boolean
+    /// option.
     pub value: String,
 }
 

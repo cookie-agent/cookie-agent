@@ -42,6 +42,9 @@ Each prompt's last text block is a command:
   mcp list               lists cookie's tools through the bridge
   mcp call <tool> <json> calls one of cookie's tools through the bridge
 
+Its config options are `mode` (unless ACP_FIXTURE_MODES), `model`, and `fast`, a
+boolean when the client takes boolean options (else an on/off select).
+
 Environment:
 
   ACP_FIXTURE_LOG        a file every message received is appended to
@@ -139,6 +142,17 @@ def options(session):
         "currentValue": session["model"],
         "options": [{"value": "small", "name": "Small"}, {"value": "large", "name": "Large"}],
     })
+    # As Claude Code's fast mode: a boolean for a client that takes them,
+    # else an on/off select.
+    fast = {"id": "fast", "name": "Fast mode", "category": "model_config"}
+    if client_capabilities.get("session", {}).get("configOptions", {}).get("boolean") is not None:
+        fast.update({"type": "boolean", "currentValue": session.get("fast", False)})
+    else:
+        fast.update({
+            "type": "select", "currentValue": "on" if session.get("fast") else "off",
+            "options": [{"value": "on", "name": "On"}, {"value": "off", "name": "Off"}],
+        })
+    result.append(fast)
     return result
 
 
@@ -497,7 +511,16 @@ def handle(message):
         respond(request_id, session_result(session_id, False))
     elif method == "session/set_config_option":
         session = sessions[params["sessionId"]]
-        session[params["configId"]] = params["value"]
+        value = params["value"]
+        if params["configId"] == "fast":
+            if params.get("type") == "boolean" and isinstance(value, bool):
+                pass
+            elif value in ("on", "off"):
+                value = value == "on"
+            else:
+                fail(request_id, -32602, f"invalid value for fast: {value!r}")
+                return
+        session[params["configId"]] = value
         respond(request_id, {"configOptions": options(session)})
     elif method == "session/set_mode":
         sessions[params["sessionId"]]["mode"] = params["modeId"]

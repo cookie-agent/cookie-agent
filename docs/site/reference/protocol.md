@@ -809,6 +809,12 @@ over the Agent Client Protocol (see the
   its latest `usage_update`, recorded as it changes. The agent's turns
   report no usage, so clients show `used` as the session's context, of a
   window of `size` tokens, until a model's turn reports its own.
+- Since 1.23.0, an option of `options` may have `kind: boolean` (left out
+  for a select): an on/off option whose `current_value` is `true` or
+  `false` and whose `values` are `true` (On) and `false` (Off), so a client
+  that reads every option as a select can still set it.
+  `session.agent_option.set` takes `"true"` or `"false"` for it, and the
+  daemon sends the agent a boolean.
 - The agent's turns are model turns of `acp/<agent ID>`; the calls it
   reports are tool calls whose `tool.source` is `acp` (`agent`,
   `runtime_id`), and the calls it makes of cookie's tools through the MCP

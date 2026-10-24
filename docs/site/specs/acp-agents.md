@@ -757,3 +757,18 @@ unchanged):
   partial result, marked incomplete like every failed call's, and says
   `the command exited with code <n>` when its content says nothing; calls
   left open when the round ends keep theirs the same way.
+- **Boolean options.** `initialize` declares
+  `clientCapabilities.session.configOptions.boolean: {}`, so an agent sends
+  its on/off options as `type: boolean` (Claude Code's `fast`, category
+  `model_config`) rather than an `on`/`off` select. `AcpConfigOption.kind`
+  (`select`, left out, or `boolean`) says which; a boolean's
+  `current_value` is `true` or `false` and its `values` list both (`true`
+  named On, `false` Off), so a client older than 1.23.0 still shows a
+  two-value select that sets it. `session.agent_option.set` keeps its
+  string `value` (`"true"` or `"false"`), and the daemon sends
+  `session/set_config_option` with `type: boolean` and a JSON boolean; a
+  select's request is unchanged (no `type`). `acp.config` takes `"true"`
+  or `"false"` for a boolean. An option of a type cookie does not know is
+  left out, as ACP asks. The TUI's `/options` toggles a boolean from its
+  row and stays open; the web's Agent options sheet shows a switch
+  (`role="switch"`).
