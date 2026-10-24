@@ -17,6 +17,9 @@ use super::support::*;
 #[tokio::test]
 async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
     let mut app = app_with_approval().await;
+    // The app takes its colours from the environment; these styles are
+    // the true-colour default theme's.
+    app.theme = Theme::default();
     // Draw once to populate the hit map.
     let _ = rendered_frame(&mut app, 120, 40);
     let target = app.hit_map.approval_actions[0].rect;

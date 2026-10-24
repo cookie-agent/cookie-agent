@@ -200,12 +200,28 @@ fn user_messages_render_markdown_and_keep_typed_newlines() {
 /// A long transcript lays its code out plain and highlights only what is
 /// within a viewport of the visible rows, before the frame draws it; code
 /// scrolled into view is highlighted in the frame that shows it, on the
-/// rows it already had.
+/// rows it already had — in the styles a full layout in the same theme
+/// gives it, at every colour level.
 #[tokio::test]
 async fn code_highlights_as_it_comes_into_view() {
+    use crate::theme::{ColorLevel, ThemeKind};
+
+    for colors in [
+        ColorLevel::TrueColor,
+        ColorLevel::Ansi256,
+        ColorLevel::Ansi16,
+    ] {
+        // The test app's theme follows the environment; pin it.
+        let theme = Theme::new(ThemeKind::Default, colors);
+        code_highlights_as_it_comes_into_view_in(theme).await;
+    }
+}
+
+async fn code_highlights_as_it_comes_into_view_in(theme: Theme) {
     use cookie_agent_protocol::{AttemptId, EventPayload, RunId, SessionId};
 
     let mut app = test_app().await;
+    app.theme = theme;
     let session = SessionId::new_v7();
     let mut events = vec![session_created(session, 1)];
     let mut seq = 1;
@@ -243,12 +259,18 @@ async fn code_highlights_as_it_comes_into_view() {
 
     let code_rows = |app: &App| {
         let width = app.layout_cache.key.expect("laid out").width;
-        let reference = transcript_layout(&app.store.sessions[&session], None, width)
-            .lines
-            .into_iter()
-            .filter(|line| line.to_string().contains("let value_"))
-            .map(|line| (line.to_string(), line))
-            .collect::<std::collections::HashMap<_, _>>();
+        let reference = transcript_layout_with(
+            &app.store.sessions[&session],
+            None,
+            width,
+            &app.theme,
+            &crate::markdown::SyntectHighlighter::default(),
+        )
+        .lines
+        .into_iter()
+        .filter(|line| line.to_string().contains("let value_"))
+        .map(|line| (line.to_string(), line))
+        .collect::<std::collections::HashMap<_, _>>();
         // Every code row, with whether it is highlighted as a full layout
         // would highlight it.
         let rows = app
@@ -275,12 +297,17 @@ async fn code_highlights_as_it_comes_into_view() {
     assert!(view.start > 0, "the transcript overflows the view");
     for (index, highlighted) in &rows {
         if view.contains(index) {
-            assert!(highlighted, "visible code row {index} is highlighted");
+            assert!(
+                highlighted,
+                "visible code row {index} is highlighted ({:?})",
+                app.theme.key()
+            );
         }
     }
     assert!(
         rows.iter().any(|(_, highlighted)| !highlighted),
-        "code far out of view stays plain"
+        "code far out of view stays plain ({:?})",
+        app.theme.key()
     );
 
     app.conversation_scroll.top();
@@ -291,7 +318,8 @@ async fn code_highlights_as_it_comes_into_view() {
         if view.contains(&index) {
             assert!(
                 highlighted,
-                "code row {index} scrolled into view is highlighted"
+                "code row {index} scrolled into view is highlighted ({:?})",
+                app.theme.key()
             );
         }
     }

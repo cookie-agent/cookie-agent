@@ -1397,6 +1397,9 @@ async fn alt_enter_queues_while_enter_steers_and_ctrl_enter_adds_a_line() {
 #[tokio::test]
 async fn strip_entries_highlight_on_hover() {
     let (mut app, session, run) = app_with_active_run().await;
+    // The app takes its colours from the environment; these styles are
+    // the true-colour default theme's.
+    app.theme = Theme::default();
     assert!(app.store.apply_event(admitted(session, 1, run, "first")));
     assert!(app.store.apply_event(admitted(session, 2, run, "second")));
     rendered_frame(&mut app, 80, 24);
