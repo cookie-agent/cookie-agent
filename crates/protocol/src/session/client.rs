@@ -2163,7 +2163,7 @@ async fn route_notification(
 /// own, so one this build cannot read fails neither the page nor the replay.
 #[derive(Deserialize)]
 struct ReplayPageWire {
-    events: Vec<Value>,
+    events: Vec<Box<RawValue>>,
     #[serde(default)]
     has_more: bool,
     #[serde(default)]
@@ -2183,23 +2183,29 @@ impl ReplayPageWire {
     /// payload; one whose envelope it cannot read is dropped with a
     /// [`ClientDelivery::Diagnostic`].
     fn read(self, session_id: SessionId, deliveries: &Deliveries) -> ReplayPage {
-        let last_seq = self
-            .events
-            .last()
-            .and_then(|event| event.get("seq"))
-            .and_then(Value::as_u64);
+        let count = self.events.len();
+        let mut last_seq = None;
         let events = self
             .events
             .into_iter()
-            .filter_map(|event| {
-                let seq = event.get("seq").cloned();
-                match serde_json::from_value::<ClientEvent>(event) {
-                    Ok(event) => Some(event),
+            .enumerate()
+            .filter_map(|(index, event)| {
+                match serde_json::from_str::<ClientEvent>(event.get()) {
+                    Ok(event) => {
+                        if index + 1 == count {
+                            last_seq = Some(event.seq);
+                        }
+                        Some(event)
+                    }
                     Err(error) => {
+                        let seq = event_seq(&event);
+                        if index + 1 == count {
+                            last_seq = seq;
+                        }
                         let _ = deliveries.send(ClientDelivery::Diagnostic {
                             message: format!(
                                 "dropped an event of session {session_id} (seq {}) this client cannot read: {error}",
-                                seq.unwrap_or(Value::Null)
+                                seq.map_or_else(|| "null".to_owned(), |seq| seq.to_string())
                             ),
                         });
                         None
@@ -2209,6 +2215,18 @@ impl ReplayPageWire {
             .collect();
         ReplayPage { events, last_seq }
     }
+}
+
+/// The sequence of an event this client could not read, when its envelope
+/// has one.
+fn event_seq(event: &RawValue) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Seq {
+        seq: Option<u64>,
+    }
+    serde_json::from_str::<Seq>(event.get())
+        .ok()
+        .and_then(|event| event.seq)
 }
 
 /// Checks that a message is exactly a response (an id with one of a result

@@ -1654,3 +1654,36 @@ async fn unknown_outcomes_and_methods_fail_only_their_call() {
     let error = list.await.expect("task").expect_err("unknown method");
     assert_eq!(error.to_string(), "the daemon is too old for plugins.list");
 }
+
+#[test]
+fn a_replay_page_drops_an_event_it_cannot_read_and_resumes_after_it() {
+    let session_id = SessionId::new_v7();
+    let good = serde_json::to_value(event(session_id, 1)).expect("event");
+    let mut unknown = serde_json::to_value(event(session_id, 2)).expect("event");
+    unknown["payload"] = serde_json::json!({"type": "from_a_newer_build", "field": 1});
+    let mut broken = serde_json::to_value(event(session_id, 3)).expect("event");
+    broken
+        .as_object_mut()
+        .expect("an object")
+        .remove("session_id");
+    let page = serde_json::json!({"events": [good, unknown, broken], "has_more": true});
+    let page: ReplayPageWire = serde_json::from_str(&page.to_string()).expect("page");
+    let (deliveries, mut delivered) = delivery_channel();
+    let read = page.read(session_id, &deliveries);
+    let seqs = read
+        .events
+        .iter()
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    assert_eq!(seqs, [1, 2]);
+    assert!(matches!(
+        &read.events[1].payload,
+        crate::Open::Unknown { tag, .. } if tag == "from_a_newer_build"
+    ));
+    // The next page starts after the dropped event.
+    assert_eq!(read.last_seq, Some(3));
+    let Ok(ClientDelivery::Diagnostic { message }) = delivered.try_recv() else {
+        panic!("no diagnostic");
+    };
+    assert!(message.contains("(seq 3)"), "{message}");
+}
