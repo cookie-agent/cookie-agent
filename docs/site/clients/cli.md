@@ -681,6 +681,9 @@ escalation is rejected and cancels the root run with exit code `3`. In
 `auto-approve-y`, an escalation is approved once and the run continues
 automatically. Other escalations anywhere in the session tree are rejected;
 the runner cancels the root run and waits for the matching terminal event.
+A question an [ACP agent](../extend/acp-agents.md#questions-from-the-agent)
+asks anywhere in the tree is declined, with the reason "a headless `cookie
+run` has no one to answer", and the run goes on.
 
 `--allowed-tools` may be repeated or comma-delimited and accepts any
 permission action, such as `read`, `write`, `bash`, `webfetch`, `delegate`, or

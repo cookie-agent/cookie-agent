@@ -426,6 +426,17 @@ closes the sheet in the others. On a phone the sheet fills the screen.
   daemon's views.
 - **Approvals.** When a tool call needs an answer, the bottom bar says so.
   Open it to approve once, approve for the session tree, or reject.
+- **Questions.** An [ACP agent's question](../extend/acp-agents.md#questions-from-the-agent)
+  shows as a card above the composer, naming who asks (with *1 of N* when
+  several wait), and the bottom bar says *waiting for your answer*; a
+  subagent's delegate row says the same. A form lists its fields in order:
+  radios for a choice (*No choice* for an optional one), checkboxes for a
+  multiple choice and for yes or no, and text, email, URL, date, or number
+  boxes, each with its hint and a `*` when required. **Submit** names the
+  first field that does not fit under it and sends nothing until it does;
+  **Decline** and **Cancel** answer at once. A page to open shows the whole
+  URL with its host in bold and any warning, an **Open** link that only your
+  click follows (in a new tab), then **Done**, **Decline**, and **Cancel**.
 - **Compacting.** **Compact context** opens a sheet with an optional
   **Focus** (what the summary should keep) and **Compact**. While it
   compacts, the sheet offers **Cancel compaction**, as the composer's

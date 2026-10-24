@@ -653,6 +653,25 @@ several, their attachment names, for example `local_web, labpc_api`. It
 shows `global` when that is all the session attaches, and `no runtimes` for
 a session with none.
 
+## Questions
+
+An [ACP agent's question](../extend/acp-agents.md#questions-from-the-agent)
+docks in the same place, titled `<agent> asks · waiting on you`, while no
+approval is on top. A form lists its fields: radios for a choice, boxes for
+a multiple choice and for yes or no, and a line for text and numbers, each
+with its title, what it takes (`required`, bounds, a format), and its
+description. Tab and Shift-Tab move between the fields and the buttons, the
+arrows between a field's choices (past the last, on to the next field),
+Space picks a choice or flips a box, and Enter picks and moves on, or
+presses the focused button. **Submit** checks the form and, when a field
+does not fit, names it under the field and moves there; **Decline** and
+**Cancel** (Esc) answer at once. A page to open shows its host, the whole
+URL, and any warning; focus starts on **Copy link** (`c`), and **Done**
+answers once you have finished there. The panel owns the keyboard and
+pastes (a paste goes into the focused text field), the wheel scrolls it
+when it is long, Ctrl-C cancels the run, and the answers wait out the same
+400 ms as an approval's.
+
 ## Runtimes panel
 
 `/runtime` (titled *Attached runtimes*) lists the selected session's

@@ -314,6 +314,35 @@ reject-once option, never an "always" one, so a repeat comes back to your
 rules. In the agent's auto mode, which cookie picks when it offers one, the
 agent asks about few calls.
 
+## Questions from the agent
+
+An agent can ask you something mid-turn (ACP elicitation): Claude Code's
+`AskUserQuestion` arrives as a form, and an MCP server that needs you to
+sign in as a page to open. Cookie advertises both kinds, so the agent asks
+instead of guessing or failing. The run waits on you meanwhile, and the
+clients show the question in the viewed session:
+
+- **A form** lists its fields in order, each with its title, description,
+  and what it takes: a choice (pick one), a multiple choice (pick any), yes
+  or no, text, or a number, and whether it is required. **Submit** sends
+  your answers; cookie checks them against the form first and names a field
+  that does not fit. **Decline** says no, and **Cancel** dismisses the
+  question without an answer. With Claude Code, each question comes with an
+  *Other* field for an answer of your own; leaving everything empty skips
+  the question.
+- **A page to open** shows the whole URL and its host, and warns when it is
+  not HTTPS, has a punycode host, or carries a user name. Open it yourself
+  (cookie never opens or fetches it), finish there, then choose **Done**;
+  or **Decline** or **Cancel**. When the agent reports that you finished
+  there before you choose, cookie answers Done for you.
+
+No permission rule or mode answers a question: it is the agent asking you,
+not an action. Where no one is there to answer, cookie declines it at once
+with the reason, so the turn goes on: a session in `auto_approve_n` (a cron
+run's default mode), and a headless `cookie run`. Interrupting the turn
+cancels a question still waiting. The transcript keeps a line for each
+answered question (an *info* event).
+
 ## Cookie's tools for the agent: the MCP bridge
 
 Each ACP session gets one stdio MCP server, `cookie`, whose command is
@@ -390,6 +419,14 @@ each call decided by the rules as a model's would be.
   subagent's report arrive the same way. An agent without it takes the message with its next turn: the
   web client's Steer button then reads "Queue (this agent can't be
   steered)", and the TUI's pending strip says the agent can't be steered.
+- **Questions.** A question from the agent (see [Questions from the
+  agent](#questions-from-the-agent)) docks a panel above the TUI's status
+  bar, titled `<agent> asks · waiting on you`: Tab moves between the fields
+  and the buttons, the arrows between a field's choices, Space picks or
+  ticks, Enter picks and moves on or presses the focused button, `c` copies
+  a page's link, and Esc cancels. The web client shows it as a card above
+  the composer, with the same fields and buttons and an *Open* link for a
+  page, and its bottom bar says *waiting for your answer*.
 - **Interrupting** a turn cancels it on the agent.
 - **Compaction.** `/compact` (in the TUI, the web's compaction action)
   runs the agent's own `compact` command when it offers one (Claude Code
@@ -466,6 +503,10 @@ note.
   Revert or fork to before the agent's first reply, or go on from where
   the session is. "cookie has not yet checked" clears after the agent's
   next reply.
+- **The agent's question was declined without you seeing it.** The session
+  runs unattended: its permission mode is `auto_approve_n` (a cron run's
+  default), or it is a headless `cookie run`. The transcript's info line
+  says so; switch the mode to answer questions yourself.
 - **The agent does not see cookie's tools.** `cookie runtime mcp-bridge`
   must run on the runtime's machine; the session says when the bridge could
   not be opened.
