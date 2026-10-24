@@ -10,7 +10,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -77,6 +77,9 @@ pub struct UserSkillRoots {
 
 pub(crate) struct OfficialSkillsState {
     root: PathBuf,
+    /// The versions of the skills kept, by name: the kept index as the
+    /// engine opened it, then as each refresh left it.
+    versions: Mutex<Arc<BTreeMap<String, String>>>,
     source_url: Mutex<String>,
     last_error: Mutex<Option<String>>,
     user_roots: Mutex<Option<UserSkillRoots>>,
@@ -85,8 +88,10 @@ pub(crate) struct OfficialSkillsState {
 
 impl OfficialSkillsState {
     pub(crate) fn new(data_dir: &Path) -> Self {
+        let root = cookie_agent_config::official_skills_root(data_dir);
         Self {
-            root: cookie_agent_config::official_skills_root(data_dir),
+            versions: Mutex::new(Arc::new(versions(read_kept(&root)))),
+            root,
             source_url: Mutex::new(OFFICIAL_SKILLS_URL.to_owned()),
             last_error: Mutex::new(None),
             user_roots: Mutex::new(None),
@@ -118,11 +123,8 @@ impl Engine {
 
     /// The official skills kept, by name, with their versions.
     #[must_use]
-    pub fn official_skills(&self) -> BTreeMap<String, String> {
-        read_kept(&self.inner.official_skills.root)
-            .into_iter()
-            .map(|skill| (skill.name, skill.version))
-            .collect()
+    pub fn official_skills(&self) -> Arc<BTreeMap<String, String>> {
+        Arc::clone(&lock(&self.inner.official_skills.versions))
     }
 
     /// Why the last refresh failed, as a configuration diagnostic.
@@ -146,25 +148,33 @@ impl Engine {
         let url = lock(&state.source_url).clone();
         let mut report = refresh(&url, &state.root).await;
         report.enabled = true;
+        *lock(&state.versions) = Arc::new(report.skills.clone());
         *lock(&state.last_error) = report.error.clone();
         if !report.updated.is_empty() || !report.removed.is_empty() {
-            self.reload_daemon_skills();
+            self.reload_daemon_skills().await;
         }
         report
     }
 
     /// Reloads the global runtime's skills from the user roots and the
     /// official folder, when the roots are known.
-    fn reload_daemon_skills(&self) {
+    async fn reload_daemon_skills(&self) {
         let Some(roots) = lock(&self.inner.official_skills.user_roots).clone() else {
             return;
         };
-        match cookie_agent_config::load_skill_roots_with_official(
-            Some(&self.inner.official_skills.root),
-            roots.shared.as_deref(),
-            roots.user.as_deref(),
-            &[],
-        ) {
+        let root = self.inner.official_skills.root.clone();
+        let loaded = local(move || {
+            cookie_agent_config::load_skill_roots_with_official(
+                Some(&root),
+                roots.shared.as_deref(),
+                roots.user.as_deref(),
+                &[],
+            )
+            .map_err(|error| error.to_string())
+        })
+        .await
+        .and_then(|loaded| loaded);
+        match loaded {
             Ok(skills) => self.inner.runtimes.global().replace_skills(skills),
             Err(error) => {
                 *lock(&self.inner.official_skills.last_error) =
@@ -181,10 +191,28 @@ fn read_kept(root: &Path) -> Vec<IndexSkill> {
         .unwrap_or_default()
 }
 
+/// The versions of `skills`, by name.
+fn versions(skills: impl IntoIterator<Item = IndexSkill>) -> BTreeMap<String, String> {
+    skills
+        .into_iter()
+        .map(|skill| (skill.name, skill.version))
+        .collect()
+}
+
+/// Runs the disk work `work` off the async workers.
+async fn local<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    super::blocking_io::run(work)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// One refresh against the source at `url` into `root`.
 async fn refresh(url: &str, root: &Path) -> OfficialSkillsReport {
     let mut report = OfficialSkillsReport::default();
-    let kept = read_kept(root);
+    let kept = {
+        let root = root.to_owned();
+        local(move || read_kept(&root)).await.unwrap_or_default()
+    };
     let client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(5))
         .connect_timeout(Duration::from_secs(10))
@@ -195,7 +223,7 @@ async fn refresh(url: &str, root: &Path) -> OfficialSkillsReport {
         Ok(client) => client,
         Err(error) => {
             report.error = Some(error.to_string());
-            report.skills = kept.into_iter().map(|s| (s.name, s.version)).collect();
+            report.skills = versions(kept);
             return report;
         }
     };
@@ -214,7 +242,7 @@ async fn refresh(url: &str, root: &Path) -> OfficialSkillsReport {
         Ok(index) => index,
         Err(error) => {
             report.error = Some(error);
-            report.skills = kept.into_iter().map(|s| (s.name, s.version)).collect();
+            report.skills = versions(kept);
             return report;
         }
     };
@@ -259,42 +287,61 @@ async fn refresh(url: &str, root: &Path) -> OfficialSkillsReport {
             }
         }
     }
-    // Everything else in the folder goes: unlisted skills, skills this
-    // version does not satisfy, and leftovers.
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || now_kept.contains_key(&name) {
-                continue;
-            }
-            let path = entry.path();
-            let removed = if path.is_dir() {
-                std::fs::remove_dir_all(&path)
-            } else {
-                std::fs::remove_file(&path)
-            };
-            if removed.is_ok() && kept_by_name.contains_key(&name) {
-                report.removed.push(name);
-            }
-        }
-    }
-    let record = now_kept.values().cloned().collect::<Vec<_>>();
-    if let Err(error) = write_atomically(
-        &root.join(KEPT_INDEX),
-        &serde_json::to_vec_pretty(&record).unwrap_or_default(),
-    ) {
+    let (removed, written) = {
+        let root = root.to_owned();
+        let record = now_kept.values().cloned().collect::<Vec<_>>();
+        let previously = kept_by_name.keys().cloned().collect::<BTreeSet<_>>();
+        local(move || remove_others_and_record(&root, &record, &previously))
+            .await
+            .unwrap_or_else(|error| (Vec::new(), Err(error)))
+    };
+    report.removed = removed;
+    if let Err(error) = written {
         refusals.push(format!(
             "the record of kept skills was not written: {error}"
         ));
     }
-    report.skills = now_kept
-        .into_values()
-        .map(|skill| (skill.name, skill.version))
-        .collect();
+    report.skills = versions(now_kept.into_values());
     if !refusals.is_empty() {
         report.error = Some(refusals.join("; "));
     }
     report
+}
+
+/// Removes everything in `root` but the skills of `record`, the kept index,
+/// and other dot files: unlisted skills, skills this version does not
+/// satisfy, and leftovers. Then writes `record` as the kept index. The
+/// removed skills that were `previously` kept, and whether the index was
+/// written.
+fn remove_others_and_record(
+    root: &Path,
+    record: &[IndexSkill],
+    previously: &BTreeSet<String>,
+) -> (Vec<String>, Result<(), String>) {
+    let mut removed = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || record.iter().any(|skill| skill.name == name) {
+                continue;
+            }
+            let path = entry.path();
+            let gone = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if gone.is_ok() && previously.contains(&name) {
+                removed.push(name);
+            }
+        }
+    }
+    let written = write_atomically(
+        &root.join(KEPT_INDEX),
+        &serde_json::to_vec_pretty(record).unwrap_or_default(),
+    )
+    .map_err(|error| error.to_string());
+    (removed, written)
 }
 
 fn valid_entry(skill: &IndexSkill) -> Result<(), String> {
@@ -343,16 +390,24 @@ async fn update_skill(
     directory: &Path,
     skill: &IndexSkill,
 ) -> Result<bool, String> {
+    // The files whose copy is missing or differs, found off the workers.
+    let stale = {
+        let directory = directory.to_owned();
+        let files = skill.files.clone();
+        local(move || {
+            files
+                .into_iter()
+                .filter(|file| {
+                    !std::fs::read(directory.join(&file.path))
+                        .is_ok_and(|bytes| sha256(&bytes).eq_ignore_ascii_case(&file.sha256))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await?
+    };
     let mut downloads = Vec::new();
-    for file in &skill.files {
+    for file in &stale {
         let local = directory.join(&file.path);
-        let current = std::fs::read(&local).ok();
-        if current
-            .as_deref()
-            .is_some_and(|bytes| sha256(bytes).eq_ignore_ascii_case(&file.sha256))
-        {
-            continue;
-        }
         let bytes = fetch(
             client,
             &format!("{base}/{}/{}", skill.name, file.path),
@@ -368,6 +423,23 @@ async fn update_skill(
         }
         downloads.push((local, bytes));
     }
+    let directory = directory.to_owned();
+    let listed = skill
+        .files
+        .iter()
+        .map(|file| directory.join(&file.path))
+        .collect::<BTreeSet<_>>();
+    local(move || install(&directory, downloads, &listed)).await?
+}
+
+/// Checks a downloaded `SKILL.md` loads, writes `downloads` into
+/// `directory`, and removes the files there not `listed`. Whether anything
+/// changed.
+fn install(
+    directory: &Path,
+    downloads: Vec<(PathBuf, Vec<u8>)>,
+    listed: &BTreeSet<PathBuf>,
+) -> Result<bool, String> {
     if let Some((_, skill_md)) = downloads
         .iter()
         .find(|(path, _)| path.ends_with("SKILL.md") && path.parent() == Some(directory))
@@ -386,13 +458,8 @@ async fn update_skill(
     for (path, bytes) in downloads {
         write_atomically(&path, &bytes).map_err(|error| error.to_string())?;
     }
-    let listed = skill
-        .files
-        .iter()
-        .map(|file| directory.join(&file.path))
-        .collect::<BTreeSet<_>>();
     let mut removed_any = false;
-    remove_unlisted(directory, &listed, &mut removed_any);
+    remove_unlisted(directory, listed, &mut removed_any);
     Ok(changed || removed_any)
 }
 

@@ -126,7 +126,7 @@ async fn a_refresh_adds_changes_and_removes_skills_as_the_index_says() {
         "a skill this version does not satisfy is not installed"
     );
     assert_eq!(
-        fixture.engine.official_skills(),
+        *fixture.engine.official_skills(),
         BTreeMap::from([
             ("alpha".to_owned(), "1.0.0".to_owned()),
             ("beta".to_owned(), "1.0.0".to_owned())
@@ -165,6 +165,27 @@ async fn a_refresh_adds_changes_and_removes_skills_as_the_index_says() {
     assert_eq!(names(&report.removed), ["alpha"]);
     assert!(!root.join("alpha").exists());
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_kept_versions_are_known_again_after_a_restart() {
+    let fixture = fixture("");
+    let routes = Routes::default();
+    let url = serve(Arc::clone(&routes)).await;
+    fixture.engine.set_official_skills_url(&url);
+    publish(
+        &routes,
+        &[("alpha", "1.2.0", ">=0.1.0", skill_md("alpha", "First."))],
+    );
+    fixture.engine.refresh_official_skills().await;
+    fixture.engine.shutdown().await;
+
+    let reopened = crate::runtime::tests::support::reopen_engine(&fixture);
+    assert_eq!(
+        *reopened.official_skills(),
+        BTreeMap::from([("alpha".to_owned(), "1.2.0".to_owned())])
+    );
+    reopened.shutdown().await;
 }
 
 #[tokio::test]
