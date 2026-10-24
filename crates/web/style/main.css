@@ -130,21 +130,24 @@ html.dark {
   }
 }
 
-/* The transcript's rows, and the calls and text of a long reply, are laid
-   out and painted only near the screen: a long session scrolls and
-   streams at the cost of what shows. Each keeps the height it last showed
-   at, so the scrollbar, scroll anchoring, and the follow of the end hold
-   still; the margin keeps focus rings in. The pinned rows' chips reach
-   past their row for a finger, so they are always drawn. Find in page
-   still finds text in rows it does not draw. */
-#transcript .transcript-item:not(:has([data-pinned-rows])) {
-  content-visibility: auto;
+/* The transcript's rows, and the parts of a long reply, are laid out and
+   painted only near the screen: a long session scrolls and streams at the
+   cost of what shows. Each keeps the height it last showed at, so the
+   scrollbar, scroll anchoring, and the follow of the end hold still; the
+   margin keeps focus rings in. Only a row or part the page marked drawn
+   (`data-drawn`, once that height is noted) skips: a new one would
+   shrink to its estimate before its first frame. The pinned rows' chips
+   reach past their row for a finger, so they are always drawn. Find in
+   page still finds text in rows it does not draw. */
+#transcript .transcript-item {
   contain-intrinsic-block-size: auto 4rem;
-  overflow-clip-margin: 0.5rem;
 }
-#transcript .transcript-item :is([data-tool], [data-reply-text]) {
-  content-visibility: auto;
+#transcript [data-part] {
   contain-intrinsic-block-size: auto 2.75rem;
+}
+#transcript .transcript-item[data-drawn]:not(:has([data-pinned-rows])),
+#transcript [data-part][data-drawn] {
+  content-visibility: auto;
   overflow-clip-margin: 0.5rem;
 }
 

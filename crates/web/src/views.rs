@@ -1708,11 +1708,20 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
                 _ => String::new(),
             })
         };
+        let node = NodeRef::<html::Div>::new();
+        drawn_later(node);
         return view! {
-            <div class="transcript-item min-w-0" id=row_element_id(id) inner_html=html></div>
+            <div
+                class="transcript-item min-w-0"
+                id=row_element_id(id)
+                node_ref=node
+                inner_html=html
+            ></div>
         }
         .into_any();
     }
+    let node = NodeRef::<html::Div>::new();
+    drawn_later(node);
     let header = Memo::new({
         let row = row.clone();
         move |_| {
@@ -1733,7 +1742,7 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
         parts.with(|parts| part_slots.update(parts.iter().map(|(part, html)| (*part, html))));
     });
     view! {
-        <div class="transcript-item min-w-0" id=row_element_id(id)>
+        <div class="transcript-item min-w-0" id=row_element_id(id) node_ref=node>
             <div class="flex flex-col gap-1">
                 <div class="contents" inner_html=move || header.get().to_string()></div>
                 <For
@@ -1780,10 +1789,23 @@ fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl Int
                 _ => String::new(),
             })
         };
-        return view! { <div class="contents" id=part_element_id(row, id) inner_html=html></div> }
-            .into_any();
+        // A block of its own, not `contents`: the node stays while its
+        // HTML changes, so it keeps the height it last showed at.
+        let node = NodeRef::<html::Div>::new();
+        drawn_later(node);
+        return view! {
+            <div
+                class="min-w-0"
+                data-part
+                id=part_element_id(row, id)
+                node_ref=node
+                inner_html=html
+            ></div>
+        }
+        .into_any();
     }
     let node = NodeRef::<html::Div>::new();
+    drawn_later(node);
     // The blocks on the page, each with the number of nodes it drew.
     let drawn = StoredValue::new(Vec::<(Arc<str>, u32)>::new());
     Effect::new(move |_| {
@@ -1796,7 +1818,26 @@ fn ReplyPart(part: ArcRwSignal<Option<PartHtml>>, row: u64, id: u64) -> impl Int
         };
         drawn.update_value(|drawn| draw_blocks(&element, drawn, &blocks));
     });
-    view! { <div class="markdown" data-reply-text node_ref=node></div> }.into_any()
+    view! { <div class="markdown" data-part node_ref=node></div> }.into_any()
+}
+
+/// Marks the transcript row or reply part `node` as drawn (`data-drawn`)
+/// two frames after it shows, when the page has noted the height it laid
+/// out at. Only a drawn one may skip its contents off screen
+/// (style/main.css): a new one, skipped before its first frame, would
+/// shrink to its estimate, and a reply part redrawn at the end of a turn
+/// would pull the page up to the reply's top, taking the follow with it.
+fn drawn_later(node: NodeRef<html::Div>) {
+    Effect::new(move |_| {
+        let Some(element) = node.get() else {
+            return;
+        };
+        request_animation_frame(move || {
+            request_animation_frame(move || {
+                let _ = element.set_attribute("data-drawn", "");
+            });
+        });
+    });
 }
 
 /// Brings the markdown blocks under `element` from `drawn` to `blocks`:
