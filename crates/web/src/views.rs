@@ -1636,9 +1636,17 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
             <div class="flex flex-col gap-1">
                 <div class="contents" inner_html=move || header.get().to_string()></div>
                 <For
-                    each=move || parts.with(|parts| parts.iter().map(|(id, _)| *id).collect::<Vec<_>>())
-                    key=|id| *id
-                    children=move |id| view! { <ReplyPart parts=parts id=id /> }
+                    each=move || {
+                        parts.with(|parts| {
+                            parts
+                                .iter()
+                                .enumerate()
+                                .map(|(at, (id, _))| (*id, at))
+                                .collect::<Vec<_>>()
+                        })
+                    }
+                    key=|(id, _)| *id
+                    children=move |(id, at)| view! { <ReplyPart parts=parts id=id at=at /> }
                 />
             </div>
         </div>
@@ -1648,14 +1656,20 @@ fn TranscriptRow(rows: Memo<Rows>, id: u64) -> impl IntoView {
 
 /// One part of a reply: a tool call, a thinking block, text. Text keeps the
 /// nodes of its settled markdown blocks and redraws only its open tail.
+/// `at` is where the part was when it showed: it looks there first, so a
+/// reply of many parts does not search them all for each.
 #[component]
-fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, id: u64) -> impl IntoView {
+fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, id: u64, at: usize) -> impl IntoView {
+    let at = StoredValue::new(at);
     let part = Memo::new(move |_| {
         parts.with(|parts| {
-            parts
-                .iter()
-                .find(|(part, _)| *part == id)
-                .map(|(_, html)| html.clone())
+            let hint = at.get_value();
+            let index = match parts.get(hint) {
+                Some((part, _)) if *part == id => Some(hint),
+                _ => parts.iter().position(|(part, _)| *part == id),
+            }?;
+            at.set_value(index);
+            Some(parts[index].1.clone())
         })
     });
     let markdown = untrack(|| part.with(|part| matches!(part, Some(PartHtml::Markdown(_)))));
