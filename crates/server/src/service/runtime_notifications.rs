@@ -52,23 +52,21 @@ impl Server {
 
     /// Sends `onboarding.changed` whenever `onboarding.get`'s answer
     /// changes. It changes only with the configuration or the runtime, both
-    /// of which publish a runtime change, so each publication is a moment to
-    /// compare.
+    /// of which publish a runtime change; the engine computes it once per
+    /// publication, and each connection compares it with what it last sent.
     pub(super) fn start_onboarding_notifications(&self, context: ServerContext) {
-        let mut receiver = self.engine.subscribe_runtime_changes();
-        let engine = self.engine.clone();
-        let mut last = engine.onboarding_state();
+        let mut receiver = self.engine.subscribe_onboarding();
+        let mut last = receiver.borrow_and_update().clone();
         tokio::spawn(async move {
             let shutdown = context.shutdown();
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => return,
-                    changed = receiver.recv() => match changed {
-                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
                     },
                 }
-                let state = engine.onboarding_state();
+                let state = receiver.borrow_and_update().clone();
                 if state == last {
                     continue;
                 }

@@ -1203,6 +1203,8 @@ impl Engine {
             current_models.runtime_revision().clone(),
             &published_runtime.revisions,
         )?;
+        let initial_onboarding =
+            onboarding::onboarding_state(&options.config.runtime, &published_runtime.models);
         let engine = Self {
             inner: Arc::new(Inner {
                 started_config: Arc::new(options.config.clone()),
@@ -1247,7 +1249,7 @@ impl Engine {
                 background: background_tasks::BackgroundTaskState::default(),
                 compaction: CompactionState::default(),
                 uploads: uploads::UploadState::default(),
-                onboarding: onboarding::OnboardingRuntimeState::default(),
+                onboarding: onboarding::OnboardingRuntimeState::new(initial_onboarding),
                 official_skills: official_skills::OfficialSkillsState::new(&options.data_dir),
                 memory_seen: memory_runs::SeenMemories::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
@@ -1702,6 +1704,7 @@ impl Engine {
         self.inner
             .published_runtime
             .store(Arc::clone(&publication.runtime));
+        self.publish_onboarding_state(&publication.runtime.models);
         let _ = self
             .inner
             .runtime_notifications

@@ -112,14 +112,19 @@ pub(crate) struct OnboardingRuntimeState {
     /// The last release list that could not be read, so a retry within
     /// [`RELEASE_LIST_FAILURE_CACHE`] does not ask again.
     list_failure: Mutex<Option<ListFailure>>,
+    /// The onboarding state as of the runtime published last, computed once
+    /// per publication for every connection to compare.
+    state: tokio::sync::watch::Sender<OnboardingState>,
 }
 
-impl Default for OnboardingRuntimeState {
-    fn default() -> Self {
+impl OnboardingRuntimeState {
+    /// The state of an engine that opens in onboarding state `state`.
+    pub(crate) fn new(state: OnboardingState) -> Self {
         Self {
             releases_url: Mutex::new(RELEASES_URL.to_owned()),
             cached: Arc::default(),
             list_failure: Mutex::new(None),
+            state: tokio::sync::watch::Sender::new(state),
         }
     }
 }
@@ -198,6 +203,26 @@ impl Engine {
     pub fn onboarding_state(&self) -> OnboardingState {
         let config = self.inner.config.load();
         onboarding_state(&config.runtime, &self.current_runtime().models)
+    }
+
+    /// The onboarding state, updated with each runtime publication when it
+    /// changes: a configuration or runtime change publishes one.
+    #[must_use]
+    pub fn subscribe_onboarding(&self) -> tokio::sync::watch::Receiver<OnboardingState> {
+        self.inner.onboarding.state.subscribe()
+    }
+
+    /// Recomputes the onboarding state against `models`, about to be
+    /// published, telling subscribers when it changed.
+    pub(crate) fn publish_onboarding_state(&self, models: &CompiledModelRuntime) {
+        let state = onboarding_state(&self.inner.config.load().runtime, models);
+        self.inner.onboarding.state.send_if_modified(|current| {
+            let changed = *current != state;
+            if changed {
+                *current = state;
+            }
+            changed
+        });
     }
 
     /// Where releases are downloaded from instead of [`RELEASES_URL`], for
