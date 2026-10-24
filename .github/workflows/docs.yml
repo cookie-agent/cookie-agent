@@ -1,11 +1,29 @@
 name: Documentation
 
 on:
+  # Pushes and pull requests build the site only when its sources change:
+  # the pages, the Markdown it links to, the MkDocs setup, the build script
+  # and the files it copies in. The workspace rustdoc it also embeds changes
+  # with nearly every commit; CI's `cargo doc` checks that, and the daily
+  # run below republishes it.
   push:
     branches: [main]
+    paths: &docs-paths
+      - 'docs/**'
+      - '**/*.md'
+      - 'mkdocs.yml'
+      - 'requirements-docs.txt'
+      - 'scripts/build-docs.sh'
+      - 'scripts/rustdoc-index.html'
+      - 'crates/protocol/compat/**'
+      - '.github/workflows/docs.yml'
   pull_request:
+    paths: *docs-paths
   release:
     types: [published]
+  # The development docs, workspace rustdoc included, from main once a day.
+  schedule:
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -71,7 +89,7 @@ jobs:
           : "${DOCS_DEPLOY_TOKEN:?Configure DOCS_DEPLOY_TOKEN with Contents write access to cookie-agent/doc}"
           git fetch docs +refs/heads/gh-pages:refs/heads/gh-pages
       - name: Deploy development docs
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           DOCS_DEPLOY_TOKEN: ${{ secrets.DOCS_DEPLOY_TOKEN }}
         run: |
