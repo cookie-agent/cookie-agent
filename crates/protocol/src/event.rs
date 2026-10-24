@@ -2695,6 +2695,8 @@ pub enum EventPayload {
     },
     ModelRequestPrepared {
         attempt_id: AttemptId,
+        // Write-only and costly to compute; dropped at the next major
+        // version (compatibility-v1 spec, section 3.4).
         prompt_fingerprint: Sha256Digest,
     },
     /// Names of the tools sent with this attempt's request, after plugin

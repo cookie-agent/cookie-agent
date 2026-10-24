@@ -153,6 +153,17 @@ handshake. An unknown feature is ignored.
 - **Session history** is not versioned by minor. Its additions follow the
   tolerant rules of section 8.
 
+### 3.4 Queued for the next major
+
+Changes that the 1.x freeze rules out, to make together at the next major
+version of the client, plugin, and runtime protocols and the history format:
+
+- **Drop `ModelRequestPrepared.prompt_fingerprint`.** The engine hashes the
+  whole serialized request before every model call to fill it (about 7% of
+  the daemon's CPU per tool call on long sessions), and nothing reads it.
+  Removing the field, or making it optional, is a major change for all three
+  schemas it appears in. Noted 2026-10-24.
+
 ## 4. Decoding rules
 
 ### 4.1 Tolerate information, reject unknown commands

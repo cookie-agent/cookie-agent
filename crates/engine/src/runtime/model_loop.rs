@@ -2826,7 +2826,9 @@ fn exponential_retry_delay(
 }
 
 /// SHA-256 of the request's JSON form, streamed into the hasher without
-/// materializing the serialized bytes.
+/// materializing the serialized bytes. It fills only
+/// `ModelRequestPrepared.prompt_fingerprint`, which nothing reads and which
+/// goes at the next major version (compatibility-v1 spec, section 3.4).
 fn request_fingerprint(request: &ModelRequest) -> Result<Sha256Digest, EngineError> {
     use sha2::Digest as _;
     struct HashWriter(sha2::Sha256);
