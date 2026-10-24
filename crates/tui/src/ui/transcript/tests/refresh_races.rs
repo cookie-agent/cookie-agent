@@ -334,3 +334,59 @@ async fn an_onboarding_answer_older_than_its_change_is_dropped() {
     );
     updates_until(&mut app, |app| app.onboarding_notice_visible()).await;
 }
+
+fn skill(name: &str) -> Value {
+    json!({
+        "name": name, "description": name, "when_to_use": null, "location": "/skills",
+        "source": "user", "precedence_winner": true, "permission_effect": "allow",
+        "visible": true, "user_invocable": true, "argument_hint": null
+    })
+}
+
+/// Two permission changes read the session's skills twice; the answer to
+/// the first, read before the second change, lands last and is dropped.
+#[tokio::test]
+async fn an_older_skills_answer_landing_last_is_dropped() {
+    let (mut app, recorded, incoming) = held_app().await;
+    let session = cookie_agent_protocol::SessionId::new_v7();
+    assert!(app.store.apply_event(session_created(session, 1)));
+    app.selected = Some(session);
+    for seq in [2, 3] {
+        app.refresh_skills_for_event_for_test(&cookie_agent_protocol::StoredEvent {
+            engine_version: None,
+            origin: None,
+            session_id: session,
+            run_id: None,
+            seq,
+            timestamp: jiff::Timestamp::now(),
+            payload: cookie_agent_protocol::EventPayload::SessionPermissionOverlaySet {
+                overlay: cookie_agent_protocol::SessionPermissionOverlay::empty(),
+            },
+        });
+    }
+    wait_for_recorded_request(&recorded, "skills.list", 2).await;
+    let ids = recorded
+        .lock()
+        .expect("recorded")
+        .iter()
+        .filter(|value| value["method"].as_str() == Some("skills.list"))
+        .filter_map(|value| value["id"].as_i64())
+        .collect::<Vec<_>>();
+    answer(&incoming, ids[1], json!({"skills": [skill("after")]}));
+    answer(&incoming, ids[0], json!({"skills": [skill("before")]}));
+    for _ in 0..2 {
+        let update =
+            tokio::time::timeout(std::time::Duration::from_secs(5), app.rpc_updates_rx.recv())
+                .await
+                .expect("rpc update timeout")
+                .expect("rpc update");
+        app.handle_rpc_update(update);
+    }
+    assert_eq!(
+        app.skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        ["after"]
+    );
+}

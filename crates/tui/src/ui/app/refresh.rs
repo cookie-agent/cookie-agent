@@ -843,8 +843,14 @@ impl App {
                     Err(error) => self.status = format!("permission update failed: {error}"),
                 }
             }
-            RpcUpdate::SkillsLoaded { session_id, result } => {
-                if self.selected != Some(session_id) {
+            RpcUpdate::SkillsLoaded {
+                session_id,
+                read,
+                result,
+            } => {
+                // An older read's answer may predate a permission change
+                // the newer one saw.
+                if self.selected != Some(session_id) || !self.skills_reads.is_current(read) {
                     return;
                 }
                 match result {
@@ -1543,6 +1549,7 @@ impl App {
         #[cfg(test)]
         self.skill_refresh_requests.push(session_id);
         self.skills.clear();
+        let read = self.skills_reads.begin();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -1552,7 +1559,11 @@ impl App {
                 })
                 .await
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::SkillsLoaded { session_id, result });
+            let _ = updates.send(RpcUpdate::SkillsLoaded {
+                session_id,
+                read,
+                result,
+            });
         });
     }
 
