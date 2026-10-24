@@ -69,10 +69,10 @@ The local tier is:
   and errors references in step with the code when those pages changed.
 
 The CI-only tier is the Rust 1.88 MSRV build, the Windows build and tests,
-the full workspace test run, the release target checks, and the release
-gates (`cargo audit`, `cargo deny`, and the release workflow's secret scan
-of the binary it ships). Run one of them locally only when the change is aimed at
-it: a Windows-only path (`cargo check --target x86_64-pc-windows-msvc
+the full workspace test run, the release target checks (pull requests
+only), and the release gates (`cargo audit`, `cargo deny`, and the release
+workflow's secret scan of the binary it ships). Run one of them locally
+only when the change is aimed at it: a Windows-only path (`cargo check --target x86_64-pc-windows-msvc
 --all-targets`), a language feature or dependency that may need a newer
 Rust than 1.88, or release metadata.
 
