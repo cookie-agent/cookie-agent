@@ -1002,6 +1002,13 @@ impl Turn<'_> {
                 };
                 self.stream(kind, text).await
             }
+            // Subagents stay flat on purpose: Claude Code's Task subagents
+            // arrive as ordinary tool calls whose
+            // `_meta.claudeCode.parentToolUseId` names the Task call, and ACP's
+            // `subagent_update` and child sessions (offered to a client that
+            // declares `clientCapabilities.subagents`) are unstable. Neither
+            // nesting by `parentToolUseId` nor child sessions is implemented
+            // until the subagent API is stable.
             "tool_call" | "tool_call_update" => {
                 let fields: ToolCallFields =
                     serde_json::from_value(update.clone()).unwrap_or_default();

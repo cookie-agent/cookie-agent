@@ -778,3 +778,10 @@ unchanged):
   show it as media in the reply (`AssistantChild::MediaFile`); text after
   it starts a new text part. An image that cannot be decoded or stored
   still becomes the note. Images in thoughts stay notes.
+- **Subagents stay flat.** Claude Code's Task subagents arrive as flat tool
+  calls whose `_meta.claudeCode.parentToolUseId` names the Task call, and
+  ACP's `subagent_update` and child sessions (for a client that declares
+  `clientCapabilities.subagents`) are unstable. Cookie deliberately shows
+  them as the turn's own calls and declares no `subagents` capability:
+  neither nesting by `parentToolUseId` nor child sessions is implemented
+  until the subagent API is stable.
