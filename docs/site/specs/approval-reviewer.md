@@ -126,8 +126,9 @@ Discussed 2026-10-24:
 3. A scheduled prompt carries user authority (section 4.2).
 4. The reviewer's cache TTL gets its own setting (section 5). It applies to
    the reviewer model's own provider, which may differ from the session's.
-   It has no `provider` value: providers without TTL markers cache
-   automatically, and the setting has no effect on them.
+   Its values are `1h`, `30m`, `5m`, `provider` (the reviewer model's
+   provider's own cache configuration) and `off`. The per-provider mapping is
+   the table in section 5.
 5. No reviewer variant is set in the starter kit:
    - The `approval` agent already runs `${small_model}` with its variant.
    - The kit's `explore` agent moves from `${small_model}` to
@@ -290,38 +291,38 @@ strings. The current flow does not escape the user message (section 10, d).
 
   ```toml
   [approval]
-  cache_ttl = "1h"    # "1h" (the default), "5m", or "off"
+  cache_ttl = "1h"    # "1h" (the default), "30m", "5m", "provider", or "off"
   ```
 
-  - **Providers with TTL markers (Anthropic, Bedrock):** `cache_ttl` sets
-    the reviewer's rolling marker, and its system marker is raised to at
-    least the same TTL, as the ordering rule requires (a one-hour marker
-    cannot follow a five-minute one).
-    - **`1h` without the beta flag:** when the reviewer model's authored
-      Anthropic `beta` options lack `extended-cache-ttl-2025-04-11`, `1h`
-      falls back to `5m`, and config status reports it. Cookie never adds
-      the beta flag itself.
-    - **The provider config:** today `rolling` accepts only `"5m"` or
-      `"off"`, so the strategy type gains a one-hour rolling marker for
-      internal agents. Authored provider config keeps its current values.
-  - **OpenAI and Azure models with GPT-5.6 cache controls:**
-    - `1h` and `5m` both turn on the reviewer's rolling placement with
-      `ttl = "30m"`, the only TTL these controls accept.
-    - Config status notes that substitution for `1h` and `5m`.
-    - `off` leaves no explicit placement, and automatic caching still
-      applies.
-    - The implementation checks this against OpenAI's official
-      prompt-caching documentation first, since oven-sdk mirrors it.
-  - **Providers with only automatic caching** (OpenAI models without those
-    controls, OpenAI-compatible, Gemini, Cohere): `cache_ttl` has no effect,
-    and config status says so when the reviewer runs on one. The append-only
-    chain gets their automatic prefix discount anyway. OpenAI's
-    `prompt_cache_retention` (`in_memory` or `24h`) is a different mechanism,
-    so it is not mapped.
-  - **`off`:** no reviewer markers.
-  - **Fallback:** a reviewer that falls back from `${small_model}` to
-    `${parent_model}` on another provider follows the same rules for that
-    model's provider.
+  `provider` means the reviewer model's own provider's cache configuration:
+  its authored `cache` table, or that provider's defaults. It never means the
+  session's.
+
+  When a provider does not offer the TTL asked for, the reviewer uses the
+  nearest offered TTL that is at least as long. If none is longer, it uses
+  the longest offered. Config status notes every substitution, and every
+  "no effect" cell when the reviewer runs on that provider.
+
+  | Reviewer's provider | `1h` | `30m` | `5m` | `provider` | `off` |
+  |---|---|---|---|---|---|
+  | Anthropic | rolling 1h; system and tools raised to 1h (a one-hour marker cannot follow a five-minute one); 5m when the model's `beta` options lack `extended-cache-ttl-2025-04-11` | 1h under the same rule, else 5m | rolling 5m; system and tools as configured | the provider's `cache` table (default system 1h, tools 1h, rolling 5m) | no markers |
+  | Bedrock | rolling 1h on models that support it, system and tools raised to 1h; else 5m | 1h where supported, else 5m | rolling 5m | the provider's `cache` table (default all 5m) | no cache points |
+  | OpenAI, Azure (GPT-5.6 controls) | rolling placement at 30m, the longest offered | rolling placement at 30m | 30m, the only TTL offered | the provider's `cache` table (controls off by default: automatic caching) | `mode = "explicit"` with no placements: no cache writes |
+  | OpenAI, Azure (other models) | automatic caching; no effect | no effect | no effect | no effect | no effect (cannot be turned off) |
+  | OpenAI-compatible | provider-managed automatic caching; no effect | no effect | no effect | no effect | no effect |
+  | Gemini, Vertex | implicit caching; no effect | no effect | no effect | no effect | no effect |
+  | Cohere | server-side automatic caching; no effect | no effect | no effect | no effect | no effect |
+
+  Further rules:
+  - **Rolling 1h:** the Anthropic and Bedrock strategy type gains a one-hour
+    rolling marker for internal agents. Authored provider configuration keeps
+    `rolling = "5m" | "off"`. Cookie never adds the Anthropic beta flag
+    itself.
+  - **Fallback model:** a reviewer that falls back from `${small_model}` to
+    `${parent_model}` on another provider follows that model's row.
+  - **Verify the OpenAI row:** check it against OpenAI's official
+    prompt-caching documentation before relying on it, since it comes from
+    oven-sdk.
 
   The knob is read at each review, so a config apply takes effect at the
   next one. The title agent keeps `rolling = None`.
@@ -472,11 +473,9 @@ All additive. Client and plugin minors are bumped together in one commit.
   readers skip it.
 - **Tool-denial `source: "approval_reviewer"`:** this is model-facing text,
   not a wire schema.
-- **`[approval] cache_ttl`:** `"1h"` (the default), `"5m"`, or `"off"`.
-  It applies to the reviewer model's own provider when that provider takes
-  explicit cache placements: Anthropic and Bedrock markers, and OpenAI's
-  GPT-5.6 controls at their one `30m` TTL (section 5). Unknown values fail,
-  as for every config key.
+- **`[approval] cache_ttl`:** `"1h"` (the default), `"30m"`, `"5m"`, `"provider"`, or `"off"`.
+  It maps onto the reviewer model's own provider by the table in section 5.
+  Unknown values fail, as for every config key.
 - **Internal agents' cache strategy:** gains a one-hour rolling marker.
 - **The starter kit's `explore`** uses `${default_model}` (already done,
   with this spec).
