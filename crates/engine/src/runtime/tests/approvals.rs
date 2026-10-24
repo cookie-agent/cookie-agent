@@ -1517,7 +1517,7 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
             if *approval_id == approval.request.approval_id()
                 && decision.decision == ApprovalInternalDecisionKind::Escalate
                 && decision.source == ApprovalDecisionSource::InternalAgent
-                && decision.reason_code == ApprovalReasonCode::Escalated
+                && decision.reason_code == ApprovalReasonCode::InternalAgentFailed
     )));
 
     approve_once(&fixture.engine, &approval, "malformed-approval-response").await;
@@ -2135,4 +2135,81 @@ async fn built_in_approval_agent_request_inherits_the_parent_run_output_cap() {
         );
     }
     fixture.engine.shutdown().await;
+}
+
+/// A reviewer that fails (here, an unparseable reply) is never approved on
+/// the user's behalf: `auto_approve_y` escalates it like `auto_approve`, and
+/// `auto_approve_n` rejects it (approval reviewer spec section 10, a).
+#[tokio::test]
+async fn a_failed_review_escalates_under_auto_approve_y_and_is_rejected_under_n() {
+    for (mode, escalates) in [
+        (PermissionMode::AutoApproveY, true),
+        (PermissionMode::AutoApproveN, false),
+    ] {
+        let (endpoint, captured) = scripted_approval_server("not-json").await;
+        let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+        let executed = Arc::new(TestFlag::default());
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(TestWriteProvider {
+                executed: Arc::clone(&executed),
+            }),
+        );
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("session");
+        fixture
+            .engine
+            .set_permission_mode(
+                session.session_id,
+                mode,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .expect("mode");
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new("failed-review").expect("run ID"),
+                    selection,
+                    content: "request the write tool".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("run");
+        if escalates {
+            let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+            assert_eq!(
+                approval
+                    .internal_decision
+                    .as_ref()
+                    .map(|decision| decision.reason_code),
+                Some(ApprovalReasonCode::InternalAgentFailed)
+            );
+            assert!(!executed.is_set());
+        } else {
+            wait_for_session_not_running(&fixture.engine, session.session_id).await;
+            let events = fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("projection")
+                .log
+                .events();
+            assert!(events.iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
+                    if decision.outcome == ApprovalFinalOutcome::Rejected
+                        && decision.reason_code == ApprovalReasonCode::AutoApproveNRejected
+            )));
+            assert!(!executed.is_set());
+        }
+        captured.abort();
+        fixture.engine.shutdown().await;
+    }
 }

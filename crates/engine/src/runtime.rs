@@ -113,7 +113,7 @@ pub(crate) fn test_session_id() -> cookie_agent_protocol::SessionId {
 }
 use approval_flow::{
     ApprovalEvaluationTransition, ApprovalRuntimeState, ApprovalTerminal, ApprovalToolInput,
-    ModelApprovalInput, PreparedApprovalInvalidation,
+    ModelApprovalInput, PreparedApprovalInvalidation, ReviewOutcome,
 };
 pub(crate) use approval_flow::{ApprovalOutcome, PendingApproval};
 #[cfg(test)]

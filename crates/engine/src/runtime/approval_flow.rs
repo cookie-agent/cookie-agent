@@ -88,6 +88,21 @@ pub(crate) enum ApprovalTerminal {
     Expired,
 }
 
+/// What the approval reviewer made of a call, or that it never ran.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReviewOutcome {
+    /// The permission mode sends the call to the user without a review.
+    Unreviewed,
+    /// The reviewer answered `allow`, `deny`, or `ask`.
+    Verdict {
+        decision: ApprovalInternalDecisionKind,
+        reason: Option<String>,
+    },
+    /// The reviewer failed: an error, a timeout, an unparseable reply, or
+    /// no model. No permission mode approves such a call for the user.
+    Failed,
+}
+
 pub(crate) enum ApprovalEvaluationTransition {
     Resolved(ApprovalOutcome),
     Escalated(oneshot::Receiver<ApprovalOutcome>),
@@ -387,8 +402,8 @@ impl Engine {
             });
         }
 
-        let internal_kind = match permission_mode {
-            PermissionMode::Ask => ApprovalInternalDecisionKind::Ask,
+        let review = match permission_mode {
+            PermissionMode::Ask => ReviewOutcome::Unreviewed,
             PermissionMode::AutoApprove
             | PermissionMode::AutoApproveN
             | PermissionMode::AutoApproveY => {
@@ -438,7 +453,7 @@ impl Engine {
                     run,
                     request,
                     executor,
-                    (permission_mode, internal_kind),
+                    (permission_mode, review),
                     cancelled,
                 )
             })
@@ -487,7 +502,7 @@ impl Engine {
         policy: &FrozenInternalAgentPolicy,
         request: &ApprovalRequest,
         tool: ApprovalToolInput<'_>,
-    ) -> ApprovalInternalDecisionKind {
+    ) -> ReviewOutcome {
         let events = session.log.event_snapshot();
         let actions = request
             .operation()
@@ -533,9 +548,14 @@ impl Engine {
             .await;
         match result {
             Ok(result) => {
-                parse_internal_approval(&result.text).unwrap_or(ApprovalInternalDecisionKind::Ask)
+                parse_internal_approval(&result.text).map_or(ReviewOutcome::Failed, |decision| {
+                    ReviewOutcome::Verdict {
+                        decision,
+                        reason: None,
+                    }
+                })
             }
-            Err(_) => ApprovalInternalDecisionKind::Ask,
+            Err(_) => ReviewOutcome::Failed,
         }
     }
 }

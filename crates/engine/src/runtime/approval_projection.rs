@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 
 use super::{
     ApprovalEvaluationTransition, ApprovalOutcome, ApprovalRespondFailure, ApprovalTerminal,
-    Engine, EngineError, Event, PendingApproval, PreparedApprovalInvalidation,
+    Engine, EngineError, Event, PendingApproval, PreparedApprovalInvalidation, ReviewOutcome,
     approval_flow::{approval_constraints, approval_deadline_exhausted, approval_evaluations},
     helpers::root_id,
 };
@@ -28,10 +28,10 @@ impl Engine {
         run: RunId,
         request: ApprovalRequest,
         executor: PreparedExecutorCell,
-        mode_decision: (PermissionMode, ApprovalInternalDecisionKind),
+        mode_review: (PermissionMode, ReviewOutcome),
         cancelled: bool,
     ) -> Result<ApprovalEvaluationTransition, EngineError> {
-        let (permission_mode, decision) = mode_decision;
+        let (permission_mode, review) = mode_review;
         let approval_id = request.approval_id();
         let events = self.inner.store.log(session)?.event_snapshot();
         let Some(record) = approval_record(session, &events, approval_id) else {
@@ -77,20 +77,43 @@ impl Engine {
         }
 
         let source = ApprovalDecisionSource::InternalAgent;
-        let (decision, reason_code) = match decision {
-            ApprovalInternalDecisionKind::Allow => (
+        let (decision, reason_code, rationale) = match review {
+            ReviewOutcome::Verdict {
+                decision: ApprovalInternalDecisionKind::Allow,
+                reason,
+            } => (
                 ApprovalInternalDecisionKind::Allow,
                 ApprovalReasonCode::InternalAgentAllowed,
+                reason,
             ),
-            ApprovalInternalDecisionKind::Deny => (
+            ReviewOutcome::Verdict {
+                decision: ApprovalInternalDecisionKind::Deny,
+                reason,
+            } => (
                 ApprovalInternalDecisionKind::Deny,
                 ApprovalReasonCode::InternalAgentDenied,
+                reason,
             ),
-            ApprovalInternalDecisionKind::Ask | ApprovalInternalDecisionKind::Escalate => (
+            ReviewOutcome::Verdict {
+                decision: ApprovalInternalDecisionKind::Ask | ApprovalInternalDecisionKind::Escalate,
+                reason,
+            } => (
                 ApprovalInternalDecisionKind::Escalate,
                 ApprovalReasonCode::Escalated,
+                reason,
+            ),
+            ReviewOutcome::Unreviewed => (
+                ApprovalInternalDecisionKind::Escalate,
+                ApprovalReasonCode::Escalated,
+                None,
+            ),
+            ReviewOutcome::Failed => (
+                ApprovalInternalDecisionKind::Escalate,
+                ApprovalReasonCode::InternalAgentFailed,
+                None,
             ),
         };
+        let reviewer_failed = reason_code == ApprovalReasonCode::InternalAgentFailed;
         self.append_direct(
             session,
             Some(run),
@@ -103,7 +126,7 @@ impl Engine {
                         source,
                         reason_code,
                         evaluations: approval_evaluations(&request),
-                        rationale: None,
+                        rationale,
                     },
                 },
             ),
@@ -146,12 +169,16 @@ impl Engine {
                 ApprovalReasonCode::AutoApproveNRejected,
                 Some(AUTO_APPROVE_N_REJECTION_FEEDBACK),
             )),
-            PermissionMode::AutoApproveY => Some((
+            // A failed review is never approved for the user: it is
+            // theirs, as in `auto_approve`.
+            PermissionMode::AutoApproveY if !reviewer_failed => Some((
                 ApprovalFinalOutcome::Approved,
                 ApprovalReasonCode::AutoApproveYApproved,
                 None,
             )),
-            PermissionMode::AutoApprove | PermissionMode::Ask => None,
+            PermissionMode::AutoApproveY | PermissionMode::AutoApprove | PermissionMode::Ask => {
+                None
+            }
             PermissionMode::Yolo => unreachable!("yolo approvals resolve before evaluation"),
         };
         if let Some((outcome, reason_code, feedback)) = mode_resolution {
