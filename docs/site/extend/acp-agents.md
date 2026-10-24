@@ -254,8 +254,36 @@ message and in this order, each part left out when it is empty:
 
 `AGENTS.md` is not sent: the agents read it themselves. The prompt carries
 these again when cookie has to start a new ACP session because the agent
-lost the one it had, and not when it resumes or loads one, since the agent
+lost the one it had (or a fork or revert before its first reply starts
+over), and not when it resumes, loads, or forks one, since the agent
 remembers them there. Later prompts carry only the input.
+
+## Forking, reverting, and deleting a session
+
+The agent keeps its own conversation, so cookie keeps it in step when you
+change the session's:
+
+- **Fork.** A fork of the session gets its own agent conversation: at its
+  first turn cookie asks the agent to fork the source's (`session/fork`),
+  and the source keeps its own. An agent without `session/fork` (Gemini
+  CLI) cannot be forked after its first reply; the fork is refused with
+  `` `gemini` on `local` can't fork its own conversation ``. A fork at an
+  earlier point than the end of the agent's conversation also needs its
+  fork to start at a given message (below).
+- **Revert.** After a revert the agent's next turn forks its conversation
+  at its last reply the session keeps, then deletes the old conversation,
+  and the transcript says *the agent continues from the revert point*. The
+  agent must fork at a given message: cookie names it with JetBrains AIR's
+  fork point, which Claude Code's and Codex's adapters read. Cookie checks
+  whether the agent does once per agent process, after its first reply in
+  a run; until then, and for an agent that does not (Gemini CLI, or one
+  whose fork ignores the fork point), a revert past the agent's first reply
+  is refused with `` `claude` on `local` can't rewind its own conversation ``
+  (or that cookie has not checked yet). A revert to before the agent's
+  first reply always works: the next turn starts a new agent conversation.
+- **Delete.** Deleting a session also deletes the agent's own transcripts
+  of it (`session/delete`, when the agent offers it), but never those of
+  the session it was forked from.
 
 ## Permissions
 
@@ -360,6 +388,20 @@ each call decided by the rules as a model's would be.
   web client's Steer button then reads "Queue (this agent can't be
   steered)", and the TUI's pending strip says the agent can't be steered.
 - **Interrupting** a turn cancels it on the agent.
+- **Compaction.** `/compact` (in the TUI, the web's compaction action)
+  runs the agent's own `compact` command when it offers one (Claude Code
+  does), with the focus you give; otherwise it is refused with
+  `` `gemini` does not offer compaction ``. Cookie never compacts an ACP
+  agent's conversation on its own; the agent does, and its compaction
+  shows as a notice.
+- **Titles.** The agent's own title names the session, and each new one
+  replaces the last until you rename the session. An agent that names
+  nothing gets cookie's generated title after its first reply, on your
+  `small_model`; with no `small_model` the session stays untitled.
+- **A run that fails because the agent stopped** says why: "the agent
+  refused", "the agent hit its output token limit", or "the agent hit its
+  turn request limit". What the agent used up to then still counts in the
+  session's usage.
 
 ## Delegating to an ACP agent
 
@@ -414,6 +456,13 @@ note.
 - **A steered message arrives after the turn.** The agent took it with its
   next turn: either it cannot be steered, or its turn had already ended
   when the message reached it.
+- **"can't rewind its own conversation" or "can't fork its own
+  conversation".** The agent cannot fork its conversation where the
+  revert or the fork would cut it (see
+  [Forking, reverting, and deleting a session](#forking-reverting-and-deleting-a-session)).
+  Revert or fork to before the agent's first reply, or go on from where
+  the session is. "cookie has not yet checked" clears after the agent's
+  next reply.
 - **The agent does not see cookie's tools.** `cookie runtime mcp-bridge`
   must run on the runtime's machine; the session says when the bridge could
   not be opened.
