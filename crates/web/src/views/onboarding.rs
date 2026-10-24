@@ -11,6 +11,7 @@ use cookie_agent_client_state::onboarding::{
     kit_file_status, model_groups, model_input, model_label, run_summary, small_model_variant,
     variants,
 };
+use cookie_agent_client_state::refresh::Latest;
 use cookie_agent_protocol::{
     AvailableModelDescriptor, ModelKey, OnboardingFileAction, OnboardingKitSource,
     OnboardingPreviewResult, OnboardingRunParams, OnboardingStatus, VariantId,
@@ -52,11 +53,26 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
     let kit = RwSignal::new(None::<Result<OnboardingPreviewResult, String>>);
     let kit_source = RwSignal::new(None::<OnboardingKitSource>);
     let install = RwSignal::new(true);
+    // Only the preview of the kit chosen last shows: one of a kit chosen
+    // before, landing later, is dropped, so Finish installs what it shows.
+    let kit_reads = StoredValue::new(Latest::default());
+    let kit_loading = RwSignal::new(false);
     let load_kit = move |source: Option<OnboardingKitSource>| {
         kit.set(None);
         kit_source.set(source.clone());
+        kit_loading.set(true);
+        let read = kit_reads.try_update_value(|reads| reads.begin());
         spawn_local(async move {
             let preview = workspace.preview_kit(source).await;
+            let current = read.is_some_and(|read| {
+                kit_reads
+                    .try_with_value(|reads| reads.is_current(read))
+                    .unwrap_or(false)
+            });
+            if !current {
+                return;
+            }
+            kit_loading.set(false);
             install.set(preview.as_ref().is_ok_and(|preview| {
                 preview
                     .files
@@ -68,12 +84,20 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
     };
     // The kit is read when its step first shows.
     Effect::new(move |_| {
-        if step.get() == OnboardingStep::Kit && kit.with_untracked(Option::is_none) {
+        if step.get() == OnboardingStep::Kit
+            && kit.with_untracked(Option::is_none)
+            && !kit_loading.get_untracked()
+        {
             load_kit(kit_source.get_untracked());
         }
     });
     let status = move || onboarding.status.get();
     let refusal = move || {
+        // Finishing now would leave out the kit still being read, though
+        // it is to be installed.
+        if install.get() && kit_loading.get() {
+            return Some("Reading the starter kit…".to_owned());
+        }
         status().and_then(|status| {
             finish_refusal(
                 &status,
