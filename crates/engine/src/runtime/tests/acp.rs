@@ -2199,3 +2199,59 @@ async fn a_boolean_option_is_a_toggle_set_with_a_boolean() {
     let refused = set("on").await.expect_err("not a boolean's value");
     assert!(refused.to_string().contains("no value `on`"), "{refused}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_image_in_the_agents_message_is_media_of_its_turn() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "picture", "picture").await;
+    assert_eq!(final_text(&outcome), "Here it is:A picture.");
+    let content = events(engine, session)
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::ModelTurnCommitted { turn, .. } => Some(turn.content),
+            _ => None,
+        })
+        .unwrap();
+    let [
+        PersistedAssistantPart::Text { text: before, .. },
+        PersistedAssistantPart::File { file },
+        PersistedAssistantPart::Text { text: after, .. },
+    ] = &content[..]
+    else {
+        panic!("text, an image, and text: {content:?}");
+    };
+    assert_eq!(
+        (before.as_str(), after.as_str()),
+        ("Here it is:", "A picture.")
+    );
+    assert_eq!(file.media_type.as_str(), "image/png");
+    let cookie_agent_protocol::PersistedFileSource::Artifact {
+        byte_length,
+        sha256,
+        ..
+    } = &file.source
+    else {
+        panic!("an artifact: {file:?}");
+    };
+    assert_eq!(*byte_length, 8);
+    // The artifact holds the image's bytes.
+    let bytes = engine
+        .inner
+        .artifacts
+        .read_verified_attachment(
+            session,
+            &cookie_agent_protocol::ToolAttachment {
+                mime_type: file.media_type.clone(),
+                filename: None,
+                byte_length: *byte_length,
+                sha256: sha256.clone(),
+                reference: cookie_agent_protocol::ArtifactReference {
+                    uri: format!("artifact://sha256/{}", sha256.as_str()),
+                },
+            },
+        )
+        .expect("the image");
+    assert_eq!(&bytes[..], b"\x89PNG\r\n\x1a\n");
+}

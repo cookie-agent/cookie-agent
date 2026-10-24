@@ -337,6 +337,8 @@ each call decided by the rules as a model's would be.
   content as text, images, and links; edits as diffs; the files it touched
   as links; and its raw output when it sends no content. With Claude Code,
   the call's tool name (`Read`, `Bash`) is the name it was called by.
+- **Images** the agent puts in its reply show in the reply, as an image a
+  model generates does; cookie keeps them with the session.
 - **Command output.** A command the agent runs shows its output as cookie's
   own `bash` calls do: in a terminal block that grows while the command
   runs (Codex streams it; Claude Code sends it when the command ends), with

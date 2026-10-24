@@ -753,6 +753,48 @@ impl Turn<'_> {
         Ok(())
     }
 
+    /// Adds the image content block `block` to the turn as a file part,
+    /// its bytes retained as an artifact; one that cannot be read or kept
+    /// becomes the note `[image]`.
+    async fn image(&mut self, block: &Value) -> Result<(), EngineError> {
+        use base64::Engine as _;
+        let session = self.session();
+        let media_type = block
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .unwrap_or("image/png");
+        let file = block
+            .get("data")
+            .and_then(Value::as_str)
+            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
+            .and_then(|bytes| {
+                let media_type = cookie_agent_protocol::MimeType::new(media_type).ok()?;
+                let (reference, sha256) =
+                    self.engine.inner.artifacts.retain(session, &bytes).ok()?;
+                Some(cookie_agent_protocol::PersistedFilePart {
+                    media_type,
+                    filename: None,
+                    source: cookie_agent_protocol::PersistedFileSource::Artifact {
+                        byte_length: bytes.len() as u64,
+                        sha256: cookie_agent_protocol::Sha256Digest::new(sha256).ok()?,
+                        reference,
+                    },
+                    metadata: None,
+                })
+            });
+        let Some(file) = file else {
+            return self
+                .stream(StreamedOutputKind::Text, "[image]".to_owned())
+                .await;
+        };
+        self.ensure_step().await?;
+        let step = self.step.as_mut().expect("step started");
+        step.parts.push(PersistedAssistantPart::File { file });
+        // Text after it starts a new part.
+        step.streaming = None;
+        Ok(())
+    }
+
     /// Commits the step as a model turn finished for `finish`; returns its
     /// sequence number.
     async fn commit(&mut self, finish: ModelFinishReason) -> Result<u64, EngineError> {
@@ -936,6 +978,18 @@ impl Turn<'_> {
             .unwrap_or_default()
             .to_owned();
         match kind.as_str() {
+            // An image in the agent's message is media of the turn, as a
+            // model's generated image is.
+            "agent_message_chunk"
+                if update
+                    .get("content")
+                    .and_then(|content| content.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("image") =>
+            {
+                self.image(update.get("content").expect("matched above"))
+                    .await
+            }
             "agent_message_chunk" | "agent_thought_chunk" => {
                 let text = update
                     .get("content")

@@ -772,3 +772,9 @@ unchanged):
   left out, as ACP asks. The TUI's `/options` toggles a boolean from its
   row and stays open; the web's Agent options sheet shows a switch
   (`role="switch"`).
+- **Images in replies.** An `agent_message_chunk` whose content is an image
+  becomes a `file` part of the turn (an artifact of the session, like a
+  model's generated image) in place of the `[image]` note, so the clients
+  show it as media in the reply (`AssistantChild::MediaFile`); text after
+  it starts a new text part. An image that cannot be decoded or stored
+  still becomes the note. Images in thoughts stay notes.

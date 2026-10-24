@@ -4734,7 +4734,8 @@ def acp_agents(browser):
     the agent picker lists both with their runtime, the disabled one dimmed
     and not pickable; the agent's turn shows its plan as a checklist and its
     tool call with the agent as its source; the commands it runs show their
-    output; its commands are offered in the
+    output, and an image in its reply shows as media; its commands are
+    offered in the
     composer; and the model chip opens its options, which change on the
     agent, a boolean one as a switch."""
     new_session(browser)
@@ -4775,6 +4776,14 @@ def acp_agents(browser):
         lambda: "FAILED 1 test" in browser.text("#transcript") and "notes.txt" in browser.text("#transcript"),
     )
     print("the agent's commands show their output")
+
+    send(browser, "picture")
+    browser.wait("the agent's picture", lambda: "A picture." in browser.text("#transcript"), timeout=60)
+    browser.wait(
+        "the picture as media of the reply",
+        lambda: count(browser, '#transcript .media[data-media-type="image/png"]') >= 1,
+    )
+    print("an image in the agent's reply shows as media")
 
     browser.type("#composer", "/re")
     browser.wait("the agent's commands", lambda: count(browser, '#agent-commands [data-agent-command="review"]') == 1)

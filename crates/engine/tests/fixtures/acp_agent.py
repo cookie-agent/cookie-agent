@@ -29,6 +29,7 @@ Each prompt's last text block is a command:
                          text content): one as Codex sends it (chunks, then
                          exit 3, failed), one as Claude Code does (the whole
                          output once, then exit 0, completed)
+  picture                answers text, an image, and more text
   mode-switch <mode>     switches its own mode to <mode> (current_mode_update),
                          as Claude Code does when it leaves plan mode
   late-input             a tool call whose title, kind, and raw input arrive in a
@@ -434,6 +435,10 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     elif word == "terminal":
         terminal_calls(session_id)
         say(session_id, "ran")
+    elif word == "picture":
+        say(session_id, "Here it is:")
+        update(session_id, {"sessionUpdate": "agent_message_chunk", "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}})
+        say(session_id, "A picture.")
     elif word == "mode-switch":
         session["mode"] = rest
         update(session_id, {"sessionUpdate": "current_mode_update", "currentModeId": rest})
