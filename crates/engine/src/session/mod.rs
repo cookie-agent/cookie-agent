@@ -17,6 +17,8 @@ pub(crate) use fold::projection;
 use fold::refold;
 pub(crate) use fold::restart_stable_grant;
 pub(crate) use fold::same_place;
+#[cfg(test)]
+pub(crate) use fold::skip_reference_fold;
 use fold::*;
 pub(crate) use tree_load::TreeLoadObserver;
 pub(crate) use tree_load::TreeLoadProducts;
@@ -1915,7 +1917,7 @@ impl SessionStore {
             self.record_terminal_run(id, terminal.0, terminal.1)?;
         }
         #[cfg(test)]
-        if !SKIP_REFERENCE_FOLD.with(std::cell::Cell::get) {
+        if !reference_fold_skipped() {
             let reference = projection_fold(log).expect("reference fold");
             let resident = self.get_resident(id).expect("resident after append");
             assert_projection_equivalent(&resident, &reference);

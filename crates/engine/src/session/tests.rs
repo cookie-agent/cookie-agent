@@ -4651,7 +4651,7 @@ fn in_place_projection_matches_a_full_fold_through_truncation_and_late_usage() {
 fn session_append_timing() {
     const TARGET_EVENTS: u64 = 20_000;
     const TURNS_PER_RUN: usize = 8;
-    super::SKIP_REFERENCE_FOLD.with(|skip| skip.set(true));
+    super::skip_reference_fold();
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);

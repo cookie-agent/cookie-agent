@@ -23,6 +23,7 @@ mod guards;
 mod hook_failures;
 mod interception;
 mod interrupt;
+mod long_session_bench;
 mod mailbox;
 mod media;
 mod memory;

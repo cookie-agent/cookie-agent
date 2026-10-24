@@ -7,6 +7,19 @@ pub(super) fn projection_fold_count() -> u64 {
     PROJECTION_FOLDS.with(std::cell::Cell::get)
 }
 
+/// Test-only: skips the per-append reference fold for the rest of the
+/// process, so a timing test measures the append path rather than the
+/// differential check, whichever thread appends.
+#[cfg(test)]
+pub(crate) fn skip_reference_fold() {
+    SKIP_REFERENCE_FOLD.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn reference_fold_skipped() -> bool {
+    SKIP_REFERENCE_FOLD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Asserts that two projections of the same log are field-identical. The log
 /// itself is compared by identity/tip rather than by folding the events.
 #[cfg(test)]
@@ -690,10 +703,12 @@ pub(super) fn add_usage(total: &mut Option<u64>, value: Option<u64>) {
 #[cfg(test)]
 thread_local! {
     pub(super) static PROJECTION_FOLDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// Test-only: skips the per-append reference fold, so a timing test
-    /// measures the append path rather than the differential check.
-    pub(super) static SKIP_REFERENCE_FOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+
+/// See [`skip_reference_fold`].
+#[cfg(test)]
+static SKIP_REFERENCE_FOLD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Whether two attachments name the same runtime capability at the same
 /// workspace, whatever their names.
