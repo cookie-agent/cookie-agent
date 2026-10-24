@@ -4733,11 +4733,11 @@ def acp_agents(browser):
     declares the scripted fixture, and a disabled one, for this group):
     the agent picker lists both with their runtime, the disabled one dimmed
     and not pickable; the agent's turn shows its plan as a checklist and its
-    tool call with the agent as its source; the commands it runs show their
-    output, and an image in its reply shows as media; its commands are
-    offered in the
-    composer; and the model chip opens its options, which change on the
-    agent, a boolean one as a switch."""
+    tool call with the agent as its source, and the status bar its context;
+    the commands it runs show their output, and an image in its reply shows
+    as media; its commands are offered in the composer; and the model chip
+    opens its options, which change on the agent, a boolean one as a
+    switch."""
     new_session(browser)
     browser.click("#agent-chip")
     fixture = '#sheet [data-agent="fixture"]'
@@ -4763,7 +4763,12 @@ def acp_agents(browser):
         "the agent's tool call",
         lambda: "fixture on local" in browser.text("#transcript [data-tool-source]"),
     )
-    print("the agent's turn shows its plan and names it on its tool call")
+    # The agent's context use, as its usage_update reported it.
+    browser.wait("the agent's context", lambda: "1.2k tokens" in browser.text("#context"))
+    assert "of 200,000" in browser.script("return document.querySelector('#context').title"), browser.script(
+        "return document.querySelector('#context').title"
+    )
+    print("the agent's turn shows its plan and names it on its tool call, and its context shows")
 
     send(browser, "terminal")
     browser.wait("the commands' output", lambda: "ran" in browser.text("#transcript"), timeout=60)
