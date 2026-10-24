@@ -137,7 +137,11 @@ pub(in crate::ui) struct OnboardingState {
     pub(in crate::ui) archive: Option<(PathBuf, Vec<u8>)>,
     pub(in crate::ui) path_input: Option<InputState>,
     pub(in crate::ui) preview: Option<Result<OnboardingPreviewResult, String>>,
+    /// A preview of the kit chosen now is on its way.
     pub(in crate::ui) preview_in_flight: bool,
+    /// The `onboarding.preview` reads: only the newest, of the kit chosen
+    /// last, is installed.
+    preview_reads: Latest,
     pub(in crate::ui) selected_file: usize,
     pub(in crate::ui) show_diff: bool,
     pub(in crate::ui) running: bool,
@@ -248,11 +252,15 @@ impl App {
     pub(super) fn open_onboarding_panel(&mut self) {
         let status = self.onboarding.status.clone();
         let status_reads = self.onboarding.status_reads;
+        // A preview on its way was of the kit chosen before: dropped.
+        let mut preview_reads = self.onboarding.preview_reads;
+        preview_reads.supersede();
         let state_file = self.onboarding.state_file.take();
         let not_now = self.onboarding.not_now.take();
         self.onboarding = OnboardingState {
             status,
             status_reads,
+            preview_reads,
             state_file,
             not_now,
             install_kit: true,
@@ -291,15 +299,18 @@ impl App {
     fn go_to_step(&mut self, step: OnboardingStep) {
         self.onboarding.step = Some(step);
         self.onboarding.show_diff = false;
-        if step == OnboardingStep::Kit && self.onboarding.preview.is_none() {
+        if step == OnboardingStep::Kit
+            && self.onboarding.preview.is_none()
+            && !self.onboarding.preview_in_flight
+        {
             self.preview_kit();
         }
     }
 
+    /// Previews the kit chosen now; a preview of a kit chosen before that
+    /// is still on its way is dropped when it lands.
     fn preview_kit(&mut self) {
-        if self.onboarding.preview_in_flight {
-            return;
-        }
+        let read = self.onboarding.preview_reads.begin();
         self.onboarding.preview_in_flight = true;
         let source = self.kit_source();
         let client = self.client.clone();
@@ -309,7 +320,7 @@ impl App {
                 .preview_onboarding(source)
                 .await
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::OnboardingPreview { result });
+            let _ = updates.send(RpcUpdate::OnboardingPreview { read, result });
         });
     }
 
@@ -322,8 +333,12 @@ impl App {
 
     pub(in crate::ui) fn install_onboarding_preview(
         &mut self,
+        read: Ticket,
         result: Result<OnboardingPreviewResult, String>,
     ) {
+        if !self.onboarding.preview_reads.is_current(read) {
+            return;
+        }
         self.onboarding.preview_in_flight = false;
         self.onboarding.selected_file = 0;
         self.onboarding.preview = Some(result);
@@ -336,6 +351,11 @@ impl App {
         };
         if self.onboarding.running {
             return Some("Setting up…".into());
+        }
+        // Finishing now would leave out the kit the preview is still
+        // reading, though it is to be installed.
+        if self.onboarding.install_kit && self.onboarding.preview_in_flight {
+            return Some("Reading the starter kit…".into());
         }
         finish_refusal(
             status,

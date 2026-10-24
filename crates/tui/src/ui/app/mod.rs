@@ -1188,6 +1188,7 @@ pub(in crate::ui) enum RpcUpdate {
         status: Option<cookie_agent_protocol::OnboardingStatus>,
     },
     OnboardingPreview {
+        read: cookie_agent_client_state::refresh::Ticket,
         result: Result<cookie_agent_protocol::OnboardingPreviewResult, String>,
     },
     OnboardingRun {

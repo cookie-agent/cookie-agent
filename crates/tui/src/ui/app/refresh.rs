@@ -679,7 +679,9 @@ impl App {
             RpcUpdate::OnboardingStatus { read, status } => {
                 self.install_onboarding_read(read, status)
             }
-            RpcUpdate::OnboardingPreview { result } => self.install_onboarding_preview(result),
+            RpcUpdate::OnboardingPreview { read, result } => {
+                self.install_onboarding_preview(read, result)
+            }
             RpcUpdate::OnboardingRun { result } => self.install_onboarding_run(result),
             RpcUpdate::ConfigApplied {
                 path,

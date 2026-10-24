@@ -390,3 +390,84 @@ async fn an_older_skills_answer_landing_last_is_dropped() {
         ["after"]
     );
 }
+
+fn kit_preview(origin: &str) -> Value {
+    json!({
+        "kit_version": 1,
+        "origin": origin,
+        "files": [{"path": "config.toml", "action": "write"}]
+    })
+}
+
+fn request_ids(recorded: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>, method: &str) -> Vec<i64> {
+    recorded
+        .lock()
+        .expect("recorded")
+        .iter()
+        .filter(|value| value["method"].as_str() == Some(method))
+        .filter_map(|value| value["id"].as_i64())
+        .collect()
+}
+
+/// A downloaded kit chosen while the release kit's preview is on its way:
+/// it is previewed too, the release's preview landing last is dropped,
+/// Finish waits for the downloaded kit's preview, and `onboarding.run`
+/// installs the kit the preview showed.
+#[tokio::test]
+async fn the_kit_chosen_last_is_the_one_previewed_and_installed() {
+    use crate::ui::app::onboarding::{OnboardingAction, sample_status};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let (mut app, recorded, incoming) = held_app().await;
+    let directory = tempfile::tempdir().expect("directory");
+    let archive = directory.path().join("cookie-agent-defaults.tar.gz");
+    std::fs::write(&archive, b"downloaded kit").expect("archive");
+    // A set-up daemon opens the panel on the kit step, which previews the
+    // release's kit.
+    app.onboarding.status = Some(sample_status(&[]));
+    app.activate_onboarding_action(OnboardingAction::SetUp);
+    wait_for_recorded_request(&recorded, "onboarding.preview", 1).await;
+
+    app.activate_onboarding_action(OnboardingAction::UseArchive);
+    for character in archive.display().to_string().chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+            .await;
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    wait_for_recorded_request(&recorded, "onboarding.preview", 2).await;
+    let previews = request_ids(&recorded, "onboarding.preview");
+    let params = last_request_params(&recorded, "onboarding.preview");
+    assert_eq!(params["source"]["type"], "archive", "{params}");
+
+    // Finish waits for the chosen kit's preview.
+    app.activate_onboarding_action(OnboardingAction::Finish);
+    assert_eq!(app.status, "Reading the starter kit…");
+
+    answer(&incoming, previews[1], kit_preview("archive"));
+    answer(
+        &incoming,
+        previews[0],
+        kit_preview("https://example.invalid/kit.tar.gz"),
+    );
+    for _ in 0..2 {
+        let update =
+            tokio::time::timeout(std::time::Duration::from_secs(5), app.rpc_updates_rx.recv())
+                .await
+                .expect("rpc update timeout")
+                .expect("rpc update");
+        app.handle_rpc_update(update);
+    }
+    assert!(
+        matches!(&app.onboarding.preview, Some(Ok(preview)) if preview.origin == "archive"),
+        "{:?}",
+        app.onboarding.preview
+    );
+    assert!(!app.onboarding.preview_in_flight);
+
+    app.activate_onboarding_action(OnboardingAction::Finish);
+    wait_for_recorded_request(&recorded, "onboarding.run", 1).await;
+    let run = last_request_params(&recorded, "onboarding.run");
+    assert_eq!(run["install_kit"], true, "{run}");
+    assert_eq!(run["source"], params["source"], "{run}");
+}
