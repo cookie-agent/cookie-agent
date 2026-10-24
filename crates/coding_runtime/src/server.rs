@@ -1346,6 +1346,7 @@ impl Server {
         };
         let artifacts = Arc::new(InlineArtifacts::default());
         let (detach, mut detach_watch) = DetachPoint::channel();
+        let reached = detach.clone();
         // The daemon decides whether to detach; it only needs to hear when
         // the call may be.
         let peer = self.peer.clone();
@@ -1394,7 +1395,13 @@ impl Server {
                 CANCELLED_CALL_GRACE.as_secs()
             ))),
         };
-        announce.abort();
+        // A call that reached its detach point is announced before its
+        // result, even when it finished before the announcement ran.
+        if reached.current().is_some() {
+            let _ = announce.await;
+        } else {
+            announce.abort();
+        }
         let outcome = match result {
             Ok(completion) => ExecuteOutcome::Completed(ToolResult::of(completion)),
             Err(error) => ExecuteOutcome::Failed {
