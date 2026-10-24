@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_coding_runtime"
-version = "0.3.0"
+version = "0.4.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -12,10 +12,10 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 base64 = "0.22"
-cookie_agent_config = { version = "=0.3.0", path = "../config" }
-cookie_agent_mcp = { version = "=0.3.0", path = "../mcp" }
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
-cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
+cookie_agent_config = { version = "=0.4.0", path = "../config" }
+cookie_agent_mcp = { version = "=0.4.0", path = "../mcp" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api" }
 futures-util.workspace = true
 process-wrap.workspace = true
 html2text = "=0.15.5"
@@ -37,7 +37,7 @@ rustix.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["test-support"] }
-cookie_agent_engine = { version = "=0.3.0", path = "../engine", features = ["test-support"] }
-cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api", features = ["test-support"] }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support"] }
+cookie_agent_engine = { version = "=0.4.0", path = "../engine", features = ["test-support"] }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api", features = ["test-support"] }
 tempfile.workspace = true

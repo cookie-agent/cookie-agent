@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_web"
-version = "0.3.0"
+version = "0.4.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,8 @@ workspace = true
 
 [dependencies]
 base64 = "0.22"
-cookie_agent_client_state = { version = "=0.3.0", path = "../client_state" }
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["websocket"] }
+cookie_agent_client_state = { version = "=0.4.0", path = "../client_state" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["websocket"] }
 foldhash.workspace = true
 futures-util.workspace = true
 gloo-timers = { version = "0.3.0", features = ["futures"] }
@@ -78,4 +78,4 @@ web-sys = { version = "0.3.103", features = [
 
 [dev-dependencies]
 crc32fast.workspace = true
-cookie_agent_client_state = { version = "=0.3.0", path = "../client_state", features = ["test-support"] }
+cookie_agent_client_state = { version = "=0.4.0", path = "../client_state", features = ["test-support"] }

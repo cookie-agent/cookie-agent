@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_engine"
-version = "0.3.0"
+version = "0.4.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -18,12 +18,12 @@ async-trait.workspace = true
 base64 = "0.22"
 bytes.workspace = true
 similar = { version = "2.7.0", default-features = false, features = ["text"] }
-cookie_agent_config = { version = "=0.3.0", path = "../config" }
-cookie_agent_identity = { version = "=0.3.0", path = "../identity" }
-cookie_agent_mcp = { version = "=0.3.0", path = "../mcp", features = ["oauth"] }
-cookie_agent_models = { version = "=0.3.0", path = "../models" }
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
-cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
+cookie_agent_config = { version = "=0.4.0", path = "../config" }
+cookie_agent_identity = { version = "=0.4.0", path = "../identity" }
+cookie_agent_mcp = { version = "=0.4.0", path = "../mcp", features = ["oauth"] }
+cookie_agent_models = { version = "=0.4.0", path = "../models" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api" }
 fs2.workspace = true
 futures-util.workspace = true
 indexmap.workspace = true
@@ -49,10 +49,10 @@ libc.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
-cookie_agent_coding_runtime = { version = "=0.3.0", path = "../coding_runtime" }
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["test-support"] }
-cookie_agent_models = { version = "=0.3.0", path = "../models", features = ["test-support"] }
-cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api", features = ["test-support"] }
+cookie_agent_coding_runtime = { version = "=0.4.0", path = "../coding_runtime" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support"] }
+cookie_agent_models = { version = "=0.4.0", path = "../models", features = ["test-support"] }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api", features = ["test-support"] }
 insta.workspace = true
 oven-sdk-openai.workspace = true
 tempfile.workspace = true

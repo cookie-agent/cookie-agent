@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_web_assets"
-version = "0.3.0"
+version = "0.4.0"
 description = "The Cookie Agent web client's built page, embedded for the daemon to serve"
 edition.workspace = true
 rust-version.workspace = true

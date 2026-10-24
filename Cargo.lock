@@ -726,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_client_state"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "cookie_agent_protocol",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_coding_runtime"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cookie_agent_identity",
  "cookie_agent_models",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_identity"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "schemars",
  "serde",
@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_models"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arc-swap",
  "cookie_agent_identity",
@@ -937,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_plugin_sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "cookie_agent_protocol",
@@ -952,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_runtime_api"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_tui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1074,7 +1074,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_web"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "cookie_agent_client_state",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "cookie_agent_web_assets"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",

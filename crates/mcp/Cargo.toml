@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_mcp"
-version = "0.3.0"
+version = "0.4.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
@@ -27,10 +27,10 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 base64 = "0.22"
-cookie_agent_config = { version = "=0.3.0", path = "../config" }
-cookie_agent_models = { version = "=0.3.0", path = "../models", optional = true }
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
-cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
+cookie_agent_config = { version = "=0.4.0", path = "../config" }
+cookie_agent_models = { version = "=0.4.0", path = "../models", optional = true }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api" }
 futures-util = { workspace = true, optional = true }
 http.workspace = true
 process-wrap.workspace = true
@@ -50,6 +50,6 @@ zeroize = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 
 [dev-dependencies]
-cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api", features = ["test-support"] }
+cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api", features = ["test-support"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

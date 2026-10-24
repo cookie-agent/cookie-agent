@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_plugin_sdk"
-version = "0.3.0"
+version = "0.4.0"
 description = "Rust SDK for building Cookie Agent plugins"
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ homepage = "https://cookie-agent.github.io/cookie-agent/"
 workspace = true
 
 [dependencies]
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
 base64 = "0.22"
 jsonschema = { version = "0.49.9", default-features = false }
 serde.workspace = true
@@ -22,6 +22,6 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sy
 tokio-util.workspace = true
 
 [dev-dependencies]
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["test-support"] }
+cookie_agent_protocol = { version = "=0.4.0", path = "../protocol", features = ["test-support"] }
 jiff.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

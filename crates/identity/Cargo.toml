@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_identity"
-version = "0.3.0"
+version = "0.4.0"
 description = "Identity and identifier types for Cookie Agent"
 edition.workspace = true
 rust-version.workspace = true

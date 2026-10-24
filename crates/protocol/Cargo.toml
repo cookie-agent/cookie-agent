@@ -1,6 +1,6 @@
 [package]
 name = "cookie_agent_protocol"
-version = "0.3.0"
+version = "0.4.0"
 description = "Protocol types and transports for Cookie Agent"
 edition.workspace = true
 rust-version.workspace = true
@@ -27,7 +27,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 bytes.workspace = true
-cookie_agent_identity = { version = "=0.3.0", path = "../identity" }
+cookie_agent_identity = { version = "=0.4.0", path = "../identity" }
 crc32fast.workspace = true
 futures-util.workspace = true
 jiff.workspace = true
