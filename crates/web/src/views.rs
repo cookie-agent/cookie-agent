@@ -1716,7 +1716,7 @@ fn ReplyPart(parts: Memo<Arc<[(u64, PartHtml)]>>, row: u64, id: u64, at: usize) 
         };
         drawn.update_value(|drawn| draw_blocks(&element, drawn, &blocks));
     });
-    view! { <div class="markdown" node_ref=node></div> }.into_any()
+    view! { <div class="markdown" data-reply-text node_ref=node></div> }.into_any()
 }
 
 /// Brings the markdown blocks under `element` from `drawn` to `blocks`:

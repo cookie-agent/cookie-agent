@@ -130,6 +130,24 @@ html.dark {
   }
 }
 
+/* The transcript's rows, and the calls and text of a long reply, are laid
+   out and painted only near the screen: a long session scrolls and
+   streams at the cost of what shows. Each keeps the height it last showed
+   at, so the scrollbar, scroll anchoring, and the follow of the end hold
+   still; the margin keeps focus rings in. The pinned rows' chips reach
+   past their row for a finger, so they are always drawn. Find in page
+   still finds text in rows it does not draw. */
+#transcript .transcript-item:not(:has([data-pinned-rows])) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 4rem;
+  overflow-clip-margin: 0.5rem;
+}
+#transcript .transcript-item :is([data-tool], [data-reply-text]) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 2.75rem;
+  overflow-clip-margin: 0.5rem;
+}
+
 /* A session row's long press offers to delete it, not the browser's
    callout. */
 .no-callout {
