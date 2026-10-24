@@ -785,3 +785,23 @@ starts; a daemon document without an `acp` block shadowing a declaration
   them as the turn's own calls and declares no `subagents` capability:
   neither nesting by `parentToolUseId` nor child sessions is implemented
   until the subagent API is stable.
+- **Checked by hand against Claude Code** (`claude` 2.1.309, adapter
+  0.95.0, scratch daemon): a `Bash` call of `printf 'one\ntwo\n'; exit 3`
+  showed its output in a `terminal` block (replaced into the live display
+  once the adapter sent it, with the result) and ended failed with exit
+  code 3, `the command exited with code 3`, and the output retained; the
+  context was recorded twice (`used` 21205, then 21285, of a 1000000-token
+  window); the options came as `mode`, `model`, `effort`, and `fast` as a
+  boolean, which `session.agent_option.set` turned on.
+
+**Tests** (display round): the context use recorded once for a repeated
+`usage_update`, and the client reducer keeping it across ACP turns and
+clearing it at a model's; the TUI status line's `ctx` with the agent's
+window; the agent's own mode switch on its own mode option and on one made
+of its modes, and an unknown mode ignored; terminal output streamed as
+Codex and Claude Code send it (the capabilities, the live replacement and
+append, the exit codes, the retained output, a failed call's partial
+result); a boolean option recorded with its values and set with a JSON
+boolean, and the TUI toggling it; an image in a reply as a file part whose
+artifact holds its bytes; the `acp_agents` browser scenario (context chip,
+command output, the reply's image, the boolean switch).
