@@ -2331,6 +2331,22 @@ fn approvals_label(count: usize) -> String {
     }
 }
 
+/// The context chip's title: the tokens, and the window they fill when the
+/// session says it (an ACP agent's).
+fn context_title(tokens: u64, window: Option<u64>) -> String {
+    match window {
+        Some(window) => format!(
+            "Context: {} of {} tokens",
+            format_count(tokens),
+            format_count(window)
+        ),
+        None => format!(
+            "Context: {} tokens in the last request",
+            format_count(tokens)
+        ),
+    }
+}
+
 /// How long a phone's status line keeps a new status message.
 const STATUS_LIVE: Duration = Duration::from_secs(8);
 
@@ -2347,7 +2363,13 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 .with(|costs| costs.get(&session_id).copied())
         })
     };
-    let context = move || workspace.viewed.with(|viewed| viewed.context_tokens);
+    let context = move || {
+        workspace.viewed.with(|viewed| {
+            viewed
+                .context_tokens
+                .map(|tokens| (tokens, viewed.context_window))
+        })
+    };
     let agent = move || {
         workspace
             .draft
@@ -2480,10 +2502,11 @@ fn BottomBar(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             >
                 {move || workspace.status.get()}
             </span>
-            {move || context().map(|tokens| view! {
+            {move || context().map(|(tokens, window)| view! {
                 <span
+                    id="context"
                     class="inline-flex min-h-11 items-center gap-1.5 px-2 text-ink compact:hidden dark:text-sand"
-                    title=format!("Context: {} tokens in the last request", format_count(tokens))
+                    title=context_title(tokens, window)
                 >
                     <Glyph icon=icondata::FaGaugeSimpleHighSolid />
                     <span class="font-mono">{format!("{} tokens", compact_count(tokens))}</span>

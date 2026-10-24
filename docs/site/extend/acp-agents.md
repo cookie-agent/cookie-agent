@@ -319,6 +319,9 @@ each call decided by the rules as a model's would be.
   the web client, which shows the agent's model. Choosing a value changes
   it on the agent at once. They appear once the agent's session has
   started, with the first message.
+- **Context.** The status line shows how much context the agent's
+  conversation uses, as the agent reports it (`ctx` in the TUI, with the
+  share of the agent's context window; the tokens in the web client).
 - **Plan.** The agent's plan shows in the transcript as a checklist after
   the turn's reply, each step done (`[x]`), in progress (`[~]`), or pending
   (`[ ]`), updated in place as the agent works; each turn's plan stays where

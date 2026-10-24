@@ -1,6 +1,7 @@
 //! What the client protocol and session history say about ACP agents
 //! (`docs/site/specs/acp-agents.md` sections 5, 10, and 11; client protocol
-//! 1.17.0, notices, steering, and tool presentations 1.20.0).
+//! 1.17.0, notices, steering, and tool presentations 1.20.0, context use
+//! 1.23.0).
 //!
 //! The daemon records the ACP session a cookie session talks to
 //! (`acp_session_started`) and what the agent reports about it
@@ -149,6 +150,17 @@ pub struct AcpToolPresentation {
     pub presentation: PreparedPresentation,
 }
 
+/// How much of its context window the agent's conversation uses, as its
+/// latest `usage_update` reported (client protocol 1.23.0).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AcpContextUsage {
+    /// Tokens in the agent's context.
+    pub used: u64,
+    /// The agent's context window in tokens, when it reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
 /// The payload of `acp_session_updated`: what changed, each member the
 /// whole new value.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -169,6 +181,9 @@ pub struct AcpSessionUpdate {
     /// A tool call's new presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_presentation: Option<AcpToolPresentation>,
+    /// The agent's context use, when it changed (client protocol 1.23.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<AcpContextUsage>,
 }
 
 impl AcpSessionUpdate {
@@ -181,6 +196,7 @@ impl AcpSessionUpdate {
             && self.notice.is_none()
             && self.steered.is_none()
             && self.tool_presentation.is_none()
+            && self.context.is_none()
     }
 }
 

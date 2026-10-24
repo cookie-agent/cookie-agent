@@ -8,6 +8,7 @@ Each prompt's last text block is a command:
   echo                   answers every text block of the prompt joined by " | ",
                          as it does any prompt that is not a command
   work                   a thought, an edit tool call with a diff, a plan, usage
+                         (the same usage_update twice)
   stop <reason>          answers with stop reason <reason>
   permission <kind> <r>  asks permission for a call of ACP kind <kind> on <r>
                          (a path, a command, or a URL) and says the outcome
@@ -268,6 +269,8 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
             "content": [{"type": "diff", "path": "/work/notes.txt", "oldText": "one\ntwo\n", "newText": "one\n2\n"}],
             "rawOutput": {"ok": True},
         })
+        update(session_id, {"sessionUpdate": "usage_update", "used": 1234, "size": 200000, "cost": {"amount": 0.5, "currency": "USD"}})
+        # The same context use again: the session records it once.
         update(session_id, {"sessionUpdate": "usage_update", "used": 1234, "size": 200000, "cost": {"amount": 0.5, "currency": "USD"}})
         say(session_id, "Done.")
     elif word == "late-input":

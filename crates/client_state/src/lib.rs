@@ -964,8 +964,14 @@ pub struct SessionState {
     pub cwd_identity: Option<cookie_agent_protocol::CwdIdentity>,
     /// Total context occupied at the end of the latest committed turn
     /// (`input_tokens + output_tokens`); `None` when the turn reported no
-    /// usage, so the bottom bar hides its context segment.
+    /// usage, so the bottom bar hides its context segment. An ACP agent's
+    /// turns report none: its latest context use (`acp_session_updated`
+    /// `context`) stands instead.
     pub context_tokens: Option<u64>,
+    /// The context window `context_tokens` fills, when the session says it:
+    /// an ACP agent's, which no model catalog lists. `None` for a model's
+    /// turns, whose window the catalog gives.
+    pub context_window: Option<u64>,
     /// Latest authoritative session usage cost fetched from the engine.
     /// `None` covers both not-yet-fetched and unpriced usage; both hide the
     /// bottom-bar segment.

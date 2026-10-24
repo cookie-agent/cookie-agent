@@ -334,6 +334,9 @@ pub struct Viewed {
     /// A run or a compaction to stop.
     pub stoppable: bool,
     pub context_tokens: Option<u64>,
+    /// The window `context_tokens` fills, when the session says it (an ACP
+    /// agent's).
+    pub context_window: Option<u64>,
 }
 
 impl Workspace {
@@ -357,6 +360,7 @@ impl Workspace {
                             }),
                         stoppable: state.active_run.is_some() || state.is_compacting(),
                         context_tokens: state.context_tokens,
+                        context_window: state.context_window,
                     })
                     .unwrap_or_default()
             })

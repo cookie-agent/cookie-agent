@@ -804,6 +804,11 @@ over the Agent Client Protocol (see the
   `tool_presentation` (`tool_call_id`, `presentation`): a new title, hint,
   primary argument, arguments, and preview for one of the agent's tool
   calls, which replace the call's own (its tool identity stays).
+- Since 1.23.0, `acp_session_updated` may carry `context` (`used`, and
+  `size` when the agent reports its window): the agent's context use from
+  its latest `usage_update`, recorded as it changes. The agent's turns
+  report no usage, so clients show `used` as the session's context, of a
+  window of `size` tokens, until a model's turn reports its own.
 - The agent's turns are model turns of `acp/<agent ID>`; the calls it
   reports are tool calls whose `tool.source` is `acp` (`agent`,
   `runtime_id`), and the calls it makes of cookie's tools through the MCP

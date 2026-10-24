@@ -4367,3 +4367,58 @@ fn a_rebuilding_replay_keeps_the_background_calls() {
     assert_eq!(user_texts(&store, session_id), ["first"]);
     assert_eq!(background_jobs(&store, session_id), ["job-1"]);
 }
+
+#[test]
+fn an_acp_agents_context_use_is_the_sessions_context_across_its_turns() {
+    use cookie_agent_protocol::{AcpContextUsage, AcpSessionUpdate};
+    let session_id = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let mut state = SessionState::default();
+    let apply = |state: &mut SessionState, seq, payload| {
+        reduce_event(
+            state,
+            session_id,
+            Some(run),
+            seq,
+            jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            payload,
+        );
+    };
+    let acp_turn = || {
+        let mut turn = committed_turn(1);
+        if let EventPayload::ModelTurnCommitted { resolved_model, .. } = &mut turn {
+            *resolved_model = serde_json::from_value(serde_json::json!({
+                "provider_id": "acp",
+                "model_id": "claude",
+                "adapter_id": "acp",
+                "selection": {"model": "acp/claude", "variant": null},
+                "selection_fingerprint": "b".repeat(64)
+            }))
+            .expect("resolved model");
+        }
+        turn
+    };
+    apply(
+        &mut state,
+        2,
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                context: Some(AcpContextUsage {
+                    used: 30_000,
+                    size: Some(120_000),
+                }),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    assert_eq!(state.context_tokens, Some(30_000));
+    assert_eq!(state.context_window, Some(120_000));
+    // The agent's turns report no usage and leave its context standing.
+    apply(&mut state, 3, acp_turn());
+    assert_eq!(state.context_tokens, Some(30_000));
+    assert_eq!(state.context_window, Some(120_000));
+    // A model's usage-less turn clears both: the catalog gives its window.
+    apply(&mut state, 4, committed_turn(3));
+    assert_eq!(state.context_tokens, None);
+    assert_eq!(state.context_window, None);
+}

@@ -247,6 +247,18 @@ fn usage_of(response: Option<&Value>, update: Option<&Value>) -> Option<Usage> {
     })
 }
 
+/// The context use a `usage_update` reports: `used` tokens of a `size`-token
+/// window (a `size` of 0 says nothing).
+fn context_of(update: &Value) -> Option<cookie_agent_protocol::AcpContextUsage> {
+    Some(cookie_agent_protocol::AcpContextUsage {
+        used: update.get("used").and_then(Value::as_u64)?,
+        size: update
+            .get("size")
+            .and_then(Value::as_u64)
+            .filter(|size| *size > 0),
+    })
+}
+
 /// The cost a `usage_update` reports in US dollars, in pico-dollars.
 fn cost_of(update: Option<&Value>) -> Option<u64> {
     let cost = update?.get("cost")?;
@@ -592,6 +604,8 @@ struct Turn<'a> {
     /// The claim on the round's input, released at its first commit.
     claim: Option<super::super::producer_claims::ClaimedPrompt>,
     usage_update: Option<Value>,
+    /// The context use the session last recorded in this run.
+    context: Option<cookie_agent_protocol::AcpContextUsage>,
     home: Option<String>,
     /// Calls through the bridge still running.
     bridged: Vec<tokio::task::JoinHandle<()>>,
@@ -952,9 +966,21 @@ impl Turn<'_> {
                 }
                 Ok(())
             }
+            // The agent's context use: what the clients show as the
+            // session's context, recorded as it changes.
             "usage_update" => {
                 self.usage_update = Some(update.clone());
-                Ok(())
+                match context_of(update).filter(|context| self.context != Some(*context)) {
+                    Some(context) => {
+                        self.context = Some(context);
+                        self.record_update(AcpSessionUpdate {
+                            context: Some(context),
+                            ..AcpSessionUpdate::default()
+                        })
+                        .await
+                    }
+                    None => Ok(()),
+                }
             }
             // The session notices RFD: an advisory line for the user.
             "notice" => {
@@ -1522,6 +1548,7 @@ impl Engine {
             input_through_seq: 0,
             claim: None,
             usage_update: None,
+            context: None,
             home,
             bridged: Vec::new(),
             steering: process.init().steering(),

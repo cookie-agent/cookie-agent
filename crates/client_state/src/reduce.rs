@@ -659,11 +659,17 @@ pub(super) fn reduce_event_from(
             // it generated. A usage-less turn clears the display, except an
             // interrupted one: it never reports usage, and the previous
             // turn's context remains the best estimate.
-            if turn.finish_reason != cookie_agent_protocol::ModelFinishReason::Aborted {
+            // An ACP agent's turns report no usage: its context use arrives
+            // in `acp_session_updated` and stands across its turns.
+            let acp_turn = resolved_model.selection.model.provider_id().as_str()
+                == cookie_agent_protocol::ACP_MODEL_PROVIDER;
+            if turn.finish_reason != cookie_agent_protocol::ModelFinishReason::Aborted && !acp_turn
+            {
                 state.context_tokens = match (turn.usage.input_tokens, turn.usage.output_tokens) {
                     (Some(input), Some(output)) => Some(input.saturating_add(output)),
                     _ => None,
                 };
+                state.context_window = None;
             }
             // Generation wall time: the durable span between the event that
             // closed this turn's input window and the commit itself.
@@ -1242,6 +1248,10 @@ pub(super) fn reduce_event_from(
             }
             if let Some(options) = update.options {
                 state.acp.options = options;
+            }
+            if let Some(context) = update.context {
+                state.context_tokens = Some(context.used);
+                state.context_window = context.size;
             }
             if let Some(cookie_agent_protocol::Open::Known(
                 cookie_agent_protocol::DisplayBlock::Plan { entries },

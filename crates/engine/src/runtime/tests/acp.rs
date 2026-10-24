@@ -364,6 +364,21 @@ async fn a_turn_renders_chunks_thoughts_tool_calls_a_plan_and_usage() {
     assert_eq!(usage.0.input_tokens, Some(10));
     assert_eq!(usage.0.output_tokens, Some(5));
     assert_eq!(usage.1, Some(500_000_000_000));
+    // The agent's context use, recorded once although reported twice.
+    let contexts = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.context,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contexts,
+        [cookie_agent_protocol::AcpContextUsage {
+            used: 1234,
+            size: Some(200_000)
+        }]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

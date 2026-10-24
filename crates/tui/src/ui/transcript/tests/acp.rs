@@ -295,3 +295,18 @@ fn a_notice_and_a_steered_message_render() {
         assert!(text.contains(line), "{line}\n{text}");
     }
 }
+
+#[tokio::test]
+async fn the_status_line_shows_the_agents_context_of_its_own_window() {
+    let (mut app, session) = acp_session_app().await;
+    app.draft = Some(cookie_agent_protocol::RunSelection {
+        agent: AgentId::new("claude").unwrap(),
+        model: cookie_agent_protocol::acp_model_selection(&AgentId::new("claude").unwrap()),
+        preset: None,
+    });
+    let state = app.store.sessions.get_mut(&session).unwrap();
+    state.context_tokens = Some(30_000);
+    state.context_window = Some(120_000);
+    let bar = rendered_row(&mut app, 100, 24, 23);
+    assert!(bar.contains("ctx 30.0K (25%)"), "{bar}");
+}

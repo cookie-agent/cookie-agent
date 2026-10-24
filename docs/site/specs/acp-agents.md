@@ -718,3 +718,15 @@ starts; a daemon document without an `acp` block shadowing a declaration
   The manual check of round 3 saw an accepted `run.cancel` that never sent
   `session/cancel` while Claude Code streamed updates; this was the window.
 
+**Display round** (2026-10-24; client protocol 1.23.0; history format
+unchanged):
+
+- **Context.** Each `usage_update` whose `used` or `size` changed is
+  recorded as `acp_session_updated.context` (`used`, and `size` when it is
+  not 0). ACP turns still commit with empty usage, since the turns' usage
+  feeds the session's usage totals and the round's usage is recorded once
+  (above); the reducer keeps an ACP agent's context across its turns
+  (a turn of the `acp` provider leaves it standing) and takes the window
+  from `size`, which no catalog lists for `acp/<agent>`. The TUI's status
+  line shows `ctx` with the percentage of that window, the web's the tokens
+  (the window in its title). All three adapters send `usage_update`.

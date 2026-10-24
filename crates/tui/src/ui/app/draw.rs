@@ -526,16 +526,22 @@ impl App {
         // No token data → no context segment at all; a bare dash would be
         // noise. The percentage degrades away before the count does.
         let context = context_tokens.map(|tokens| format!("ctx {}", format_token_count(tokens)));
-        let context_limit = self
-            .draft
-            .as_ref()
-            .and_then(|draft| self.model_descriptor(&draft.model.model))
+        // An ACP agent reports its own window; a model's comes from the
+        // catalog.
+        let context_limit = state
+            .and_then(|state| state.context_window)
             .or_else(|| {
-                state
-                    .and_then(latest_resolved_model_key)
-                    .and_then(|key| self.model_descriptor(key))
+                self.draft
+                    .as_ref()
+                    .and_then(|draft| self.model_descriptor(&draft.model.model))
+                    .or_else(|| {
+                        state
+                            .and_then(latest_resolved_model_key)
+                            .and_then(|key| self.model_descriptor(key))
+                    })
+                    .map(|descriptor| descriptor.capabilities.context_tokens)
             })
-            .map(|descriptor| descriptor.capabilities.context_tokens);
+            .filter(|limit| *limit > 0);
         let context_with_percentage = match (context_tokens, context_limit) {
             (Some(tokens), Some(limit)) => {
                 let percentage = tokens.saturating_mul(100).saturating_add(limit / 2) / limit;
