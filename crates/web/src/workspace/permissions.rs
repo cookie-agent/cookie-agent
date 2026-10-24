@@ -31,7 +31,7 @@ impl Workspace {
         self.new_session.get()
     }
 
-    fn load_permissions(self) {
+    pub(super) fn load_permissions(self) {
         let Some(client) = self.client() else {
             return;
         };

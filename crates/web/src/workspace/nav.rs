@@ -4,7 +4,7 @@
 
 use leptos::prelude::*;
 
-use super::Workspace;
+use super::{Panel, Workspace};
 use crate::{
     browser,
     connect::SIDEBAR_KEY,
@@ -50,12 +50,15 @@ impl Workspace {
         self.settings_section.set(section);
     }
 
-    /// Reads again what the open view lists, keeping what is open in it,
-    /// for a redialed connection: a read made while the page reconnected
-    /// failed on the closed connection, and the daemon may have changed
-    /// meanwhile. [`Workspace::refresh_lists`] reads the runtimes (the
-    /// Machines view, Settings → Providers) and the cron jobs.
-    pub(super) fn reread_view(self) {
+    /// Reads again what the open view and sheet show, keeping what is
+    /// open in them, for a redialed connection: a read made while the
+    /// page reconnected was not sent, one on its way failed with the
+    /// connection, and the daemon may have changed meanwhile.
+    /// [`Workspace::refresh_lists`] reads the runtimes (the Machines view,
+    /// Settings → Providers, the runtimes sheet), the projects (Move to
+    /// project…), and the cron jobs; the redial reads the viewed session's
+    /// approvals, permission mode, and cost.
+    pub(super) fn reread_open(self) {
         match self.view.get_untracked() {
             View::Agents => self.poll_config(),
             View::Settings => match untrack(|| self.shown_section()) {
@@ -66,6 +69,27 @@ impl Workspace {
             },
             View::Memory => self.poll_memory(),
             View::Chat | View::Machines | View::Cron => {}
+        }
+        match self.panel.get_untracked() {
+            Some(Panel::Skills) => self.load_skills(),
+            Some(Panel::Usage) => self.load_usage(),
+            Some(Panel::Permissions) => self.load_permissions(),
+            Some(Panel::Project) => {
+                // An editor that read its project keeps its edits.
+                let unread = self.project_editor.with_untracked(|editor| {
+                    editor
+                        .as_ref()
+                        .filter(|editor| !editor.agents_md_loaded)
+                        .and_then(|editor| editor.project.as_ref())
+                        .map(|project| project.id.clone())
+                });
+                if let Some(project) = unread {
+                    self.load_editor(project);
+                }
+            }
+            // The rest show the store, the runtime snapshot, or what
+            // the redial reads anyway.
+            _ => {}
         }
     }
 

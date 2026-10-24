@@ -10,20 +10,28 @@ use super::{Panel, Workspace};
 impl Workspace {
     /// Opens `/skills`, searching for `query`.
     pub(super) fn open_skills(self, query: String) {
-        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
-        else {
+        if self.selected.get_untracked().is_none() {
             self.status
                 .set("select a session before running a skill".into());
             return;
-        };
+        }
         self.skill_query.set(query);
         self.skill_pick.set(None);
         self.skill_args.set(String::new());
         self.skills.set(None);
         self.panel.set(Some(Panel::Skills));
+        self.load_skills();
+    }
+
+    /// Reads the viewed session's skills for `/skills`.
+    pub(super) fn load_skills(self) {
         // Opened again, maybe on another session: the earlier listing,
         // landing later, is dropped.
         let read = self.begin_read(|reads| &mut reads.skills);
+        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
+        else {
+            return;
+        };
         spawn_local(async move {
             let result = client
                 .list_skills(SkillsListParams {

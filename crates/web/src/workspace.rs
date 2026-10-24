@@ -63,6 +63,11 @@ pub use projects::{EditorFields, ProjectEditor};
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
 
+/// The status while the page reconnects and something needed the
+/// connection, and once it has.
+const RECONNECTING: &str = "reconnecting to the daemon…";
+const RECONNECTED: &str = "reconnected to the daemon";
+
 /// A sheet the chat view shows: on the right of a wide window, from the
 /// bottom of a phone's. The daemon-wide panels are views
 /// ([`crate::layout::View`]) instead.
@@ -481,8 +486,22 @@ impl Workspace {
         }
     }
 
+    /// The connection, `None` while the page reconnects: what needs it
+    /// then does nothing and says the page is reconnecting, and a redial
+    /// reads again what is open ([`Workspace::reread_open`]), rather
+    /// than a read failing on the closed connection and its error staying.
     fn client(self) -> Option<Client> {
-        self.client.get_value()
+        let client = self.client.get_value();
+        if client.is_none() && self.connection.get_value() > 0 {
+            self.say_reconnecting();
+        }
+        client
+    }
+
+    fn say_reconnecting(self) {
+        if self.status.with_untracked(|status| status != RECONNECTING) {
+            self.status.set(RECONNECTING.into());
+        }
     }
 
     /// Reads the projections; tracks `revision` when called reactively.
@@ -536,7 +555,7 @@ impl Workspace {
     /// A redial rebuilds what the old connection fed, as the TUI does: the
     /// viewed session from a full replay, the lists, approvals, and mode.
     pub fn adopt(self, client: Client) {
-        let reconnected = self.client.with_value(Option::is_some);
+        let reconnected = self.connection.get_value() > 0;
         self.connection.update_value(|connection| *connection += 1);
         self.can_delete.set(
             cookie_agent_client_state::session_delete::daemon_can_delete_sessions(
@@ -571,7 +590,10 @@ impl Workspace {
         let selected = self.selected.get_untracked();
         self.refresh_onboarding(!reconnected);
         if reconnected {
-            self.reread_view();
+            self.reread_open();
+            if self.status.with_untracked(|status| status == RECONNECTING) {
+                self.status.set(RECONNECTED.into());
+            }
         }
         spawn_local(async move {
             self.refresh_lists().await;
@@ -586,13 +608,16 @@ impl Workspace {
                 self.send_subscribe(subscribe);
                 self.refresh_approvals(session_id);
                 self.load_permission_mode(session_id);
-                self.status.set("reconnected to the daemon".into());
+                self.refresh_cost(session_id);
+                self.status.set(RECONNECTED.into());
             }
         });
     }
 
-    /// The connection dropped: nothing is subscribed on it any more.
+    /// The connection dropped: nothing is subscribed on it any more, and
+    /// nothing is sent on it until a redial is adopted.
     pub fn disconnected(self) {
+        self.client.set_value(None);
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
     }

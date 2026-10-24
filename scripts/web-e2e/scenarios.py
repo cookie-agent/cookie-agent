@@ -3413,7 +3413,8 @@ def suspended_tab(browser):
     """A phone suspends a background tab; when it shows again the page
     checks its connection. A daemon that stopped answering (here, paused)
     is reconnected to once it answers again. Removing the focused composer
-    with the page does not panic."""
+    with the page does not panic, and a sheet opened meanwhile says the
+    page is reconnecting and reads its figures once it has."""
     with open(os.path.join(HOME, "daemon.pid")) as file:
         daemon = int(file.read())
     visibility = (
@@ -3428,11 +3429,18 @@ def suspended_tab(browser):
         browser.script(visibility, "visible")
         browser.wait("the reconnect", lambda: "stopped answering" in browser.text("#reconnecting"), timeout=20)
         browser.shot("suspended-reconnecting")
+        # The paused daemon holds the page reconnecting: /usage reads
+        # nothing on the closed connection and says why.
+        menu(browser, "usage")
+        browser.wait("the usage sheet", lambda: "Reading usage" in browser.text("#sheet"))
+        browser.wait("the reconnecting status", lambda: browser.text("#status") == "reconnecting to the daemon…")
     finally:
         os.kill(daemon, signal.SIGCONT)
     browser.wait("the reconnection", lambda: browser.text("#connected") != "", timeout=60)
     browser.wait("the restored session", lambda: "reconnected to the daemon" in browser.text("#status"), timeout=30)
-    print("a tab shown again after the daemon stopped answering reconnects")
+    cache_hit_rate(browser)
+    close_sheet(browser)
+    print("a tab shown again after the daemon stopped answering reconnects, and reads the open sheet again")
 
 
 # Clicks each of `arguments[0]` (selectors) in turn, the first at the
