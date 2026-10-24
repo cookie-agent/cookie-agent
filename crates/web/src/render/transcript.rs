@@ -1822,4 +1822,74 @@ mod tests {
         };
         assert!(std::sync::Arc::ptr_eq(old, new));
     }
+
+    /// The cost of one delta at the end of a reply of 4000 parts (half of
+    /// them calls, half text), the pass a streaming frame makes. Run with
+    /// `cargo test -p cookie_agent_web --release -- --ignored --nocapture
+    /// a_delta_in_a_long_reply`.
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn a_delta_in_a_long_reply() {
+        use cookie_agent_client_state::AssistantChild;
+        let (mut state, _) = streaming_reply();
+        let mut calls = Vec::new();
+        let TranscriptItem::Assistant { children, .. } = &mut state.transcript[0] else {
+            unreachable!()
+        };
+        let tail = children.pop().expect("the text");
+        for index in 0..2000u64 {
+            let call = run("Run `ls`", "ls");
+            children.push(AssistantChild::Tool { call_id: call.id });
+            calls.push(call);
+            let mut markdown = cookie_agent_client_state::markdown::MarkdownDocument::default();
+            markdown.append(&format!("Step {index} looked at the **files**.\n\n"));
+            children.push(AssistantChild::Text {
+                id: 10 + index,
+                version: 0,
+                markdown: markdown.finished(),
+            });
+        }
+        children.push(tail);
+        state
+            .tools
+            .extend(calls.into_iter().map(|call| (call.id, call)));
+        let names = ModelDisplayNames::default();
+        let expanded = HashSet::new();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let mut cache = super::RowCache::default();
+        let draw = |state: &SessionState, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded: &expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+            };
+            super::transcript_rows(&view, None, cache)
+        };
+        draw(&state, &mut cache);
+        let rounds = 200;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            let TranscriptItem::Assistant {
+                version, children, ..
+            } = &mut state.transcript[0]
+            else {
+                unreachable!()
+            };
+            *version += 1;
+            if let Some(AssistantChild::Text {
+                version, markdown, ..
+            }) = children.last_mut()
+            {
+                *version += 1;
+                markdown.append(" more");
+            }
+            std::hint::black_box(draw(&state, &mut cache));
+        }
+        let per_delta = started.elapsed() / rounds;
+        println!("one delta in a 4000-part reply: {per_delta:?}");
+    }
 }

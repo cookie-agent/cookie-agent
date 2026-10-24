@@ -24,6 +24,9 @@ otherwise the last user text decides.
   named after the word that follows "label" (or "line"), to scroll while it
   streams; containing "stream long": a `bash` call that prints a tick every
   50 ms, then that long answer, to fold the call while the answer streams;
+- containing "long session <n>": a reply of <n> steps, each a sentence and
+  a `read` call, then the "stream only" answer at 1,500 lines, for the
+  page's frame time on a long transcript;
 - containing "remember": a `memory_write` of `user://e2e-build`; containing
   "forget": a `memory_delete` of it;
 - anything else: "ok".
@@ -81,17 +84,45 @@ def tool_reply(name="bash", arguments=None):
     yield chunk({}, "tool_calls", USAGE)
 
 
-def long_reply(text):
+def long_reply(text, lines=600):
     """A long markdown answer streamed fast, a code block now and then."""
     label = re.search(r"label (\w+)", text)
     label = label.group(1) if label else "line"
     parts = []
-    for index in range(600):
+    for index in range(lines):
         if index % 50 == 25:
             parts.append("```rust\nfn step_%d() {}\n```\n\n" % index)
         else:
             parts.append("%s %d of the long answer.\n\n" % (label, index))
     return text_reply(parts, pause=0.02)
+
+
+def long_session_step(messages, text):
+    """The next step of a "long session <n>" reply: a sentence and a `read`
+    call while fewer than <n> calls ran since the user's message, then the
+    long answer."""
+    steps = int(re.search(r"long session (\d+)", text).group(1))
+    done = 0
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            break
+        done += message.get("role") == "tool"
+    if done >= steps:
+        # Long enough to time the page while it streams.
+        return long_reply(text, lines=1500)
+    call = {
+        "index": 0,
+        "id": "call-" + str(time.time_ns()),
+        "type": "function",
+        "function": {"name": "read", "arguments": json.dumps({"filePath": "step-%d.txt" % done})},
+    }
+
+    def parts():
+        yield chunk({"content": "Step %d looks at **step-%d.txt**.\n\n" % (done, done)})
+        yield chunk({"tool_calls": [call]})
+        yield chunk({}, "tool_calls", USAGE)
+
+    return parts()
 
 
 def last_text(messages):
@@ -107,6 +138,8 @@ def last_text(messages):
 def reply(request):
     messages = request.get("messages", [])
     if messages and messages[-1].get("role") == "tool":
+        if "long session" in last_text(messages).lower():
+            return long_session_step(messages, last_text(messages).lower())
         if "stream long" in last_text(messages).lower():
             return long_reply(last_text(messages).lower())
         return text_reply(["The tool ran."])
@@ -152,6 +185,8 @@ def reply(request):
             "delegate_subagent",
             {"description": "child task", "prompt": prompt, "agent_type": "helper"},
         )
+    if "long session" in text:
+        return long_session_step(messages, text)
     if "stream only" in text:
         return long_reply(text)
     if "stream long" in text:

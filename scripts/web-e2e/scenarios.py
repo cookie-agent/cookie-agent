@@ -767,6 +767,99 @@ def streaming_scroll(browser):
     idle(browser, "the last reply's end", text="gamma 599 ")
 
 
+FRAME_STATS = """
+const done = arguments[arguments.length - 1];
+const span = arguments[0];
+const gaps = [];
+let long = 0, blocking = 0;
+const observer = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+        long += 1;
+        blocking += entry.duration;
+    }
+});
+observer.observe({type: 'longtask'});
+let last = performance.now();
+const end = last + span;
+function tick(now) {
+    gaps.push(now - last);
+    last = now;
+    if (now < end) {
+        requestAnimationFrame(tick);
+        return;
+    }
+    observer.disconnect();
+    gaps.sort((a, b) => a - b);
+    done({
+        frames: gaps.length,
+        mean: gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length,
+        p95: gaps[Math.floor(gaps.length * 0.95)],
+        max: gaps[gaps.length - 1],
+        long: long,
+        blocking: blocking,
+        nodes: document.getElementsByTagName('*').length,
+    });
+}
+requestAnimationFrame(tick);
+"""
+
+
+# Finds text from the transcript's end as find in page does: selects the
+# match (window.find, which does not scroll) and brings it into view.
+FIND_IN_PAGE = """
+const done = arguments[arguments.length - 1];
+const t = document.querySelector('#transcript');
+t.scrollTop = t.scrollHeight;
+window.getSelection().removeAllRanges();
+if (!window.find(arguments[0])) return done(null);
+const selection = window.getSelection();
+const range = selection.getRangeAt(0);
+range.startContainer.parentElement.scrollIntoView({block: 'center'});
+requestAnimationFrame(() => requestAnimationFrame(() => {
+    const rect = range.getBoundingClientRect();
+    const box = t.getBoundingClientRect();
+    done({inside: t.contains(selection.anchorNode),
+        shown: rect.height > 0 && rect.top >= box.top && rect.bottom <= box.bottom});
+}));
+"""
+
+
+def long_session(browser):
+    """A reply of hundreds of calls and paragraphs, then a long answer
+    streaming at its end: the transcript follows the end and holds still
+    when scrolled up, find in page reaches an early row, and the page
+    reports its frame times and size."""
+    new_session(browser)
+    send(browser, "long session 400, label omega")
+    browser.wait("the calls", lambda: count(browser, "#transcript [data-tool]") >= 400, timeout=400)
+    browser.wait("the long answer", lambda: "omega 40 " in browser.text("#transcript"), timeout=60)
+    follows(browser, "the long session's stream")
+    # Rows far from the screen are not drawn: scrolled up, the view holds
+    # still while the end grows, and the jump follows it again.
+    wheel(browser, -3000)
+    stays_put(browser, "a wheel up in the long session")
+    browser.click("[data-jump-latest]")
+    follows(browser, "the jump in the long session")
+    # At full speed and on a CPU six times slower, as a phone's.
+    for rate in (1, 6):
+        browser.cdp("Emulation.setCPUThrottlingRate", {"rate": rate})
+        try:
+            stats = browser.script_async(FRAME_STATS, 3000)
+        finally:
+            browser.cdp("Emulation.setCPUThrottlingRate", {"rate": 1})
+        print(
+            "streaming after 400 calls, CPU 1/%d: %d frames, mean %.1f ms, p95 %.1f ms, max %.1f ms, "
+            "%d long tasks (%.0f ms), %d elements"
+            % (rate, stats["frames"], stats["mean"], stats["p95"], stats["max"], stats["long"], stats["blocking"], stats["nodes"])
+        )
+    idle(browser, "the long answer's end", text="omega 1499 ", timeout=180)
+    print("the long session's page: %d elements" % browser.script("return document.getElementsByTagName('*').length"))
+    # Find in page reaches a row far above the screen.
+    found = browser.script_async(FIND_IN_PAGE, "Step 7 looks at")
+    assert found and found["inside"] and found["shown"], "find in page missed an early row: %s" % found
+    print("find in page finds and shows a row far above the end")
+
+
 def pinned_rows(browser):
     """The system prompt and the tools the latest request offered, pinned
     folded at the top of the transcript as in the TUI; each opens to the
@@ -4767,6 +4860,7 @@ SCENARIOS = [
     ("tool_rows", tool_rows, "chat", []),
     ("pinned_rows", pinned_rows, "chat", ["tool_rows"]),
     ("streaming_scroll", streaming_scroll, "chat", []),
+    ("long_session", long_session, "long", []),
     ("message_menu", message_menu, "chat", ["basics"]),
     ("session_depth", session_depth, "depth", []),
     ("permission_rules", permission_rules, "depth", []),
