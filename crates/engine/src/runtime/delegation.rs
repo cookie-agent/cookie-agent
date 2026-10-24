@@ -1216,6 +1216,20 @@ impl Engine {
                 return Err(error);
             }
         };
+        #[cfg(test)]
+        if let Some(hook) = {
+            self.inner
+                .test_hooks
+                .delegate_run_unrecorded_hook
+                .lock()
+                .expect("delegate run hook lock")
+                .take()
+        } {
+            if let Some(reached) = hook.reached.lock().expect("reached lock").take() {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
         if let Some(record) = self
             .inner
             .delegation
@@ -1396,7 +1410,33 @@ impl Engine {
         });
     }
 
-    /// Whether a foreground call still waits for `run` of `child`.
+    /// Holds the next delegation between its child's run going live and the
+    /// delegation recording the run's id, until the returned notify fires.
+    #[cfg(test)]
+    pub(crate) fn install_delegate_run_unrecorded_hook_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .test_hooks
+            .delegate_run_unrecorded_hook
+            .lock()
+            .expect("delegate run hook lock") =
+            Some(Arc::new(super::test_hooks::PromptSnapshotHook {
+                reached: Mutex::new(Some(reached)),
+                release: release.clone(),
+            }));
+        (receiver, release)
+    }
+
+    /// Whether a foreground call still waits for `run` of `child`. Until
+    /// the delegation records the run it started, a run of a child it is
+    /// still starting is that run: the child's turn is live (its
+    /// `RunStarted` is out and it is among the active runs) a moment before
+    /// the delegation learns its id, and in that moment it must not read
+    /// as a turn the child runs on its own.
     pub(super) fn foreground_waits_for(&self, child: SessionId, run: RunId) -> bool {
         self.inner
             .delegation
@@ -1404,7 +1444,16 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&child)
-            .is_some_and(|record| record.foreground_waiting && record.child_run_id == Some(run))
+            .is_some_and(|record| {
+                record.foreground_waiting
+                    && match record.child_run_id {
+                        Some(recorded) => recorded == run,
+                        None => matches!(
+                            record.state,
+                            DelegationState::Queued | DelegationState::Starting
+                        ),
+                    }
+            })
     }
 
     /// Cancels the child run and returns the structured delegate cancellation

@@ -249,8 +249,9 @@ async fn a_waiting_grandchild_keeps_the_root_waiting() {
 }
 
 /// A foreground delegation is unchanged: while its call waits for the
-/// child's first turn the parent runs and lists no subagent, and the
-/// finished delegation leaves it waiting on nothing.
+/// child's first turn the parent runs and lists no subagent, even in the
+/// moment between that turn going live and the delegation recording it,
+/// and the finished delegation leaves it waiting on nothing.
 #[tokio::test]
 async fn a_foreground_delegation_leaves_its_parent_waiting_on_nothing() {
     let (endpoint, sender, captured) = scripted_channel_server(3).await;
@@ -280,6 +281,7 @@ async fn a_foreground_delegation_leaves_its_parent_waiting_on_nothing() {
         .create_session(selection.clone())
         .expect("parent")
         .session_id;
+    let (unrecorded, release) = engine.install_delegate_run_unrecorded_hook_for_test();
     engine
         .start_run(
             RunStartParams {
@@ -293,11 +295,19 @@ async fn a_foreground_delegation_leaves_its_parent_waiting_on_nothing() {
         )
         .await
         .expect("parent run");
+    // The child's turn is live, and the delegation has yet to record it.
+    with_watchdog("the child's run going live", unrecorded)
+        .await
+        .expect("delegate run hook");
     let child = await_child(&engine, parent, "running child", |child| {
         child.status == SessionStatus::Running
     })
     .await
     .session_id;
+    assert!(engine.background_calls(parent).is_empty());
+    assert!(listed_waiting(&engine, parent).is_empty());
+    assert!(listed_waiting(&engine, child).is_empty());
+    release.notify_one();
     // The child's turn is held until its response is sent.
     assert!(engine.background_calls(parent).is_empty());
     assert!(listed_waiting(&engine, parent).is_empty());
