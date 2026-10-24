@@ -23,7 +23,7 @@ use crate::{
     PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProgress, ToolProvider,
     events::OutputHub,
-    permissions::{PermissionDecision, PermissionPipeline, PermissionScope},
+    permissions::{MergedRules, PermissionDecision, PermissionPipeline, PermissionScope},
     policy::FrozenRunPolicy,
     runtimes::{ComposedTool, Composition, SourcedProvider, compose},
 };
@@ -1149,7 +1149,7 @@ impl Engine {
     pub(crate) fn compose_session_tools(
         &self,
         session: SessionId,
-        keep: impl Fn(&SourcedProvider, &crate::ToolSpec) -> bool,
+        mut keep: impl FnMut(&SourcedProvider, &crate::ToolSpec) -> bool,
     ) -> Result<Composition, EngineError> {
         let context = SessionToolContext::new(session);
         let mut candidates = Vec::new();
@@ -1192,6 +1192,9 @@ impl Engine {
             &policy.agent,
             Some(&session_projection.permission_overlay),
         );
+        // One merged rule list per home the runtimes reported, not one per
+        // tool.
+        let mut merged_by_home = Vec::<(Option<String>, MergedRules<'_>)>::new();
         let mut composition = self.compose_session_tools(session, |source, tool| {
             let delegation_tool = tool.permission_name.as_deref() == Some("delegate");
             let goal_tool = source.attachment.is_none()
@@ -1207,13 +1210,27 @@ impl Engine {
                     .permission_name
                     .as_deref()
                     .is_none_or(|permission_name| {
-                        PermissionPipeline::tool_offered(
-                            &policy.agent,
-                            Some(&session_projection.permission_overlay),
+                        let scope = PermissionScope::of(&source.origin);
+                        let index = merged_by_home
+                            .iter()
+                            .position(|(home, _)| home.as_deref() == scope.home)
+                            .unwrap_or_else(|| {
+                                merged_by_home.push((
+                                    scope.home.map(str::to_owned),
+                                    MergedRules::of(
+                                        &policy.agent,
+                                        Some(&session_projection.permission_overlay),
+                                        scope.home,
+                                    ),
+                                ));
+                                merged_by_home.len() - 1
+                            });
+                        PermissionPipeline::tool_offered_by(
+                            &merged_by_home[index].1,
                             None,
                             permission_name,
                             &tool.name,
-                            PermissionScope::of(&source.origin),
+                            scope,
                         )
                     })
         })?;

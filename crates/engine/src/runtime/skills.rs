@@ -228,16 +228,26 @@ impl Engine {
         let projection = self.inner.store.get(session)?;
         let policy = permissions::governing_agent_for_skills(&projection);
         let grants = self.skill_grants_for_session(session, None);
-        Ok(self.session_skills(session)?.iter().any(|(name, skill)| {
-            model_skill_visibility(
-                &policy,
-                &projection.permission_overlay,
-                grants.as_ref(),
-                name,
-                skill,
-            )
-            .1
-        }))
+        let view = self.session_skills(session)?;
+        if view.skills.is_empty() {
+            return Ok(false);
+        }
+        let merged = skill_rules(&policy, &projection.permission_overlay);
+        // Without the `skill` action offered or granted, no skill is
+        // visible, whatever each skill's rules say.
+        let grants_skill = grants.as_ref().is_some_and(|grants| {
+            grants.rules.iter().any(|grant| {
+                grant.action == PermissionAction::SKILL
+                    && grant.effect == PermissionEffect::Allow
+                    && grant.applies_to(None)
+            })
+        });
+        if !grants_skill && !merged.offers(&PermissionAction::SKILL, None) {
+            return Ok(false);
+        }
+        Ok(view
+            .iter()
+            .any(|(name, skill)| model_skill_visibility(&merged, grants.as_ref(), name, skill).1))
     }
 
     /// The turn-scoped skill grants that apply to tools of `attachment`
@@ -328,19 +338,15 @@ impl Engine {
         let projection = self.inner.store.get(session)?;
         let policy = permissions::governing_agent_for_skills(&projection);
         let grants = self.skill_grants_for_session(session, None);
+        let merged = skill_rules(&policy, &projection.permission_overlay);
         let view = self.session_skills(session)?;
         let mut skills = view
             .discoveries
             .iter()
             .filter_map(|discovery| {
                 let skill = view.get(&discovery.name)?;
-                let (effect, visible) = model_skill_visibility(
-                    &policy,
-                    &projection.permission_overlay,
-                    grants.as_ref(),
-                    &discovery.name,
-                    skill,
-                );
+                let (effect, visible) =
+                    model_skill_visibility(&merged, grants.as_ref(), &discovery.name, skill);
                 let mut descriptor = skill_descriptor(
                     &discovery.name,
                     skill.document(),
@@ -416,16 +422,10 @@ impl Engine {
         let projection = self.inner.store.get(session)?;
         let policy = permissions::governing_agent_for_skills(&projection);
         let grants = self.skill_grants_for_session(session, None);
+        let merged = skill_rules(&policy, &projection.permission_overlay);
         let view = self.session_skills(session)?;
         let visible = |skill_name: &str, skill: &SessionSkill| {
-            model_skill_visibility(
-                &policy,
-                &projection.permission_overlay,
-                grants.as_ref(),
-                skill_name,
-                skill,
-            )
-            .1
+            model_skill_visibility(&merged, grants.as_ref(), skill_name, skill).1
         };
         let Some(skill) = view.get(name).filter(|skill| visible(name, skill)) else {
             let hints = view
@@ -438,14 +438,7 @@ impl Engine {
                 "unknown or unavailable model skill `{name}`; valid skills: {hints}"
             )));
         };
-        let effect = model_skill_visibility(
-            &policy,
-            &projection.permission_overlay,
-            grants.as_ref(),
-            name,
-            skill,
-        )
-        .0;
+        let effect = model_skill_visibility(&merged, grants.as_ref(), name, skill).0;
         Ok(SkillsGetResult {
             skill: skill_descriptor(name, skill.document(), true, effect, true),
             rendered: render_skill(skill.document(), args),
@@ -870,18 +863,13 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(session)?;
         let view = self.session_skills(session)?;
+        let merged = skill_rules(&policy.agent, &projection.permission_overlay);
         let visible = view
             .iter()
             .filter_map(|(name, skill)| {
-                model_skill_visibility(
-                    &policy.agent,
-                    &projection.permission_overlay,
-                    prospective_grants,
-                    name,
-                    skill,
-                )
-                .1
-                .then_some((name.as_str(), skill.document()))
+                model_skill_visibility(&merged, prospective_grants, name, skill)
+                    .1
+                    .then_some((name.as_str(), skill.document()))
             })
             .collect::<Vec<_>>();
         if visible.is_empty() {
@@ -944,35 +932,31 @@ fn skill_descriptor(
     }
 }
 
+/// The merged rules skills are decided by: `policy`'s and `overlay`'s, on
+/// the base layer, which reports no home.
+fn skill_rules<'a>(
+    policy: &'a cookie_agent_protocol::AgentSnapshot,
+    overlay: &'a SessionPermissionOverlay,
+) -> permissions::MergedRules<'a> {
+    permissions::MergedRules::of(policy, Some(overlay), None)
+}
+
+/// The effect of `skill`, known as `name`, under `merged`
+/// ([`skill_rules`]), and whether the model sees it: the `skill` action is
+/// offered or granted, the skill is not denied, and it does not opt out of
+/// model invocation.
 fn model_skill_visibility(
-    policy: &cookie_agent_protocol::AgentSnapshot,
-    overlay: &SessionPermissionOverlay,
+    merged: &permissions::MergedRules<'_>,
     grants: Option<&SessionPermissionOverlay>,
     name: &str,
     skill: &SessionSkill,
 ) -> (PermissionEffect, bool) {
-    let workspace = skill.workspace.as_deref();
-    let effect = permissions::effective_permission_with_overlay(
-        policy,
-        Some(overlay),
-        &PermissionAction::SKILL,
-        name,
-        workspace,
-    )
-    .0;
-    let action_visible = permissions::PermissionPipeline::tool_visible_with_grants(
-        policy,
-        Some(overlay),
-        grants,
-        "skill",
-        workspace,
-    );
-    (
-        effect,
-        action_visible
-            && effect != PermissionEffect::Deny
-            && !skill.document().frontmatter.disable_model_invocation,
-    )
+    let scope = permissions::PermissionScope::from(skill.workspace.as_deref());
+    let effect = merged.decide(&PermissionAction::SKILL, name, scope).0;
+    let visible = effect != PermissionEffect::Deny
+        && !skill.document().frontmatter.disable_model_invocation
+        && permissions::PermissionPipeline::tool_visible_by(merged, grants, "skill", scope);
+    (effect, visible)
 }
 
 /// The plan for invoking `skill`, known to the session as `name`. A project

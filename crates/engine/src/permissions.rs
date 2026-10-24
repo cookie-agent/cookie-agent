@@ -137,12 +137,27 @@ impl<'a> MergedRules<'a> {
         home: Option<&str>,
     ) -> Self {
         let session = overlay.map_or(&[][..], |overlay| overlay.rules.as_slice());
+        // Each overlay identity is expanded once, and a policy rule's
+        // pattern only when an overlay rule shares its action and runtime
+        // selector.
+        let replaced = session
+            .iter()
+            .map(|rule| identity(rule, home))
+            .collect::<Vec<_>>();
         let rules = policy
             .iter()
             .filter(|rule| {
-                !session
+                let mut same_target = replaced
                     .iter()
-                    .any(|session| same_identity(rule, session, home))
+                    .filter(|(action, runtime, _)| {
+                        **action == rule.action && *runtime == rule.runtime.as_ref()
+                    })
+                    .peekable();
+                if same_target.peek().is_none() {
+                    return true;
+                }
+                let pattern = rule_pattern(rule, home);
+                !same_target.any(|(_, _, replacing)| *replacing == pattern)
             })
             .map(|rule| MergedRule {
                 rule,
@@ -292,14 +307,22 @@ impl<'a> MergedRules<'a> {
     }
 }
 
-/// Whether `left` and `right` have one identity in the merged list: the same
-/// action and runtime selector, and the same pattern once a leading `~` is
-/// expanded against `home`.
-fn same_identity(left: &PermissionRule, right: &PermissionRule, home: Option<&str>) -> bool {
-    left.action == right.action
-        && left.runtime == right.runtime
-        && (left.resource == right.resource
-            || rule_pattern(left, home) == rule_pattern(right, home))
+/// `rule`'s identity in the merged list: its action and runtime selector,
+/// and its pattern once a leading `~` is expanded against `home`. Two rules
+/// with one identity replace each other.
+fn identity<'rule>(
+    rule: &'rule PermissionRule,
+    home: Option<&str>,
+) -> (
+    &'rule PermissionAction,
+    Option<&'rule RuntimeId>,
+    Cow<'rule, str>,
+) {
+    (
+        &rule.action,
+        rule.runtime.as_ref(),
+        rule_pattern(rule, home),
+    )
 }
 
 /// Whether `rule` governs a name-only check of `action` in `scope`.
@@ -652,14 +675,29 @@ impl PermissionPipeline {
         scope: impl Into<PermissionScope<'a>>,
     ) -> bool {
         let scope = scope.into();
+        Self::tool_offered_by(
+            &MergedRules::of(policy, overlay, scope.home),
+            grants,
+            permission_name,
+            tool_name,
+            scope,
+        )
+    }
+
+    /// [`Self::tool_offered`] against a merged list already built for
+    /// `scope.home`, for callers that ask about many tools.
+    pub(crate) fn tool_offered_by(
+        merged: &MergedRules<'_>,
+        grants: Option<&SessionPermissionOverlay>,
+        permission_name: &str,
+        tool_name: &str,
+        scope: PermissionScope<'_>,
+    ) -> bool {
         match Self::action_for_permission_name(permission_name) {
             Ok(action) if action.is_tool_name() => {
-                MergedRules::of(policy, overlay, scope.home)
-                    .decide(&action, tool_name, scope)
-                    .0
-                    != PermissionEffect::Deny
+                merged.decide(&action, tool_name, scope).0 != PermissionEffect::Deny
             }
-            _ => Self::tool_visible_with_grants(policy, overlay, grants, permission_name, scope),
+            _ => Self::tool_visible_by(merged, grants, permission_name, scope),
         }
     }
 
@@ -675,10 +713,25 @@ impl PermissionPipeline {
         scope: impl Into<PermissionScope<'a>>,
     ) -> bool {
         let scope = scope.into();
+        Self::tool_visible_by(
+            &MergedRules::of(policy, overlay, scope.home),
+            grants,
+            permission_name,
+            scope,
+        )
+    }
+
+    /// [`Self::tool_visible_with_grants`] against a merged list already
+    /// built for `scope.home`.
+    pub(crate) fn tool_visible_by(
+        merged: &MergedRules<'_>,
+        grants: Option<&SessionPermissionOverlay>,
+        permission_name: &str,
+        scope: PermissionScope<'_>,
+    ) -> bool {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
-        let merged = MergedRules::of(policy, overlay, scope.home);
         if merged.offers(&action, scope.runtime) {
             return true;
         }
