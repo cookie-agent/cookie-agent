@@ -40,6 +40,7 @@ mod providers;
 mod recovery;
 mod replay;
 mod restart;
+mod run_end;
 mod runtime_delegation;
 mod runtimes;
 mod session_delete;

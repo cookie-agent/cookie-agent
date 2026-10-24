@@ -515,6 +515,90 @@ async fn an_agent_error_fails_the_run_with_its_message() {
     );
 }
 
+/// The moment an ACP run's `RunFinished` arrives (completed, failed, or
+/// cancelled by the agent), a command that needs the session idle is
+/// accepted: every other round a delete, which minds the engine's active
+/// runs, and between them another run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_commands_are_accepted_the_moment_an_acp_run_ends() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let run_end = |event: &cookie_agent_protocol::EventSubscriptionMessage, run: RunId| match event
+    {
+        cookie_agent_protocol::EventSubscriptionMessage::Event { event }
+            if event.run_id == Some(run) =>
+        {
+            match &event.payload {
+                EventPayload::RunFinished {
+                    outcome: Open::Known(outcome),
+                } => Some(outcome.clone()),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    for round in 0..60 {
+        let session = engine.create_session(selection()).unwrap().session_id;
+        let (_, mut live) = engine.subscribe(session, None).await.expect("subscribe");
+        let (text, expected) = [
+            ("say hi", "completed"),
+            ("error", "failed"),
+            ("stop cancelled", "cancelled"),
+        ][round / 2 % 3];
+        let first = start(engine, session, "first", text).await;
+        let outcome = with_watchdog("the run's end", async {
+            loop {
+                let message = live.recv().await.expect("live subscription");
+                if let Some(outcome) = run_end(&message, first) {
+                    return outcome;
+                }
+            }
+        })
+        .await;
+        let ended = match outcome {
+            RunOutcome::Completed { .. } => "completed",
+            RunOutcome::Failed { .. } => "failed",
+            RunOutcome::Cancelled { .. } => "cancelled",
+            other => panic!("round {round}: the run ended {other:?}"),
+        };
+        assert_eq!(ended, expected, "round {round}");
+        if round % 2 == 1 {
+            let tip = engine
+                .inner
+                .store
+                .get(session)
+                .unwrap()
+                .log
+                .last_event()
+                .map_or(0, |event| event.seq);
+            if let Err(error) = engine.delete_session(session, tip).await {
+                panic!("round {round}: delete after a {ended} run was refused: {error:?}");
+            }
+            continue;
+        }
+        let next = engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session,
+                    client_run_id: ClientRunId::new("next").unwrap(),
+                    selection: selection(),
+                    content: "say again".into(),
+                },
+                origin(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("round {round}: a run after a {ended} run was refused: {error:?}")
+            })
+            .run_id;
+        with_watchdog("the next run's end", async {
+            while run_end(&live.recv().await.expect("live subscription"), next).is_none() {}
+        })
+        .await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_process_exit_fails_the_run_with_its_stderr_and_the_next_turn_starts_again() {
     let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[]).await;

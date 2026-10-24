@@ -821,33 +821,20 @@ impl Engine {
                     .execute_direct_skill(active.clone(), run_id, name, args)
                     .await
             {
+                let failure = engine.run_failure_event(active.session, run_id, &error);
                 if matches!(error, EngineError::Permission(_)) {
                     tokio::select! {
-                                            () = active.cancellation.cancelled() => {
-                                                let _ = engine.append_run_cancelled_once(&active, run_id, None);
-                                            }
-                                            () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
-                                                let _ = engine
-                                                    .append(
-                                                        active.session,
-                                                        Some(run_id),
-                                                        event_origin("engine:model-loop"),
-                    engine.run_failure_event(active.session, run_id, &error),
-                                                    )
-                                                    .await;
-                                            }
-                                        }
+                        () = active.cancellation.cancelled() => {
+                            let _ = engine.append_run_cancelled_once(&active, run_id, None);
+                        }
+                        () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                            let _ = engine.append_run_end(active.session, run_id, failure).await;
+                        }
+                    }
                 } else if active.cancellation.is_cancelled() {
                     let _ = engine.append_run_cancelled_once(&active, run_id, None);
                 } else {
-                    let _ = engine
-                        .append(
-                            active.session,
-                            Some(run_id),
-                            event_origin("engine:model-loop"),
-                            engine.run_failure_event(active.session, run_id, &error),
-                        )
-                        .await;
+                    let _ = engine.append_run_end(active.session, run_id, failure).await;
                 }
                 if let Ok(mut active_runs) = engine.inner.sessions.active.lock() {
                     active_runs.remove(&run_id);
@@ -876,10 +863,9 @@ impl Engine {
                         .map(|_| ())
                 } else {
                     engine
-                        .append(
+                        .append_run_end(
                             session_id,
-                            Some(run_id),
-                            event_origin("engine:model-loop"),
+                            run_id,
                             engine.run_failure_event(session_id, run_id, &error),
                         )
                         .await
@@ -892,14 +878,18 @@ impl Engine {
                     return;
                 }
             }
+            // The terminal append released the entry already, unless the run
+            // was ended from outside (`cancel_run_durably`), which leaves it
+            // for this task to drop once it has wound down.
             if let Ok(mut active_runs) = engine.inner.sessions.active.lock() {
                 active_runs.remove(&run_id);
             }
             let _ = engine.reconcile_producers(session_id).await;
             engine.drain_queued_input(session_id).await;
-            // The delegation monitor can observe the terminal event before
-            // this task releases its active-run pin. Retry eviction now so a
-            // skipped completion sweep need not wait for the periodic janitor.
+            // The delegation monitor can observe a terminal event appended
+            // from outside before this task releases its active-run pin.
+            // Retry eviction now so a skipped completion sweep need not wait
+            // for the periodic janitor.
             if let Err(error) = engine.evict_idle_subagents().await {
                 eprintln!("session {session_id} completion eviction failed: {error}");
             }
@@ -998,23 +988,14 @@ impl Engine {
         setup_error: EngineError,
     ) -> EngineError {
         match self
-            .append(
+            .append_run_end(
                 active.session,
-                Some(run_id),
-                event_origin("engine:model-loop"),
+                run_id,
                 self.run_failure_event(active.session, run_id, &setup_error),
             )
             .await
         {
-            Ok(()) => {
-                self.inner
-                    .sessions
-                    .active
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&run_id);
-                setup_error
-            }
+            Ok(()) => setup_error,
             Err(terminal_error) => terminal_error,
         }
     }
@@ -1157,10 +1138,9 @@ impl Engine {
                         self.append_run_cancelled_once(&active, run_id, None)?;
                         return Ok(());
                     }
-                    self.append(
+                    self.append_run_end(
                         active.session,
-                        Some(run_id),
-                        event_origin("engine:model-loop"),
+                        run_id,
                         self.run_failure_event(active.session, run_id, &error),
                     )
                     .await?;

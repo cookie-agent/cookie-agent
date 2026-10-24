@@ -194,6 +194,9 @@ impl Engine {
         self.commit_run_cancelled_with_retry(active.session, run_id, reason, origin, &mut committed)
     }
 
+    /// Ends `run` as cancelled from the task that drives it, which stops
+    /// right after: the run leaves the active runs as its `RunCancelled` is
+    /// published ([`Self::release_active_run`]).
     pub(super) fn append_run_cancelled_once(
         &self,
         active: &ActiveRun,
@@ -205,7 +208,84 @@ impl Engine {
             .cancelled_committed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.commit_run_cancelled_with_retry(active.session, run_id, reason, origin, &mut committed)
+        let released = self.release_active_run(active.session, run_id);
+        let result = self.commit_run_cancelled_with_retry(
+            active.session,
+            run_id,
+            reason,
+            origin,
+            &mut committed,
+        );
+        if result.is_err() {
+            self.restore_active_run(run_id, released);
+        }
+        result
+    }
+
+    /// Takes `run` of `session` out of the active runs just before the task
+    /// driving it publishes its terminal event: a client that sees the run
+    /// end must find the session idle. Until the event lands the projection
+    /// still says running, which refuses what an idle session alone may do.
+    /// Returns the entry, for [`Self::restore_active_run`] when the append
+    /// fails.
+    pub(super) fn release_active_run(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Option<Arc<ActiveRun>> {
+        let mut active = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active
+            .get(&run)
+            .is_some_and(|entry| entry.session == session)
+        {
+            active.remove(&run)
+        } else {
+            None
+        }
+    }
+
+    /// Puts back an entry [`Self::release_active_run`] took for a terminal
+    /// event that failed to append: a run still durably running keeps its
+    /// entry for reopen reconciliation.
+    pub(super) fn restore_active_run(&self, run: RunId, entry: Option<Arc<ActiveRun>>) {
+        if let Some(entry) = entry {
+            self.inner
+                .sessions
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(run)
+                .or_insert(entry);
+        }
+    }
+
+    /// Appends `event`, the terminal event of `run`, from the task that
+    /// drives the run, releasing its active entry first
+    /// ([`Self::release_active_run`]).
+    pub(super) async fn append_run_end(
+        &self,
+        session: SessionId,
+        run: RunId,
+        event: Event,
+    ) -> Result<(), EngineError> {
+        let released = self.release_active_run(session, run);
+        let result = self
+            .append(
+                session,
+                Some(run),
+                super::event_origin("engine:model-loop"),
+                event,
+            )
+            .await;
+        if result.is_err() {
+            self.restore_active_run(run, released);
+        }
+        result
     }
 
     pub(super) fn commit_run_cancelled_with_retry(

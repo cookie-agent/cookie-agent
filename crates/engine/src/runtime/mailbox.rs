@@ -1443,12 +1443,18 @@ impl Engine {
         }
         promoted |= self.promote_producer_inputs_direct(session, run, false)?;
         if !promoted && complete_if_empty {
-            self.append_direct(
+            // The run's task stops once it completes: its entry goes as the
+            // completion is published.
+            let released = self.release_active_run(session, run);
+            if let Err(error) = self.append_direct(
                 session,
                 Some(run),
                 super::event_origin("engine:model-loop"),
                 Event::run_finished(cookie_agent_protocol::RunOutcome::Completed { final_text }),
-            )?;
+            ) {
+                self.restore_active_run(run, released);
+                return Err(error);
+            }
         }
         Ok(promoted)
     }
