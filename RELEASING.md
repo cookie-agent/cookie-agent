@@ -106,7 +106,10 @@ reapply and review these edits:
 - Install the pinned `dtolnay/rust-toolchain` action with toolchain `1.88.0`
   and the joined matrix targets instead of the generated Rust update step.
 - Keep the SHA-pinned `Swatinem/rust-cache` step after toolchain installation,
-  including the generated matrix target key and cache provider.
+  including the generated matrix target key and cache provider, with
+  `save-if: ${{ github.event_name != 'release' }}`: a stable release's
+  dependencies, built with fat LTO, could otherwise become the cache the
+  nightlies restore and then rebuild.
 - Set `retention-days: 2` on every dist scratch `upload-artifact` step: the dist
   cache, plan manifest, local artifacts, global artifacts, and final manifest.
 - Set `COOKIE_GIT_HASH: ${{ github.sha }}` in `build-local-artifacts`.

@@ -177,10 +177,14 @@ jobs:
         with:
           toolchain: '1.88.0'
           targets: ${{ join(matrix.targets, ',') }}
+      # Hand-maintained (allow-dirty = ["ci"]): only nightlies save, so the
+      # cache holds dependencies built with their profile; a stable release
+      # rebuilds them with its own and leaves the cache as it was.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: ${{ join(matrix.targets, '-') }}
           cache-provider: ${{ matrix.cache_provider }}
+          save-if: ${{ github.event_name != 'release' }}
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
