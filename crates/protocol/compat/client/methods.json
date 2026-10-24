@@ -388,6 +388,38 @@
     {
       "direction": "from_daemon",
       "kind": "notification",
+      "method": "onboarding.changed",
+      "params": "OnboardingStatus",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "onboarding.get",
+      "params": "OnboardingGetParams",
+      "params_role": "command",
+      "result": "OnboardingStatus"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "onboarding.preview",
+      "params": "OnboardingPreviewParams",
+      "params_role": "command",
+      "result": "OnboardingPreviewResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "onboarding.run",
+      "params": "OnboardingRunParams",
+      "params_role": "command",
+      "result": "OnboardingRunResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
       "method": "plugins.changed",
       "params": "PluginsChangedNotification",
       "params_role": "information",
@@ -824,6 +856,14 @@
       "params": "SkillsListParams",
       "params_role": "command",
       "result": "SkillsListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "skills.update",
+      "params": "SkillsUpdateParams",
+      "params_role": "command",
+      "result": "SkillsUpdateResult"
     }
   ],
   "surface": "client"

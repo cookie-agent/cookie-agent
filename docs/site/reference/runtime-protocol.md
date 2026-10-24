@@ -130,7 +130,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.7.0**
+The protocol version is a semver string, currently **1.8.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -196,6 +196,8 @@ no message carries them.
 `acp_agents` of `runtime/initialize`'s settings and result,
 `runtime/agents_changed`, the `agent/*` relay messages, and the MCP bridge
 messages; and the display block `plan`.
+1.8.0 added the skill source `official`, the daemon's official skills; a
+runtime reports its project skills as before.
 
 ## Capabilities and instances
 

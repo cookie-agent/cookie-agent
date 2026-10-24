@@ -3,13 +3,11 @@
   "additionalProperties": false,
   "properties": {
     "session_id": {
+      "description": "The session whose skills to list; the daemon's own (user and\nofficial skills) when absent (client protocol 1.22.0).",
       "format": "uuid",
       "type": "string"
     }
   },
-  "required": [
-    "session_id"
-  ],
   "title": "SkillsListParams",
   "type": "object"
 }

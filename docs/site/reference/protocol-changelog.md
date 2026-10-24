@@ -5,6 +5,31 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.22.0
+
+- Onboarding ([default models and onboarding spec](../specs/default-models-and-onboarding.md)):
+  - New methods `onboarding.get` (whether the daemon is set up: `ready`,
+    `missing`, `providers_connected`, `default_model`, `small_model`),
+    `onboarding.preview` (what installing the starter kit from a release or
+    a sent archive would do, per file), and `onboarding.run` (sets the
+    models and installs the kit as one change, or refuses with the new error
+    `onboarding_incomplete` and writes nothing). A kit that cannot be
+    fetched or used is the new error `onboarding_kit_unavailable`.
+  - New notification `onboarding.changed`, the new `onboarding.get` answer,
+    to every connection. An older client ignores it.
+- `AgentDescriptor` has the optional `unset_models`: the configuration
+  fields (`default_model`, `small_model`) its `models` entries name that are
+  not set. An older client does not show them.
+- The frozen `${parent_model}` fallback of an internal agent definition in
+  `run_started` has the optional `variant` that replaces the parent model's
+  variant. Plugin protocol 1.10.0 carries it too; an older reader runs the
+  parent's own variant.
+- Official skills: the skill source `official` (an older client reads it as
+  `user`; runtime protocol 1.8.0 carries it too), the optional `version` of
+  an official skill's `SkillDescriptor`, `skills.list` without a
+  `session_id` for the daemon's own skills, and the new method
+  `skills.update`, which refreshes the official skills now.
+
 ## 1.21.0
 
 - ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15,

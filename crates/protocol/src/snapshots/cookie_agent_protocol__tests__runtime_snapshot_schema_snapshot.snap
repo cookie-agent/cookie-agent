@@ -108,7 +108,7 @@ expression: schema_for!(RuntimeSnapshotResult)
           "maxItems": 256
         },
         "unset_models": {
-          "description": "The configuration fields (`default_model`, `small_model`) the agent's\n`models` entries name but that are not set, sorted (client protocol\n1.19.0). Those entries are skipped; an agent with no other entry is\nunavailable until a field is set.",
+          "description": "The configuration fields (`default_model`, `small_model`) the agent's\n`models` entries name but that are not set, sorted (client protocol\n1.22.0). Those entries are skipped; an agent with no other entry is\nunavailable until a field is set.",
           "type": "array",
           "items": {
             "type": "string"

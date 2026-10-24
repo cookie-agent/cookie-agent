@@ -89,6 +89,14 @@
           },
           "maxItems": 256,
           "type": "array"
+        },
+        "unset_models": {
+          "description": "The configuration fields (`default_model`, `small_model`) the agent's\n`models` entries name but that are not set, sorted (client protocol\n1.22.0). Those entries are skipped; an agent with no other entry is\nunavailable until a field is set.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "type": "array"
         }
       },
       "required": [

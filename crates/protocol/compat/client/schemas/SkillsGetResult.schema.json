@@ -39,6 +39,13 @@
         "user_invocable": {
           "type": "boolean"
         },
+        "version": {
+          "description": "An official skill's version (client protocol 1.22.0).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "visible": {
           "type": "boolean"
         },
@@ -64,9 +71,10 @@
       "type": "object"
     },
     "SkillSource": {
-      "description": "A value this build does not know reads as `user`.",
+      "description": "Where a skill comes from: `project`, `official` (an official skill the\ndaemon keeps up to date, since client protocol 1.22.0), or `user`. A\nvalue this build does not know reads as `user`.",
       "enum": [
         "project",
+        "official",
         "user"
       ],
       "type": "string",

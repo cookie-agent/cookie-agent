@@ -2206,10 +2206,20 @@
     "FrozenInternalAgentFallback": {
       "oneOf": [
         {
+          "description": "The owner run's model, with `variant` in place of its own when set\n(client protocol 1.22.0; `base` is the base variant).",
           "properties": {
             "type": {
               "const": "parent_model",
               "type": "string"
+            },
+            "variant": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9._-]+$",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
