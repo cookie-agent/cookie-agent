@@ -160,8 +160,14 @@ jobs:
         with:
           toolchain: 1.88.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: cargo-nextest@0.9.145
+      # The test build on its own, so the warm-up below lands between it and
+      # the tests, which then find everything built.
       - name: Build tests
-        run: cargo test --locked --workspace --no-run
+        run: cargo nextest run --workspace --locked --no-run
         timeout-minutes: 60
       # On a fresh runner the first launch of Git Bash and Python
       # can take from seconds to over a minute (cold image disk, on-access
@@ -179,10 +185,6 @@ jobs:
           "Git Bash ($bash): {0:N1}s" -f $time.TotalSeconds
           $time = Measure-Command { python -c "import base64, json, os, sys, threading, time" | Out-Host }
           "Python: {0:N1}s" -f $time.TotalSeconds
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
-        with:
-          tool: cargo-nextest@0.9.145
       - name: Run tests
         run: cargo nextest run --workspace --locked --no-fail-fast --profile ci
         timeout-minutes: 60
