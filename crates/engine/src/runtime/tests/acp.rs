@@ -475,6 +475,56 @@ async fn modes_without_a_mode_option_start_in_auto_and_an_option_can_be_set() {
     assert!(refused.to_string().contains("no value `huge`"), "{refused}");
 }
 
+/// The current value of option `id` the session last recorded.
+fn recorded_option(engine: &Engine, session: SessionId, id: &str) -> Option<String> {
+    events(engine, session)
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::AcpSessionUpdated { update } => update.options.clone(),
+            _ => None,
+        })?
+        .into_iter()
+        .find(|option| option.id == id)
+        .map(|option| option.current_value)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_own_mode_switch_moves_its_mode_option() {
+    // The agent offers a mode option of its own beside its modes.
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "first", "say hello").await;
+    assert_eq!(
+        recorded_option(engine, session, "mode").as_deref(),
+        Some("auto")
+    );
+    turn(engine, session, "switch", "mode-switch plan").await;
+    assert_eq!(
+        recorded_option(engine, session, "mode").as_deref(),
+        Some("plan")
+    );
+    // A mode the option does not list leaves it.
+    turn(engine, session, "unknown", "mode-switch nowhere").await;
+    assert_eq!(
+        recorded_option(engine, session, "mode").as_deref(),
+        Some("plan")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_mode_switch_moves_the_option_made_of_its_modes() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_MODES", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "switch", "mode-switch plan").await;
+    assert_eq!(
+        recorded_option(engine, session, "mode").as_deref(),
+        Some("plan")
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn without_an_auto_mode_the_agent_keeps_its_default() {
     let acp = acp_fixture(&[("ACP_FIXTURE_NO_AUTO", "1")], &[]).await;

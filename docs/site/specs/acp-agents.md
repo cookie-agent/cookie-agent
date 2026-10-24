@@ -730,3 +730,9 @@ unchanged):
   from `size`, which no catalog lists for `acp/<agent>`. The TUI's status
   line shows `ctx` with the percentage of that window, the web's the tokens
   (the window in its title). All three adapters send `usage_update`.
+- **Mode updates.** `current_mode_update` moves the current value of the
+  option that shows the agent's modes (id `mode` or category `mode`) when it
+  lists the new mode, whether cookie made the option of the agent's modes
+  or the agent offers its own mode option beside them, as Claude Code's
+  adapter does; before, only the made-up option followed, and Claude Code
+  leaving plan mode by itself left the chip on `plan`.

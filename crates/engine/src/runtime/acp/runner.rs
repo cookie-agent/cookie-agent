@@ -942,14 +942,28 @@ impl Turn<'_> {
                 })
                 .await
             }
-            "current_mode_update" if self.live.modes_as_option => {
+            // The mode the agent switched to, such as Claude Code leaving
+            // plan mode on its own: the option that shows its modes follows,
+            // whether cookie made it of the modes or the agent offers its own
+            // mode option beside them (Claude Code's adapter does).
+            "current_mode_update" => {
                 let Some(mode) = update.get("currentModeId").and_then(Value::as_str) else {
                     return Ok(());
                 };
+                let mut changed = false;
                 for option in &mut self.live.options {
-                    if option.id == "mode" {
+                    let shows_modes =
+                        option.id == "mode" || option.category.as_deref() == Some("mode");
+                    if shows_modes
+                        && option.current_value != mode
+                        && option.values.iter().any(|value| value.value == mode)
+                    {
                         mode.clone_into(&mut option.current_value);
+                        changed = true;
                     }
+                }
+                if !changed {
+                    return Ok(());
                 }
                 self.engine.remember_live(&self.live);
                 self.record_update(AcpSessionUpdate {

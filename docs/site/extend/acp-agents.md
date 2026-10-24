@@ -317,8 +317,9 @@ each call decided by the rules as a model's would be.
   effort, are the session's agent options: `/options` in the TUI (or the
   title's model, which opens them for an ACP agent), and the model chip in
   the web client, which shows the agent's model. Choosing a value changes
-  it on the agent at once. They appear once the agent's session has
-  started, with the first message.
+  it on the agent at once, and a mode the agent switches to by itself
+  (Claude Code leaving plan mode) shows at once too. They appear once the
+  agent's session has started, with the first message.
 - **Context.** The status line shows how much context the agent's
   conversation uses, as the agent reports it (`ctx` in the TUI, with the
   share of the agent's context window; the tokens in the web client).

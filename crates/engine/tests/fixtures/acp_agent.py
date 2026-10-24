@@ -24,6 +24,8 @@ Each prompt's last text block is a command:
   exit                   exits with status 3 after writing to stderr
   error                  fails the prompt with an authentication error
   title <text>           reports session title <text>
+  mode-switch <mode>     switches its own mode to <mode> (current_mode_update),
+                         as Claude Code does when it leaves plan mode
   late-input             a tool call whose title, kind, and raw input arrive in a
                          later update (as Claude Code's adapter sends them), with
                          text, image, and resource-link content and raw output
@@ -357,6 +359,10 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     elif word == "error":
         fail(request_id, -32000, "Authentication required")
         return
+    elif word == "mode-switch":
+        session["mode"] = rest
+        update(session_id, {"sessionUpdate": "current_mode_update", "currentModeId": rest})
+        say(session_id, f"mode: {rest}")
     elif word == "title":
         update(session_id, {"sessionUpdate": "session_info_update", "title": rest})
         say(session_id, "titled")
