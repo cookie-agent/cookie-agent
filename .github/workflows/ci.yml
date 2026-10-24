@@ -26,6 +26,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to a branch other than main, or to a pull request, stops the
+# run it supersedes. Runs on main and stable releases each get a group of
+# their own and always finish.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ (github.ref == 'refs/heads/main' || github.event_name == 'release') && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   stable:
     name: Rust stable
