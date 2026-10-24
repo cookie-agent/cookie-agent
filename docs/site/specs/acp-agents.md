@@ -719,8 +719,8 @@ starts; a daemon document without an `acp` block shadowing a declaration
   The manual check of round 3 saw an accepted `run.cancel` that never sent
   `session/cancel` while Claude Code streamed updates; this was the window.
 
-**Display round** (2026-10-24; client protocol 1.23.0; history format
-unchanged):
+**Display round** (2026-10-24; client protocol 1.23.0, plugin protocol
+1.11.0; history format unchanged):
 
 - **Context.** Each `usage_update` whose `used` or `size` changed is
   recorded as `acp_session_updated.context` (`used`, and `size` when it is

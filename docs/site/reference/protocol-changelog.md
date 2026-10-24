@@ -17,6 +17,8 @@ adds and a major breaks; before it, every minor could break the wire (see the
   its `values` are `true` (On) and `false` (Off), so an older client shows
   it as a two-value select that still sets it; `session.agent_option.set`
   takes `"true"` or `"false"` for it.
+- Plugin protocol 1.11.0 carries both in the events plugins receive; an
+  older plugin ignores them.
 
 ## 1.22.0
 
