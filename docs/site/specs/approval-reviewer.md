@@ -304,11 +304,20 @@ strings. The current flow does not escape the user message (section 10, d).
     - **The provider config:** today `rolling` accepts only `"5m"` or
       `"off"`, so the strategy type gains a one-hour rolling marker for
       internal agents. Authored provider config keeps its current values.
-  - **Providers with automatic caching** (OpenAI and Azure,
-    OpenAI-compatible, Gemini, Cohere): `cache_ttl` has no effect, and config
-    status says so when the reviewer runs on one. The append-only chain gets
-    their automatic prefix discount anyway. OpenAI's `24h` retention is a
-    different mechanism, so it is not mapped.
+  - **OpenAI and Azure models with GPT-5.6 cache controls:**
+    - `1h` and `5m` both turn on the reviewer's rolling placement with
+      `ttl = "30m"`, the only TTL these controls accept.
+    - Config status notes that substitution for `1h` and `5m`.
+    - `off` leaves no explicit placement, and automatic caching still
+      applies.
+    - The implementation checks this against OpenAI's official
+      prompt-caching documentation first, since oven-sdk mirrors it.
+  - **Providers with only automatic caching** (OpenAI models without those
+    controls, OpenAI-compatible, Gemini, Cohere): `cache_ttl` has no effect,
+    and config status says so when the reviewer runs on one. The append-only
+    chain gets their automatic prefix discount anyway. OpenAI's
+    `prompt_cache_retention` (`in_memory` or `24h`) is a different mechanism,
+    so it is not mapped.
   - **`off`:** no reviewer markers.
   - **Fallback:** a reviewer that falls back from `${small_model}` to
     `${parent_model}` on another provider follows the same rules for that
@@ -464,8 +473,10 @@ All additive. Client and plugin minors are bumped together in one commit.
 - **Tool-denial `source: "approval_reviewer"`:** this is model-facing text,
   not a wire schema.
 - **`[approval] cache_ttl`:** `"1h"` (the default), `"5m"`, or `"off"`.
-  It applies to the reviewer model's own provider when that provider uses TTL
-  markers (section 5). Unknown values fail, as for every config key.
+  It applies to the reviewer model's own provider when that provider takes
+  explicit cache placements: Anthropic and Bedrock markers, and OpenAI's
+  GPT-5.6 controls at their one `30m` TTL (section 5). Unknown values fail,
+  as for every config key.
 - **Internal agents' cache strategy:** gains a one-hour rolling marker.
 - **The starter kit's `explore`** uses `${default_model}` (already done,
   with this spec).
