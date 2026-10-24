@@ -112,7 +112,7 @@ pub(in crate::ui) struct RuntimePanel {
     pub(in crate::ui) machines: Option<Result<MachinesListResult, String>>,
     pub(in crate::ui) machine_selection: ListState,
     pub(in crate::ui) machine_form: Option<MachineForm>,
-    pub(in crate::ui) machines_in_flight: bool,
+    pub(in crate::ui) machines_refresh: crate::ui::app::ListingRefresh,
     /// `mcp.server.list`, for the MCP servers each runtime hosts; `None`
     /// until it answers.
     pub(in crate::ui) mcp_servers: Option<Vec<McpServerInfo>>,
@@ -139,7 +139,6 @@ impl RuntimePanel {
 
     pub(in crate::ui) fn install_machines(&mut self, machines: Result<MachinesListResult, String>) {
         self.machines = Some(machines);
-        self.machines_in_flight = false;
         let count = self.machine_entries().len();
         self.machine_selection.select((count > 0).then(|| {
             self.machine_selection

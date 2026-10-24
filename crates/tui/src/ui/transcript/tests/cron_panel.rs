@@ -45,22 +45,6 @@ async fn pump_until(
     panic!("condition never held; status: {}", app.status);
 }
 
-/// Handles RPC updates until `done` holds.
-async fn updates_until(app: &mut App, done: impl Fn(&App) -> bool) {
-    for _ in 0..50 {
-        if done(app) {
-            return;
-        }
-        let update =
-            tokio::time::timeout(std::time::Duration::from_secs(5), app.rpc_updates_rx.recv())
-                .await
-                .expect("rpc update timeout")
-                .expect("rpc update");
-        app.handle_rpc_update(update);
-    }
-    panic!("condition never held; status: {}", app.status);
-}
-
 /// `field: value` set in a form, replacing the line of that field.
 fn with_field(form: &str, field: &str, value: &str) -> String {
     form.lines()

@@ -82,10 +82,9 @@ impl App {
 
     /// Fetches `machines.list` for the open `/runtime` panel.
     pub(super) fn poll_machines(&mut self) {
-        if self.modal != Modal::Runtimes || self.runtime_panel.machines_in_flight {
+        if self.modal != Modal::Runtimes || !self.runtime_panel.machines_refresh.start() {
             return;
         }
-        self.runtime_panel.machines_in_flight = true;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
@@ -95,6 +94,19 @@ impl App {
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::MachinesRefreshed { result });
         });
+    }
+
+    /// Installs `machines.list`, and lists again when a change was
+    /// announced while it was on its way.
+    pub(super) fn install_machine_listing(
+        &mut self,
+        result: Result<cookie_agent_protocol::MachinesListResult, String>,
+    ) {
+        let again = self.runtime_panel.machines_refresh.landed();
+        self.runtime_panel.install_machines(result);
+        if again {
+            self.poll_machines();
+        }
     }
 
     pub(super) fn install_machine_change(

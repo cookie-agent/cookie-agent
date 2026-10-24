@@ -359,3 +359,39 @@ async fn the_machines_view_regroups_runtimes_and_renames_and_merges_machines() {
     .await;
     assert_eq!(machine_names(&app), [daemon]);
 }
+
+/// A machine change announced while `machines.list` is on its way may
+/// postdate what that listing read: the panel lists the machines again
+/// once it lands, so the change is not lost behind it.
+#[tokio::test]
+async fn a_machine_change_announced_during_a_listing_lists_again() {
+    let mut app = test_app().await;
+    let (client, recorded) = answering_client(|method, _| match method {
+        "machines.list" => {
+            Ok(serde_json::to_value(crate::ui::management::sample_machines()).unwrap())
+        }
+        "runtimes.list" => Ok(serde_json::json!({"runtimes": [], "instances": []})),
+        "mcp.server.list" => Ok(serde_json::json!({"servers": []})),
+        _ => Err(serde_json::json!({"code": -32601, "message": "not scripted"})),
+    });
+    app.client = client;
+    app.modal = Modal::Runtimes;
+    app.poll_runtimes();
+    assert!(app.runtime_panel.machines_refresh.in_flight());
+    app.handle_delivery(cookie_agent_protocol::ClientDelivery::MachinesChanged(
+        cookie_agent_protocol::MachinesChangedNotification {},
+    ))
+    .await;
+    updates_until(&mut app, |app| {
+        matches!(app.runtime_panel.machines, Some(Ok(_)))
+    })
+    .await;
+    wait_for_recorded_request(&recorded, "machines.list", 2).await;
+    updates_until(&mut app, |app| {
+        !app.runtime_panel.machines_refresh.in_flight() && !app.runtime_panel.refresh.in_flight()
+    })
+    .await;
+    // Settled: nothing further is asked for.
+    settle_recording().await;
+    assert_eq!(recorded_method_count(&recorded, "machines.list"), 2);
+}

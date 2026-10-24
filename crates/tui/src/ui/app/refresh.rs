@@ -699,27 +699,27 @@ impl App {
                 self.install_cron_save(*request, *result);
             }
             RpcUpdate::CronChanged { result } => self.install_cron_change(result),
-            RpcUpdate::MachinesRefreshed { result } => self.runtime_panel.install_machines(result),
+            RpcUpdate::MachinesRefreshed { result } => self.install_machine_listing(result),
             RpcUpdate::MachineChanged { result } => self.install_machine_change(result),
-            RpcUpdate::RuntimesRefreshed { result } => {
+            RpcUpdate::RuntimesRefreshed { result } => match result {
+                Ok(listing) => {
+                    self.install_runtime_homes(
+                        cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing),
+                    );
+                    self.runtime_panel.install(listing);
+                }
+                Err(error) => self.status = format!("runtime refresh failed: {error}"),
+            },
+            RpcUpdate::RuntimeMcpRefreshed { result } => {
                 let again = self.runtime_panel.refresh.landed();
                 match result {
-                    Ok(listing) => {
-                        self.install_runtime_homes(
-                            cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing),
-                        );
-                        self.runtime_panel.install(listing);
-                    }
-                    Err(error) => self.status = format!("runtime refresh failed: {error}"),
+                    Ok(listing) => self.runtime_panel.install_mcp_servers(listing.servers),
+                    Err(error) => self.status = format!("MCP refresh failed: {error}"),
                 }
                 if again {
-                    self.poll_runtimes();
+                    self.poll_runtime_listing();
                 }
             }
-            RpcUpdate::RuntimeMcpRefreshed { result } => match result {
-                Ok(listing) => self.runtime_panel.install_mcp_servers(listing.servers),
-                Err(error) => self.status = format!("MCP refresh failed: {error}"),
-            },
             RpcUpdate::RuntimeHomesRefreshed { homes } => self.install_runtime_homes(homes),
             RpcUpdate::ProjectsRefreshed { projects } => self.install_projects(projects),
             RpcUpdate::SessionProjectSet { label, result } => {
@@ -1420,6 +1420,12 @@ impl App {
 
     pub(in crate::ui) fn poll_runtimes(&mut self) {
         self.poll_machines();
+        self.poll_runtime_listing();
+    }
+
+    /// Fetches `runtimes.list`, then `mcp.server.list`, for the open
+    /// `/runtime` panel; the read is on its way until the second answers.
+    fn poll_runtime_listing(&mut self) {
         if self.modal != Modal::Runtimes || !self.runtime_panel.refresh.start() {
             return;
         }

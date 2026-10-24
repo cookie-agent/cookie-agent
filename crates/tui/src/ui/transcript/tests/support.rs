@@ -2409,6 +2409,21 @@ pub(crate) fn pending_texts(app: &App, session: SessionId) -> Vec<&str> {
         .unwrap_or_default()
 }
 
+/// Handles RPC updates until `done` holds.
+pub(crate) async fn updates_until(app: &mut App, done: impl Fn(&App) -> bool) {
+    for _ in 0..50 {
+        if done(app) {
+            return;
+        }
+        let update = tokio::time::timeout(Duration::from_secs(5), app.rpc_updates_rx.recv())
+            .await
+            .expect("rpc update timeout")
+            .expect("rpc update");
+        app.handle_rpc_update(update);
+    }
+    panic!("condition never held; status: {}", app.status);
+}
+
 pub(crate) async fn wait_for_recorded_request(
     recorded: &Arc<Mutex<Vec<Value>>>,
     method: &str,
