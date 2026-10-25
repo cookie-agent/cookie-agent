@@ -1,7 +1,8 @@
 # Native compaction: parallel summaries and default on
 
-Status: **approved** (2026-10-24), not yet implemented. Revises
-[Compaction](../sessions/compaction.md) (native provider compaction).
+Status: **implemented** (2026-10-24); approved 2026-10-24, with the
+deviations in section 10. Revises [Compaction](../sessions/compaction.md)
+(native provider compaction).
 
 ## 1. Goal and scope
 
@@ -98,6 +99,16 @@ and in any other, uses the summary instead.
 - **Gateways:** for OpenAI-compatible gateways, a 400 that names the
   compaction or encrypted content field counts.
 - **Unclear errors:** an unclassified error does not mark the provider.
+- **The window's wire names (added 2026-10-24):** besides OpenAI's code, a
+  400 or 422 whose code, message, or body names one of the names the window
+  travels under on the wire counts: the compaction item's `type`,
+  `compaction`, and its `encrypted_content` field. A gateway without
+  compaction support typically answers "unknown item type `compaction`" or
+  "content keyed `encrypted_content` isn't supported". The same match on the
+  compact call's own answer marks the provider `unsupported`. The names are
+  defined once in oven-sdk (`oven_sdk::provider_support`), where the OpenAI
+  and Azure window validators read them too, so the list cannot drift from
+  what is sent.
 
 ## 5. The provider record
 
@@ -212,3 +223,89 @@ provider or model then has nothing to fall back to.
 `sessions/compaction.md`, `extend/providers.md` (the `compaction` setting),
 the configuration reference for the record file, and a troubleshooting
 entry: "native compaction stopped being used for a provider".
+
+## 10. Implementation notes
+
+Implemented 2026-10-24 in client protocol 1.29.0 and plugin protocol 1.17.0,
+with oven-sdk 342a029 (native compaction on compatible Responses endpoints,
+and the window's wire names with `error_names_responses_native_context`).
+Where it differs from, or makes concrete, the sections above:
+
+**Classifying OpenAI's error (section 4).** OpenAI's documentation does not
+list an error for an invalid or expired compaction item: the compaction
+guide (developers.openai.com/api/docs/guides/compaction), the conversation
+state guide, the `/responses/compact` reference, the reasoning guide, and
+the error codes guide (developers.openai.com/api/docs/guides/error-codes)
+describe the item as opaque and name no failure. The API has been observed
+to answer an unusable compaction item with HTTP 400, type
+`invalid_request_error`, and code `invalid_encrypted_content` ("The
+encrypted content for item cmp_... could not be verified"), reported in
+OpenAI's own Codex tracker (github.com/openai/codex/issues/36704). The
+implementation does not rely on that code alone: it matches the window's
+wire names, and `invalid_encrypted_content` contains `encrypted_content`.
+A reasoning item's encrypted content refused on a request that also carried
+a window marks the provider too; the cost is the summary until the mark
+lifts.
+
+**Compaction (section 3).**
+- **Durable elision stays native's.** When the native call's input would
+  exceed the model's limit less the compaction output allowance, bulky tool
+  outputs are still elided in the saved log before both calls, as native
+  compaction did before; the summary otherwise keeps its private pruning
+  retry.
+- **The summary builds on the latest summary.** A window alone (section 7)
+  is passed over: the summary path summarizes from the latest checkpoint
+  that has a summary, or the whole log, so the one-time summary of an old
+  native-only checkpoint is an ordinary compaction. Its `source_from_seq`
+  follows the summary it replaces; `prior_checkpoint_seq` still names the
+  latest checkpoint of any kind.
+- **The window's boundaries.** `native.source_through_seq` is the
+  checkpoint's `input_through_seq`; a window the boundaries cannot hold is
+  dropped and the summary commits alone.
+- **"The adapter cannot build the compact request"** is the adapter's
+  `supports_compaction` refusing the prepared request; it marks
+  `unsupported`. A compact call that carried the previous window and is
+  refused naming the window marks `rejects_windows` instead.
+
+**Requests (section 4).**
+- **Integrity checks.** Besides the adapter, provider, and model, the
+  request asks the adapter to validate the window before any I/O; a window
+  whose scope (endpoint, account, compaction setting) it refuses serves no
+  request, and the summary does.
+- **A window alone** that a request cannot use makes the request compact
+  first (forced, summary beside native), then rebuild; if that fails, the
+  run fails with "the session's latest checkpoint is a provider window this
+  model cannot use, and it has no summary".
+- **`unsupported` keeps windows.** Only `rejects_windows` stops stored
+  windows from serving; `unsupported` stops new native calls.
+
+**The record (section 5).** The configuration digest covers what defines
+the provider rather than one model: its source (the managed recipe and its
+fingerprint, or the custom definition's fingerprint), endpoint, provider
+recipe, setup, and authentication method and parameters, not credentials.
+The configuration status carries each entry as `NativeCompactionMark`
+(`provider_id`, `state`, `reason`, `age_seconds`) in a new optional
+`ConfigStatus.native_compaction`; clients show them as notes.
+
+**Configuration (section 6).**
+- **Custom models.** A custom model's `capabilities.compaction` became
+  optional: omitted, a Responses adaptor compacts natively; `"unsupported"`
+  opts out and stays the only value accepted.
+- **Variants.** A variant that switches `request_endpoint` compacts
+  natively when its own adaptor does and the base model's setting allows
+  it; the frozen binding's native check reads the selected adaptor, not the
+  base model's protocol recipe.
+- **Azure.** Native compaction needs `model`, `version`, and
+  `deployment_type` in the provider's setup; the `azure.openai` identity is
+  no longer checked separately, since Oven requires it of every Azure
+  model.
+- **Replay scopes change once.** The official OpenAI adapter's replay scope
+  includes its compaction setting, so turning native compaction on by
+  default gives every OpenAI Responses model a new scope: reasoning replayed
+  from turns before the upgrade is omitted once. Compatible endpoints keep
+  their scope.
+
+**History (section 7).** The window is `native` (`CheckpointNativeWindow`:
+`window`, `source_through_seq`) on the `internal_summary` checkpoint. The
+`native_window` checkpoint is read, never written.
+
