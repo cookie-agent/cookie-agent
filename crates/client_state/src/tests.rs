@@ -4624,3 +4624,105 @@ fn an_escalation_opens_the_approval_window() {
     assert_eq!(approval.constraints.expires_at, Some(expires_at));
     assert!(approval.is_visible_user_escalation());
 }
+
+/// The reviewer's reason reaches the approval and, for a call resolved
+/// without the user, its info row (approval reviewer spec section 7).
+#[test]
+fn the_reviewers_reason_reaches_the_approval_and_its_info_row() {
+    let session_id = SessionId::new_v7();
+    let request = windowless_approval_request();
+    let approval_id = request.approval_id();
+    let evaluations = request.evaluations().to_vec();
+    let mut state = SessionState::default();
+    let now = jiff::Timestamp::now();
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        1,
+        now,
+        EventPayload::ApprovalRequested {
+            request: request.clone(),
+        },
+    );
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        2,
+        now,
+        EventPayload::approval_step(
+            approval_id,
+            cookie_agent_protocol::ApprovalStep::Evaluated {
+                decision: cookie_agent_protocol::ApprovalInternalDecision {
+                    decision: cookie_agent_protocol::ApprovalInternalDecisionKind::Deny,
+                    source: cookie_agent_protocol::ApprovalDecisionSource::InternalAgent,
+                    reason_code: cookie_agent_protocol::ApprovalReasonCode::InternalAgentDenied,
+                    evaluations: evaluations.clone(),
+                    rationale: Some("Deletes the user's data.".into()),
+                },
+            },
+        ),
+    );
+    assert_eq!(
+        state.approvals[0].reviewer,
+        Some(ReviewerNote::Decided {
+            reason: Some("Deletes the user's data.".into())
+        })
+    );
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        3,
+        now,
+        EventPayload::approval_finalized(
+            approval_id,
+            cookie_agent_protocol::ApprovalFinalization::Decided {
+                decision: cookie_agent_protocol::ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Rejected,
+                    source: cookie_agent_protocol::ApprovalDecisionSource::InternalAgent,
+                    reason_code: cookie_agent_protocol::ApprovalReasonCode::InternalAgentDenied,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
+            },
+        ),
+    );
+    let last = state
+        .transcript
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            TranscriptItem::Event { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("an info row");
+    assert!(
+        last.ends_with(" · the reviewer: Deletes the user's data."),
+        "{last}"
+    );
+
+    // An escalated record read from `approval.list` carries the note too,
+    // and a failed review says so.
+    let record = cookie_agent_protocol::ApprovalRecord {
+        session_id,
+        request: request.with_expires_at(None),
+        status: cookie_agent_protocol::ApprovalStatus::Escalated,
+        internal_decision: Some(cookie_agent_protocol::ApprovalInternalDecision {
+            decision: cookie_agent_protocol::ApprovalInternalDecisionKind::Escalate,
+            source: cookie_agent_protocol::ApprovalDecisionSource::InternalAgent,
+            reason_code: cookie_agent_protocol::ApprovalReasonCode::InternalAgentFailed,
+            evaluations,
+            rationale: None,
+        }),
+        user_decision: None,
+        final_decision: None,
+    };
+    let approval = approval_state_from_record(record).expect("visible escalation");
+    assert_eq!(approval.reviewer, Some(ReviewerNote::Failed));
+    assert_eq!(
+        approval.reviewer.unwrap().escalation_line().as_deref(),
+        Some("The reviewer failed, so the call is yours to decide.")
+    );
+}

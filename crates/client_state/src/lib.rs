@@ -267,6 +267,47 @@ pub struct ApprovalState {
     pub evaluations: Vec<ApprovalEvaluation>,
     pub constraints: ApprovalConstraints,
     pub escalated: bool,
+    /// What the approval reviewer made of the call, once it was evaluated.
+    pub reviewer: Option<ReviewerNote>,
+}
+
+/// The approval reviewer's part in an approval, as clients show it
+/// (approval reviewer spec section 7).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReviewerNote {
+    /// The reviewer answered, with its one-sentence reason when it gave one.
+    Decided { reason: Option<String> },
+    /// The reviewer failed, so the call is the user's to decide.
+    Failed,
+}
+
+impl ReviewerNote {
+    /// The note of an internal decision, or `None` when no reviewer made it.
+    #[must_use]
+    pub fn of(decision: &cookie_agent_protocol::ApprovalInternalDecision) -> Option<Self> {
+        if decision.source != cookie_agent_protocol::ApprovalDecisionSource::InternalAgent {
+            return None;
+        }
+        if decision.reason_code == cookie_agent_protocol::ApprovalReasonCode::InternalAgentFailed {
+            return Some(Self::Failed);
+        }
+        Some(Self::Decided {
+            reason: decision.rationale.clone(),
+        })
+    }
+
+    /// The line an escalated call's approval shows: "The reviewer asks:
+    /// <reason>", or that it failed. `None` when the reviewer gave no reason.
+    #[must_use]
+    pub fn escalation_line(&self) -> Option<String> {
+        match self {
+            Self::Decided {
+                reason: Some(reason),
+            } => Some(format!("The reviewer asks: {reason}")),
+            Self::Decided { reason: None } => None,
+            Self::Failed => Some("The reviewer failed, so the call is yours to decide.".into()),
+        }
+    }
 }
 
 impl ApprovalState {

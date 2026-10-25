@@ -187,6 +187,45 @@ async fn panel_leads_with_the_command_why_it_asks_and_what_the_focus_does() {
     assert!(!rendered.contains("operation fingerprint"), "{rendered}");
 }
 
+/// An escalated call shows the reviewer's reason, or that it failed
+/// (approval reviewer spec section 7).
+#[tokio::test]
+async fn panel_shows_what_the_reviewer_asks() {
+    for (note, shown) in [
+        (
+            cookie_agent_client_state::ReviewerNote::Decided {
+                reason: Some("Pushes to a shared branch.".into()),
+            },
+            Some("The reviewer asks: Pushes to a shared branch."),
+        ),
+        (
+            cookie_agent_client_state::ReviewerNote::Failed,
+            Some("The reviewer failed, so the call is yours to decide."),
+        ),
+        (
+            cookie_agent_client_state::ReviewerNote::Decided { reason: None },
+            None,
+        ),
+    ] {
+        let mut app = app_with_linked_bash().await;
+        let session = app.selected.expect("session");
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session state")
+            .approvals[0]
+            .reviewer = Some(note);
+        let rendered = rendered_frame(&mut app, 120, 40);
+        match shown {
+            Some(line) => assert!(
+                rendered.contains(&format!("reviewer  {line}")),
+                "{rendered}"
+            ),
+            None => assert!(!rendered.contains("reviewer  "), "{rendered}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn unlinked_request_falls_back_to_its_resources() {
     let mut app = app_with_approval().await;

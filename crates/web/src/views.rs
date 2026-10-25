@@ -3115,6 +3115,11 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                         })
                         .unwrap_or_else(|| ("a tool call".into(), String::new(), icons::hint_icon(None)))
                 });
+                let reviewer = approval
+                    .reviewer
+                    .as_ref()
+                    .and_then(cookie_agent_client_state::ReviewerNote::escalation_line)
+                    .map(|line| view! { <p class=NOTE data-reviewer>{line}</p> });
                 let decide = move |decision: ApprovalUserDecision| {
                     let approval = approval.clone();
                     move |_| workspace.respond(approval.clone(), decision)
@@ -3126,6 +3131,7 @@ fn approvals_sheet(workspace: Workspace) -> impl IntoView {
                             <span class="min-w-0 break-words">{title}</span>
                         </p>
                         <div class="min-w-0" inner_html=preview></div>
+                        {reviewer}
                         <div class="flex flex-wrap gap-2">
                             <button type="button" class=PRIMARY data-decision="approve_once" on:click=decide(ApprovalUserDecision::ApproveOnce)>
                                 <Glyph icon=icondata::FaCheckSolid />

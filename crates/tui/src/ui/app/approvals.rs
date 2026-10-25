@@ -530,6 +530,17 @@ fn approval_body(
         Line::styled(approval_reason(approval), theme.muted_text()),
         width,
     )));
+    if let Some(line) = approval
+        .reviewer
+        .as_ref()
+        .and_then(cookie_agent_client_state::ReviewerNote::escalation_line)
+    {
+        rows.extend(plain_rows(labeled_rows(
+            Span::styled("reviewer", theme.muted()),
+            Line::styled(line, theme.body()),
+            width,
+        )));
+    }
     if let Some(focus) = panel.focus {
         let (glyph, _, short) = decision_labels(focus);
         let tone = theme.decision(decision_tone(focus), false);

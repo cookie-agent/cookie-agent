@@ -980,16 +980,25 @@ pub(super) fn reduce_event_from(
                 .push(approval_state_from_request(session_id, request, false));
         }
         EventPayload::ApprovalStep { approval_id, step } => match step.into_known() {
-            Some(cookie_agent_protocol::ApprovalStep::Evaluated { decision }) => push_event(
-                state,
-                EventLevel::Debug,
-                format!(
-                    "approval {approval_id} evaluated: {:?} ({:?})",
-                    decision.decision, decision.reason_code
-                )
-                .to_lowercase(),
-                timestamp,
-            ),
+            Some(cookie_agent_protocol::ApprovalStep::Evaluated { decision }) => {
+                if let Some(approval) = state
+                    .approvals
+                    .iter_mut()
+                    .find(|approval| approval.approval_id == approval_id)
+                {
+                    approval.reviewer = crate::ReviewerNote::of(&decision);
+                }
+                push_event(
+                    state,
+                    EventLevel::Debug,
+                    format!(
+                        "approval {approval_id} evaluated: {:?} ({:?})",
+                        decision.decision, decision.reason_code
+                    )
+                    .to_lowercase(),
+                    timestamp,
+                );
+            }
             Some(cookie_agent_protocol::ApprovalStep::Escalated {
                 reason_code,
                 expires_at,
@@ -1038,6 +1047,16 @@ pub(super) fn reduce_event_from(
             approval_id,
             outcome,
         } => {
+            let reviewer_reason = state
+                .approvals
+                .iter()
+                .find(|approval| approval.approval_id == approval_id)
+                .and_then(|approval| match &approval.reviewer {
+                    Some(crate::ReviewerNote::Decided {
+                        reason: Some(reason),
+                    }) => Some(reason.clone()),
+                    _ => None,
+                });
             state
                 .approvals
                 .retain(|approval| approval.approval_id != approval_id);
@@ -1052,7 +1071,21 @@ pub(super) fn reduce_event_from(
                 }
                 None => format!("approval {approval_id} ended"),
             };
-            push_event(state, EventLevel::Info, message.to_lowercase(), timestamp);
+            // A call the reviewer resolved, or that its permission mode
+            // resolved after the reviewer asked, says why (approval reviewer
+            // spec section 7).
+            let resolved_without_user = outcome.known().is_some_and(|outcome| {
+                matches!(
+                    outcome.decision().source,
+                    cookie_agent_protocol::ApprovalDecisionSource::InternalAgent
+                        | cookie_agent_protocol::ApprovalDecisionSource::PermissionMode
+                )
+            });
+            let message = match reviewer_reason.filter(|_| resolved_without_user) {
+                Some(reason) => format!("{} · the reviewer: {reason}", message.to_lowercase()),
+                None => message.to_lowercase(),
+            };
+            push_event(state, EventLevel::Info, message, timestamp);
         }
         EventPayload::ElicitationRequested { request } => {
             state
@@ -2752,7 +2785,11 @@ pub fn approval_state_from_record(record: ApprovalRecord) -> Option<ApprovalStat
         | ApprovalStatus::Cancelled
         | ApprovalStatus::Expired => return None,
     }
-    let approval = approval_state_from_request(record.session_id, record.request, true);
+    let mut approval = approval_state_from_request(record.session_id, record.request, true);
+    approval.reviewer = record
+        .internal_decision
+        .as_ref()
+        .and_then(crate::ReviewerNote::of);
     approval.is_visible_user_escalation().then_some(approval)
 }
 
@@ -2820,6 +2857,7 @@ pub(super) fn approval_state_from_request(
         evaluations,
         constraints,
         escalated,
+        reviewer: None,
     }
 }
 

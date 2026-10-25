@@ -498,12 +498,15 @@ def expanded(browser, row):
 def tool_rows(browser):
     """Tool calls start collapsed and open on a click, kept per session; a
     running call shows its progress collapsed; long output stops at the
-    row budget."""
+    row budget. The approval says why the reviewer passed the call on: the
+    mock model answers the reviewer with no verdict, so it failed."""
     new_session(browser)
     send(browser, "print many lines")
     browser.wait("the approval", lambda: count(browser, "#transcript [data-action=approvals]") == 1)
     browser.click("#transcript [data-action=approvals]")
     browser.wait("the approval sheet", lambda: count(browser, "#sheet [data-decision=approve_once]") > 0)
+    reviewer = browser.text("#sheet [data-reviewer]")
+    assert reviewer == "The reviewer failed, so the call is yours to decide.", reviewer
     browser.click("#sheet [data-decision=approve_once]")
     close_sheet(browser)
     idle(browser, "the tool's answer", text="The tool ran.")
