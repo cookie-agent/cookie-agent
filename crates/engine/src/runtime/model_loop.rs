@@ -7,11 +7,11 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ExtensionAgentBeforeStartParams, ExtensionInterceptionHook,
-    ExtensionToolAfterResultAction, ExtensionToolAfterResultParams, ExtensionUserBeforeInputAction,
-    ExtensionUserBeforeInputParams, InternalAgentKind, InvocationId, OperationFingerprint,
-    PersistedAssistantPart, PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId,
-    SessionOrigin, SessionStatus, Sha256Digest, StreamedOutputKind, ToolCallId, ToolCallStart,
+    ExtensionAgentBeforeStartParams, ExtensionInterceptionHook, ExtensionToolAfterResultAction,
+    ExtensionToolAfterResultParams, ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams,
+    InternalAgentKind, InvocationId, OperationFingerprint, PersistedAssistantPart,
+    PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId, SessionOrigin,
+    SessionStatus, Sha256Digest, StreamedOutputKind, ToolCallId, ToolCallStart,
 };
 use futures_util::StreamExt;
 use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
@@ -21,7 +21,6 @@ use super::{
     ActiveRun, ApprovalToolInput, AttemptTurn, Engine, EngineError, Event,
     MAX_PENDING_PREPARED_TOOLS, ModelApprovalInput, PendingTool, SessionCommand,
     ToolCallFailureCode, ToolFailure, UserInputInterception,
-    approval_projection::denied_tool_failure,
     compaction::CompactionInput,
     event_origin,
     helpers::safe_error,
@@ -1441,11 +1440,8 @@ impl Engine {
                             approved_tasks.push(PendingTool::ImmediateFailure(ToolFailure {
                                 partial_output: None,
                                 code: ToolCallFailureCode::ExecutionFailed,
-                                message: denied_tool_failure(
-                                    ApprovalDecisionSource::Model,
-                                    "model approval refused by user",
-                                    outcome.feedback,
-                                ),
+                                message: outcome
+                                    .denial_message("model", "model approval refused by user"),
                             }));
                             continue;
                         }

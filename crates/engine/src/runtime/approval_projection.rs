@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 use super::{
     ApprovalEvaluationTransition, ApprovalOutcome, ApprovalRespondFailure, ApprovalTerminal,
     Engine, EngineError, Event, PendingApproval, PreparedApprovalInvalidation, ReviewOutcome,
+    ReviewerDenial,
     approval_flow::{
         approval_constraints, approval_deadline_exhausted, approval_evaluations, approval_expiry,
     },
@@ -68,6 +69,7 @@ impl Engine {
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved: false,
                 feedback: Some("cancelled".into()),
+                reviewer_denial: None,
             }));
         }
         if approval_deadline_exhausted(approval_constraints(&request).expires_at) {
@@ -75,6 +77,7 @@ impl Engine {
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved: false,
                 feedback: Some("approval expired unattended".into()),
+                reviewer_denial: None,
             }));
         }
 
@@ -116,6 +119,7 @@ impl Engine {
             ),
         };
         let reviewer_failed = reason_code == ApprovalReasonCode::InternalAgentFailed;
+        let denial_reason = rationale.clone();
         self.append_direct(
             session,
             Some(run),
@@ -128,7 +132,7 @@ impl Engine {
                         source,
                         reason_code,
                         evaluations: approval_evaluations(&request),
-                        rationale,
+                        rationale: rationale.clone(),
                     },
                 },
             ),
@@ -162,6 +166,9 @@ impl Engine {
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved,
                 feedback: None,
+                reviewer_denial: (!approved).then_some(ReviewerDenial {
+                    reason: denial_reason,
+                }),
             }));
         }
 
@@ -207,6 +214,7 @@ impl Engine {
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved: outcome == ApprovalFinalOutcome::Approved,
                 feedback: feedback.map(str::to_owned),
+                reviewer_denial: None,
             }));
         }
 
@@ -495,6 +503,7 @@ impl Engine {
                     .feedback
                     .as_ref()
                     .map(|feedback| feedback.message.to_string()),
+                reviewer_denial: None,
             });
         }
         let events = self
@@ -594,6 +603,7 @@ impl Engine {
                         "prepared capability was lost before approval response".into()
                     }
                 }),
+                reviewer_denial: None,
             });
         }
         let current = approval_record(
@@ -679,6 +689,7 @@ fn approval_terminal_outcome(terminal: ApprovalTerminal) -> ApprovalOutcome {
             ApprovalTerminal::Cancelled => "cancelled".into(),
             ApprovalTerminal::Expired => "approval expired unattended".into(),
         }),
+        reviewer_denial: None,
     }
 }
 
@@ -699,6 +710,7 @@ fn approval_lost_outcome(record: &ApprovalRecord) -> ApprovalOutcome {
     ApprovalOutcome {
         approved: false,
         feedback: Some(feedback),
+        reviewer_denial: None,
     }
 }
 
@@ -908,23 +920,26 @@ pub(crate) fn doom_loop_repetitions(
     reset_at.unwrap_or(repetitions)
 }
 
+/// The model-facing text of a denied tool call. `source` names who refused
+/// it: `policy`, `model` (a model-requested approval the user refused), or
+/// `approval_reviewer`. Model history reads it back.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DeniedToolFailure {
     kind: String,
-    source: ApprovalDecisionSource,
+    source: String,
     reason: String,
     feedback: Option<String>,
 }
 
 pub(super) fn denied_tool_failure(
-    source: ApprovalDecisionSource,
+    source: &str,
     reason: impl Into<String>,
     feedback: Option<String>,
 ) -> String {
     serde_json::to_string(&DeniedToolFailure {
         kind: "tool_denied".into(),
-        source,
+        source: source.to_owned(),
         reason: reason.into(),
         feedback,
     })

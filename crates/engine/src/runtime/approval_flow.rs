@@ -68,7 +68,37 @@ const APPROVAL_PRIOR_DECISION_TEXT_MAX: usize = 256;
 pub(crate) struct ApprovalOutcome {
     pub(crate) approved: bool,
     pub(crate) feedback: Option<String>,
+    /// Set when the approval reviewer itself denied the call.
+    pub(crate) reviewer_denial: Option<ReviewerDenial>,
 }
+
+/// The approval reviewer's denial of a call: the agent is told the reviewer
+/// refused it, and why (approval reviewer spec section 7).
+#[derive(Clone, Debug)]
+pub(crate) struct ReviewerDenial {
+    pub(crate) reason: Option<String>,
+}
+
+impl ApprovalOutcome {
+    /// The tool failure the agent receives for this refused outcome.
+    pub(crate) fn denial_message(self, source: &str, reason: &str) -> String {
+        match self.reviewer_denial {
+            Some(denial) => super::approval_projection::denied_tool_failure(
+                REVIEWER_DENIAL_SOURCE,
+                denial
+                    .reason
+                    .unwrap_or_else(|| REVIEWER_DENIAL_REASON.to_owned()),
+                None,
+            ),
+            None => super::approval_projection::denied_tool_failure(source, reason, self.feedback),
+        }
+    }
+}
+
+/// The `source` of a tool denial the approval reviewer decided.
+pub(crate) const REVIEWER_DENIAL_SOURCE: &str = "approval_reviewer";
+/// Its `reason` when the reviewer gave none.
+pub(crate) const REVIEWER_DENIAL_REASON: &str = "the approval reviewer denied this call";
 
 pub(crate) struct PendingApproval {
     pub(crate) sender: oneshot::Sender<ApprovalOutcome>,
@@ -258,6 +288,7 @@ impl Engine {
             return Ok(ApprovalOutcome {
                 approved: false,
                 feedback: None,
+                reviewer_denial: None,
             });
         }
 
@@ -306,6 +337,7 @@ impl Engine {
             return Ok(ApprovalOutcome {
                 approved: true,
                 feedback: None,
+                reviewer_denial: None,
             });
         }
 
@@ -351,6 +383,7 @@ impl Engine {
             return Ok(ApprovalOutcome {
                 approved: false,
                 feedback: None,
+                reviewer_denial: None,
             });
         }
 
@@ -403,6 +436,7 @@ impl Engine {
             return Ok(ApprovalOutcome {
                 approved: true,
                 feedback: None,
+                reviewer_denial: None,
             });
         }
 
@@ -480,6 +514,7 @@ impl Engine {
                     Ok(ApprovalOutcome {
                         approved: false,
                         feedback: Some("cancelled".into()),
+                        reviewer_denial: None,
                     })
                 } else {
                     receiver.await.map_err(|_| EngineError::ActorStopped)
@@ -493,6 +528,7 @@ impl Engine {
                     Ok(ApprovalOutcome {
                         approved: false,
                         feedback: Some("approval expired unattended".into()),
+                        reviewer_denial: None,
                     })
                 } else {
                     receiver.await.map_err(|_| EngineError::ActorStopped)

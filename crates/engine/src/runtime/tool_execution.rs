@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use cookie_agent_protocol::{
-    ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
+    ApprovalConstraints, ApprovalId, ApprovalRequest, ApprovalTrigger,
     ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, Open, OperationFingerprint,
     PersistedToolResult as ToolResult, PluginDiagnosticKind, PreparedOperationIdentity, RunId,
     RuntimeId, SessionId, Sha256Digest, ToolIdentity, ToolPresentation, ToolSource,
@@ -189,7 +189,7 @@ impl Engine {
         match permission.effect {
             cookie_agent_protocol::PermissionEffect::Allow => Ok(()),
             cookie_agent_protocol::PermissionEffect::Deny => Err(ToolError::PermissionDenied(
-                denied_tool_failure(ApprovalDecisionSource::Policy, "permission denied", None),
+                denied_tool_failure("policy", "permission denied", None),
             )
             .into()),
             cookie_agent_protocol::PermissionEffect::Ask => {
@@ -245,11 +245,7 @@ impl Engine {
                     Err(ToolFailure {
                         partial_output: None,
                         code: ToolCallFailureCode::ExecutionFailed,
-                        message: denied_tool_failure(
-                            ApprovalDecisionSource::Policy,
-                            "permission refused by user",
-                            outcome.feedback,
-                        ),
+                        message: outcome.denial_message("policy", "permission refused by user"),
                     })
                 }
             }

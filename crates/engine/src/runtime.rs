@@ -115,7 +115,7 @@ use approval_flow::{
     ApprovalEvaluationTransition, ApprovalRuntimeState, ApprovalTerminal, ApprovalToolInput,
     ModelApprovalInput, PreparedApprovalInvalidation, ReviewOutcome,
 };
-pub(crate) use approval_flow::{ApprovalOutcome, PendingApproval};
+pub(crate) use approval_flow::{ApprovalOutcome, PendingApproval, ReviewerDenial};
 #[cfg(test)]
 pub(crate) use artifacts::ArtifactStore;
 #[cfg(test)]

@@ -6,14 +6,13 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ArtifactRef, ArtifactReference, ContextCheckpoint,
-    DelegatedContextRole, EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection,
-    NativeContextScope, NativeReplayArtifact, Open, PersistedAssistantPart, PersistedContentValue,
-    PersistedFilePart, PersistedFileSource, PersistedModelTurn, PersistedToolContent,
-    PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode,
-    SafeErrorMessage, SessionId, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
-    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
-    UserContent, UserContentPart,
+    ArtifactRef, ArtifactReference, ContextCheckpoint, DelegatedContextRole, EventPayload,
+    FrozenModelBinding, ModelFinishReason, ModelSelection, NativeContextScope,
+    NativeReplayArtifact, Open, PersistedAssistantPart, PersistedContentValue, PersistedFilePart,
+    PersistedFileSource, PersistedModelTurn, PersistedToolContent, PersistedToolResult,
+    ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode, SafeErrorMessage, SessionId,
+    Sha256Digest, StoredEvent, ToolAttachment, ToolCallId, ToolEmittedContent, ToolEmittedMessage,
+    ToolEmittedMessageRole, ToolTerminationOutcome, Usage, UserContent, UserContentPart,
 };
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
@@ -1071,16 +1070,7 @@ fn assemble_history_with_replay(
                     let mut metadata = BTreeMap::from([
                         (
                             "denial_source".into(),
-                            serde_json::Value::String(match denied.source {
-                                ApprovalDecisionSource::Policy => "policy".into(),
-                                ApprovalDecisionSource::Model => "model".into(),
-                                ApprovalDecisionSource::InternalAgent => "internal_agent".into(),
-                                ApprovalDecisionSource::PermissionMode => "permission_mode".into(),
-                                ApprovalDecisionSource::TreeGrant => "tree_grant".into(),
-                                ApprovalDecisionSource::User => "user".into(),
-                                ApprovalDecisionSource::DoomLoopGuard => "doom_loop_guard".into(),
-                                ApprovalDecisionSource::System => "system".into(),
-                            }),
+                            serde_json::Value::String(denied.source),
                         ),
                         (
                             "denial_reason".into(),
@@ -1469,7 +1459,7 @@ fn user_file_attachment(artifact: &ArtifactRef) -> Result<ToolAttachment, Histor
 #[serde(deny_unknown_fields)]
 struct DeniedToolFailure {
     kind: String,
-    source: ApprovalDecisionSource,
+    source: String,
     reason: String,
     feedback: Option<String>,
 }

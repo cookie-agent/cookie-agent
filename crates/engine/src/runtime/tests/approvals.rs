@@ -2225,3 +2225,59 @@ async fn a_failed_review_escalates_under_auto_approve_y_and_is_rejected_under_n(
         fixture.engine.shutdown().await;
     }
 }
+
+/// The message a model sees for a call the approval reviewer denied names
+/// the reviewer, not the user (approval reviewer spec section 10, e).
+#[tokio::test]
+async fn a_reviewer_denial_names_the_reviewer() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"deny"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(TestFlag::default());
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("reviewer-denial").expect("run ID"),
+                selection,
+                content: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    let termination = await_event(
+        &fixture.engine,
+        session.session_id,
+        "denied tool termination",
+        |event| matches!(&event.payload, EventPayload::ToolCallTerminated { .. }),
+    )
+    .await;
+    let EventPayload::ToolCallTerminated { termination } = &termination.payload else {
+        unreachable!("matched termination");
+    };
+    let message = termination.error.as_ref().expect("denial").message.as_str();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(message).expect("denial JSON"),
+        serde_json::json!({
+            "kind": "tool_denied",
+            "source": "approval_reviewer",
+            "reason": "the approval reviewer denied this call",
+            "feedback": null,
+        })
+    );
+    assert!(!executed.is_set());
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
