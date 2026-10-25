@@ -283,8 +283,8 @@ pub enum ProjectAgent {
 /// The selection `project`'s default agent and preset give a new session
 /// (`docs/site/specs/projects.md` section 4): the agent among `agents` that
 /// runs as root in that preset (with no agent named, the preset's `primary`,
-/// else its first), and that agent's first model `live` accepts, else
-/// `fallback_model`.
+/// else its first), and that agent's model: an ACP agent's synthetic one,
+/// else its first `live` accepts, else `fallback_model`.
 pub fn project_agent(
     project: &ProjectInfo,
     agents: &[AgentDescriptor],
@@ -328,11 +328,14 @@ pub fn project_agent(
     let Some(agent) = agent else {
         return unavailable();
     };
-    let Some(model) = agent
-        .resolved_fallback
-        .iter()
-        .find(|selection| live(selection))
-        .cloned()
+    let Some(model) = crate::acp::acp_model(agent)
+        .or_else(|| {
+            agent
+                .resolved_fallback
+                .iter()
+                .find(|selection| live(selection))
+                .cloned()
+        })
         .or(fallback_model)
     else {
         return unavailable();

@@ -1,4 +1,6 @@
-use cookie_agent_protocol::{AgentId, CapabilityName, ProjectName, SemVer, SessionStatus};
+use cookie_agent_protocol::{
+    AgentId, AgentRuntime, CapabilityName, ProjectName, SemVer, SessionStatus,
+};
 
 use super::*;
 
@@ -326,6 +328,34 @@ fn the_default_agent_brings_its_preset_and_its_own_model() {
         panic!("the preset has a root agent");
     };
     assert_eq!(selection.agent.as_str(), "builder");
+}
+
+#[test]
+fn an_acp_default_agent_runs_its_synthetic_model() {
+    // The synthetic model is in no catalog, so `live` refuses it.
+    let mut claude = agent("claude", None, true, &["acp/claude"]);
+    claude.runtimes = vec![AgentRuntime {
+        runtime_id: RuntimeId::new("local").unwrap(),
+        agent: AgentId::new("claude").unwrap(),
+        available: true,
+        options: Vec::new(),
+        input_media: Vec::new(),
+    }];
+    let agents = vec![claude];
+    let live = |selection: &ModelSelection| selection.model.as_str() != "acp/claude";
+    let mut info = project("aaa", "web", None);
+    info.defaults = Some(ProjectDefaults {
+        agent: Some(AgentId::new("claude").unwrap()),
+        ..ProjectDefaults::default()
+    });
+    assert_eq!(
+        project_agent(&info, &agents, live, Some(model("custom.local/a"))),
+        ProjectAgent::Selected(RunSelection {
+            agent: AgentId::new("claude").unwrap(),
+            model: model("acp/claude"),
+            preset: None,
+        })
+    );
 }
 
 #[test]
