@@ -297,7 +297,7 @@ impl ReviewerNote {
     }
 
     /// The line an escalated call's approval shows: "The reviewer asks:
-    /// <reason>", or that it failed. `None` when the reviewer gave no reason.
+    /// `<reason>`", or that it failed. `None` when the reviewer gave no reason.
     #[must_use]
     pub fn escalation_line(&self) -> Option<String> {
         match self {
