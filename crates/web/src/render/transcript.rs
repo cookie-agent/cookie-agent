@@ -204,13 +204,20 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     item.id().hash(&mut hasher);
     item.version().hash(&mut hasher);
     std::mem::discriminant(item).hash(&mut hasher);
-    if let TranscriptItem::Assistant { children, .. } = item {
+    if let TranscriptItem::Assistant { id, children, .. } = item {
+        // The footer's inputs: metrics can land after the reply settles.
+        view.state.assistant_metrics.get(id).hash(&mut hasher);
+        view.state
+            .interrupted_assistant_items
+            .contains(id)
+            .hash(&mut hasher);
         children.len().hash(&mut hasher);
         for child in children {
             child.version().hash(&mut hasher);
             match child {
-                AssistantChild::Thinking { id, .. } => {
-                    view.expanded.thinking(*id).hash(&mut hasher);
+                AssistantChild::Thinking { id: part, .. } => {
+                    view.expanded.thinking(*part).hash(&mut hasher);
+                    hash_thinking_status(view.state, *id, *part, &mut hasher);
                 }
                 AssistantChild::Tool { call_id } => pass.hash_tool(call_id, &mut hasher),
                 _ => {}
@@ -269,6 +276,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             )
         }
         TranscriptItem::Assistant {
+            id,
             attribution,
             children,
             ..
@@ -278,8 +286,9 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 escape(&attribution.header(view.names))
             );
             for child in children {
-                html.push_str(&child_html(view, child));
+                html.push_str(&child_html(view, *id, child));
             }
+            html.push_str(&reply_footer_html(view.state, *id).unwrap_or_default());
             format!("<div class=\"flex flex-col gap-1\">{html}</div>")
         }
         TranscriptItem::Event {
@@ -727,7 +736,7 @@ fn part_id(child: &AssistantChild, index: usize) -> u64 {
 }
 
 /// A key that changes whenever the part's HTML would.
-fn part_key(pass: &Pass<'_, '_>, child: &AssistantChild) -> u64 {
+fn part_key(pass: &Pass<'_, '_>, item_id: u64, child: &AssistantChild) -> u64 {
     let view = pass.view;
     let mut hasher = foldhash::fast::FixedState::default().build_hasher();
     // Segment and turn numbers repeat across sessions.
@@ -740,6 +749,7 @@ fn part_key(pass: &Pass<'_, '_>, child: &AssistantChild) -> u64 {
         AssistantChild::Thinking { id, version, .. } => {
             let open = view.expanded.thinking(*id);
             (id, open).hash(&mut hasher);
+            hash_thinking_status(view.state, item_id, *id, &mut hasher);
             if open {
                 version.hash(&mut hasher);
             }
@@ -799,11 +809,12 @@ pub fn transcript_rows(
             None => {
                 let row = match item {
                     TranscriptItem::Assistant {
+                        id,
                         attribution,
                         children,
                         ..
                     } => {
-                        let (reply, keys) = reply_parts(&pass, children, cache, &mut parts);
+                        let (reply, keys) = reply_parts(&pass, *id, children, cache, &mut parts);
                         CachedRow {
                             html: RowHtml::Reply {
                                 header: Arc::from(format!(
@@ -841,10 +852,12 @@ pub fn transcript_rows(
     }
 }
 
-/// A reply's parts, each under its ID, and their content keys. Parts whose
-/// key is in `cache` reuse its HTML; every part drawn lands in `used`.
+/// A reply's parts, each under its ID, and their content keys, then its
+/// footer when it has one. Parts whose key is in `cache` reuse its HTML;
+/// every part drawn lands in `used`.
 fn reply_parts(
     pass: &Pass<'_, '_>,
+    item_id: u64,
     children: &[AssistantChild],
     cache: &mut RowCache,
     used: &mut FastMap<u64, PartHtml>,
@@ -852,7 +865,7 @@ fn reply_parts(
     let mut seen: FastSet<u64> =
         HashSet::with_capacity_and_hasher(children.len(), foldhash::fast::FixedState::default());
     let mut keys = Vec::with_capacity(children.len());
-    let parts = children
+    let mut parts: Vec<_> = children
         .iter()
         .enumerate()
         .map(|(index, child)| {
@@ -861,7 +874,7 @@ fn reply_parts(
                 id = foldhash::fast::FixedState::default().hash_one((id, index));
                 seen.insert(id);
             }
-            let key = part_key(pass, child);
+            let key = part_key(pass, item_id, child);
             let html = match used.get(&key).or_else(|| cache.parts.get(&key)) {
                 Some(html) => html.clone(),
                 None => match child {
@@ -871,7 +884,7 @@ fn reply_parts(
                     }
                     _ => {
                         cache.drawn += 1;
-                        PartHtml::Html(Arc::from(child_html(pass.view, child)))
+                        PartHtml::Html(Arc::from(child_html(pass.view, item_id, child)))
                     }
                 },
             };
@@ -880,7 +893,46 @@ fn reply_parts(
             (id, html)
         })
         .collect();
-    (parts, keys)
+    // Drawn with its row, whose key holds what it shows.
+    if let Some(footer) = reply_footer_html(pass.view.state, item_id) {
+        parts.push((
+            foldhash::fast::FixedState::default().hash_one(7u8),
+            PartHtml::Html(Arc::from(footer)),
+        ));
+    }
+    (parts.into(), keys)
+}
+
+/// The line that closes a reply, as the TUI's footer reads: its generation
+/// speed, the context it left, its cost, and whether it was interrupted.
+fn reply_footer_html(state: &SessionState, item_id: u64) -> Option<String> {
+    cookie_agent_client_state::reply::assistant_footer(state, item_id).map(|footer| {
+        format!(
+            "<div class=\"{NOTE} font-mono\" data-reply-footer>{}</div>",
+            escape(&footer)
+        )
+    })
+}
+
+/// What a thinking block's header says: `thinking…` while it streams,
+/// then how long it thought.
+fn thinking_status(state: &SessionState, item_id: u64, id: u64) -> String {
+    if state.is_open_thinking(item_id, id) {
+        "thinking…".to_owned()
+    } else {
+        cookie_agent_client_state::reply::thought_label(state.thinking_duration(item_id, id))
+    }
+}
+
+/// Hashes what [`thinking_status`] reads.
+fn hash_thinking_status(
+    state: &SessionState,
+    item_id: u64,
+    id: u64,
+    hasher: &mut impl std::hash::Hasher,
+) {
+    state.is_open_thinking(item_id, id).hash(hasher);
+    state.thinking_duration(item_id, id).hash(hasher);
 }
 
 /// The key under which a collapsible row's expansion is kept, shared with
@@ -1047,7 +1099,7 @@ fn collapsible(
     html
 }
 
-fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
+fn child_html(view: &TranscriptView<'_>, item_id: u64, child: &AssistantChild) -> String {
     match child {
         AssistantChild::Text { markdown, .. } => {
             format!("<div class=\"markdown\">{}</div>", document_html(markdown))
@@ -1058,7 +1110,7 @@ fn child_html(view: &TranscriptView<'_>, child: &AssistantChild) -> String {
             view.expanded.thinking(*id),
             &thinking_key(*id),
             icondata::FaLightbulbRegular,
-            "thinking",
+            &thinking_status(view.state, item_id, *id),
             None,
             text,
         ),
@@ -1441,7 +1493,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
             };
-            child_html(&view, &thinking)
+            child_html(&view, 1, &thinking)
         };
         let folded = draw(&Expanded::default());
         assert!(folded.contains("data-block-key=\"thinking:7\""), "{folded}");
@@ -2086,6 +2138,92 @@ mod tests {
             panic!("the thinking block is not HTML")
         };
         assert!(std::sync::Arc::ptr_eq(old, new));
+    }
+
+    #[test]
+    fn a_reply_footer_that_lands_after_the_reply_settles_draws_it_again() {
+        let (mut state, _) = streaming_reply();
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let mut cache = super::RowCache::default();
+        let draw = |state: &SessionState, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded: &expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+            };
+            (
+                item_key(&view, &state.transcript[0]),
+                super::transcript_rows(&view, None, cache),
+            )
+        };
+        let (before_key, before) = draw(&state, &mut cache);
+        assert_eq!(reply_parts(&before).len(), 3, "no footer without metrics");
+        // The usage arrives without the reply's version moving.
+        let metrics = state.assistant_metrics.entry(1).or_default();
+        metrics.timed_output_tokens = 421;
+        metrics.generation = std::time::Duration::from_secs(10);
+        metrics.timed_turns = 1;
+        metrics.context_tokens = Some(12_500);
+        metrics.estimated_cost_pico_usd = Some(4_000_000_000);
+        let (metrics_key, metrics) = draw(&state, &mut cache);
+        assert_ne!(metrics_key, before_key, "the metrics change the row's key");
+        let footer = |rows: &super::Rows| match reply_parts(rows).last() {
+            Some((_, super::PartHtml::Html(html))) => html.to_string(),
+            other => panic!("no footer: {other:?}"),
+        };
+        assert_eq!(
+            footer(&metrics),
+            "<div class=\"text-xs text-ink dark:text-sand font-mono\" data-reply-footer>⚡ 42.1 tps · 12.5K ctx · $0.0040</div>"
+        );
+        state.interrupted_assistant_items.insert(1);
+        let (interrupted_key, interrupted) = draw(&state, &mut cache);
+        assert_ne!(interrupted_key, metrics_key);
+        assert!(
+            footer(&interrupted).contains("$0.0040 · interrupted</div>"),
+            "{}",
+            footer(&interrupted)
+        );
+    }
+
+    #[test]
+    fn a_sealed_thinking_block_says_how_long_it_thought() {
+        let (mut state, _) = streaming_reply();
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let mut cache = super::RowCache::default();
+        let draw = |state: &SessionState, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state,
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded: &expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+            };
+            super::transcript_rows(&view, None, cache)
+        };
+        let thinking = |rows: &super::Rows| match &reply_parts(rows)[0].1 {
+            super::PartHtml::Html(html) => html.to_string(),
+            super::PartHtml::Markdown(_) => panic!("the thinking block is not HTML"),
+        };
+        let untimed = thinking(&draw(&state, &mut cache));
+        assert!(
+            untimed.contains("<span class=\"min-w-0 flex-1 truncate\">thought</span>"),
+            "{untimed}"
+        );
+        state
+            .thinking_durations
+            .insert((1, 2), std::time::Duration::from_secs(65));
+        let timed = thinking(&draw(&state, &mut cache));
+        assert!(timed.contains(">thought for 1m 5s</span>"), "{timed}");
     }
 
     #[test]

@@ -345,10 +345,8 @@ pub(super) fn assistant_child_layout(
             // row: `▸` collapsed, `▾` expanded, after the thinking emoji.
             let status = if key.streaming {
                 format!("thinking{}", ".".repeat(usize::from(key.dots)))
-            } else if let Some(duration) = key.duration {
-                format!("thought for {}", format_thinking_duration(duration))
             } else {
-                "thought".to_owned()
+                cookie_agent_client_state::reply::thought_label(key.duration)
             };
             let label = if key.expanded {
                 format!("💭 ▾ {status}")
@@ -399,18 +397,6 @@ pub(super) fn assistant_child_layout(
         | AssistantChild::Notice { .. } => {
             unreachable!("tool children use tool_child_layout")
         }
-    }
-}
-
-/// A settled thinking duration as compact text: seconds under a minute,
-/// then minutes and seconds. Sub-second spans never reach the label (they
-/// are filtered to plain "thought" by the caller).
-pub(super) fn format_thinking_duration(duration: Duration) -> String {
-    let seconds = duration.as_secs();
-    if seconds >= 60 {
-        format!("{}m {}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{seconds}s")
     }
 }
 
@@ -482,44 +468,19 @@ pub(super) fn attribution_line(
 /// The assistant block's closing footer:
 /// `╰─ ⚡ 42.1 tps · 12.5K ctx · $0.0040` in
 /// muted styling — visually subordinate to the body, closing the block's
-/// gutter tree. A block whose run was interrupted gains a trailing
-/// `· interrupted`. The rate is committed output tokens over generation wall
-/// time measured between durable event timestamps, so a replayed log yields
-/// the identical row; the ctx is the total context the turn left behind
-/// (`input_tokens + output_tokens`). `None` unless every input is present:
-/// at least one turn with a positive generation span and a known
-/// end-of-turn context total.
+/// gutter tree. Its text, and whether it shows at all, is the shared
+/// [`cookie_agent_client_state::reply::assistant_footer`].
 pub(super) fn assistant_footer_line(
     state: &SessionState,
     item_id: u64,
     width: u16,
     theme: &Theme,
 ) -> Option<Vec<Line<'static>>> {
-    let metrics = state.assistant_metrics.get(&item_id)?;
-    let context_tokens = metrics.context_tokens?;
-    if metrics.timed_output_tokens == 0 || metrics.generation.is_zero() {
-        return None;
-    }
-    let tps = metrics.timed_output_tokens as f64 / metrics.generation.as_secs_f64();
-    let cost = metrics
-        .estimated_cost_pico_usd
-        .map(|cost| crate::ui::app::format_cost_usd(cost as f64 / 1_000_000_000_000.0));
-    let cost = cost.map_or_else(String::new, |cost| format!(" · {cost}"));
-    let interrupted = if state.interrupted_assistant_items.contains(&item_id) {
-        " · interrupted"
-    } else {
-        ""
-    };
+    let footer = cookie_agent_client_state::reply::assistant_footer(state, item_id)?;
     let prefix = (width >= 4).then(|| vec![Span::styled("╰─ ", theme.muted())]);
     Some(repeated_prefixed_wrapped_line(
         prefix.unwrap_or_default(),
-        Line::from(Span::styled(
-            format!(
-                "⚡ {tps:.1} tps · {} ctx{cost}{interrupted}",
-                crate::ui::app::format_token_count(context_tokens),
-            ),
-            theme.muted(),
-        )),
+        Line::from(Span::styled(footer, theme.muted())),
         width,
     ))
 }

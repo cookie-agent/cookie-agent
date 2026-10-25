@@ -29,6 +29,7 @@ pub mod projects;
 pub mod providers;
 mod reduce;
 pub mod refresh;
+pub mod reply;
 pub mod restart;
 pub mod rows;
 mod runtime;
@@ -857,7 +858,7 @@ pub struct RunAssistantProjection {
 /// turns with a known positive span (never mixing measured and unmeasured
 /// generation), plus the total context occupied at the end of the last
 /// committed turn (its `input_tokens + output_tokens`).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct AssistantTurnMetrics {
     pub timed_output_tokens: u64,
     pub generation: Duration,

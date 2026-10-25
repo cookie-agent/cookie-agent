@@ -458,6 +458,25 @@ async fn interrupted_run_footer_marks_interrupted_block() {
         run,
         EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted { reason: None }),
     ));
+    // Nothing streams when the run ends, yet the block's version moves, so
+    // a client that caches the block by it draws the marker.
+    let mut store = StateStore::default();
+    let (interrupt, before) = events.split_last().expect("events");
+    for event in before {
+        store.apply_event(event.clone());
+    }
+    let version = |store: &StateStore| {
+        store.sessions[&session]
+            .transcript
+            .iter()
+            .find_map(|item| {
+                matches!(item, TranscriptItem::Assistant { .. }).then(|| item.version())
+            })
+            .expect("assistant item")
+    };
+    let settled = version(&store);
+    store.apply_event(interrupt.clone());
+    assert_ne!(version(&store), settled, "the interrupted block redraws");
     let mut app = app_with_footer_log(events, session).await;
     let rendered = frame_rows(&mut app, 100, 30).join("\n");
     assert!(

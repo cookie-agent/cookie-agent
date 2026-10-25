@@ -1908,21 +1908,7 @@ fn latest_resolved_model_key(state: &crate::state::SessionState) -> Option<&Mode
     })
 }
 
-pub(super) fn format_token_count(tokens: u64) -> String {
-    if tokens < 1_000 {
-        tokens.to_string()
-    } else {
-        format!("{:.1}K", tokens as f64 / 1_000.0)
-    }
-}
-
-pub(super) fn format_cost_usd(cost: f64) -> String {
-    if cost >= 0.01 {
-        format!("${cost:.2}")
-    } else {
-        format!("${cost:.4}")
-    }
-}
+pub(super) use cookie_agent_client_state::usage::{format_cost_usd, format_token_count};
 
 pub(in crate::ui) use cookie_agent_client_state::session_actions::permission_mode_label;
 

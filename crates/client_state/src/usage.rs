@@ -1,7 +1,7 @@
 //! Usage figures every client shows the same way: token counts with
-//! thousands separators and the prompt-cache hit rate of a session, a
-//! session tree, or one model of either (`session.usage`,
-//! `session.tree_usage`).
+//! thousands separators or in short form, costs, and the prompt-cache hit
+//! rate of a session, a session tree, or one model of either
+//! (`session.usage`, `session.tree_usage`).
 //!
 //! The hit rate is the share of the prompt the provider read from its
 //! cache:
@@ -127,6 +127,26 @@ pub fn format_count(count: u64) -> String {
         output.push_str(std::str::from_utf8(chunk).expect("decimal digits are UTF-8"));
     }
     output
+}
+
+/// `tokens` in short form: as it is below a thousand, else in thousands
+/// with one decimal, as `12.5K`.
+pub fn format_token_count(tokens: u64) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    }
+}
+
+/// A cost in US dollars: to the cent from a cent up, else to four decimals,
+/// as `$0.0040`.
+pub fn format_cost_usd(cost: f64) -> String {
+    if cost >= 0.01 {
+        format!("${cost:.2}")
+    } else {
+        format!("${cost:.4}")
+    }
 }
 
 #[cfg(test)]

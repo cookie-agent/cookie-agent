@@ -346,6 +346,11 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     request)`). Click one to open it: the prompt in monospace with its
     line breaks and indentation, up to 256 lines or 32 KiB, and the tool
     names as chips, up to 8 KiB of names.
+  - **Replies** end with the TUI's footer line, `⚡ 42.1 tps · 12.5K ctx ·
+    $0.0040`: generation speed, the context the reply left, and its
+    estimated cost when every request was priced, then `interrupted` when
+    its run was. A thinking block's line reads `thinking…` while it
+    streams, then how long the model thought, as `thought for 12s`.
   - **Tool calls** are one line each until you open them, as in the TUI:
     an icon for the kind of tool (from its presentation hint, never its
     name), the title, the primary argument unless the title names it, and

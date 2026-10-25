@@ -1134,6 +1134,15 @@ pub(super) fn reduce_event_from(
                 // The run's open block keeps an `interrupted` footer marker.
                 if let Some(projection) = state.open_run_assistant.take() {
                     state.interrupted_assistant_items.insert(projection.item_id);
+                    // The marker changes what the block shows even when
+                    // nothing was streaming to close.
+                    if let Some(TranscriptItem::Assistant { version, .. }) = state
+                        .transcript
+                        .iter_mut()
+                        .rfind(|item| item.id() == projection.item_id)
+                    {
+                        *version = version.wrapping_add(1);
+                    }
                 }
             } else {
                 state.open_run_assistant = None;
