@@ -10,7 +10,7 @@ use cookie_agent_protocol::{
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, text_tools,
     tool_presentation,
 };
 use schemars::JsonSchema;
@@ -26,6 +26,7 @@ pub struct EditTool {
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct EditArgs {
     #[serde(
         rename = "filePath",
@@ -33,13 +34,22 @@ struct EditArgs {
     )]
     /// Path to the file. Relative paths resolve against the session working directory.
     file_path: String,
+    /// The exact text to replace, whitespace and indentation included; not
+    /// empty. It must occur exactly once in the file unless `replaceAll` is
+    /// set.
     #[serde(rename = "oldString")]
     old_string: String,
+    /// The text that replaces it.
     #[serde(rename = "newString")]
     new_string: String,
+    /// Replace every occurrence of `oldString` instead of exactly one.
+    /// Defaults to false.
     #[serde(rename = "replaceAll", default)]
     replace_all: bool,
 }
+
+/// What the model reads about `edit`.
+const DESCRIPTION: &str = "Replace exact text in a UTF-8 text file, atomically. `oldString` is matched exactly, whitespace and indentation included, and must occur exactly once in the file: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique, or set `replaceAll` to replace every occurrence. The line numbers `read` shows are not part of the file. Text files only; use `write` to create a file or replace all of it.";
 
 struct EditExecutor {
     target: fs_cap::PreparedExisting,
@@ -48,22 +58,23 @@ struct EditExecutor {
     shown_path: PathBuf,
 }
 
-/// Counts `old` in `text`, failing as an edit of `text` would.
-fn match_count(text: &str, args: &EditArgs) -> Result<usize, ToolError> {
+/// Counts `old` in `text`, the file `target`, failing as an edit of `text`
+/// would.
+fn match_count(text: &str, args: &EditArgs, target: &Path) -> Result<usize, ToolError> {
     let count = text.matches(&args.old_string).count();
-    if count == 0 {
-        return Err(ToolError::execution("oldString was not found"));
-    }
-    if !args.replace_all && count != 1 {
-        return Err(ToolError::execution(format!(
-            "oldString matched {count} times"
+    if count == 0 || (!args.replace_all && count != 1) {
+        return Err(ToolError::execution(text_tools::occurrence_error(
+            &args.old_string,
+            count,
+            &target.display().to_string(),
+            !args.replace_all,
         )));
     }
     Ok(count)
 }
 
-fn apply(text: &str, args: &EditArgs) -> Result<(String, usize), ToolError> {
-    let count = match_count(text, args)?;
+fn apply(text: &str, args: &EditArgs, target: &Path) -> Result<(String, usize), ToolError> {
+    let count = match_count(text, args, target)?;
     let replaced = if args.replace_all {
         text.replace(&args.old_string, &args.new_string)
     } else {
@@ -211,7 +222,7 @@ impl ToolProvider for EditTool {
             result_truncation: Default::default(),
             name: "edit".into(),
             permission_name: Self::get_permission_name("edit")?.map(Into::into),
-            description: "Replace oldString with newString in a file, atomically.".into(),
+            description: DESCRIPTION.into(),
             parameters: schema::<EditArgs>(),
         }])
     }
@@ -270,7 +281,7 @@ impl ToolProvider for EditTool {
             let (args, target) = tool.prepare_target(call)?;
             // Fail fast on an oldString that does not match the current content.
             let text = read_text(&target)?;
-            match_count(&text, &args)?;
+            match_count(&text, &args, &target.display_path)?;
             tool.prepare_edit(args, target, &text)
         })
         .await
@@ -334,11 +345,13 @@ impl EditTool {
                 let (args, target) = pending[index].take().expect("grouped edit pending");
                 let current = text.get_or_insert_with(|| read_text(&target));
                 results[index] = Some(match current {
-                    Ok(current) => apply(current, &args).and_then(|(next, _)| {
-                        let prepared = self.prepare_edit(args, target, current);
-                        *current = next;
-                        prepared
-                    }),
+                    Ok(current) => {
+                        apply(current, &args, &target.display_path).and_then(|(next, _)| {
+                            let prepared = self.prepare_edit(args, target, current);
+                            *current = next;
+                            prepared
+                        })
+                    }
                     // Every member of the group reports the shared read failure.
                     Err(error) => Err(ToolError::execution(error.message())),
                 });
@@ -366,7 +379,7 @@ impl PreparedExecutor for EditExecutor {
         let session = context.session;
         let (path, count, diff) = crate::blocking(move || {
             let text = read_text(&self.target)?;
-            let (replaced, count) = apply(&text, &self.args)?;
+            let (replaced, count) = apply(&text, &self.args, &self.target.display_path)?;
             self.target.replace(replaced.as_bytes())?;
             let diff = display::fit_block(
                 edit_diff(&text, &self.args, &self.shown_path, DiffAsOf::Execute),
@@ -379,14 +392,14 @@ impl PreparedExecutor for EditExecutor {
             Ok((self.target.display_path.clone(), count, diff))
         })
         .await?;
-        let path = path.display();
+        let path = path.display().to_string();
         Ok(cookie_agent_runtime_api::ToolCompletion::single(
             ToolResult {
                 display: vec![Open::Known(diff)],
                 background: None,
                 retained_output: None,
                 title: crate::safe_title(format!("Edited {path}")),
-                output: "Edit applied atomically".into(),
+                output: text_tools::edited(&path, count),
                 metadata: serde_json::json!({ "replacements": count }),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
@@ -934,15 +947,98 @@ mod tests {
             [(6, 6)]
         );
         assert_eq!((applied.added, applied.removed), (1, 1));
-        // The model sees what it always saw.
-        assert_eq!(result.output, "Edit applied atomically");
-        assert_eq!(result.metadata, serde_json::json!({"replacements": 1}));
+        let path = crate::shown_root(root.path()).join("value.rs");
         assert_eq!(
-            result.title.as_str(),
+            result.output,
+            format!("Edited {}: 1 replacement.", path.display())
+        );
+        assert_eq!(result.metadata, serde_json::json!({"replacements": 1}));
+        assert_eq!(result.title.as_str(), format!("Edited {}", path.display()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn edit_errors_name_the_file_and_the_count() {
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("value.txt"), "same same").expect("fixture");
+        let tool = EditTool::new(&crate::test_workspace(root.path()));
+        let path = crate::shown_root(root.path()).join("value.txt");
+        let error = |call| async {
+            match tool.prepare(context(root.path()), call).await {
+                Ok(_) => panic!("the edit cannot apply"),
+                Err(error) => error.message(),
+            }
+        };
+        assert_eq!(
+            error(edit_call("value.txt", "same", "new")).await,
             format!(
-                "Edited {}",
-                crate::shown_root(root.path()).join("value.rs").display()
+                "`same` occurs 2 times in {}; include more context so it occurs once or set replaceAll",
+                path.display()
             )
+        );
+        assert_eq!(
+            error(edit_call("value.txt", "other", "new")).await,
+            format!(
+                "`other` occurs 0 times in {}; include more context so it occurs once or set replaceAll",
+                path.display()
+            )
+        );
+        // With replaceAll there is nothing to set.
+        let mut call = edit_call("value.txt", "other", "new");
+        call.arguments["replaceAll"] = true.into();
+        assert_eq!(
+            error(call).await,
+            format!(
+                "`other` occurs 0 times in {}; include more context so it occurs once",
+                path.display()
+            )
+        );
+        // A long oldString is echoed cut.
+        let long = "x".repeat(300);
+        assert_eq!(
+            error(edit_call("value.txt", &long, "new")).await,
+            format!(
+                "`{}…` occurs 0 times in {}; include more context so it occurs once or set replaceAll",
+                "x".repeat(200),
+                path.display()
+            )
+        );
+        assert_eq!(
+            error(edit_call("missing.txt", "a", "b")).await,
+            format!(
+                "{} does not exist",
+                crate::shown_root(root.path()).join("missing.txt").display()
+            )
+        );
+        // replaceAll replaces every occurrence and says how many.
+        let mut call = edit_call("value.txt", "same", "new");
+        call.arguments["replaceAll"] = true.into();
+        let result = tool
+            .prepare(context(root.path()), call)
+            .await
+            .expect("prepare")
+            .execute_for_test(execution_context(root.path()))
+            .await
+            .expect("execute");
+        assert_eq!(
+            result.output,
+            format!("Edited {}: 2 replacements.", path.display())
+        );
+    }
+
+    #[test]
+    fn unknown_arguments_are_refused() {
+        let tool = EditTool::new(&crate::test_workspace(std::env::temp_dir()));
+        let Err(error) = tool.get_permission_resource(
+            "edit",
+            &serde_json::json!({"filePath":"a.txt","oldString":"a","newString":"b","old":"a"}),
+        ) else {
+            panic!("an unknown argument is refused");
+        };
+        assert!(
+            error.message().contains("unknown field `old`"),
+            "{}",
+            error.message()
         );
     }
 

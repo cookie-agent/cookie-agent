@@ -11,7 +11,7 @@ use cookie_agent_protocol::{
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, text_tools,
     tool_presentation,
 };
 use schemars::JsonSchema;
@@ -31,6 +31,7 @@ pub struct WriteTool {
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct WriteArgs {
     #[serde(
         rename = "filePath",
@@ -38,8 +39,12 @@ struct WriteArgs {
     )]
     /// Path to the file. Relative paths resolve against the session working directory.
     file_path: String,
+    /// Everything the file will hold.
     content: String,
 }
+
+/// What the model reads about `write`.
+const DESCRIPTION: &str = "Write a whole file: create it, or replace everything it holds with `content`, overwriting it without a check. Missing parent folders are created. The write is atomic: the file holds either its old content or all of the new. The result says whether the file was created or replaced. To change part of a file, use `edit`.";
 
 struct WriteExecutor {
     target: fs_cap::PreparedTarget,
@@ -193,8 +198,7 @@ impl ToolProvider for WriteTool {
             result_truncation: Default::default(),
             name: "write".into(),
             permission_name: Self::get_permission_name("write")?.map(Into::into),
-            description: "Write content to a file atomically, creating missing parent directories."
-                .into(),
+            description: DESCRIPTION.into(),
             parameters: schema::<WriteArgs>(),
         }])
     }
@@ -304,8 +308,9 @@ impl PreparedExecutor for WriteExecutor {
         }
         let artifacts = Arc::clone(&context.artifacts);
         let session = context.session;
-        let (path, bytes, diff) = crate::blocking(move || {
+        let (path, bytes, created, diff) = crate::blocking(move || {
             let replaced = Replaced::of(&self.target);
+            let created = matches!(replaced, Replaced::Nothing);
             self.target.write(&self.bytes)?;
             let diff = display::fit_block(
                 write_diff(&self.shown_path, &replaced, &self.bytes, DiffAsOf::Execute),
@@ -318,19 +323,20 @@ impl PreparedExecutor for WriteExecutor {
             Ok((
                 self.target.display_path().to_owned(),
                 self.bytes.len(),
+                created,
                 diff,
             ))
         })
         .await?;
-        let path = path.display();
+        let path = path.display().to_string();
         Ok(cookie_agent_runtime_api::ToolCompletion::single(
             ToolResult {
                 display: vec![Open::Known(diff)],
                 background: None,
                 retained_output: None,
                 title: crate::safe_title(format!("Wrote {path}")),
-                output: format!("Wrote {bytes} bytes to {path}"),
-                metadata: serde_json::json!({ "bytes": bytes }),
+                output: text_tools::wrote(created, &path, bytes),
+                metadata: serde_json::json!({ "bytes": bytes, "created": created }),
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             },
@@ -758,14 +764,60 @@ mod tests {
                 },
             ]
         );
-        // The model sees what it always saw.
+        // The model reads that the file was created.
         let path = crate::shown_root(root.path()).join("new.rs");
         assert_eq!(
             result.output,
-            format!("Wrote 4 bytes to {}", path.display())
+            format!("Created {} (4 bytes).", path.display())
         );
-        assert_eq!(result.metadata, serde_json::json!({"bytes": 4}));
+        assert_eq!(
+            result.metadata,
+            serde_json::json!({"bytes": 4, "created": true})
+        );
         assert_eq!(result.title.as_str(), format!("Wrote {}", path.display()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn a_write_over_a_file_says_it_replaced_it() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("value.txt"), "old").expect("fixture");
+        let result = WriteTool::new(&crate::test_workspace(root.path()))
+            .prepare(context(root.path()), write_call("value.txt", "x"))
+            .await
+            .expect("prepare")
+            .execute_for_test(execution_context(root.path()))
+            .await
+            .expect("write");
+        let path = crate::shown_root(root.path()).join("value.txt");
+        assert_eq!(
+            result.output,
+            format!("Replaced {} (1 byte).", path.display())
+        );
+        assert_eq!(result.metadata["created"], false);
+    }
+
+    #[test]
+    fn unknown_arguments_are_refused() {
+        let tool = WriteTool::new(&crate::test_workspace(std::env::temp_dir()));
+        let Err(error) = tool.get_permission_resource(
+            "write",
+            &serde_json::json!({"filePath":"a.txt","content":"","mode":"append"}),
+        ) else {
+            panic!("an unknown argument is refused");
+        };
+        assert!(
+            error.message().contains("unknown field `mode`"),
+            "{}",
+            error.message()
+        );
+        let spec = tool
+            .tools_for_session(&cookie_agent_runtime_api::SessionToolContext::new(
+                cookie_agent_protocol::SessionId::new_v7(),
+            ))
+            .expect("write spec")
+            .remove(0);
+        assert_eq!(spec.parameters["additionalProperties"], false);
     }
 
     #[cfg(any(unix, windows))]

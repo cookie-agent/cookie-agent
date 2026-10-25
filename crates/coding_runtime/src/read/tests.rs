@@ -7,9 +7,10 @@ use cookie_agent_protocol::{
 use cookie_agent_runtime_api::{
     SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
     ToolResultTruncationPolicy, TurnAgentContext,
+    text_tools::{LineWindow, MAX_LINE_BYTES},
 };
 
-use super::{MAX_LINE_BYTES, ReadTool, directory_page, text_result};
+use super::{ReadTool, directory_page, text_result};
 
 const PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -80,21 +81,28 @@ fn turn_context(
     })
 }
 
-fn page(text: &str, offset: usize, limit: usize) -> PersistedToolResult {
+/// The window from 1-based line `offset`, at most `limit` lines.
+fn window(offset: usize, limit: usize) -> LineWindow {
+    LineWindow::new(Some(offset), Some(limit)).unwrap()
+}
+
+fn try_page(text: &str, offset: usize, limit: usize) -> Result<PersistedToolResult, ToolError> {
     text_result(
         Path::new("/file.txt"),
         Path::new("file.txt"),
         &mut std::io::Cursor::new(text.as_bytes()),
-        offset,
-        limit,
+        window(offset, limit),
     )
-    .unwrap()
+}
+
+fn page(text: &str, offset: usize, limit: usize) -> PersistedToolResult {
+    try_page(text, offset, limit).unwrap()
 }
 
 #[test]
 fn long_lines_are_cut_so_any_page_fits_the_result_limit() {
     let long = "x".repeat(3 * 1024 * 1024);
-    let result = page(&format!("{long}\nshort\n"), 0, 1);
+    let result = page(&format!("{long}\nshort\n"), 1, 1);
     let first = result.output.lines().nth(3).unwrap();
     assert!(first.starts_with(&format!("1: {}...", "x".repeat(MAX_LINE_BYTES))));
     assert!(first.ends_with(&format!(
@@ -102,21 +110,41 @@ fn long_lines_are_cut_so_any_page_fits_the_result_limit() {
         long.len() - MAX_LINE_BYTES
     )));
     assert_eq!(result.metadata["total_lines"], 2);
-    assert!(result.metadata["next_offset"].is_null());
-
-    let exact = "y".repeat(MAX_LINE_BYTES);
-    assert!(page(&exact, 0, 1).output.contains(&format!("1: {exact}\n")));
-
-    // Many long lines stop at the page budget and say where to continue.
-    let text = format!("{}\n", "z".repeat(MAX_LINE_BYTES)).repeat(2_000);
-    let result = page(&text, 0, 2_000);
-    assert!(result.output.len() <= PersistedToolResult::MAX_OUTPUT_BYTES);
-    let next = result.metadata["next_offset"].as_u64().unwrap();
-    assert!(next > 0 && next < 2_000);
+    // The second line is left out by the limit: the page says where it is.
+    assert_eq!(result.metadata["next_offset"], 2);
     assert!(
         result
             .output
-            .contains(&format!("continue with offset={next}]"))
+            .ends_with("</content>\n[1 more line; continue with offset=2]")
+    );
+
+    let exact = "y".repeat(MAX_LINE_BYTES);
+    assert!(page(&exact, 1, 1).output.contains(&format!("1: {exact}\n")));
+
+    // Many long lines stop at the page budget and say where to continue:
+    // the 1-based number of the first line left out.
+    let text = format!("{}\n", "z".repeat(MAX_LINE_BYTES)).repeat(2_000);
+    let result = page(&text, 1, 2_000);
+    assert!(result.output.len() <= PersistedToolResult::MAX_OUTPUT_BYTES);
+    let next = result.metadata["next_offset"].as_u64().unwrap();
+    assert!(next > 1 && next < 2_000);
+    assert!(result.output.ends_with(&format!(
+        "</content>\n[page cut at the result size limit; continue with offset={next}]"
+    )));
+    let last_shown = result.output.lines().rev().nth(2).unwrap();
+    assert!(
+        last_shown.starts_with(&format!("{}: z", next - 1)),
+        "{last_shown}"
+    );
+    let resumed = page(&text, next as usize, 2_000);
+    assert!(
+        resumed
+            .output
+            .lines()
+            .nth(3)
+            .unwrap()
+            .starts_with(&format!("{next}: z")),
+        "the next page starts at the line the marker names"
     );
     assert_eq!(result.metadata["total_lines"], 2_000);
 
@@ -130,7 +158,7 @@ fn long_lines_are_cut_so_any_page_fits_the_result_limit() {
 #[test]
 fn multibyte_characters_are_not_split_by_a_line_cut() {
     let line = format!("{}é tail", "a".repeat(MAX_LINE_BYTES - 1));
-    let output = page(&line, 0, 1).output;
+    let output = page(&line, 1, 1).output;
     assert!(output.contains(&format!("1: {}...", "a".repeat(MAX_LINE_BYTES - 1))));
     assert!(output.contains("[line truncated: 7 more bytes]"));
 }
@@ -156,6 +184,77 @@ fn permission_resource_is_the_file_path() {
     ));
 }
 
+#[tokio::test]
+async fn offsets_are_one_based_and_checked_before_approval() {
+    let root = tempfile::tempdir().expect("workspace");
+    fs::write(root.path().join("value.txt"), "one\ntwo\n").expect("fixture");
+    let tool = ReadTool::new(&crate::test_workspace(root.path()));
+    let prepare = |arguments: serde_json::Value| {
+        tool.prepare(
+            context(root.path()),
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments,
+            },
+        )
+    };
+    for (arguments, message) in [
+        (
+            serde_json::json!({"filePath":"value.txt","offset":0}),
+            "offset is 1-based: the first line is offset=1",
+        ),
+        (
+            serde_json::json!({"filePath":"value.txt","limit":0}),
+            "limit must be positive",
+        ),
+    ] {
+        let Err(error) = prepare(arguments).await else {
+            panic!("an invalid window is refused");
+        };
+        assert_eq!(error.message(), message);
+    }
+    let prepared = prepare(serde_json::json!({"filePath":"value.txt","offset":2,"limit":1}))
+        .await
+        .expect("prepare read");
+    assert_eq!(prepared.normalized_arguments()["offset"], 2);
+    assert_eq!(prepared.normalized_arguments()["limit"], 1);
+}
+
+#[test]
+fn an_offset_past_the_last_line_is_an_error() {
+    let text = "one\ntwo\nthree\n";
+    // The last line is the last page that can start.
+    assert!(page(text, 3, 10).output.contains("\n3: three\n</content>"));
+    assert_eq!(
+        try_page(text, 4, 10).unwrap_err().message(),
+        "offset=4 is past the end of /file.txt, which has 3 lines"
+    );
+    assert_eq!(
+        try_page("one", 2, 10).unwrap_err().message(),
+        "offset=2 is past the end of /file.txt, which has 1 line"
+    );
+    // Line 1 of an empty file is an empty page.
+    assert_eq!(page("", 1, 10).metadata["total_lines"], 0);
+    assert!(try_page("", 2, 10).is_err());
+}
+
+#[test]
+fn unknown_arguments_are_refused() {
+    let tool = ReadTool::new(&crate::test_workspace(std::env::temp_dir()));
+    let Err(error) = tool.get_permission_resource(
+        "read",
+        &serde_json::json!({"filePath":"src/lib.rs","lines":10}),
+    ) else {
+        panic!("an unknown argument is refused");
+    };
+    assert!(
+        error.message().contains("unknown field `lines`"),
+        "{}",
+        error.message()
+    );
+}
+
 #[test]
 fn display_argument_abbreviates_paths_and_includes_explicit_window() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -168,10 +267,10 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
     assert_eq!(
             tool.get_display_argument(
                 "read",
-                &serde_json::json!({"filePath":workspace.path().join("src/lib.rs"),"offset":0,"limit":100})
+                &serde_json::json!({"filePath":workspace.path().join("src/lib.rs"),"offset":1,"limit":100})
             )
             .expect("workspace"),
-            "src/lib.rs [offset=0, limit=100]"
+            "src/lib.rs [offset=1, limit=100]"
         );
     let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
     assert_eq!(
@@ -229,7 +328,7 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
 }
 
 #[test]
-fn schema_documents_zero_based_offset_and_limit_default() {
+fn schema_documents_one_based_offset_and_limit_default() {
     let root = tempfile::tempdir().expect("workspace");
     let tool = ReadTool::new(&crate::test_workspace(root.path()));
     let parameters = &tool
@@ -240,16 +339,17 @@ fn schema_documents_zero_based_offset_and_limit_default() {
         .parameters;
     assert_eq!(
         parameters["properties"]["offset"]["description"],
-        "Zero-based entry or line offset. Defaults to 0."
+        "The 1-based line, or directory entry, to start at. Defaults to 1."
     );
     assert_eq!(
         parameters["properties"]["limit"]["description"],
-        "Maximum number of entries or lines to return. Defaults to 2000."
+        "The most lines, or directory entries, to return. Defaults to 2000."
     );
+    assert_eq!(parameters["additionalProperties"], false);
 }
 
 #[test]
-fn text_pagination_handles_zero_based_boundaries() {
+fn text_pagination_handles_one_based_boundaries() {
     let numbered = |text: &str, offset, limit| {
         let output = page(text, offset, limit).output;
         output
@@ -259,37 +359,51 @@ fn text_pagination_handles_zero_based_boundaries() {
             .map(str::to_owned)
             .collect::<Vec<_>>()
     };
-    assert!(numbered("", 0, usize::MAX).is_empty());
-    assert_eq!(page("", 0, 1).metadata["total_lines"], 0);
+    assert!(numbered("", 1, usize::MAX).is_empty());
+    assert_eq!(page("", 1, 1).metadata["total_lines"], 0);
 
     let text = "first\r\nsecond\nthird";
-    assert_eq!(numbered(text, 0, 2), ["1: first", "2: second"]);
-    assert_eq!(numbered(text, 1, 1), ["2: second"]);
-    assert!(numbered(text, 3, usize::MAX).is_empty());
-    assert!(numbered(text, 4, usize::MAX).is_empty());
-    assert!(numbered(text, usize::MAX, usize::MAX).is_empty());
+    // The first page.
+    assert_eq!(numbered(text, 1, 2), ["1: first", "2: second"]);
+    assert_eq!(page(text, 1, 2).metadata["next_offset"], 3);
+    assert!(
+        page(text, 1, 2)
+            .output
+            .ends_with("</content>\n[1 more line; continue with offset=3]")
+    );
+    assert_eq!(numbered(text, 2, 1), ["2: second"]);
+    // The last page: no marker.
+    assert_eq!(numbered(text, 3, usize::MAX), ["3: third"]);
+    assert!(page(text, 3, usize::MAX).metadata["next_offset"].is_null());
+    assert!(page(text, 3, usize::MAX).output.ends_with("</content>"));
+    assert!(try_page(text, 4, usize::MAX).is_err());
+    assert!(try_page(text, usize::MAX, usize::MAX).is_err());
     assert_eq!(
-        numbered(text, 0, usize::MAX),
+        numbered(text, 1, usize::MAX),
         ["1: first", "2: second", "3: third"]
     );
-    assert_eq!(page(text, 0, 1).metadata["total_lines"], 3);
-    assert_eq!(page("a\nb\n", 0, 1).metadata["total_lines"], 2);
+    assert_eq!(page(text, 1, 1).metadata["total_lines"], 3);
+    assert_eq!(page(text, 2, 1).metadata["offset"], 2);
+    assert_eq!(page("a\nb\n", 1, 1).metadata["total_lines"], 2);
     assert!(
         text_result(
             Path::new("/file.txt"),
             Path::new("file.txt"),
             &mut std::io::Cursor::new(b"ok\n\xff\n".as_slice()),
-            0,
-            2,
+            window(1, 2),
         )
         .is_err()
     );
 }
 
 #[test]
-fn directory_pagination_handles_zero_based_boundaries() {
+fn directory_pagination_handles_one_based_boundaries() {
     let empty = Vec::<(String, bool)>::new();
-    assert!(directory_page(&empty, 0, usize::MAX).next().is_none());
+    assert!(
+        directory_page(&empty, window(1, usize::MAX))
+            .next()
+            .is_none()
+    );
 
     let entries = [
         ("alpha".to_owned(), false),
@@ -297,25 +411,19 @@ fn directory_pagination_handles_zero_based_boundaries() {
         ("gamma".to_owned(), false),
     ];
     assert_eq!(
-        directory_page(&entries, 0, 2).collect::<Vec<_>>(),
+        directory_page(&entries, window(1, 2)).collect::<Vec<_>>(),
         [&entries[0], &entries[1]]
     );
     assert_eq!(
-        directory_page(&entries, 1, usize::MAX).collect::<Vec<_>>(),
+        directory_page(&entries, window(2, usize::MAX)).collect::<Vec<_>>(),
         [&entries[1], &entries[2]]
     );
-    assert!(
-        directory_page(&entries, entries.len(), usize::MAX)
-            .next()
-            .is_none()
+    assert_eq!(
+        directory_page(&entries, window(3, usize::MAX)).collect::<Vec<_>>(),
+        [&entries[2]]
     );
     assert!(
-        directory_page(&entries, entries.len() + 1, usize::MAX)
-            .next()
-            .is_none()
-    );
-    assert!(
-        directory_page(&entries, usize::MAX, usize::MAX)
+        directory_page(&entries, window(4, usize::MAX))
             .next()
             .is_none()
     );
@@ -605,8 +713,7 @@ async fn prepared_read_exposes_lexical_normalized_arguments_not_raw_traversal() 
             .to_string()
             .contains("safe/..")
     );
-    assert_eq!(prepared.normalized_arguments()["offset"], 0);
-    assert_eq!(prepared.normalized_arguments()["limit"], 2_000);
+    assert_eq!(prepared.normalized_arguments()["offset"], 1);
 }
 
 #[tokio::test]
@@ -880,7 +987,7 @@ async fn a_text_read_shows_an_excerpt_with_file_line_numbers() {
     fs::write(root.path().join("src/lib.rs"), "one\ntwo\r\nthree\nfour\n").unwrap();
     let result = read(
         root.path(),
-        serde_json::json!({"filePath":"src/lib.rs","offset":1,"limit":2}),
+        serde_json::json!({"filePath":"src/lib.rs","offset":2,"limit":2}),
     )
     .await;
     assert_eq!(
@@ -895,11 +1002,11 @@ async fn a_text_read_shows_an_excerpt_with_file_line_numbers() {
             full: None,
         })]
     );
-    // The model's page is unchanged.
+    // The model's page numbers the same lines.
     assert_eq!(
         result.output,
         format!(
-            "<path>{}</path>\n<type>file</type>\n<content>\n2: two\n3: three\n</content>",
+            "<path>{}</path>\n<type>file</type>\n<content>\n2: two\n3: three\n</content>\n[1 more line; continue with offset=4]",
             crate::shown_root(root.path())
                 .join("src")
                 .join("lib.rs")
@@ -950,5 +1057,75 @@ async fn a_directory_read_shows_a_table_of_entries() {
             ],
             omitted_rows: None,
         })]
+    );
+    assert_eq!(
+        result.title.as_str(),
+        format!(
+            "Read {}",
+            crate::shown_root(root.path()).join("tree").display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_directory_page_counts_entries_from_one_and_says_where_to_continue() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("tree")).unwrap();
+    for name in ["a", "b", "c"] {
+        fs::write(root.path().join("tree").join(name), "").unwrap();
+    }
+    let first = read(
+        root.path(),
+        serde_json::json!({"filePath":"tree","offset":1,"limit":2}),
+    )
+    .await;
+    assert!(
+        first
+            .output
+            .ends_with("<entries>\na\nb\n</entries>\n[1 more entry; continue with offset=3]"),
+        "{}",
+        first.output
+    );
+    assert_eq!(first.metadata["next_offset"], 3);
+    let last = read(
+        root.path(),
+        serde_json::json!({"filePath":"tree","offset":3,"limit":2}),
+    )
+    .await;
+    assert!(
+        last.output.ends_with("<entries>\nc\n</entries>"),
+        "{}",
+        last.output
+    );
+    assert!(last.metadata["next_offset"].is_null());
+    let tool = ReadTool::new(&crate::test_workspace(root.path()));
+    let Err(error) = tool
+        .prepare(
+            context(root.path()),
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments: serde_json::json!({"filePath":"tree","offset":4}),
+            },
+        )
+        .await
+        .expect("prepare read")
+        .execute_for_test(
+            cookie_agent_engine::testing::tool_execution_context(
+                root.path().join("artifacts"),
+                crate::test_turn_context(),
+            )
+            .expect("execution context"),
+        )
+        .await
+    else {
+        panic!("an offset past the last entry is an error");
+    };
+    assert_eq!(
+        error.message(),
+        format!(
+            "offset=4 is past the end of {}, which has 3 entries",
+            crate::shown_root(root.path()).join("tree").display()
+        )
     );
 }

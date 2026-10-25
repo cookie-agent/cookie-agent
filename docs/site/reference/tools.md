@@ -160,15 +160,35 @@ preview, and result blocks.
 
 ## Filesystem tools
 
-`read`'s `limit` must be positive. The path is resolved when the call is prepared; the content is read when it executes.
-A text line longer than 4 KiB is cut and ends with a
-`[line truncated: N more bytes]` marker, and a page that would exceed the result
-size limit stops early with a `continue with offset=N` note (also reported as
-`next_offset` in the metadata). Media files are checked against the size limits
-before they are read in full.
+`read` numbers lines from 1, and its `offset` is the 1-based line (or
+directory entry) to start at: `offset=1`, the default, is the first line, and
+an `offset` of 0 is refused. `limit`, 2000 lines or entries when left out,
+must be positive. An `offset` past the last line or entry is an error, except
+that line 1 of an empty file is an empty page. The path is resolved when the
+call is prepared; the content is read when it executes. A text line longer
+than 4 KiB is cut and ends with a `... [line truncated: N more bytes]` marker.
+A page that leaves lines or entries out ends with a continuation marker that
+names the 1-based `offset` to read next: `[N more lines; continue with
+offset=M]` (or `entries` for a directory) when the `limit` stopped it, and
+`[page cut at the result size limit; continue with offset=M]` when it would
+have exceeded the result size limit. The metadata reports the same `offset`
+as `next_offset`. Media files are checked against the size limits before they
+are read in full.
 
-`write` takes the file's complete `content`. `edit` requires `oldString` to
-identify one unambiguous replacement. Preparation checks the replacement against the current
+`memory_read` and `read_artifact` page the same way: the same 1-based
+`offset`, the same `limit` and its default, the same numbering, line cut, page
+cap, and continuation marker ([Memory tools](#memory-tools),
+[read_artifact](#read_artifact)).
+
+`write` takes the file's complete `content` and says whether it
+`Created <path> (N bytes).` or `Replaced <path> (N bytes).`. `edit` requires
+`oldString` to occur exactly once, or at least once with `replaceAll`, and
+reports `Edited <path>: N replacement(s).`. When it occurs some other number
+of times, the call fails with `` `<oldString>` occurs N times in <path>;
+include more context so it occurs once or set replaceAll``, the echoed text
+cut to 200 characters. A path that is not there fails `read` and `edit` with
+`<path> does not exist`. All three refuse arguments they do not define.
+Preparation checks the replacement against the current
 content so a mismatch fails before approval, but the edit itself is applied to
 the file's content at execution: changes made while an approval was pending are
 kept, and an `oldString` that no longer matches fails the call. Both tools
@@ -191,14 +211,14 @@ read(filePath: string, limit?: integer, offset?: integer)
 Description sent to the model:
 
 ```text
-Read a text/image/video file or a directory snapshot using a zero-based offset.
+Read a file or a directory. A text file comes back as numbered lines, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error. A directory lists its entries, one per line with `/` after a folder's name, paged by the same 1-based `offset` and `limit`. An image, video, or other media file the model accepts is attached instead.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `filePath` | `string` | yes | Path to the file or directory. Relative paths resolve against the session working directory. |
-| `limit` | `integer` | no | Maximum number of entries or lines to return. Defaults to 2000. |
-| `offset` | `integer` | no | Zero-based entry or line offset. Defaults to 0. |
+| `limit` | `integer` | no | The most lines, or directory entries, to return. Defaults to 2000. |
+| `offset` | `integer` | no | The 1-based line, or directory entry, to start at. Defaults to 1. |
 
 ??? note "Parameters JSON Schema"
 
@@ -212,7 +232,7 @@ Read a text/image/video file or a directory snapshot using a zero-based offset.
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of entries or lines to return. Defaults to 2000.",
+          "description": "The most lines, or directory entries, to return. Defaults to 2000.",
           "format": "uint",
           "minimum": 0,
           "type": [
@@ -221,7 +241,7 @@ Read a text/image/video file or a directory snapshot using a zero-based offset.
           ]
         },
         "offset": {
-          "description": "Zero-based entry or line offset. Defaults to 0.",
+          "description": "The 1-based line, or directory entry, to start at. Defaults to 1.",
           "format": "uint",
           "minimum": 0,
           "type": [
@@ -251,12 +271,12 @@ write(content: string, filePath: string)
 Description sent to the model:
 
 ```text
-Write content to a file atomically, creating missing parent directories.
+Write a whole file: create it, or replace everything it holds with `content`, overwriting it without a check. Missing parent folders are created. The write is atomic: the file holds either its old content or all of the new. The result says whether the file was created or replaced. To change part of a file, use `edit`.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `content` | `string` | yes |  |
+| `content` | `string` | yes | Everything the file will hold. |
 | `filePath` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
 
 ??? note "Parameters JSON Schema"
@@ -264,8 +284,10 @@ Write content to a file atomically, creating missing parent directories.
     ```json
     {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "content": {
+          "description": "Everything the file will hold.",
           "type": "string"
         },
         "filePath": {
@@ -295,34 +317,38 @@ edit(filePath: string, newString: string, oldString: string, replaceAll?: boolea
 Description sent to the model:
 
 ```text
-Replace oldString with newString in a file, atomically.
+Replace exact text in a UTF-8 text file, atomically. `oldString` is matched exactly, whitespace and indentation included, and must occur exactly once in the file: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique, or set `replaceAll` to replace every occurrence. The line numbers `read` shows are not part of the file. Text files only; use `write` to create a file or replace all of it.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `filePath` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
-| `newString` | `string` | yes |  |
-| `oldString` | `string` | yes |  |
-| `replaceAll` | `boolean` | no | Default: `false`. |
+| `newString` | `string` | yes | The text that replaces it. |
+| `oldString` | `string` | yes | The exact text to replace, whitespace and indentation included; not empty. It must occur exactly once in the file unless `replaceAll` is set. |
+| `replaceAll` | `boolean` | no | Replace every occurrence of `oldString` instead of exactly one. Defaults to false. Default: `false`. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "filePath": {
           "description": "Path to the file. Relative paths resolve against the session working directory.",
           "type": "string"
         },
         "newString": {
+          "description": "The text that replaces it.",
           "type": "string"
         },
         "oldString": {
+          "description": "The exact text to replace, whitespace and indentation included; not\nempty. It must occur exactly once in the file unless `replaceAll` is\nset.",
           "type": "string"
         },
         "replaceAll": {
           "default": false,
+          "description": "Replace every occurrence of `oldString` instead of exactly one.\nDefaults to false.",
           "type": "boolean"
         }
       },
@@ -359,7 +385,7 @@ the table does not know is passed on lowercased).
 | Title | `Read <path>` | `Write <path>` | `Edit <path>` |
 | Arguments | `key_value` of `offset` and `limit` when the call gives them | – | `key_value` `replace all: yes` when set; `newString` as `code` in the path's language only when there is no preview (a call that failed to prepare) |
 | Preview | – | `diff` against the file preparation finds (`created` when there is none) | `diff` of the edit applied to the content preparation read |
-| Result | `file_excerpt` of the page (`start_line` is `offset + 1`, `total_lines` the file's), `table` (`name`, `type`) of a directory page, or `media` of the retained attachment | `diff` against the text the write replaced | `diff` built from the ranges the edit replaced |
+| Result | `file_excerpt` of the page (`start_line` is the 1-based `offset`, `total_lines` the file's), `table` (`name`, `type`) of a directory page, or `media` of the retained attachment | `diff` against the text the write replaced | `diff` built from the ranges the edit replaced |
 
 - **`edit`'s diff** comes from the replaced byte ranges, not a diff
   algorithm. Each replacement covers the whole lines it touches;

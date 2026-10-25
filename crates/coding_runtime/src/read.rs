@@ -10,9 +10,14 @@ use cookie_agent_protocol::{
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec, media::AttachmentGate,
-    media::approved_media_type, media::attachment_gate_error, media::gate_attachment,
-    media::sniff_media_type, tool_presentation,
+    ToolPreparationContext, ToolProvider, ToolSpec,
+    media::AttachmentGate,
+    media::approved_media_type,
+    media::attachment_gate_error,
+    media::gate_attachment,
+    media::sniff_media_type,
+    text_tools::{self, LineWindow, MAX_PAGE_BYTES, PageError},
+    tool_presentation,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -21,12 +26,6 @@ use cookie_agent_runtime_api::WorkspaceContext;
 
 use crate::{display, fs_cap, parse_args, schema};
 
-const DEFAULT_LIMIT: usize = 2_000;
-/// Longest line returned in full; the rest of a longer line is replaced by a
-/// marker, so one huge minified line cannot fill or fail the result.
-const MAX_LINE_BYTES: usize = 4 * 1024;
-/// Output budget for one page of text, under the 2 MiB result limit.
-const MAX_PAGE_BYTES: usize = ToolResult::MAX_OUTPUT_BYTES - 64 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 const _: () = assert!(READ_BUFFER_BYTES >= cookie_agent_runtime_api::media::MEDIA_SNIFF_BYTES);
 
@@ -44,16 +43,18 @@ struct ReadArgs {
     )]
     /// Path to the file or directory. Relative paths resolve against the session working directory.
     file_path: String,
-    /// Maximum number of entries or lines to return. Defaults to 2000.
+    /// The most lines, or directory entries, to return. Defaults to 2000.
     limit: Option<usize>,
-    /// Zero-based entry or line offset. Defaults to 0.
+    /// The 1-based line, or directory entry, to start at. Defaults to 1.
     offset: Option<usize>,
 }
 
+/// What the model reads about `read`.
+const DESCRIPTION: &str = "Read a file or a directory. A text file comes back as numbered lines, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error. A directory lists its entries, one per line with `/` after a folder's name, paged by the same 1-based `offset` and `limit`. An image, video, or other media file the model accepts is attached instead.";
+
 struct ReadExecutor {
     target: fs_cap::PreparedExisting,
-    offset: usize,
-    limit: usize,
+    window: LineWindow,
     /// The path clients see.
     shown_path: PathBuf,
 }
@@ -91,9 +92,7 @@ impl ToolProvider for ReadTool {
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "read".into(),
             permission_name: Self::get_permission_name("read")?.map(Into::into),
-            description:
-                "Read a text/image/video file or a directory snapshot using a zero-based offset."
-                    .into(),
+            description: DESCRIPTION.into(),
             parameters: schema::<ReadArgs>(),
         }])
     }
@@ -181,14 +180,8 @@ impl ToolProvider for ReadTool {
         if call.name != "read" {
             return Err(ToolError::execution("read provider received another tool"));
         }
-        let mut args: ReadArgs = parse_args("read", call.arguments)?;
-        let offset = args.offset.unwrap_or(0);
-        let limit = args.limit.unwrap_or(DEFAULT_LIMIT);
-        if limit == 0 {
-            return Err(ToolError::execution("limit must be positive"));
-        }
-        args.offset = Some(offset);
-        args.limit = Some(limit);
+        let args: ReadArgs = parse_args("read", call.arguments)?;
+        let window = LineWindow::new(args.offset, args.limit)?;
         let workspace = self.workspace.clone();
         let shown_path = self.shown_path(&args);
         crate::blocking(move || {
@@ -196,16 +189,15 @@ impl ToolProvider for ReadTool {
                 fs_cap::prepare_existing(&workspace, std::path::Path::new(&args.file_path))?;
             let normalized_arguments = serde_json::json!({
                 "filePath": target.display_path,
-                "offset": offset,
-                "limit": limit,
+                "offset": window.offset,
+                "limit": window.limit,
             });
             PreparedTool::declared(
                 normalized_arguments,
                 None,
                 Box::new(ReadExecutor {
                     target,
-                    offset,
-                    limit,
+                    window,
                     shown_path,
                 }),
             )
@@ -221,83 +213,89 @@ impl PreparedExecutor for ReadExecutor {
         context: ToolExecutionContext,
     ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         let result = crate::blocking(move || {
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::execution(
-                "prepared read cancelled before execution",
-            ));
-        }
-        if self.target.directory {
-            let entries = self.target.directory_entries()?;
-            let page = directory_page(&entries, self.offset, self.limit).collect::<Vec<_>>();
-            let mut output = format!(
-                "<path>{}</path>\n<type>directory</type>\n<entries>\n",
-                self.target.display_path.display()
-            );
-            for (name, directory) in &page {
-                output.push_str(name);
-                if *directory {
-                    output.push('/');
+            if context.cancellation.is_cancelled() {
+                return Err(ToolError::execution(
+                    "prepared read cancelled before execution",
+                ));
+            }
+            if self.target.directory {
+                let entries = self.target.directory_entries()?;
+                let target = self.target.display_path.display().to_string();
+                self.window
+                    .check_in_range(entries.len(), "entry", &target)?;
+                let page = directory_page(&entries, self.window).collect::<Vec<_>>();
+                let mut output =
+                    format!("<path>{target}</path>\n<type>directory</type>\n<entries>\n");
+                for (name, directory) in &page {
+                    output.push_str(name);
+                    if *directory {
+                        output.push('/');
+                    }
+                    output.push('\n');
                 }
-                output.push('\n');
+                output.push_str("</entries>");
+                let marker = self.window.remaining_marker(entries.len(), "entry");
+                if let Some(marker) = &marker {
+                    output.push('\n');
+                    output.push_str(marker);
+                }
+                let table = DisplayBlock::Table {
+                    columns: vec!["name".into(), "type".into()],
+                    rows: page
+                        .iter()
+                        .map(|(name, directory)| {
+                            vec![
+                                name.clone(),
+                                if *directory { "directory" } else { "file" }.into(),
+                            ]
+                        })
+                        .collect(),
+                    omitted_rows: None,
+                };
+                return Ok(ToolResult {
+                    display: vec![Open::Known(display::fit_block(table, None)?)],
+                    background: None,
+                    retained_output: None,
+                    title: crate::safe_title(format!("Read {target}")),
+                    output,
+                    metadata: serde_json::json!({
+                        "kind": "directory",
+                        "offset": self.window.offset,
+                        "limit": self.window.limit,
+                        "shown": page.len(),
+                        "total_entries": entries.len(),
+                        "next_offset": marker.is_some().then(|| self.window.end_index() + 1),
+                    }),
+                    attachments: Vec::new(),
+                    additional_messages: Vec::new(),
+                });
             }
-            output.push_str("</entries>");
-            let table = DisplayBlock::Table {
-                columns: vec!["name".into(), "type".into()],
-                rows: page
-                    .iter()
-                    .map(|(name, directory)| {
-                        vec![
-                            name.clone(),
-                            if *directory { "directory" } else { "file" }.into(),
-                        ]
-                    })
-                    .collect(),
-                omitted_rows: None,
-            };
-            return Ok(ToolResult {
-display: vec![Open::Known(display::fit_block(table, None)?)],
-background: None,
-retained_output: None,
-                title: crate::safe_title(format!(
-                    "Read directory {}",
-                    self.target.display_path.display()
-                )),
-                output,
-                metadata: serde_json::json!({"kind":"directory","shown":page.len(),"total_entries":entries.len()}),
-                attachments: Vec::new(),
-                additional_messages: Vec::new(),
-            });
-        }
-        let file = self.target.open_file()?;
-        let len = file.metadata().map_err(io_error)?.len();
-        let mut reader = BufReader::with_capacity(READ_BUFFER_BYTES, file);
-        let head = reader.fill_buf().map_err(io_error)?;
-        let path = &self.target.display_path;
-        if let Some(mime) = sniff_media_type(path, head, len)? {
-            // Gate on the file size before reading the whole file.
-            let gate = gate_attachment(
-                &context.turn_context.input_media,
-                mime,
-                len,
-            );
-            if let Some(error) = attachment_gate_error(
-                gate,
-                mime,
-                &context.turn_context.model,
-                &context.turn_context.adapter,
-            ) {
-                return Err(ToolError::execution(error));
+            let file = self.target.open_file()?;
+            let len = file.metadata().map_err(io_error)?.len();
+            let mut reader = BufReader::with_capacity(READ_BUFFER_BYTES, file);
+            let head = reader.fill_buf().map_err(io_error)?;
+            let path = &self.target.display_path;
+            if let Some(mime) = sniff_media_type(path, head, len)? {
+                // Gate on the file size before reading the whole file.
+                let gate = gate_attachment(&context.turn_context.input_media, mime, len);
+                if let Some(error) = attachment_gate_error(
+                    gate,
+                    mime,
+                    &context.turn_context.model,
+                    &context.turn_context.adapter,
+                ) {
+                    return Err(ToolError::execution(error));
+                }
+                let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+                reader.read_to_end(&mut bytes).map_err(io_error)?;
+                let mime = approved_media_type(path, &bytes)?
+                    .ok_or_else(|| ToolError::execution("file changed while it was read"))?;
+                return attachment_result(&context, path, mime, gate, &bytes);
             }
-            let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
-            reader.read_to_end(&mut bytes).map_err(io_error)?;
-            let mime = approved_media_type(path, &bytes)?
-                .ok_or_else(|| ToolError::execution("file changed while it was read"))?;
-            return attachment_result(&context, path, mime, gate, &bytes);
-        }
-        if std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()) {
-            return Err(not_text());
-        }
-        text_result(path, &self.shown_path, &mut reader, self.offset, self.limit)
+            if std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()) {
+                return Err(not_text());
+            }
+            text_result(path, &self.shown_path, &mut reader, self.window)
         })
         .await;
         result.map(cookie_agent_runtime_api::ToolCompletion::single)
@@ -362,7 +360,7 @@ fn attachment_result(
         display: vec![Open::Known(media)],
         background: None,
         retained_output: None,
-        title: crate::safe_title(format!("Read attachment {}", path.display())),
+        title: crate::safe_title(format!("Read {}", path.display())),
         output,
         metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":sha256}),
         attachments,
@@ -377,168 +375,47 @@ fn text_result(
     path: &Path,
     shown_path: &Path,
     reader: &mut impl BufRead,
-    offset: usize,
-    limit: usize,
+    window: LineWindow,
 ) -> Result<ToolResult, ToolError> {
-    let mut page = TextPage {
-        output: format!(
-            "<path>{}</path>\n<type>file</type>\n<content>\n",
-            path.display()
-        ),
-        line: Vec::new(),
-        cut: 0,
-        stopped_at: None,
-        excerpt: Vec::new(),
-        excerpt_bytes: 0,
-        excerpt_omitted: 0,
-    };
-    let end = offset.saturating_add(limit);
-    // Lines ended so far, and whether bytes follow the last newline.
-    let mut lines = 0_usize;
-    let mut partial = false;
-    loop {
-        let chunk = reader.fill_buf().map_err(io_error)?;
-        if chunk.is_empty() {
-            break;
-        }
-        let consumed = chunk.len();
-        let mut rest = chunk;
-        while !rest.is_empty() {
-            let wanted = lines >= offset && lines < end && page.stopped_at.is_none();
-            if !wanted && lines >= offset {
-                // Past the page: only count what remains.
-                lines += memchr::memchr_iter(b'\n', rest).count();
-                partial = rest.last() != Some(&b'\n');
-                break;
-            }
-            let newline = memchr::memchr(b'\n', rest);
-            if wanted {
-                page.keep(&rest[..newline.unwrap_or(rest.len())]);
-            }
-            match newline {
-                Some(at) => {
-                    if wanted {
-                        page.finish_line(lines, true)?;
-                    }
-                    lines += 1;
-                    partial = false;
-                    rest = &rest[at + 1..];
-                }
-                None => {
-                    partial = true;
-                    rest = &[];
-                }
-            }
-        }
-        reader.consume(consumed);
-    }
-    if partial {
-        if lines >= offset && lines < end && page.stopped_at.is_none() {
-            page.finish_line(lines, false)?;
-        }
-        lines += 1;
-    }
-    let excerpt = DisplayBlock::FileExcerpt {
-        path: shown_path.display().to_string(),
-        language: display::language_for_path(shown_path),
-        start_line: (offset as u64).saturating_add(1),
-        lines: page.excerpt,
-        total_lines: Some(lines as u64),
-        omitted_lines: (page.excerpt_omitted > 0).then_some(page.excerpt_omitted),
-        full: None,
-    };
-    let mut output = page.output;
+    let target = path.display().to_string();
+    let mut output = format!("<path>{target}</path>\n<type>file</type>\n<content>\n");
+    let page = text_tools::page_reader(reader, window, MAX_PAGE_BYTES - output.len()).map_err(
+        |error| match error {
+            PageError::Io(error) => io_error(error),
+            PageError::NotText => not_text(),
+        },
+    )?;
+    page.check_in_range(&target)?;
+    let excerpt = page.excerpt_block(
+        shown_path.display().to_string(),
+        display::language_for_path(shown_path),
+    );
+    output.push_str(&page.text);
     output.push_str("</content>");
-    if let Some(next) = page.stopped_at {
-        output.push_str(&format!(
-            "\n[page cut at the result size limit; continue with offset={next}]"
-        ));
+    if let Some(marker) = page.continuation() {
+        output.push('\n');
+        output.push_str(&marker);
     }
     Ok(ToolResult {
         display: vec![Open::Known(display::fit_block(excerpt, None)?)],
         background: None,
         retained_output: None,
-        title: crate::safe_title(format!("Read file {}", path.display())),
+        title: crate::safe_title(format!("Read {target}")),
         output,
         metadata: serde_json::json!({
             "kind": "text",
-            "offset": offset,
-            "limit": limit,
-            "total_lines": lines,
-            "next_offset": page.stopped_at,
+            "offset": window.offset,
+            "limit": window.limit,
+            "total_lines": page.total_lines,
+            "next_offset": page.next_offset,
         }),
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     })
 }
 
-struct TextPage {
-    output: String,
-    /// The current line's bytes, up to [`MAX_LINE_BYTES`].
-    line: Vec<u8>,
-    /// Bytes of the current line beyond [`MAX_LINE_BYTES`].
-    cut: usize,
-    /// The first line left out because the page reached [`MAX_PAGE_BYTES`].
-    stopped_at: Option<usize>,
-    /// The page's lines as clients see them, up to the display budget.
-    excerpt: Vec<String>,
-    excerpt_bytes: usize,
-    /// Lines of the page past the display budget.
-    excerpt_omitted: u64,
-}
-
-impl TextPage {
-    fn keep(&mut self, segment: &[u8]) {
-        let take = MAX_LINE_BYTES
-            .saturating_sub(self.line.len())
-            .min(segment.len());
-        self.line.extend_from_slice(&segment[..take]);
-        self.cut += segment.len() - take;
-    }
-
-    fn finish_line(&mut self, index: usize, terminated: bool) -> Result<(), ToolError> {
-        if terminated && self.cut == 0 && self.line.last() == Some(&b'\r') {
-            self.line.pop();
-        }
-        let text = match std::str::from_utf8(&self.line) {
-            Ok(text) => text,
-            // A cut can split the last character; drop its leading bytes.
-            Err(error) if self.cut > 0 && error.error_len().is_none() => {
-                self.cut += self.line.len() - error.valid_up_to();
-                std::str::from_utf8(&self.line[..error.valid_up_to()]).expect("valid prefix")
-            }
-            Err(_) => return Err(not_text()),
-        };
-        let number = index + 1;
-        let rendered = if self.cut == 0 {
-            format!("{number}: {text}\n")
-        } else {
-            format!(
-                "{number}: {text}... [line truncated: {} more bytes]\n",
-                self.cut
-            )
-        };
-        if self.output.len() + rendered.len() > MAX_PAGE_BYTES {
-            self.stopped_at = Some(index);
-        } else {
-            self.output.push_str(&rendered);
-            // The excerpt line is the numbered line without its number.
-            let shown = &rendered[rendered.find(": ").map_or(0, |at| at + 2)..rendered.len() - 1];
-            if self.excerpt_bytes + shown.len() <= cookie_agent_protocol::DISPLAY_BUDGET_BYTES {
-                self.excerpt_bytes += shown.len();
-                self.excerpt.push(shown.to_owned());
-            } else {
-                self.excerpt_omitted += 1;
-            }
-        }
-        self.line.clear();
-        self.cut = 0;
-        Ok(())
-    }
-}
-
-fn directory_page<T>(entries: &[T], offset: usize, limit: usize) -> impl Iterator<Item = &T> {
-    entries.iter().skip(offset).take(limit)
+fn directory_page<T>(entries: &[T], window: LineWindow) -> impl Iterator<Item = &T> {
+    entries.iter().skip(window.first_index()).take(window.limit)
 }
 
 #[cfg(test)]

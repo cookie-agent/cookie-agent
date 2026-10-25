@@ -305,9 +305,11 @@ mod unix {
     pub fn prepare_existing(cwd: &Path, requested: &Path) -> Result<PreparedExisting, ToolError> {
         match prepare_target(cwd, requested)? {
             PreparedTarget::Existing(existing) => Ok(existing),
-            PreparedTarget::Absent(_) => {
-                Err(ToolError::execution("prepared target does not exist"))
-            }
+            PreparedTarget::Absent(absent) => Err(ToolError::execution(
+                cookie_agent_runtime_api::text_tools::not_found(
+                    &absent.display_path.display().to_string(),
+                ),
+            )),
         }
     }
 
@@ -798,9 +800,11 @@ mod windows {
     pub fn prepare_existing(cwd: &Path, requested: &Path) -> Result<PreparedExisting, ToolError> {
         match prepare_target(cwd, requested)? {
             PreparedTarget::Existing(existing) => Ok(existing),
-            PreparedTarget::Absent(_) => {
-                Err(ToolError::execution("prepared target does not exist"))
-            }
+            PreparedTarget::Absent(absent) => Err(ToolError::execution(
+                cookie_agent_runtime_api::text_tools::not_found(
+                    &absent.display_path.display().to_string(),
+                ),
+            )),
         }
     }
 
