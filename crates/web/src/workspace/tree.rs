@@ -23,6 +23,31 @@ impl Workspace {
                 .with_untracked(|tree| tree.as_ref().is_some_and(|tree| contains(tree, session_id)))
     }
 
+    /// The root of `session_id`'s tree: the shown tree's root when it holds
+    /// the session, else the root its origin in the session list names,
+    /// else the session itself.
+    pub(super) fn root_of(self, session_id: SessionId) -> SessionId {
+        let shown = self.tree.with_untracked(|tree| {
+            tree.as_ref()
+                .filter(|tree| contains(tree, session_id))
+                .map(|tree| tree.session.session_id)
+        });
+        shown.unwrap_or_else(|| {
+            self.sessions.with_untracked(|sessions| {
+                match sessions
+                    .iter()
+                    .find(|session| session.session_id == session_id)
+                    .map(|session| &session.origin)
+                {
+                    Some(SessionOrigin::Delegated {
+                        root_session_id, ..
+                    }) => *root_session_id,
+                    _ => session_id,
+                }
+            })
+        })
+    }
+
     /// Makes `session_id` the root of the tree the page shows.
     pub(super) fn reroot_tree(self, session_id: SessionId) {
         if self.tree_root.get_untracked() != Some(session_id) {

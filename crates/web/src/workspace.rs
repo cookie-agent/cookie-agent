@@ -1267,15 +1267,14 @@ impl Workspace {
     /// settled sessions released.
     fn note_viewed(self, session_id: SessionId) {
         let root = self.tree_root.get_untracked().unwrap_or(session_id);
-        let tree = self.tree.get_untracked();
-        let root_of = |session: SessionId| match &tree {
-            Some(tree) if crate::tree::contains(tree, session) => tree.session.session_id,
-            _ => session,
-        };
         let released = self
             .subscriptions
             .try_update_value(|subscriptions| {
-                subscriptions.note_viewed_tree(root, root_of, |session| self.is_settled(session))
+                subscriptions.note_viewed_tree(
+                    root,
+                    |session| self.root_of(session),
+                    |session| self.is_settled(session),
+                )
             })
             .unwrap_or_default();
         for session in released {
@@ -1468,9 +1467,15 @@ impl Workspace {
         );
     }
 
+    /// Whether `session_id` keeps its subscription once it settles: it is
+    /// the viewed session, or its tree was viewed recently. The recent set
+    /// holds roots, so a subagent counts by its root's.
     fn is_recent(self, session_id: SessionId) -> bool {
-        self.subscriptions
-            .with_value(|subscriptions| subscriptions.is_recent_tree(session_id))
+        let root = self.root_of(session_id);
+        self.selected.get_untracked() == Some(session_id)
+            || self
+                .subscriptions
+                .with_value(|subscriptions| subscriptions.is_recent_tree(root))
     }
 
     fn is_settled(self, session_id: SessionId) -> bool {

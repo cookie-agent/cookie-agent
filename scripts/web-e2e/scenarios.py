@@ -933,6 +933,16 @@ def session_depth(browser):
     )
     print("a running subagent shows under its session:", browser.text("#transcript [data-delegate-activity]"))
     browser.shot("subagent-live")
+    # Opened while it runs, the subagent keeps its transcript when its run
+    # ends.
+    browser.click(nested)
+    browser.wait("the running child session", lambda: "child task" in browser.text("#transcript"))
+    browser.wait("the child's answer", lambda: "word59" in browser.text("#transcript"), timeout=60)
+    browser.wait("the child's end", lambda: count(browser, nested + " svg") == 0, timeout=30)
+    time.sleep(1)
+    assert "word59" in browser.text("#transcript"), "the finished subagent's transcript went blank"
+    print("a subagent opened while it runs keeps its transcript when it finishes")
+    browser.click("main [data-crumb]")
     browser.wait("the delegation", lambda: "The tool ran." in browser.text("#transcript"), timeout=90)
     # Nothing runs: the collapsed tree shows nothing.
     browser.wait("the empty collapsed tree", lambda: count(browser, nested) == 0)
