@@ -767,7 +767,7 @@ async fn the_user_window_starts_at_the_escalation() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (mut fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     fixture.engine.shutdown().await;
-    fixture.config.runtime.approval.timeout_ms = 120_000;
+    fixture.config.runtime.approval.timeout_ms = Some(120_000);
     fixture.engine = reopen_engine(&fixture);
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Local,

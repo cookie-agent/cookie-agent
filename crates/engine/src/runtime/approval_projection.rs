@@ -222,7 +222,7 @@ impl Engine {
         // out of it (approval reviewer spec section 10, b).
         let expires_at = approval_constraints(&request)
             .expires_at
-            .or_else(|| approval_expiry(self.inner.config.load().runtime.approval.timeout_ms));
+            .or_else(|| approval_expiry(self.inner.config.load().runtime.approval.window()));
         self.append_direct(
             session,
             Some(run),

@@ -658,10 +658,9 @@ pub(super) fn approval_request_for_operation(
     .expect("prepared approval request is complete")
 }
 
-pub(super) fn approval_expiry(timeout_ms: u64) -> Option<jiff::Timestamp> {
-    jiff::Timestamp::now()
-        .checked_add(std::time::Duration::from_millis(timeout_ms))
-        .ok()
+/// When an approval escalated now expires: never without a `window`.
+pub(super) fn approval_expiry(window: Option<std::time::Duration>) -> Option<jiff::Timestamp> {
+    jiff::Timestamp::now().checked_add(window?).ok()
 }
 
 pub(super) fn approval_deadline_exhausted(expires_at: Option<jiff::Timestamp>) -> bool {

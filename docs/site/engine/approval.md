@@ -1,12 +1,13 @@
 # Approval [approval]
 
 Set the expiry for pending user approvals and how long the approval
-reviewer's conversation stays in its provider's prompt cache. Complete
+reviewer's conversation stays in its provider's prompt cache. By default a
+pending approval waits until you answer it. Complete
 `config.toml`:
 
 ```toml
 [approval]
-timeout_ms = 30000
+timeout_ms = 600000
 cache_ttl = "1h"
 ```
 
@@ -21,7 +22,7 @@ fields fail; see [config.toml](configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `timeout_ms` | integer | `30000` | How long a user approval stays pending before it expires unattended, counted from when the call reaches you. Must be greater than zero. |
+| `timeout_ms` | integer | none | How long a user approval stays pending before it expires unattended, counted from when the call reaches you. Absent, `0`, or negative: it never expires, and waits until it is answered, the run is cancelled, or the daemon stops. |
 | `cache_ttl` | string | `"1h"` | The reviewer's prompt-cache lifetime: `"1h"`, `"30m"`, `"12h"`, `"5m"`, `"provider"` (the reviewer model's provider's own `cache` configuration), or `"off"` (no cache writes). See [The reviewer's cache](#the-reviewers-cache). |
 
 ## The reviewer's cache

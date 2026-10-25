@@ -47,6 +47,36 @@ fn the_reviewer_cache_ttl_is_strict() {
     // Setting the TTL keeps the section's other key.
     let directory = root("[approval]\ntimeout_ms = 45000\ncache_ttl = \"off\"\n");
     let loaded = load_from_user_root(Some(directory.path())).expect("both keys");
-    assert_eq!(loaded.runtime.approval.timeout_ms, 45_000);
+    assert_eq!(loaded.runtime.approval.timeout_ms, Some(45_000));
     assert_eq!(loaded.runtime.approval.cache_ttl, ApprovalCacheTtl::Off);
+}
+
+/// `[approval] timeout_ms`: a positive value is the user's window, and
+/// absent, zero, or negative means an approval waits until it is answered
+/// (push notifications spec section 4.4).
+#[test]
+fn the_approval_window_is_positive_or_unbounded() {
+    for (written, window) in [
+        (
+            "[approval]\ntimeout_ms = 1\n",
+            Some(std::time::Duration::from_millis(1)),
+        ),
+        ("[approval]\ntimeout_ms = 0\n", None),
+        ("[approval]\ntimeout_ms = -1\n", None),
+        ("[approval]\ncache_ttl = \"off\"\n", None),
+    ] {
+        let directory = root(written);
+        let loaded = load_from_user_root(Some(directory.path())).expect(written);
+        assert_eq!(loaded.runtime.approval.window(), window, "{written}");
+    }
+    for invalid in [
+        "[approval]\ntimeout_ms = 1.5\n",
+        "[approval]\ntimeout_ms = \"never\"\n",
+    ] {
+        let directory = root(invalid);
+        assert!(
+            load_from_user_root(Some(directory.path())).is_err(),
+            "{invalid}"
+        );
+    }
 }

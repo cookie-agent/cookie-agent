@@ -786,11 +786,13 @@ const fn default_subagent_output_bytes() -> usize {
     10 * 1024
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalConfig {
-    #[serde(default = "default_approval_timeout")]
-    pub timeout_ms: u64,
+    /// How long an escalated approval waits for the user, in milliseconds.
+    /// Absent, or at most zero, it waits until it is answered.
+    #[serde(default)]
+    pub timeout_ms: Option<i64>,
     /// The approval reviewer's prompt-cache lifetime, mapped onto its
     /// model's provider (approval reviewer spec section 5).
     #[serde(default)]
@@ -1165,16 +1167,16 @@ fn parse_duration(value: &str) -> Option<Duration> {
     };
     Some(Duration::from_millis(milliseconds))
 }
-impl Default for ApprovalConfig {
-    fn default() -> Self {
-        Self {
-            timeout_ms: default_approval_timeout(),
-            cache_ttl: ApprovalCacheTtl::default(),
-        }
+impl ApprovalConfig {
+    /// The user's window to answer an escalated approval: `None` when it
+    /// never ends (`timeout_ms` absent, or at most zero).
+    #[must_use]
+    pub fn window(&self) -> Option<Duration> {
+        self.timeout_ms
+            .and_then(|milliseconds| u64::try_from(milliseconds).ok())
+            .filter(|milliseconds| *milliseconds > 0)
+            .map(Duration::from_millis)
     }
-}
-const fn default_approval_timeout() -> u64 {
-    30_000
 }
 
 #[derive(Clone, Debug)]
@@ -1429,10 +1431,6 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         (
             kept_lines_empty(runtime.subagent_output.kept_lines()),
             "subagent_output.head_lines and tail_lines must keep at least one line",
-        ),
-        (
-            runtime.approval.timeout_ms == 0,
-            "approval.timeout_ms must be positive",
         ),
         (
             runtime.model_retry.backoff_ceiling_ms == 0,
