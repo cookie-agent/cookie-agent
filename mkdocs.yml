@@ -159,6 +159,8 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Native compaction: specs/native-compaction.md
+          - Approval reviewer: specs/approval-reviewer.md
           - Web client and local daemon use: specs/web-client.md
           - MCP OAuth from the web client: specs/web-mcp-oauth.md
           - Memory: specs/memory.md
@@ -177,8 +179,6 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - Approval reviewer: specs/approval-reviewer.md
-          - Native compaction: specs/native-compaction.md
           - Projects: specs/projects.md
           - Delegating to runtimes: specs/runtime-delegation.md
           - Cron jobs: specs/cron.md
