@@ -19,6 +19,7 @@
 
 pub mod authoring;
 pub mod context;
+pub mod display;
 mod error;
 mod execution;
 pub mod media;

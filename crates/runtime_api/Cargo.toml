@@ -19,9 +19,11 @@ base64 = "0.22"
 cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
 crc32fast.workspace = true
 futures-util.workspace = true
+memchr = "2.8.3"
 schemars.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
+similar = { version = "2.7.0", default-features = false }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }

@@ -20,7 +20,7 @@ use cookie_agent_runtime_api::{
 pub mod acp_bridge;
 mod acp_host;
 pub mod bash;
-mod display;
+use cookie_agent_runtime_api::display;
 pub mod edit;
 pub mod fs_cap;
 mod path_args;

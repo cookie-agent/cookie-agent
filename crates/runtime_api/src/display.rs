@@ -1,19 +1,20 @@
-//! What the coding runtime's tools show clients: language labels, file
-//! diffs with real line numbers and five lines of context, and fitting a
-//! block to the display budget (`docs/site/specs/compatibility-v1.md`
+//! What file-changing tools show clients, shared by the coding runtime's
+//! tools and the engine's memory tools: language labels, file diffs with
+//! real line numbers and five lines of context, and fitting a block to the
+//! display budget (`docs/site/specs/compatibility-v1.md`
 //! section 12.5).
 
 use std::path::Path;
 
+use crate::{ToolArtifacts, ToolError};
 use cookie_agent_protocol::SessionId;
 use cookie_agent_protocol::{
     ArtifactRef, DISPLAY_BUDGET_BYTES, DiffAsOf, DiffBlock, DiffChange, DiffHunk, DiffLine,
     DiffLineOp, DisplayBlock, fit_display_budget,
 };
-use cookie_agent_runtime_api::{ToolArtifacts, ToolError};
 
 /// Unchanged lines a diff shows on each side of a change.
-pub(crate) const CONTEXT_LINES: usize = 5;
+pub const CONTEXT_LINES: usize = 5;
 
 /// What a block cut to the budget leaves for its `full` reference.
 const FULL_RESERVE_BYTES: usize = 1024;
@@ -21,7 +22,7 @@ const FULL_RESERVE_BYTES: usize = 1024;
 /// The language label clients highlight a file of `path` with: a fenced code
 /// block's name for the extensions this table knows, else the extension
 /// itself (lowercase, when it is a plain word).
-pub(crate) fn language_for_path(path: &Path) -> Option<String> {
+pub fn language_for_path(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let special = match name {
         "Makefile" | "makefile" | "GNUmakefile" => Some("makefile"),
@@ -86,7 +87,7 @@ pub(crate) fn language_for_path(path: &Path) -> Option<String> {
 
 /// The lines of `text`, each with its line terminator; a trailing newline
 /// does not start another line.
-pub(crate) fn raw_lines(text: &str) -> Vec<&str> {
+pub fn raw_lines(text: &str) -> Vec<&str> {
     text.split_inclusive('\n').collect()
 }
 
@@ -100,7 +101,7 @@ fn shown(line: &str) -> String {
 /// into the old lines) onward, and `added` stands at `new_start` in the new
 /// lines. Lines keep their terminators.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LineChange<'a> {
+pub struct LineChange<'a> {
     pub old_start: usize,
     pub removed: Vec<&'a str>,
     pub new_start: usize,
@@ -115,7 +116,7 @@ type Region = (usize, usize, Vec<(usize, usize)>);
 /// lines it touches, replacements whose lines overlap are taken together,
 /// and lines a replacement leaves as they were at either end are not part
 /// of its change.
-pub(crate) fn replacement_changes<'a>(
+pub fn replacement_changes<'a>(
     text: &'a str,
     matches: &[(usize, usize)],
     new: &str,
@@ -220,7 +221,7 @@ fn line_starts(text: &str) -> Vec<usize> {
 
 /// The line changes from `old` to `new`, by a line diff that gives up on an
 /// optimal result after a second.
-pub(crate) fn line_diff_changes<'a>(old: &'a str, new: &str) -> Vec<LineChange<'a>> {
+pub fn line_diff_changes<'a>(old: &'a str, new: &str) -> Vec<LineChange<'a>> {
     let old_lines = raw_lines(old);
     let new_lines = raw_lines(new);
     let ops = similar::capture_diff_slices_deadline(
@@ -263,7 +264,7 @@ pub(crate) fn line_diff_changes<'a>(old: &'a str, new: &str) -> Vec<LineChange<'
 /// overlaps or touches in one hunk, and 1-based file line numbers. A side
 /// with no lines in a hunk starts at the line before it (0 at the top), as a
 /// unified diff numbers it.
-pub(crate) fn hunks(old: &[&str], changes: &[LineChange<'_>]) -> Vec<DiffHunk> {
+pub fn hunks(old: &[&str], changes: &[LineChange<'_>]) -> Vec<DiffHunk> {
     let mut hunks = Vec::new();
     let mut index = 0;
     while index < changes.len() {
@@ -320,7 +321,7 @@ pub(crate) fn hunks(old: &[&str], changes: &[LineChange<'_>]) -> Vec<DiffHunk> {
 }
 
 /// A diff of `path` from `old` lines by `changes`.
-pub(crate) fn diff_block(
+pub fn diff_block(
     path: &Path,
     change: DiffChange,
     old: &[&str],
@@ -346,7 +347,7 @@ pub(crate) fn diff_block(
 
 /// Where a cut block's complete content is kept: the session's artifact
 /// store, under `filename`.
-pub(crate) struct Retain<'a> {
+pub struct Retain<'a> {
     pub artifacts: &'a dyn ToolArtifacts,
     pub session: SessionId,
     pub filename: String,
@@ -354,11 +355,7 @@ pub(crate) struct Retain<'a> {
 
 impl<'a> Retain<'a> {
     /// `session`'s store, for the diff of a file of `path`.
-    pub(crate) fn diff_of(
-        artifacts: &'a dyn ToolArtifacts,
-        session: SessionId,
-        path: &Path,
-    ) -> Self {
+    pub fn diff_of(artifacts: &'a dyn ToolArtifacts, session: SessionId, path: &Path) -> Self {
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -375,7 +372,7 @@ impl<'a> Retain<'a> {
 /// executed call also names its complete content: its
 /// [`DisplayBlock::to_text`] before the cut, retained as `retain` says. A
 /// preview has no store to retain it in.
-pub(crate) fn fit_block(
+pub fn fit_block(
     mut block: DisplayBlock,
     retain: Option<Retain<'_>>,
 ) -> Result<DisplayBlock, ToolError> {
@@ -470,6 +467,74 @@ fn pre_cut(block: DisplayBlock, budget: usize) -> DisplayBlock {
         }
         block => block,
     }
+}
+
+/// How a text document changed, for [`text_diff`].
+#[derive(Clone, Copy, Debug)]
+pub enum TextChange<'a> {
+    /// A new document of `text`.
+    Created { text: &'a str },
+    /// `text` with each byte range of `ranges` (in order, not overlapping)
+    /// replaced by `new`, as the `edit` tool computes it.
+    Replaced {
+        text: &'a str,
+        ranges: &'a [(usize, usize)],
+        new: &'a str,
+    },
+    /// `old` replaced whole by `new`, as the `write` tool computes it.
+    Modified { old: &'a str, new: &'a str },
+    /// A removed document that held `text`.
+    Deleted { text: &'a str },
+}
+
+/// The diff of a text document labelled `label` changing as `change` says,
+/// built as the `edit` and `write` tools build theirs: real line numbers,
+/// five unchanged lines on each side of a change, and the label's
+/// language unless `language` names one.
+#[must_use]
+pub fn text_diff(
+    label: &str,
+    language: Option<String>,
+    change: TextChange<'_>,
+    as_of: DiffAsOf,
+) -> DisplayBlock {
+    let path = Path::new(label);
+    let (kind, old, changes) = match change {
+        TextChange::Created { text } => (DiffChange::Created, "", line_diff_changes("", text)),
+        TextChange::Replaced { text, ranges, new } => (
+            DiffChange::Modified,
+            text,
+            replacement_changes(text, ranges, new),
+        ),
+        TextChange::Modified { old, new } => {
+            (DiffChange::Modified, old, line_diff_changes(old, new))
+        }
+        TextChange::Deleted { text } => (DiffChange::Deleted, text, line_diff_changes(text, "")),
+    };
+    let mut block = diff_block(path, kind, &raw_lines(old), &changes, as_of);
+    if language.is_some() {
+        block.language = language;
+    }
+    DisplayBlock::Diff(block)
+}
+
+/// An executed call's `block` fit to the display budget, as the `edit` and
+/// `write` tools fit theirs: a cut block names its complete content, kept in
+/// `session`'s artifact store as `filename`.
+pub fn fit_executed_block(
+    block: DisplayBlock,
+    artifacts: &dyn ToolArtifacts,
+    session: SessionId,
+    filename: String,
+) -> Result<DisplayBlock, ToolError> {
+    fit_block(
+        block,
+        Some(Retain {
+            artifacts,
+            session,
+            filename,
+        }),
+    )
 }
 
 #[cfg(test)]
