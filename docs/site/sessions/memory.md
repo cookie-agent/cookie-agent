@@ -279,9 +279,10 @@ The daemon backs the rubric with a few checks that need no model:
   daemon restart a session reads a memory again before replacing it.)
 - **Deletes delete.** `memory_delete` removes the file, `user://` categories
   and `agent://` files included; nothing is kept, and there is no undo.
-- **Every change is visible.** Each write, edit, and delete a model makes is
-  a one-line event in the transcript, such as `Saved
-  project://cookie-agent/release`. A change you make from a client records
+- **Every change is visible.** The tool row of each write, edit, and delete a
+  model makes is the record of its change: its header links to the memory,
+  and expanding it shows the change as a diff, as an `edit` row does. No
+  separate transcript line is added. A change you make from a client records
   none.
 
 When an agent's `memory_write` rule is `ask`, the approval reviewer is given
