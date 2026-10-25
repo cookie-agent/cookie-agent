@@ -68,26 +68,6 @@ pub(crate) use remote::{
     RuntimeProducerCall, RuntimeProducerHost, register_configured_templates, runtime_settings,
 };
 
-/// One-line description of where a tool runs, for the approval reviewer.
-pub(crate) fn describe_origin(origin: &ToolOrigin) -> String {
-    match origin {
-        ToolOrigin::Base => "the daemon's base layer (no workspace)".to_owned(),
-        ToolOrigin::Runtime(runtime) => match runtime.workspace() {
-            Some(workspace) => format!(
-                "the `{}` {} runtime with workspace {}",
-                runtime.id(),
-                runtime.kind().as_str(),
-                workspace.root().display()
-            ),
-            None => format!(
-                "the `{}` {} runtime (no workspace)",
-                runtime.id(),
-                runtime.kind().as_str()
-            ),
-        },
-    }
-}
-
 /// Where [`crate::Engine::try_register_tool_provider`] adds a provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolLayer {

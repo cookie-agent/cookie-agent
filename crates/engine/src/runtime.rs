@@ -48,6 +48,7 @@ mod admission;
 mod agent_md;
 mod agent_memory;
 mod approval_api;
+mod approval_context;
 mod approval_flow;
 mod approval_projection;
 mod artifact_reads;

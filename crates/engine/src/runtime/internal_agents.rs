@@ -1,13 +1,12 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use cookie_agent_protocol::{
-    AgentId, AgentMode, ApprovalInternalDecisionKind, FrozenInternalAgentDefinition,
-    FrozenInternalAgentFallback, InternalAgentBackend, InternalAgentFailure,
-    InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, RunId, SafeInternalAgentCall,
-    SafeInternalAgentResult, SessionId, Sha256Digest,
+    AgentId, AgentMode, FrozenInternalAgentDefinition, FrozenInternalAgentFallback,
+    InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind,
+    InternalAgentRunId, RunId, SafeInternalAgentCall, SafeInternalAgentResult, SessionId,
+    Sha256Digest,
 };
 use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
-use serde::Deserialize;
 
 use super::{
     ActiveRun, Engine, EngineError, Event, PublishedRuntime, UNAVAILABLE_BUILTIN_REVISION,
@@ -932,24 +931,6 @@ pub(super) fn internal_text_history(
     ]
 }
 
-pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDecisionKind> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Decision {
-        decision: String,
-    }
-    match serde_json::from_str::<Decision>(value.trim())
-        .ok()?
-        .decision
-        .as_str()
-    {
-        "allow" => Some(ApprovalInternalDecisionKind::Allow),
-        "deny" => Some(ApprovalInternalDecisionKind::Deny),
-        "ask" => Some(ApprovalInternalDecisionKind::Ask),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1097,10 +1078,11 @@ mod tests {
             "validation must not remove replay witnesses"
         );
         assert_eq!(
-            super::parse_internal_approval(match &restored[0] {
+            crate::runtime::approval_context::parse_verdict(match &restored[0] {
                 oven_sdk::AssistantPart::Text(text) => &text.text,
                 _ => unreachable!(),
-            }),
+            })
+            .map(|verdict| verdict.decision),
             Some(cookie_agent_protocol::ApprovalInternalDecisionKind::Allow)
         );
         // Titles retain their existing non-strict text extraction policy.

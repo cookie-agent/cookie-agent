@@ -228,9 +228,7 @@ impl Engine {
                         true,
                         ApprovalToolInput {
                             tool_call_id: prepared_call.call.id,
-                            name: &prepared_call.call.name,
                             origin: prepared_call.origin(),
-                            normalized_parameters: prepared.normalized_arguments(),
                         },
                     )
                     .await

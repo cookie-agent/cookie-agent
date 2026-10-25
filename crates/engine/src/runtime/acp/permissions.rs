@@ -423,9 +423,7 @@ impl Engine {
             true,
             super::super::approval_flow::ApprovalToolInput {
                 tool_call_id,
-                name: &tool,
                 origin: None,
-                normalized_parameters: &arguments,
             },
         )
         .await

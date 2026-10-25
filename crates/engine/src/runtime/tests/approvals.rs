@@ -538,11 +538,40 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
     fixture.engine.shutdown().await;
 }
 
+/// The text of each message of a captured chat request.
+fn chat_messages(request: &str) -> Vec<(String, String)> {
+    request_body(request)["messages"]
+        .as_array()
+        .expect("chat messages")
+        .iter()
+        .map(|message| {
+            let content = match &message["content"] {
+                serde_json::Value::String(text) => text.clone(),
+                serde_json::Value::Array(parts) => parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect(),
+                other => other.to_string(),
+            };
+            (
+                message["role"].as_str().unwrap_or_default().to_owned(),
+                content,
+            )
+        })
+        .collect()
+}
+
+/// Two reviews in one session build one append-only reviewer conversation:
+/// the second request is the first, its verdict, and one more turn, and a
+/// restarted daemon renders the same conversation from the log (approval
+/// reviewer spec sections 4.1 and 12). The verdict's reason is recorded as
+/// the evaluation's rationale.
 #[tokio::test]
-async fn repeated_approvals_feed_prior_decisions_to_the_reviewer() {
+async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
     let (endpoint, captured) =
-        scripted_two_evaluated_writes_server(r#"{"decision":"allow"}"#).await;
-    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        scripted_two_evaluated_writes_server(r#"{"decision":"allow","reason":"Routine write."}"#)
+            .await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
         "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
         Some((
@@ -552,41 +581,64 @@ async fn repeated_approvals_feed_prior_decisions_to_the_reviewer() {
         None,
         false,
     );
-    let executed = Arc::new(TestFlag::default());
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Local,
         Arc::new(TestWriteProvider {
-            executed: Arc::clone(&executed),
+            executed: Arc::new(TestFlag::default()),
         }),
     );
     let session = fixture
         .engine
         .create_session(selection.clone())
-        .expect("persistent approval session");
+        .expect("session");
     fixture
         .engine
         .start_run(
             RunStartParams {
                 reset_fallback: false,
                 session_id: session.session_id,
-                client_run_id: cookie_agent_protocol::ClientRunId::new("persistent-approval")
-                    .expect("run ID"),
+                client_run_id: ClientRunId::new("conversation").expect("run ID"),
                 selection,
                 content: "request two writes".to_owned().into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
-        .expect("accepted persistent approval run");
-
+        .expect("run");
     await_projection(
         &fixture.engine,
         session.session_id,
-        "stateless approval completion",
+        "both reviews",
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    assert!(executed.is_set());
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("server task");
+    let first = chat_messages(&requests[1]);
+    let second = chat_messages(&requests[3]);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].1, "Evaluate approval requests conservatively.");
+    assert!(first[1].1.starts_with("<context>\n[user] "));
+    assert!(first[1].1.contains("request two writes"));
+    assert_eq!(second.len(), 4);
+    assert_eq!(
+        &second[..2],
+        first.as_slice(),
+        "the second request extends the first"
+    );
+    assert_eq!(
+        second[2],
+        (
+            "assistant".to_owned(),
+            r#"{"decision":"allow","reason":"Routine write."}"#.to_owned()
+        )
+    );
+    assert!(
+        second[3]
+            .1
+            .starts_with("<context_delta>\n[tool call] write")
+    );
 
     let events = fixture
         .engine
@@ -596,32 +648,42 @@ async fn repeated_approvals_feed_prior_decisions_to_the_reviewer() {
         .expect("projection")
         .log
         .events();
-    let evaluations = events
-        .iter()
-        .filter(|event| {
-            matches!(
-                event.payload,
+    let reviewed =
+        events
+            .iter()
+            .filter_map(|event| match &event.payload {
                 EventPayload::ApprovalStep {
-                    step: cookie_agent_protocol::Open::Known(
-                        cookie_agent_protocol::ApprovalStep::Evaluated { .. }
-                    ),
-                    ..
-                }
-            )
-        })
-        .count();
-    assert_eq!(evaluations, 2);
-    let requests = with_watchdog("captured fixture completion", captured)
-        .await
-        .expect("persistent approval server task");
-    assert_eq!(requests.len(), 5);
-    assert!(requests[1].contains("<prior_decisions>"));
-    assert!(requests[1].contains("[none]"));
+                    approval_id,
+                    step:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalStep::Evaluated { decision },
+                        ),
+                } => Some((*approval_id, decision.rationale.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+    assert_eq!(reviewed.len(), 2);
     assert!(
-        requests[3].contains("- write:file approval-test.txt: approved by approval reviewer"),
-        "second approval request lacks the first decision: {}",
-        requests[3]
+        reviewed
+            .iter()
+            .all(|(_, rationale)| rationale.as_deref() == Some("Routine write."))
     );
+
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    let restarted = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("reopened")
+        .log
+        .event_snapshot();
+    let conversation =
+        crate::runtime::approval_context::render(&restarted, None, reviewed[1].0).expect("render");
+    assert_eq!(conversation.reviews.len(), 1);
+    assert_eq!(conversation.reviews[0].0, first[1].1);
+    assert_eq!(conversation.request, second[3].1);
     fixture.engine.shutdown().await;
 }
 
