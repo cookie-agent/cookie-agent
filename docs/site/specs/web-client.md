@@ -483,7 +483,10 @@ where each feature lands.
     caching stays out. It calls `skipWaiting` and `clients.claim`, and
     `scripts/build-web.sh` stamps the build on its last line, so a new
     build replaces it on the next load. The page registers it only in a
-    secure context, with `updateViaCache: "none"`.
+    secure context, with `updateViaCache: "none"`. Since 2026-10-25 it also
+    shows push notifications and opens a clicked one's session, still
+    caching nothing ([push notifications](push-notifications.md) section
+    9.2).
   - **Serving.** `sw.js` keeps its name, so it is sent with `no-cache`
     and an `ETag` like `index.html`, as `text/javascript`. The
     Content-Security-Policy adds `worker-src 'self'` and

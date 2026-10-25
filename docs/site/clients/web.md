@@ -830,10 +830,63 @@ else, clear the site data for the daemon's address in the browser's
 settings.
 
 The page has a service worker, `sw.js`, which installing needs on some
-browsers. It caches nothing and passes every request to the daemon, so a
+browsers, and which shows [notifications](#notifications). It caches nothing
+and passes every request to the daemon, so a
 daemon that is not running shows the browser's own error, and a restarted
 daemon of a new build serves its own page at once. It never touches the
 `/ws` and `/runtime` WebSockets.
+
+## Notifications
+
+The daemon can notify your phone, or any browser, when a session needs you,
+even while the page is closed:
+
+- **A session finished.** A root session's run ended (completed or failed)
+  and nothing will start another one without you: no subagent, background
+  call, plugin, or one-time scheduled prompt is still due to wake it, and
+  no queued message is waiting. A recurring scheduled prompt does not hold
+  it back. The notification shows the session's title and the start of its
+  reply, or the error.
+- **An approval or a question waits.** An approval the reviewer handed to
+  you, or a question an ACP agent asks, anywhere in a session's tree.
+
+Nothing is pushed for a session a client shows you at that moment: an open,
+focused page or app that you used in the last two minutes, or a TUI whose
+terminal reports focus. `[notifications]` in `config.toml` turns pushes off,
+shows less on the lock screen, and more (see
+[Push Notifications](../engine/notifications.md)).
+
+**Turning them on.** Open Settings › This browser › Notifications and
+choose **Turn on notifications**; the browser asks whether to allow them.
+
+- **It needs HTTPS**, as installing does (see
+  [Installing as an app](#installing-as-an-app)).
+- **iPhone and iPad** (iOS and iPadOS 16.4 or later) notify only the
+  installed app: add the page to the Home Screen first, open it from there,
+  and turn notifications on in the app.
+- **Android** notifies Chrome and other browsers through Google's push
+  service, so a phone without Google Play services may not receive them.
+- **Blocked.** If you blocked notifications for the page, allow them again
+  in the browser's site settings.
+
+Once on, **Send test** sends one at once, the field names this device in
+the list, and **Turn off** stops them. **Devices** lists every browser the
+daemon pushes to, with when it last sent one and why the last one failed;
+**Remove** stops another device's. A browser takes notifications from one
+daemon at a time: on a page that connected to another daemon since, Settings
+offers **Switch to this daemon**.
+
+**Clicking one** opens its session, in the open page or a new one, on the
+daemon the notification came from; an approval or a question opens in its
+session, ready to answer. Opening a session closes its notifications. A
+daemon the device cannot reach shows the usual connection error.
+
+**What leaves the machine.** The daemon sends each notification to the
+browser's push service (Google, Apple, or Mozilla), which delivers it to the
+device. It is encrypted for the browser, so the push service sees only its
+size and time. The daemon needs outbound HTTPS to reach it; nothing has to
+reach the daemon from the internet. No account or registration is needed:
+the daemon makes its own key, kept in `push/` in its data directory.
 
 ## Signing in to MCP servers
 

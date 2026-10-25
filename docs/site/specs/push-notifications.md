@@ -1,7 +1,7 @@
 # Push notifications
 
-Status: **draft** (2026-10-25), awaiting approval; the user's decisions of
-2026-10-25 are in section 14.
+Status: **implemented** (2026-10-25); approved 2026-10-25 with the user's
+decisions in section 14, implemented with the deviations in section 16.2.
 Extends the [web client](web-client.md) (section 9, installable app),
 [cron jobs](cron.md), [background tool calls](background-tools.md)
 (`waiting_on`), the [approval reviewer](approval-reviewer.md), and
@@ -700,3 +700,61 @@ on its own.
 8. **Approvals do not expire by default** (section 4.4): `[approval]
    timeout_ms` becomes optional, and absent or any value `<= 0` means an
    approval waits until it is answered.
+
+## 16. Implementation notes (2026-10-25)
+
+Implemented in four commits after the user's go: the approval default, the
+engine signals and `[notifications]`, the daemon's push sender and the
+protocol (client protocol 1.30.0), the web client, and the TUI's presence
+with these docs.
+
+### 16.1 Where it lives
+
+- **Engine** (`crates/engine/src/runtime/push_signals.rs`): the armed roots,
+  the settle check on the root's actor, `wakes_once` carried up the tree in
+  `PushSignalState::waking_once` beside `waking_children`, and the
+  `PushSignal` broadcast (`Engine::subscribe_push_signals`). One-time jobs
+  are `StoredJob::one_time` and `CronStore::waits_on_once`.
+- **Daemon** (`crates/server/src/push/`): `crypto.rs` (RFC 8291 and the
+  VAPID key and token, on `aws-lc-rs`), `store.rs` (`<data_root>/push/`),
+  `payload.rs`, and `PushService` with the notifier task, presence, and
+  delivery. `Server::new` starts the notifier.
+- **Clients**: the presence rule and the version gate are shared in
+  `cookie_agent_client_state::presence`; the web client's offer states,
+  labels, and `#session=` are pure logic in `crates/web/src/push.rs`, its
+  browser calls in `crates/web/src/browser.rs`, its daemon calls in
+  `crates/web/src/workspace/notifications.rs`, and the section in
+  `crates/web/src/views/notifications.rs`; the TUI's in
+  `crates/tui/src/ui/app/presence.rs`.
+
+### 16.2 Deviations
+
+- **`client.presence` is a request**, answered with an empty object: the
+  client protocol has no client-to-daemon notifications.
+- **Two more things wake a root**, found by the end-to-end test of a child
+  that waits on a background call (section 3.2): a child's subagent report
+  on its way to its parent (the report is sent from its own task after the
+  child's run ended), and a wake already scheduled for a producer message
+  that arrived. Without them the root briefly looked settled and was pushed
+  for the turn before.
+- **The settle signal carries no `run_id`**, and the payload has `root`
+  beside `session` (the tag and `Topic` follow the root).
+- **Network errors are retried** like a `5xx`.
+- **The phone banner's offer** (section 9.1, last bullet) is not built:
+  Settings › This browser is the one place to turn notifications on.
+- **This browser's subscription** is known by the id `notifications.subscribe`
+  returned, kept in the browser's storage per daemon URL; renaming registers
+  the same subscription again with the new label.
+
+### 16.3 Tests
+
+Every test of section 13.1 except the manual check: the engine's settle
+rule (`runtime/tests/push_signals.rs`, the child-and-background-call case in
+`runtime/tests/background_waits.rs`, the approval in
+`runtime/tests/approvals.rs`), `[notifications]` and `[approval]` in
+`crates/config/tests/`, the crypto against RFC 8291's example, the sender
+and presence against a local push service (`crates/server/src/push/tests.rs`),
+the RPCs (`notifications_are_reachable_through_rpc`), and the web client's
+pure logic. A headless browser cannot receive pushes, so the service worker's
+handlers are checked only by the asset test; the manual check on a phone is
+the user's.

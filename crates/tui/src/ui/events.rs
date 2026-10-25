@@ -9,8 +9,9 @@ use std::{
 use crossterm::{
     cursor::Show,
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -67,12 +68,14 @@ struct TerminalState {
     mouse_capture: bool,
     bracketed_paste: bool,
     keyboard_enhancement: bool,
+    focus_change: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TerminalCleanup {
     DisableMouseCapture,
     DisableBracketedPaste,
+    DisableFocusChange,
     PopKeyboardEnhancement,
     LeaveAlternateScreen,
     ShowCursor,
@@ -124,6 +127,13 @@ impl TerminalRestore {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .keyboard_enhancement = true;
     }
+
+    pub(super) fn focus_change_enabled(&mut self) {
+        terminal_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .focus_change = true;
+    }
 }
 
 fn cleanup_steps(state: TerminalState) -> Vec<TerminalCleanup> {
@@ -133,6 +143,9 @@ fn cleanup_steps(state: TerminalState) -> Vec<TerminalCleanup> {
     }
     if state.bracketed_paste {
         steps.push(TerminalCleanup::DisableBracketedPaste);
+    }
+    if state.focus_change {
+        steps.push(TerminalCleanup::DisableFocusChange);
     }
     if state.keyboard_enhancement {
         steps.push(TerminalCleanup::PopKeyboardEnhancement);
@@ -176,6 +189,9 @@ fn cleanup_terminal_then<R>(after_cleanup: impl FnOnce() -> R) -> R {
             }
             TerminalCleanup::DisableBracketedPaste => {
                 let _ = execute!(stdout, DisableBracketedPaste);
+            }
+            TerminalCleanup::DisableFocusChange => {
+                let _ = execute!(stdout, DisableFocusChange);
             }
             TerminalCleanup::PopKeyboardEnhancement => {
                 let _ = execute!(stdout, PopKeyboardEnhancementFlags);
@@ -221,6 +237,9 @@ pub(super) fn resume_terminal() -> io::Result<()> {
     }
     if enable_keyboard_enhancement(&mut stdout) {
         restore.keyboard_enhancement_enabled();
+    }
+    if execute!(stdout, EnableFocusChange).is_ok() {
+        restore.focus_change_enabled();
     }
     Ok(())
 }
@@ -366,6 +385,7 @@ mod tests {
             mouse_capture: true,
             bracketed_paste: true,
             keyboard_enhancement: true,
+            focus_change: true,
         });
         let mut steps = Vec::new();
 
@@ -377,6 +397,7 @@ mod tests {
             [
                 TerminalCleanup::DisableMouseCapture,
                 TerminalCleanup::DisableBracketedPaste,
+                TerminalCleanup::DisableFocusChange,
                 TerminalCleanup::PopKeyboardEnhancement,
                 TerminalCleanup::LeaveAlternateScreen,
                 TerminalCleanup::ShowCursor,

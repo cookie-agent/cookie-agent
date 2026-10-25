@@ -675,6 +675,16 @@ pastes (a paste goes into the focused text field), the wheel scrolls it
 when it is long, Ctrl-C cancels the run, and the answers wait out the same
 400 ms as an approval's.
 
+## Notifications on other devices
+
+The daemon can push a notification to a phone or a browser when a session
+finishes its turn or an approval waits (turn them on in the web client; see
+[Notifications](web.md#notifications)). It pushes nothing for the session
+the TUI shows while its terminal has focus and you used it in the last two
+minutes. The TUI asks the terminal to report focus; in a terminal that does
+not (or inside a multiplexer that does not pass it on), the TUI never says
+you are there, so the push still comes.
+
 ## Runtimes panel
 
 `/runtime` (titled *Attached runtimes*) lists the selected session's

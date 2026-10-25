@@ -17,6 +17,7 @@ pub(in crate::ui) mod onboarding;
 mod pickers;
 mod plugins;
 mod pointer;
+mod presence;
 mod projects;
 mod providers;
 mod questions;
@@ -747,6 +748,8 @@ pub struct App {
     pub(super) reconnector: Option<Reconnector>,
     /// The connection dropped and a reconnect is under way.
     pub(super) reconnecting: bool,
+    /// What the daemon was told the TUI shows, for push notifications.
+    pub(in crate::ui) presence: presence::Presence,
     /// Which draft change a debounced publish of the draft as the session's
     /// model selection may still send: only one no later change followed.
     pub(super) draft_publish: cookie_agent_client_state::model_draft::DraftPublish,
@@ -1530,6 +1533,7 @@ impl App {
             runtime_homes_refresh: ListingRefresh::default(),
             reconnector: None,
             reconnecting: false,
+            presence: Default::default(),
             draft_publish: Default::default(),
             store: StateStore::default(),
             sessions: Vec::new(),
@@ -2073,6 +2077,11 @@ async fn run_terminal(
     if super::events::enable_keyboard_enhancement(&mut stdout) {
         restore.keyboard_enhancement_enabled();
     }
+    // Focus reports tell the daemon whether the user is here, so it pushes
+    // nothing for the session on screen. Best effort, as above.
+    if execute!(stdout, crossterm::event::EnableFocusChange).is_ok() {
+        restore.focus_change_enabled();
+    }
     let backend = EmojiBackend::new(CrosstermBackend::new(stdout));
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let deliveries = app.take_deliveries();
@@ -2210,8 +2219,11 @@ async fn event_loop(
                 Ok(CrosstermEvent::Key(key)) if key.kind == KeyEventKind::Release => {}
                 Ok(CrosstermEvent::Key(key)) => {
                     app.handle_key(key).await;
+                    app.note_input();
                     render.mark_immediate();
                 }
+                Ok(CrosstermEvent::FocusGained) => app.focus_changed(true),
+                Ok(CrosstermEvent::FocusLost) => app.focus_changed(false),
                 Ok(CrosstermEvent::Mouse(mouse)) => {
                     // Wheel and pointer motion arrive in bursts (a trackpad
                     // sends ~100 scroll events a second): draw them at the
@@ -2225,6 +2237,9 @@ async fn event_loop(
                             | MouseEventKind::Moved
                             | MouseEventKind::Drag(_)
                     );
+                    if !matches!(mouse.kind, MouseEventKind::Moved) {
+                        app.note_input();
+                    }
                     if app.handle_mouse(mouse).await {
                         if burst {
                             render.mark_stream();
@@ -2236,6 +2251,7 @@ async fn event_loop(
                 Ok(CrosstermEvent::Paste(text)) => {
                     let text = Zeroizing::new(text);
                     app.handle_paste(&text);
+                    app.note_input();
                     render.mark_immediate();
                 }
                 Ok(CrosstermEvent::Resize(_, _)) => {
@@ -2245,7 +2261,6 @@ async fn event_loop(
                         return (Err(error), app.session_errors.clone());
                     }
                 }
-                Ok(_) => {},
                 Err(error) => {
                     app.status = error.to_string();
                     render.mark_immediate();
@@ -2289,6 +2304,8 @@ async fn event_loop(
             _ = mcp_poll.tick() => {
                 app.poll_mcp();
                 app.poll_runtimes();
+                // Going idle, or a session opened by a delivery.
+                app.report_presence();
             },
             _ = frame_tick.tick(), if frame_due => {
                 // The frame cadence drives the clock bucket (the "thinking…"
