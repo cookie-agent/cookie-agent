@@ -406,9 +406,8 @@ impl Engine {
                 // no rule decides is answered once.
                 allow_tree_grant: by_rules && !action.is_path(),
                 cancellable: true,
-                expires_at: super::super::approval_flow::approval_expiry(
-                    self.inner.config.load().runtime.approval.timeout_ms,
-                ),
+                // The user's window starts at the escalation.
+                expires_at: None,
             },
         ) {
             Ok(request) => request,

@@ -990,13 +990,21 @@ pub(super) fn reduce_event_from(
                 .to_lowercase(),
                 timestamp,
             ),
-            Some(cookie_agent_protocol::ApprovalStep::Escalated { reason_code, .. }) => {
+            Some(cookie_agent_protocol::ApprovalStep::Escalated {
+                reason_code,
+                expires_at,
+            }) => {
                 if let Some(approval) = state
                     .approvals
                     .iter_mut()
                     .find(|approval| approval.approval_id == approval_id)
                 {
                     approval.escalated = true;
+                    // The user's window starts at the escalation (client
+                    // protocol 1.28.0); an earlier daemon's request carries it.
+                    if expires_at.is_some() {
+                        approval.constraints.expires_at = expires_at;
+                    }
                 }
                 push_event(
                     state,

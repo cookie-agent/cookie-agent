@@ -105,7 +105,11 @@ pub(crate) enum ReviewOutcome {
 
 pub(crate) enum ApprovalEvaluationTransition {
     Resolved(ApprovalOutcome),
-    Escalated(oneshot::Receiver<ApprovalOutcome>),
+    /// The call waits for the user until `expires_at`.
+    Escalated {
+        receiver: oneshot::Receiver<ApprovalOutcome>,
+        expires_at: Option<jiff::Timestamp>,
+    },
 }
 
 pub(crate) struct ApprovalToolInput<'a> {
@@ -176,10 +180,10 @@ impl Engine {
                 })
                 .collect(),
             false,
-            // The user-facing approval window comes from `[approval].timeout_ms`.
-            // The internal approval agent's own `limits.timeout_ms` is only the
-            // classifier model-call budget (see `run_internal_history_agent`).
-            approval_expiry(self.inner.config.load().runtime.approval.timeout_ms),
+            // The user's window, `[approval].timeout_ms`, starts when the
+            // call escalates to them; the reviewer's own `limits.timeout_ms`
+            // bounds only its model call (see `run_internal_history_agent`).
+            None,
         );
         self.await_user_approval(active, run, request, input.executor, false, input.tool)
             .await
@@ -458,11 +462,14 @@ impl Engine {
                 )
             })
             .await?;
-        let mut receiver = match transition {
+        let (mut receiver, expires_at) = match transition {
             ApprovalEvaluationTransition::Resolved(outcome) => return Ok(outcome),
-            ApprovalEvaluationTransition::Escalated(receiver) => receiver,
+            ApprovalEvaluationTransition::Escalated {
+                receiver,
+                expires_at,
+            } => (receiver, expires_at),
         };
-        let expiry_wait = approval_expiry_wait(approval_constraints(&request).expires_at);
+        let expiry_wait = approval_expiry_wait(expires_at);
         tokio::select! {
             decision = &mut receiver => decision.map_err(|_| EngineError::ActorStopped),
             _ = active.cancellation.cancelled() => {

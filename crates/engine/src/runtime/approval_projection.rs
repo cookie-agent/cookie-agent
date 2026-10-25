@@ -14,7 +14,9 @@ use tokio::sync::oneshot;
 use super::{
     ApprovalEvaluationTransition, ApprovalOutcome, ApprovalRespondFailure, ApprovalTerminal,
     Engine, EngineError, Event, PendingApproval, PreparedApprovalInvalidation, ReviewOutcome,
-    approval_flow::{approval_constraints, approval_deadline_exhausted, approval_evaluations},
+    approval_flow::{
+        approval_constraints, approval_deadline_exhausted, approval_evaluations, approval_expiry,
+    },
     helpers::root_id,
 };
 use cookie_agent_runtime_api::PreparedExecutorCell;
@@ -208,6 +210,11 @@ impl Engine {
             }));
         }
 
+        // The user's window starts now: the reviewer's time never comes
+        // out of it (approval reviewer spec section 10, b).
+        let expires_at = approval_constraints(&request)
+            .expires_at
+            .or_else(|| approval_expiry(self.inner.config.load().runtime.approval.timeout_ms));
         self.append_direct(
             session,
             Some(run),
@@ -216,7 +223,7 @@ impl Engine {
                 approval_id,
                 cookie_agent_protocol::ApprovalStep::Escalated {
                     reason_code: ApprovalReasonCode::Escalated,
-                    expires_at: None,
+                    expires_at,
                 },
             ),
         )?;
@@ -240,7 +247,10 @@ impl Engine {
         }
         #[cfg(test)]
         self.inner.test_hooks.pending_approval_ready.notify_one();
-        Ok(ApprovalEvaluationTransition::Escalated(receiver))
+        Ok(ApprovalEvaluationTransition::Escalated {
+            receiver,
+            expires_at,
+        })
     }
 
     pub(super) fn approval_respond_direct(
@@ -794,8 +804,12 @@ fn apply_approval_event(record: &mut ApprovalRecord, payload: &Event) {
             cookie_agent_protocol::ApprovalStep::Evaluated { decision } => {
                 record.internal_decision = Some(decision.clone());
             }
-            cookie_agent_protocol::ApprovalStep::Escalated { .. } => {
+            cookie_agent_protocol::ApprovalStep::Escalated { expires_at, .. } => {
                 record.status = ApprovalStatus::Escalated;
+                // The window an escalation opened is the record's.
+                if expires_at.is_some() {
+                    record.request = record.request.clone().with_expires_at(*expires_at);
+                }
             }
             cookie_agent_protocol::ApprovalStep::UserDecision { decision, .. } => {
                 record.user_decision = Some(*decision);

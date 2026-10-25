@@ -8,8 +8,6 @@ use cookie_agent_protocol::{
     SessionStatus, ToolTerminationOutcome, WildcardPattern,
 };
 
-use jiff::Timestamp;
-
 use crate::EngineError;
 
 use super::support::*;
@@ -695,7 +693,7 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
 }
 
 #[tokio::test]
-async fn approval_request_window_uses_the_configured_timeout() {
+async fn the_user_window_starts_at_the_escalation() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (mut fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     fixture.engine.shutdown().await;
@@ -745,18 +743,32 @@ async fn approval_request_window_uses_the_configured_timeout() {
             _ => None,
         })
         .expect("approval requested event");
-    let constraints: cookie_agent_protocol::ApprovalConstraints = serde_json::from_value(
-        serde_json::to_value(requested).expect("request JSON")["constraints"].clone(),
-    )
-    .expect("request constraints");
-    let expires_at = constraints
-        .expires_at
-        .expect("configured window must set an expiry");
-    let remaining = expires_at.duration_since(Timestamp::now()).unsigned_abs();
+    // The request opens no window: the reviewer's time is not the user's.
+    assert_eq!(requested.constraints().expires_at, None);
+    let (escalated_at, expires_at) =
+        events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ApprovalStep {
+                    approval_id: id,
+                    step:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalStep::Escalated { expires_at, .. },
+                        ),
+                } if *id == approval_id => Some((event.timestamp, *expires_at)),
+                _ => None,
+            })
+            .expect("escalated step");
+    let expires_at = expires_at.expect("the escalation opens the window");
+    // The window is computed just before the step is stamped.
+    let window = expires_at.duration_since(escalated_at).unsigned_abs();
     assert!(
-        remaining > std::time::Duration::from_secs(100),
-        "the configured 120s window must not collapse to the internal classifier budget, got {remaining:?}"
+        window <= std::time::Duration::from_secs(120)
+            && window > std::time::Duration::from_secs(119),
+        "the window is [approval] timeout_ms from the escalation, got {window:?}"
     );
+    // The record, and so `approval.list`, carries the window.
+    assert_eq!(approval.request.constraints().expires_at, Some(expires_at));
     captured.abort();
     fixture.engine.shutdown().await;
 }

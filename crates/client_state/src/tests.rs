@@ -4537,3 +4537,90 @@ fn pickers_show_the_document_id_only_when_it_differs_from_the_name() {
     assert_eq!(document_id("high", "high"), None);
     assert_eq!(document_id("base", "base"), None);
 }
+
+/// A request for `git status` with no window of its own, as a 1.28.0
+/// daemon writes it.
+fn windowless_approval_request() -> cookie_agent_protocol::ApprovalRequest {
+    use cookie_agent_protocol as p;
+    let resource = p::PreparedApprovalResource {
+        capability: p::PermissionAction::BASH,
+        canonical: p::PreparedResourceIdentity::new("command:git-status").unwrap(),
+        binding_digest: p::PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
+        binding_lifetime: p::PreparedBindingLifetime::ProcessLocal,
+        boundary: p::ApprovalBoundary::Exact,
+        source: p::ApprovalResourceSource::PrimaryOperation,
+    };
+    let resource_digest = resource.binding_digest.clone();
+    let operation = p::PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"arguments"),
+        vec![p::ApprovalCapability {
+            action: p::PermissionAction::BASH,
+            operation: p::PreparedCapabilityOperation::new("execute").unwrap(),
+        }],
+        vec![resource],
+        Sha256Digest::of_bytes(b"context"),
+    )
+    .unwrap();
+    p::ApprovalRequest::new(
+        ApprovalId::new_v7(),
+        1,
+        p::ToolCallId::new_v7(),
+        ApprovalTrigger::PermissionPolicy,
+        operation,
+        vec![p::ApprovalEvaluation {
+            resource_digest,
+            effect: p::PermissionEffect::Ask,
+            trace: p::DecisionTrace {
+                action: p::PermissionAction::BASH,
+                normalized_resource: "git status".into(),
+                candidates: Vec::new(),
+                effect: p::PermissionEffect::Ask,
+                precedence_reason: "test".into(),
+            },
+        }],
+        p::ApprovalConstraints {
+            allow_once: true,
+            allow_tree_grant: false,
+            cancellable: true,
+            expires_at: None,
+        },
+    )
+    .unwrap()
+}
+
+/// The user's window opens at the escalation (client protocol 1.28.0): the
+/// escalated step's `expires_at` becomes the approval's.
+#[test]
+fn an_escalation_opens_the_approval_window() {
+    let session_id = SessionId::new_v7();
+    let request = windowless_approval_request();
+    let approval_id = request.approval_id();
+    let mut state = SessionState::default();
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        1,
+        jiff::Timestamp::now(),
+        EventPayload::ApprovalRequested { request },
+    );
+    let expires_at = jiff::Timestamp::from_second(4_000_000_000).unwrap();
+    reduce_event(
+        &mut state,
+        session_id,
+        None,
+        2,
+        jiff::Timestamp::now(),
+        EventPayload::approval_step(
+            approval_id,
+            cookie_agent_protocol::ApprovalStep::Escalated {
+                reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
+                expires_at: Some(expires_at),
+            },
+        ),
+    );
+    let approval = &state.approvals[0];
+    assert!(approval.escalated);
+    assert_eq!(approval.constraints.expires_at, Some(expires_at));
+    assert!(approval.is_visible_user_escalation());
+}

@@ -15,7 +15,6 @@ use tokio::sync::mpsc;
 use super::{
     ActiveRun, ApprovalToolInput, Engine, EngineError, Event, OutputCapture, PreparedToolCall,
     PublishedTool, PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
-    approval_flow::approval_expiry,
     approval_projection::denied_tool_failure,
     helpers::{safe_display, session_depth},
 };
@@ -210,12 +209,9 @@ impl Engine {
                         allow_once: true,
                         allow_tree_grant,
                         cancellable: true,
-                        // The user-facing approval window comes from
-                        // `[approval].timeout_ms`, not the internal approval
-                        // agent's classifier model-call budget.
-                        expires_at: approval_expiry(
-                            self.inner.config.load().runtime.approval.timeout_ms,
-                        ),
+                        // The user's window, `[approval].timeout_ms`, starts
+                        // when the call escalates to them.
+                        expires_at: None,
                     },
                 )
                 .map_err(|error| ToolFailure {
