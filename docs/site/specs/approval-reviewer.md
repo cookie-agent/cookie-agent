@@ -1,6 +1,6 @@
 # Approval reviewer: context, caching, and verdicts
 
-Status: **draft** (2026-10-24); open questions answered, awaiting the go-ahead. Revises the built-in
+Status: **implemented** (2026-10-24); approved 2026-10-24, with the deviations in section 15. Revises the built-in
 `approval` internal agent ([Agents: internal agents](../extend/agents.md))
 and the approval flow of the [permission consolidation](permission-consolidation.md)
 spec, which left approvals out of scope.
@@ -304,8 +304,10 @@ strings. The current flow does not escape the user message (section 10, d).
   When a provider does not offer the TTL asked for, the reviewer uses the
   nearest offered TTL by ratio (on a log scale), with ties going to the
   longer TTL:
-  - on OpenAI GPT-5.6 controls (`30m`, `12h`), `1h` maps to `30m`, and so
-    does `5m`;
+  - on OpenAI Responses with the GPT-5.6 controls (`30m`, `12h`), `1h` maps
+    to `30m`, and so does `5m`;
+  - on OpenAI Chat Completions and Azure with the controls (`30m` only),
+    every TTL maps to `30m`;
   - on Anthropic and Bedrock (`5m`, `1h`), `30m` maps to `1h`, and so does
     `12h`.
 
@@ -316,7 +318,8 @@ strings. The current flow does not escape the user message (section 10, d).
   |---|---|---|---|---|---|---|
   | Anthropic | rolling 1h; system and tools raised to 1h (a one-hour marker cannot follow a five-minute one) | 1h under the same rule | 1h under the same rule | rolling 5m; system and tools as configured | the provider's `cache` table, unset fields from the reviewed session's layer (root: system 1h, tools 1h, rolling 1h; subagent: system 1h, tools 1h, rolling 5m) | no markers |
   | Bedrock | rolling 1h on models that support it, system and tools raised to 1h; else 5m | 1h where supported, else 5m | 1h where supported, else 5m | rolling 5m | the provider's `cache` table, unset fields from the reviewed session's layer (root: system 1h, tools 1h, rolling 1h; subagent: system 1h, tools 1h, rolling 5m), each 1h only on models that support it, else 5m | no cache points |
-  | OpenAI, Azure (GPT-5.6 controls) | rolling placement at 30m | rolling placement at 30m | rolling placement at 12h (writes cost 2.5× input, reads 0.1×) | rolling placement at 30m | the provider's `cache` table (controls off by default: automatic caching) | `mode = "explicit"` with no placements: no cache writes |
+  | OpenAI Responses (GPT-5.6 controls) | rolling placement at 30m | rolling placement at 30m | rolling placement at 12h (writes cost 2.5× input, reads 0.1×) | rolling placement at 30m | the provider's `cache` table (controls off by default: automatic caching) | `mode = "explicit"` with no placements: no cache writes |
+  | OpenAI Chat Completions, Azure (GPT-5.6 controls) | rolling placement at 30m, the only TTL offered | rolling placement at 30m | rolling placement at 30m, the only TTL offered | rolling placement at 30m | the provider's `cache` table (controls off by default: automatic caching) | `mode = "explicit"` with no placements: no cache writes |
   | OpenAI, Azure (other models) | automatic caching; no effect | no effect | no effect | no effect | no effect | no effect (cannot be turned off) |
   | OpenAI-compatible | provider-managed automatic caching; no effect | no effect | no effect | no effect | no effect | no effect |
   | Gemini, Vertex | implicit caching; no effect | no effect | no effect | no effect | no effect | no effect |
@@ -331,8 +334,11 @@ strings. The current flow does not escape the user message (section 10, d).
     `${parent_model}` on another provider follows that model's row.
   - **The OpenAI row** was checked against OpenAI's documentation on
     2026-10-24: on GPT-5.6 and later, `prompt_cache_options.ttl` is `"30m"`
-    or `"12h"`, and a breakpoint can carry its own `ttl`. oven-sdk support
-    for `12h` and per-breakpoint TTLs is a separate change.
+    or `"12h"` (12h documented for the Responses API only), and a breakpoint
+    can carry its own `ttl`; explicit mode with no breakpoint writes no
+    cache. Checked again 2026-10-24 for the implementation: writes cost
+    1.25× input at 30m and 2.5× at 12h, reads 0.1×. oven-sdk 933036e takes
+    `12h` on Responses only; Chat Completions and Azure stay 30m-only.
 
   The knob is read at each review, so a config apply takes effect at the
   next one. The title agent keeps `rolling = None`.
@@ -547,3 +553,97 @@ the reviewer, and the title agent's stays off.
 ## 14. Open questions
 
 None. All were answered 2026-10-24 (section 3).
+
+## 15. Implementation notes
+
+Implemented 2026-10-24 in client protocol 1.28.0 and plugin protocol
+1.16.0, in the order of section 13. Where it differs from the sections
+above:
+
+**Protocol and history (section 11).**
+- **The window opens at the escalated step.** The request written before
+  the review carries no `expires_at`; the `escalated` step gained an
+  optional `expires_at`, and the approval's record (`approval.list`) folds
+  it into its request's constraints, so clients read the window where they
+  always did. Section 11 listed no step change; this is the one additive
+  member it took.
+- **`internal_agent_failed` is on the evaluated step only.** The decision
+  is `escalate` from `internal_agent`; the `escalated` step that follows
+  keeps `escalated`, which older readers require. Readers before 1.28.0
+  checked an evaluated step's decision even when its reason read as a
+  fallback, so they refuse that one step as contradictory (their approval
+  records already read tolerantly); 1.28.0 readers check a decision only
+  when its reason and source read as themselves.
+- **`permission_mode_set`** is appended once per change (not when the
+  mode is already the root's newest) and folds into the root's
+  projection, which every reader of the mode asks: the runtime-only map
+  is gone, so the mode also survives a root paging out. Like the overlay,
+  it follows revert and fork.
+- **The tool denial's `source`** is now a plain label in the model-facing
+  JSON (`policy`, `model`, `approval_reviewer`); model history passes it
+  on as written.
+
+**The conversation (section 4).**
+- **Producer messages count as messages.** Scheduled prompts and agents'
+  messages reach a session as producer messages, not as
+  `user_input_submitted` with `cron:` or `agent:` origins (event origins
+  are `user`, `client:`, `engine:`, and `plugin:`). A cron job's prompt is
+  `[scheduled prompt <job>]` with the user's authority, an agent's message
+  `[message from agent <session>]`, a subagent's report `[report from
+  subagent <session>]`, another external producer's `[message from
+  <source> <name>]`; background tool and delegation results are output and
+  goal reminders are the engine's, so they stay out.
+- **Positions.** A message sits at its `user_input_submitted` or
+  `producer_message_consumed`, a tool call at its `tool_call_terminated`
+  (so its outcome is known when its turn is rendered), and a user decision
+  at its `approval_finalized`. A review is the cut at its call's
+  `approval_requested`; a review whose reviewer failed has no verdict and
+  no turn, and its entries fall into the next review's turn.
+- **A review is recognised** by an approval `internal_agent_finished` that
+  completed between the call's request and its evaluated step, so `ask`
+  mode's escalations (also evaluated by `internal_agent`) are not verdicts.
+- **The request block is rendered from the log.** The normalized
+  parameters are not in the log, so the block carries the call's name,
+  where it runs (from the tool's source and the attachment's recorded
+  workspace), what the permission rules saw (each evaluation's action and
+  normalized resource), and the model's arguments from the committed turn,
+  canonicalized. Normalized parameters could not be re-rendered byte for
+  byte after a restart.
+- **Earlier thinking blocks are not kept** (decision 6). The reviewer's
+  reasoning is not in the log, so a re-render could not include it; the
+  verdicts are rendered as canonical JSON from the evaluated step's
+  decision and rationale.
+- **Read-only tools** left out: `read`, `glob`, `grep`, `list`, `ls`,
+  `read_artifact`, `list_runtimes`, `list_agents`, `cron_list`,
+  `memory_search`, `memory_read`, `goal_get`, `get_subagent_result`, and
+  `skill`.
+- **Inherited opening.** A delegated session's root messages are those up
+  to the creation of the root's child on its branch; the ancestors'
+  instructions are each one's first `engine:delegation` input. The root's
+  `AGENTS.md` is that of the newest run that loaded one by then. A root's
+  own is that of the newest run that loaded one before its first review.
+- **Token estimates** are bytes over four throughout.
+- **`<prior_decisions>`** and the tree-wide prior-decision scan are gone,
+  as section 4.4 says; users' decisions in other sessions of the tree are
+  not shown.
+
+**Verdicts (section 7).** A reason has control characters replaced and
+blank runs collapsed before it is cut to 300 characters; a blank reason
+is none. The TUI shows "The reviewer asks: <reason>" (or that the reviewer
+failed) as a `reviewer` row of the approval panel, the web client as a
+note on the approval card, and both append "· the reviewer: <reason>" to
+the info row of a call the reviewer or its mode resolved.
+
+**Caching (section 5).** "GPT-5.6 controls" means the provider's cache
+table enables them (`mode`, `ttl`, `system`, or `rolling`); without them
+the knob has no effect on OpenAI and Azure. Configuration status notes
+are computed for the approval agent's named models; `${parent_model}` is
+only known at a review. When the reviewer runs the session's very model
+with an inherited cache, the session's strategy is the base the TTL maps
+from.
+
+**Budgets and epochs (section 6).** Over budget, user messages also keep
+the first `[instructions from the parent agent]`, a delegated session's
+own task. The trajectory halves as often as it takes to fit. A new
+epoch's first turn says the conversation started over; the five carried
+verdicts read `[your earlier verdict] on <tool>: {…}`.
