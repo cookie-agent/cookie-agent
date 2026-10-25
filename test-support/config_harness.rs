@@ -3,9 +3,18 @@
 //! Rust tests share process environment and may run in parallel, so changing
 //! these variables from an individual test is racy. This initializer runs
 //! before the test harness starts and gives the whole process one isolated
-//! home.
+//! home, which a finalizer removes as the process exits.
 
-use std::{env, fs, path::Path, process, time::SystemTime};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process,
+    sync::OnceLock,
+    time::SystemTime,
+};
+
+/// The process's isolated directory, for the finalizer to remove.
+static ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 #[used]
 #[cfg_attr(
@@ -40,9 +49,30 @@ static ISOLATE_USER_CONFIG: extern "C" fn() = {
             #[cfg(windows)]
             env::set_var("USERPROFILE", &home);
         }
+        let _ = ROOT.set(root);
     }
 
     initialize
+};
+
+// Every test process (nextest runs one per test) would otherwise leave its
+// directory behind. Not on Windows, whose CRT terminators this does not
+// register; a process that aborts leaves its directory there too.
+#[cfg(not(target_os = "windows"))]
+#[used]
+#[cfg_attr(
+    target_vendor = "apple",
+    unsafe(link_section = "__DATA,__mod_term_func,mod_term_funcs")
+)]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".fini_array"))]
+static REMOVE_USER_CONFIG: extern "C" fn() = {
+    extern "C" fn remove() {
+        if let Some(root) = ROOT.get() {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    remove
 };
 
 fn create_private_directory(path: &Path) {
