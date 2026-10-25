@@ -350,8 +350,8 @@ fn write_status<I: ConfigIo>(
             .join(", ");
         io.write_line(&format!("Restart the daemon to apply: {parts}."))?;
     }
-    for diagnostic in &status.diagnostics {
-        io.write_line(&format!("Note: {diagnostic}"))?;
+    for line in cookie_agent_client_state::config::diagnostic_lines(status) {
+        io.write_line(&line)?;
     }
     Ok(())
 }

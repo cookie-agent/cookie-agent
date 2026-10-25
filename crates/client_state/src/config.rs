@@ -4,6 +4,7 @@
 
 use cookie_agent_protocol::{
     ClientError, ConfigApplyErrorCode, ConfigApplyResult, ConfigGetResult, ConfigStatus,
+    NativeCompactionState,
 };
 
 /// The text a new agent document starts from.
@@ -100,6 +101,41 @@ pub fn diagnostic_lines(status: &ConfigStatus) -> Vec<String> {
         .diagnostics
         .iter()
         .map(|diagnostic| format!("Note: {diagnostic}"))
+        .chain(
+            native_compaction_lines(status)
+                .into_iter()
+                .map(|line| format!("Note: {line}")),
+        )
+        .collect()
+}
+
+/// The providers the daemon's native compaction record marks, one line
+/// each: the provider, why native compaction is off for it, and how long
+/// ago it was marked. Deleting the record file or changing the provider's
+/// configuration clears a mark; it also expires on its own.
+pub fn native_compaction_lines(status: &ConfigStatus) -> Vec<String> {
+    status
+        .native_compaction
+        .iter()
+        .map(|mark| {
+            let state = match mark.state {
+                NativeCompactionState::Unsupported => "native compaction unsupported",
+                NativeCompactionState::RejectsWindows => "compacted windows rejected",
+                NativeCompactionState::Unknown => "native compaction off",
+            };
+            let epoch = jiff::Timestamp::UNIX_EPOCH;
+            let marked = epoch
+                .checked_add(jiff::SignedDuration::from_secs(
+                    i64::try_from(mark.age_seconds).unwrap_or(i64::MAX),
+                ))
+                .unwrap_or(jiff::Timestamp::MAX);
+            format!(
+                "`{}`: {state} ({}), {}",
+                mark.provider_id,
+                mark.reason,
+                crate::memory::ago(epoch, marked)
+            )
+        })
         .collect()
 }
 
@@ -211,7 +247,7 @@ pub fn document_text(config: &ConfigGetResult, path: &str) -> String {
 mod tests {
     use cookie_agent_protocol::{ConfigApplyErrorCode, ConfigGetResult};
 
-    use super::{ConfigApplyOutcome, config_rows, new_agent_refusal};
+    use super::{ConfigApplyOutcome, config_rows, diagnostic_lines, new_agent_refusal};
 
     fn config() -> ConfigGetResult {
         serde_json::from_value(serde_json::json!({
@@ -269,5 +305,28 @@ mod tests {
         }
         .report("config.toml");
         assert!(!conflict.keep_draft);
+    }
+
+    #[test]
+    fn native_compaction_marks_read_as_notes_with_their_reason_and_age() {
+        let status = serde_json::from_value(serde_json::json!({
+            "applied_revision": format!("sha256:{}", "a".repeat(64)),
+            "diagnostics": ["an agent is missing"],
+            "native_compaction": [
+                {"provider_id": "gateway", "state": "unsupported",
+                 "reason": "the compact endpoint answered HTTP 404", "age_seconds": 7200},
+                {"provider_id": "openai", "state": "rejects_windows",
+                 "reason": "a request carrying a compacted window was refused", "age_seconds": 30}
+            ]
+        }))
+        .expect("status");
+        assert_eq!(
+            diagnostic_lines(&status),
+            [
+                "Note: an agent is missing",
+                "Note: `gateway`: native compaction unsupported (the compact endpoint answered HTTP 404), 2 hours ago",
+                "Note: `openai`: compacted windows rejected (a request carrying a compacted window was refused), less than a minute ago",
+            ]
+        );
     }
 }

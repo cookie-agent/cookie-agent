@@ -1085,9 +1085,9 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
         view! {
             {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
             {config.status.error.clone().map(|error| view! { <p class=ERROR>{format!("The running configuration has an error: {error}")}</p> })}
-            {(!config.status.diagnostics.is_empty()).then(|| view! {
+            {(!config.status.diagnostics.is_empty() || !config.status.native_compaction.is_empty()).then(|| view! {
                 <ul class="flex flex-col gap-1 text-sm text-caramel dark:text-maple" id="config-diagnostics">
-                    {config.status.diagnostics.iter().map(|diagnostic| view! { <li>{diagnostic.clone()}</li> }).collect_view()}
+                    {config.status.diagnostics.iter().cloned().chain(cookie_agent_client_state::config::native_compaction_lines(&config.status)).map(|line| view! { <li>{line}</li> }).collect_view()}
                 </ul>
             })}
             <div class="flex items-center gap-2" data-config-path="config.toml">
