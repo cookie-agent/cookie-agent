@@ -86,6 +86,7 @@ mod cron_fire;
 mod cron_run;
 pub(crate) mod producers;
 mod prompt_blocks;
+pub(crate) mod push_signals;
 mod recovery;
 mod residency;
 pub(crate) mod restart;
@@ -991,6 +992,8 @@ pub(crate) struct Inner {
     pub(crate) skills_runtime: SkillRuntimeState,
     pub(crate) output: OutputState,
     pub(crate) background: background_tasks::BackgroundTaskState,
+    /// When to push a notification (`runtime/push_signals.rs`).
+    pub(crate) push: push_signals::PushSignalState,
     pub(crate) compaction: CompactionState,
     pub(crate) uploads: uploads::UploadState,
     pub(crate) onboarding: onboarding::OnboardingRuntimeState,
@@ -1266,6 +1269,7 @@ impl Engine {
                 skills_runtime: SkillRuntimeState::default(),
                 output: OutputState::default(),
                 background: background_tasks::BackgroundTaskState::default(),
+                push: push_signals::PushSignalState::default(),
                 compaction: CompactionState::default(),
                 uploads: uploads::UploadState::default(),
                 onboarding: onboarding::OnboardingRuntimeState::new(initial_onboarding),

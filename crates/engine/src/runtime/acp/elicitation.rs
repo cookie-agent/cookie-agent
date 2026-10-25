@@ -526,6 +526,13 @@ impl Engine {
                 },
             );
         }
+        let asks_user = immediate.is_none().then(|| {
+            (
+                question.agent.to_string(),
+                question.message.clone(),
+                question.url.is_some(),
+            )
+        });
         if self
             .append(
                 session,
@@ -542,6 +549,9 @@ impl Engine {
                 ElicitationAnsweredBy::RunEnded,
                 "the question could not be recorded",
             );
+        }
+        if let Some((agent, message, url)) = asks_user {
+            self.signal_question_needs_you(session, agent, message, url);
         }
         let answer = match immediate {
             Some(answer) => answer,

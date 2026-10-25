@@ -133,6 +133,7 @@ nav:
       - 'External Producers [producers]': engine/producers.md
       - 'Memory [memory]': engine/memory.md
       - 'Cron Jobs [cron]': engine/cron.md
+      - 'Push Notifications [notifications]': engine/notifications.md
       - 'ACP Agents [acp]': engine/acp.md
       - 'Request Header [headers]': engine/headers.md
       - tui.toml:

@@ -72,6 +72,9 @@ pub use runtime::onboarding::{
     KitError, KitFileAction, KitFilePlan, KitManifest, KitPreview, KitSource, OnboardingOutcome,
     OnboardingRequest, OnboardingRequirement, OnboardingState, RELEASES_URL,
 };
+pub use runtime::push_signals::{
+    NeedsYouItem, NeedsYouSignal, PushSignal, SettledOutcome, SettledSignal,
+};
 pub use runtime::restart::{RestartHook, RestartScheduled, RestartStatus};
 pub use runtime::uploads::{MAX_UPLOADS_PER_CONNECTION, MediaError};
 pub use runtime::{

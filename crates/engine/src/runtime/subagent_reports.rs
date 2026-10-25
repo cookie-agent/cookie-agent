@@ -35,6 +35,11 @@ impl Engine {
         else {
             return;
         };
+        // The report on its way wakes the parent: a push notification
+        // waits for it (push notifications spec section 3.2).
+        if ended {
+            self.report_in_flight(session, run, parent_session_id, true);
+        }
         self.notify_background_changed(parent_session_id);
         if !ended {
             return;
@@ -46,13 +51,18 @@ impl Engine {
             .clone()
             .or_else(|| tokio::runtime::Handle::try_current().ok())
         else {
+            self.report_in_flight(session, run, parent_session_id, false);
             return;
         };
-        let _ = self.spawn_admission_task(&runtime, async move {
+        if !self.spawn_admission_task(&runtime, async move {
             engine
                 .deliver_subagent_report_until_done(session, run)
                 .await;
-        });
+            engine.report_in_flight(session, run, parent_session_id, false);
+            engine.refresh_live_waiting(parent_session_id);
+        }) {
+            self.report_in_flight(session, run, parent_session_id, false);
+        }
     }
 
     /// Delivers the report of `run` of `child`, retrying with a growing

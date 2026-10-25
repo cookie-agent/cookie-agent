@@ -779,6 +779,7 @@ async fn the_user_window_starts_at_the_escalation() {
         .engine
         .create_session(selection.clone())
         .expect("session");
+    let mut signals = fixture.engine.subscribe_push_signals();
     fixture
         .engine
         .start_run(
@@ -839,6 +840,22 @@ async fn the_user_window_starts_at_the_escalation() {
     );
     // The record, and so `approval.list`, carries the window.
     assert_eq!(approval.request.constraints().expires_at, Some(expires_at));
+    // The escalation asks the daemon to push it, with the call and its
+    // window (push notifications spec section 4.1).
+    let signal = with_watchdog("the approval's push signal", signals.recv())
+        .await
+        .expect("push signal");
+    let crate::PushSignal::NeedsYou(needs) = signal else {
+        panic!("expected a needs-you signal, got {signal:?}");
+    };
+    assert_eq!(needs.root, session.session_id);
+    assert_eq!(needs.session, session.session_id);
+    assert_eq!(needs.handle, None);
+    assert_eq!(needs.expires_at(), Some(expires_at));
+    assert!(
+        matches!(&needs.item, crate::NeedsYouItem::Approval { tool, .. } if !tool.is_empty() && tool != "A tool call"),
+        "{needs:?}"
+    );
     captured.abort();
     fixture.engine.shutdown().await;
 }

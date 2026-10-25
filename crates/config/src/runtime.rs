@@ -446,6 +446,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub cron: CronConfig,
     #[serde(default)]
+    pub notifications: NotificationsConfig,
+    #[serde(default)]
     pub acp: AcpConfig,
     /// `[skills]`: the official skills.
     #[serde(default)]
@@ -477,6 +479,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) producers: Option<ProducersConfig>,
     pub(crate) memory: Option<MemoryConfig>,
     pub(crate) cron: Option<CronConfig>,
+    pub(crate) notifications: Option<NotificationsConfig>,
     pub(crate) acp: Option<AcpConfig>,
     pub(crate) skills: Option<SkillsConfig>,
     #[serde(default)]
@@ -976,6 +979,66 @@ impl CronConfig {
         None
     }
 }
+/// `[notifications]`: Web Push notifications to the user's browsers
+/// (`docs/site/specs/push-notifications.md` section 10).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// Whether the daemon sends pushes; `false` keeps the subscriptions
+    /// and the requests working.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// What a notification says of the session.
+    #[serde(default)]
+    pub preview: NotificationPreview,
+    /// Notify for approvals and agent questions waiting for the user.
+    #[serde(default = "yes")]
+    pub approvals: bool,
+    /// Notify when a root session a new-session cron job created settles.
+    #[serde(default = "yes")]
+    pub cron_sessions: bool,
+    /// The VAPID `sub` claim, an `https:` or `mailto:` URL; absent, the
+    /// repository URL the daemon was built from.
+    #[serde(default)]
+    pub contact: Option<String>,
+}
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            preview: NotificationPreview::default(),
+            approvals: true,
+            cron_sessions: true,
+            contact: None,
+        }
+    }
+}
+impl NotificationsConfig {
+    fn invalid_reason(&self) -> Option<&'static str> {
+        let contact = self.contact.as_deref()?;
+        let valid = contact
+            .strip_prefix("https://")
+            .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace))
+            || contact
+                .strip_prefix("mailto:")
+                .is_some_and(|rest| rest.contains('@') && !rest.contains(char::is_whitespace));
+        (!valid).then_some("notifications.contact must be an https: or mailto: URL")
+    }
+}
+
+/// `[notifications] preview`: how much of the session a notification
+/// shows on the lock screen.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationPreview {
+    /// The start of the final reply, the error, the tool call, or the
+    /// question.
+    #[default]
+    Reply,
+    /// Only what happened: finished, failed, or waiting.
+    Status,
+}
+
 /// `[skills]`: whether the daemon keeps the official skills up to date and
 /// offers them (`docs/site/specs/default-models-and-onboarding.md` section
 /// 13).
@@ -1334,6 +1397,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.cron {
         runtime.cron = value.clone();
     }
+    if let Some(value) = &layer.notifications {
+        runtime.notifications = value.clone();
+    }
     if let Some(value) = &layer.acp {
         runtime.acp = value.clone();
     }
@@ -1466,6 +1532,9 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.cron.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
+    }
+    if let Some(reason) = runtime.notifications.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.acp.invalid_reason() {

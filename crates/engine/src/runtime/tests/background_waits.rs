@@ -487,3 +487,42 @@ async fn a_scheduled_wake_with_an_undelivered_result_keeps_the_root_resident() {
         .expect("requests");
     engine.shutdown().await;
 }
+
+/// A root whose turn ended while its child still waits on a background call
+/// stays armed and silent; it settles once, after the child's follow-up
+/// turn reported and the root's run for it ended (push notifications spec
+/// section 3.4).
+#[tokio::test]
+async fn a_root_settles_for_a_push_only_after_its_waking_child_reported() {
+    let job = start_child_job().await;
+    let engine = job.fixture.engine.clone();
+    assert!(
+        engine
+            .inner
+            .push
+            .armed
+            .lock()
+            .unwrap()
+            .contains_key(&job.parent),
+        "the root's turn ended and waits to settle"
+    );
+    let mut signals = engine.subscribe_push_signals();
+    let job = finish_child_job(job).await;
+    let signal = with_watchdog("the root settled", signals.recv())
+        .await
+        .expect("push signal");
+    let crate::PushSignal::Settled(settled) = signal else {
+        panic!("expected a settle, got {signal:?}");
+    };
+    assert_eq!(settled.root, job.parent);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), signals.recv())
+            .await
+            .is_err(),
+        "the root settles once"
+    );
+    with_watchdog("scripted server", job.captured)
+        .await
+        .expect("requests");
+    engine.shutdown().await;
+}

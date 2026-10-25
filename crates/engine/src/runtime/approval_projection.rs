@@ -235,6 +235,7 @@ impl Engine {
                 },
             ),
         )?;
+        self.signal_approval_needs_you(session, &request, expires_at);
         let (sender, receiver) = oneshot::channel();
         let replaced = self
             .inner

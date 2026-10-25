@@ -334,6 +334,7 @@ fn build_in_process_server(
             default_model: None,
             small_model: None,
             cron: Default::default(),
+            notifications: Default::default(),
             acp: Default::default(),
             skills: Default::default(),
             server: ServerConfig::default(),

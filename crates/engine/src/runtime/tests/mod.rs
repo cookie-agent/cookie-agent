@@ -42,6 +42,7 @@ mod producers_plugin;
 mod projects;
 mod prompts;
 mod providers;
+mod push_signals;
 mod recovery;
 mod replay;
 mod restart;

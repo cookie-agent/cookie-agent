@@ -79,9 +79,9 @@ fn owns_message(caller: &ProducerOwner, message: &ProducerOwner) -> bool {
     }
 }
 
-struct Registration {
+pub(super) struct Registration {
     id: ProducerId,
-    authority: ProducerAuthority,
+    pub(super) authority: ProducerAuthority,
     registered: Instant,
 }
 
@@ -103,8 +103,8 @@ impl std::ops::Deref for ProjectionRef<'_> {
 
 #[derive(Default)]
 pub(super) struct SessionProducers {
-    registrations: Vec<Registration>,
-    wake_scheduled: bool,
+    pub(super) registrations: Vec<Registration>,
+    pub(super) wake_scheduled: bool,
     pub(super) starting: bool,
     pub(super) preempted: bool,
     diagnostics: HashSet<String>,
@@ -1473,9 +1473,16 @@ impl Engine {
     /// spec, addendum 2026-10-22). Each refresh computes and records under
     /// `waking_children`, releases every lock, announces, and only then
     /// refreshes the parent, so no lock is held across a step.
+    ///
+    /// Beside it, `waking_once` carries the same up the tree counting only
+    /// one-time cron jobs, which decides when a root settles for a push
+    /// notification (push notifications spec section 3.2); the root at the
+    /// top of a refresh is checked for settling.
     pub(super) fn refresh_live_waiting(&self, session: SessionId) {
         let mut next = Some(session);
+        let mut top = session;
         while let Some(session) = next {
+            top = session;
             let (changed, parent) = {
                 let mut waking = self
                     .inner
@@ -1483,28 +1490,33 @@ impl Engine {
                     .waking_children
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
+                let mut waking_once = self
+                    .inner
+                    .push
+                    .waking_once
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 let kinds = self.live_waiting_kinds(session, &waking);
                 let wakes = !kinds.is_empty();
+                let wakes_once = self.wakes_once(session, &waking_once);
                 let changed = self.inner.store.record_live_waiting(session, kinds);
+                let mut parent_of = None;
+                let mut parent_of =
+                    || *parent_of.get_or_insert_with(|| self.inner.store.parent_of(session));
                 // The parent to refresh: the one this session started or
-                // stopped counting for.
-                let parent = if !wakes {
-                    waking.remove(&session)
-                } else if let Entry::Vacant(entry) = waking.entry(session) {
-                    let parent = self.inner.store.parent_of(session);
-                    if let Some(parent) = parent {
-                        entry.insert(parent);
-                    }
-                    parent
-                } else {
-                    None
-                };
-                (changed, parent)
+                // stopped counting for, in either view.
+                let parent = count_for_parent(&mut waking, session, wakes, &mut parent_of);
+                let parent_once =
+                    count_for_parent(&mut waking_once, session, wakes_once, &mut parent_of);
+                (changed, parent.or(parent_once))
             };
             if changed {
                 self.inner.store.announce_live_waiting(session);
             }
             next = parent;
+        }
+        if self.inner.store.parent_of(top).is_none() {
+            self.schedule_settle_check(top);
         }
     }
 
@@ -1574,8 +1586,28 @@ impl Engine {
                 .map(|(_, parent)| *parent)
                 .collect::<HashSet<_>>();
             waking.retain(|child, parent| !deleted.contains(child) && !deleted.contains(parent));
+            let mut waking_once = self
+                .inner
+                .push
+                .waking_once
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let parents = parents
+                .into_iter()
+                .chain(
+                    waking_once
+                        .iter()
+                        .filter(|(child, parent)| {
+                            deleted.contains(child) && !deleted.contains(parent)
+                        })
+                        .map(|(_, parent)| *parent),
+                )
+                .collect::<HashSet<_>>();
+            waking_once
+                .retain(|child, parent| !deleted.contains(child) && !deleted.contains(parent));
             parents
         };
+        self.forget_push_state(deleted);
         self.inner.store.forget_live_waiting(deleted);
         for parent in parents {
             self.refresh_live_waiting(parent);
@@ -2208,4 +2240,25 @@ pub(crate) enum ExternalProducerResult {
     Send(ProducerSendResult),
     Unregister(ProducerUnregisterResult),
     Discard(ProducerDiscardResult),
+}
+
+/// Records whether `session` counts for its parent in `children` (child to
+/// parent), and returns the parent when that changed: the one to refresh.
+fn count_for_parent(
+    children: &mut HashMap<SessionId, SessionId>,
+    session: SessionId,
+    counts: bool,
+    parent_of: &mut dyn FnMut() -> Option<SessionId>,
+) -> Option<SessionId> {
+    if !counts {
+        return children.remove(&session);
+    }
+    if let Entry::Vacant(entry) = children.entry(session) {
+        let parent = parent_of();
+        if let Some(parent) = parent {
+            entry.insert(parent);
+        }
+        return parent;
+    }
+    None
 }

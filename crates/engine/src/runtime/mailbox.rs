@@ -544,6 +544,9 @@ impl Engine {
                 self.observe_cron_run(session, run);
             }
         }
+        if !recovery {
+            self.observe_push_event(session, &envelope.payload);
+        }
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.log(session)?.event_snapshot().iter() {
                 let drops = self.inner.plugins.stream_session_event(durable);

@@ -114,6 +114,7 @@ pub(crate) fn production_provider_harness(
             default_model: None,
             small_model: None,
             cron: Default::default(),
+            notifications: Default::default(),
             acp: Default::default(),
             skills: Default::default(),
             server: ServerConfig::default(),

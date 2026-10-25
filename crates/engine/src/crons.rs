@@ -451,6 +451,17 @@ impl StoredJob {
         self.enabled && self.next_fire.is_some() && self.target.session() == Some(session)
     }
 
+    /// Whether the job fires once by its definition: an `at` schedule (what
+    /// `in` becomes) or a `cron` schedule with `max_runs = 1`. The agent
+    /// waking itself through one is the agent still at work, which holds a
+    /// push notification back (push notifications spec section 2).
+    pub(crate) fn one_time(&self) -> bool {
+        match self.schedule {
+            StoredSchedule::At(_) => true,
+            StoredSchedule::Cron(_) => self.max_runs == CronMaxRuns::Count(1),
+        }
+    }
+
     /// The name lists show: the job's name, else the start of its prompt.
     pub(crate) fn label(&self) -> String {
         if let Some(name) = &self.name {
@@ -554,6 +565,13 @@ impl CronStore {
     /// Whether an enabled job with a next fire targets `session`.
     pub(crate) fn waits_on(&self, session: SessionId) -> bool {
         lock(&self.jobs).iter().any(|job| job.waits_on(session))
+    }
+
+    /// Whether an enabled one-time job with a next fire targets `session`.
+    pub(crate) fn waits_on_once(&self, session: SessionId) -> bool {
+        lock(&self.jobs)
+            .iter()
+            .any(|job| job.one_time() && job.waits_on(session))
     }
 
     /// Whether a delivered fire into `session` waits for its run's end.
