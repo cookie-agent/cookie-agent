@@ -646,8 +646,8 @@ converted to text. Over-cap responses return the fetched prefix with
 parameter. Full results use the standard event log and result
 store. The standard Bounded policy retains oversized output and sends a preview
 to the model. `read_artifact` pages the retained header and body by physical
-line; its zero-based offset 5 starts at the body. Follow `next_offset` for
-successive pages. Metadata is separate and is not paged.
+line, numbered from 1; its 1-based offset 6 starts at the body. Follow the
+continuation marker, or `next_offset`, for successive pages. Metadata is separate and is not paged.
 
 Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
 `transport_error`, and `unsupported_content_type` (which names the content type).
