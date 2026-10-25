@@ -62,11 +62,13 @@ impl Workspace {
     }
 
     /// Finds the tree `session_id` belongs to: the one shown, a root of the
-    /// session list, or the root its origin names.
-    pub(super) fn locate_tree(self, session_id: SessionId) {
+    /// session list, or the root its origin names. Returns that root, or
+    /// `None` while the daemon is asked for it, which records the tree as
+    /// viewed once it answers.
+    pub(super) fn locate_tree(self, session_id: SessionId) -> Option<SessionId> {
         if self.in_viewed_tree(session_id) {
             self.refresh_tree();
-            return;
+            return self.tree_root.get_untracked();
         }
         let known = self.sessions.with_untracked(|sessions| {
             sessions
@@ -77,11 +79,17 @@ impl Workspace {
         match known {
             Some(SessionOrigin::Delegated {
                 root_session_id, ..
-            }) => self.reroot_tree(root_session_id),
-            Some(_) => self.reroot_tree(session_id),
+            }) => {
+                self.reroot_tree(root_session_id);
+                Some(root_session_id)
+            }
+            Some(_) => {
+                self.reroot_tree(session_id);
+                Some(session_id)
+            }
             None => {
                 let Some(client) = self.client() else {
-                    return;
+                    return Some(session_id);
                 };
                 spawn_local(async move {
                     let root = match client.get_session(SessionGetParams { session_id }).await {
@@ -95,8 +103,10 @@ impl Workspace {
                     };
                     if self.selected.get_untracked() == Some(session_id) {
                         self.reroot_tree(root);
+                        self.note_viewed(root);
                     }
                 });
+                None
             }
         }
     }

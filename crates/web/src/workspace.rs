@@ -1235,8 +1235,11 @@ impl Workspace {
         self.user_menu.set(None);
         let generation = self.begin_ownership_classification(session_id);
         let connection = self.connection.get_value();
-        self.locate_tree(session_id);
-        self.note_viewed(session_id);
+        // A root still being asked for is recorded once the daemon
+        // answers, rather than as the tree shown before.
+        if let Some(root) = self.locate_tree(session_id) {
+            self.note_viewed(root);
+        }
         let owned = self.owned(session_id);
         if let Some(subscribe) = self
             .subscriptions
@@ -1262,11 +1265,10 @@ impl Workspace {
         });
     }
 
-    /// Records `session_id`'s tree as the most recently viewed: its
+    /// Records the tree rooted at `root` as the most recently viewed: its
     /// sessions stay subscribed, and the tree this pushes out has its
     /// settled sessions released.
-    fn note_viewed(self, session_id: SessionId) {
-        let root = self.tree_root.get_untracked().unwrap_or(session_id);
+    pub(super) fn note_viewed(self, root: SessionId) {
         let released = self
             .subscriptions
             .try_update_value(|subscriptions| {
