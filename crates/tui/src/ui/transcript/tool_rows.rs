@@ -608,6 +608,8 @@ pub(super) enum ToolRowAction {
     LoadFull(usize),
     /// Opens a session the display refers to.
     OpenSession(SessionId),
+    /// Opens the memory the `link` block at this index names.
+    OpenMemory(usize),
 }
 
 impl ToolRowAction {
@@ -620,6 +622,10 @@ impl ToolRowAction {
                 block: u32::try_from(block).unwrap_or(u32::MAX),
             },
             Self::OpenSession(session) => BlockId::ToolSession { call_id, session },
+            Self::OpenMemory(block) => BlockId::ToolMemory {
+                call_id,
+                block: u32::try_from(block).unwrap_or(u32::MAX),
+            },
         }
     }
 }

@@ -220,6 +220,28 @@ impl App {
         self.memory_panel.focus = Some(url);
     }
 
+    /// Opens the Memory panel at the memory a call's title row names: the
+    /// call's memory URL, else the URL its header shows whole.
+    pub(in crate::ui) fn open_tool_memory(&mut self, call_id: cookie_agent_protocol::ToolCallId) {
+        let url = self
+            .selected
+            .and_then(|session| self.store.sessions.get(&session))
+            .and_then(|state| state.tools.get(&call_id))
+            .and_then(|tool| match tool.memory_url() {
+                Some(url) => Some(url.to_owned()),
+                None => {
+                    let header = tool.header_text();
+                    let span = cookie_agent_client_state::tool_header::memory_url_span(&header)?;
+                    let url = &header[span];
+                    cookie_agent_client_state::tool_header::is_memory_url(url)
+                        .then(|| url.to_owned())
+                }
+            });
+        if let Some(url) = url {
+            self.open_memory_panel_at(url);
+        }
+    }
+
     /// Fetches `memory.list` for the open `/memory` panel.
     pub(super) fn poll_memory(&mut self) {
         if self.modal != Modal::Memory || !self.memory_panel.refresh.start() {

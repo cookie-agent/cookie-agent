@@ -346,6 +346,12 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         session: SessionId,
     },
+    /// A row of a call's display, the `link` block at this index, that
+    /// opens the memory it names in the Memory panel.
+    ToolMemory {
+        call_id: cookie_agent_protocol::ToolCallId,
+        block: u32,
+    },
     CommittedTool {
         turn_seq: u64,
         content_index: u32,
@@ -602,6 +608,7 @@ impl LayoutCache {
                             BlockId::ToolOutput { .. }
                                 | BlockId::ToolFull { .. }
                                 | BlockId::ToolSession { .. }
+                                | BlockId::ToolMemory { .. }
                         )
                     })
                     .flat_map(|region| {
@@ -888,39 +895,59 @@ pub(super) struct BlockHit {
     pub(super) toggle_rect: Option<Rect>,
     /// The background button of a running call's title row, when shown.
     pub(super) action_rect: Option<Rect>,
+    /// The memory URL a call's title row names, which opens the memory in
+    /// the Memory panel.
+    pub(super) link_rect: Option<Rect>,
 }
 
 impl BlockHit {
     /// The cells a hover paints: the block's header content rect, clipped to
     /// its hit rect and to `viewport` (which already stops before the
-    /// reserved scrollbar columns), minus a background button and the blank
-    /// column before it. The header highlight ends before the button, which
-    /// hovers on its own, so the two highlights never touch.
+    /// reserved scrollbar columns), minus a background button with the blank
+    /// column before it and the rest of its row, and minus a memory link
+    /// with a blank column on each side. The header highlight leaves out
+    /// what hovers on its own, so the highlights never touch.
     pub(super) fn hover_cells(&self, viewport: Option<Rect>) -> Vec<Rect> {
         let Some(rect) = self.hover_rect.map(|rect| rect.intersection(self.rect)) else {
             return Vec::new();
         };
         let rect = viewport.map_or(rect, |viewport| rect.intersection(viewport));
-        let Some(button) = self
+        let on_header = |button: &Rect| button.y >= rect.y && button.y < rect.bottom();
+        // Each target on the title row takes the columns `[start, end)`.
+        let mut taken = self
             .action_rect
-            .filter(|button| button.y >= rect.y && button.y < rect.bottom())
-        else {
+            .filter(on_header)
+            .map(|button| (button.y, button.x.saturating_sub(1), rect.right()))
+            .into_iter()
+            .chain(self.link_rect.filter(on_header).map(|link| {
+                (
+                    link.y,
+                    link.x.saturating_sub(1),
+                    link.right().saturating_add(1),
+                )
+            }))
+            .collect::<Vec<_>>();
+        let Some(&(row, _, _)) = taken.first() else {
             return vec![rect];
         };
-        let row_end = button.x.saturating_sub(1).clamp(rect.x, rect.right());
-        [
-            Rect::new(rect.x, rect.y, rect.width, button.y - rect.y),
-            Rect::new(rect.x, button.y, row_end - rect.x, 1),
-            Rect::new(
-                rect.x,
-                button.y + 1,
-                rect.width,
-                rect.bottom() - button.y - 1,
-            ),
-        ]
-        .into_iter()
-        .filter(|rect| !rect.is_empty())
-        .collect()
+        taken.retain(|(y, _, _)| *y == row);
+        taken.sort_by_key(|(_, start, _)| *start);
+        let mut cells = vec![Rect::new(rect.x, rect.y, rect.width, row - rect.y)];
+        let mut x = rect.x;
+        for (_, start, end) in taken {
+            let start = start.clamp(x, rect.right());
+            cells.push(Rect::new(x, row, start - x, 1));
+            x = end.clamp(x, rect.right());
+        }
+        cells.push(Rect::new(x, row, rect.right() - x, 1));
+        cells.push(Rect::new(
+            rect.x,
+            row + 1,
+            rect.width,
+            rect.bottom() - row - 1,
+        ));
+        cells.retain(|rect| !rect.is_empty());
+        cells
     }
 }
 
@@ -2017,6 +2044,23 @@ impl App {
                 self.watch_session(session);
                 return;
             }
+            BlockId::ToolMemory { call_id, block } => {
+                let url = self
+                    .store
+                    .sessions
+                    .get(&session_id)
+                    .and_then(|state| state.tools.get(&call_id))
+                    .and_then(|tool| match tool.shown_display().get(block as usize) {
+                        Some(cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::DisplayBlock::Link { url, .. },
+                        )) => Some(url.clone()),
+                        _ => None,
+                    });
+                if let Some(url) = url {
+                    self.open_memory_panel_at(url);
+                }
+                return;
+            }
             BlockId::MemoryChange(seq) => {
                 let url = self.store.sessions.get(&session_id).and_then(|state| {
                     state.transcript.iter().rev().find_map(|item| match item {
@@ -2413,8 +2457,33 @@ pub(super) fn block_hit_at<'a>(
         }
         _ => None,
     };
+    // A memory URL the title row names links to the Memory panel.
+    let link_rect = match region.id {
+        BlockId::Tool(_) if region.start_line >= scroll_offset && region.start_line < end => {
+            line_at(region.start_line).and_then(|line| {
+                let text = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                let span = cookie_agent_client_state::tool_header::memory_url_span(&text)?;
+                let column = UnicodeWidthStr::width(&text[..span.start]);
+                Some(Rect::new(
+                    viewport
+                        .x
+                        .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
+                    viewport.y
+                        + u16::try_from(region.start_line - scroll_offset).unwrap_or(u16::MAX),
+                    u16::try_from(UnicodeWidthStr::width(&text[span])).unwrap_or(u16::MAX),
+                    1,
+                ))
+            })
+        }
+        _ => None,
+    };
     (start < end).then(|| BlockHit {
         action_rect,
+        link_rect,
         rect: Rect::new(
             viewport.x,
             viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),
@@ -2424,7 +2493,10 @@ pub(super) fn block_hit_at<'a>(
         id: region.id,
         toggle_rect: if matches!(
             region.id,
-            BlockId::ToolOutput { .. } | BlockId::ToolFull { .. } | BlockId::ToolSession { .. }
+            BlockId::ToolOutput { .. }
+                | BlockId::ToolFull { .. }
+                | BlockId::ToolSession { .. }
+                | BlockId::ToolMemory { .. }
         ) {
             // Action regions are single clickable rows of a tool body.
             (region.start_line >= scroll_offset).then(|| {

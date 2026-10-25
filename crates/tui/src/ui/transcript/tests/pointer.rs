@@ -79,6 +79,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::Scrollbar(ScrollbarTarget::Input) => "composer scrollbar",
         PointerTarget::UserMessage(_) => "user message",
         PointerTarget::BackgroundButton(_) => "background button",
+        PointerTarget::MemoryLink(_) => "memory link",
         PointerTarget::TranscriptBlock(_) => "transcript block",
         PointerTarget::TreeExpand(_) => "tree expand",
         PointerTarget::TreeRow(_) => "tree row",
@@ -91,6 +92,7 @@ fn is_transcript(target: PointerTarget) -> bool {
         target,
         PointerTarget::TranscriptBlock(_)
             | PointerTarget::BackgroundButton(_)
+            | PointerTarget::MemoryLink(_)
             | PointerTarget::UserMessage(_)
     )
 }
@@ -197,6 +199,33 @@ fn sweep(app: &mut App, surface: &str) -> BTreeSet<&'static str> {
     targets.iter().map(|(target, _)| kind(*target)).collect()
 }
 
+/// A finished memory edit of `agent://builder`, and a finished memory
+/// search that found `project://web/build`.
+fn memory_calls() -> (crate::state::SessionState, crate::state::SessionState) {
+    let edit = display_tool_state(
+        hinted_presentation(
+            "Edit memory agent://builder",
+            cookie_agent_protocol::ToolHint::FILE_EDIT,
+            Some("agent://builder"),
+        ),
+        ToolStatus::Completed,
+        Vec::new(),
+    );
+    let search = display_tool_state(
+        hinted_presentation(
+            "Search memory",
+            cookie_agent_protocol::ToolHint::SEARCH,
+            Some("build"),
+        ),
+        ToolStatus::Completed,
+        vec![cookie_agent_protocol::DisplayBlock::Link {
+            url: "project://web/build".into(),
+            label: Some("Build conventions".into()),
+        }],
+    );
+    (edit, search)
+}
+
 fn background_call(job: &str) -> BackgroundCall {
     BackgroundCall {
         job: job.into(),
@@ -227,6 +256,17 @@ async fn content_app() -> (App, SessionId, ToolCallId) {
             .extend(tall_transcript_state(40).transcript);
         state.transcript.extend(done.transcript);
         state.tools.extend(done.tools);
+        // A memory call, whose title row links to the memory, and an open
+        // search whose results open theirs.
+        let (memory, search) = memory_calls();
+        state.transcript.extend(memory.transcript);
+        state.tools.extend(memory.tools);
+        app.expanded_blocks
+            .entry(session)
+            .or_default()
+            .insert(BlockId::Tool(read_tool_id(&search)));
+        state.transcript.extend(search.transcript);
+        state.tools.extend(search.tools);
         state.transcript.extend(running.transcript);
         state.tools.extend(running.tools);
         // A model's memory change, whose line opens the Memory panel.
@@ -490,6 +530,7 @@ async fn every_clickable_element_hovers_visibly() {
         "composer scrollbar",
         "user message",
         "background button",
+        "memory link",
         "transcript block",
         "tree expand",
         "tree row",
@@ -620,6 +661,119 @@ async fn a_tool_header_hover_stops_before_its_background_button() {
                 .expect("header")
                 .intersection(app.hit_map.conversation.unwrap())
         ]
+    );
+}
+
+/// A memory URL on a call's title row is a target of its own: it hovers
+/// alone, the header around it hovers without it, and a click opens the
+/// Memory panel at the memory while the rest of the row toggles the call.
+/// A search result's row opens its memory too.
+#[tokio::test]
+async fn a_memory_url_on_a_title_row_opens_the_memory() {
+    let (mut app, session, run) = app_with_active_run().await;
+    app.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+    let (memory, search) = memory_calls();
+    let call_id = read_tool_id(&memory);
+    let search_id = read_tool_id(&search);
+    {
+        let state = app.store.sessions.get_mut(&session).expect("session");
+        state.transcript.extend(memory.transcript);
+        state.tools.extend(memory.tools);
+        state.transcript.extend(search.transcript);
+        state.tools.extend(search.tools);
+    }
+    let _ = run;
+    app.hover = None;
+    let plain = draw(&mut app);
+    let hit = *app
+        .hit_map
+        .blocks
+        .iter()
+        .find(|hit| hit.id == BlockId::Tool(call_id))
+        .expect("call hit");
+    let link = hit.link_rect.expect("memory link");
+    let text = link
+        .positions()
+        .map(|position| plain[position].symbol().to_owned())
+        .collect::<String>();
+    assert_eq!(text, "agent://builder");
+    for x in link.x..link.right() {
+        assert_eq!(
+            app.hover_target_at(x, link.y),
+            Some(PointerTarget::MemoryLink(call_id))
+        );
+    }
+    let header = hit.hover_rect.expect("header");
+    for x in [header.x, link.x - 1, link.right()] {
+        assert_eq!(
+            app.hover_target_at(x, link.y),
+            Some(PointerTarget::TranscriptBlock(BlockId::Tool(call_id))),
+            "at {x}"
+        );
+    }
+    // The header highlight leaves the link and a column on each side.
+    app.hover = Some(PointerTarget::TranscriptBlock(BlockId::Tool(call_id)));
+    let hovered = draw(&mut app);
+    assert!(
+        restyled(
+            &plain,
+            &hovered,
+            Rect::new(header.x, link.y, link.x - 1 - header.x, 1)
+        ) > 0
+    );
+    assert_eq!(
+        restyled(
+            &plain,
+            &hovered,
+            Rect::new(link.x - 1, link.y, link.width + 2, 1)
+        ),
+        0
+    );
+    // The link hovers alone.
+    app.hover = Some(PointerTarget::MemoryLink(call_id));
+    let hovered = draw(&mut app);
+    assert!(restyled(&plain, &hovered, link) > 0);
+    assert_eq!(
+        restyled(
+            &plain,
+            &hovered,
+            Rect::new(header.x, link.y, link.x - header.x, 1)
+        ),
+        0
+    );
+
+    app.hover = None;
+    draw(&mut app);
+    app.handle_click(link.x, link.y).await;
+    assert_eq!(app.modal, Modal::Memory);
+    assert_eq!(app.memory_panel.focus.as_deref(), Some("agent://builder"));
+    assert!(
+        !app.expanded_blocks
+            .get(&session)
+            .is_some_and(|blocks| blocks.contains(&BlockId::Tool(call_id))),
+        "the link does not toggle the call"
+    );
+
+    // An open search: its result's row opens that memory.
+    app.memory_panel = Default::default();
+    app.modal = Modal::None;
+    app.expanded_blocks
+        .entry(session)
+        .or_default()
+        .insert(BlockId::Tool(search_id));
+    draw(&mut app);
+    let row = *app
+        .hit_map
+        .blocks
+        .iter()
+        .find(|hit| matches!(hit.id, BlockId::ToolMemory { call_id, block: 0 } if call_id == search_id))
+        .expect("the result's row");
+    let at = row.toggle_rect.expect("its click row");
+    app.handle_click(at.x + 2, at.y).await;
+    assert_eq!(app.modal, Modal::Memory);
+    assert_eq!(
+        app.memory_panel.focus.as_deref(),
+        Some("project://web/build")
     );
 }
 

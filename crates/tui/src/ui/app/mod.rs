@@ -543,6 +543,9 @@ pub(super) enum PointerTarget {
     UserMessage(u64),
     /// A running call's background button on its title row.
     BackgroundButton(cookie_agent_protocol::ToolCallId),
+    /// The memory URL a call's title row names: opens it in the Memory
+    /// panel.
+    MemoryLink(cookie_agent_protocol::ToolCallId),
     TranscriptBlock(BlockId),
     /// A tree row's expand/collapse marker.
     TreeExpand(SessionId),

@@ -355,6 +355,21 @@ fn block_rows(
                 out.push(ToolBodyLine::wrapped(Line::from(spans)));
             }
         }
+        // A memory URL opens the memory in the Memory panel.
+        DisplayBlock::Link { url, label }
+            if cookie_agent_client_state::tool_header::is_memory_url(url) =>
+        {
+            let text = match label.as_deref().filter(|label| !label.is_empty()) {
+                Some(label) => format!("🧠 {url} — {}", flatten_header_argument(label)),
+                None => format!("🧠 {url}"),
+            };
+            if let Some(text) = sink.line(&text) {
+                out.push(
+                    ToolBodyLine::wrapped(Line::styled(text, theme.link()))
+                        .with_action(ToolRowAction::OpenMemory(index)),
+                );
+            }
+        }
         DisplayBlock::Link { url, label } => {
             let shown = label.as_deref().unwrap_or(url);
             if let Some(shown) = sink.line(shown) {
