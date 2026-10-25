@@ -154,7 +154,7 @@ pub(crate) fn history_from_view(
                 used[reused] = true;
                 return Ok(original[reused].clone());
             }
-            build_turn(message, &files).map_err(|error| format!("message {index}: {error}"))
+            build_turn(message, &files).map_err(|error| format!("messages[{index}]{error}"))
         })
         .collect()
 }
@@ -205,14 +205,22 @@ fn original_files(history: &[HistoryTurn]) -> HashMap<String, FilePart> {
     files
 }
 
+/// The parts of a replacement message, or `.content[i]: unknown type`
+/// for the first part this build does not know.
 fn known_parts(content: Vec<Open<HookContentPart>>) -> Result<Vec<HookContentPart>, String> {
     content
         .into_iter()
-        .map(|part| match part {
+        .enumerate()
+        .map(|(index, part)| match part {
             Open::Known(part) => Ok(part),
-            Open::Unknown { tag, .. } => Err(format!("a part of unknown type `{tag}`")),
+            Open::Unknown { tag, .. } => Err(format!(".content[{index}]: unknown type `{tag}`")),
         })
         .collect()
+}
+
+/// `error`, about part `index` of a message, as `.content[index]: error`.
+fn at_part(index: usize) -> impl Fn(String) -> String {
+    move |error| format!(".content[{index}]: {error}")
 }
 
 fn known_file(
@@ -227,48 +235,54 @@ fn known_file(
     })
 }
 
+/// Rebuilds one replacement message. Every error names the part it is
+/// about, as `.content[i]: …`, which the caller prefixes with the message's
+/// own path (`messages[n]`), so a plugin author can find it in the array
+/// they sent.
 fn build_turn(
     message: HookHistoryMessage,
     files: &HashMap<String, FilePart>,
 ) -> Result<HistoryTurn, String> {
     let parts = known_parts(message.content)?;
-    let refused = |role: &str, part: &HookContentPart| {
-        Err(format!(
+    let refused = |role: &str, index: usize, part: &HookContentPart| {
+        Err(at_part(index)(format!(
             "a {role} message cannot hold a `{}` part",
             content_part_type(part)
-        ))
+        )))
     };
     match message.role {
         ExtensionMessageRole::System => {
             let mut content = Vec::new();
-            for part in parts {
+            for (index, part) in parts.into_iter().enumerate() {
                 match part {
                     HookContentPart::Text { text } => {
                         content.push(SystemPart::Text(TextPart::new(text)));
                     }
-                    other => return refused("system", &other),
+                    other => return refused("system", index, &other),
                 }
             }
             Ok(HistoryTurn::system(SystemMessage::new(content)))
         }
         ExtensionMessageRole::User => {
             let mut content = Vec::new();
-            for part in parts {
+            for (index, part) in parts.into_iter().enumerate() {
                 match part {
                     HookContentPart::Text { text } => {
                         content.push(InputPart::Text(TextPart::new(text)))
                     }
                     HookContentPart::File { artifact } => {
-                        content.push(InputPart::File(known_file(files, &artifact)?));
+                        content.push(InputPart::File(
+                            known_file(files, &artifact).map_err(at_part(index))?,
+                        ));
                     }
-                    other => return refused("user", &other),
+                    other => return refused("user", index, &other),
                 }
             }
             Ok(HistoryTurn::user(UserMessage::new(content)))
         }
         ExtensionMessageRole::Assistant => {
             let mut content = Vec::new();
-            for part in parts {
+            for (index, part) in parts.into_iter().enumerate() {
                 content.push(match part {
                     HookContentPart::Text { text } => AssistantPart::Text(TextPart::new(text)),
                     HookContentPart::ToolCall {
@@ -282,7 +296,7 @@ fn build_turn(
                         is_error,
                     } => AssistantPart::ToolResult(result_part(tool_call_id, content, is_error)),
                     HookContentPart::File { artifact } => {
-                        AssistantPart::File(known_file(files, &artifact)?)
+                        AssistantPart::File(known_file(files, &artifact).map_err(at_part(index))?)
                     }
                 });
             }
@@ -301,7 +315,7 @@ fn build_turn(
         }
         ExtensionMessageRole::Tool => {
             let mut results: Vec<ToolResultPart> = Vec::new();
-            for part in parts {
+            for (index, part) in parts.into_iter().enumerate() {
                 match part {
                     HookContentPart::ToolResult {
                         tool_call_id,
@@ -310,10 +324,12 @@ fn build_turn(
                     } => results.push(result_part(tool_call_id, content, is_error)),
                     // A file belongs to the result before it.
                     HookContentPart::File { artifact } => {
-                        let file = known_file(files, &artifact)?;
-                        let result = results
-                            .last_mut()
-                            .ok_or("a file in a tool message must follow a tool result")?;
+                        let file = known_file(files, &artifact).map_err(at_part(index))?;
+                        let result = results.last_mut().ok_or_else(|| {
+                            at_part(index)(
+                                "a file in a tool message must follow a tool result".into(),
+                            )
+                        })?;
                         let mut values = match std::mem::replace(
                             &mut result.content,
                             ToolContent::Mixed(Vec::new()),
@@ -325,7 +341,7 @@ fn build_turn(
                         values.push(ContentValue::File(file));
                         result.content = ToolContent::Mixed(values);
                     }
-                    other => return refused("tool", &other),
+                    other => return refused("tool", index, &other),
                 }
             }
             Ok(HistoryTurn::tool(ToolMessage::new(results)))
@@ -431,7 +447,7 @@ pub(crate) fn assistant_from_view(
         let part = match part {
             Open::Known(part) => part,
             Open::Unknown { tag, .. } => {
-                return Err(format!("part {position}: unknown type `{tag}`"));
+                return Err(format!("content[{position}]: unknown type `{tag}`"));
             }
         };
         if let Some(reused) = views
@@ -451,7 +467,7 @@ pub(crate) fn assistant_from_view(
         }
         content.push(
             build_assistant_part(original, part)
-                .map_err(|error| format!("part {position}: {error}"))?,
+                .map_err(|error| format!("content[{position}]: {error}"))?,
         );
     }
     content.extend(
@@ -521,21 +537,19 @@ pub(crate) fn transformed_input(
     if transformed.is_blank() {
         return Err("plugin transformed user input to empty content".into());
     }
-    for part in transformed.parts() {
+    for (index, part) in transformed.parts().iter().enumerate() {
         match part {
             Open::Known(UserContentPart::Text { .. }) => {}
             Open::Known(UserContentPart::File { artifact }) => {
                 if !input.files().any(|file| file == artifact) {
                     return Err(format!(
-                        "plugin added file {} to user input; a transform may not add files",
+                        "content[{index}]: file {} is not in the user input; a transform may not add files",
                         artifact.display_name()
                     ));
                 }
             }
             Open::Unknown { tag, .. } => {
-                return Err(format!(
-                    "plugin transformed user input to a part of unknown type `{tag}`"
-                ));
+                return Err(format!("content[{index}]: unknown type `{tag}`"));
             }
         }
     }

@@ -397,7 +397,11 @@ see views of them:
 Parts are open: a part of a type the SDK does not know reads as
 `Open::Unknown`, and the daemon refuses a replacement that holds one. A
 replacement the daemon refuses is skipped with an `invalid_modification`
-diagnostic, as before.
+diagnostic, as before. The diagnostic names the refused item by its path in
+the array the plugin returned, counting from 0 as the plugin's own arrays
+do: `messages[1].content[0]: a system message cannot hold a `tool_call` part`
+for `model_before_request`, and `content[2]: unknown type `hologram`` for
+`message_end` and `user_before_input`.
 
 `agent_before_start` gets `prompt_context`:
 

@@ -203,7 +203,7 @@ fn a_history_replacement_may_not_add_files_or_misplace_parts() {
             ExtensionMessageRole::User,
             vec![unknown_file.clone()]
         )])
-        .contains("may not add files")
+        .starts_with("messages[0].content[0]: file ")
     );
     assert!(
         refused(vec![message(
@@ -211,8 +211,7 @@ fn a_history_replacement_may_not_add_files_or_misplace_parts() {
             vec![Open::Known(HookContentPart::File {
                 artifact: artifact("text/plain", "build.log", LOG),
             })]
-        )])
-        .contains("must follow a tool result")
+        )]) == "messages[0].content[0]: a file in a tool message must follow a tool result"
     );
     assert!(
         refused(vec![message(
@@ -222,14 +221,24 @@ fn a_history_replacement_may_not_add_files_or_misplace_parts() {
                 name: "read".into(),
                 arguments: json!({}),
             })]
-        )])
-        .contains("a system message cannot hold a `tool_call` part")
+        )]) == "messages[0].content[0]: a system message cannot hold a `tool_call` part"
     );
     let future: Open<HookContentPart> =
         serde_json::from_value(json!({"type": "hologram", "depth": 3})).expect("an open part");
     assert!(
         refused(vec![message(ExtensionMessageRole::User, vec![future])])
-            .contains("unknown type `hologram`")
+            == "messages[0].content[0]: unknown type `hologram`"
+    );
+    // The path is the plugin's own array positions, from 0.
+    assert!(
+        refused(vec![
+            message(ExtensionMessageRole::User, vec![text("first")]),
+            message(
+                ExtensionMessageRole::User,
+                vec![text("second"), unknown_file.clone()]
+            ),
+        ])
+        .starts_with("messages[1].content[1]: file ")
     );
 }
 
@@ -363,7 +372,7 @@ fn a_changed_assistant_part_is_rebuilt_and_hidden_parts_keep_their_place() {
     assert!(
         assistant_from_view(&original, vec![added])
             .expect_err("an added file")
-            .contains("may not add files")
+            .starts_with("content[0]: file ")
     );
 }
 
@@ -395,7 +404,7 @@ fn an_input_transform_may_change_or_drop_parts_but_not_add_files() {
     assert!(
         transformed_input(&input, added)
             .expect_err("an added file")
-            .contains("may not add files")
+            .starts_with("content[0]: file ")
     );
     // The same digest under another name or size is another file.
     let renamed = UserContent::new(vec![Open::Known(UserContentPart::File {
