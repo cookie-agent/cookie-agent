@@ -84,6 +84,25 @@ CI workflow (the Documentation workflow still builds the site), except for
 the pages the tests above keep in step with the code. Pushes publish no
 prerelease: the nightly comes from CI's daily run on `main` (`RELEASING.md`).
 
+## Build Output
+
+Cargo never removes stale artifacts from a `target` directory. The many
+profiles and targets here (debug, `ci`, `web`, wasm, Windows checks), and one
+linked test binary per test target, grow it by gigabytes a day, and a
+long-lived one reaches terabytes.
+
+- A worktree builds into its own `target`. Remove the worktree, and with it
+  that `target`, as soon as its branch lands or is abandoned, and delete the
+  branch.
+- Never point `CARGO_TARGET_DIR` at a temporary or scratch directory that
+  outlives the task. Write gate and test logs there, not builds.
+- Tests that need files make them under a `tempfile` directory that removes
+  itself, never a fixed path under the system temp directory.
+  `test-support/config_harness.rs` removes each test process's isolated home
+  as the process exits.
+- When a `target` grows large, `cargo clean` it. A compiler cache such as
+  sccache keeps the next build reasonable.
+
 ## Gates
 
 CI runs all of these; the local tier above picks among them. Use locked
