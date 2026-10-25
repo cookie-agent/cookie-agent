@@ -22,9 +22,6 @@ pub struct MarkdownDocument {
     stable_reference_definitions: BTreeMap<String, ReferenceDefinition>,
     reference_definitions: BTreeMap<String, ReferenceDefinition>,
     stable_reference_dependencies: BTreeSet<String>,
-    /// Render every source newline as a line break instead of joining soft
-    /// breaks with a space: typed text means its newlines.
-    hard_breaks: bool,
     /// No more text follows: the open tail renders and caches like the
     /// stable prefix. Cleared by [`Self::append`].
     finished: bool,
@@ -50,8 +47,7 @@ impl MarkdownBlock {
         self.kind
     }
 
-    /// The block's events, soft breaks already turned into hard breaks in a
-    /// document that wants them.
+    /// The block's events, soft breaks already turned into hard breaks.
     pub fn events(&self) -> &[Event<'static>] {
         &self.events
     }
@@ -119,18 +115,6 @@ impl MarkdownDocument {
     pub fn new(source: String) -> Self {
         let mut document = Self {
             source,
-            ..Self::default()
-        };
-        document.reparse_open_tail();
-        document
-    }
-
-    /// A document whose soft line breaks render as hard breaks, for text a
-    /// person typed (user messages) rather than prose a model reflowed.
-    pub fn with_hard_breaks(source: String) -> Self {
-        let mut document = Self {
-            source,
-            hard_breaks: true,
             ..Self::default()
         };
         document.reparse_open_tail();
@@ -291,7 +275,7 @@ impl MarkdownDocument {
         let source = &self.source[start..];
         self.parse_passes = self.parse_passes.wrapping_add(1);
         self.parsed_bytes = self.parsed_bytes.wrapping_add(source.len() as u64);
-        parse_document(source, self.hard_breaks)
+        parse_document(source)
     }
 
     fn effective_definitions(
@@ -421,7 +405,10 @@ struct ParsedReferenceDefinition {
     span: std::ops::Range<usize>,
 }
 
-fn parse_document(source: &str, hard_breaks: bool) -> ParsedDocument {
+/// Every newline in a paragraph renders as a line break, as the text's
+/// author (a person or a model) wrote it, rather than joining with a space
+/// as CommonMark does; blank lines still end a paragraph, however many.
+fn parse_document(source: &str) -> ParsedDocument {
     let (definitions, events, broken_references) = {
         let mut broken_references = Vec::new();
         let mut broken_link_callback = |broken: BrokenLink<'_>| {
@@ -469,7 +456,7 @@ fn parse_document(source: &str, hard_breaks: bool) -> ParsedDocument {
             _ => {}
         }
         current.push(match event {
-            Event::SoftBreak if hard_breaks => Event::HardBreak,
+            Event::SoftBreak => Event::HardBreak,
             event => event.into_static(),
         });
         if depth == 0 {
@@ -549,7 +536,7 @@ fn block_kind(event: &Event<'_>) -> MarkdownBlockKind {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{MarkdownBlockKind, MarkdownDocument};
+    use super::{Event, MarkdownBlock, MarkdownBlockKind, MarkdownDocument};
 
     #[test]
     fn streamed_text_settles_blocks_and_keeps_the_open_tail_apart() {
@@ -671,6 +658,28 @@ mod tests {
         assert_eq!(code.kind(), MarkdownBlockKind::Code);
         assert!(code.source().ends_with("let value_1999 = 1999;\n"));
         assert!(document.parsed_bytes() - parsed < 2 * code.content_len() as u64);
+    }
+
+    #[test]
+    fn a_newline_breaks_the_line_and_blank_lines_end_the_paragraph() {
+        let document = MarkdownDocument::new("one\ntwo\n\n\n\nthree".to_owned()).finished();
+        let blocks = document.blocks().collect::<Vec<_>>();
+        assert_eq!(blocks.len(), 2);
+        let breaks = |block: &MarkdownBlock| {
+            block
+                .events()
+                .iter()
+                .filter(|event| matches!(event, Event::HardBreak))
+                .count()
+        };
+        assert_eq!(breaks(blocks[0]), 1);
+        assert!(
+            blocks[0]
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Event::SoftBreak))
+        );
+        assert_eq!(breaks(blocks[1]), 0);
     }
 
     #[test]

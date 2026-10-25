@@ -1997,7 +1997,7 @@ mod tests {
             &TranscriptItem::User {
                 id: 1,
                 version: 0,
-                markdown: cookie_agent_client_state::markdown::MarkdownDocument::with_hard_breaks(
+                markdown: cookie_agent_client_state::markdown::MarkdownDocument::new(
                     "look at notes.txt".into(),
                 )
                 .finished(),

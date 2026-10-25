@@ -250,7 +250,7 @@ fn a_name_arriving_later_relabels_cached_assistant_headers_only() {
         TranscriptItem::User {
             id: 99,
             version: 0,
-            markdown: MarkdownDocument::with_hard_breaks("question".into()),
+            markdown: MarkdownDocument::new("question".into()),
             seq: 1,
         },
     );

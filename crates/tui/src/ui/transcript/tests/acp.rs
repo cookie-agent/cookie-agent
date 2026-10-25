@@ -272,8 +272,7 @@ fn a_notice_and_a_steered_message_render() {
     state.transcript.push(TranscriptItem::User {
         id: 1,
         version: 0,
-        markdown: crate::markdown::MarkdownDocument::with_hard_breaks("look at notes.txt".into())
-            .finished(),
+        markdown: crate::markdown::MarkdownDocument::new("look at notes.txt".into()).finished(),
         seq: 7,
     });
     state.acp.steered.insert(7);

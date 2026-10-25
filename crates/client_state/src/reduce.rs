@@ -463,8 +463,7 @@ pub(super) fn reduce_event_from(
             push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,
-                markdown: MarkdownDocument::with_hard_breaks(user_content_markdown(&content))
-                    .finished(),
+                markdown: MarkdownDocument::new(user_content_markdown(&content)).finished(),
                 seq: sequence,
             });
         }
