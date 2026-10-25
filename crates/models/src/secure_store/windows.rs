@@ -286,8 +286,14 @@ pub(super) fn while_replacing<T>(
         if std::mem::take(&mut read_again) {
             continue;
         }
-        if Instant::now() >= deadline || !replacement_staged(path) {
+        if Instant::now() >= deadline {
             return Err(error);
+        }
+        if !replacement_staged(path) {
+            // No staged file left: either nothing is replacing `path`, or
+            // the rename landed after the failed open. One more read tells
+            // the two apart.
+            return read();
         }
         std::thread::sleep(pause);
         pause = (pause * 2).min(LONGEST_PAUSE);
