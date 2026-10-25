@@ -2004,11 +2004,13 @@ fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
     assert_eq!(projection.messages[1].admission, Some((run, 7)));
     assert!(!projection.messages[1].consumed);
 
-    assert!(compaction_tail_candidates(&events).is_empty());
+    // A window alone carries no summary: the next summary reads the events
+    // it covers from the log.
+    assert!(!compaction_tail_candidates(&events).is_empty());
     let prefix = compaction_prefix_history(&events, &store, &binding, "System prompt.", Some(7))
-        .expect("native compaction prefix");
+        .expect("summary prefix over a window alone");
     let prefix = serde_json::to_string(&prefix).unwrap();
-    assert!(!prefix.contains("producer body covered by native window"));
+    assert!(prefix.contains("producer body covered by native window"));
     assert!(!prefix.contains("producer body after native boundary"));
 }
 
@@ -2953,4 +2955,201 @@ fn compaction_pins_the_latest_memory_snapshot() {
     let retained = turn_texts(&retained);
     assert_eq!(retained.len(), 4, "{retained:?}");
     assert!(retained[2].contains("pinned lessons"));
+}
+
+/// A Responses binding with native compaction, and a window it compacted.
+fn native_binding_and_window(
+    binding: FrozenModelBinding,
+) -> (
+    FrozenModelBinding,
+    cookie_agent_protocol::NativeContextWindow,
+) {
+    let mut binding = binding;
+    binding.descriptor.capabilities.compaction = oven_sdk::CompactionCapability::Native;
+    let sdk_window = OvenNativeContextWindow::new(
+        AdapterId::new(binding.descriptor.adapter_id.as_str()),
+        OvenNativeContextScope::new(
+            oven_sdk::ProviderId::new(binding.selection.model.provider_id().as_str()),
+            oven_sdk::ModelId::new(binding.selection.model.model_id().as_str()),
+            ResourceId::new("selection-window").expect("resource"),
+        )
+        .expect("scope"),
+        serde_json::json!({"type": "compaction", "id": "cmp_selection"}),
+    )
+    .expect("SDK window");
+    let window = super::persist_native_context(sdk_window, &binding).expect("persisted window");
+    (binding, window)
+}
+
+/// A log whose checkpoint at seq 4 summarizes seqs 1 to 3, with `checkpoint`
+/// in it, and a live input after it.
+fn checkpointed_log(run: RunId, checkpoint: ContextCheckpoint) -> Vec<StoredEvent> {
+    let limit = SummaryByteLimit::new(1024).expect("limit");
+    vec![
+        event(
+            1,
+            run,
+            EventPayload::UserInputSubmitted {
+                content: "covered input".into(),
+            },
+        ),
+        event(2, run, EventPayload::UserInputApplied { user_input_seq: 1 }),
+        event(
+            3,
+            run,
+            EventPayload::UserInputSubmitted {
+                content: "covered follow-up".into(),
+            },
+        ),
+        event(
+            4,
+            run,
+            EventPayload::ContextCheckpointCommitted {
+                commit: ContextCheckpointCommit {
+                    checkpoint,
+                    boundaries: ContextCheckpointBoundaries {
+                        source_from_seq: 1,
+                        source_through_seq: 3,
+                        recent_from_seq: None,
+                        input_through_seq: 3,
+                        prior_checkpoint_seq: None,
+                    },
+                    budgets: ContextCheckpointBudgets {
+                        context_limit_tokens: 100,
+                        trigger_tokens: 70,
+                        input_tokens_before: 60,
+                        input_tokens_after: 5,
+                        keep_recent_tokens: 0,
+                        max_summary_bytes: limit,
+                    },
+                },
+            },
+        ),
+        event(
+            5,
+            run,
+            EventPayload::UserInputSubmitted {
+                content: "live input".into(),
+            },
+        ),
+        event(6, run, EventPayload::UserInputApplied { user_input_seq: 5 }),
+    ]
+}
+
+fn summary_with_window(window: cookie_agent_protocol::NativeContextWindow) -> ContextCheckpoint {
+    ContextCheckpoint::InternalSummary {
+        checkpoint: InternalSummaryCheckpoint::new(
+            "SUMMARY-TEXT".into(),
+            InternalAgentInvocationId::new_v7(),
+            InternalAgentRunId::new_v7(),
+            SummaryByteLimit::new(1024).expect("limit"),
+        )
+        .expect("summary"),
+        native: Some(cookie_agent_protocol::CheckpointNativeWindow {
+            window,
+            source_through_seq: 3,
+        }),
+    }
+}
+
+/// `binding` as another provider's model of the same ID.
+fn on_another_provider(binding: &FrozenModelBinding) -> FrozenModelBinding {
+    let mut other = binding.clone();
+    other.selection.model = format!("other.provider/{}", binding.selection.model.model_id())
+        .parse()
+        .expect("model key");
+    other.descriptor = oven_sdk::LanguageModelDescriptor::new(
+        oven_sdk::ModelIdentity::new(
+            oven_sdk::ProviderId::new("other.provider"),
+            oven_sdk::ModelId::new(binding.selection.model.model_id().as_str()),
+        )
+        .expect("identity"),
+        binding.descriptor.adapter_id.clone(),
+        binding.descriptor.capabilities.clone(),
+    )
+    .expect("descriptor");
+    other
+}
+
+#[test]
+fn a_window_serves_only_its_provider_and_model_and_the_summary_serves_the_rest() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let (binding, window) = native_binding_and_window(crate::test_support::model_binding());
+    let run = RunId::new_v7();
+    let events = checkpointed_log(run, summary_with_window(window));
+    let assemble = |binding: &FrozenModelBinding, use_windows: bool| {
+        super::assemble_model_context_with(&events, &store, binding, "System prompt.", use_windows)
+            .expect("context")
+    };
+    let uses_window = |context: &super::ModelContext| {
+        let rendered = serde_json::to_string(&context.history).unwrap();
+        assert!(rendered.contains("live input"));
+        assert!(!rendered.contains("covered input"));
+        match &context.native_context {
+            Some(_) => {
+                assert!(!rendered.contains("SUMMARY-TEXT"));
+                true
+            }
+            None => {
+                assert!(rendered.contains("SUMMARY-TEXT"));
+                false
+            }
+        }
+    };
+
+    // The same provider and model: the window, whatever the variant.
+    assert!(uses_window(&assemble(&binding, true)));
+    let (variant, _) = native_binding_and_window(crate::test_support::variant_model_binding());
+    assert_ne!(variant.selection.variant, binding.selection.variant);
+    assert!(uses_window(&assemble(&variant, true)));
+    // Another model on the provider, or another provider: the summary.
+    let (other_model, _) =
+        native_binding_and_window(crate::test_support::model_binding_named("fallback-one"));
+    assert!(!uses_window(&assemble(&other_model, true)));
+    assert!(!uses_window(&assemble(
+        &on_another_provider(&binding),
+        true
+    )));
+    // A provider that rejects windows: the summary.
+    assert!(!uses_window(&assemble(&binding, false)));
+}
+
+#[test]
+fn a_window_alone_that_cannot_serve_needs_a_summary_from_the_log() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let (binding, window) = native_binding_and_window(crate::test_support::model_binding());
+    let run = RunId::new_v7();
+    let events = checkpointed_log(run, ContextCheckpoint::NativeWindow { window });
+    let (other_model, _) =
+        native_binding_and_window(crate::test_support::model_binding_named("fallback-one"));
+
+    assert!(
+        super::assemble_model_context_with(&events, &store, &binding, "System prompt.", true)
+            .expect("its own model uses it")
+            .native_context
+            .is_some()
+    );
+    for (binding, use_windows) in [(&other_model, true), (&binding, false)] {
+        assert!(matches!(
+            super::assemble_model_context_with(
+                &events,
+                &store,
+                binding,
+                "System prompt.",
+                use_windows
+            ),
+            Err(super::HistoryError::UnsummarizedNativeCheckpoint)
+        ));
+    }
+    // The summary view reads the covered events from the log.
+    let view = super::assemble_summary_view(&events, &store, &other_model, "System prompt.")
+        .expect("summary view");
+    let rendered = serde_json::to_string(&view.history).unwrap();
+    assert!(rendered.contains("covered input"));
+    assert!(rendered.contains("live input"));
+    assert!(view.native_context.is_none());
 }

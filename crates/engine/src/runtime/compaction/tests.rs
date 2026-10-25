@@ -291,6 +291,7 @@ fn real_usage_fit_is_inclusive_and_overflow_recovery_uses_elision_path() {
 #[test]
 fn compaction_budget_uses_harness_or_native_limit_and_reserves_output() {
     let mut harness_binding = crate::test_support::model_binding();
+    harness_binding.descriptor.capabilities.compaction = CompactionCapability::Unsupported;
     harness_binding.descriptor.capabilities.limits.context = Some(100_000);
     let mut policy = FrozenInternalAgentPolicy {
         agent: crate::test_support::agent_snapshot(
@@ -341,7 +342,8 @@ fn compaction_raw_fit_accepts_any_fitting_fallback_order() {
     small.descriptor.capabilities.limits.context = Some(4_096);
     let mut large = crate::test_support::model_binding_named("fallback-one");
     large.descriptor.capabilities.limits.context = Some(200_000);
-    let owner = crate::test_support::model_binding();
+    let mut owner = crate::test_support::model_binding();
+    owner.descriptor.capabilities.compaction = CompactionCapability::Unsupported;
     let mut policy = FrozenInternalAgentPolicy {
         agent: crate::test_support::agent_snapshot(
             "compaction",

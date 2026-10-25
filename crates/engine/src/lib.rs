@@ -20,6 +20,7 @@ mod model_bridge;
 mod model_history;
 mod model_policy;
 mod model_snapshots;
+mod native_compaction;
 mod ownership;
 pub mod permissions;
 mod plugin;

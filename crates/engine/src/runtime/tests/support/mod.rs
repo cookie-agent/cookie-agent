@@ -735,21 +735,38 @@ pub(crate) fn custom_fixture() -> (Fixture, RunSelection) {
 }
 
 pub(crate) fn managed_openai_compaction_fixture(endpoint: &str) -> (Fixture, RunSelection) {
+    managed_native_compaction_fixture(endpoint, "")
+}
+
+/// The managed `openai` provider at `endpoint` with two Responses models,
+/// `gpt-test` (whose override still names the redundant
+/// `openai-responses-compact`) and `gpt-other`, and the config lines in
+/// `extra`, such as another provider.
+pub(crate) fn managed_native_compaction_fixture(
+    endpoint: &str,
+    extra: &str,
+) -> (Fixture, RunSelection) {
     let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
     create_private_test_dir(&project);
     write_private_test_file(
         &project.join("config.toml"),
-        r#"
+        format!(
+            r#"
 [providers.openai]
 source = "models_dev"
 api_key = "test-secret"
 
 [providers.openai.models."gpt-test"]
 model_id = "wire-native"
-adaptor_options = { request_endpoint = "responses" }
+adaptor_options = {{ request_endpoint = "responses" }}
 compaction = "openai-responses-compact"
-"#,
+
+[providers.openai.models."gpt-other"]
+adaptor_options = {{ request_endpoint = "responses" }}
+{extra}
+"#
+        ),
     );
     let agents = project.join("agents");
     create_private_test_dir(&agents);
@@ -801,14 +818,22 @@ compaction = "openai-responses-compact"
         api: Some(endpoint.into()),
         shape: None,
         documentation_url: "https://example.test/openai".into(),
-        models: BTreeMap::from([(
-            model_id.clone(),
-            CatalogModelEntry {
-                id: model_id,
-                record: Some(model),
-                quarantine: None,
-            },
-        )]),
+        models: ["gpt-test", "gpt-other"]
+            .into_iter()
+            .map(|id| {
+                let id = ProviderModelId::new(id).expect("model ID");
+                let mut record = model.clone();
+                record.id = id.clone();
+                (
+                    id.clone(),
+                    CatalogModelEntry {
+                        id,
+                        record: Some(record),
+                        quarantine: None,
+                    },
+                )
+            })
+            .collect(),
     };
     let now = Timestamp::now();
     let catalog = Arc::new(CatalogSnapshot {

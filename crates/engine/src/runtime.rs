@@ -980,6 +980,8 @@ pub(crate) struct Inner {
     pub(crate) mcp_hub: Arc<crate::runtimes::McpHub>,
     /// The ACP agents runtimes host, and their processes.
     pub(crate) acp: acp::AcpState,
+    /// The providers native compaction does not work with.
+    pub(crate) native_compaction: crate::native_compaction::NativeCompactionRecord,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     permissions: PermissionPipeline,
@@ -1252,6 +1254,9 @@ impl Engine {
                 mcp,
                 mcp_hub,
                 acp,
+                native_compaction: crate::native_compaction::NativeCompactionRecord::open(
+                    &options.data_dir,
+                ),
                 plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 permissions: PermissionPipeline::default(),

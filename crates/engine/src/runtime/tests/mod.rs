@@ -33,6 +33,7 @@ mod messaging;
 mod misc;
 mod model_loop;
 mod model_policy;
+mod native_compaction;
 mod permissions;
 mod plugins;
 mod producers;

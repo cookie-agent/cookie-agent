@@ -1771,7 +1771,9 @@ pub(crate) fn responses_text_with_transport_fields(text: &str, phase: Option<&st
     ])
 }
 
-pub(crate) const RESPONSES_REPLAY_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"optional\"\nmedia = {}";
+/// Native compaction stays off: these fixtures script one ordered answer
+/// per request, and a compact call beside the summary would take one.
+pub(crate) const RESPONSES_REPLAY_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"optional\"\ncompaction = \"unsupported\"\nmedia = {}";
 
 pub(crate) fn anthropic_usage_body(
     text: &str,
@@ -1912,4 +1914,157 @@ pub(crate) fn cache_marker_count(value: &serde_json::Value) -> usize {
         serde_json::Value::Array(values) => values.iter().map(cache_marker_count).sum(),
         _ => 0,
     }
+}
+
+/// What a [`responses_route_server`] received: each request's line and body.
+pub(crate) type RouteRequests = Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+/// A Responses server that answers `/responses/compact` from `compact` and
+/// every other request from `responses`, in order, so that a native
+/// compaction call and the summary beside it can run at the same time.
+/// Each answer is a status and a body: JSON for compaction calls and
+/// errors, server-sent events for a successful response. A queue that runs
+/// out answers 500.
+pub(crate) async fn responses_route_server(
+    compact: Vec<(u16, String)>,
+    responses: Vec<(u16, String)>,
+) -> (String, RouteRequests) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("route listener");
+    let address = listener.local_addr().expect("listener address");
+    let requests = RouteRequests::default();
+    let queues = Arc::new(std::sync::Mutex::new((
+        std::collections::VecDeque::from(compact),
+        std::collections::VecDeque::from(responses),
+    )));
+    let recorded = Arc::clone(&requests);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let queues = Arc::clone(&queues);
+            let recorded = Arc::clone(&recorded);
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 8192];
+                let mut expected = None;
+                loop {
+                    if expected.is_some_and(|expected| request.len() >= expected) {
+                        break;
+                    }
+                    let Ok(read) = socket.read(&mut buffer).await else {
+                        return;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if expected.is_none()
+                        && let Some(end) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let length = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        expected = Some(end + 4 + length);
+                    }
+                }
+                let text = String::from_utf8_lossy(&request).into_owned();
+                let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+                let line = head.lines().next().unwrap_or_default().to_owned();
+                let compact = line.contains("/responses/compact ");
+                let answer = {
+                    let mut queues = queues.lock().expect("route queues");
+                    if compact {
+                        queues.0.pop_front()
+                    } else {
+                        queues.1.pop_front()
+                    }
+                }
+                .unwrap_or((500, "{}".to_owned()));
+                recorded
+                    .lock()
+                    .expect("route requests")
+                    .push((line, body.to_owned()));
+                let (status, body) = answer;
+                let content_type = if status == 200 && !compact {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} Scripted\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (format!("http://{address}/v1"), requests)
+}
+
+/// A successful Responses stream answering `text`.
+pub(crate) fn responses_text_stream(text: &str) -> (u16, String) {
+    let id = format!("msg_{}", text.len());
+    let item = serde_json::json!({
+        "type": "message", "id": id, "role": "assistant",
+        "content": [{"type": "output_text", "text": text}]
+    });
+    let events = [
+        serde_json::json!({"type": "response.created", "response": {"id": "resp", "model": "gpt-test"}}),
+        serde_json::json!({"type": "response.output_item.added", "output_index": 0,
+            "item": {"type": "message", "id": id, "role": "assistant", "content": []}}),
+        serde_json::json!({"type": "response.output_text.delta", "output_index": 0,
+            "content_index": 0, "delta": text}),
+        serde_json::json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+        serde_json::json!({"type": "response.completed",
+            "response": {"status": "completed", "output": [item]}}),
+    ];
+    (
+        200,
+        events
+            .iter()
+            .map(|event| {
+                format!(
+                    "event: {}\ndata: {event}\n\n",
+                    event["type"].as_str().unwrap()
+                )
+            })
+            .collect(),
+    )
+}
+
+/// A successful standalone compaction answer whose window's compaction
+/// item has ID `item`.
+pub(crate) fn responses_compacted(item: &str) -> (u16, String) {
+    (
+        200,
+        serde_json::json!({
+            "id": format!("{item}_response"),
+            "created_at": 1_754_000_000_u64,
+            "object": "response.compaction",
+            "output": [{
+                "type": "compaction",
+                "id": item,
+                "encrypted_content": "opaque-compacted-state",
+                "created_by": "openai"
+            }],
+            "usage": {
+                "input_tokens": 120,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 8,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 128
+            }
+        })
+        .to_string(),
+    )
 }

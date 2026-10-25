@@ -7,9 +7,9 @@ use std::{
 use cookie_agent_config::{ContextCompactionTrigger, InternalPromptValues, render_internal_prompt};
 use cookie_agent_models::adapters::with_native_compaction_instructions;
 use cookie_agent_protocol::{
-    ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
-    ContextCheckpointCommit, ExtensionSessionBeforeCompactParams, InternalAgentKind,
-    InternalSummaryCheckpoint, PersistedToolResult, PluginDiagnosticKind, RunId,
+    CheckpointNativeWindow, ContextCheckpoint, ContextCheckpointBoundaries,
+    ContextCheckpointBudgets, ContextCheckpointCommit, ExtensionSessionBeforeCompactParams,
+    InternalAgentKind, InternalSummaryCheckpoint, PersistedToolResult, PluginDiagnosticKind, RunId,
     SessionCompactResult, SessionId, SessionStatus, StoredEvent, SummaryByteLimit,
     ToolEmittedContent,
 };
@@ -26,7 +26,8 @@ use super::{
 };
 use crate::{
     model_bridge::AbortBridge,
-    model_history::{self, assemble_model_context, wire_model},
+    model_history::{self, wire_model},
+    native_compaction,
     policy::{self, FrozenRunPolicy},
 };
 
@@ -117,6 +118,21 @@ pub(super) const DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS: u64 = 20_000;
 const MAX_AUTO_COMPACTION_FAILURES: u8 = 3;
 // Video is frame-sampled and can cost tens of thousands of tokens independent of file bytes.
 const VIDEO_FILE_FIT_SURROGATE_BYTES: usize = 40_000 * 4;
+
+/// What a successful summary commits: the checkpoint and its boundaries
+/// and budgets.
+type SummaryParts = (
+    InternalSummaryCheckpoint,
+    ContextCheckpointBoundaries,
+    ContextCheckpointBudgets,
+);
+
+/// What the native call beside the summary produced.
+#[derive(Default)]
+struct NativeOutcome {
+    window: Option<CheckpointNativeWindow>,
+    mark: Option<(native_compaction::MarkState, String)>,
+}
 
 pub(super) struct CompactionInput<'a> {
     pub(super) session: SessionId,
@@ -472,18 +488,22 @@ impl Engine {
 
         let composed_prompt = self.run_agent_prompt(input.session, input.run)?;
         let mut events = input.events.clone();
-        let mut context = assemble_model_context(
-            &events,
-            &self.inner.artifacts,
-            input.binding,
-            &composed_prompt,
-        )?;
-        // Native compaction keeps its existing durable elision policy. Summary compaction
-        // checks the actual internal-agent request and only prunes a private retry snapshot.
-        let raw_fits =
-            if input.binding.descriptor.capabilities.compaction != CompactionCapability::Native {
-                true
-            } else if let Some(raw_fits) = raw_fit_from_real_usage(
+        // Native compaction runs beside the summary when the model has it and
+        // the provider record allows it (native compaction spec section 3).
+        let native_model = (input.binding.descriptor.capabilities.compaction
+            == CompactionCapability::Native
+            && self
+                .inner
+                .native_compaction
+                .allows_compaction(input.binding))
+        .then(|| policy::resolve_model(input.binding, &input.owner_policy.runtime).ok())
+        .flatten();
+        // Native compaction keeps its durable elision policy: when its request
+        // would not fit, bulky tool outputs are elided in the log first.
+        // Summary compaction checks the actual internal-agent request and only
+        // prunes a private retry snapshot.
+        if let Some(model) = &native_model {
+            let raw_fits = if let Some(raw_fits) = raw_fit_from_real_usage(
                 input.overflow_recovery,
                 projection
                     .log
@@ -493,45 +513,41 @@ impl Engine {
             ) {
                 raw_fits
             } else {
+                let view =
+                    self.native_compaction_view(&events, input.binding, &composed_prompt, model)?;
                 let raw_fit_tokens =
-                    self.estimated_request_tokens(input.session, &context.history, input.tools)?;
+                    self.estimated_request_tokens(input.session, &view.history, input.tools)?;
                 compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
             };
-        let context_tokens_before = if raw_fits {
-            self.estimated_request_tokens(input.session, &context.history, input.tools)?
-        } else {
-            events = self
-                .stage_tool_output_elision(input.session, &events, input.origin.clone())
-                .await?;
-            context = assemble_model_context(
-                &events,
-                &self.inner.artifacts,
-                input.binding,
-                &composed_prompt,
-            )?;
-            self.estimated_request_tokens(input.session, &context.history, input.tools)?
-        };
+            if !raw_fits {
+                events = self
+                    .stage_tool_output_elision(input.session, &events, input.origin.clone())
+                    .await?;
+            }
+        }
+        // The summary always builds on the latest summary, never on a window.
+        let context = model_history::assemble_summary_view(
+            &events,
+            &self.inner.artifacts,
+            input.binding,
+            &composed_prompt,
+        )?;
+        let context_tokens_before =
+            self.estimated_request_tokens(input.session, &context.history, input.tools)?;
         let input_through_seq = events.last().map_or(0, |event| event.seq);
         let previous = projection.log.latest_checkpoint_seq();
-        let mut source_from_seq = if previous == 0 {
-            1
-        } else {
-            previous.saturating_add(1)
+        // The summary replaces what follows the latest summary: a window
+        // alone, which builds before 1.29.0 wrote, is summarized from the log.
+        let summary_base = {
+            let refs = crate::events::event_refs(&events);
+            model_history::latest_summary_checkpoint(&refs)
+                .map(|(event, commit, _)| (event.seq, commit.boundaries.recent_from_seq))
         };
-        if let Some(recent_from) = events
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                Event::ContextCheckpointCommitted { commit } => {
-                    Some(commit.boundaries.recent_from_seq)
-                }
-                _ => None,
-            })
-            .flatten()
-        {
+        let mut source_from_seq = summary_base.map_or(1, |(seq, _)| seq.saturating_add(1));
+        if let Some((_, Some(recent_from))) = summary_base {
             source_from_seq = source_from_seq.min(recent_from);
         }
-        let mut boundaries = ContextCheckpointBoundaries {
+        let boundaries = ContextCheckpointBoundaries {
             source_from_seq,
             source_through_seq: input_through_seq,
             input_through_seq,
@@ -540,237 +556,116 @@ impl Engine {
         };
         let summary_limit = SummaryByteLimit::new(config.max_summary_bytes as u64)
             .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
-        let native_checkpoint = if input.binding.descriptor.capabilities.compaction
-            == CompactionCapability::Native
-        {
-            if let Ok(model) = policy::resolve_model(input.binding, &input.owner_policy.runtime) {
-                let mut request = ModelRequest::new(context.history.clone())
-                    .with_tools(input.tools.to_vec())
-                    .with_header_context(self.model_header_context(input.session)?);
-                let capabilities = input
-                    .owner_policy
-                    .model_capabilities(input.binding)
-                    .ok_or(EngineError::NoRunnableModel)?;
-                let adapter = input.binding.descriptor.adapter_id.as_str();
-                crate::media::fit_media(
-                    &mut request.history,
-                    &input.binding.selection.model,
-                    &policy::user_input_media(adapter, &capabilities),
-                    &policy::tool_input_media(adapter, &capabilities),
-                );
-                crate::media::elide_excess_media(&mut request.history, &capabilities)
-                    .map_err(ModelError::invalid_request)?;
-                if let Some(native_context) = context.native_context.clone() {
-                    request = request.with_native_context(native_context);
-                }
-                let cache_strategy = input
-                    .owner_policy
-                    .cache_strategy(input.binding, input.session);
-                let request =
-                    model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());
-                let compact_request = with_native_compaction_instructions(
-                    CompactionRequest::new(request),
-                    input.binding.descriptor.adapter_id.as_str(),
-                    compaction_focus.clone(),
-                );
-                if model.model().supports_compaction(&compact_request) {
-                    let resolved_model = wire_model(input.binding);
-                    self.publish_transient(
-                        input.session,
-                        input.run,
-                        Event::NativeCompactionStarted {
-                            resolved_model: resolved_model.clone(),
-                        },
-                    );
-                    let abort = AbortBridge::new(input.cancellation.child_token());
-                    let result = model.model().compact(compact_request, abort.signal()).await;
-                    self.publish_transient(
-                        input.session,
-                        input.run,
-                        Event::NativeCompactionFinished { resolved_model },
-                    );
-                    match result {
-                        Ok(result) => model_history::persist_native_context(
-                            result.native_context,
-                            input.binding,
-                        )
-                        .ok(),
-                        Err(_) => None,
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         let checkpoint_prefix =
             model_history::checkpoint_retained_history(&context.history, &events, None);
-        if let Some(window) = native_checkpoint {
-            let input_tokens_after = estimated_request_tokens(&checkpoint_prefix, input.tools)?;
-            let budgets = ContextCheckpointBudgets {
-                context_limit_tokens: context_limit,
-                trigger_tokens: trigger_tokens.max(1).min(context_limit),
-                input_tokens_before: context_tokens_before,
-                input_tokens_after,
-                max_summary_bytes: summary_limit,
-                keep_recent_tokens: 0,
-            };
-            let commit = ContextCheckpointCommit {
-                checkpoint: ContextCheckpoint::NativeWindow { window },
-                boundaries: boundaries.clone(),
-                budgets,
-            };
-            if commit.validate_for_binding(input.binding).is_ok() {
-                self.append(
-                    input.session,
-                    Some(input.run),
-                    input.origin.clone(),
-                    Event::ContextCheckpointCommitted { commit },
-                )
-                .await?;
-                return Ok(self.inner.store.log(input.session)?.event_snapshot());
-            }
-        }
+        let prior_summary_count = usize::from(summary_base.is_some());
 
-        // Reserve an output-sized summary before selecting a suffix. The reserve is the
-        // compaction agent's own effective output cap, which it inherits from the owner run
-        // when its document declares none. The final fit check uses the actual replay
-        // projection and the same calibrated estimator as the input.
-        let output_reserve = internal_agent_output_limit(input.binding, input.internal_policy)
-            .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
-        let retained_limit = input_budget
-            .saturating_sub(output_reserve)
-            .min(if trigger_tokens > 0 {
-                trigger_tokens - 1
-            } else {
-                input_budget
-            })
-            .min(context_tokens_before.saturating_sub(1));
-        let summary_output_limit = input
-            .internal_policy
-            .models
-            .iter()
-            .filter_map(|binding| internal_agent_output_limit(binding, input.internal_policy))
-            .max()
-            .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
-        let summary_reserve_bytes = summary_output_limit
-            .saturating_mul(4)
-            .min(config.max_summary_bytes as u64) as usize;
-        let summary_reserve = "x".repeat(summary_reserve_bytes);
-        let base = model_history::project_summary_context(
-            &events,
-            &self.inner.artifacts,
-            input.binding,
-            &composed_prompt,
-            input_through_seq,
-            None,
-            &summary_reserve,
-        )?;
-        let base_tokens =
-            self.estimated_request_tokens(input.session, &base.history, input.tools)?;
-        let keep_recent_tokens = effective_recent_budget(
-            config.keep_recent_tokens,
-            input_budget,
-            retained_limit.saturating_sub(base_tokens),
-        );
-        let recent_from_seq = select_recent_tail(
-            model_history::compaction_tail_candidates(&events),
-            keep_recent_tokens,
-            base_tokens,
-            retained_limit,
-            |candidate| {
-                let projected = model_history::project_summary_context(
-                    &events,
-                    &self.inner.artifacts,
-                    input.binding,
-                    &composed_prompt,
-                    input_through_seq,
-                    Some(candidate),
-                    &summary_reserve,
-                )?;
-                self.estimated_request_tokens(input.session, &projected.history, input.tools)
-            },
-        )?;
-        let prefix = model_history::compaction_prefix_history(
-            &events,
-            &self.inner.artifacts,
-            input.binding,
-            &composed_prompt,
-            recent_from_seq,
-        )?;
-        let prior_summary_count = usize::from(
-            events
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    Event::ContextCheckpointCommitted { commit } => Some(matches!(
-                        commit.checkpoint,
-                        ContextCheckpoint::InternalSummary { .. }
-                    )),
-                    _ => None,
-                })
-                .unwrap_or(false),
-        );
-        if prefix.len() <= checkpoint_prefix.len().saturating_add(prior_summary_count) {
-            return Ok(events);
-        }
-        // The summarizer sees only the span the checkpoint replaces; the
-        // retained recent suffix follows the summary verbatim.
-        let instruction = compaction_instruction(
-            &input.internal_policy.agent.composed_prompt,
-            compaction_focus.as_deref(),
-            prior_summary_count > 0,
-        );
-        let mut summary = self
-            .run_internal_history_agent(
-                input.session,
-                Some(input.run),
-                InternalAgentKind::ContextCompaction,
-                input.internal_policy,
-                InternalAgentHistoryInput {
-                    history: compaction_history(prefix, &instruction),
-                    summary_source: instruction.clone(),
-                    // First trial keeps the session tool definitions so the
-                    // request stays a cache-friendly prefix of the latest
-                    // conversation request; a tool-call answer is rejected by
-                    // reject_non_text and counted as a compaction failure.
-                    tools: input.tools.to_vec(),
-                    reject_non_text: true,
-                },
-                InternalAgentExecution {
-                    cancellation: input.cancellation,
-                    actor_direct: false,
-                },
+        let native = async {
+            let Some(model) = &native_model else {
+                return NativeOutcome::default();
+            };
+            self.native_compaction_attempt(
+                &input,
+                model,
+                &events,
+                &composed_prompt,
+                compaction_focus.clone(),
+                input_through_seq,
             )
-            .await;
-        if matches!(&summary, Err(EngineError::Model(error))
-            if error.kind == oven_sdk::ModelErrorKind::ContextLength)
-            && !input.cancellation.is_cancelled()
-        {
-            let history = pruned_compaction_history(
+            .await
+        };
+        let summary = async {
+            // Reserve an output-sized summary before selecting a suffix. The reserve is the
+            // compaction agent's own effective output cap, which it inherits from the owner run
+            // when its document declares none. The final fit check uses the actual replay
+            // projection and the same calibrated estimator as the input.
+            let output_reserve = internal_agent_output_limit(input.binding, input.internal_policy)
+                .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
+            let retained_limit = input_budget
+                .saturating_sub(output_reserve)
+                .min(if trigger_tokens > 0 {
+                    trigger_tokens - 1
+                } else {
+                    input_budget
+                })
+                .min(context_tokens_before.saturating_sub(1));
+            let summary_output_limit = input
+                .internal_policy
+                .models
+                .iter()
+                .filter_map(|binding| internal_agent_output_limit(binding, input.internal_policy))
+                .max()
+                .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
+            let summary_reserve_bytes = summary_output_limit
+                .saturating_mul(4)
+                .min(config.max_summary_bytes as u64)
+                as usize;
+            let summary_reserve = "x".repeat(summary_reserve_bytes);
+            let base = model_history::project_summary_context(
                 &events,
                 &self.inner.artifacts,
-                input.session,
+                input.binding,
+                &composed_prompt,
+                input_through_seq,
+                None,
+                &summary_reserve,
+            )?;
+            let base_tokens =
+                self.estimated_request_tokens(input.session, &base.history, input.tools)?;
+            let keep_recent_tokens = effective_recent_budget(
+                config.keep_recent_tokens,
+                input_budget,
+                retained_limit.saturating_sub(base_tokens),
+            );
+            let recent_from_seq = select_recent_tail(
+                model_history::compaction_tail_candidates(&events),
+                keep_recent_tokens,
+                base_tokens,
+                retained_limit,
+                |candidate| {
+                    let projected = model_history::project_summary_context(
+                        &events,
+                        &self.inner.artifacts,
+                        input.binding,
+                        &composed_prompt,
+                        input_through_seq,
+                        Some(candidate),
+                        &summary_reserve,
+                    )?;
+                    self.estimated_request_tokens(input.session, &projected.history, input.tools)
+                },
+            )?;
+            let prefix = model_history::compaction_prefix_history(
+                &events,
+                &self.inner.artifacts,
                 input.binding,
                 &composed_prompt,
                 recent_from_seq,
             )?;
-            summary = self
+            if prefix.len() <= checkpoint_prefix.len().saturating_add(prior_summary_count) {
+                return Ok::<Option<SummaryParts>, EngineError>(None);
+            }
+            // The summarizer sees only the span the checkpoint replaces; the
+            // retained recent suffix follows the summary verbatim.
+            let instruction = compaction_instruction(
+                &input.internal_policy.agent.composed_prompt,
+                compaction_focus.as_deref(),
+                prior_summary_count > 0,
+            );
+            let mut summary = self
                 .run_internal_history_agent(
                     input.session,
                     Some(input.run),
                     InternalAgentKind::ContextCompaction,
                     input.internal_policy,
                     InternalAgentHistoryInput {
-                        history: compaction_history(history, &instruction),
-                        summary_source: instruction,
-                        // The pruned retry already rewrites tool outputs, so it
-                        // drops the tool definitions too: cache affinity is
-                        // lost either way, and fewer tools means less to send.
-                        tools: Vec::new(),
+                        history: compaction_history(prefix, &instruction),
+                        summary_source: instruction.clone(),
+                        // First trial keeps the session tool definitions so the
+                        // request stays a cache-friendly prefix of the latest
+                        // conversation request; a tool-call answer is rejected by
+                        // reject_non_text and counted as a compaction failure.
+                        tools: input.tools.to_vec(),
                         reject_non_text: true,
                     },
                     InternalAgentExecution {
@@ -779,104 +674,158 @@ impl Engine {
                     },
                 )
                 .await;
-        }
-        let Ok(summary) = summary else {
-            if !input.force
-                && let Some(run) = &active_run
-                && run.auto_compaction_failures.fetch_add(1, Ordering::Relaxed) + 1
-                    == MAX_AUTO_COMPACTION_FAILURES
-                && !run
-                    .auto_compaction_diagnostic_emitted
-                    .swap(true, Ordering::Relaxed)
+            if matches!(&summary, Err(EngineError::Model(error))
+                if error.kind == oven_sdk::ModelErrorKind::ContextLength)
+                && !input.cancellation.is_cancelled()
             {
-                let engine = self.clone();
-                let session = input.session;
-                tokio::spawn(async move {
-                    let _ = engine
-                        .on_actor(session, move |engine| {
-                            engine.append_direct(
-                                session,
-                                None,
-                                super::event_origin("engine:auto-compact"),
-                                Event::Diagnostic {
-                                    source: cookie_agent_protocol::DiagnosticSource::engine("auto-compact")
-                                        .expect("static diagnostic source is valid"),
-                                    kind: cookie_agent_protocol::EngineDiagnosticKind::AutoCompactionDisabled.label(),
-                                    message: "automatic context compaction disabled after 3 consecutive failures for this run".into(),
-                                    count: None,
-                                    detail: None,
-                                },
-                            )
-                        })
-                        .await;
-                });
+                let history = pruned_compaction_history(
+                    &events,
+                    &self.inner.artifacts,
+                    input.session,
+                    input.binding,
+                    &composed_prompt,
+                    recent_from_seq,
+                )?;
+                summary = self
+                    .run_internal_history_agent(
+                        input.session,
+                        Some(input.run),
+                        InternalAgentKind::ContextCompaction,
+                        input.internal_policy,
+                        InternalAgentHistoryInput {
+                            history: compaction_history(history, &instruction),
+                            summary_source: instruction,
+                            // The pruned retry already rewrites tool outputs, so it
+                            // drops the tool definitions too: cache affinity is
+                            // lost either way, and fewer tools means less to send.
+                            tools: Vec::new(),
+                            reject_non_text: true,
+                        },
+                        InternalAgentExecution {
+                            cancellation: input.cancellation,
+                            actor_direct: false,
+                        },
+                    )
+                    .await;
             }
+            let Ok(summary) = summary else {
+                if !input.force
+                    && let Some(run) = &active_run
+                    && run.auto_compaction_failures.fetch_add(1, Ordering::Relaxed) + 1
+                        == MAX_AUTO_COMPACTION_FAILURES
+                    && !run
+                        .auto_compaction_diagnostic_emitted
+                        .swap(true, Ordering::Relaxed)
+                {
+                    let engine = self.clone();
+                    let session = input.session;
+                    tokio::spawn(async move {
+                        let _ = engine
+                            .on_actor(session, move |engine| {
+                                engine.append_direct(
+                                    session,
+                                    None,
+                                    super::event_origin("engine:auto-compact"),
+                                    Event::Diagnostic {
+                                        source: cookie_agent_protocol::DiagnosticSource::engine("auto-compact")
+                                            .expect("static diagnostic source is valid"),
+                                        kind: cookie_agent_protocol::EngineDiagnosticKind::AutoCompactionDisabled.label(),
+                                        message: "automatic context compaction disabled after 3 consecutive failures for this run".into(),
+                                        count: None,
+                                        detail: None,
+                                    },
+                                )
+                            })
+                            .await;
+                    });
+                }
+                return Ok::<Option<SummaryParts>, EngineError>(None);
+            };
+            if summary.text.trim().is_empty() {
+                return Ok::<Option<SummaryParts>, EngineError>(None);
+            }
+            let checkpoint = InternalSummaryCheckpoint::new(
+                summary.text,
+                summary.invocation_id,
+                summary.internal_run_id,
+                summary_limit,
+            )
+            .map_err(|error| EngineError::from(ModelError::invalid_response(error.to_string())))?;
+            let retained_context = model_history::project_summary_context(
+                &events,
+                &self.inner.artifacts,
+                input.binding,
+                &composed_prompt,
+                input_through_seq,
+                recent_from_seq,
+                checkpoint.summary(),
+            )?;
+            let input_tokens_after = self.estimated_request_tokens(
+                input.session,
+                &retained_context.history,
+                input.tools,
+            )?;
+            let actual_base = model_history::project_summary_context(
+                &events,
+                &self.inner.artifacts,
+                input.binding,
+                &composed_prompt,
+                input_through_seq,
+                None,
+                checkpoint.summary(),
+            )?;
+            let actual_base_tokens =
+                self.estimated_request_tokens(input.session, &actual_base.history, input.tools)?;
+            let keep_recent_tokens = effective_recent_budget(
+                config.keep_recent_tokens,
+                input_budget,
+                retained_limit.saturating_sub(actual_base_tokens),
+            );
+            if input_tokens_after > retained_limit
+                || input_tokens_after.saturating_sub(actual_base_tokens) > keep_recent_tokens
+            {
+                return Ok::<Option<SummaryParts>, EngineError>(None);
+            }
+            let mut boundaries = boundaries.clone();
+            boundaries.recent_from_seq = recent_from_seq;
+            if let Some(recent_from_seq) = recent_from_seq {
+                boundaries.source_from_seq = boundaries.source_from_seq.min(recent_from_seq);
+            }
+            let budgets = ContextCheckpointBudgets {
+                context_limit_tokens: context_limit,
+                trigger_tokens: trigger_tokens.max(1).min(context_limit),
+                input_tokens_before: context_tokens_before,
+                input_tokens_after,
+                max_summary_bytes: summary_limit,
+                keep_recent_tokens,
+            };
+            Ok::<Option<SummaryParts>, EngineError>(Some((checkpoint, boundaries, budgets)))
+        };
+        let (native, summary) = tokio::join!(native, summary);
+        if let Some((state, reason)) = native.mark {
+            self.inner
+                .native_compaction
+                .mark(input.binding, state, reason);
+        }
+        let Some((checkpoint, boundaries, budgets)) = summary? else {
             return Ok(events);
         };
-        if summary.text.trim().is_empty() {
-            return Ok(events);
-        }
-        let checkpoint = InternalSummaryCheckpoint::new(
-            summary.text,
-            summary.invocation_id,
-            summary.internal_run_id,
-            summary_limit,
-        )
-        .map_err(|error| EngineError::from(ModelError::invalid_response(error.to_string())))?;
-        let retained_context = model_history::project_summary_context(
-            &events,
-            &self.inner.artifacts,
-            input.binding,
-            &composed_prompt,
-            input_through_seq,
-            recent_from_seq,
-            checkpoint.summary(),
-        )?;
-        let input_tokens_after =
-            self.estimated_request_tokens(input.session, &retained_context.history, input.tools)?;
-        let actual_base = model_history::project_summary_context(
-            &events,
-            &self.inner.artifacts,
-            input.binding,
-            &composed_prompt,
-            input_through_seq,
-            None,
-            checkpoint.summary(),
-        )?;
-        let actual_base_tokens =
-            self.estimated_request_tokens(input.session, &actual_base.history, input.tools)?;
-        let keep_recent_tokens = effective_recent_budget(
-            config.keep_recent_tokens,
-            input_budget,
-            retained_limit.saturating_sub(actual_base_tokens),
-        );
-        if input_tokens_after > retained_limit
-            || input_tokens_after.saturating_sub(actual_base_tokens) > keep_recent_tokens
-        {
-            return Ok(events);
-        }
-        boundaries.recent_from_seq = recent_from_seq;
-        if let Some(recent_from_seq) = recent_from_seq {
-            boundaries.source_from_seq = boundaries.source_from_seq.min(recent_from_seq);
-        }
-        let budgets = ContextCheckpointBudgets {
-            context_limit_tokens: context_limit,
-            trigger_tokens: trigger_tokens.max(1).min(context_limit),
-            input_tokens_before: context_tokens_before,
-            input_tokens_after,
-            max_summary_bytes: summary_limit,
-            keep_recent_tokens,
-        };
-        let commit = ContextCheckpointCommit {
+        let mut commit = ContextCheckpointCommit {
             checkpoint: ContextCheckpoint::InternalSummary {
                 checkpoint,
-                native: None,
+                native: native.window,
             },
             boundaries,
             budgets,
         };
         if commit.validate().is_err() {
-            return Ok(events);
+            // A window the boundaries cannot hold leaves the summary alone.
+            if let ContextCheckpoint::InternalSummary { native, .. } = &mut commit.checkpoint {
+                *native = None;
+            }
+            if commit.validate().is_err() {
+                return Ok(events);
+            }
         }
         self.append(
             input.session,
@@ -889,6 +838,154 @@ impl Engine {
             run.auto_compaction_failures.store(0, Ordering::Relaxed);
         }
         Ok(self.inner.store.log(input.session)?.event_snapshot())
+    }
+
+    /// The context native compaction compacts from: the latest window when
+    /// the model accepts it, the summary view otherwise.
+    fn native_compaction_view(
+        &self,
+        events: &[Arc<StoredEvent>],
+        binding: &cookie_agent_protocol::FrozenModelBinding,
+        composed_prompt: &str,
+        model: &policy::ResolvedRuntimeModel,
+    ) -> Result<model_history::ModelContext, EngineError> {
+        match self.request_context(events, binding, composed_prompt, model.model().as_ref()) {
+            Err(EngineError::ModelHistory(
+                model_history::HistoryError::UnsummarizedNativeCheckpoint,
+            )) => Ok(model_history::assemble_summary_view(
+                events,
+                &self.inner.artifacts,
+                binding,
+                composed_prompt,
+            )?),
+            other => other,
+        }
+    }
+
+    /// The context a request on `binding` sends (native compaction spec
+    /// section 4): the latest checkpoint's window when the provider record
+    /// allows windows, the window belongs to the binding's adapter,
+    /// provider, and model, and `model` accepts it; the summary otherwise.
+    pub(super) fn request_context(
+        &self,
+        events: &[Arc<StoredEvent>],
+        binding: &cookie_agent_protocol::FrozenModelBinding,
+        composed_prompt: &str,
+        model: &dyn oven_sdk::LanguageModel,
+    ) -> Result<model_history::ModelContext, EngineError> {
+        let use_windows = self.inner.native_compaction.allows_windows(binding);
+        let context = model_history::assemble_model_context_with(
+            events,
+            &self.inner.artifacts,
+            binding,
+            composed_prompt,
+            use_windows,
+        )?;
+        let Some(window) = &context.native_context else {
+            return Ok(context);
+        };
+        // The adapter checks the window's scope (its endpoint and account)
+        // against its own before any I/O; a window it would refuse serves no
+        // request, so the summary does.
+        let probe = ModelRequest::new(context.history.clone()).with_native_context(window.clone());
+        match model.validate_request(&probe) {
+            Err(error) if error.kind == oven_sdk::ModelErrorKind::NativeContext => {
+                Ok(model_history::assemble_model_context_with(
+                    events,
+                    &self.inner.artifacts,
+                    binding,
+                    composed_prompt,
+                    false,
+                )?)
+            }
+            _ => Ok(context),
+        }
+    }
+
+    /// One native compaction call beside the summary: the window it returns,
+    /// or how its failure marks the provider.
+    async fn native_compaction_attempt(
+        &self,
+        input: &CompactionInput<'_>,
+        model: &policy::ResolvedRuntimeModel,
+        events: &[Arc<StoredEvent>],
+        composed_prompt: &str,
+        focus: Option<String>,
+        input_through_seq: u64,
+    ) -> NativeOutcome {
+        let Ok(view) = self.native_compaction_view(events, input.binding, composed_prompt, model)
+        else {
+            return NativeOutcome::default();
+        };
+        let Ok(header_context) = self.model_header_context(input.session) else {
+            return NativeOutcome::default();
+        };
+        let Some(capabilities) = input.owner_policy.model_capabilities(input.binding) else {
+            return NativeOutcome::default();
+        };
+        let mut request = ModelRequest::new(view.history)
+            .with_tools(input.tools.to_vec())
+            .with_header_context(header_context);
+        let adapter = input.binding.descriptor.adapter_id.as_str();
+        crate::media::fit_media(
+            &mut request.history,
+            &input.binding.selection.model,
+            &policy::user_input_media(adapter, &capabilities),
+            &policy::tool_input_media(adapter, &capabilities),
+        );
+        if crate::media::elide_excess_media(&mut request.history, &capabilities).is_err() {
+            return NativeOutcome::default();
+        }
+        let seeded = view.native_context.is_some();
+        if let Some(native_context) = view.native_context {
+            request = request.with_native_context(native_context);
+        }
+        let cache_strategy = input
+            .owner_policy
+            .cache_strategy(input.binding, input.session);
+        let request = model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());
+        let compact_request =
+            with_native_compaction_instructions(CompactionRequest::new(request), adapter, focus);
+        if !model.model().supports_compaction(&compact_request) {
+            return NativeOutcome {
+                window: None,
+                mark: Some((
+                    native_compaction::MarkState::Unsupported,
+                    "the adapter cannot build the compact request".into(),
+                )),
+            };
+        }
+        let resolved_model = wire_model(input.binding);
+        self.publish_transient(
+            input.session,
+            input.run,
+            Event::NativeCompactionStarted {
+                resolved_model: resolved_model.clone(),
+            },
+        );
+        let abort = AbortBridge::new(input.cancellation.child_token());
+        let result = model.model().compact(compact_request, abort.signal()).await;
+        self.publish_transient(
+            input.session,
+            input.run,
+            Event::NativeCompactionFinished { resolved_model },
+        );
+        match result {
+            Ok(result) => NativeOutcome {
+                window: model_history::persist_native_context(result.native_context, input.binding)
+                    .ok()
+                    .filter(|window| window.validate_for_binding(input.binding).is_ok())
+                    .map(|window| CheckpointNativeWindow {
+                        window,
+                        source_through_seq: input_through_seq,
+                    }),
+                mark: None,
+            },
+            Err(error) => NativeOutcome {
+                window: None,
+                mark: native_compaction::compact_failure_mark(&error, seeded),
+            },
+        }
     }
 
     async fn stage_tool_output_elision(
@@ -1364,6 +1461,7 @@ impl io::Write for CountingWriter {
     }
 }
 
+#[cfg(test)]
 pub(super) fn estimated_request_tokens(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],

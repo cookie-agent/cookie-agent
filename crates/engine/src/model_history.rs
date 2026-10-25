@@ -121,6 +121,13 @@ pub enum HistoryError {
     Artifact(#[from] std::io::Error),
     #[error("model history could not be represented: {0}")]
     Model(Box<ModelError>),
+    /// The latest checkpoint is a provider window alone, written before
+    /// windows were kept beside a summary, and this request cannot use it:
+    /// the covered events must be summarized first.
+    #[error(
+        "the session's latest checkpoint is a provider window this model cannot use, and it has no summary"
+    )]
+    UnsummarizedNativeCheckpoint,
 }
 
 impl From<ModelError> for HistoryError {
@@ -333,6 +340,27 @@ fn latest_checkpoint<'a>(
     })
 }
 
+/// The latest checkpoint that carries a summary, with its summary: the one
+/// summary views build on. A provider window alone, which builds before
+/// 1.29.0 wrote, is passed over, so its covered events read from the log.
+pub(crate) fn latest_summary_checkpoint<'a>(
+    events: &[&'a StoredEvent],
+) -> Option<(
+    &'a StoredEvent,
+    &'a cookie_agent_protocol::ContextCheckpointCommit,
+    &'a str,
+)> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ContextCheckpointCommitted { commit } => match &commit.checkpoint {
+            ContextCheckpoint::InternalSummary { checkpoint, .. } => {
+                Some((*event, commit, checkpoint.summary()))
+            }
+            ContextCheckpoint::NativeWindow { .. } => None,
+        },
+        _ => None,
+    })
+}
+
 fn is_pinned_event(event: &StoredEvent, latest_pinned_seqs: &[u64], through_seq: u64) -> bool {
     event.seq <= through_seq
         && (matches!(event.payload, EventPayload::SkillLoaded { .. })
@@ -506,32 +534,23 @@ pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
     let Some(recent_from_seq) = recent_from_seq else {
-        return Ok(assemble_model_context(events, store, binding, composed_prompt)?.history);
+        return Ok(assemble_summary_view(events, store, binding, composed_prompt)?.history);
     };
-    let (mut visible, prior_summary) = if let Some(commit) = latest_checkpoint(events) {
-        let (retained_from, summary, mode) = match &commit.checkpoint {
-            ContextCheckpoint::InternalSummary { checkpoint, .. } => (
-                commit.boundaries.recent_from_seq,
-                Some(checkpoint.summary()),
-                CheckpointSelectionMode::InternalSummary,
-            ),
-            ContextCheckpoint::NativeWindow { .. } => {
-                (None, None, CheckpointSelectionMode::NativeWindow)
-            }
+    let (mut visible, prior_summary) =
+        if let Some((_, commit, summary)) = latest_summary_checkpoint(events) {
+            (
+                selected_checkpoint_events(
+                    events,
+                    commit.boundaries.source_through_seq,
+                    commit.boundaries.recent_from_seq,
+                    true,
+                    CheckpointSelectionMode::InternalSummary,
+                ),
+                Some(summary),
+            )
+        } else {
+            (events.to_vec(), None)
         };
-        (
-            selected_checkpoint_events(
-                events,
-                commit.boundaries.source_through_seq,
-                retained_from,
-                true,
-                mode,
-            ),
-            summary,
-        )
-    } else {
-        (events.to_vec(), None)
-    };
     let latest_pinned_seqs = latest_pinned_seqs(events);
     visible.retain(|event| {
         event.seq < recent_from_seq || is_pinned_event(event, &latest_pinned_seqs, u64::MAX)
@@ -557,20 +576,13 @@ pub(crate) fn compaction_tail_candidates<E: Borrow<StoredEvent>>(events: &[E]) -
         unresolved_calls: usize,
     }
 
-    let visible = if let Some(commit) = latest_checkpoint(events) {
-        let (recent_from, mode) = match &commit.checkpoint {
-            ContextCheckpoint::InternalSummary { .. } => (
-                commit.boundaries.recent_from_seq,
-                CheckpointSelectionMode::InternalSummary,
-            ),
-            ContextCheckpoint::NativeWindow { .. } => (None, CheckpointSelectionMode::NativeWindow),
-        };
+    let visible = if let Some((_, commit, _)) = latest_summary_checkpoint(events) {
         selected_checkpoint_events(
             events,
             commit.boundaries.source_through_seq,
-            recent_from,
+            commit.boundaries.recent_from_seq,
             true,
-            mode,
+            CheckpointSelectionMode::InternalSummary,
         )
     } else {
         events.to_vec()
@@ -728,16 +740,33 @@ struct AssembledHistory {
     replay_decisions: Vec<ReplayDecision>,
 }
 
+/// The context a request on `binding` sends, any provider window allowed:
+/// [`assemble_model_context_with`] for a caller that knows of no provider
+/// refusing windows.
 pub(crate) fn assemble_model_context<E: Borrow<StoredEvent>>(
     events: &[E],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<ModelContext, HistoryError> {
+    assemble_model_context_with(events, store, binding, composed_prompt, true)
+}
+
+/// The context a request on `binding` sends. The latest checkpoint's
+/// provider window serves when `use_windows` allows it, the window belongs
+/// to the binding's adapter, provider, and model, and it restores; the
+/// summary serves otherwise. A window alone that cannot serve is
+/// [`HistoryError::UnsummarizedNativeCheckpoint`].
+pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
+    events: &[E],
+    store: &ArtifactRouter,
+    binding: &FrozenModelBinding,
+    composed_prompt: &str,
+    use_windows: bool,
+) -> Result<ModelContext, HistoryError> {
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
-    let checkpoint = latest_checkpoint(events);
-    let Some(commit) = checkpoint else {
+    let Some(commit) = latest_checkpoint(events) else {
         let assembled =
             assemble_history_with_replay(events, events, store, binding, composed_prompt)?;
         return Ok(ModelContext {
@@ -746,32 +775,79 @@ pub(crate) fn assemble_model_context<E: Borrow<StoredEvent>>(
             replay_decisions: assembled.replay_decisions,
         });
     };
-    match &commit.checkpoint {
-        ContextCheckpoint::InternalSummary { checkpoint, .. } => project_summary_context(
+    if let Some((source_through_seq, native_context)) = usable_window(commit, binding, use_windows)
+    {
+        let selected = selected_checkpoint_events(
+            events,
+            source_through_seq,
+            None,
+            false,
+            CheckpointSelectionMode::NativeWindow,
+        );
+        let assembled =
+            assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
+        return Ok(ModelContext {
+            history: assembled.history,
+            native_context: Some(native_context),
+            replay_decisions: assembled.replay_decisions,
+        });
+    }
+    if matches!(commit.checkpoint, ContextCheckpoint::NativeWindow { .. }) {
+        return Err(HistoryError::UnsummarizedNativeCheckpoint);
+    }
+    assemble_summary_view(events, store, binding, composed_prompt)
+}
+
+/// The window `commit` holds and the last event it covers, when a request
+/// on `binding` may carry it.
+fn usable_window(
+    commit: &cookie_agent_protocol::ContextCheckpointCommit,
+    binding: &FrozenModelBinding,
+    use_windows: bool,
+) -> Option<(u64, OvenNativeContextWindow)> {
+    if !use_windows {
+        return None;
+    }
+    let (window, source_through_seq) = match &commit.checkpoint {
+        ContextCheckpoint::InternalSummary { native, .. } => {
+            let native = native.as_ref()?;
+            (&native.window, native.source_through_seq)
+        }
+        ContextCheckpoint::NativeWindow { window } => {
+            (window, commit.boundaries.source_through_seq)
+        }
+    };
+    window.validate_for_binding(binding).ok()?;
+    let restored = restore_native_context(window, binding).ok()?;
+    Some((source_through_seq, restored))
+}
+
+/// The context built on the latest summary, ignoring provider windows: the
+/// summary and its recent messages, or the whole log before any summary.
+pub(crate) fn assemble_summary_view<E: Borrow<StoredEvent>>(
+    events: &[E],
+    store: &ArtifactRouter,
+    binding: &FrozenModelBinding,
+    composed_prompt: &str,
+) -> Result<ModelContext, HistoryError> {
+    let events = crate::events::event_refs(events);
+    let events = events.as_slice();
+    match latest_summary_checkpoint(events) {
+        Some((_, commit, summary)) => project_summary_context(
             events,
             store,
             binding,
             composed_prompt,
             commit.boundaries.source_through_seq,
             commit.boundaries.recent_from_seq,
-            checkpoint.summary(),
+            summary,
         ),
-        ContextCheckpoint::NativeWindow { window } => {
-            commit
-                .validate_for_binding(binding)
-                .map_err(|error| HistoryError::Corrupt(error.to_string()))?;
-            let selected = selected_checkpoint_events(
-                events,
-                commit.boundaries.source_through_seq,
-                None,
-                false,
-                CheckpointSelectionMode::NativeWindow,
-            );
+        None => {
             let assembled =
-                assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
+                assemble_history_with_replay(events, events, store, binding, composed_prompt)?;
             Ok(ModelContext {
                 history: assembled.history,
-                native_context: Some(restore_native_context(window, binding)?),
+                native_context: None,
                 replay_decisions: assembled.replay_decisions,
             })
         }

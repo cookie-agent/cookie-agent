@@ -84,6 +84,8 @@ pub struct ConfigurationStatus {
     /// as a delegation target no agent has: an ACP agent whose runtime has
     /// not reported it, or a typo. Recomputed whenever the agents change.
     pub diagnostics: Vec<String>,
+    /// The providers the native compaction record marks.
+    pub native_compaction: Vec<cookie_agent_protocol::NativeCompactionMark>,
 }
 
 impl Engine {
@@ -127,6 +129,7 @@ impl Engine {
             applied_revision: applied.revision.clone(),
             restart_required,
             diagnostics: self.configuration_diagnostics(),
+            native_compaction: self.inner.native_compaction.marks(),
             error: self
                 .inner
                 .config_error

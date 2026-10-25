@@ -18,7 +18,7 @@ pub(crate) fn status_to_wire(status: ConfigurationStatus) -> ConfigStatus {
             .collect(),
         error: status.error,
         diagnostics: status.diagnostics,
-        native_compaction: Vec::new(),
+        native_compaction: status.native_compaction,
     }
 }
 

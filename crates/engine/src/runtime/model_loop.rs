@@ -31,9 +31,7 @@ use crate::{
     ToolCall, ToolConcurrency, TurnAgentContext,
     events::OutputHub,
     model_bridge::{AbortBridge, TurnAccumulator},
-    model_history::{
-        assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
-    },
+    model_history::{persist_turn, replay_decisions_with_preflight, wire_model},
     model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
     policy::{self, FrozenRunPolicy, freeze_root_agent_policy, resolve_agent},
 };
@@ -1832,13 +1830,46 @@ impl Engine {
                     }
                     Err(error) => return Err(error),
                 };
-                let input_through_seq = request_events.last().map_or(0, |event| event.seq);
-                let context = assemble_model_context(
+                // A provider window alone that this request cannot use is
+                // summarized from the log first, once (native compaction spec
+                // section 7).
+                let (request_events, context) = match self.request_context(
                     &request_events,
-                    &self.inner.artifacts,
                     binding,
                     composed_prompt,
-                )?;
+                    model.model().as_ref(),
+                ) {
+                    Err(EngineError::ModelHistory(
+                        crate::model_history::HistoryError::UnsummarizedNativeCheckpoint,
+                    )) => {
+                        let request_events = self
+                            .maybe_compact_context(CompactionInput {
+                                session,
+                                run,
+                                cancellation,
+                                binding,
+                                owner_policy: policy,
+                                internal_policy: &compaction_policy,
+                                tools: &tools,
+                                events: request_events,
+                                force: true,
+                                overflow_recovery: false,
+                                focus: None,
+                                origin: event_origin("engine:auto-compact"),
+                            })
+                            .await?;
+                        let context = self.request_context(
+                            &request_events,
+                            binding,
+                            composed_prompt,
+                            model.model().as_ref(),
+                        )?;
+                        (request_events, context)
+                    }
+                    context => (request_events, context?),
+                };
+                let input_through_seq = request_events.last().map_or(0, |event| event.seq);
+                let carries_window = context.native_context.is_some();
                 // The context is built from the snapshot alone, so it is built
                 // first: a snapshot still held when the attempt is appended,
                 // or through the call, makes each append copy the event list.
@@ -2166,6 +2197,19 @@ impl Engine {
                 });
                 if result.is_err() && !defer_release_for_abort {
                     request_claim.release().await?;
+                }
+                // A provider that refuses the window this request carried is
+                // marked, so later requests use the summary; this one fails
+                // with the provider's error as any refusal does.
+                if carries_window
+                    && let Err(error) = &result
+                    && let Some(reason) = crate::native_compaction::rejected_window_reason(error)
+                {
+                    self.inner.native_compaction.mark(
+                        binding,
+                        crate::native_compaction::MarkState::RejectsWindows,
+                        reason,
+                    );
                 }
                 match result {
                     Ok(turn) => {
