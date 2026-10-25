@@ -638,6 +638,27 @@ pub(crate) fn ConnectionStatus(
                                 .collect_view()
                         }}
                     </dl>
+                    // The daemon can restart from here, as from Settings ›
+                    // Configuration: the same confirmation, once the panel
+                    // is closed.
+                    <Show when=move || {
+                        matches!(connection.phase.get(), Phase::Connected { .. })
+                            && connection.workspace.can_restart.get()
+                    }>
+                        <button
+                            type="button"
+                            id=primary.then_some("connection-restart")
+                            data-connection-restart
+                            class="inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-md border border-crust px-3 text-sm hover:bg-toasted active:bg-crust dark:border-smoke dark:hover:bg-ember dark:active:bg-smoke"
+                            on:click=move |_| {
+                                close();
+                                connection.workspace.ask_restart();
+                            }
+                        >
+                            <Glyph icon=icondata::FaPowerOffSolid />
+                            "Restart daemon"
+                        </button>
+                    </Show>
                     <Show when=move || connection.attached.get()>
                         <ForgetDaemon connection=connection confirming=confirming primary=primary on_forget=close />
                     </Show>

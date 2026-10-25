@@ -54,7 +54,9 @@ address bar.
 - **Once connected**, the foot of the rail (see [Layout](#layout)) shows
   the connection's state: connected, connecting, reconnecting, or offline.
   Hover over it for the daemon's address and version, or click it for a
-  panel with them and **Forget this daemon**. Settings › This browser has
+  panel with them, **Restart daemon** (see
+  [Restarting the daemon](#restarting-the-daemon)), and **Forget this
+  daemon**. Settings › This browser has
   **Forget this daemon** too.
   - **Dropped connection.** The page redials with the TUI's backoff,
     500 ms rising to 10 s, under the same client identity.
@@ -613,8 +615,8 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 - **Restarting the daemon.** <a id="restarting-the-daemon"></a>While the
   daemon's configuration lists parts that only a restart applies, a banner
   across the top says so, such as *Restart needed to apply: plugins,
-  runtimes*, with **Restart daemon**. That button and the one in Settings ›
-  Configuration ask first: **Restart when idle** (the default) waits until
+  runtimes*, with **Restart daemon**. That button, the one in the connection
+  panel, and the one in Settings › Configuration ask first: **Restart when idle** (the default) waits until
   no turn runs and refuses new ones meanwhile, and **Restart now
   (interrupts 2 running turns)** stops the running turns, counting the
   sessions the page sees running. Cancel or Escape closes the question; on

@@ -3755,8 +3755,9 @@ def changed_daemon(browser):
 
 
 def restart_daemon(browser):
-    """A change that needs a restart shows the banner; its button and
-    Settings → Configuration's both open the confirmation, which offers a
+    """A change that needs a restart shows the banner; its button, the
+    connection panel's, and Settings → Configuration's open the
+    confirmation, which offers a
     restart when idle or now; when idle restarts the daemon, the page
     reconnects, reads the section opened meanwhile again, and the banner
     is gone."""
@@ -3797,6 +3798,18 @@ def restart_daemon(browser):
     browser.click("#restart-cancel")
     browser.resize(1280, 900)
     print("on a phone the confirmation fits and its buttons are 44 px tall")
+
+    # The connection panel (the rail's green dot) offers the same restart:
+    # the panel closes and the confirmation opens.
+    browser.click("#connection")
+    browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
+    assert browser.text("#connection-restart") == "Restart daemon", browser.text("#connection-restart")
+    browser.click("#connection-restart")
+    browser.wait("the confirmation", lambda: shown(browser, "#restart-dialog"))
+    assert count(browser, "#connection-details") == 0, "the connection panel stayed open"
+    browser.click("#restart-cancel")
+    browser.wait("the confirmation closed", lambda: not shown(browser, "#restart-dialog"))
+    print("the connection panel's Restart daemon opens the confirmation")
 
     # Settings → Configuration: Restart daemon beside Reload from disk,
     # highlighted while a change waits for it; when idle.
