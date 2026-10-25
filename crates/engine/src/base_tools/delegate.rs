@@ -61,8 +61,9 @@ const CAPABILITY_ITEMS: &str = "Each item gives the subagent one runtime capabil
 struct GetResultArgs {
     /// Handle or full UUID of one of the caller's subagents.
     session_id: String,
-    #[serde(default)]
-    offset: u32,
+    /// The 1-based line to start at; 1 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offset: Option<u32>,
     limit: Option<u32>,
 }
 
@@ -153,7 +154,7 @@ impl DelegateToolProvider {
             result_truncation: result_truncation_policy("get_subagent_result"),
             name: "get_subagent_result".into(),
             permission_name: Some("delegate".into()),
-            description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
+            description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "properties":{
@@ -161,8 +162,14 @@ impl DelegateToolProvider {
                         "type":"string",
                         "description":"Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents."
                     },
-                    "offset":{"type":"integer","minimum":0,"default":0},
-                    "limit":{"type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000}
+                    "offset":{
+                        "type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":1,
+                        "description":"The 1-based line of the result to start at. Defaults to 1."
+                    },
+                    "limit":{
+                        "type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000,
+                        "description":"The most lines to return. Defaults to 2000."
+                    }
                 },
                 "required":["session_id"]
             }),
@@ -388,8 +395,8 @@ impl ToolProvider for DelegateToolProvider {
             "get_subagent_result" => match parse_result(&call.arguments) {
                 Ok(args) => {
                     let mut entries = vec![("session", args.session_id.clone())];
-                    if args.offset > 0 {
-                        entries.push(("offset", args.offset.to_string()));
+                    if let Some(offset) = args.offset.filter(|offset| *offset != 1) {
+                        entries.push(("offset", offset.to_string()));
                     }
                     entries.extend(args.limit.map(|limit| ("limit", limit.to_string())));
                     base_presentation(
@@ -455,11 +462,12 @@ impl ToolProvider for DelegateToolProvider {
             }
             "get_subagent_result" => {
                 let mut args = parse_result(&call.arguments)?;
-                let limit = args.limit.unwrap_or(DEFAULT_RESULT_LIMIT);
-                if limit == 0 {
-                    return Err(ToolError::execution("limit must be positive"));
-                }
-                args.limit = Some(limit);
+                let window = cookie_agent_runtime_api::text_tools::LineWindow::new(
+                    args.offset.map(|offset| offset as usize),
+                    Some(args.limit.unwrap_or(DEFAULT_RESULT_LIMIT) as usize),
+                )?;
+                args.offset = Some(window.offset as u32);
+                args.limit = Some(window.limit as u32);
                 let target = self
                     .engine
                     .resolve_subagent_target(
@@ -557,8 +565,10 @@ impl PreparedExecutor for DelegateExecutor {
                         context.session,
                         &args.session_id,
                         false,
-                        args.offset,
-                        args.limit.expect("normalized result limit"),
+                        cookie_agent_runtime_api::text_tools::LineWindow {
+                            offset: args.offset.expect("normalized result offset") as usize,
+                            limit: args.limit.expect("normalized result limit") as usize,
+                        },
                         context.cancellation,
                     )
                     .await
@@ -698,7 +708,7 @@ mod tests {
             "read",
             &GetResultArgs {
                 session_id: session_id.to_string(),
-                offset: 0,
+                offset: None,
                 limit: Some(super::DEFAULT_RESULT_LIMIT),
             },
             "agent",

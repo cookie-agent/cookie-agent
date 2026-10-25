@@ -412,8 +412,7 @@ async fn a_subagent_result_wait_wakes_on_the_run_end_without_polling() {
                 parent_id,
                 child_id,
                 true,
-                0,
-                20,
+                page_window(1, 20),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await

@@ -1133,7 +1133,7 @@ The report previews the turn's final message per
 [`[subagent_output]`](../engine/subagent_output.md), with its line breaks and
 tabs kept and other control characters folded to spaces. A report over the limit
 shows its first and last lines around a marker such as
-`[… 200 lines omitted. Read more: get_subagent_result(session_id="explore_1a2b3c4d", offset=20)]`;
+`[… 200 lines omitted. Read more: get_subagent_result(session_id="explore_1a2b3c4d", offset=21)]`;
 a complete one ends in `full output shown`.
 Terminal and lifecycle results keep the UUID under the unified `session_id`
 metadata key and add `handle`. `resume_session_id` accepts the same two forms,
@@ -1296,15 +1296,15 @@ get_subagent_result(limit?: integer, offset?: integer, session_id: string)
 Description sent to the model:
 
 ```text
-Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. "explore_1a2b3c4d". Only your own subagents are visible.
+Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. "explore_1a2b3c4d". Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.
 ```
 
 Only when the agent can delegate to at least one subagent at this depth.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `limit` | `integer` | no | Default: `2000`. |
-| `offset` | `integer` | no | Default: `0`. |
+| `limit` | `integer` | no | The most lines to return. Defaults to 2000. Default: `2000`. |
+| `offset` | `integer` | no | The 1-based line of the result to start at. Defaults to 1. Default: `1`. |
 | `session_id` | `string` | yes | Handle (agent_type + 8 hex, e.g. "coder_9f8e7d6b") or full UUID of one of your subagents. |
 
 ??? note "Parameters JSON Schema"
@@ -1315,13 +1315,16 @@ Only when the agent can delegate to at least one subagent at this depth.
       "properties": {
         "limit": {
           "default": 2000,
+          "description": "The most lines to return. Defaults to 2000.",
           "maximum": 4294967295,
           "minimum": 1,
           "type": "integer"
         },
         "offset": {
-          "default": 0,
-          "minimum": 0,
+          "default": 1,
+          "description": "The 1-based line of the result to start at. Defaults to 1.",
+          "maximum": 4294967295,
+          "minimum": 1,
           "type": "integer"
         },
         "session_id": {
@@ -1344,7 +1347,7 @@ Only when the agent can delegate to at least one subagent at this depth.
 |---|---|---|---|
 | Hint | `delegate` | `delegate` | `skill` |
 | Title | `Delegate to <agent>` | `Read subagent <session>` | `Load skill <name>` |
-| Arguments | `key_value` of `agent`, `description`, `resume` and `inherit context` when set, and `prompt` | `key_value` of `session`, and `offset` (when not 0) and `limit` when given | `key_value` of `name`, and `arguments` when not empty |
+| Arguments | `key_value` of `agent`, `description`, `resume` and `inherit context` when set, and `prompt` | `key_value` of `session`, and `offset` (when not 1) and `limit` when given | `key_value` of `name`, and `arguments` when not empty |
 | Preview | – | – | – |
 | Result | `session_ref` of the subagent (handle as `short_id`, `<agent> · <status>` as `label`), then its whole final message as `markdown` | `session_ref` (its status as `label`), then the page's lines as `markdown` | the loaded skill as `markdown` |
 

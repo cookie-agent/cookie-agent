@@ -1881,8 +1881,7 @@ async fn a_fork_of_a_session_that_delegated_leaves_its_subagents_behind() {
                         fork,
                         child.session_id,
                         false,
-                        0,
-                        1,
+                        page_window(1, 1),
                         tokio_util::sync::CancellationToken::new(),
                     )
                     .await

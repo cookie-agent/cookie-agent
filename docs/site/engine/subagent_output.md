@@ -20,8 +20,10 @@ truncates the way [`[tool_output]`](tool_output.md) does: a report within both
 `max_lines` and `max_bytes` is shown whole and ends in `full output shown`; a
 longer one shows its first `head_lines` and last `tail_lines` lines, splitting
 `max_bytes` between them in the same ratio, around a marker such as
-`[… 200 lines omitted. Read more: get_subagent_result(session_id="explore_1a2b3c4d", offset=20)]`.
-`get_subagent_result` pages the full report and is never truncated.
+`[… 200 lines omitted. Read more: get_subagent_result(session_id="explore_1a2b3c4d", offset=21)]`.
+The marker's `offset` is the 1-based line of the first line it left out.
+`get_subagent_result` pages the full report, as `read` pages a file, and is
+never truncated.
 
 The preview is stored when the turn reports, on the parent's
 `delegation_finished` event or report message, so changing these limits affects

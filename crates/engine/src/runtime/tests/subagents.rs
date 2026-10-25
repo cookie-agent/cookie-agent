@@ -345,17 +345,16 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
             parent.session_id,
             child_session_id,
             false,
-            1,
-            1,
+            page_window(2, 1),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
         .expect("paginated subagent result");
     assert_eq!(
         page.output,
-        "<status>completed</status>\n<content>\n2: second line\n</content>"
+        "<status>completed</status>\n<content>\n2: second line\n</content>\n[1 more line; continue with offset=3]"
     );
-    assert_eq!(page.metadata["offset"], 1);
+    assert_eq!(page.metadata["offset"], 2);
     assert_eq!(page.metadata["limit"], 1);
     assert_eq!(page.metadata["total_lines"], 3);
 
@@ -370,8 +369,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
                 foreign.session_id,
                 child_session_id,
                 false,
-                0,
-                1,
+                page_window(1, 1),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await
@@ -728,8 +726,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
             parent.session_id,
             child_session_id,
             false,
-            0,
-            20,
+            page_window(1, 20),
             tokio_util::sync::CancellationToken::new(),
         )
         .await

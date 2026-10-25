@@ -497,8 +497,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             parent.session_id,
             children[0],
             false,
-            0,
-            20,
+            page_window(1, 20),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -545,8 +544,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             parent.session_id,
             children[0],
             false,
-            0,
-            20,
+            page_window(1, 20),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -826,8 +824,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             parent.session_id,
             children[0],
             false,
-            0,
-            20,
+            page_window(1, 20),
             tokio_util::sync::CancellationToken::new(),
         )
         .await

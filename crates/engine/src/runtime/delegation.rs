@@ -2633,14 +2633,14 @@ impl Engine {
     /// Reports **session liveness**, not delegation lifecycle. A running
     /// (including queued/starting, or finished-then-woken) subagent reports
     /// "running"; once it ends, the result is the last assistant message of its
-    /// most recent turn, paginated by `offset`/`limit`.
+    /// most recent turn, the lines of `window`, numbered from 1 as `read`
+    /// numbers a file's.
     pub async fn get_subagent_result(
         &self,
         caller_session_id: SessionId,
         reference: impl std::fmt::Display,
         wait: bool,
-        offset: u32,
-        limit: u32,
+        window: cookie_agent_runtime_api::text_tools::LineWindow,
         cancellation: CancellationToken,
     ) -> Result<ToolResult, EngineError> {
         let child_session_id = self.resolve_subagent_target(
@@ -2672,22 +2672,22 @@ impl Engine {
                 || self.producer_wake_in_flight(child_session_id);
             if !running {
                 let text = last_assistant_message(&child);
-                return Ok(paginated_subagent_result(
+                return paginated_subagent_result(
                     (child_session_id, child.meta.short_id.as_deref()),
                     session_status_name(child.status),
                     &text,
-                    offset,
-                    limit,
-                ));
+                    window,
+                )
+                .map_err(|error| EngineError::ToolFailed(error.message()));
             }
             if !wait {
-                return Ok(paginated_subagent_result(
+                return paginated_subagent_result(
                     (child_session_id, child.meta.short_id.as_deref()),
                     "running",
                     "",
-                    offset,
-                    limit,
-                ));
+                    window,
+                )
+                .map_err(|error| EngineError::ToolFailed(error.message()));
             }
             tokio::select! {
                 () = cancellation.cancelled() => {
@@ -3994,7 +3994,8 @@ fn preview_text(text: &str, handle: &str, limits: PreviewLimits) -> String {
         &preview::omitted(preview::newlines(text), text.len() as u64, head, tail),
         &format!(
             "get_subagent_result(session_id=\"{handle}\", offset={})",
-            preview::newlines(head)
+            // The 1-based number of the first line the preview left out.
+            preview::newlines(head) + 1
         ),
     );
     preview::render(head, &marker, tail.trim_end_matches('\n'))
@@ -4016,47 +4017,52 @@ const fn background_queue_limit_reached(limit: u32, queued: u32) -> bool {
     queued >= limit.saturating_mul(4)
 }
 
+/// The page `window` of a subagent's latest result `text`, numbered from 1
+/// as `read` numbers a file's lines, with `read`'s line cut, page cap, and
+/// continuation marker. A running subagent has no result to page yet; for a
+/// finished one, a window past its last line is an error.
 fn paginated_subagent_result(
     child: (SessionId, Option<&str>),
     status: &str,
     text: &str,
-    offset: u32,
-    limit: u32,
-) -> ToolResult {
-    let lines = text.lines().collect::<Vec<_>>();
+    window: cookie_agent_runtime_api::text_tools::LineWindow,
+) -> Result<ToolResult, cookie_agent_runtime_api::ToolError> {
+    use cookie_agent_runtime_api::text_tools;
     let mut output = format!("<status>{status}</status>\n<content>\n");
-    let page = lines
-        .iter()
-        .enumerate()
-        .skip(offset as usize)
-        .take(limit as usize)
-        .collect::<Vec<_>>();
-    for (index, line) in &page {
-        output.push_str(&format!("{}: {line}\n", index + 1));
+    let page = text_tools::page_text(
+        text,
+        window,
+        text_tools::MAX_PAGE_BYTES.saturating_sub(output.len()),
+    );
+    if status != "running" {
+        let label = reference_label(Some(child.0), child.1).unwrap_or_default();
+        page.check_in_range(&format!("the result of {label}"))?;
     }
+    output.push_str(&page.text);
     output.push_str("</content>");
-    let page = page
-        .iter()
-        .map(|(_, line)| **line)
-        .collect::<Vec<_>>()
-        .join("\n");
-    ToolResult {
+    if let Some(marker) = page.continuation() {
+        output.push('\n');
+        output.push_str(&marker);
+    }
+    let shown = page.excerpt.join("\n");
+    Ok(ToolResult {
         display: delegate_display(
             Some(session_display(child.0, child.1, status.to_owned())),
-            (!page.is_empty()).then(|| report_markdown(&page)),
+            (!shown.is_empty()).then(|| report_markdown(&shown)),
         ),
         background: None,
         retained_output: None,
         title: safe_display("Read subagent result"),
         output,
         metadata: serde_json::json!({
-            "offset": offset,
-            "limit": limit,
-            "total_lines": lines.len(),
+            "offset": window.offset,
+            "limit": window.limit,
+            "total_lines": page.total_lines,
+            "next_offset": page.next_offset,
         }),
         attachments: Vec::new(),
         additional_messages: Vec::new(),
-    }
+    })
 }
 
 /// The model-facing reference for a session: its handle when one exists, else
@@ -4514,7 +4520,7 @@ second line
             .collect::<String>();
         expected.push_str(
             "[… 110 lines omitted. Read more: get_subagent_result(session_id=\"explore_1a2b3c4d\", \
-             offset=20)]\n",
+             offset=21)]\n",
         );
         expected.push_str(
             &(131..=150)
@@ -4576,18 +4582,47 @@ second line
                 label: Some(label.into()),
             })
         };
+        let window = |offset, limit| {
+            cookie_agent_runtime_api::text_tools::LineWindow::new(Some(offset), Some(limit))
+                .unwrap()
+        };
         let page = paginated_subagent_result(
             (child, Some("explore_1a2b3c4d")),
             "completed",
             "one\ntwo\nthree",
-            1,
-            1,
-        );
+            window(2, 1),
+        )
+        .unwrap();
+        // Line 2, numbered from 1, and where to continue.
         assert_eq!(
             page.output,
-            "<status>completed</status>\n<content>\n2: two\n</content>"
+            "<status>completed</status>\n<content>\n2: two\n</content>\n[1 more line; continue with offset=3]"
         );
         assert_eq!(page.metadata["total_lines"], 3);
+        assert_eq!(page.metadata["next_offset"], 3);
+        // The last page ends without a marker; past it is an error.
+        let last = paginated_subagent_result(
+            (child, Some("explore_1a2b3c4d")),
+            "completed",
+            "one\ntwo\nthree",
+            window(3, 5),
+        )
+        .unwrap();
+        assert_eq!(
+            last.output,
+            "<status>completed</status>\n<content>\n3: three\n</content>"
+        );
+        assert_eq!(
+            paginated_subagent_result(
+                (child, Some("explore_1a2b3c4d")),
+                "completed",
+                "one\ntwo\nthree",
+                window(4, 5),
+            )
+            .unwrap_err()
+            .message(),
+            "offset=4 is past the end of the result of explore_1a2b3c4d, which has 3 lines"
+        );
         // Clients see the subagent and the page's own text.
         assert_eq!(
             page.display,
@@ -4597,8 +4632,13 @@ second line
             ]
         );
 
-        let running =
-            paginated_subagent_result((child, Some("explore_1a2b3c4d")), "running", "", 0, 20);
+        let running = paginated_subagent_result(
+            (child, Some("explore_1a2b3c4d")),
+            "running",
+            "",
+            window(1, 20),
+        )
+        .unwrap();
         assert_eq!(
             running.output,
             "<status>running</status>\n<content>\n</content>"

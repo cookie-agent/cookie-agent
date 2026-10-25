@@ -250,8 +250,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
             parent.session_id,
             child_session_id,
             false,
-            0,
-            20,
+            page_window(1, 20),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -624,8 +623,7 @@ async fn queued_terminal_resume_cancel_is_durable() {
             parent.session_id,
             resumed_session_id,
             false,
-            0,
-            20,
+            page_window(1, 20),
             tokio_util::sync::CancellationToken::new(),
         )
         .await

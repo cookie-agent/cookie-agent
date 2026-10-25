@@ -50,8 +50,7 @@ async fn running_subagent_result_is_empty_waits_and_stop_background_stops_its_tu
             parent.session_id,
             child_session_id,
             false,
-            0,
-            20,
+            page_window(1, 20),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -68,8 +67,7 @@ async fn running_subagent_result_is_empty_waits_and_stop_background_stops_its_tu
                 parent.session_id,
                 child_session_id,
                 true,
-                0,
-                20,
+                page_window(1, 20),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await
@@ -204,8 +202,7 @@ async fn running_subagent_results_are_scoped_to_the_callers_tree() {
             foreign.session_id,
             child_session_id,
             false,
-            0,
-            2000,
+            page_window(1, 2000),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -230,8 +227,7 @@ async fn running_subagent_results_are_scoped_to_the_callers_tree() {
             foreign.session_id,
             child_handle.clone(),
             false,
-            0,
-            2000,
+            page_window(1, 2000),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -298,8 +294,7 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
             parent.session_id,
             child_session_id,
             false,
-            0,
-            2000,
+            page_window(1, 2000),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -331,8 +326,7 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
             parent.session_id,
             child_session_id,
             false,
-            0,
-            2000,
+            page_window(1, 2000),
             tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -350,8 +344,7 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
                 parent.session_id,
                 child_session_id,
                 true,
-                0,
-                2000,
+                page_window(1, 2000),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await

@@ -285,8 +285,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
                 parent.session_id,
                 cancelled_id,
                 false,
-                0,
-                1,
+                page_window(1, 1),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await

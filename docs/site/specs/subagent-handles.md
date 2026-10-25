@@ -6,7 +6,9 @@ around it: `cancel_subagent` was removed and a subagent's turn is stopped with
 subagents report in `<subagent_report handle="…">` rather than
 `<subagent_notification>`; `short_id` on `session_created` became required with
 history format 1; and get_subagent_result, resume, and stop resolve only the
-caller's direct children, while `send_message` resolves any peer in the tree.
+caller's direct children, while `send_message` resolves any peer in the tree;
+and since 2026-10-25 get_subagent_result's `offset`, and the offset a report's
+marker names, is 1-based, its pages numbered and cut as `read`'s are.
 The [tool reference](../reference/tools.md#delegation-and-skills) states the
 current contract. This document records the design
 decisions for replacing raw 36-character UUID session references in the

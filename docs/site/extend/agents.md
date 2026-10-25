@@ -360,9 +360,10 @@ foreground call, whose report is the tool result instead. Each turn reports
 exactly once, across retries and restarts; a grandchild reports to its own
 parent only.
 
-Use `get_subagent_result` with the child's handle or UUID and zero-based
-`offset`/`limit` to read the last assistant message of the child's most recent
-turn in pages; a running child (including one just woken by `send_message`)
+Use `get_subagent_result` with the child's handle or UUID and a 1-based
+`offset` and a `limit` to read the last assistant message of the child's most
+recent turn in pages, numbered from 1 as `read` numbers a file's lines, with
+its 4 KiB line cut and continuation marker; a running child (including one just woken by `send_message`)
 reports as running and returns no text. It never waits. If a background child
 is still running, tell the user that you are waiting and end the turn; its
 report will wake this parent session.
