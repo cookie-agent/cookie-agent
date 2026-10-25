@@ -662,7 +662,8 @@ def streaming_scroll(browser):
     back to the end or jumps to the latest, and a row opened or closed in
     the streaming reply responds within a frame or two."""
     new_session(browser)
-    send(browser, "stream only, label alpha")
+    # Long enough (about 30 s) to outlast every step below on a slow runner.
+    send(browser, "stream only, label alpha, lines 1500")
     browser.wait("the long reply", lambda: "alpha 60 " in browser.text("#transcript"), timeout=30)
     follows(browser, "the stream")
     # A wheel up stops following at once, whatever streams in below.
@@ -689,7 +690,7 @@ def streaming_scroll(browser):
     send(browser, "noted, thanks")
     follows(browser, "the message sent")
     print("a message sent while scrolled up follows the end again")
-    idle(browser, "the long reply's end", text="alpha 599 ")
+    idle(browser, "the long reply's end", text="alpha 1499 ")
     # The turn's end draws the reply's text anew; the view stays at the end.
     end = browser.script(SCROLL_STATE)
     assert end["gap"] <= 2 and not end["jump"], "the reply's end left the end: %s" % end

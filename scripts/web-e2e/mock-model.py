@@ -22,7 +22,7 @@ otherwise the last user text decides.
   block;
 - containing "stream only": a long markdown answer streamed fast, its lines
   named after the word that follows "label" (or "line"), to scroll while it
-  streams; containing "stream long": a `bash` call that prints a tick every
+  streams ("lines <n>" sets its length, 600 by default); containing "stream long": a `bash` call that prints a tick every
   50 ms, then that long answer, to fold the call while the answer streams;
 - containing "long session <n>": a reply of <n> steps, each a sentence and
   a `read` call, then the "stream only" answer at 1,500 lines, for the
@@ -85,7 +85,10 @@ def tool_reply(name="bash", arguments=None):
 
 
 def long_reply(text, lines=600):
-    """A long markdown answer streamed fast, a code block now and then."""
+    """A long markdown answer streamed fast, a code block now and then;
+    "lines <n>" in the prompt sets its length."""
+    asked = re.search(r"lines (\d+)", text)
+    lines = int(asked.group(1)) if asked else lines
     label = re.search(r"label (\w+)", text)
     label = label.group(1) if label else "line"
     parts = []
