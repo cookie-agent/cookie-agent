@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.29.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.30.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.29.0",
+    "protocol_version": "1.30.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.29.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.30.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
 ```
 
@@ -268,6 +268,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `crons.update` | Job `id`, any member of `crons.create` (`null` clears `name`, `permission_mode`, `max_consecutive_failures`) | The `job` afterwards |
 | `crons.delete` | Job `id` | Empty object; the sessions its fires started stay |
 | `crons.run` | Job `id` | The `job` afterwards and the `session_id` the fire went to, absent when it was skipped |
+| `notifications.get` | Empty object | The daemon's VAPID `public_key`, whether it sends pushes (`enabled`), and the `subscriptions` it pushes to (since 1.30.0; see [Push notifications](#push-notifications)) |
+| `notifications.subscribe` | A browser's push subscription: `endpoint`, `p256dh`, `auth`, and a `label` | The `subscription`; the same endpoint keeps its id |
+| `notifications.unsubscribe` | Subscription `id` | Empty object |
+| `notifications.test` | Subscription `id` | `status` (`sent`, `gone`, or `failed`) and an optional `detail` |
+| `client.presence` | `session`: the session this connection shows the user, or `null` when the user is not there | Empty object |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -719,6 +724,29 @@ run now and counts toward neither `max_runs` nor the failure count. Each
 change and fire sends `crons.changed` to every connection. An unknown job is
 `cron_not_found`, a refused value `cron_invalid`, and a failure to read or
 write `crons.json` `cron_store_failed`.
+
+### Push notifications
+
+Since 1.30.0 the daemon sends Web Push notifications to the browsers clients
+registered ([push notifications spec](../specs/push-notifications.md)): when
+a root session settles (its run ended and nothing but a recurring cron job
+can start another) and when an approval or an ACP agent's question waits for
+the user. `[notifications]` configures them.
+
+- **Subscribing.** A client subscribes the browser with the daemon's
+  `public_key` (`applicationServerKey`), then sends the subscription's
+  `endpoint` (an `https://` URL), `p256dh` and `auth` keys (base64url), and
+  a `label` of 1 to 80 characters to `notifications.subscribe`. A
+  `PushSubscription` as clients see it is `{ id, label, push_service,
+  created_at, last_sent_at?, last_error? }`; the endpoint and keys are never
+  sent back. A subscription the push service reports gone is removed.
+- **Presence.** `client.presence` names the session a connection shows the
+  user; the daemon pushes nothing for that session's tree while any
+  connection shows it. It lasts until the next call or the connection's end.
+- **Errors.** An unknown subscription is `push_subscription_not_found`, a
+  refused value `push_subscription_invalid`, and a push folder the daemon
+  cannot read or write `push_unavailable`. Each subscription change sends
+  `notifications.changed` to every connection.
 
 ### Restarting the daemon
 
@@ -1188,6 +1216,7 @@ subscriptions to the deleted sessions end with them: no further
 | `memory.changed` | A memory file changed through the daemon; an empty object |
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
+| `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
 | `daemon.restarting` | A restart is scheduled: `when` (`idle` or `now`), the `active_runs` it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
 | `onboarding.changed` | `onboarding.get`'s answer changed (since 1.22.0): the new answer, after a configuration apply or reload, a provider connected or disconnected, or a model becoming available or not |
 
@@ -1202,7 +1231,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, `crons.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `projects.changed`, `crons.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -1229,8 +1258,8 @@ bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `runtimes.changed` and `plugins.changed` work the same way for
 `runtimes.list` and `plugins.list`, `machines.changed` for
 `machines.list` and `runtimes.list`, `memory.changed` for
-`memory.list`, `projects.changed` for `projects.list`, and `crons.changed`
-for `crons.list`.
+`memory.list`, `projects.changed` for `projects.list`, `crons.changed`
+for `crons.list`, and `notifications.changed` for `notifications.get`.
 
 ### Connection failures
 

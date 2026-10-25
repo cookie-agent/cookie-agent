@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What this connection shows the user now: a session the user is looking\nat, or `null` when the user is not there (the window is hidden or\nidle). It lasts until the next call or the connection's end.",
+  "properties": {
+    "session": {
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ClientPresenceParams",
+  "type": "object"
+}

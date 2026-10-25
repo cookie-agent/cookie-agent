@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "NotificationsTestStatus": {
+      "description": "What the push service did with a test push.",
+      "oneOf": [
+        {
+          "const": "sent",
+          "description": "The push service took it.",
+          "type": "string"
+        },
+        {
+          "const": "gone",
+          "description": "The subscription no longer exists; the daemon removed it.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The push service refused it, or could not be reached.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "$ref": "#/$defs/NotificationsTestStatus"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "NotificationsTestResult",
+  "type": "object"
+}

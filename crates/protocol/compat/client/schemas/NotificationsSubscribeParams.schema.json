@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Registers a browser's push subscription, or updates the one with the\nsame endpoint, which keeps its id.",
+  "properties": {
+    "auth": {
+      "description": "The subscription's `auth` secret, base64url.",
+      "type": "string"
+    },
+    "endpoint": {
+      "description": "The subscription's `https://` endpoint.",
+      "type": "string"
+    },
+    "label": {
+      "description": "1 to 80 characters.",
+      "type": "string"
+    },
+    "p256dh": {
+      "description": "The subscription's `p256dh` key, base64url.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "endpoint",
+    "p256dh",
+    "auth",
+    "label"
+  ],
+  "title": "NotificationsSubscribeParams",
+  "type": "object"
+}

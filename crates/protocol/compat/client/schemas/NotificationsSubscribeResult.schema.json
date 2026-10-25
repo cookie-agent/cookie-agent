@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "PushSubscription": {
+      "description": "A browser the daemon pushes to, as clients see it: never its endpoint\nor keys.",
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "id": {
+          "description": "Eight lowercase letters and digits, assigned by the daemon.",
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "last_error": {
+          "description": "Why the last send failed, until one succeeds.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_sent_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "push_service": {
+          "description": "The host of the push service the endpoint points at, such as\n`fcm.googleapis.com`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "push_service",
+        "created_at"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "subscription": {
+      "$ref": "#/$defs/PushSubscription"
+    }
+  },
+  "required": [
+    "subscription"
+  ],
+  "title": "NotificationsSubscribeResult",
+  "type": "object"
+}

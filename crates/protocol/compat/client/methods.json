@@ -68,6 +68,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "client.presence",
+      "params": "ClientPresenceParams",
+      "params_role": "command",
+      "result": "ClientPresenceResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "config.apply",
       "params": "ConfigApplyParams",
       "params_role": "command",
@@ -392,6 +400,46 @@
       "params": "MemoryWriteParams",
       "params_role": "command",
       "result": "MemoryWriteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "notifications.changed",
+      "params": "NotificationsChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "notifications.get",
+      "params": "NotificationsGetParams",
+      "params_role": "command",
+      "result": "NotificationsGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "notifications.subscribe",
+      "params": "NotificationsSubscribeParams",
+      "params_role": "command",
+      "result": "NotificationsSubscribeResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "notifications.test",
+      "params": "NotificationsTestParams",
+      "params_role": "command",
+      "result": "NotificationsTestResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "notifications.unsubscribe",
+      "params": "NotificationsUnsubscribeParams",
+      "params_role": "command",
+      "result": "NotificationsUnsubscribeResult"
     },
     {
       "direction": "from_daemon",

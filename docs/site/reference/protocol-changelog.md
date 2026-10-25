@@ -5,6 +5,23 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.30.0
+
+- Push notifications ([push notifications spec](../specs/push-notifications.md)),
+  all additions an older peer ignores:
+  - `notifications.get`, `notifications.subscribe`,
+    `notifications.unsubscribe`, and `notifications.test`: the daemon's
+    VAPID public key and the browsers it pushes to (`PushSubscription`:
+    `id`, `label`, `push_service`, `created_at`, `last_sent_at`,
+    `last_error`). `NotificationsTestStatus` is open; an unknown value reads
+    as `unknown`.
+  - `notifications.changed`, sent to every connection when a subscription
+    is added, changed, or removed.
+  - `client.presence`: the session a connection shows the user, or `null`,
+    so the daemon does not push what is on screen.
+  - The errors `push_subscription_not_found`, `push_subscription_invalid`,
+    and `push_unavailable`.
+
 ## 1.29.0
 
 - Native compaction beside the summary ([native compaction spec](../specs/native-compaction.md)),

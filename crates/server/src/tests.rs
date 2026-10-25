@@ -2527,3 +2527,102 @@ async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
     let closed = closed.expect("the connection ends saying why");
     assert!(closed.ends_with("the daemon is restarting"), "{closed}");
 }
+
+/// Push notifications over the client protocol (push notifications spec
+/// section 7): the key and devices, a subscription announced to clients,
+/// presence, and the push errors.
+#[tokio::test]
+async fn notifications_are_reachable_through_rpc() {
+    use base64::Engine as _;
+    let harness = harness();
+    let mut client = connect(Arc::clone(&harness.server)).await;
+
+    let (got, _) = request(&mut client, 2, "notifications.get", json!({})).await;
+    let key = got["result"]["public_key"].as_str().expect("public key");
+    assert_eq!(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(key)
+            .unwrap()
+            .len(),
+        65
+    );
+    assert_eq!(got["result"]["enabled"], true);
+    assert_eq!(got["result"]["subscriptions"], json!([]));
+
+    let point = {
+        let mut point = vec![4u8];
+        point.extend(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(key)
+                .unwrap()
+                .into_iter()
+                .skip(1),
+        );
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point)
+    };
+    let (subscribed, early) = request(
+        &mut client,
+        3,
+        "notifications.subscribe",
+        json!({
+            "endpoint": "https://push.example/abc",
+            "p256dh": point,
+            "auth": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([1u8; 16]),
+            "label": "Phone",
+        }),
+    )
+    .await;
+    let subscription = &subscribed["result"]["subscription"];
+    assert_eq!(subscription["label"], "Phone", "{subscribed}");
+    assert_eq!(subscription["push_service"], "push.example");
+    assert!(subscription.get("endpoint").is_none(), "{subscribed}");
+    if !early
+        .iter()
+        .any(|notification| notification["method"] == "notifications.changed")
+    {
+        notification_where(&mut client, "notifications.changed", |_| true).await;
+    }
+
+    let (refused, _) = request(
+        &mut client,
+        4,
+        "notifications.subscribe",
+        json!({
+            "endpoint": "http://push.example/abc",
+            "p256dh": point,
+            "auth": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([1u8; 16]),
+            "label": "Phone",
+        }),
+    )
+    .await;
+    assert_eq!(
+        refused["error"]["data"]["code"], "push_subscription_invalid",
+        "{refused}"
+    );
+
+    let (present, _) = request(
+        &mut client,
+        5,
+        "client.presence",
+        json!({ "session": null }),
+    )
+    .await;
+    assert_eq!(present["result"], json!({}), "{present}");
+
+    let id = subscription["id"].as_str().unwrap().to_owned();
+    let (removed, _) = request(
+        &mut client,
+        6,
+        "notifications.unsubscribe",
+        json!({ "id": id }),
+    )
+    .await;
+    assert_eq!(removed["result"], json!({}), "{removed}");
+    let (missing, _) = request(&mut client, 7, "notifications.test", json!({ "id": id })).await;
+    assert_eq!(
+        missing["error"]["data"]["code"], "push_subscription_not_found",
+        "{missing}"
+    );
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
+}

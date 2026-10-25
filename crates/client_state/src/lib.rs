@@ -1706,6 +1706,7 @@ impl StateStore {
             | ClientDelivery::MemoryChanged(_)
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
+            | ClientDelivery::NotificationsChanged(_)
             | ClientDelivery::DaemonRestarting(_) => DeliveryOutcome::Applied,
             ClientDelivery::OnboardingChanged(_) => DeliveryOutcome::Applied,
         }

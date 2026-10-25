@@ -481,6 +481,7 @@ fn delivery_kind(delivery: &ClientDelivery) -> Option<&'static str> {
         ClientDelivery::MemoryChanged(_) => "memory_changed",
         ClientDelivery::ProjectsChanged(_) => "projects_changed",
         ClientDelivery::CronsChanged(_) => "crons_changed",
+        ClientDelivery::NotificationsChanged(_) => "notifications_changed",
         ClientDelivery::DaemonRestarting(_) => "daemon_restarting",
         ClientDelivery::OnboardingChanged(_) => "onboarding_changed",
         ClientDelivery::Diagnostic { .. } => "diagnostic",

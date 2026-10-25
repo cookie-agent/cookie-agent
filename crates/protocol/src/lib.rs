@@ -1,4 +1,4 @@
-//! cookie-agent client protocol 1.29, plugin and runtime protocols, and
+//! cookie-agent client protocol 1.30, plugin and runtime protocols, and
 //! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
@@ -200,6 +200,7 @@ mod manifest;
 pub mod media_sniff;
 mod memory;
 mod model;
+mod notifications;
 #[cfg(all(feature = "oauth-callback", not(target_arch = "wasm32")))]
 pub mod oauth_callback;
 mod onboarding;
@@ -253,6 +254,7 @@ pub use input_lanes::*;
 pub use manifest::*;
 pub use memory::*;
 pub use model::*;
+pub use notifications::*;
 pub use onboarding::*;
 pub use open::*;
 pub use producer::*;

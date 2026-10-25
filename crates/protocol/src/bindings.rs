@@ -348,6 +348,11 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(CRONS_UPDATE_METHOD, ToDaemon, CronUpdateParams => CronJobResult),
         request!(CRONS_DELETE_METHOD, ToDaemon, CronDeleteParams => CronDeleteResult),
         request!(CRONS_RUN_METHOD, ToDaemon, CronRunParams => CronRunResult),
+        request!(NOTIFICATIONS_GET_METHOD, ToDaemon, NotificationsGetParams => NotificationsGetResult),
+        request!(NOTIFICATIONS_SUBSCRIBE_METHOD, ToDaemon, NotificationsSubscribeParams => NotificationsSubscribeResult),
+        request!(NOTIFICATIONS_UNSUBSCRIBE_METHOD, ToDaemon, NotificationsUnsubscribeParams => NotificationsUnsubscribeResult),
+        request!(NOTIFICATIONS_TEST_METHOD, ToDaemon, NotificationsTestParams => NotificationsTestResult),
+        request!(CLIENT_PRESENCE_METHOD, ToDaemon, ClientPresenceParams => ClientPresenceResult),
         request!(PLUGINS_LIST_METHOD, ToDaemon, PluginsListParams => PluginsListResult),
         request!(PLUGINS_RESTART_METHOD, ToDaemon, PluginsRestartParams => PluginsRestartResult),
         request!(CONFIG_RELOAD_METHOD, ToDaemon, ConfigReloadParams => ConfigReloadResult),
@@ -415,6 +420,11 @@ fn client_methods() -> Vec<MethodSpec> {
             ProjectsChangedNotification
         ),
         notification!(CRONS_CHANGED_METHOD, FromDaemon, CronsChangedNotification),
+        notification!(
+            NOTIFICATIONS_CHANGED_METHOD,
+            FromDaemon,
+            NotificationsChangedNotification
+        ),
         notification!(
             DAEMON_RESTARTING_METHOD,
             FromDaemon,

@@ -249,6 +249,27 @@ impl RpcFault {
     }
 }
 
+impl RpcFault {
+    /// A `notifications.*` request that failed.
+    pub(crate) fn push(error: crate::push::PushError) -> Self {
+        use crate::push::PushError;
+        match error {
+            PushError::NotFound(id) => {
+                Self::of(errors::PUSH_SUBSCRIPTION_NOT_FOUND.error().field("id", id))
+            }
+            PushError::Invalid { field, reason } => Self::of(
+                errors::PUSH_SUBSCRIPTION_INVALID
+                    .error()
+                    .field("field", field)
+                    .field("reason", reason),
+            ),
+            PushError::Unavailable(detail) => {
+                Self::of(errors::PUSH_UNAVAILABLE.error().detail(detail))
+            }
+        }
+    }
+}
+
 impl From<RpcFault> for cookie_agent_protocol::ServerFault {
     fn from(fault: RpcFault) -> Self {
         Self::from_error(fault.0)

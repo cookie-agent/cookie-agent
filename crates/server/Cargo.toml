@@ -4,6 +4,7 @@ version = "0.4.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 license-file.workspace = true
 
 [lints]
@@ -11,6 +12,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys"] }
 axum.workspace = true
 base64 = "0.22"
 cookie_agent_config = { version = "=0.4.0", path = "../config" }
@@ -20,6 +22,8 @@ cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
 cookie_agent_web_assets = { version = "=0.4.0", path = "../web_assets" }
 futures-util.workspace = true
 getrandom.workspace = true
+jiff.workspace = true
+reqwest.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 serde.workspace = true

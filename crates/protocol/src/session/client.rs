@@ -126,6 +126,8 @@ pub enum ClientDelivery {
     /// A cron job was created, changed, fired, or deleted; refetch
     /// `crons.list`.
     CronsChanged(crate::CronsChangedNotification),
+    /// The push subscriptions changed; refetch `notifications.get`.
+    NotificationsChanged(crate::NotificationsChangedNotification),
     /// The daemon will restart: when, and how many runs it still waits
     /// for. The connection then closes and the client reconnects.
     DaemonRestarting(crate::DaemonRestartingNotification),
@@ -1194,6 +1196,61 @@ impl Client {
             .await
     }
 
+    /// The daemon's push key and the browsers it pushes to.
+    pub async fn get_notifications(&self) -> Result<crate::NotificationsGetResult, ClientError> {
+        self.call(
+            crate::NOTIFICATIONS_GET_METHOD,
+            &crate::NotificationsGetParams {},
+        )
+        .await
+    }
+
+    /// Registers a browser's push subscription.
+    pub async fn subscribe_notifications(
+        &self,
+        params: crate::NotificationsSubscribeParams,
+    ) -> Result<crate::NotificationsSubscribeResult, ClientError> {
+        self.call(crate::NOTIFICATIONS_SUBSCRIBE_METHOD, &params)
+            .await
+    }
+
+    /// Removes a push subscription.
+    pub async fn unsubscribe_notifications(
+        &self,
+        id: String,
+    ) -> Result<crate::NotificationsUnsubscribeResult, ClientError> {
+        self.call(
+            crate::NOTIFICATIONS_UNSUBSCRIBE_METHOD,
+            &crate::NotificationsUnsubscribeParams { id },
+        )
+        .await
+    }
+
+    /// Sends a test push to one subscription.
+    pub async fn test_notifications(
+        &self,
+        id: String,
+    ) -> Result<crate::NotificationsTestResult, ClientError> {
+        self.call(
+            crate::NOTIFICATIONS_TEST_METHOD,
+            &crate::NotificationsTestParams { id },
+        )
+        .await
+    }
+
+    /// Tells the daemon what this connection shows the user: a session the
+    /// user looks at, or `None` when the user is not there.
+    pub async fn set_presence(
+        &self,
+        session: Option<crate::SessionId>,
+    ) -> Result<crate::ClientPresenceResult, ClientError> {
+        self.call(
+            crate::CLIENT_PRESENCE_METHOD,
+            &crate::ClientPresenceParams { session },
+        )
+        .await
+    }
+
     /// The configured plugins, in the order their hooks run.
     pub async fn list_plugins(&self) -> Result<crate::PluginsListResult, ClientError> {
         self.call(crate::PLUGINS_LIST_METHOD, &crate::PluginsListParams {})
@@ -2153,6 +2210,10 @@ async fn route_notification(
         crate::CRONS_CHANGED_METHOD => {
             let changed: crate::CronsChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::CronsChanged(changed));
+        }
+        crate::NOTIFICATIONS_CHANGED_METHOD => {
+            let changed: crate::NotificationsChangedNotification = serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::NotificationsChanged(changed));
         }
         crate::DAEMON_RESTARTING_METHOD => {
             let restarting: crate::DaemonRestartingNotification = serde_json::from_str(params)?;

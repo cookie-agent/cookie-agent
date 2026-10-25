@@ -35,16 +35,26 @@ pub struct Server {
     /// until it has closed, so a shutdown can wait for each to send its
     /// close frame ([`RunningServer::wait`]).
     pub(crate) connections: Arc<tokio::sync::watch::Sender<()>>,
+    /// Web Push notifications to the user's browsers.
+    pub(crate) push: Arc<crate::push::PushService>,
 }
 
 impl Server {
+    /// A server for `engine`. Within a Tokio runtime it starts sending the
+    /// engine's push notifications at once, until [`Self::shutdown`].
     #[must_use]
     pub fn new(engine: Engine) -> Self {
+        let shutdown = CancellationToken::new();
+        let push = crate::push::PushService::new(engine.clone());
+        if tokio::runtime::Handle::try_current().is_ok() {
+            push.start(shutdown.clone());
+        }
         Self {
             engine,
-            shutdown: CancellationToken::new(),
+            shutdown,
             restarting: Arc::new(AtomicBool::new(false)),
             connections: Arc::new(tokio::sync::watch::Sender::new(())),
+            push,
         }
     }
 

@@ -748,6 +748,33 @@ error_codes! {
         hint: Some("See the details, then check that the cookie data directory is readable and writable."),
         description: "Reading or writing `crons.json`, or taking the memory lock, failed; nothing changed.",
     }
+    PUSH_SUBSCRIPTION_NOT_FOUND {
+        code: "push_subscription_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("id", "The subscription ID.")],
+        message: "There is no push subscription {id}.",
+        hint: Some("See `notifications.get` for the subscriptions."),
+        description: "A `notifications.*` request named a subscription the daemon does not have.",
+    }
+    PUSH_SUBSCRIPTION_INVALID {
+        code: "push_subscription_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("field", "The member that was refused."),
+            required("reason", "Why, in the daemon's words."),
+        ],
+        message: "The push subscription's {field} was refused: {reason}.",
+        hint: None,
+        description: "A `notifications.subscribe` value the daemon does not accept: an endpoint that is not an `https://` URL, keys that are not a P-256 point and a 16-byte secret, or a label outside 1 to 80 characters; nothing changed.",
+    }
+    PUSH_UNAVAILABLE {
+        code: "push_unavailable",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "Push notifications are not available.",
+        hint: Some("See the details, then check that the `push` folder in the cookie data directory is readable and writable."),
+        description: "The daemon could not read or write its push key or subscriptions; nothing changed.",
+    }
     CONFIG_APPLY_REFUSED {
         code: "config_apply_refused",
         rpc: APPLICATION_ERROR,

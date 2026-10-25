@@ -469,6 +469,37 @@ impl ServerProtocol for StubServer {
     async fn run_cron(&self, _: crate::CronRunParams) -> Result<crate::CronRunResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn get_notifications(
+        &self,
+        _: crate::NotificationsGetParams,
+    ) -> Result<crate::NotificationsGetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn subscribe_notifications(
+        &self,
+        _: crate::NotificationsSubscribeParams,
+    ) -> Result<crate::NotificationsSubscribeResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn unsubscribe_notifications(
+        &self,
+        _: crate::NotificationsUnsubscribeParams,
+    ) -> Result<crate::NotificationsUnsubscribeResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn test_notifications(
+        &self,
+        _: crate::NotificationsTestParams,
+    ) -> Result<crate::NotificationsTestResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn set_client_presence(
+        &self,
+        _: crate::ClientPresenceParams,
+        _: &ServerContext,
+    ) -> Result<crate::ClientPresenceResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_plugins(
         &self,
         _: crate::PluginsListParams,

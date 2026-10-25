@@ -44,6 +44,7 @@ impl ServerProtocol for Server {
         self.start_memory_notifications(context.clone());
         self.start_project_notifications(context.clone());
         self.start_cron_notifications(context.clone());
+        self.start_push_notifications(context.clone());
         self.start_restart_notifications(context.clone());
         self.start_background_notifications(context.clone());
         self.start_upload_cleanup(&context);
@@ -822,6 +823,65 @@ impl ServerProtocol for Server {
             .await
             .map(|job| cookie_agent_protocol::CronJobResult { job })
             .map_err(protocol_fault)
+    }
+
+    async fn get_notifications(
+        &self,
+        _params: cookie_agent_protocol::NotificationsGetParams,
+    ) -> Result<cookie_agent_protocol::NotificationsGetResult> {
+        self.push
+            .get()
+            .map_err(|error| RpcFault::push(error).into())
+    }
+
+    async fn subscribe_notifications(
+        &self,
+        params: cookie_agent_protocol::NotificationsSubscribeParams,
+    ) -> Result<cookie_agent_protocol::NotificationsSubscribeResult> {
+        self.push
+            .subscribe(params)
+            .map(
+                |subscription| cookie_agent_protocol::NotificationsSubscribeResult { subscription },
+            )
+            .map_err(|error| RpcFault::push(error).into())
+    }
+
+    async fn unsubscribe_notifications(
+        &self,
+        params: cookie_agent_protocol::NotificationsUnsubscribeParams,
+    ) -> Result<cookie_agent_protocol::NotificationsUnsubscribeResult> {
+        self.push
+            .unsubscribe(&params.id)
+            .map(|()| cookie_agent_protocol::NotificationsUnsubscribeResult {})
+            .map_err(|error| RpcFault::push(error).into())
+    }
+
+    async fn test_notifications(
+        &self,
+        params: cookie_agent_protocol::NotificationsTestParams,
+    ) -> Result<cookie_agent_protocol::NotificationsTestResult> {
+        self.push
+            .test(&params.id)
+            .await
+            .map_err(|error| RpcFault::push(error).into())
+    }
+
+    async fn set_client_presence(
+        &self,
+        params: cookie_agent_protocol::ClientPresenceParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ClientPresenceResult> {
+        let connection = context.connection_id();
+        if self.push.set_presence(connection, params.session) {
+            // The connection's presence ends with it.
+            let push = std::sync::Arc::clone(&self.push);
+            let shutdown = context.shutdown();
+            tokio::spawn(async move {
+                shutdown.cancelled().await;
+                push.clear_presence(connection);
+            });
+        }
+        Ok(cookie_agent_protocol::ClientPresenceResult {})
     }
 
     async fn delete_cron(

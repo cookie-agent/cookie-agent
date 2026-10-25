@@ -272,6 +272,34 @@ impl Server {
         });
     }
 
+    /// Signals push subscription changes to this connection; bursts
+    /// coalesce.
+    pub(super) fn start_push_notifications(&self, context: ServerContext) {
+        let mut receiver = self.push.subscribe_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                if context
+                    .notify(
+                        cookie_agent_protocol::NOTIFICATIONS_CHANGED_METHOD,
+                        &cookie_agent_protocol::NotificationsChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Tells this connection about a scheduled restart: at once when one is
     /// already scheduled, then whenever its `when` or the active runs
     /// change.

@@ -622,6 +622,32 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::CronRunParams,
     ) -> Result<crate::CronRunResult, ServerFault>;
+    /// The daemon's push key and the browsers it pushes to.
+    async fn get_notifications(
+        &self,
+        params: crate::NotificationsGetParams,
+    ) -> Result<crate::NotificationsGetResult, ServerFault>;
+    /// Registers a browser's push subscription.
+    async fn subscribe_notifications(
+        &self,
+        params: crate::NotificationsSubscribeParams,
+    ) -> Result<crate::NotificationsSubscribeResult, ServerFault>;
+    /// Removes a push subscription.
+    async fn unsubscribe_notifications(
+        &self,
+        params: crate::NotificationsUnsubscribeParams,
+    ) -> Result<crate::NotificationsUnsubscribeResult, ServerFault>;
+    /// Sends a test push to one subscription.
+    async fn test_notifications(
+        &self,
+        params: crate::NotificationsTestParams,
+    ) -> Result<crate::NotificationsTestResult, ServerFault>;
+    /// Records what this connection shows the user now.
+    async fn set_client_presence(
+        &self,
+        params: crate::ClientPresenceParams,
+        context: &ServerContext,
+    ) -> Result<crate::ClientPresenceResult, ServerFault>;
     /// Lists the configured plugins.
     async fn list_plugins(
         &self,
@@ -1203,6 +1229,21 @@ async fn dispatch<S: ServerProtocol>(
         crate::CRONS_UPDATE_METHOD => value(server.update_cron(decode(params)?).await?),
         crate::CRONS_DELETE_METHOD => value(server.delete_cron(decode(params)?).await?),
         crate::CRONS_RUN_METHOD => value(server.run_cron(decode(params)?).await?),
+        crate::NOTIFICATIONS_GET_METHOD => {
+            value(server.get_notifications(decode_default(params)?).await?)
+        }
+        crate::NOTIFICATIONS_SUBSCRIBE_METHOD => {
+            value(server.subscribe_notifications(decode(params)?).await?)
+        }
+        crate::NOTIFICATIONS_UNSUBSCRIBE_METHOD => {
+            value(server.unsubscribe_notifications(decode(params)?).await?)
+        }
+        crate::NOTIFICATIONS_TEST_METHOD => {
+            value(server.test_notifications(decode(params)?).await?)
+        }
+        crate::CLIENT_PRESENCE_METHOD => {
+            value(server.set_client_presence(decode(params)?, context).await?)
+        }
         crate::PLUGINS_LIST_METHOD => value(server.list_plugins(decode_default(params)?).await?),
         crate::PLUGINS_RESTART_METHOD => value(server.restart_plugin(decode(params)?).await?),
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),
