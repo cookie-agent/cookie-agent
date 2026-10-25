@@ -1860,6 +1860,7 @@ mod tests {
         };
         let attribution = FrozenAssistantAttribution {
             agent: AgentId::new("primary").expect("agent"),
+            acp_model: None,
             resolved_model: ResolvedModelRef {
                 provider_id: ProviderId::new("gateway").expect("provider"),
                 model_id: ProviderModelId::new("model").expect("model"),

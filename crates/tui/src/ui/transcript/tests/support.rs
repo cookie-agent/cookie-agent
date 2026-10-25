@@ -430,6 +430,7 @@ pub(crate) fn attribution(variant: Option<&str>) -> FrozenAssistantAttribution {
     FrozenAssistantAttribution {
         agent: agent_id(),
         resolved_model: resolved_model(variant),
+        acp_model: None,
     }
 }
 

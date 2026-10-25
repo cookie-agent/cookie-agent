@@ -524,6 +524,7 @@ pub(super) fn reduce_event_from(
                     let item_id = open_assistant_item(
                         state,
                         FrozenAssistantAttribution {
+                            acp_model: acp_model_label(state, &resolved_model),
                             agent,
                             resolved_model: resolved_model.clone(),
                         },
@@ -542,6 +543,7 @@ pub(super) fn reduce_event_from(
                 open_assistant_item(
                     state,
                     FrozenAssistantAttribution {
+                        acp_model: acp_model_label(state, &resolved_model),
                         agent,
                         resolved_model,
                     },
@@ -1646,6 +1648,7 @@ pub(super) fn rebind_pending_attempt(
     let new_attribution = FrozenAssistantAttribution {
         agent: attribution.agent.clone(),
         resolved_model: projection.current_model.clone(),
+        acp_model: attribution.acp_model.clone(),
     };
     // A fallback marker belongs to this unstreamed retry, not the old block.
     if let Some(marker) = attempt.attribution_marker {
@@ -2683,6 +2686,7 @@ pub(super) fn split_assistant_if_pending(
     let item_id = open_assistant_item(
         state,
         FrozenAssistantAttribution {
+            acp_model: acp_model_label(state, &projection.current_model),
             agent,
             resolved_model: projection.current_model.clone(),
         },
@@ -3165,4 +3169,13 @@ fn internal_agent_finished_message(
             format!("internal agent {kind:?} interrupted").to_lowercase(),
         ),
     }
+}
+
+/// The header label of an attempt by `resolved_model`: an ACP agent's own
+/// model and effort from the options its session holds as the attempt
+/// starts, which `acp_session_updated` recorded before it.
+fn acp_model_label(state: &SessionState, resolved_model: &ResolvedModelRef) -> Option<String> {
+    crate::acp::is_acp_model(&resolved_model.selection)
+        .then(|| crate::acp::model_label(&state.acp.options))
+        .flatten()
 }

@@ -225,6 +225,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     let expected_b_header = FrozenAssistantAttribution {
         agent: agent_id(),
         resolved_model: resolved_b,
+        acp_model: None,
     }
     .header(&crate::state::ModelDisplayNames::default());
     let after_attempt = assistant_projection(&app.store.sessions[&session]);

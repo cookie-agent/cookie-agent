@@ -2946,6 +2946,7 @@ fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() 
             version: 0,
             attribution: FrozenAssistantAttribution {
                 agent: AgentId::new("test").expect("agent id"),
+                acp_model: None,
                 resolved_model: serde_json::from_value(serde_json::json!({
                     "provider_id": "test",
                     "model_id": "test",
@@ -3432,6 +3433,7 @@ fn assistant_state_with_item(item_id: u64) -> SessionState {
             version: 0,
             attribution: FrozenAssistantAttribution {
                 agent: AgentId::new("test").expect("agent id"),
+                acp_model: None,
                 resolved_model: serde_json::from_value(serde_json::json!({
                     "provider_id": "test",
                     "model_id": "test",
@@ -4929,4 +4931,95 @@ fn the_reviewers_reason_reaches_the_approval_and_its_info_row() {
         approval.reviewer.unwrap().escalation_line().as_deref(),
         Some("The reviewer failed, so the call is yours to decide.")
     );
+}
+
+#[test]
+fn an_acp_reply_is_headed_by_the_agents_model_and_effort_as_it_started() {
+    let session = SessionId::new_v7();
+    let acp_model: ResolvedModelRef = serde_json::from_value(serde_json::json!({
+        "provider_id": "acp",
+        "model_id": "claude",
+        "adapter_id": "openai-compatible",
+        "selection": {"model": "acp/claude", "variant": null},
+        "selection_fingerprint": "b".repeat(64)
+    }))
+    .expect("resolved model");
+    let select = |id: &str, category: &str, current: &str, values: &[(&str, &str)]| {
+        cookie_agent_protocol::AcpConfigOption {
+            id: id.into(),
+            name: id.into(),
+            kind: Default::default(),
+            description: None,
+            category: Some(category.into()),
+            current_value: current.into(),
+            values: values
+                .iter()
+                .map(|(value, name)| cookie_agent_protocol::AcpConfigValue {
+                    value: (*value).into(),
+                    name: (*name).into(),
+                    description: None,
+                })
+                .collect(),
+        }
+    };
+    let options = |model: &str, effort: &str| EventPayload::AcpSessionUpdated {
+        update: cookie_agent_protocol::AcpSessionUpdate {
+            options: Some(vec![
+                select(
+                    "model",
+                    "model",
+                    model,
+                    &[("opus", "Opus"), ("sonnet", "Sonnet")],
+                ),
+                select(
+                    "effort",
+                    "thought_level",
+                    effort,
+                    &[("high", "High"), ("low", "Low")],
+                ),
+            ]),
+            ..cookie_agent_protocol::AcpSessionUpdate::default()
+        },
+    };
+    let attempt = |resolved_model: ResolvedModelRef| EventPayload::ModelAttemptStarted {
+        attempt_id: AttemptId::new_v7(),
+        attempt_ordinal: 1,
+        fallback_index: 0,
+        retry_ordinal: 0,
+        resolved_model,
+        prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+    };
+    let first = RunId::new_v7();
+    let second = RunId::new_v7();
+    let third = RunId::new_v7();
+    let events = vec![
+        stored_event(session, Some(first), 1, options("opus", "high")),
+        stored_event(session, Some(first), 2, attempt(acp_model.clone())),
+        stored_event(session, None, 3, options("sonnet", "low")),
+        stored_event(session, Some(second), 4, attempt(acp_model)),
+        stored_event(session, Some(third), 5, attempt(resolved_model())),
+    ];
+    let state = reduce_session_events(session, 0, &events);
+    let labels = state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::Assistant { attribution, .. } => attribution.acp_model.clone(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // Each reply keeps the values its attempt started with; a model run's
+    // reply has none.
+    assert_eq!(labels, ["Opus • High", "Sonnet • Low"]);
+    let header = state
+        .transcript
+        .iter()
+        .find_map(|item| match item {
+            TranscriptItem::Assistant { attribution, .. } => {
+                Some(attribution.header(&ModelDisplayNames::default()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(header.ends_with(" • Opus • High"), "{header}");
 }

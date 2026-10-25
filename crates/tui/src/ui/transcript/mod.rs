@@ -1344,6 +1344,8 @@ fn continuation_header(
     let attribution = crate::state::FrozenAssistantAttribution {
         agent: attribution.agent.clone(),
         resolved_model: resolved_model.clone(),
+        // A model change within a reply; an ACP agent's model is one model.
+        acp_model: None,
     };
     assistant_header(attribution.header(model_names).as_str(), width, theme)
 }

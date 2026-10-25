@@ -474,6 +474,7 @@ async fn activation_and_resume_send_current_draft_without_changing_running_attri
         let run = RunId::new_v7();
         let attribution = FrozenAssistantAttribution {
             agent: previous.agent.clone(),
+            acp_model: None,
             resolved_model: ResolvedModelRef {
                 selection: previous.model.clone(),
                 provider_id: previous.model.model.provider_id(),

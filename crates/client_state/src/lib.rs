@@ -363,18 +363,27 @@ impl EventLevel {
 pub struct FrozenAssistantAttribution {
     pub agent: AgentId,
     pub resolved_model: ResolvedModelRef,
+    /// An ACP agent's own model and effort as the attempt started
+    /// ([`acp::model_label`], `Opus • High`), in place of its synthetic
+    /// `acp/<agent>` model; `None` for a model run, or an agent that names
+    /// no model option.
+    pub acp_model: Option<String>,
 }
 
 impl FrozenAssistantAttribution {
     /// The visible header `<agent-id> • <Model Name> • <variant>`. The display
     /// name is a render-time lookup; without a distinct name the header shows
     /// `<provider>/<model-id>` instead. Exact base behavior shows no variant.
+    /// An ACP agent shows its own model and effort.
     pub fn header(&self, names: &ModelDisplayNames) -> String {
-        format!(
-            "{} • {}",
-            self.agent,
-            names.selection_label(&self.resolved_model.selection)
-        )
+        match &self.acp_model {
+            Some(label) => format!("{} • {label}", self.agent),
+            None => format!(
+                "{} • {}",
+                self.agent,
+                names.selection_label(&self.resolved_model.selection)
+            ),
+        }
     }
 
     /// The variant retained in structured attribution, rendered as `base`
