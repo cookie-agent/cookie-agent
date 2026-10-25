@@ -292,6 +292,7 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                                 SettingsSection::Providers => connect_sheet(workspace).into_any(),
                                 SettingsSection::Mcp => mcp_sheet(workspace).into_any(),
                                 SettingsSection::Plugins => plugins_sheet(workspace).into_any(),
+                                SettingsSection::Notifications => super::notifications::notifications_section(workspace, connection).into_any(),
                                 SettingsSection::Browser => browser_section(workspace, connection).into_any(),
                             }}
                         </div>
@@ -308,7 +309,6 @@ fn browser_section(workspace: Workspace, connection: Connection) -> impl IntoVie
     let confirming = RwSignal::new(false);
     view! {
         {super::install::install_section()}
-        {super::notifications::notifications_section(workspace, connection)}
         <h2 class="mt-4 text-sm font-bold">"Diagnostics in the transcript"</h2>
         <p class=NOTE>"The same choice as Diagnostics in the session's ⋮ menu; it stays in this browser."</p>
         {events_sheet(workspace)}

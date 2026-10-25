@@ -102,18 +102,22 @@ pub enum SettingsSection {
     Providers,
     Mcp,
     Plugins,
-    /// This browser: installing the page as an app, push notifications,
-    /// and what it keeps: the diagnostics filter and the token.
+    /// Push notifications: this browser's, and every device the daemon
+    /// pushes to.
+    Notifications,
+    /// This browser: installing the page as an app, and what it keeps:
+    /// the diagnostics filter and the token.
     Browser,
 }
 
 impl SettingsSection {
     /// The order the section list shows.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Configuration,
         Self::Providers,
         Self::Mcp,
         Self::Plugins,
+        Self::Notifications,
         Self::Browser,
     ];
 
@@ -123,6 +127,7 @@ impl SettingsSection {
             Self::Providers => "Providers",
             Self::Mcp => "MCP servers",
             Self::Plugins => "Plugins",
+            Self::Notifications => "Notifications",
             Self::Browser => "This browser",
         }
     }
@@ -134,9 +139,8 @@ impl SettingsSection {
             Self::Providers => "connect or disconnect a model provider",
             Self::Mcp => "every runtime's MCP servers",
             Self::Plugins => "plugin status and restarts",
-            Self::Browser => {
-                "installing the app, notifications, diagnostics shown, and forgetting this daemon"
-            }
+            Self::Notifications => "push notifications on this browser and your devices",
+            Self::Browser => "installing the app, diagnostics shown, and forgetting this daemon",
         }
     }
 
@@ -147,6 +151,7 @@ impl SettingsSection {
             Self::Providers => "providers",
             Self::Mcp => "mcp",
             Self::Plugins => "plugins",
+            Self::Notifications => "notifications",
             Self::Browser => "browser",
         }
     }

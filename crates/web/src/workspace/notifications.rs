@@ -1,5 +1,5 @@
 //! Push notifications from the page (push notifications spec section 9):
-//! Settings › This browser › Notifications' calls (`notifications.*`,
+//! Settings › Notifications' calls (`notifications.*`,
 //! client protocol 1.30), kept fresh by `notifications.changed`, and what
 //! the page tells the daemon it shows (`client.presence`). The view is
 //! `crate::views::notifications`.
@@ -17,6 +17,32 @@ use crate::{
 /// daemon URL.
 fn subscription_key(daemon_url: &str) -> String {
     format!("cookie.push_subscription.{daemon_url}")
+}
+
+/// How long forgetting a daemon waits for it to drop this browser's
+/// subscription.
+const RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Forgetting the daemon at `daemon_url` stops its notifications here: the
+/// daemon drops this browser's subscription, over `client` while the page
+/// is still connected, and the browser unsubscribes when its notifications
+/// come from that daemon (a daemon it could not tell finds the
+/// subscription gone at its next push).
+pub(crate) async fn release_push(
+    daemon_url: String,
+    client: Option<cookie_agent_protocol::Client>,
+) {
+    let own = browser::load(&subscription_key(&daemon_url));
+    if let (Some(client), Some(id)) = (client, own) {
+        let removal = std::pin::pin!(client.unsubscribe_notifications(id));
+        let timeout = std::pin::pin!(gloo_timers::future::sleep(RELEASE_TIMEOUT));
+        let _ = futures_util::future::select(removal, timeout).await;
+    }
+    browser::forget(&subscription_key(&daemon_url));
+    if browser::load(PUSH_DAEMON_URL_KEY).as_deref() == Some(daemon_url.as_str()) {
+        browser::push_unsubscribe().await;
+        browser::forget(PUSH_DAEMON_URL_KEY);
+    }
 }
 
 /// What the browser says about push now.

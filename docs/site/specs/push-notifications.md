@@ -478,7 +478,8 @@ buzz.
 
 ### 9.1 Turning notifications on
 
-**Settings › This browser › Notifications**, decided by pure logic beside
+**Settings › Notifications** (its own section since 2026-10-25, section
+16.4), decided by pure logic beside
 `crates/web/src/install.rs`, in these states:
 
 | State | What it shows |
@@ -758,3 +759,19 @@ the RPCs (`notifications_are_reachable_through_rpc`), and the web client's
 pure logic. A headless browser cannot receive pushes, so the service worker's
 handlers are checked only by the asset test; the manual check on a phone is
 the user's.
+
+### 16.4 Addendum (2026-10-25): its own section, and forgetting a daemon
+
+User decisions after the first use:
+
+- **Settings › Notifications** is its own section of Settings, between
+  Plugins and This browser, rather than part of This browser. It shows
+  this browser's state, then **Devices**, which is always listed once
+  `notifications.get` answered (*No devices yet.* when empty).
+- **Forget this daemon stops its notifications here.** While the page is
+  still connected, it calls `notifications.unsubscribe` for this browser's
+  subscription (waiting at most 5 seconds) before it closes the connection;
+  when this browser's notifications come from that daemon, the browser
+  unsubscribes too and forgets which daemon they came from. Forgotten
+  while not connected, only the browser unsubscribes, and the daemon drops
+  the subscription when its next push finds it gone.

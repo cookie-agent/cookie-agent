@@ -320,7 +320,17 @@ impl Connection {
     /// Deletes the stored token and disconnects.
     pub(crate) fn forget(self) {
         self.next_generation();
-        self.drop_client();
+        // The connection stays open until the daemon dropped this
+        // browser's push subscription, so it notifies here no more.
+        let client = self.client.get_value();
+        self.client.set_value(None);
+        let url = self.url();
+        spawn_local(async move {
+            crate::workspace::release_push(url, client.clone()).await;
+            if let Some(client) = client {
+                client.shutdown();
+            }
+        });
         browser::forget(&token_key(self.url.get_untracked().trim()));
         self.token.set(String::new());
         self.attached.set(false);
@@ -697,7 +707,7 @@ pub(crate) fn ForgetDaemon(
             }
         >
             <div class="flex flex-col gap-2 rounded-md border border-caramel p-2 text-sm dark:border-maple">
-                <p>"Delete this daemon's token from the browser and disconnect? Connecting again takes a new link from `cookie web`."</p>
+                <p>"Delete this daemon's token from the browser, stop its notifications here, and disconnect? Connecting again takes a new link from `cookie web`."</p>
                 <div class="flex flex-wrap gap-2">
                     <button
                         type="button"

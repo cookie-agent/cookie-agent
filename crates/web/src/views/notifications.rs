@@ -1,6 +1,6 @@
-//! Settings › This browser › Notifications (push notifications spec
-//! section 9.1): turning push notifications on in this browser, a test,
-//! and every device the daemon pushes to.
+//! Settings › Notifications (push notifications spec section 9.1):
+//! turning push notifications on in this browser, a test, and every device
+//! the daemon pushes to.
 
 use cookie_agent_protocol::PushSubscription;
 use leptos::prelude::*;
@@ -10,9 +10,9 @@ use crate::{
     app::Connection, format::relative_time, icons::Glyph, push::PushOffer, workspace::Workspace,
 };
 
-/// The section: what this browser offers, then the devices.
+/// The section: what this browser offers, then the devices. Opening it
+/// reads `notifications.get` ([`Workspace::open_section`]).
 pub(crate) fn notifications_section(workspace: Workspace, connection: Connection) -> impl IntoView {
-    workspace.poll_notifications();
     let offer = move || {
         workspace
             .push_key()
@@ -183,8 +183,13 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
                 .unwrap_or_default()
         })
     };
+    let loaded = move || {
+        workspace
+            .notifications
+            .with(|notifications| notifications.as_ref().is_some_and(Result::is_ok))
+    };
     view! {
-        <h2 class="mt-4 text-sm font-bold">"Notifications"</h2>
+        <h2 class="text-sm font-bold">"This browser"</h2>
         <div id="notifications" class="flex flex-col gap-2">
             {body}
             <Show when=sending_off>
@@ -192,15 +197,21 @@ pub(crate) fn notifications_section(workspace: Workspace, connection: Connection
             </Show>
             {move || workspace.push_test.get().map(|said| view! { <p class=NOTE data-notifications-test>{said}</p> })}
             {move || workspace.push_error.get().map(|error| view! { <p class=ERROR>{error}</p> })}
-            <Show when=move || !devices().is_empty()>
-                <h3 class="mt-2 text-xs font-bold">"Devices"</h3>
-                <ul class="flex flex-col gap-1">
+        </div>
+        <Show when=move || workspace.has_push.get() && loaded()>
+            <h2 class="mt-4 text-sm font-bold">"Devices"</h2>
+            <p class=NOTE>"Every browser this daemon sends notifications to."</p>
+            <Show
+                when=move || !devices().is_empty()
+                fallback=|| view! { <p class=NOTE id="notifications-no-devices">"No devices yet."</p> }
+            >
+                <ul id="notifications-devices" class="flex flex-col gap-1">
                     <For each=devices key=|device| device.id.clone() let:device>
                         {device_row(workspace, connection, device)}
                     </For>
                 </ul>
             </Show>
-        </div>
+        </Show>
     }
 }
 

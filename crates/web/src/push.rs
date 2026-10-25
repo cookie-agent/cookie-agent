@@ -28,7 +28,7 @@ pub struct PushContext {
     pub subscribed_key: Option<String>,
 }
 
-/// What Settings › This browser › Notifications shows.
+/// What Settings › Notifications shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PushOffer {
     /// Not a secure context: notifications need HTTPS.

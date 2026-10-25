@@ -3338,7 +3338,7 @@ SCRIPTED = [
     ("new-session-cards", ["[data-new-session]"]),
 ] + [
     ("settings-%s" % section, ["[data-rail=primary] [data-view=settings]", "[data-section=%s]" % section])
-    for section in ("configuration", "providers", "mcp", "plugins", "browser")
+    for section in ("configuration", "providers", "mcp", "plugins", "notifications", "browser")
 ] + [
     ("editor-config", [
         "[data-rail=primary] [data-view=settings]", "[data-section=configuration]",

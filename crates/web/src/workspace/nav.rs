@@ -45,6 +45,7 @@ impl Workspace {
             None | Some(SettingsSection::Configuration) => self.open_config(),
             Some(SettingsSection::Mcp) => self.poll_mcp(),
             Some(SettingsSection::Plugins) => self.poll_plugins(),
+            Some(SettingsSection::Notifications) => self.poll_notifications(),
             Some(SettingsSection::Providers | SettingsSection::Browser) => {}
         }
         self.settings_section.set(section);
@@ -65,6 +66,7 @@ impl Workspace {
                 None | Some(SettingsSection::Configuration) => self.poll_config(),
                 Some(SettingsSection::Mcp) => self.poll_mcp(),
                 Some(SettingsSection::Plugins) => self.poll_plugins(),
+                Some(SettingsSection::Notifications) => self.poll_notifications(),
                 Some(SettingsSection::Providers | SettingsSection::Browser) => {}
             },
             View::Memory => self.poll_memory(),

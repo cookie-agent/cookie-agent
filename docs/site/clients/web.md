@@ -45,7 +45,8 @@ address bar.
   daemon's ready line.
 - **Connecting.** With both a URL and a token, the page connects without a
   click.
-- **Forget this daemon** deletes the stored token. Once connected, the
+- **Forget this daemon** deletes the stored token and stops the daemon's
+  [notifications](#notifications) in this browser. Once connected, the
   same button is in the connection panel (below), behind a confirmation.
 - **A refused connection.** A browser shows a page no reason when the daemon
   refuses or closes its connection before the handshake, or nothing answers.
@@ -659,6 +660,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
 - **Plugins.** Settings › Plugins lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
   bottom bar.
+- **Notifications.** Settings › Notifications turns push notifications on
+  in this browser and lists every device the daemon pushes to; see
+  [Notifications](#notifications).
 - **This browser.** Settings › This browser picks the diagnostics the
   transcript shows (as **Diagnostics** does) and forgets the daemon.
 
@@ -858,8 +862,8 @@ terminal reports focus. `[notifications]` in `config.toml` turns pushes off,
 shows less on the lock screen, and more (see
 [Push Notifications](../engine/notifications.md)).
 
-**Turning them on.** Open Settings › This browser › Notifications and
-choose **Turn on notifications**; the browser asks whether to allow them.
+**Turning them on.** Open Settings › Notifications and choose **Turn on
+notifications**; the browser asks whether to allow them.
 
 - **It needs HTTPS**, as installing does (see
   [Installing as an app](#installing-as-an-app)).
@@ -872,9 +876,11 @@ choose **Turn on notifications**; the browser asks whether to allow them.
   in the browser's site settings.
 
 Once on, **Send test** sends one at once, the field names this device in
-the list, and **Turn off** stops them. **Devices** lists every browser the
-daemon pushes to, with when it last sent one and why the last one failed;
-**Remove** stops another device's. A browser takes notifications from one
+the list, and **Turn off** stops them. **Devices**, below, lists every
+browser the daemon pushes to, with when it last sent one and why the last
+one failed; **Remove** stops another device's. **Forget this daemon** stops
+this browser's too: while still connected, the daemon removes it from
+Devices, and the browser drops its subscription. A browser takes notifications from one
 daemon at a time: on a page that connected to another daemon since, Settings
 offers **Switch to this daemon**.
 
