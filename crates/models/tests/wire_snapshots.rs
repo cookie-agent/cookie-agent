@@ -101,14 +101,20 @@ async fn capture_server() -> (String, mpsc::UnboundedReceiver<String>) {
     (format!("http://{address}"), receiver)
 }
 
-fn capabilities(reasoning: bool, structured: bool, temperature: bool, replay: &str) -> String {
+fn capabilities(
+    reasoning: bool,
+    structured: bool,
+    temperature: bool,
+    top_p: bool,
+    replay: &str,
+) -> String {
     let replay = if replay.is_empty() {
         String::new()
     } else {
         format!(", native_replay = \"{replay}\"")
     };
     format!(
-        "capabilities = {{ input = [\"text\"], output = [\"text\"], context_tokens = 200000, output_tokens = {OUTPUT_TOKENS}, tool_calling = true, parallel_tool_calls = true, structured_output = {structured}, reasoning = {reasoning}, temperature = {temperature}, top_p = true, seed = false, media = {{}}{replay} }}"
+        "capabilities = {{ input = [\"text\"], output = [\"text\"], context_tokens = 200000, output_tokens = {OUTPUT_TOKENS}, tool_calling = true, parallel_tool_calls = true, structured_output = {structured}, reasoning = {reasoning}, temperature = {temperature}, top_p = {top_p}, seed = false, media = {{}}{replay} }}"
     )
 }
 
@@ -118,6 +124,7 @@ struct ModelSpec {
     reasoning: bool,
     structured: bool,
     temperature: bool,
+    top_p: bool,
     replay: &'static str,
     variants: &'static [(&'static str, &'static str)],
     options: &'static str,
@@ -175,9 +182,20 @@ const fn model(
         reasoning,
         structured: true,
         temperature: true,
+        top_p: true,
         replay: "",
         variants,
         options: "",
+    }
+}
+
+/// The first-party adaptor sends Anthropic API version 2026-10-21, which has
+/// no sampling parameters.
+const fn first_party_anthropic(spec: ModelSpec) -> ModelSpec {
+    ModelSpec {
+        temperature: false,
+        top_p: false,
+        ..spec
     }
 }
 
@@ -213,6 +231,7 @@ fn custom_definition(base: &str, provider: &ProviderSpec) -> ProviderDefinition 
                 model.reasoning,
                 model.structured,
                 model.temperature,
+                model.top_p,
                 model.replay
             ),
         ));
@@ -253,10 +272,15 @@ fn custom_providers() -> Vec<ProviderSpec> {
 reasoning = { type = "effort", value = "low" }"#,
                         ),
                     ],
-                    ..model("sonnet", "claude-sonnet-4-6", true, &[])
+                    ..first_party_anthropic(model("sonnet", "claude-sonnet-4-6", true, &[]))
                 },
-                model("legacy", "claude-3-7-sonnet-20250219", true, ALL_REASONING),
-                model("plain", "claude-haiku-3", false, &[]),
+                first_party_anthropic(model(
+                    "legacy",
+                    "claude-3-7-sonnet-20250219",
+                    true,
+                    ALL_REASONING,
+                )),
+                first_party_anthropic(model("plain", "claude-haiku-3", false, &[])),
             ],
         },
         ProviderSpec {
@@ -771,30 +795,43 @@ fn cache_strategies(family: OvenAdapterFamily) -> Vec<(&'static str, CacheStrate
         | OvenAdapterFamily::OpenaiResponses
         | OvenAdapterFamily::OpenaiCompatible
         | OvenAdapterFamily::AzureOpenaiChat
-        | OvenAdapterFamily::AzureOpenaiResponses => vec![
-            (
-                "openai-cache",
+        | OvenAdapterFamily::AzureOpenaiResponses => {
+            let controls = |ttl| {
                 CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
                     prompt_cache_key: Some("cookie-cache-key".into()),
-                    prompt_cache_retention: Some(OpenAiPromptCacheRetention::InMemory),
+                    prompt_cache_retention: None,
                     mode: Some(OpenAiCacheMode::Explicit),
-                    ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
+                    ttl: Some(ttl),
                     system: true,
                     rolling: true,
-                }),
-            ),
-            (
-                "openai-cache-key-only",
-                CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
-                    prompt_cache_key: Some("cookie-cache-key".into()),
-                    prompt_cache_retention: Some(OpenAiPromptCacheRetention::TwentyFourHours),
-                    mode: None,
-                    ttl: None,
-                    system: false,
-                    rolling: false,
-                }),
-            ),
-        ],
+                })
+            };
+            let mut strategies = vec![
+                (
+                    "openai-cache",
+                    controls(OpenAiPromptCacheTtl::ThirtyMinutes),
+                ),
+                (
+                    "openai-cache-key-only",
+                    CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+                        prompt_cache_key: Some("cookie-cache-key".into()),
+                        prompt_cache_retention: Some(OpenAiPromptCacheRetention::TwentyFourHours),
+                        mode: None,
+                        ttl: None,
+                        system: false,
+                        rolling: false,
+                    }),
+                ),
+            ];
+            // OpenAI documents the 12-hour lifetime for Responses only.
+            if family == OvenAdapterFamily::OpenaiResponses {
+                strategies.push((
+                    "openai-cache-12h",
+                    controls(OpenAiPromptCacheTtl::TwelveHours),
+                ));
+            }
+            strategies
+        }
         OvenAdapterFamily::CohereV2Chat => Vec::new(),
     }
 }

@@ -290,6 +290,26 @@ pub const fn custom_setup_recipe(
     }
 }
 
+/// Whether Cookie agent sends `anthropic-version: 2026-10-21`, which rejects
+/// `temperature`, `top_p`, and `top_k`.
+///
+/// The first-party `anthropic` adaptor and the managed `anthropic` catalog
+/// provider get it. Other Anthropic-compatible endpoints keep `2023-06-01`,
+/// since whether they accept the newer version is unknown; a custom provider
+/// that needs sampling on Anthropic's own API uses `anthropic-compatible`.
+#[must_use]
+pub fn uses_anthropic_api_2026_10_21(
+    family: OvenAdapterFamily,
+    provider_id: &str,
+    custom: bool,
+) -> bool {
+    match family {
+        OvenAdapterFamily::Anthropic => true,
+        OvenAdapterFamily::AnthropicCompatible => !custom && provider_id == "anthropic",
+        _ => false,
+    }
+}
+
 pub fn families() -> impl ExactSizeIterator<Item = OvenAdapterFamily> {
     ALL.iter().copied()
 }

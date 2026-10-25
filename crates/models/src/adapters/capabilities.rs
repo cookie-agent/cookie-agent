@@ -28,6 +28,11 @@ pub fn validate_capability_ceiling(
     {
         return Err(AdapterCapabilityError::Unsupported);
     }
+    // The first-party adaptor sends Anthropic API version 2026-10-21, which
+    // rejects sampling parameters.
+    if family == OvenAdapterFamily::Anthropic && (capabilities.temperature || capabilities.top_p) {
+        return Err(AdapterCapabilityError::Unsupported);
+    }
     if capabilities.reasoning
         && matches!(
             family,

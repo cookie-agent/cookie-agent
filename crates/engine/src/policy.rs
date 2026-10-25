@@ -858,6 +858,14 @@ fn resolve_authored_cache_strategy(
                 cookie_agent_config::OpenAiCacheConfig::default()
             };
             let controls = config.gpt_5_6_controls_enabled();
+            if controls
+                && config.effective_ttl() == cookie_agent_config::OpenAiPromptCacheTtl::TwelveHours
+                && family != OvenAdapterFamily::OpenaiResponses
+            {
+                return Err(EngineError::CacheStrategy(
+                    cookie_agent_models::authoring::TWELVE_HOUR_TTL_REQUIRES_RESPONSES.into(),
+                ));
+            }
             Some(CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
                 prompt_cache_key: Some("${session_id}".into()),
                 prompt_cache_retention: config.prompt_cache_retention.map(|retention| {
@@ -877,6 +885,9 @@ fn resolve_authored_cache_strategy(
                 ttl: controls.then(|| match config.effective_ttl() {
                     cookie_agent_config::OpenAiPromptCacheTtl::ThirtyMinutes => {
                         OpenAiPromptCacheTtl::ThirtyMinutes
+                    }
+                    cookie_agent_config::OpenAiPromptCacheTtl::TwelveHours => {
+                        OpenAiPromptCacheTtl::TwelveHours
                     }
                 }),
                 system: config.system,
@@ -1056,6 +1067,9 @@ fn wire_cache_strategy(
             ttl: strategy.ttl.map(|ttl| match ttl {
                 OpenAiPromptCacheTtl::ThirtyMinutes => {
                     protocol::FrozenOpenAiPromptCacheTtl::ThirtyMinutes
+                }
+                OpenAiPromptCacheTtl::TwelveHours => {
+                    protocol::FrozenOpenAiPromptCacheTtl::TwelveHours
                 }
             }),
             system: strategy.system.then_some(true),

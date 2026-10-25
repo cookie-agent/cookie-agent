@@ -2179,7 +2179,9 @@ async fn anthropic_http_400_diagnostics_reach_all_clients_and_persisted_events()
             let path = workspace.join(".cookie-agent/config.toml");
             let config = fs::read_to_string(&path).unwrap()
                 .replace("adaptor = \"openai-compatible\"", "adaptor = \"anthropic\"")
-                .replace("auth = { method = \"no-auth-v1\", values = {} }", "auth = { method = \"anthropic-api-key-v1\", values = { api_key = \"fixture-anthropic-key\" } }");
+                .replace("auth = { method = \"no-auth-v1\", values = {} }", "auth = { method = \"anthropic-api-key-v1\", values = { api_key = \"fixture-anthropic-key\" } }")
+                // The first-party adaptor's API version 2026-10-21 has no sampling.
+                .replace("temperature = true, top_p = true", "temperature = false, top_p = false");
             fs::write(path, config).unwrap();
         }).await;
         for _ in 0..2 {

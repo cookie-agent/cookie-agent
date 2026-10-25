@@ -289,6 +289,14 @@ pub struct PartialRequestDefaults {
     pub tool_choice: Option<ToolChoice>,
 }
 
+impl PartialRequestDefaults {
+    /// Whether these options set `temperature` or `top_p`.
+    #[must_use]
+    pub fn sets_sampling(&self) -> bool {
+        self.temperature.is_some() || self.top_p.is_some()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedModelOverride {
@@ -442,6 +450,19 @@ fn validate_custom(provider: &CustomProvider) -> Result<(), AuthoringError> {
         let adapter = crate::adapters::OvenAdapterFamily::parse(provider.adaptor.as_str())
             .ok_or(AuthoringError::Adaptor)?;
         let capabilities = model.capabilities.resolve(adapter);
+        if adapter == crate::adapters::OvenAdapterFamily::Anthropic
+            && (capabilities.temperature
+                || capabilities.top_p
+                || model.defaults.sets_sampling()
+                || model.variants.values().any(|variant| {
+                    variant
+                        .generation_options
+                        .as_ref()
+                        .is_some_and(PartialRequestDefaults::sets_sampling)
+                }))
+        {
+            return Err(AuthoringError::AnthropicSampling);
+        }
         validate_capabilities(&capabilities)?;
         validate_defaults(&model.defaults.resolve(), &capabilities)?;
         if let Some(ConfiguredModelDefault::Named(id)) = &model.default_variant
@@ -453,6 +474,10 @@ fn validate_custom(provider: &CustomProvider) -> Result<(), AuthoringError> {
     Ok(())
 }
 
+/// OpenAI documents the 12-hour lifetime for Responses only; Chat Completions
+/// and Azure OpenAI accept only 30 minutes.
+pub const TWELVE_HOUR_TTL_REQUIRES_RESPONSES: &str = "ttl = \"12h\" requires the OpenAI Responses API; Chat Completions and Azure OpenAI accept only \"30m\"";
+
 pub(crate) fn validate_provider_cache(
     cache: Option<&ProviderCacheConfig>,
     adaptor: &str,
@@ -463,8 +488,15 @@ pub(crate) fn validate_provider_cache(
     let result = match adaptor {
         "anthropic" | "anthropic-compatible" => cache.anthropic().map(|_| ()),
         "aws-bedrock-converse" => cache.bedrock().map(|_| ()),
-        "openai-chat" | "openai-responses" | "azure-openai-chat" | "azure-openai-responses" => {
-            cache.openai().map(|_| ())
+        "openai-responses" => cache.openai().map(|_| ()),
+        "openai-chat" | "azure-openai-chat" | "azure-openai-responses" => {
+            cache.openai().and_then(|config| {
+                if config.ttl == Some(OpenAiPromptCacheTtl::TwelveHours) {
+                    Err(TWELVE_HOUR_TTL_REQUIRES_RESPONSES.into())
+                } else {
+                    Ok(())
+                }
+            })
         }
         "openai-compatible" => cache.openai_compatible().map(|_| ()),
         "google-gemini" | "google-vertex-gemini" => {
@@ -734,6 +766,10 @@ pub enum AuthoringError {
     Capabilities,
     #[error("invalid request defaults")]
     Defaults,
+    #[error(
+        "the `anthropic` adaptor sends Anthropic API version 2026-10-21, which rejects temperature and top_p: set capabilities temperature = false and top_p = false and remove them from generation_options, or use the `anthropic-compatible` adaptor, which sends 2023-06-01"
+    )]
+    AnthropicSampling,
     #[error("invalid adaptor-specific model options")]
     Options,
     #[error("default variant does not name an authored variant")]
@@ -839,6 +875,49 @@ mod tests {
         assert_eq!(
             validate_provider_cache(Some(&cache(serde_json::json!({}))), "google-gemini"),
             Err("Google caching is always implicit".into())
+        );
+    }
+
+    #[test]
+    fn twelve_hour_openai_ttl_is_accepted_only_for_responses() {
+        let twelve = || cache(serde_json::json!({"ttl":"12h","system":true}));
+        assert_eq!(
+            validate_provider_cache(Some(&twelve()), "openai-responses"),
+            Ok(())
+        );
+        for adaptor in ["openai-chat", "azure-openai-chat", "azure-openai-responses"] {
+            let error = validate_provider_cache(Some(&twelve()), adaptor).unwrap_err();
+            assert!(error.contains("Responses"), "{adaptor}: {error}");
+            assert_eq!(
+                validate_provider_cache(Some(&cache(serde_json::json!({"ttl":"30m"}))), adaptor),
+                Ok(())
+            );
+        }
+    }
+
+    #[test]
+    fn openai_retention_cannot_combine_with_gpt_5_6_controls() {
+        for controls in [
+            serde_json::json!({"mode":"explicit"}),
+            serde_json::json!({"ttl":"30m"}),
+            serde_json::json!({"system":true}),
+            serde_json::json!({"rolling":true}),
+        ] {
+            let mut value = controls.clone();
+            value["prompt_cache_retention"] = serde_json::json!("24h");
+            let error =
+                validate_provider_cache(Some(&cache(value)), "openai-responses").unwrap_err();
+            assert!(
+                error.contains("prompt_cache_retention"),
+                "{controls}: {error}"
+            );
+        }
+        assert_eq!(
+            validate_provider_cache(
+                Some(&cache(serde_json::json!({"prompt_cache_retention":"24h"}))),
+                "openai-chat"
+            ),
+            Ok(())
         );
     }
 

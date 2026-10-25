@@ -2041,6 +2041,7 @@ fn restore_usage(usage: &Usage) -> oven_sdk::Usage {
         input_tokens_no_cache: usage.input_tokens_no_cache,
         input_tokens_cache_read: usage.input_tokens_cache_read,
         input_tokens_cache_write: usage.input_tokens_cache_write,
+        input_tokens_cache_write_by_ttl: Default::default(),
         output_tokens: usage.output_tokens,
         output_tokens_text: usage.output_tokens_text,
         output_tokens_reasoning: usage.output_tokens_reasoning,

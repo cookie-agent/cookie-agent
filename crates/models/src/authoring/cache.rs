@@ -132,6 +132,9 @@ pub enum OpenAiPromptCacheTtl {
     #[default]
     #[serde(rename = "30m")]
     ThirtyMinutes,
+    /// OpenAI Responses only; Chat Completions and Azure OpenAI accept only 30m.
+    #[serde(rename = "12h")]
+    TwelveHours,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -160,6 +163,17 @@ impl OpenAiCacheConfig {
     #[must_use]
     pub fn effective_ttl(&self) -> OpenAiPromptCacheTtl {
         self.ttl.unwrap_or_default()
+    }
+
+    /// `prompt_cache_retention` is for models before GPT-5.6, and OpenAI and
+    /// Azure reject it next to the GPT-5.6 controls.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.prompt_cache_retention.is_some() && self.gpt_5_6_controls_enabled() {
+            return Err(
+                "prompt_cache_retention is for models before GPT-5.6 and cannot be combined with mode, ttl, system, or rolling",
+            );
+        }
+        Ok(())
     }
 }
 
@@ -253,7 +267,7 @@ impl ProviderCacheConfig {
         self.validate_field::<OpenAiPromptCacheTtl>("ttl")?;
         self.validate_field::<bool>("system")?;
         self.validate_field::<bool>("rolling")?;
-        serde_json::from_value(self.0.clone()).map_err(|error| error.to_string())
+        decode_and_validate(&self.0, OpenAiCacheConfig::validate)
     }
 
     pub fn openai_compatible(&self) -> Result<OpenAiCompatibleCacheConfig, String> {

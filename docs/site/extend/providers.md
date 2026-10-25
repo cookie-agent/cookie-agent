@@ -323,6 +323,15 @@ Vertex, Bedrock, and Azure compute routes from setup and reject arbitrary
 managed `base_url` overrides. Custom endpoints must satisfy the selected
 adaptor's route constraints too.
 
+The `anthropic` adaptor and the managed `anthropic` provider send
+`anthropic-version: 2026-10-21`. That version rejects `temperature`, `top_p`,
+and `top_k`, so their models have no sampling capabilities: declaring
+`temperature` or `top_p` as true, or setting either in `generation_options`, is
+a load error. The `anthropic-compatible` adaptor and the other managed
+Anthropic-protocol providers send `2023-06-01` and keep sampling; a custom
+provider that needs sampling on Anthropic's own API uses
+`anthropic-compatible`.
+
 ### Model fields
 
 Custom model definition under `[providers."custom.x".models."<model-id>"]`:
@@ -666,10 +675,12 @@ parent's cached prefix instead of creating an isolated cache namespace.
 OpenAI and Azure OpenAI always send the session's bare UUIDv7 as
 `prompt_cache_key`; this has no configuration field or opt-out. Their cache table
 accepts `prompt_cache_retention`, `mode`, `ttl`, `system`, and `rolling`.
-`prompt_cache_retention` is `"in_memory"` or `"24h"`. Setting `mode` or `ttl`, or
-setting `system` or `rolling` to true, enables GPT-5.6 controls. Both placements
-default to false; omitted `mode` and `ttl` then default to `"auto"` and `"30m"`.
-The only accepted `ttl` is `"30m"`. `mode = "explicit"` disables the
+`prompt_cache_retention` is `"in_memory"` or `"24h"`, for models before GPT-5.6.
+Setting `mode` or `ttl`, or setting `system` or `rolling` to true, enables
+GPT-5.6 controls, which cannot be combined with `prompt_cache_retention`. Both
+placements default to false; omitted `mode` and `ttl` then default to `"auto"`
+and `"30m"`. `ttl` is `"30m"` or `"12h"`; `"12h"` requires the OpenAI Responses
+API, and Chat Completions and Azure OpenAI reject it. `mode = "explicit"` disables the
 provider-managed breakpoint, so `system = false` and `rolling = false` produce
 zero cache writes. There is no tools placement.
 

@@ -54,6 +54,7 @@ pub enum OpenAiCacheMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenAiPromptCacheTtl {
     ThirtyMinutes,
+    TwelveHours,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -9,7 +9,7 @@ use oven_sdk::{
     ModelConfig, ModelDeclaration, ModelError, ModelId,
 };
 use oven_sdk_anthropic::{
-    AnthropicCompatibleModel, AnthropicCompatibleSettings, AnthropicModel,
+    AnthropicApiVersion, AnthropicCompatibleModel, AnthropicCompatibleSettings, AnthropicModel,
     AnthropicProtocolSettings, AnthropicRequestOptions, AnthropicSettings, AnthropicThinking,
     AnthropicThinkingSupport,
 };
@@ -93,6 +93,13 @@ pub(crate) fn compile_executable(
     } else {
         OvenCompaction::Unsupported
     };
+    let anthropic_2026_10_21 =
+        crate::adapters::uses_anthropic_api_2026_10_21(model.adapter, provider_id, model.custom);
+    if anthropic_2026_10_21 {
+        // Compilation already clears these; Oven refuses to construct a
+        // 2026-10-21 model that declares them.
+        capabilities.features -= oven_sdk::Capability::TEMPERATURE | oven_sdk::Capability::TOP_P;
+    }
     let declaration = ModelDeclaration::new(
         ModelId::new(model.wire_model_id.as_str().to_owned()),
         capabilities,
@@ -106,6 +113,7 @@ pub(crate) fn compile_executable(
         declaration,
         &auth,
         header_discriminator.as_deref(),
+        anthropic_2026_10_21,
     )?;
     Ok(crate::ConstructedAdapter {
         model,
@@ -257,6 +265,7 @@ fn construct(
     declaration: ModelDeclaration,
     auth: &AuthConfig,
     header_discriminator: Option<&str>,
+    anthropic_2026_10_21: bool,
 ) -> Result<Constructed, ModelBuildError> {
     let reasoning = behavior.reasoning;
     let capabilities = &model.capabilities;
@@ -274,7 +283,7 @@ fn construct(
                 AnthropicSettings {
                     client: anthropic_client(timeouts)?,
                     timeouts: timeouts.anthropic(),
-                    protocol: anthropic_protocol(model, false),
+                    protocol: anthropic_protocol(model, false, AnthropicApiVersion::V2026_10_21),
                     native_context_discriminator: None,
                 },
             ))?),
@@ -288,7 +297,15 @@ fn construct(
                     adapter_id: AdapterId::new(model.adapter_id.clone()),
                     client: anthropic_client(timeouts)?,
                     timeouts: timeouts.anthropic(),
-                    protocol: anthropic_protocol(model, !capabilities.temperature),
+                    protocol: anthropic_protocol(
+                        model,
+                        !capabilities.temperature,
+                        if anthropic_2026_10_21 {
+                            AnthropicApiVersion::V2026_10_21
+                        } else {
+                            AnthropicApiVersion::V2023_06_01
+                        },
+                    ),
                     native_context_discriminator: None,
                 },
             ))?),
@@ -718,6 +735,7 @@ fn anthropic_client(timeouts: TimeoutsConfig) -> Result<reqwest::Client, ModelBu
 fn anthropic_protocol(
     model: &CompiledDynamicModel,
     reject_non_default_sampling: bool,
+    api_version: AnthropicApiVersion,
 ) -> AnthropicProtocolSettings {
     let reasoning = model.capabilities.reasoning;
     AnthropicProtocolSettings {
@@ -732,6 +750,7 @@ fn anthropic_protocol(
         effort: reasoning,
         assistant_prefill: false,
         reject_non_default_sampling,
+        api_version: Some(api_version),
     }
 }
 

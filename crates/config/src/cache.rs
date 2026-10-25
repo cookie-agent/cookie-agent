@@ -20,6 +20,9 @@ impl CacheConfig {
         if let Some(config) = &self.bedrock {
             config.validate()?;
         }
+        if let Some(config) = &self.openai {
+            config.validate()?;
+        }
         Ok(())
     }
 }

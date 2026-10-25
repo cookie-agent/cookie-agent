@@ -447,35 +447,43 @@ fn openai_prompt_cache_options(
     Some(match adapter {
         OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses => {
             serde_json::to_value(oven_sdk_openai::OpenAiPromptCacheOptions {
-                mode: match mode {
+                mode: Some(match mode {
                     OpenAiCacheMode::Implicit => oven_sdk_openai::OpenAiPromptCacheMode::Implicit,
                     OpenAiCacheMode::Explicit => oven_sdk_openai::OpenAiPromptCacheMode::Explicit,
-                },
-                ttl: match ttl {
+                }),
+                ttl: Some(match ttl {
                     OpenAiPromptCacheTtl::ThirtyMinutes => {
                         oven_sdk_openai::OpenAiPromptCacheTtl::ThirtyMinutes
                     }
-                },
+                    OpenAiPromptCacheTtl::TwelveHours => {
+                        oven_sdk_openai::OpenAiPromptCacheTtl::TwelveHours
+                    }
+                }),
+                prewarm: None,
             })
             .expect("OpenAI cache options serialize")
         }
         OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses => {
-            serde_json::to_value(oven_sdk_azure::AzureOpenAiPromptCacheOptions {
-                mode: match mode {
-                    OpenAiCacheMode::Implicit => {
-                        oven_sdk_azure::AzureOpenAiPromptCacheMode::Implicit
-                    }
-                    OpenAiCacheMode::Explicit => {
-                        oven_sdk_azure::AzureOpenAiPromptCacheMode::Explicit
-                    }
-                },
-                ttl: match ttl {
-                    OpenAiPromptCacheTtl::ThirtyMinutes => {
-                        oven_sdk_azure::AzureOpenAiPromptCacheTtl::ThirtyMinutes
-                    }
-                },
-            })
-            .expect("Azure OpenAI cache options serialize")
+            let mode = match mode {
+                OpenAiCacheMode::Implicit => oven_sdk_azure::AzureOpenAiPromptCacheMode::Implicit,
+                OpenAiCacheMode::Explicit => oven_sdk_azure::AzureOpenAiPromptCacheMode::Explicit,
+            };
+            match ttl {
+                OpenAiPromptCacheTtl::ThirtyMinutes => {
+                    serde_json::to_value(oven_sdk_azure::AzureOpenAiPromptCacheOptions {
+                        mode: Some(mode),
+                        ttl: Some(oven_sdk_azure::AzureOpenAiPromptCacheTtl::ThirtyMinutes),
+                    })
+                    .expect("Azure OpenAI cache options serialize")
+                }
+                // Config validation rejects 12h for Azure. Should one reach
+                // here anyway, Oven's strict option decoding refuses the
+                // request before any provider I/O instead of sending 30m.
+                OpenAiPromptCacheTtl::TwelveHours => serde_json::json!({
+                    "mode": mode,
+                    "ttl": "12h",
+                }),
+            }
         }
         _ => return None,
     })

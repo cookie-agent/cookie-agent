@@ -761,7 +761,7 @@ fn wire_breakpoint_count(value: &Value) -> usize {
 async fn openai_cache_controls_reach_all_four_provider_wires() {
     let strategy = CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
         prompt_cache_key: Some("wire-key".into()),
-        prompt_cache_retention: Some(OpenAiPromptCacheRetention::TwentyFourHours),
+        prompt_cache_retention: None,
         mode: Some(OpenAiCacheMode::Explicit),
         ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
         system: true,
@@ -801,7 +801,7 @@ async fn openai_cache_controls_reach_all_four_provider_wires() {
             .unwrap();
         let body = captured.await.unwrap();
         assert_eq!(body["prompt_cache_key"], "wire-key", "{adapter:?}");
-        assert_eq!(body["prompt_cache_retention"], "24h", "{adapter:?}");
+        assert!(body.get("prompt_cache_retention").is_none(), "{adapter:?}");
         assert_eq!(
             body["prompt_cache_options"],
             json!({"mode":"explicit", "ttl":"30m"}),

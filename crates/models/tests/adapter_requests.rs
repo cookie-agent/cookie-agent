@@ -506,6 +506,8 @@ fn video_definition(endpoint: &str, adaptor: &str, video_mime_type: &str) -> Pro
         ),
         _ => panic!("unsupported video fixture adaptor"),
     };
+    // The first-party adaptor sends API version 2026-10-21, which has no sampling.
+    let sampling = adaptor != "anthropic";
     toml::from_str(&format!(
         r#"source = "custom"
 endpoint = "{endpoint}"
@@ -515,7 +517,7 @@ adaptor = "{adaptor}"
 
 [models.test]
 display_name = "Video"
-capabilities = {{ input = ["text", "video"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {{ video = {{ mime_types = ["{video_mime_type}"], max_bytes = 26214400, max_count = 2 }} }} }}
+capabilities = {{ input = ["text", "video"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = {sampling}, top_p = {sampling}, seed = false, native_replay = "unsupported", media = {{ video = {{ mime_types = ["{video_mime_type}"], max_bytes = 26214400, max_count = 2 }} }} }}
 "#
     ))
     .unwrap()

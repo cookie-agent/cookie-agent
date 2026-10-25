@@ -200,6 +200,46 @@ fn first_party_openai_cache_key_is_always_the_session_id() {
 }
 
 #[test]
+fn twelve_hour_openai_cache_ttl_applies_only_to_responses() {
+    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        ttl: 12h\n        system: true\npermissions: {}\n---\nStable owner prompt.\n";
+    for adaptor in ["openai-responses", "openai-chat"] {
+        let (fixture, selection) =
+            custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+                "http://127.0.0.1:9/v1",
+                primary,
+                None,
+                None,
+                false,
+                None,
+                None,
+                4_096,
+                None,
+                adaptor,
+            );
+        if adaptor == "openai-responses" {
+            let policy = frozen_root_policy(&fixture, &selection);
+            let binding = policy.selected_suffix.first().unwrap();
+            let Some(cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(strategy)) =
+                policy.cache_strategy(binding, SessionId::new_v7())
+            else {
+                panic!("OpenAI cache strategy");
+            };
+            assert_eq!(
+                strategy.ttl,
+                Some(cookie_agent_models::adapters::OpenAiPromptCacheTtl::TwelveHours)
+            );
+        } else {
+            let Err(EngineError::CacheStrategy(message)) =
+                try_frozen_root_policy(&fixture, &selection)
+            else {
+                panic!("12h on Chat Completions must be a cache strategy error");
+            };
+            assert!(message.contains("Responses"), "{message}");
+        }
+    }
+}
+
+#[test]
 fn compatible_openai_cache_key_defaults_disables_and_expands() {
     let primary = "---\ndescription: Compatible cache owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nStable owner prompt.\n";
     for (provider_cache, expected_prefix) in [

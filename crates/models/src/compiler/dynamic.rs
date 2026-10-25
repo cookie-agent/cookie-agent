@@ -291,6 +291,10 @@ pub enum DynamicCompileError {
     Variant,
     #[error("invalid cache config: {0}")]
     Cache(String),
+    #[error(
+        "temperature and top_p are unavailable: Cookie agent sends Anthropic API version 2026-10-21 to this provider, which rejects them; declare capabilities temperature = false and top_p = false and remove them from generation_options (a custom provider can use the `anthropic-compatible` adaptor, which sends 2023-06-01)"
+    )]
+    AnthropicSampling,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -512,6 +516,23 @@ impl DynamicCompiler {
         let mut capabilities = capabilities_from_catalog(model, adapter).map_err(|_| {
             ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
         })?;
+        if crate::adapters::uses_anthropic_api_2026_10_21(adapter, provider_id.as_str(), false) {
+            capabilities.temperature = false;
+            capabilities.top_p = false;
+            if override_.is_some_and(|value| {
+                value.defaults.sets_sampling()
+                    || value.variants.values().any(|variant| {
+                        variant
+                            .generation_options
+                            .as_ref()
+                            .is_some_and(crate::authoring::PartialRequestDefaults::sets_sampling)
+                    })
+            }) {
+                return Err(ModelLocalError::Provider(
+                    DynamicCompileError::AnthropicSampling,
+                ));
+            }
+        }
         apply_compaction_config(
             &mut capabilities,
             adapter,
@@ -769,6 +790,22 @@ impl DynamicCompiler {
             let wire = wire_adapter_for_custom(resolved_adapter);
             let mut capabilities = model.capabilities.resolve(resolved_adapter);
             let defaults = model.defaults.resolve();
+            if crate::adapters::uses_anthropic_api_2026_10_21(
+                resolved_adapter,
+                provider_id.as_str(),
+                true,
+            ) && (capabilities.temperature
+                || capabilities.top_p
+                || model.defaults.sets_sampling()
+                || model.variants.values().any(|variant| {
+                    variant
+                        .generation_options
+                        .as_ref()
+                        .is_some_and(crate::authoring::PartialRequestDefaults::sets_sampling)
+                }))
+            {
+                return Err(DynamicCompileError::AnthropicSampling);
+            }
             let wire_model_id = model.model_id.clone().map_or_else(
                 || provider_wire_model_id(id, resolved_adapter, Some(&setup)),
                 Ok,

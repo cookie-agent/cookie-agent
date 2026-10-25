@@ -233,9 +233,8 @@ models:
   - model: custom.test/other
     cache:
       openai:
-        prompt_cache_retention: in_memory
         mode: explicit
-        ttl: 30m
+        ttl: 12h
         system: true
         rolling: true
 permissions: {}
@@ -258,12 +257,65 @@ permissions: {}
         .openai
         .as_ref()
         .unwrap();
-    assert_eq!(
-        openai.prompt_cache_retention,
-        Some(OpenAiPromptCacheRetention::InMemory)
-    );
+    assert_eq!(openai.prompt_cache_retention, None);
     assert_eq!(openai.mode, Some(OpenAiCacheMode::Explicit));
-    assert_eq!(openai.ttl, Some(OpenAiPromptCacheTtl::ThirtyMinutes));
+    assert_eq!(openai.ttl, Some(OpenAiPromptCacheTtl::TwelveHours));
+}
+
+#[test]
+fn openai_retention_cannot_combine_with_gpt_5_6_controls() {
+    for controls in [
+        "mode: explicit",
+        "ttl: 30m",
+        "system: true",
+        "rolling: true",
+    ] {
+        let error = serde_yaml::from_str::<AgentFrontmatter>(&format!(
+            r#"
+description: Cached agent
+mode: primary
+enabled: true
+models:
+  - model: custom.test/other
+    cache:
+      openai:
+        prompt_cache_retention: in_memory
+        {controls}
+permissions: {{}}
+"#
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("prompt_cache_retention"),
+            "{controls}: {error}"
+        );
+    }
+    let retention_only: AgentFrontmatter = serde_yaml::from_str(
+        r#"
+description: Cached agent
+mode: primary
+enabled: true
+models:
+  - model: custom.test/other
+    cache:
+      openai:
+        prompt_cache_retention: 24h
+permissions: {}
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        retention_only.models[0]
+            .cache
+            .as_ref()
+            .unwrap()
+            .openai
+            .as_ref()
+            .unwrap()
+            .prompt_cache_retention,
+        Some(OpenAiPromptCacheRetention::TwentyFourHours)
+    );
 }
 
 #[test]

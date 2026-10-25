@@ -100,8 +100,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -123,7 +122,6 @@
         ],
         "model": "qwen3.5-plus",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -153,7 +151,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 444"
+        "content-length: 407"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -324,8 +322,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -350,7 +347,6 @@
         ],
         "model": "qwen3.5-plus",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -380,7 +376,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 468"
+        "content-length: 431"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -554,8 +550,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -580,7 +575,6 @@
         ],
         "model": "qwen3.5-plus",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -610,7 +604,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 467"
+        "content-length: 430"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -801,7 +795,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -875,7 +869,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1005,7 +999,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1079,7 +1073,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1209,7 +1203,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1283,7 +1277,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1403,7 +1397,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1467,7 +1461,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1600,7 +1594,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1677,7 +1671,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1810,7 +1804,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -1887,7 +1881,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-api-key: managed-key",
         "accept: */*",
         "host: <volatile>",
@@ -4071,8 +4065,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -4182,7 +4174,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4258,7 +4250,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4281,8 +4273,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -4392,7 +4382,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4468,7 +4458,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4491,8 +4481,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -4592,7 +4580,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4658,7 +4646,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4681,8 +4669,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -4795,7 +4781,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4874,7 +4860,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -4897,8 +4883,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -5011,7 +4995,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5090,7 +5074,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5113,8 +5097,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -5217,7 +5199,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5286,7 +5268,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5309,8 +5291,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -5420,7 +5400,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5496,7 +5476,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5518,8 +5498,6 @@
           "tool_calling",
           "parallel_tools",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -5619,7 +5597,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5685,7 +5663,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -5708,8 +5686,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -5822,7 +5798,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "anthropic-beta: files-api-2025-04-14",
@@ -5902,7 +5878,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "anthropic-beta: files-api-2025-04-14",
@@ -5926,8 +5902,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -6037,7 +6011,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6113,7 +6087,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6136,8 +6110,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -6245,7 +6217,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6319,7 +6291,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6342,8 +6314,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -6443,7 +6413,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6509,7 +6479,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6532,8 +6502,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -6644,7 +6612,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6721,7 +6689,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6744,8 +6712,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -6856,7 +6822,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6933,7 +6899,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -6956,8 +6922,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -7060,7 +7024,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -7129,7 +7093,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -7152,8 +7116,6 @@
           "parallel_tools",
           "reasoning",
           "structured_output",
-          "temperature",
-          "top_p",
           "max_output_tokens",
           "prompt_caching"
         ],
@@ -7261,7 +7223,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -7335,7 +7297,7 @@
       },
       "headers": [
         "content-type: application/json",
-        "anthropic-version: 2023-06-01",
+        "anthropic-version: 2026-10-21",
         "x-session-id: root-session",
         "x-static: fixed",
         "x-api-key: anthropic-key",
@@ -7463,7 +7425,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -7506,7 +7467,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -7536,7 +7496,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 639"
+        "content-length: 602"
       ],
       "request_line": "POST /openai/v1/chat/completions HTTP/1.1"
     }
@@ -7721,7 +7681,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -7764,7 +7723,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -7794,7 +7752,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 639"
+        "content-length: 602"
       ],
       "request_line": "POST /openai/v1/chat/completions HTTP/1.1"
     }
@@ -7981,7 +7939,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -8024,7 +7981,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -8054,7 +8010,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 650"
+        "content-length: 613"
       ],
       "request_line": "POST /openai/v1/chat/completions HTTP/1.1"
     }
@@ -8242,7 +8198,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": "high",
           "service_tier": null,
           "user": null,
@@ -8285,7 +8240,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "high",
         "stream": true,
         "tool_choice": "auto",
@@ -8316,7 +8270,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 676"
+        "content-length: 639"
       ],
       "request_line": "POST /openai/v1/chat/completions HTTP/1.1"
     }
@@ -8505,7 +8459,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": "minimal",
           "service_tier": null,
           "user": null,
@@ -8548,7 +8501,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "minimal",
         "stream": true,
         "tool_choice": "auto",
@@ -8579,7 +8531,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 679"
+        "content-length: 642"
       ],
       "request_line": "POST /openai/v1/chat/completions HTTP/1.1"
     }
@@ -8781,7 +8733,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -8829,7 +8780,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "store": false,
         "stream": true,
         "tool_choice": "auto",
@@ -8858,7 +8808,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 703"
+        "content-length: 666"
       ],
       "request_line": "POST /openai/v1/responses HTTP/1.1"
     }
@@ -9078,7 +9028,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -9128,7 +9077,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "store": false,
         "stream": true,
         "tool_choice": "auto",
@@ -9157,7 +9105,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 732"
+        "content-length: 695"
       ],
       "request_line": "POST /openai/v1/responses HTTP/1.1"
     }
@@ -9382,7 +9330,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -9432,7 +9379,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "high"
         },
@@ -9464,7 +9410,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 762"
+        "content-length: 725"
       ],
       "request_line": "POST /openai/v1/responses HTTP/1.1"
     }
@@ -9692,7 +9638,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -9742,7 +9687,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "minimal"
         },
@@ -9774,7 +9718,7 @@
         "api-key: azure-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 765"
+        "content-length: 728"
       ],
       "request_line": "POST /openai/v1/responses HTTP/1.1"
     }
@@ -17767,7 +17711,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -17810,7 +17753,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -17841,7 +17783,7 @@
         "openai-project: proj-2",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 657"
+        "content-length: 620"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -18031,7 +17973,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": "high",
           "service_tier": null,
           "user": null,
@@ -18074,7 +18015,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "high",
         "stream": true,
         "tool_choice": "auto",
@@ -18106,7 +18046,7 @@
         "openai-project: proj-2",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 683"
+        "content-length: 646"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -18293,7 +18233,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -18336,7 +18275,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -18366,7 +18304,7 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 639"
+        "content-length: 602"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -18555,7 +18493,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -18598,7 +18535,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -18630,7 +18566,7 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 650"
+        "content-length: 613"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -18822,7 +18758,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": "high",
           "service_tier": null,
           "user": null,
@@ -18865,7 +18800,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "high",
         "stream": true,
         "tool_choice": "auto",
@@ -18898,7 +18832,7 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 676"
+        "content-length: 639"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -19091,7 +19025,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_effort": "minimal",
           "service_tier": null,
           "user": null,
@@ -19134,7 +19067,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "minimal",
         "stream": true,
         "tool_choice": "auto",
@@ -19167,7 +19099,7 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 679"
+        "content-length: 642"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -19343,8 +19275,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -19366,7 +19297,6 @@
         ],
         "model": "qwen3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -19397,7 +19327,7 @@
         "x-session-id: root-session",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 437"
+        "content-length: 400"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -19570,8 +19500,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -19593,7 +19522,6 @@
         ],
         "model": "qwen3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "high",
         "stream": true,
         "tool_choice": "auto",
@@ -19625,7 +19553,7 @@
         "x-session-id: root-session",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 463"
+        "content-length: 426"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -19832,7 +19760,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -19883,7 +19810,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "store": false,
         "stream": true,
         "tool_choice": "auto",
@@ -19913,7 +19839,102 @@
         "x-session-id: root-session",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 757"
+        "content-length: 720"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-compatible-header/reasoner#responses+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": null,
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "qwen3",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-api-key: header-key",
+        "x-session-id: root-session",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 720"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -20102,8 +20123,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -20125,7 +20145,6 @@
         ],
         "model": "local-model",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -20154,7 +20173,7 @@
         "content-type: application/json",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 443"
+        "content-length: 406"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -20321,8 +20340,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -20344,7 +20362,6 @@
         ],
         "model": "llama",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -20374,7 +20391,7 @@
         "authorization: Bearer compatible-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 437"
+        "content-length: 400"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -20544,8 +20561,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -20567,7 +20583,6 @@
         ],
         "model": "qwen3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -20597,7 +20612,7 @@
         "authorization: Bearer compatible-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 437"
+        "content-length: 400"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -20768,8 +20783,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -20791,7 +20805,6 @@
         ],
         "model": "qwen3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "high",
         "stream": true,
         "tool_choice": "auto",
@@ -20822,7 +20835,7 @@
         "authorization: Bearer compatible-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 463"
+        "content-length: 426"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -21030,7 +21043,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -21081,7 +21093,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "high"
         },
@@ -21113,7 +21124,104 @@
         "authorization: Bearer compatible-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 787"
+        "content-length: 750"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-compatible/reasoner#responses+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": null,
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "qwen3",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "effort": "high"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "authorization: Bearer compatible-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 750"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -21340,7 +21448,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -21391,7 +21498,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "store": false,
         "stream": true,
         "tool_choice": "auto",
@@ -21420,7 +21526,101 @@
         "x-route: default-route",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 766"
+        "content-length: 729"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-responses-open/reasoner#default+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": null,
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "local-reasoner",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-route: default-route",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 729"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -21647,7 +21847,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -21698,7 +21897,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "high"
         },
@@ -21730,7 +21928,104 @@
         "x-route: default-route",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 796"
+        "content-length: 759"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-responses-open/reasoner#effort-high+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": null,
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "local-reasoner",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "effort": "high"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-route: default-route",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 759"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -21955,7 +22250,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -22006,7 +22300,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "store": false,
         "stream": true,
         "tool_choice": "auto",
@@ -22035,7 +22328,101 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 759"
+        "content-length: 722"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-responses/plain#default+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": null,
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "gpt-4.1",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "authorization: Bearer openai-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 722"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -22264,7 +22651,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -22315,7 +22701,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "summary": "auto"
         },
@@ -22349,7 +22734,106 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 790"
+        "content-length: 753"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-responses/reasoner#default+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": "auto",
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "gpt-5.6",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "summary": "auto"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "openai-organization: org-1",
+        "openai-project: proj-1",
+        "authorization: Bearer openai-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 753"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -22584,7 +23068,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -22635,7 +23118,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "high",
           "summary": "auto"
@@ -22670,7 +23152,107 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 806"
+        "content-length: 769"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-responses/reasoner#effort-high+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": "auto",
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "gpt-5.6",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "openai-organization: org-1",
+        "openai-project: proj-1",
+        "authorization: Bearer openai-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 769"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -22906,7 +23488,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -22957,7 +23538,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "minimal",
           "summary": "auto"
@@ -22992,7 +23572,107 @@
         "authorization: Bearer openai-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 809"
+        "content-length: 772"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "custom.openai-responses/reasoner#effort-minimal+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": "auto",
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "gpt-5.6",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "effort": "minimal",
+          "summary": "auto"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "openai-organization: org-1",
+        "openai-project: proj-1",
+        "authorization: Bearer openai-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 772"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -25514,8 +26194,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -25537,7 +26216,6 @@
         ],
         "model": "deepseek-v4-pro",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -25567,7 +26245,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 447"
+        "content-length: 410"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -25736,8 +26414,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -25759,7 +26436,6 @@
         ],
         "model": "deepseek-v4-pro",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "low",
         "stream": true,
         "tool_choice": "auto",
@@ -25790,7 +26466,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 472"
+        "content-length: 435"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -25960,8 +26636,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -25983,7 +26658,6 @@
         ],
         "model": "deepseek-v4-pro",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "max",
         "stream": true,
         "tool_choice": "auto",
@@ -26014,7 +26688,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 472"
+        "content-length: 435"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -26190,8 +26864,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -26217,7 +26890,6 @@
         ],
         "model": "deepseek-v4-pro",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "thinking": {
           "type": "disabled"
@@ -26250,7 +26922,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 478"
+        "content-length: 441"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -26425,8 +27097,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -26448,7 +27119,6 @@
         ],
         "model": "k3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -26478,7 +27148,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 434"
+        "content-length: 397"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -26647,8 +27317,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -26670,7 +27339,6 @@
         ],
         "model": "k3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "high",
         "stream": true,
         "tool_choice": "auto",
@@ -26701,7 +27369,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 460"
+        "content-length: 423"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -26871,8 +27539,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -26894,7 +27561,6 @@
         ],
         "model": "k3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "none",
         "stream": true,
         "tool_choice": "auto",
@@ -26925,7 +27591,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 460"
+        "content-length: 423"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -27674,8 +28340,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -27697,7 +28362,6 @@
         ],
         "model": "kimi-k3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "stream": true,
         "tool_choice": "auto",
         "tools": [
@@ -27727,7 +28391,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 439"
+        "content-length: 402"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -27896,8 +28560,7 @@
     "provider_options": {
       "openai": {
         "chat": {
-          "prompt_cache_key": "cookie-cache-key",
-          "prompt_cache_retention": "in_memory"
+          "prompt_cache_key": "cookie-cache-key"
         }
       },
       "openai_compatible": {
@@ -27919,7 +28582,6 @@
         ],
         "model": "kimi-k3",
         "prompt_cache_key": "cookie-cache-key",
-        "prompt_cache_retention": "in_memory",
         "reasoning_effort": "high",
         "stream": true,
         "tool_choice": "auto",
@@ -27950,7 +28612,7 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 465"
+        "content-length: 428"
       ],
       "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
@@ -28156,7 +28818,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -28207,7 +28868,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "summary": "auto"
         },
@@ -28239,7 +28899,104 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 790"
+        "content-length: 753"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "openai/gpt-5.6#default+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": "auto",
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "gpt-5.6",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "summary": "auto"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "authorization: Bearer managed-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 753"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -28468,7 +29225,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -28519,7 +29275,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "high",
           "summary": "auto"
@@ -28552,7 +29307,105 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 806"
+        "content-length: 769"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "openai/gpt-5.6#high+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": "auto",
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "gpt-5.6",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "effort": "high",
+          "summary": "auto"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "authorization: Bearer managed-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 769"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }
@@ -28782,7 +29635,6 @@
             "mode": "explicit",
             "ttl": "30m"
           },
-          "prompt_cache_retention": "in_memory",
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -28833,7 +29685,6 @@
           "mode": "explicit",
           "ttl": "30m"
         },
-        "prompt_cache_retention": "in_memory",
         "reasoning": {
           "effort": "low",
           "summary": "auto"
@@ -28866,7 +29717,105 @@
         "authorization: Bearer managed-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 805"
+        "content-length: 768"
+      ],
+      "request_line": "POST /v1/responses HTTP/1.1"
+    }
+  },
+  "openai/gpt-5.6#low+openai-cache-12h": {
+    "provider_options": {
+      "openai": {
+        "responses": {
+          "include": [],
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "cookie-cache-key",
+          "prompt_cache_options": {
+            "mode": "explicit",
+            "ttl": "12h"
+          },
+          "reasoning_mode": null,
+          "reasoning_summary": "auto",
+          "service_tier": null,
+          "truncation": null,
+          "user": null,
+          "verbosity": null
+        }
+      }
+    },
+    "wire": {
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "input_text"
+              }
+            ],
+            "role": "developer",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "input_text"
+              }
+            ],
+            "role": "user",
+            "type": "message"
+          }
+        ],
+        "max_output_tokens": 32000,
+        "model": "gpt-5.6",
+        "parallel_tool_calls": true,
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "12h"
+        },
+        "reasoning": {
+          "effort": "low",
+          "summary": "auto"
+        },
+        "store": false,
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Inspect one path.",
+            "name": "inspect",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            },
+            "strict": false,
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "authorization: Bearer managed-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 768"
       ],
       "request_line": "POST /v1/responses HTTP/1.1"
     }

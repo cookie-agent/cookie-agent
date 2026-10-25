@@ -1389,3 +1389,101 @@ capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, out
         second.models[&ProviderModelId::new("test").unwrap()].behavior_fingerprint
     );
 }
+
+#[test]
+fn managed_anthropic_has_no_sampling_and_rejects_authored_sampling() {
+    let mut catalog = record("@ai-sdk/anthropic", None);
+    catalog.id = ProviderId::new("anthropic").unwrap();
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed("test", &catalog, None)
+        .unwrap();
+    let capabilities = &compiled.models.values().next().unwrap().capabilities;
+    assert!(!capabilities.temperature && !capabilities.top_p);
+    for overrides in [
+        "generation_options = { temperature = 0.5 }",
+        "generation_options = { top_p = 0.9 }",
+        "variants = { cool = { generation_options = { temperature = 0.2 } } }",
+    ] {
+        let authored: ModelsDevProvider =
+            toml::from_str(&format!("[models.\"model/1\"]\n{overrides}")).unwrap();
+        let error = DynamicCompiler::family_registry()
+            .compile_managed("test", &catalog, Some(&authored))
+            .unwrap_err();
+        assert_eq!(error, DynamicCompileError::AnthropicSampling, "{overrides}");
+        assert!(error.to_string().contains("2026-10-21"));
+    }
+
+    // Other Anthropic-compatible catalog providers keep 2023-06-01 and sampling.
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed(
+            "test",
+            &record("@ai-sdk/anthropic", Some("https://example.com/v1")),
+            None,
+        )
+        .unwrap();
+    assert!(
+        compiled
+            .models
+            .values()
+            .next()
+            .unwrap()
+            .capabilities
+            .temperature
+    );
+}
+
+#[test]
+fn custom_first_party_anthropic_rejects_sampling() {
+    let definition = |capabilities: &str, extra: &str| {
+        let definition: ProviderDefinition = toml::from_str(&format!(
+            r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "anthropic"
+auth = {{ method = "anthropic-api-key-v1", values = {{ api_key = "secret" }} }}
+
+[models.test]
+display_name = "Test"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, reasoning = false, {capabilities}, seed = false, media = {{}} }}
+{extra}
+"#
+        ))
+        .unwrap();
+        let ProviderDefinition::Custom(provider) = definition else {
+            unreachable!();
+        };
+        provider
+    };
+    fn compile(
+        provider: &cookie_agent_models::CustomProvider,
+    ) -> Result<cookie_agent_models::compiler::CompiledDynamicProvider, DynamicCompileError> {
+        DynamicCompiler::family_registry()
+            .compile_custom(&ProviderId::new("custom.test").unwrap(), provider)
+    }
+    for (capabilities, extra) in [
+        ("temperature = true, top_p = false", ""),
+        ("temperature = false, top_p = true", ""),
+        (
+            "temperature = false, top_p = false",
+            "generation_options = { temperature = 0.5 }",
+        ),
+        (
+            "temperature = false, top_p = false",
+            "variants = { cool = { generation_options = { top_p = 0.9 } } }",
+        ),
+    ] {
+        let provider = definition(capabilities, extra);
+        assert_eq!(
+            compile(&provider).unwrap_err(),
+            DynamicCompileError::AnthropicSampling,
+            "{capabilities} {extra}"
+        );
+        assert!(
+            ProviderDefinition::Custom(provider)
+                .validate_for(&ProviderId::new("custom.test").unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("anthropic-compatible")
+        );
+    }
+    assert!(compile(&definition("temperature = false, top_p = false", "")).is_ok());
+}

@@ -1780,9 +1780,11 @@ async fn dynamic_handles_execute_anthropic_and_openai_responses_and_build_vertex
     )
     .await;
     let model = |display: &str| {
+        // The first-party Anthropic adaptor sends API version 2026-10-21, which has no sampling.
+        let temperature = display != "Anthropic";
         format!(
             r#"display_name = "{display}"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = {temperature}, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
 "#
         )
     };
