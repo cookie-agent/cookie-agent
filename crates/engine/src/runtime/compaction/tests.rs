@@ -385,7 +385,10 @@ fn checkpoint_dedup_includes_the_exact_snapshot_boundary() {
         timestamp: jiff::Timestamp::now(),
         payload: Event::ContextCheckpointCommitted {
             commit: ContextCheckpointCommit {
-                checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
+                checkpoint: ContextCheckpoint::InternalSummary {
+                    checkpoint,
+                    native: None,
+                },
                 boundaries: ContextCheckpointBoundaries {
                     source_from_seq: 1,
                     source_through_seq: 10,

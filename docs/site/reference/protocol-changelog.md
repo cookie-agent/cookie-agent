@@ -5,6 +5,24 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.29.0
+
+- Native compaction beside the summary ([native compaction spec](../specs/native-compaction.md)),
+  all additions an older peer ignores:
+  - The `internal_summary` checkpoint of `context_checkpoint_committed` has
+    an optional `native` (`CheckpointNativeWindow`: `window`,
+    `source_through_seq`), the provider window compacted from the same
+    events. An older reader uses the summary. Plugin protocol 1.17.0
+    carries it too.
+  - The `native_window` checkpoint is no longer written; earlier logs keep
+    reading.
+  - `ConfigStatus` has an optional `native_compaction`, a list of
+    `NativeCompactionMark` (`provider_id`, `state`, `reason`,
+    `age_seconds`): the providers the daemon stopped attempting native
+    compaction for (`unsupported`) or whose windows it ignores
+    (`rejects_windows`). `NativeCompactionState` is open; an unknown value
+    reads as `unknown`.
+
 ## 1.28.0
 
 - The approval reviewer ([approval reviewer spec](../specs/approval-reviewer.md)

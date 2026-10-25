@@ -555,7 +555,7 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
         .log
         .events();
     assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ContextCheckpointCommitted { commit }
-        if matches!(&commit.checkpoint, cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint } if checkpoint.summary() == "summary with transport fields"))));
+        if matches!(&commit.checkpoint, cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint, .. } if checkpoint.summary() == "summary with transport fields"))));
     assert!(!events.iter().any(|event| matches!(
         &event.payload,
         EventPayload::InternalAgentFinished {

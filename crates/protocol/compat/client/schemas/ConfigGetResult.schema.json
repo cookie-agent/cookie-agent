@@ -56,6 +56,14 @@
             "null"
           ]
         },
+        "native_compaction": {
+          "description": "Providers the daemon stopped attempting native compaction for, or\nwhose stored windows it ignores, until the mark expires or the\nprovider's configuration changes (client protocol 1.29.0).",
+          "items": {
+            "$ref": "#/$defs/NativeCompactionMark"
+          },
+          "maxItems": 1024,
+          "type": "array"
+        },
         "restart_required": {
           "description": "Parts changed since the daemon started that apply only after a\nrestart.",
           "items": {
@@ -68,6 +76,56 @@
         "applied_revision"
       ],
       "type": "object"
+    },
+    "NativeCompactionMark": {
+      "description": "One provider in the daemon's native compaction record.",
+      "properties": {
+        "age_seconds": {
+          "description": "How long ago it was marked.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "What the provider answered that marked it.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/NativeCompactionState"
+        }
+      },
+      "required": [
+        "provider_id",
+        "state",
+        "reason",
+        "age_seconds"
+      ],
+      "type": "object"
+    },
+    "NativeCompactionState": {
+      "description": "Why a provider is in the native compaction record.\n\nA value this build does not know reads as `unknown`: native compaction\nis off for the provider for a reason it cannot name.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "The compact call answered that the provider has no native compaction.",
+          "type": "string"
+        },
+        {
+          "const": "rejects_windows",
+          "description": "The provider refused a request that carried a compacted window.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

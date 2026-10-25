@@ -1802,7 +1802,10 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
     )
     .unwrap();
     let mut commit = ContextCheckpointCommit {
-        checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
+        checkpoint: ContextCheckpoint::InternalSummary {
+            checkpoint,
+            native: None,
+        },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 1,
             source_through_seq: 2,
@@ -1838,7 +1841,10 @@ fn checkpoint_recent_tail_is_required_and_stays_within_source() {
     )
     .unwrap();
     let commit = ContextCheckpointCommit {
-        checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
+        checkpoint: ContextCheckpoint::InternalSummary {
+            checkpoint,
+            native: None,
+        },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 2,
             source_through_seq: 4,
@@ -1933,20 +1939,172 @@ fn native_checkpoint_rejects_recent_tail_boundary_and_budget() {
     assert!(commit.validate().is_ok());
 }
 
+fn test_window(adapter: &str, provider: &str, model: &str) -> NativeContextWindow {
+    NativeContextWindow::new(
+        SafeCode::new(adapter).unwrap(),
+        Sha256Digest::of_bytes(b"selection"),
+        NativeContextScope {
+            provider_id: ProviderId::new(provider).unwrap(),
+            model_id: ProviderModelId::new(model).unwrap(),
+            resource_id: SafeDisplayText::new("resource").unwrap(),
+        },
+        json!({"id": "window"}),
+    )
+    .unwrap()
+}
+
+fn summary_commit(native: Option<CheckpointNativeWindow>) -> ContextCheckpointCommit {
+    ContextCheckpointCommit {
+        checkpoint: ContextCheckpoint::InternalSummary {
+            checkpoint: InternalSummaryCheckpoint::new(
+                "summary".into(),
+                InternalAgentInvocationId::new_v7(),
+                InternalAgentRunId::new_v7(),
+                SummaryByteLimit::new(1024).unwrap(),
+            )
+            .unwrap(),
+            native,
+        },
+        boundaries: ContextCheckpointBoundaries {
+            source_from_seq: 2,
+            source_through_seq: 6,
+            recent_from_seq: Some(5),
+            input_through_seq: 6,
+            prior_checkpoint_seq: None,
+        },
+        budgets: ContextCheckpointBudgets {
+            context_limit_tokens: 100,
+            trigger_tokens: 70,
+            input_tokens_before: 60,
+            input_tokens_after: 20,
+            keep_recent_tokens: 10,
+            max_summary_bytes: SummaryByteLimit::new(1024).unwrap(),
+        },
+    }
+}
+
 #[test]
-fn native_compaction_is_limited_to_responses_recipes() {
+fn a_summary_checkpoint_carries_an_optional_window_beside_the_summary() {
+    let window = test_window("oven.openai.responses", "openai", "gpt-5.6-sol");
+    let commit = summary_commit(Some(CheckpointNativeWindow {
+        window: window.clone(),
+        source_through_seq: 6,
+    }));
+    assert!(commit.validate().is_ok());
+    assert_eq!(commit.native_window(), Some(&window));
+    let value = serde_json::to_value(&commit).unwrap();
+    assert_eq!(value["checkpoint"]["type"], "internal_summary");
+    assert_eq!(value["checkpoint"]["summary"], "summary");
+    assert_eq!(value["checkpoint"]["native"]["source_through_seq"], 6);
+    assert_eq!(
+        serde_json::from_value::<ContextCheckpointCommit>(value).unwrap(),
+        commit
+    );
+
+    // A summary checkpoint without the member reads as one without a window,
+    // and writes none.
+    let plain = summary_commit(None);
+    let value = serde_json::to_value(&plain).unwrap();
+    assert!(value["checkpoint"].get("native").is_none());
+    assert_eq!(
+        serde_json::from_value::<ContextCheckpointCommit>(value)
+            .unwrap()
+            .native_window(),
+        None
+    );
+
+    for source_through_seq in [1, 7] {
+        let outside = summary_commit(Some(CheckpointNativeWindow {
+            window: window.clone(),
+            source_through_seq,
+        }));
+        assert_eq!(
+            outside.validate(),
+            Err(EventSchemaError::InvalidCheckpointBoundaries),
+            "{source_through_seq}"
+        );
+    }
+}
+
+#[test]
+fn a_window_serves_its_provider_and_model_across_variants() {
+    let mut binding = frozen_binding();
+    binding.descriptor.adapter_id = oven_sdk::AdapterId::new("oven.openai.responses");
+    let window = test_window("oven.openai.responses", "openai", "gpt-5.6-sol");
+    assert!(window.validate_for_binding(&binding).is_ok());
+    // Another variant changes the fingerprints, not the window's use.
+    binding.selection.variant = Some("high".parse().unwrap());
+    binding.blueprint_fingerprint = Sha256Digest::of_bytes(b"another variant");
+    binding.selection_fingerprint = Sha256Digest::of_bytes(b"another selection");
+    assert!(window.validate_for_binding(&binding).is_ok());
+    for other in [
+        test_window("oven.openai.responses", "openai", "gpt-5.5"),
+        test_window("oven.openai.responses", "gateway", "gpt-5.6-sol"),
+        test_window("oven.azure.openai.responses", "openai", "gpt-5.6-sol"),
+    ] {
+        assert_eq!(
+            other.validate_for_binding(&binding),
+            Err(NativeArtifactError::InvalidScope)
+        );
+    }
+}
+
+#[test]
+fn config_status_native_compaction_marks_read_unknown_states() {
+    let status: ConfigStatus = serde_json::from_value(json!({
+        "applied_revision": format!("sha256:{}", "1".repeat(64)),
+        "native_compaction": [
+            {"provider_id": "gateway", "state": "rejects_windows", "reason": "400", "age_seconds": 5},
+            {"provider_id": "other", "state": "from_the_future", "reason": "?", "age_seconds": 0}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(
+        status
+            .native_compaction
+            .iter()
+            .map(|mark| mark.state)
+            .collect::<Vec<_>>(),
+        [
+            NativeCompactionState::RejectsWindows,
+            NativeCompactionState::Unknown
+        ]
+    );
+    let empty: ConfigStatus = serde_json::from_value(json!({
+        "applied_revision": format!("sha256:{}", "1".repeat(64))
+    }))
+    .unwrap();
+    assert!(empty.native_compaction.is_empty());
+    assert!(
+        serde_json::to_value(&empty)
+            .unwrap()
+            .get("native_compaction")
+            .is_none()
+    );
+}
+
+#[test]
+fn native_compaction_is_limited_to_responses_adapters() {
     let mut binding = frozen_binding();
     binding.descriptor.capabilities.compaction = oven_sdk::CompactionCapability::Native;
-    assert!(binding.validate().is_ok());
-
-    binding.protocol_recipe = ProtocolRecipeId::new("oven.azure.openai.responses").unwrap();
-    assert!(binding.validate().is_ok());
-
-    binding.protocol_recipe = ProtocolRecipeId::new("oven.openai.chat").unwrap();
-    assert_eq!(
-        binding.validate(),
-        Err(ModelSchemaError::NativeCompactionUnsupported)
-    );
+    for (adapter, valid) in [
+        ("oven.openai.responses", true),
+        ("oven.azure.openai.responses", true),
+        ("oven.openai-compatible.responses.gateway", true),
+        ("oven.openai.chat", false),
+        ("oven.openai-compatible.chat.gateway", false),
+    ] {
+        binding.descriptor.adapter_id = oven_sdk::AdapterId::new(adapter);
+        assert_eq!(
+            binding.validate(),
+            if valid {
+                Ok(())
+            } else {
+                Err(ModelSchemaError::NativeCompactionUnsupported)
+            },
+            "{adapter}"
+        );
+    }
 }
 
 #[test]

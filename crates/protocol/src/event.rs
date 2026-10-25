@@ -1244,17 +1244,17 @@ impl NativeContextWindow {
         )
     }
 
+    /// Whether a request bound to `binding` may carry this window: the same
+    /// adapter, provider ID, and model ID. The variant, and with it the
+    /// selection fingerprint, may differ.
     pub fn validate_for_binding(
         &self,
         binding: &FrozenModelBinding,
-        expected_scope: &NativeContextScope,
     ) -> Result<(), NativeArtifactError> {
         binding
             .validate()
             .map_err(|_| NativeArtifactError::InvalidScope)?;
         if self.adapter_id.as_str() != binding.descriptor.adapter_id.as_str()
-            || self.selection_fingerprint != binding.blueprint_fingerprint
-            || self.scope != *expected_scope
             || self.scope.provider_id != binding.selection.model.provider_id()
             || self.scope.model_id != binding.selection.model.model_id()
         {
@@ -2111,16 +2111,34 @@ impl<'de> Deserialize<'de> for InternalSummaryCheckpoint {
     }
 }
 
+/// The provider window a summary checkpoint carries beside its summary,
+/// when native compaction succeeded alongside it (client protocol 1.29.0).
+/// A request on the window's provider and model uses it; every other
+/// request uses the summary.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CheckpointNativeWindow {
+    pub window: NativeContextWindow,
+    /// The last event the window covers; it keeps no recent tail apart.
+    #[schemars(range(min = 1))]
+    pub source_through_seq: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContextCheckpoint {
     InternalSummary {
         #[serde(flatten)]
         checkpoint: InternalSummaryCheckpoint,
+        /// The provider window compacted from the same events; absent when
+        /// native compaction was not attempted or failed. A reader that
+        /// ignores it uses the summary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        native: Option<CheckpointNativeWindow>,
     },
-    NativeWindow {
-        window: NativeContextWindow,
-    },
+    /// A provider window alone, which builds before 1.29.0 wrote; read
+    /// only. A request that cannot use it compacts the covered events
+    /// into a summary first.
+    NativeWindow { window: NativeContextWindow },
 }
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ContextCheckpointCommit {
@@ -2141,6 +2159,12 @@ impl ContextCheckpointCommit {
             matches!(self.checkpoint, ContextCheckpoint::NativeWindow { .. })
                 && (self.boundaries.recent_from_seq.is_some()
                     || self.budgets.keep_recent_tokens != 0);
+        let native_outside_input = matches!(
+            &self.checkpoint,
+            ContextCheckpoint::InternalSummary { native: Some(native), .. }
+                if native.source_through_seq < self.boundaries.source_from_seq
+                    || native.source_through_seq > self.boundaries.input_through_seq
+        );
         if self.boundaries.source_from_seq == 0
             || self.boundaries.source_from_seq > self.boundaries.source_through_seq
             || recent_outside_source
@@ -2149,11 +2173,12 @@ impl ContextCheckpointCommit {
             || self.budgets.trigger_tokens > self.budgets.context_limit_tokens
             || self.budgets.input_tokens_after >= self.budgets.input_tokens_before
             || native_has_recent_tail
+            || native_outside_input
         {
             return Err(EventSchemaError::InvalidCheckpointBoundaries);
         }
         match &self.checkpoint {
-            ContextCheckpoint::InternalSummary { checkpoint }
+            ContextCheckpoint::InternalSummary { checkpoint, .. }
                 if checkpoint.byte_length() > self.budgets.max_summary_bytes.get() =>
             {
                 Err(EventSchemaError::SummaryTooLarge)
@@ -2162,6 +2187,9 @@ impl ContextCheckpointCommit {
         }
     }
 
+    /// [`Self::validate`], and for a window alone, whether a request bound
+    /// to `binding` may carry it
+    /// ([`NativeContextWindow::validate_for_binding`]).
     pub fn validate_for_binding(
         &self,
         binding: &FrozenModelBinding,
@@ -2169,10 +2197,22 @@ impl ContextCheckpointCommit {
         self.validate()?;
         if let ContextCheckpoint::NativeWindow { window } = &self.checkpoint {
             window
-                .validate_for_binding(binding, window.scope())
+                .validate_for_binding(binding)
                 .map_err(|_| EventSchemaError::NativeSelectionMismatch)?;
         }
         Ok(())
+    }
+
+    /// The provider window this checkpoint holds, alone or beside its
+    /// summary.
+    #[must_use]
+    pub fn native_window(&self) -> Option<&NativeContextWindow> {
+        match &self.checkpoint {
+            ContextCheckpoint::InternalSummary { native, .. } => {
+                native.as_ref().map(|native| &native.window)
+            }
+            ContextCheckpoint::NativeWindow { window } => Some(window),
+        }
     }
 }
 impl<'de> Deserialize<'de> for ContextCheckpointCommit {

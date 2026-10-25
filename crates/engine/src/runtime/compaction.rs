@@ -868,7 +868,10 @@ impl Engine {
             keep_recent_tokens,
         };
         let commit = ContextCheckpointCommit {
-            checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
+            checkpoint: ContextCheckpoint::InternalSummary {
+                checkpoint,
+                native: None,
+            },
             boundaries,
             budgets,
         };

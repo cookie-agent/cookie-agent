@@ -510,7 +510,7 @@ pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
     };
     let (mut visible, prior_summary) = if let Some(commit) = latest_checkpoint(events) {
         let (retained_from, summary, mode) = match &commit.checkpoint {
-            ContextCheckpoint::InternalSummary { checkpoint } => (
+            ContextCheckpoint::InternalSummary { checkpoint, .. } => (
                 commit.boundaries.recent_from_seq,
                 Some(checkpoint.summary()),
                 CheckpointSelectionMode::InternalSummary,
@@ -747,7 +747,7 @@ pub(crate) fn assemble_model_context<E: Borrow<StoredEvent>>(
         });
     };
     match &commit.checkpoint {
-        ContextCheckpoint::InternalSummary { checkpoint } => project_summary_context(
+        ContextCheckpoint::InternalSummary { checkpoint, .. } => project_summary_context(
             events,
             store,
             binding,

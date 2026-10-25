@@ -330,7 +330,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
         TranscriptItem::Compaction { commit, .. } => {
             let key = block_key(item).unwrap_or_default();
             let (kind, body) = match &commit.checkpoint {
-                ContextCheckpoint::InternalSummary { checkpoint } => {
+                ContextCheckpoint::InternalSummary { checkpoint, .. } => {
                     ("internal summary", checkpoint.summary().to_owned())
                 }
                 ContextCheckpoint::NativeWindow { window } => {

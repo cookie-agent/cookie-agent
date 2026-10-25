@@ -172,6 +172,7 @@ mod tests {
             restart_required: parts,
             error: None,
             diagnostics: Vec::new(),
+            native_compaction: Vec::new(),
         }
     }
 

@@ -1316,11 +1316,14 @@ impl FrozenModelBinding {
         {
             return Err(ModelSchemaError::DescriptorIdentityMismatch);
         }
+        // The selected behavior's adapter, which a variant that switches
+        // endpoint changes, decides: Responses, official, compatible, or Azure.
+        let adapter = self.descriptor.adapter_id.as_str();
         if self.descriptor.capabilities.compaction == oven_sdk::CompactionCapability::Native
-            && !matches!(
-                self.protocol_recipe.as_str(),
+            && !(matches!(
+                adapter,
                 "oven.openai.responses" | "oven.azure.openai.responses"
-            )
+            ) || adapter.starts_with("oven.openai-compatible.responses."))
         {
             return Err(ModelSchemaError::NativeCompactionUnsupported);
         }

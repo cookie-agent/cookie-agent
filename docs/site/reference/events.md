@@ -827,6 +827,7 @@ The retention fields:
 |---|---|---|
 | `boundaries.recent_from_seq` | `u64` or `null` | Inclusive starting sequence of the retained original-message suffix. `null` means no retained suffix. |
 | `budgets.keep_recent_tokens` | `u64` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
+| `checkpoint.native` | object, optional | On an `internal_summary` checkpoint, the provider window compacted from the same events (`window`) and the last event it covers (`source_through_seq`). Absent when native compaction was not attempted or failed. |
 
 The effective budget is at most `min(configured keep_recent_tokens,
 input_budget / 4)` and is further limited by actual post-checkpoint available
@@ -835,9 +836,11 @@ than that budget; an oversized newest indivisible group yields no tail rather
 than exceeding the budget. A reader never infers a suffix from current
 configuration.
 
-Native compacted windows retain their existing replay behavior, with no
-independently appended recent-message suffix. Neither checkpoint path rereads
-files.
+A request on the window's provider and model uses the window, with no
+independently appended recent-message suffix; every other request uses the
+summary and its recent messages. The `native_window` checkpoint, a window
+without a summary, is read but no longer written. Neither checkpoint path
+rereads files.
 
 ## Subscriptions
 

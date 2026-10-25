@@ -424,7 +424,7 @@ pub(super) fn compaction_layout(
     )];
     if is_expanded {
         match &commit.checkpoint {
-            cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint } => {
+            cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint, .. } => {
                 body.extend(bounded_safe_display_text(
                     checkpoint.summary(),
                     context.theme.internal(),

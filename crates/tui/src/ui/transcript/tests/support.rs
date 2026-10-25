@@ -477,6 +477,7 @@ pub(crate) fn checkpoint_commit(summary: &str) -> cookie_agent_protocol::Context
                 max,
             )
             .expect("summary checkpoint"),
+            native: None,
         },
         boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
             source_from_seq: 2,

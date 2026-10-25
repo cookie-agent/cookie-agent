@@ -155,8 +155,9 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
         assert!(!assembled.contains("compact this context"));
         let commit = commit.expect("compaction checkpoint");
         if fail_native {
-            let Some(cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint }) =
-                Some(&commit.checkpoint)
+            let Some(cookie_agent_protocol::ContextCheckpoint::InternalSummary {
+                checkpoint, ..
+            }) = Some(&commit.checkpoint)
             else {
                 panic!("native failure must commit the harness checkpoint");
             };

@@ -46,6 +46,39 @@ pub struct ConfigStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 256))]
     pub diagnostics: Vec<String>,
+    /// Providers the daemon stopped attempting native compaction for, or
+    /// whose stored windows it ignores, until the mark expires or the
+    /// provider's configuration changes (client protocol 1.29.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub native_compaction: Vec<NativeCompactionMark>,
+}
+
+/// One provider in the daemon's native compaction record.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct NativeCompactionMark {
+    pub provider_id: String,
+    pub state: NativeCompactionState,
+    /// What the provider answered that marked it.
+    pub reason: String,
+    /// How long ago it was marked.
+    pub age_seconds: u64,
+}
+
+/// Why a provider is in the native compaction record.
+///
+/// A value this build does not know reads as `unknown`: native compaction
+/// is off for the provider for a reason it cannot name.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum NativeCompactionState {
+    /// The compact call answered that the provider has no native compaction.
+    Unsupported,
+    /// The provider refused a request that carried a compacted window.
+    RejectsWindows,
+    #[serde(other)]
+    Unknown,
 }
 
 /// Re-read the configuration from disk and apply it, for edits made by hand.

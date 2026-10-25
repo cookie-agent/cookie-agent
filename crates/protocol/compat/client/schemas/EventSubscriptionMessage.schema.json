@@ -1051,6 +1051,25 @@
       "type": "string",
       "x-open": true
     },
+    "CheckpointNativeWindow": {
+      "description": "The provider window a summary checkpoint carries beside its summary,\nwhen native compaction succeeded alongside it (client protocol 1.29.0).\nA request on the window's provider and model uses it; every other\nrequest uses the summary.",
+      "properties": {
+        "source_through_seq": {
+          "description": "The last event the window covers; it keeps no recent tail apart.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "window": {
+          "$ref": "#/$defs/NativeContextWindow"
+        }
+      },
+      "required": [
+        "window",
+        "source_through_seq"
+      ],
+      "type": "object"
+    },
     "ContextCheckpoint": {
       "oneOf": [
         {
@@ -1067,6 +1086,17 @@
             "invocation_id": {
               "format": "uuid",
               "type": "string"
+            },
+            "native": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CheckpointNativeWindow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The provider window compacted from the same events; absent when\nnative compaction was not attempted or failed. A reader that\nignores it uses the summary."
             },
             "sha256": {
               "maxLength": 64,
@@ -1093,6 +1123,7 @@
           "type": "object"
         },
         {
+          "description": "A provider window alone, which builds before 1.29.0 wrote; read\nonly. A request that cannot use it compacts the covered events\ninto a summary first.",
           "properties": {
             "type": {
               "const": "native_window",
