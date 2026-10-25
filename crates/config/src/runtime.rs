@@ -791,6 +791,58 @@ const fn default_subagent_output_bytes() -> usize {
 pub struct ApprovalConfig {
     #[serde(default = "default_approval_timeout")]
     pub timeout_ms: u64,
+    /// The approval reviewer's prompt-cache lifetime, mapped onto its
+    /// model's provider (approval reviewer spec section 5).
+    #[serde(default)]
+    pub cache_ttl: ApprovalCacheTtl,
+}
+
+/// `[approval] cache_ttl`: how long the approval reviewer's conversation
+/// stays in its provider's prompt cache. A TTL the provider does not offer
+/// becomes the nearest one it does; `provider` is the reviewer model's
+/// provider's own cache configuration, and `off` writes no cache.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ApprovalCacheTtl {
+    #[default]
+    #[serde(rename = "1h")]
+    OneHour,
+    #[serde(rename = "30m")]
+    ThirtyMinutes,
+    #[serde(rename = "12h")]
+    TwelveHours,
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "provider")]
+    Provider,
+    #[serde(rename = "off")]
+    Off,
+}
+
+impl ApprovalCacheTtl {
+    /// The lifetime in minutes, or `None` for `provider` and `off`.
+    #[must_use]
+    pub const fn minutes(self) -> Option<u32> {
+        match self {
+            Self::FiveMinutes => Some(5),
+            Self::ThirtyMinutes => Some(30),
+            Self::OneHour => Some(60),
+            Self::TwelveHours => Some(720),
+            Self::Provider | Self::Off => None,
+        }
+    }
+
+    /// The value as written in `config.toml`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OneHour => "1h",
+            Self::ThirtyMinutes => "30m",
+            Self::TwelveHours => "12h",
+            Self::FiveMinutes => "5m",
+            Self::Provider => "provider",
+            Self::Off => "off",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1117,6 +1169,7 @@ impl Default for ApprovalConfig {
     fn default() -> Self {
         Self {
             timeout_ms: default_approval_timeout(),
+            cache_ttl: ApprovalCacheTtl::default(),
         }
     }
 }

@@ -496,12 +496,20 @@ impl Engine {
         owner: &FrozenRunPolicy,
         parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
     ) -> Result<FrozenInternalAgentPolicy, EngineError> {
+        // Read at each call, so a configuration apply reaches the next
+        // review.
+        let approval_ttl = self.inner.config.load().runtime.approval.cache_ttl;
         if let Some(definition) = owner
             .internal_agents
             .iter()
             .find(|definition| definition.kind == kind)
         {
-            return frozen_internal_policy_from_definition(definition, owner, parent_binding);
+            return frozen_internal_policy_from_definition(
+                definition,
+                owner,
+                parent_binding,
+                approval_ttl,
+            );
         }
         let id = internal_agent_id(kind)?;
         let resolved = owner
@@ -579,6 +587,7 @@ impl Engine {
             owner,
             parent_binding,
             inherit_parent_cache,
+            approval_ttl,
         )?;
         Ok(FrozenInternalAgentPolicy {
             agent: snapshot,
@@ -639,6 +648,7 @@ fn frozen_internal_policy_from_definition(
     definition: &FrozenInternalAgentDefinition,
     owner: &FrozenRunPolicy,
     parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
+    approval_ttl: cookie_agent_config::ApprovalCacheTtl,
 ) -> Result<FrozenInternalAgentPolicy, EngineError> {
     // A frozen fallback this build cannot read fails the internal agent, as
     // the run's own unreadable binding would fail the run.
@@ -699,6 +709,7 @@ fn frozen_internal_policy_from_definition(
         owner,
         parent_binding,
         inherit_parent_cache,
+        approval_ttl,
     )?;
     Ok(FrozenInternalAgentPolicy {
         agent,
@@ -720,6 +731,7 @@ fn internal_cache_strategies(
     owner: &FrozenRunPolicy,
     parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
     inherit_parent_cache: bool,
+    approval_ttl: cookie_agent_config::ApprovalCacheTtl,
 ) -> Result<Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>, EngineError> {
     models
         .iter()
@@ -734,14 +746,22 @@ fn internal_cache_strategies(
                     owner.cache_layer,
                 )?
             };
-            if matches!(
-                kind,
-                InternalAgentKind::Approval | InternalAgentKind::SessionTitle
-            ) && let Some(cookie_agent_models::adapters::CacheStrategyConfig::Anthropic(
-                strategy,
-            )) = &mut strategy
-            {
-                strategy.rolling = None;
+            match kind {
+                // The reviewer's conversation grows by one turn per review,
+                // so a rolling marker lets the next review read it back
+                // (approval reviewer spec section 5).
+                InternalAgentKind::Approval => {
+                    strategy = policy::reviewer_cache_strategy(strategy, binding, approval_ttl).0;
+                }
+                InternalAgentKind::SessionTitle => {
+                    if let Some(cookie_agent_models::adapters::CacheStrategyConfig::Anthropic(
+                        strategy,
+                    )) = &mut strategy
+                    {
+                        strategy.rolling = None;
+                    }
+                }
+                InternalAgentKind::ContextCompaction => {}
             }
             Ok(strategy)
         })

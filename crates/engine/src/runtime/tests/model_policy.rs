@@ -73,7 +73,10 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
 }
 
 #[tokio::test]
-async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
+/// The title agent sends no rolling marker, compaction shares the owner's,
+/// and the approval reviewer's follows `[approval] cache_ttl` (approval
+/// reviewer spec section 5), read at each call.
+async fn internal_agent_cache_strategy_by_kind_and_the_reviewer_ttl() {
     let primary = "---\ndescription: Cache policy owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nStable owner prompt.\n";
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
@@ -105,11 +108,45 @@ async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
             .map(str::to_owned)
     };
 
-    for kind in [
-        InternalAgentKind::SessionTitle,
-        InternalAgentKind::Approval,
-        InternalAgentKind::ContextCompaction,
+    for (kind, ttl, expected) in [
+        (
+            InternalAgentKind::SessionTitle,
+            cookie_agent_config::ApprovalCacheTtl::OneHour,
+            (Some("one_hour"), Some("one_hour"), None),
+        ),
+        (
+            InternalAgentKind::ContextCompaction,
+            cookie_agent_config::ApprovalCacheTtl::Off,
+            (Some("one_hour"), Some("one_hour"), Some(owner_rolling)),
+        ),
+        (
+            InternalAgentKind::Approval,
+            cookie_agent_config::ApprovalCacheTtl::OneHour,
+            (Some("one_hour"), Some("one_hour"), Some("one_hour")),
+        ),
+        (
+            InternalAgentKind::Approval,
+            cookie_agent_config::ApprovalCacheTtl::FiveMinutes,
+            (Some("one_hour"), Some("one_hour"), Some("five_minutes")),
+        ),
+        (
+            InternalAgentKind::Approval,
+            cookie_agent_config::ApprovalCacheTtl::Provider,
+            (Some("one_hour"), Some("one_hour"), Some(owner_rolling)),
+        ),
+        (
+            InternalAgentKind::Approval,
+            cookie_agent_config::ApprovalCacheTtl::Off,
+            (None, None, None),
+        ),
     ] {
+        let mut config = (*fixture.engine.inner.config.load_full()).clone();
+        config.runtime.approval.cache_ttl = ttl;
+        fixture
+            .engine
+            .inner
+            .config
+            .store(std::sync::Arc::new(config));
         let policy = fixture
             .engine
             .internal_agent_policy(kind, &owner, Some(parent))
@@ -139,16 +176,13 @@ async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
             panic!("user turn");
         };
         assert_eq!(
-            marker(&system.provider_options).as_deref(),
-            Some("one_hour")
-        );
-        assert_eq!(
-            marker(&prepared.tools[0].provider_options).as_deref(),
-            Some("one_hour")
-        );
-        assert_eq!(
-            marker(&user.provider_options).as_deref(),
-            (kind == InternalAgentKind::ContextCompaction).then_some(owner_rolling)
+            (
+                marker(&system.provider_options).as_deref(),
+                marker(&prepared.tools[0].provider_options).as_deref(),
+                marker(&user.provider_options).as_deref(),
+            ),
+            expected,
+            "{kind:?} with {ttl:?}"
         );
     }
     fixture.engine.shutdown().await;
@@ -1039,4 +1073,67 @@ fn explicit_internal_output_cap_is_still_clamped_to_the_model_output_limit() {
         internal_output_cap(&fixture, &selection, InternalAgentKind::Approval),
         Some(1_024)
     );
+}
+
+/// Configuration status notes a reviewer TTL its model's provider does not
+/// offer, and one that changes nothing there (approval reviewer spec
+/// section 5).
+#[tokio::test]
+async fn configuration_status_notes_what_the_reviewer_ttl_does() {
+    let primary = "---\ndescription: Owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nOwner.\n";
+    let approval = "---\ndescription: Reviewer\nmode: internal\nenabled: true\nmodels: [{ model: \"custom.test/group/model\" }]\npermissions: {}\n---\n{{default_prompt}}\n";
+    for (adaptor, ttl, expected) in [
+        (
+            "anthropic-compatible",
+            cookie_agent_config::ApprovalCacheTtl::ThirtyMinutes,
+            Some(
+                "`[approval] cache_ttl = \"30m\"`: the reviewer's model `custom.test/group/model` caches for 1h, the nearest TTL its provider offers",
+            ),
+        ),
+        (
+            "anthropic-compatible",
+            cookie_agent_config::ApprovalCacheTtl::OneHour,
+            None,
+        ),
+        (
+            "openai-compatible",
+            cookie_agent_config::ApprovalCacheTtl::OneHour,
+            Some(
+                "`[approval] cache_ttl = \"1h\"` has no effect on the reviewer's model `custom.test/group/model`: its provider manages caching itself",
+            ),
+        ),
+    ] {
+        let (fixture, _) =
+            custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+                "http://127.0.0.1:9/v1",
+                primary,
+                Some(("approval.md", approval)),
+                None,
+                false,
+                None,
+                None,
+                4_096,
+                None,
+                adaptor,
+            );
+        let mut config = (*fixture.engine.inner.config.load_full()).clone();
+        config.runtime.approval.cache_ttl = ttl;
+        fixture
+            .engine
+            .inner
+            .config
+            .store(std::sync::Arc::new(config));
+        let diagnostics = fixture.engine.configuration_status().diagnostics;
+        let notes = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.contains("[approval] cache_ttl"))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notes,
+            expected.into_iter().collect::<Vec<_>>(),
+            "{adaptor} {ttl:?}"
+        );
+        fixture.engine.shutdown().await;
+    }
 }

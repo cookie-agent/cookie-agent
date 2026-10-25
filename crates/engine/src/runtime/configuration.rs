@@ -184,8 +184,66 @@ impl Engine {
             }
         }
         diagnostics.extend(self.official_skills_diagnostic());
+        diagnostics.extend(self.approval_cache_diagnostics(&published));
         diagnostics.truncate(256);
         diagnostics
+    }
+
+    /// What `[approval] cache_ttl` does on each model the approval reviewer
+    /// names: a TTL its provider does not offer, or a provider it cannot
+    /// change (approval reviewer spec section 5). `${parent_model}` is the
+    /// reviewed run's model, unknown until a review.
+    fn approval_cache_diagnostics(
+        &self,
+        published: &crate::runtime_snapshot::PublishedRuntime,
+    ) -> Vec<String> {
+        let ttl = self.inner.config.load().runtime.approval.cache_ttl;
+        let Ok(id) =
+            cookie_agent_protocol::AgentId::new(cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID)
+        else {
+            return Vec::new();
+        };
+        let Some(approval) = published.agents.get(&id) else {
+            return Vec::new();
+        };
+        approval
+            .resolved_fallback
+            .iter()
+            .filter_map(|fallback| match fallback {
+                crate::runtime_snapshot::ResolvedAgentFallback::Selection { selection, .. } => {
+                    Some(selection)
+                }
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => None,
+            })
+            .filter_map(|selection| {
+                let binding = crate::model_snapshots::binding_for_selection(
+                    &published.current_manifest,
+                    &published.models,
+                    selection,
+                )
+                .ok()?;
+                let provider = crate::policy::resolve_cache_strategy(
+                    Some(approval),
+                    &binding,
+                    published,
+                    cookie_agent_config::CacheLayer::Root,
+                )
+                .ok()
+                .flatten();
+                let (_, note) = crate::policy::reviewer_cache_strategy(provider, &binding, ttl);
+                let model = selection.model.to_string();
+                Some(match note? {
+                    crate::policy::ReviewerCacheNote::Substituted { used, why } => format!(
+                        "`[approval] cache_ttl = \"{}\"`: the reviewer's model `{model}` caches for {used}, {why}",
+                        ttl.as_str()
+                    ),
+                    crate::policy::ReviewerCacheNote::NoEffect(why) => format!(
+                        "`[approval] cache_ttl = \"{}\"` has no effect on the reviewer's model `{model}`: {why}",
+                        ttl.as_str()
+                    ),
+                })
+            })
+            .collect()
     }
 
     /// The user root the configuration is read from and written to.

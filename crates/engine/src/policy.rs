@@ -746,6 +746,229 @@ fn authored_cache<'a>(
     })
 }
 
+/// What `[approval] cache_ttl` did on a reviewer model's provider, for
+/// configuration status (approval reviewer spec section 5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReviewerCacheNote {
+    /// The provider does not offer the TTL asked for: the reviewer caches
+    /// for `used`.
+    Substituted {
+        used: &'static str,
+        why: &'static str,
+    },
+    /// The provider caches on its own terms: the knob changes nothing.
+    NoEffect(&'static str),
+}
+
+/// The provider's TTL nearest `asked` by ratio, on a log scale; a tie goes
+/// to the longer one.
+fn nearest_ttl(asked: u32, offered: &[(u32, &'static str)]) -> (u32, &'static str) {
+    let distance = |minutes: u32| (f64::from(minutes) / f64::from(asked)).ln().abs();
+    offered
+        .iter()
+        .copied()
+        .fold(None::<(u32, &'static str)>, |best, candidate| match best {
+            Some(best)
+                if distance(best.0) < distance(candidate.0) - 1e-9
+                    || ((distance(best.0) - distance(candidate.0)).abs() <= 1e-9
+                        && best.0 > candidate.0) =>
+            {
+                Some(best)
+            }
+            _ => Some(candidate),
+        })
+        .expect("a provider offers a TTL")
+}
+
+/// The approval reviewer's cache strategy for `binding` under `ttl`, from
+/// `provider`, the strategy its provider's cache configuration gives the
+/// reviewed session's layer (approval reviewer spec section 5).
+pub(crate) fn reviewer_cache_strategy(
+    provider: Option<CacheStrategyConfig>,
+    binding: &protocol::FrozenModelBinding,
+    ttl: cookie_agent_config::ApprovalCacheTtl,
+) -> (Option<CacheStrategyConfig>, Option<ReviewerCacheNote>) {
+    use cookie_agent_models::adapters::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig};
+    let Some(asked) = ttl.minutes() else {
+        if ttl == cookie_agent_config::ApprovalCacheTtl::Provider {
+            return (provider, None);
+        }
+        // `off`.
+        return match provider {
+            Some(CacheStrategyConfig::Anthropic(_)) => (
+                Some(CacheStrategyConfig::Anthropic(
+                    AnthropicCacheStrategyConfig::default(),
+                )),
+                None,
+            ),
+            Some(CacheStrategyConfig::Bedrock(_)) => (
+                Some(CacheStrategyConfig::Bedrock(BedrockCacheStrategy {
+                    system: None,
+                    tools: None,
+                    messages: Vec::new(),
+                })),
+                None,
+            ),
+            Some(CacheStrategyConfig::OpenAi(mut strategy)) if strategy.mode.is_some() => {
+                // Explicit mode with no breakpoint writes no cache.
+                strategy.mode = Some(OpenAiCacheMode::Explicit);
+                strategy.system = false;
+                strategy.rolling = false;
+                (Some(CacheStrategyConfig::OpenAi(strategy)), None)
+            }
+            other => (
+                other,
+                reviewer_cache_no_effect(binding).or(Some(ReviewerCacheNote::NoEffect(
+                    "its provider's automatic caching cannot be turned off",
+                ))),
+            ),
+        };
+    };
+    let structural = [(5, "5m"), (60, "1h")];
+    match provider {
+        Some(CacheStrategyConfig::Anthropic(provider)) => {
+            let (minutes, used) = nearest_ttl(asked, &structural);
+            let note = (minutes != asked).then_some(ReviewerCacheNote::Substituted {
+                used,
+                why: "the nearest TTL its provider offers",
+            });
+            let one_hour = minutes == 60;
+            // A one-hour marker cannot follow a five-minute one.
+            let raise = |ttl: Option<AnthropicCacheTtlConfig>| match ttl {
+                Some(AnthropicCacheTtlConfig::FiveMinutes) if one_hour => {
+                    Some(AnthropicCacheTtlConfig::OneHour)
+                }
+                other => other,
+            };
+            (
+                Some(CacheStrategyConfig::Anthropic(
+                    AnthropicCacheStrategyConfig {
+                        system: raise(provider.system),
+                        tools: raise(provider.tools),
+                        rolling: Some(if one_hour {
+                            AnthropicCacheTtlConfig::OneHour
+                        } else {
+                            AnthropicCacheTtlConfig::FiveMinutes
+                        }),
+                    },
+                )),
+                note,
+            )
+        }
+        Some(CacheStrategyConfig::Bedrock(provider)) => {
+            let supports_one_hour = cookie_agent_models::adapters::bedrock_supports_one_hour_cache(
+                wire_model_id(binding),
+            );
+            let (minutes, note) = if supports_one_hour {
+                let (minutes, used) = nearest_ttl(asked, &structural);
+                (
+                    minutes,
+                    (minutes != asked).then_some(ReviewerCacheNote::Substituted {
+                        used,
+                        why: "the nearest TTL its provider offers",
+                    }),
+                )
+            } else {
+                (
+                    5,
+                    (asked != 5).then_some(ReviewerCacheNote::Substituted {
+                        used: "5m",
+                        why: "the model takes no one-hour cache TTL on Bedrock",
+                    }),
+                )
+            };
+            let ttl = if minutes == 60 {
+                BedrockCacheTtl::OneHour
+            } else {
+                BedrockCacheTtl::FiveMinutes
+            };
+            let raise = |point: Option<BedrockCachePoint>| {
+                point.map(|point| match point.ttl {
+                    Some(BedrockCacheTtl::FiveMinutes) | None if minutes == 60 => {
+                        BedrockCachePoint {
+                            ttl: Some(BedrockCacheTtl::OneHour),
+                        }
+                    }
+                    _ => point,
+                })
+            };
+            (
+                Some(CacheStrategyConfig::Bedrock(BedrockCacheStrategy {
+                    system: raise(provider.system),
+                    tools: raise(provider.tools),
+                    messages: vec![BedrockMessageCachePoint {
+                        history_index: usize::MAX,
+                        cache_point: BedrockCachePoint { ttl: Some(ttl) },
+                    }],
+                })),
+                note,
+            )
+        }
+        Some(CacheStrategyConfig::OpenAi(mut strategy)) if strategy.mode.is_some() => {
+            let responses = matches!(
+                reviewer_family(binding),
+                Some(OvenAdapterFamily::OpenaiResponses)
+            );
+            let (minutes, used) = if responses {
+                nearest_ttl(asked, &[(30, "30m"), (720, "12h")])
+            } else {
+                (30, "30m")
+            };
+            let note = (minutes != asked).then_some(ReviewerCacheNote::Substituted {
+                used,
+                why: if responses {
+                    "the nearest TTL its provider offers"
+                } else {
+                    "the only TTL its provider offers"
+                },
+            });
+            strategy.ttl = Some(if minutes == 720 {
+                OpenAiPromptCacheTtl::TwelveHours
+            } else {
+                OpenAiPromptCacheTtl::ThirtyMinutes
+            });
+            strategy.rolling = true;
+            (Some(CacheStrategyConfig::OpenAi(strategy)), note)
+        }
+        other => (other, reviewer_cache_no_effect(binding)),
+    }
+}
+
+/// The adapter family of `binding`.
+fn reviewer_family(binding: &protocol::FrozenModelBinding) -> Option<OvenAdapterFamily> {
+    if binding
+        .descriptor
+        .adapter_id
+        .as_str()
+        .starts_with("oven.openai-compatible.")
+    {
+        return Some(OvenAdapterFamily::OpenaiCompatible);
+    }
+    cookie_agent_models::adapters::wire_adapter_for_protocol(binding.descriptor.adapter_id.as_str())
+}
+
+/// Why `[approval] cache_ttl` changes nothing on `binding`'s provider.
+fn reviewer_cache_no_effect(binding: &protocol::FrozenModelBinding) -> Option<ReviewerCacheNote> {
+    Some(ReviewerCacheNote::NoEffect(
+        match reviewer_family(binding)? {
+            OvenAdapterFamily::OpenaiChat
+            | OvenAdapterFamily::OpenaiResponses
+            | OvenAdapterFamily::AzureOpenaiChat
+            | OvenAdapterFamily::AzureOpenaiResponses => {
+                "its provider caches automatically unless its cache table enables the GPT-5.6 controls"
+            }
+            OvenAdapterFamily::OpenaiCompatible => "its provider manages caching itself",
+            OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => {
+                "Gemini caches implicitly"
+            }
+            OvenAdapterFamily::CohereV2Chat => "Cohere caches automatically on its servers",
+            OvenAdapterFamily::Anthropic
+            | OvenAdapterFamily::AnthropicCompatible
+            | OvenAdapterFamily::AwsBedrockConverse => return None,
+        },
+    ))
+}
+
 fn resolve_authored_cache_strategy(
     authored: Option<&cookie_agent_config::CacheConfig>,
     binding: &protocol::FrozenModelBinding,
@@ -1400,6 +1623,245 @@ impl FrozenRunPolicy {
 #[cfg(test)]
 mod cache_strategy_tests {
     use super::*;
+    use cookie_agent_config::ApprovalCacheTtl;
+    use cookie_agent_models::adapters::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig};
+
+    /// The test binding on the adapter `recipe`, sending `wire_model`.
+    fn reviewer_binding(recipe: &str, wire_model: &str) -> protocol::FrozenModelBinding {
+        let mut binding = crate::test_support::model_binding();
+        binding.descriptor.adapter_id = oven_sdk::AdapterId::new(recipe);
+        binding.descriptor.provider_metadata.insert(
+            "cookie_agent.wire_model_id".into(),
+            serde_json::Value::String(wire_model.into()),
+        );
+        binding
+    }
+
+    fn anthropic(
+        system: Option<AnthropicCacheTtlConfig>,
+        tools: Option<AnthropicCacheTtlConfig>,
+        rolling: Option<AnthropicCacheTtlConfig>,
+    ) -> Option<CacheStrategyConfig> {
+        Some(CacheStrategyConfig::Anthropic(
+            AnthropicCacheStrategyConfig {
+                system,
+                tools,
+                rolling,
+            },
+        ))
+    }
+
+    fn openai(ttl: Option<OpenAiPromptCacheTtl>) -> Option<CacheStrategyConfig> {
+        Some(CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+            prompt_cache_key: Some("${session_id}".into()),
+            prompt_cache_retention: None,
+            mode: ttl.map(|_| OpenAiCacheMode::Implicit),
+            ttl,
+            system: ttl.is_some(),
+            rolling: false,
+        }))
+    }
+
+    #[test]
+    fn the_nearest_ttl_goes_by_ratio_and_ties_go_longer() {
+        let structural = [(5, "5m"), (60, "1h")];
+        assert_eq!(nearest_ttl(30, &structural), (60, "1h"));
+        assert_eq!(nearest_ttl(720, &structural), (60, "1h"));
+        assert_eq!(nearest_ttl(5, &structural), (5, "5m"));
+        let responses = [(30, "30m"), (720, "12h")];
+        assert_eq!(nearest_ttl(60, &responses), (30, "30m"));
+        assert_eq!(nearest_ttl(5, &responses), (30, "30m"));
+        assert_eq!(nearest_ttl(720, &responses), (720, "12h"));
+        // 10 is as far from 5 as from 20: the longer wins.
+        assert_eq!(nearest_ttl(10, &[(5, "5m"), (20, "20m")]), (20, "20m"));
+    }
+
+    /// Anthropic (approval reviewer spec section 5): a one-hour rolling
+    /// marker raises five-minute system and tools markers; five minutes
+    /// leaves them; `off` writes none; `provider` keeps the provider's.
+    #[test]
+    fn the_reviewer_ttl_on_anthropic() {
+        use AnthropicCacheTtlConfig::{FiveMinutes, OneHour};
+        let binding = reviewer_binding("oven.anthropic.messages", "claude-haiku-5");
+        let provider = anthropic(Some(FiveMinutes), None, Some(FiveMinutes));
+        for (ttl, expected, note) in [
+            (
+                ApprovalCacheTtl::OneHour,
+                anthropic(Some(OneHour), None, Some(OneHour)),
+                None,
+            ),
+            (
+                ApprovalCacheTtl::ThirtyMinutes,
+                anthropic(Some(OneHour), None, Some(OneHour)),
+                Some("1h"),
+            ),
+            (
+                ApprovalCacheTtl::TwelveHours,
+                anthropic(Some(OneHour), None, Some(OneHour)),
+                Some("1h"),
+            ),
+            (
+                ApprovalCacheTtl::FiveMinutes,
+                anthropic(Some(FiveMinutes), None, Some(FiveMinutes)),
+                None,
+            ),
+            (ApprovalCacheTtl::Off, anthropic(None, None, None), None),
+            (ApprovalCacheTtl::Provider, provider.clone(), None),
+        ] {
+            let (strategy, got) = reviewer_cache_strategy(provider.clone(), &binding, ttl);
+            assert_eq!(strategy, expected, "{ttl:?}");
+            assert_eq!(
+                got,
+                note.map(|used| ReviewerCacheNote::Substituted {
+                    used,
+                    why: "the nearest TTL its provider offers",
+                }),
+                "{ttl:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reviewer_ttl_on_bedrock_follows_the_models_one_hour_support() {
+        let point = |ttl| BedrockCachePoint { ttl: Some(ttl) };
+        let provider = Some(CacheStrategyConfig::Bedrock(BedrockCacheStrategy {
+            system: Some(point(BedrockCacheTtl::FiveMinutes)),
+            tools: Some(point(BedrockCacheTtl::FiveMinutes)),
+            messages: Vec::new(),
+        }));
+        let rolling = |strategy: &Option<CacheStrategyConfig>| match strategy {
+            Some(CacheStrategyConfig::Bedrock(strategy)) => (
+                strategy.system.as_ref().and_then(|point| point.ttl),
+                strategy
+                    .messages
+                    .iter()
+                    .map(|point| point.cache_point.ttl)
+                    .collect::<Vec<_>>(),
+            ),
+            _ => panic!("a Bedrock strategy"),
+        };
+        let modern = reviewer_binding(
+            "oven.bedrock.converse",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        );
+        let (strategy, note) =
+            reviewer_cache_strategy(provider.clone(), &modern, ApprovalCacheTtl::OneHour);
+        assert_eq!(
+            rolling(&strategy),
+            (
+                Some(BedrockCacheTtl::OneHour),
+                vec![Some(BedrockCacheTtl::OneHour)]
+            )
+        );
+        assert_eq!(note, None);
+        let older = reviewer_binding(
+            "oven.bedrock.converse",
+            "anthropic.claude-3-7-sonnet-20250219-v1:0",
+        );
+        let (strategy, note) =
+            reviewer_cache_strategy(provider.clone(), &older, ApprovalCacheTtl::OneHour);
+        assert_eq!(
+            rolling(&strategy),
+            (
+                Some(BedrockCacheTtl::FiveMinutes),
+                vec![Some(BedrockCacheTtl::FiveMinutes)]
+            )
+        );
+        assert!(matches!(
+            note,
+            Some(ReviewerCacheNote::Substituted { used: "5m", .. })
+        ));
+        let (strategy, _) = reviewer_cache_strategy(provider, &older, ApprovalCacheTtl::Off);
+        assert_eq!(rolling(&strategy), (None, vec![]));
+    }
+
+    /// OpenAI GPT-5.6 controls: Responses offers 30m and 12h, Chat
+    /// Completions and Azure only 30m; a provider without the controls
+    /// caches automatically and the knob changes nothing.
+    #[test]
+    fn the_reviewer_ttl_on_openai_follows_the_controls_and_the_endpoint() {
+        let ttl_of = |strategy: Option<CacheStrategyConfig>| match strategy {
+            Some(CacheStrategyConfig::OpenAi(strategy)) => (strategy.ttl, strategy.rolling),
+            _ => panic!("an OpenAI strategy"),
+        };
+        let controls = openai(Some(OpenAiPromptCacheTtl::ThirtyMinutes));
+        let responses = reviewer_binding("oven.openai.responses", "gpt-5.6");
+        let chat = reviewer_binding("oven.openai.chat", "gpt-5.6");
+        let azure = reviewer_binding("oven.azure.openai.responses", "gpt-5.6");
+        for (binding, ttl, expected, substituted) in [
+            (
+                &responses,
+                ApprovalCacheTtl::OneHour,
+                OpenAiPromptCacheTtl::ThirtyMinutes,
+                true,
+            ),
+            (
+                &responses,
+                ApprovalCacheTtl::TwelveHours,
+                OpenAiPromptCacheTtl::TwelveHours,
+                false,
+            ),
+            (
+                &responses,
+                ApprovalCacheTtl::ThirtyMinutes,
+                OpenAiPromptCacheTtl::ThirtyMinutes,
+                false,
+            ),
+            (
+                &chat,
+                ApprovalCacheTtl::TwelveHours,
+                OpenAiPromptCacheTtl::ThirtyMinutes,
+                true,
+            ),
+            (
+                &azure,
+                ApprovalCacheTtl::FiveMinutes,
+                OpenAiPromptCacheTtl::ThirtyMinutes,
+                true,
+            ),
+        ] {
+            let (strategy, note) = reviewer_cache_strategy(controls.clone(), binding, ttl);
+            assert_eq!(ttl_of(strategy), (Some(expected), true), "{ttl:?}");
+            assert_eq!(note.is_some(), substituted, "{ttl:?}");
+        }
+        let (strategy, note) = reviewer_cache_strategy(controls, &responses, ApprovalCacheTtl::Off);
+        let Some(CacheStrategyConfig::OpenAi(off)) = strategy else {
+            panic!("an OpenAI strategy");
+        };
+        assert_eq!(off.mode, Some(OpenAiCacheMode::Explicit));
+        assert!(!off.system && !off.rolling);
+        assert_eq!(note, None);
+
+        let automatic = openai(None);
+        for ttl in [ApprovalCacheTtl::OneHour, ApprovalCacheTtl::Off] {
+            let (strategy, note) = reviewer_cache_strategy(automatic.clone(), &chat, ttl);
+            assert_eq!(strategy, automatic);
+            assert!(
+                matches!(note, Some(ReviewerCacheNote::NoEffect(_))),
+                "{ttl:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reviewer_ttl_has_no_effect_on_implicit_caches() {
+        for recipe in [
+            "oven.google.gemini.generate-content",
+            "oven.cohere.chat-v2",
+            "oven.openai-compatible.chat.local",
+        ] {
+            let binding = reviewer_binding(recipe, "model");
+            let (strategy, note) =
+                reviewer_cache_strategy(None, &binding, ApprovalCacheTtl::OneHour);
+            assert_eq!(strategy, None, "{recipe}");
+            assert!(
+                matches!(note, Some(ReviewerCacheNote::NoEffect(_))),
+                "{recipe}"
+            );
+            let (_, note) = reviewer_cache_strategy(None, &binding, ApprovalCacheTtl::Provider);
+            assert_eq!(note, None, "{recipe}");
+        }
+    }
 
     #[test]
     fn all_off_bedrock_config_emits_no_cache_points() {
