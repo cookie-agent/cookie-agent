@@ -2579,6 +2579,9 @@ pub enum EventPayload {
     /// 1.14.0). A transcript shows it as one line, such as `Saved
     /// project://cookie-agent/release`. An audit event: the memory itself
     /// lives outside the session.
+    // Queued for removal at the next major (`docs/site/specs/
+    // compatibility-v1.md` section 3.4): since 2026-10-24 the memory tools
+    // no longer emit it, and clients only fold it for older logs.
     MemoryChanged {
         change: MemoryChangeKind,
         url: String,

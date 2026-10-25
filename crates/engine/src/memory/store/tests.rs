@@ -70,14 +70,16 @@ fn edit(
     old: &str,
     new: &str,
 ) -> Result<MemoryRevision, StoreError> {
-    memory.edit(
-        &url(target),
-        old,
-        new,
-        any_agent,
-        &MemoryLimits::all(LIMIT),
-        now(),
-    )
+    memory
+        .edit(
+            &url(target),
+            old,
+            new,
+            any_agent,
+            &MemoryLimits::all(LIMIT),
+            now(),
+        )
+        .map(|edited| edited.revision)
 }
 
 /// Creates `target` with `body` as a client would, at [`earlier`].
@@ -298,7 +300,8 @@ fn size_limits_refuse_growth_and_let_an_oversized_memory_shrink() {
             &lowered,
             now(),
         )
-        .unwrap();
+        .unwrap()
+        .revision;
     assert!((fs::metadata(&path).unwrap().len() as usize) < size);
     write_at(
         &memory,
@@ -573,7 +576,7 @@ fn a_project_overview_keeps_the_daemons_description() {
         .edit(&overview, "web", "book", Owners, &limits, now())
         .unwrap();
     let edited = memory.read(&overview).unwrap();
-    assert_eq!(edited.entry.revision, revision);
+    assert_eq!(edited.entry.revision, revision.revision);
     assert_eq!(
         edited.entry.document.unwrap().description(),
         "Overview of the `web` project, loaded in full into its sessions"

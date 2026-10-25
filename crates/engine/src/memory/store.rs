@@ -241,6 +241,18 @@ pub(crate) struct Written {
     pub(crate) created: bool,
     /// Memories near a new one (section 16.9.5), for the writer to check.
     pub(crate) near: Vec<NearMemory>,
+    /// The file the write replaced, as it was; `None` for a new memory.
+    pub(crate) replaced: Option<String>,
+    /// The file as the write left it.
+    pub(crate) text: String,
+}
+
+/// A successful edit: the file before and after it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Edited {
+    pub(crate) revision: MemoryRevision,
+    pub(crate) before: String,
+    pub(crate) after: String,
 }
 
 /// Something in the memory folder that is not a memory file of the layout:
@@ -745,6 +757,8 @@ impl MemoryRoot {
             kept,
             created: existing.is_none(),
             near,
+            replaced: existing_text,
+            text: written,
         })
     }
 
@@ -764,7 +778,7 @@ impl MemoryRoot {
         owners: impl MemoryOwners,
         limits: &MemoryLimits,
         now: Timestamp,
-    ) -> Result<MemoryRevision, StoreError> {
+    ) -> Result<Edited, StoreError> {
         let lock = self.lock()?;
         if let MemoryUrl::Project { project, .. } = url
             && let Some(projects) = owners.unknown_project(project)
@@ -817,22 +831,27 @@ impl MemoryRoot {
             .created()
             .unwrap_or_else(|| modified_time(&metadata));
         let text = edited.with_stamps(Some(created), Some(now)).render();
-        check_size(url, &text, Some(&String::from_utf8_lossy(&bytes)), limits)?;
+        let before = String::from_utf8_lossy(&bytes).into_owned();
+        check_size(url, &text, Some(&before), limits)?;
         let revision = write_file(&path, text.as_bytes())?;
         drop(lock);
         self.changed();
-        Ok(revision)
+        Ok(Edited {
+            revision,
+            before,
+            after: text,
+        })
     }
 
     /// Deletes a memory, at revision `expected` when one is given (a
-    /// client's delete). A model's delete deletes, whatever the layer
-    /// (section 16.9.11). A project's folder stays when its last memory
-    /// goes: it belongs to the project.
+    /// client's delete), and returns the text it held. A model's delete
+    /// deletes, whatever the layer (section 16.9.11). A project's folder
+    /// stays when its last memory goes: it belongs to the project.
     pub(crate) fn delete(
         &self,
         url: &MemoryUrl,
         expected: Option<&MemoryRevision>,
-    ) -> Result<(), StoreError> {
+    ) -> Result<String, StoreError> {
         let lock = self.lock()?;
         let path = self.file_path(url);
         let (bytes, _) =
@@ -849,7 +868,7 @@ impl MemoryRoot {
         fs::remove_file(&path).map_err(io_error(&path))?;
         drop(lock);
         self.changed();
-        Ok(())
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Stamps every valid memory file without stamps with its modification

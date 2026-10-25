@@ -471,32 +471,6 @@ impl Engine {
         .await
     }
 
-    /// Appends the transcript line for a model's change to the memory at
-    /// `url` (section 16.9.10). The memory changed whatever happens here,
-    /// so a failure to append is reported, not returned.
-    pub(crate) async fn record_memory_change(
-        &self,
-        session: SessionId,
-        run: RunId,
-        change: cookie_agent_protocol::MemoryChangeKind,
-        url: &MemoryUrl,
-    ) {
-        if let Err(error) = self
-            .append(
-                session,
-                Some(run),
-                event_origin("engine:memory"),
-                Event::MemoryChanged {
-                    change,
-                    url: url.to_string(),
-                },
-            )
-            .await
-        {
-            eprintln!("cookie-agent: memory change of session {session}: {error}");
-        }
-    }
-
     /// The run `run` as the memory tools see it. Blocking: it reads the
     /// session's project.
     pub(crate) fn memory_caller(&self, run: RunId) -> Result<MemoryCaller, String> {

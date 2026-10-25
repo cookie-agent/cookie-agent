@@ -163,6 +163,9 @@ version of the client, plugin, and runtime protocols and the history format:
   the daemon's CPU per tool call on long sessions), and nothing reads it.
   Removing the field, or making it optional, is a major change for all three
   schemas it appears in. Noted 2026-10-24.
+- **Drop the `memory_changed` event.** Since 2026-10-24 the memory tools no
+  longer emit it (the tool row shows the change), and clients only fold it
+  for older logs. Noted 2026-10-24.
 
 ## 4. Decoding rules
 

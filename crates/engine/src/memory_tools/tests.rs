@@ -2,9 +2,11 @@ use serde_json::json;
 
 use jiff::Timestamp;
 
+use cookie_agent_protocol::{DiffBlock, DiffChange, DiffLineOp, DisplayBlock, Open};
+
 use super::{
-    MemoryCall, MemoryTools, PART_B, check, near_output, permission_name, prompt_section,
-    read_output, search_output,
+    MemoryCall, MemoryTools, PART_B, check, edit_diff, memory_diff, near_output, permission_name,
+    prompt_section, read_output, search_display, search_output, shown_text,
 };
 use crate::{
     memory::{limits::MemoryLimits, search::SearchHit, similar::NearMemory, url::MemoryUrl},
@@ -433,4 +435,252 @@ fn keywords_are_optional_and_an_agent_memory_needs_no_description() {
             "{url}"
         );
     }
+}
+
+fn only_diff(blocks: &[Open<DisplayBlock>]) -> &DiffBlock {
+    match blocks {
+        [Open::Known(DisplayBlock::Diff(diff))] => diff,
+        other => panic!("expected one diff, got {other:?}"),
+    }
+}
+
+fn tool_context(root: &std::path::Path) -> cookie_agent_runtime_api::ToolExecutionContext {
+    crate::testing::tool_execution_context(
+        root.join("artifacts"),
+        std::sync::Arc::new(cookie_agent_runtime_api::TurnAgentContext {
+            agent: cookie_agent_protocol::AgentId::new("test").unwrap(),
+            model: "test/model".parse().unwrap(),
+            adapter: cookie_agent_protocol::AdaptorId::OPENAI_CHAT,
+            input_media: Vec::new(),
+        }),
+    )
+    .unwrap()
+}
+
+/// A memory file of `body`, stamped as a save at `modified` stamps it.
+fn stamped(body: &str, modified: &str) -> String {
+    crate::memory::file::MemoryDocument::new("Build conventions", vec!["cargo".to_owned()], body)
+        .unwrap()
+        .with_stamps(Some(at("2026-10-01T09:12:44Z")), Some(at(modified)))
+        .render()
+}
+
+fn numbered(count: usize) -> String {
+    (1..=count).map(|line| format!("line {line}\n")).collect()
+}
+
+#[test]
+fn a_diff_leaves_out_the_stamps_the_daemon_rewrites() {
+    let text = stamped("- run cargo test\n", "2026-10-20T16:03:10Z");
+    assert!(text.contains("modified: "), "{text}");
+    assert_eq!(
+        shown_text(&text),
+        "---\ndescription: Build conventions\nkeywords: [cargo]\n---\n- run cargo test\n"
+    );
+    // A text without frontmatter is shown whole.
+    assert_eq!(shown_text("created: x\n"), "created: x\n");
+}
+
+/// A memory edit shows the diff the coding runtime's `edit` tool shows for
+/// the same text and replacement: the same hunks, with the same unchanged
+/// lines of context around the change.
+#[tokio::test]
+async fn a_memory_edit_diff_is_the_edit_tools_diff() {
+    use cookie_agent_runtime_api::ToolProvider as _;
+
+    let root = tempfile::tempdir().unwrap();
+    let url = MemoryUrl::parse("project://web/build").unwrap();
+    let edited = crate::memory::store::Edited {
+        revision: crate::memory::file::MemoryRevision::of(b"after"),
+        before: stamped(&numbered(20), "2026-10-20T16:03:10Z"),
+        after: stamped(
+            &numbered(20).replacen("line 10\n", "ten\n", 1),
+            "2026-10-22T12:00:00Z",
+        ),
+    };
+    let context = tool_context(root.path());
+    let memory = edit_diff(&url, &edited, "line 10\n", "ten\n", &context).unwrap();
+    let memory = only_diff(&memory);
+
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("build.md"), shown_text(&edited.before)).unwrap();
+    let workspace = cookie_agent_runtime_api::WorkspaceContext::new(&workspace).unwrap();
+    let tool = cookie_agent_coding_runtime::edit::EditTool::new(&workspace);
+    let prepared = tool
+        .prepare(
+            cookie_agent_runtime_api::ToolPreparationContext {
+                session: cookie_agent_protocol::SessionId::new_v7(),
+                run: cookie_agent_protocol::RunId::new_v7(),
+                origin: cookie_agent_runtime_api::ToolOrigin::Runtime(std::sync::Arc::new(
+                    cookie_agent_runtime_api::RuntimeInfo::coding(
+                        cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+                        workspace.clone(),
+                    ),
+                )),
+                turn_context: context.turn_context.clone(),
+            },
+            cookie_agent_runtime_api::ToolCall {
+                id: cookie_agent_protocol::ToolCallId::new_v7(),
+                name: "edit".into(),
+                arguments: json!({"filePath": "build.md", "oldString": "line 10\n", "newString": "ten\n"}),
+            },
+        )
+        .await
+        .unwrap();
+    let result = prepared
+        .execute_for_test(tool_context(root.path()))
+        .await
+        .unwrap();
+    let edit = only_diff(&result.display);
+
+    assert_eq!(memory.path, "project://web/build");
+    assert_eq!(memory.language.as_deref(), Some("markdown"));
+    assert_eq!(memory.language, edit.language);
+    assert_eq!(memory.change, DiffChange::Modified);
+    assert_eq!(memory.change, edit.change);
+    assert_eq!(memory.as_of, edit.as_of);
+    assert_eq!((memory.added, memory.removed), (1, 1));
+    assert_eq!((memory.added, memory.removed), (edit.added, edit.removed));
+    assert_eq!(memory.hunks, edit.hunks);
+    // Five unchanged lines on each side; the stamps are not part of it.
+    let hunk = &memory.hunks[0];
+    assert_eq!(
+        (
+            hunk.old_start,
+            hunk.old_lines,
+            hunk.new_start,
+            hunk.new_lines
+        ),
+        (9, 11, 9, 11)
+    );
+    let context_lines = hunk
+        .lines
+        .iter()
+        .filter(|line| line.op == DiffLineOp::Context)
+        .count();
+    assert_eq!(context_lines, 10);
+}
+
+/// An edit that changed more than the replacement, such as an agent file
+/// whose frontmatter the daemon rewrote, shows the whole change.
+#[test]
+fn an_edit_that_changed_the_frontmatter_shows_it_too() {
+    let root = tempfile::tempdir().unwrap();
+    let url = MemoryUrl::parse("agent://reviewer").unwrap();
+    let edited = crate::memory::store::Edited {
+        revision: crate::memory::file::MemoryRevision::of(b"after"),
+        before: "---\ndescription: Stale\n---\n- a lesson\n".to_owned(),
+        after: "---\ndescription: Reviews code\n---\n- two lessons\n".to_owned(),
+    };
+    let display = edit_diff(
+        &url,
+        &edited,
+        "a lesson",
+        "two lessons",
+        &tool_context(root.path()),
+    )
+    .unwrap();
+    let diff = only_diff(&display);
+    assert_eq!(diff.change, DiffChange::Modified);
+    let changed = diff.hunks[0]
+        .lines
+        .iter()
+        .filter(|line| line.op != DiffLineOp::Context)
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>();
+    assert!(changed.contains(&"description: Stale"), "{changed:?}");
+    assert!(
+        changed.contains(&"description: Reviews code"),
+        "{changed:?}"
+    );
+    assert!(changed.contains(&"- two lessons"), "{changed:?}");
+    assert!(changed.contains(&"- a lesson"), "{changed:?}");
+}
+
+/// A new memory is a created diff, a replaced one a modified diff against
+/// what it held, and a deleted one a deleted diff of what it held.
+#[test]
+fn writes_and_deletes_show_created_modified_and_deleted_diffs() {
+    let root = tempfile::tempdir().unwrap();
+    let context = tool_context(root.path());
+    let url = MemoryUrl::parse("user://preferences").unwrap();
+    let first = shown_text(&stamped("- tabs\n", "2026-10-20T16:03:10Z"));
+    let second = shown_text(&stamped("- spaces\n", "2026-10-22T12:00:00Z"));
+    let summary = |display: &[Open<DisplayBlock>]| {
+        let diff = only_diff(display);
+        (diff.path.clone(), diff.change, diff.added, diff.removed)
+    };
+    let created = memory_diff(
+        &url,
+        cookie_agent_runtime_api::display::TextChange::Created { text: &first },
+        &context,
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&created),
+        ("user://preferences".to_owned(), DiffChange::Created, 5, 0)
+    );
+    let replaced = memory_diff(
+        &url,
+        cookie_agent_runtime_api::display::TextChange::Modified {
+            old: &first,
+            new: &second,
+        },
+        &context,
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&replaced),
+        ("user://preferences".to_owned(), DiffChange::Modified, 1, 1)
+    );
+    let deleted = memory_diff(
+        &url,
+        cookie_agent_runtime_api::display::TextChange::Deleted { text: &second },
+        &context,
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&deleted),
+        ("user://preferences".to_owned(), DiffChange::Deleted, 0, 5)
+    );
+    let removed = only_diff(&deleted).hunks[0]
+        .lines
+        .iter()
+        .map(|line| (line.op, line.text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(removed.last(), Some(&(DiffLineOp::Remove, "- spaces")));
+}
+
+/// Search results show as one link per memory, labelled with its
+/// description, which a client opens in its Memory view.
+#[test]
+fn search_results_show_as_links_to_the_memories() {
+    let hit = |url: &str, description: &str| SearchHit {
+        url: MemoryUrl::parse(url).unwrap(),
+        description: description.to_owned(),
+        keywords: Vec::new(),
+        modified: at("2026-10-20T16:03:10Z"),
+        full: true,
+    };
+    assert_eq!(
+        search_display(&[
+            hit("project://web/build", "Build conventions"),
+            hit("user://preferences", "Preferences"),
+        ]),
+        [
+            Open::Known(DisplayBlock::Link {
+                url: "project://web/build".into(),
+                label: Some("Build conventions".into()),
+            }),
+            Open::Known(DisplayBlock::Link {
+                url: "user://preferences".into(),
+                label: Some("Preferences".into()),
+            }),
+        ]
+    );
+    assert_eq!(
+        search_display(&[]),
+        cookie_agent_protocol::text_display("No memories match.")
+    );
 }

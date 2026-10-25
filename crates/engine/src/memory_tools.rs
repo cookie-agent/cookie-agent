@@ -23,13 +23,14 @@ use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    ApprovalResourceSource, DisplayBlock, MemoryChangeKind, Open, PermissionAction,
+    ApprovalResourceSource, DiffAsOf, DisplayBlock, Open, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime,
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolConcurrency,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
     authoring::{parse_args, prepared_operation, prepared_resource, safe_title, schema},
+    display::{TextChange, fit_executed_block, text_diff},
 };
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -651,8 +652,124 @@ fn result(
     })
 }
 
-fn key_value(entries: Vec<(&str, String)>) -> Vec<Open<DisplayBlock>> {
-    cookie_agent_protocol::fit_result_display(vec![Open::Known(DisplayBlock::key_value(entries))])
+/// The frontmatter keys the daemon stamps on every save.
+const STAMP_KEYS: [&str; 2] = ["created", "modified"];
+
+/// A memory file as its diff shows it: without the stamp lines of its
+/// frontmatter, which the daemon rewrites on every save and the memory
+/// editors leave out, the rest kept byte for byte.
+fn shown_text(text: &str) -> String {
+    let Some(opening) = ["---\n", "---\r\n"]
+        .into_iter()
+        .find(|opening| text.starts_with(opening))
+    else {
+        return text.to_owned();
+    };
+    let mut kept = String::with_capacity(text.len());
+    kept.push_str(opening);
+    let mut lines = text[opening.len()..].split_inclusive('\n');
+    for line in lines.by_ref() {
+        if line.trim_end() == "---" {
+            kept.push_str(line);
+            break;
+        }
+        let stamp = STAMP_KEYS.iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.starts_with(':'))
+        });
+        if !stamp {
+            kept.push_str(line);
+        }
+    }
+    lines.for_each(|line| kept.push_str(line));
+    kept
+}
+
+/// The diff of the memory at `url` changing as `change` says, built as the
+/// coding runtime's `edit` and `write` tools build theirs, labelled with
+/// the URL, and fit to the display budget with its complete content kept
+/// in the session's artifact store.
+fn memory_diff(
+    url: &MemoryUrl,
+    change: TextChange<'_>,
+    context: &ToolExecutionContext,
+) -> Result<Vec<Open<DisplayBlock>>, ToolError> {
+    let label = url.to_string();
+    let name = label.rsplit(['/', ':']).next().unwrap_or("memory");
+    let block = fit_executed_block(
+        text_diff(
+            &label,
+            Some("markdown".to_owned()),
+            change,
+            DiffAsOf::Execute,
+        ),
+        context.artifacts.as_ref(),
+        context.session,
+        format!("{name}.diff"),
+    )?;
+    Ok(vec![Open::Known(block)])
+}
+
+/// The diff of an edit that replaced `old` with `new` in the body: the
+/// `edit` tool's replacement diff when that one replacement is all that
+/// changed, else a line diff of the whole file (an `agent://` file or a
+/// project's overview whose frontmatter the daemon rewrote too).
+fn edit_diff(
+    url: &MemoryUrl,
+    edited: &crate::memory::store::Edited,
+    old: &str,
+    new: &str,
+    context: &ToolExecutionContext,
+) -> Result<Vec<Open<DisplayBlock>>, ToolError> {
+    let before = shown_text(&edited.before);
+    let after = shown_text(&edited.after);
+    let body = MemoryDocument::parse(edited.before.as_bytes())
+        .ok()
+        .map(|document| document.body().to_owned());
+    let at = body.as_deref().and_then(|body| {
+        let start = before.len().checked_sub(body.len())?;
+        (before[start..] == *body).then_some(start + body.find(old)?)
+    });
+    if let Some(at) = at
+        && !old.is_empty()
+        && format!("{}{new}{}", &before[..at], &before[at + old.len()..]) == after
+    {
+        return memory_diff(
+            url,
+            TextChange::Replaced {
+                text: &before,
+                ranges: &[(at, at + old.len())],
+                new,
+            },
+            context,
+        );
+    }
+    memory_diff(
+        url,
+        TextChange::Modified {
+            old: &before,
+            new: &after,
+        },
+        context,
+    )
+}
+
+/// The search results as clients show them: one link per memory, which
+/// opens it, labelled with its description.
+fn search_display(hits: &[SearchHit]) -> Vec<Open<DisplayBlock>> {
+    if hits.is_empty() {
+        return cookie_agent_protocol::text_display("No memories match.".to_owned());
+    }
+    cookie_agent_protocol::fit_result_display(
+        hits.iter()
+            .map(|hit| {
+                Open::Known(DisplayBlock::Link {
+                    url: hit.url.to_string(),
+                    label: Some(hit.description.clone()),
+                })
+            })
+            .collect(),
+    )
 }
 
 #[async_trait]
@@ -691,8 +808,8 @@ impl PreparedExecutor for MemoryExecutor {
                         "Found {count} {}",
                         if count == 1 { "memory" } else { "memories" }
                     ),
-                    output.clone(),
-                    crate::base_tools::markdown_display(&output),
+                    output,
+                    search_display(&hits),
                     serde_json::json!({
                         "results": hits.iter().map(|hit| hit.url.to_string()).collect::<Vec<_>>(),
                     }),
@@ -755,9 +872,16 @@ impl PreparedExecutor for MemoryExecutor {
                     .inner
                     .memory_seen
                     .saw(session, url.clone(), written.revision.clone());
-                engine
-                    .record_memory_change(session, context.run, MemoryChangeKind::Saved, &url)
-                    .await;
+                let after = shown_text(&written.text);
+                let before = written.replaced.as_deref().map(shown_text);
+                let display = memory_diff(
+                    &url,
+                    match &before {
+                        Some(old) => TextChange::Modified { old, new: &after },
+                        None => TextChange::Created { text: &after },
+                    },
+                    &context,
+                )?;
                 let verb = if written.created {
                     "Created"
                 } else {
@@ -784,14 +908,15 @@ impl PreparedExecutor for MemoryExecutor {
                 Ok(result(
                     format!("{verb} memory {url}"),
                     output,
-                    key_value(vec![("url", url.to_string())]),
+                    display,
                     serde_json::json!({ "url": url.to_string() }),
                 ))
             }
             MemoryCall::Edit { url, old, new } => {
                 let target = url.clone();
                 let owners = engine.clone();
-                let revision = blocking(move || {
+                let replacement = (old.clone(), new.clone());
+                let edited = blocking(move || {
                     root.edit(
                         &target,
                         &old,
@@ -804,30 +929,30 @@ impl PreparedExecutor for MemoryExecutor {
                 .await?
                 .map_err(store_error)?;
                 // A write of its own counts as seeing the memory.
-                engine.inner.memory_seen.saw(session, url.clone(), revision);
                 engine
-                    .record_memory_change(session, context.run, MemoryChangeKind::Edited, &url)
-                    .await;
+                    .inner
+                    .memory_seen
+                    .saw(session, url.clone(), edited.revision.clone());
+                let display = edit_diff(&url, &edited, &replacement.0, &replacement.1, &context)?;
                 Ok(result(
                     format!("Edited memory {url}"),
                     format!("Edited {url}."),
-                    key_value(vec![("url", url.to_string())]),
+                    display,
                     serde_json::json!({ "url": url.to_string() }),
                 ))
             }
             MemoryCall::Delete { url } => {
                 let target = url.clone();
-                blocking(move || root.delete(&target, None))
+                let removed = blocking(move || root.delete(&target, None))
                     .await?
                     .map_err(store_error)?;
                 engine.inner.memory_seen.forget(session, &url);
-                engine
-                    .record_memory_change(session, context.run, MemoryChangeKind::Deleted, &url)
-                    .await;
+                let removed = shown_text(&removed);
+                let display = memory_diff(&url, TextChange::Deleted { text: &removed }, &context)?;
                 Ok(result(
                     format!("Deleted memory {url}"),
                     format!("Deleted {url}."),
-                    key_value(vec![("url", url.to_string())]),
+                    display,
                     serde_json::json!({ "url": url.to_string() }),
                 ))
             }

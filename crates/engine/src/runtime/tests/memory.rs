@@ -5,9 +5,10 @@
 use std::{collections::HashMap, time::Duration};
 
 use cookie_agent_protocol::{
-    ClientRunId, EventOrigin, EventPayload, MemorySnapshot, PermissionAction, PermissionEffect,
-    PermissionRule, RunSelection, RunStartParams, SessionId, SessionPermissionOverlay,
-    ToolCallTermination, ToolTerminationOutcome, WildcardPattern,
+    ClientRunId, DiffAsOf, DiffBlock, DiffChange, DiffLineOp, DisplayBlock, EventOrigin,
+    EventPayload, MemorySnapshot, Open, PermissionAction, PermissionEffect, PermissionRule,
+    RunSelection, RunStartParams, SessionId, SessionPermissionOverlay, ToolCallTermination,
+    ToolTerminationOutcome, WildcardPattern,
 };
 
 use super::{producers::request_tool_names, support::*};
@@ -150,14 +151,13 @@ fn user_write(fixture: &Fixture, target: &str, description: &str, body: &str) {
 }
 
 /// The memory changes each transcript line of `session` names, in order.
-fn memory_changes(fixture: &Fixture, session: SessionId) -> Vec<String> {
+/// The `memory_changed` events of `session`, which the memory tools no
+/// longer record: a memory tool's row shows its change.
+fn memory_changes(fixture: &Fixture, session: SessionId) -> usize {
     events(fixture, session)
         .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::MemoryChanged { change, url } => Some(format!("{} {url}", change.verb())),
-            _ => None,
-        })
-        .collect()
+        .filter(|event| matches!(event.payload, EventPayload::MemoryChanged { .. }))
+        .count()
 }
 
 fn rule(action: PermissionAction, effect: PermissionEffect) -> PermissionRule {
@@ -650,18 +650,81 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         "{unseen}"
     );
     assert!(unseen.contains("- unseen"), "{unseen}");
-    // Every change is one transcript line.
+    // Each call's row is the record of its change: a diff of the memory as
+    // the editors show it, without the daemon's stamps.
+    let diff = |id: &str| match ended[id].result.as_ref().unwrap().display.as_slice() {
+        [Open::Known(DisplayBlock::Diff(diff))] => diff.clone(),
+        other => panic!("{id}: {other:?}"),
+    };
+    let changed = |diff: &DiffBlock| {
+        diff.hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.op != DiffLineOp::Context)
+            .map(|line| format!("{:?} {}", line.op, line.text))
+            .collect::<Vec<_>>()
+    };
+    let written = diff("write-1");
     assert_eq!(
-        memory_changes(&fixture, session),
+        (written.path.as_str(), written.change, written.as_of),
+        (
+            "project://web/build",
+            DiffChange::Created,
+            DiffAsOf::Execute
+        )
+    );
+    assert_eq!(
+        changed(&written),
         [
-            "Saved project://web/build",
-            "Edited project://web/build",
-            "Saved project://web/build",
-            "Deleted project://web/build",
-            "Saved user://hobbies",
-            "Deleted user://profile",
+            "Add ---",
+            "Add description: Build conventions",
+            "Add keywords: [cargo]",
+            "Add ---",
+            "Add - run cargo test"
         ]
     );
+    let edited = diff("edit-1");
+    assert_eq!(edited.change, DiffChange::Modified);
+    assert_eq!(
+        changed(&edited),
+        ["Remove - run cargo test", "Add - run cargo nextest"]
+    );
+    // Context: the frontmatter above the line, stamps left out.
+    assert_eq!(edited.hunks[0].old_start, 1);
+    assert_eq!(
+        edited.hunks[0].lines[1].text,
+        "description: Build conventions"
+    );
+    let replaced = diff("replace-1");
+    assert_eq!(replaced.change, DiffChange::Modified);
+    assert_eq!(
+        changed(&replaced),
+        [
+            "Remove - run cargo nextest",
+            "Add - run cargo nextest --no-fail-fast"
+        ]
+    );
+    let deleted = diff("delete-1");
+    assert_eq!(deleted.change, DiffChange::Deleted);
+    assert_eq!(deleted.removed, 5);
+    assert_eq!(
+        changed(&deleted).last().map(String::as_str),
+        Some("Remove - run cargo nextest --no-fail-fast")
+    );
+    // A read shows the body, a search links to what it found.
+    assert_eq!(
+        ended["read-1"].result.as_ref().unwrap().display,
+        crate::base_tools::markdown_display("- run cargo test\n")
+    );
+    assert_eq!(
+        ended["search-1"].result.as_ref().unwrap().display,
+        [Open::Known(DisplayBlock::Link {
+            url: "project://web/build".into(),
+            label: Some("Build conventions".into()),
+        })]
+    );
+    // No separate change lines: the rows are the record.
+    assert_eq!(memory_changes(&fixture, session), 0);
     // Results reach the model.
     assert!(requests[2].contains("max size: 2048 bytes"));
     fixture.engine.shutdown().await;
@@ -719,7 +782,7 @@ async fn a_delete_follows_the_memory_write_rules() {
         "{denied:?}"
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert!(memory_changes(&fixture, session).is_empty());
+    assert_eq!(memory_changes(&fixture, session), 0);
     fixture.engine.shutdown().await;
 }
 

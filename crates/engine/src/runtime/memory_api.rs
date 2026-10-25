@@ -289,6 +289,7 @@ impl Engine {
             engine
                 .memory_root()
                 .delete(&url, Some(&revision))
+                .map(drop)
                 .map_err(|error| match error {
                     StoreError::Refused(reason) => MemoryRequestError::Refused {
                         url: url.to_string(),
