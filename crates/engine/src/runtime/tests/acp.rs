@@ -794,6 +794,10 @@ async fn a_lost_session_is_replaced_and_the_session_is_told() {
         final_text(&third).ends_with(" | You review changes.\n | echo"),
         "a new ACP session gets the body again"
     );
+    assert!(
+        final_text(&third).contains("Working directory: "),
+        "and the attachments, though every tool is hidden"
+    );
     let starts = session_starts(engine, session);
     assert_eq!(starts.len(), 2);
     assert_eq!(starts[1].how, AcpSessionStart::New);
@@ -1341,7 +1345,8 @@ pub(super) fn prompts(acp: &AcpFixture) -> Vec<Vec<String>> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_the_body() {
+async fn the_first_prompt_carries_the_offered_tools_instructions_the_attachments_the_memory_and_the_body()
+ {
     // The memory write tools are hidden: part A of the memory section, not
     // its rubric.
     let document = "---\ndescription: Fixture with context\nmode: all\nacp:\n  hide_tools: [read, write, edit, bash, webfetch, memory_write, memory_edit, memory_delete]\n---\nYou review changes.\n";
@@ -1376,19 +1381,33 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_
     let received = prompts(&acp);
     assert_eq!(received.len(), 2);
     let first = &received[0];
-    assert_eq!(first.len(), 4, "{first:#?}");
+    assert_eq!(first.len(), 5, "{first:#?}");
     assert_eq!(
         first[0],
         "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
     );
-    assert!(
-        first[1].starts_with("<system-reminder>\n# Memory\n"),
-        "{}",
-        first[1]
+    // One attachment: where it works, as a model run's system prompt says,
+    // with nothing on the harness's built-in tools.
+    let workspace = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
+    let machine = engine
+        .runtime_machine("local")
+        .expect("the daemon's machine");
+    assert_eq!(
+        first[1],
+        format!(
+            "Working directory: {}\nMachine: {machine} ({})",
+            workspace.display(),
+            std::env::consts::OS
+        )
     );
-    assert!(first[1].contains("Ada drinks tea."), "{}", first[1]);
-    assert_eq!(first[2], "You review changes.\n");
-    assert_eq!(first[3], "say one");
+    assert!(
+        first[2].starts_with("<system-reminder>\n# Memory\n"),
+        "{}",
+        first[2]
+    );
+    assert!(first[2].contains("Ada drinks tea."), "{}", first[2]);
+    assert_eq!(first[3], "You review changes.\n");
+    assert_eq!(first[4], "say one");
     assert_eq!(
         received[1],
         ["say two"],
@@ -1403,16 +1422,17 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say one").await;
     let first = &prompts(&acp)[0];
-    assert_eq!(first.len(), 3, "no body: {first:#?}");
+    assert_eq!(first.len(), 4, "no body: {first:#?}");
     assert!(
         first[0].contains("You manage your own memory."),
         "{}",
         first[0]
     );
+    assert!(first[1].starts_with("Working directory: "), "{}", first[1]);
     assert!(
-        first[1].starts_with("<system-reminder>\n# Memory\n"),
+        first[2].starts_with("<system-reminder>\n# Memory\n"),
         "{}",
-        first[1]
+        first[2]
     );
     let document = "---\ndescription: Fixture with context\nmode: all\nacp: { hide_tools: [\"memory_*\"] }\n---\nBody.\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
@@ -1420,13 +1440,14 @@ async fn the_first_prompt_carries_the_offered_tools_instructions_the_memory_and_
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say one").await;
     let first = &prompts(&acp)[0];
-    assert_eq!(first.len(), 3, "{first:#?}");
+    assert_eq!(first.len(), 4, "{first:#?}");
+    assert!(first[0].starts_with("Working directory: "), "{}", first[0]);
     assert!(
-        first[0].starts_with("<system-reminder>\n# Memory\n"),
+        first[1].starts_with("<system-reminder>\n# Memory\n"),
         "{}",
-        first[0]
+        first[1]
     );
-    assert_eq!(first[1..], ["Body.\n", "say one"]);
+    assert_eq!(first[2..], ["Body.\n", "say one"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

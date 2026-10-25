@@ -153,6 +153,12 @@ admission changes the next run's block, while the tool descriptions follow
 at once. The block is skipped rather than truncated if the composed prompt is
 already at its byte limit.
 
+An [ACP agent](../extend/acp-agents.md#what-the-first-prompt-carries) gets
+the same block in its first prompt. With several attachments, the
+attachment its harness's built-in tools run on carries
+`builtin_tools="true"`, and a sentence after `</machines>` names it, its
+runtime and machine, and the agent's working directory.
+
 ## AGENTS.md context turn
 
 At each root run start where AGENTS.md loading is on (the run agent's

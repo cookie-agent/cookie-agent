@@ -1884,6 +1884,7 @@ impl Engine {
                     &active.policy,
                     &claim.events,
                     &document,
+                    &turn.live,
                 )?
             } else {
                 Vec::new()
@@ -2184,14 +2185,18 @@ impl Engine {
     /// left out when empty: the tool instruction sections cookie would
     /// compose for a model run, for exactly the tools the agent is offered
     /// over the bridge; the listing of the skills a model run would see,
-    /// when the `skill` tool is offered; the session's memory snapshot as a
-    /// model run sees it; and the agent document's body.
+    /// when the `skill` tool is offered; the block on the session's
+    /// attachments a model run's system prompt carries, which with several
+    /// also says where the harness's built-in tools run (2026-10-25); the
+    /// session's memory snapshot as a model run sees it; and the agent
+    /// document's body.
     fn acp_first_prompt_context(
         &self,
         session: SessionId,
         policy: &crate::policy::FrozenRunPolicy,
         events: &crate::events::EventSnapshot,
         document: &cookie_agent_config::AgentDocument,
+        live: &LiveSession,
     ) -> Result<Vec<String>, EngineError> {
         let hide = document
             .frontmatter
@@ -2210,6 +2215,13 @@ impl Engine {
                 super::prompt::SKILL_LISTING_CONTEXT_TOKENS,
             )?);
         }
+        context.extend(self.runtimes_block(
+            session,
+            Some(&super::super::runtime_notes::BuiltinTools {
+                runtime: live.agent.runtime.as_str(),
+                cwd: &live.cwd,
+            }),
+        ));
         context.extend(
             events
                 .iter()

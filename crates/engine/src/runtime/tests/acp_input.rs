@@ -391,6 +391,97 @@ async fn an_agent_without_additional_directories_gets_only_its_cwd() {
     assert!(new.get("additionalDirectories").is_none(), "{new}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn several_attachments_say_where_the_agents_builtin_tools_run() {
+    // Every tool hidden: the attachments are listed all the same.
+    let document = "---\ndescription: Fixture\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\n";
+    let acp = acp_fixture(&[("ACP_FIXTURE_RESUME", "1")], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let (session, second) = two_workspace_session(&acp).await;
+    turn(engine, session, "first", "say hi").await;
+    let cwd = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
+    let cwd = cwd.to_string_lossy();
+    let names = engine
+        .session_runtimes(session)
+        .unwrap()
+        .into_iter()
+        .filter(|attachment| attachment.runtime_id.as_str() == "local")
+        .map(|attachment| attachment.name.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let [first, other] = &names[..] else {
+        panic!("two attachments on `local`: {names:?}");
+    };
+    let machine = engine
+        .runtime_machine("local")
+        .expect("the daemon's machine");
+    let os = std::env::consts::OS;
+    let received = prompts(&acp);
+    assert_eq!(
+        received[0][0],
+        format!(
+            "{}\n<machines>\n\
+             <machine name=\"{machine}\" platform=\"{os}\">\n\
+             <runtime name=\"local\">\n\
+             <attachment name=\"{first}\" kind=\"coding\" workspace=\"{cwd}\" builtin_tools=\"true\"/>\n\
+             <attachment name=\"{other}\" kind=\"coding\" workspace=\"{second}\"/>\n\
+             </runtime>\n\
+             </machine>\n\
+             </machines>\n\
+             Your harness's built-in tools run on attachment `{first}` (runtime `local` on machine \
+             `{machine}`), marked `builtin_tools` above, in working directory {cwd}, and act on \
+             that machine and workspace only. Cookie's tools from the `cookie` MCP server act on \
+             the attachment their description or `<attachment>_` prefix names.",
+            crate::runtime::runtime_notes::SEVERAL_ATTACHMENTS
+        )
+    );
+    assert!(
+        received[0][1].starts_with("<system-reminder>\n# Memory\n"),
+        "{received:?}"
+    );
+    assert_eq!(received[0][2..], ["say hi"]);
+    // A resumed ACP session already knows.
+    super::acp::stop_process(engine).await;
+    turn(engine, session, "second", "say again").await;
+    assert_eq!(
+        session_starts(engine, session).pop().unwrap().how,
+        cookie_agent_protocol::AcpSessionStart::Resumed
+    );
+    assert_eq!(prompts(&acp)[1], ["say again"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_prompt_names_the_sessions_project() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let project = engine
+        .create_project(cookie_agent_protocol::ProjectCreateParams {
+            name: cookie_agent_protocol::ProjectName::new("web").unwrap(),
+            emoji: None,
+            defaults: None,
+        })
+        .await
+        .unwrap();
+    engine
+        .set_session_project(session, Some(project.id))
+        .await
+        .unwrap();
+    turn(engine, session, "first", "say hi").await;
+    let cwd = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
+    let machine = engine
+        .runtime_machine("local")
+        .expect("the daemon's machine");
+    let first = &prompts(&acp)[0];
+    assert!(
+        first.contains(&format!(
+            "Working directory: {}\nMachine: {machine} ({})\nProject: web",
+            cwd.display(),
+            std::env::consts::OS
+        )),
+        "{first:#?}"
+    );
+}
+
 /// A session of the agent whose `local` workspace holds the project skill
 /// `review`.
 async fn session_with_a_skill(acp: &AcpFixture) -> cookie_agent_protocol::SessionId {
@@ -449,6 +540,11 @@ async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
         tools.is_none_or(|tools| Some(tools) < skills),
         "{prompts:?}"
     );
+    // The attachments come next.
+    let attachments = prompts[0]
+        .iter()
+        .position(|part| part.starts_with("Working directory: "));
+    assert_eq!(attachments, skills.map(|skills| skills + 1), "{prompts:?}");
     assert!(
         !prompts[1]
             .iter()

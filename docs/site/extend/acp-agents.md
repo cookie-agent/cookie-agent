@@ -242,7 +242,9 @@ Guidelines:
 - Delegate with cookie's delegate_subagent (list_agents shows who), not
   with your harness's own subagents; schedule follow-ups with cookie's cron
   tools.
-- Your built-in file and shell tools work in this session's workspace.
+- Your built-in file and shell tools work in this session's workspace;
+  with several attachments, the first prompt says which one, and on which
+  machine.
 - Some calls need the user's approval through cookie; if one is refused,
   do not retry the same call.
 - Messages wrapped in <scheduled_job> or <subagent_report> come from
@@ -270,9 +272,20 @@ message and in this order, each part left out when it is empty:
    description, and file), when the agent is offered cookie's `skill` tool
    over the bridge, with the same rules a model's listing follows (a
    denied skill, or one that opts out of model invocation, is left out);
-3. the session's memory as a model would see it at the start of a session
+3. where the session's attachments work, as a model's system prompt says
+   it, even for an attachment whose tools `hide_tools` hides: with one
+   attachment, its working directory and machine; with several, a
+   `<machines>` listing of every attachment by machine and runtime, which
+   explains tool names such as `labpc_read`, with the attachment your
+   harness's built-in tools run on marked `builtin_tools="true"` and a
+   sentence naming that attachment, its runtime and machine, and the
+   working directory: the built-in tools act on that machine and workspace
+   only, while cookie's tools act on the attachment their description or
+   `<attachment>_` prefix names. A session in a
+   [project](../concepts/projects.md) also names the project here;
+4. the session's memory as a model would see it at the start of a session
    (the `# Memory` reminder);
-4. the agent document's body.
+5. the agent document's body.
 
 `AGENTS.md` is not sent: the agents read it themselves. The prompt carries
 these again when cookie has to start a new ACP session because the agent
