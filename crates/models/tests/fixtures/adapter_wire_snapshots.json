@@ -8607,7 +8607,7 @@
       "adapter_id": "oven.azure.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -8898,7 +8898,7 @@
       "adapter_id": "oven.azure.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -9197,7 +9197,7 @@
       "adapter_id": "oven.azure.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -9505,7 +9505,7 @@
       "adapter_id": "oven.azure.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -19628,7 +19628,7 @@
       "adapter_id": "oven.openai-compatible.responses.custom.openai-compatible-header",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -20909,7 +20909,7 @@
       "adapter_id": "oven.openai-compatible.responses.custom.openai-compatible",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -21317,7 +21317,7 @@
       "adapter_id": "oven.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -21713,7 +21713,7 @@
       "adapter_id": "oven.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -22121,7 +22121,7 @@
       "adapter_id": "oven.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -22515,7 +22515,7 @@
       "adapter_id": "oven.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -22931,7 +22931,7 @@
       "adapter_id": "oven.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",
@@ -23351,7 +23351,7 @@
       "adapter_id": "oven.openai.responses",
       "capabilities": {
         "cancellation": "local_only",
-        "compaction": "unsupported",
+        "compaction": "native",
         "features": [
           "tool_calling",
           "parallel_tools",

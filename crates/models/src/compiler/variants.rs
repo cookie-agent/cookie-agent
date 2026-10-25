@@ -383,7 +383,7 @@ mod tests {
             default_variant,
             options: crate::AdaptorOptions::default(),
             pricing: None,
-            compaction: crate::NativeCompactionConfig::Unsupported,
+            compaction: crate::NativeCompactionConfig::Default,
             headers: BTreeMap::new(),
         }
     }

@@ -224,7 +224,7 @@ fn executable_auth(
 }
 
 /// OpenAI-protocol Responses served by a compatible gateway or without
-/// credentials: a caller-named adapter identity and no native compaction.
+/// credentials: a caller-named adapter identity.
 fn compatible_responses(model: &CompiledDynamicModel) -> bool {
     model.adapter == OvenAdapterFamily::OpenaiResponses
         && (model.adapter_id.starts_with("oven.openai-compatible.")
@@ -234,8 +234,8 @@ fn compatible_responses(model: &CompiledDynamicModel) -> bool {
 fn native_compaction(model: &CompiledDynamicModel) -> bool {
     model.capabilities.compaction == crate::CompactionCapability::Native
         && match model.adapter {
-            OvenAdapterFamily::OpenaiResponses => !compatible_responses(model),
-            OvenAdapterFamily::AzureOpenaiResponses => true,
+            OvenAdapterFamily::OpenaiResponses => true,
+            OvenAdapterFamily::AzureOpenaiResponses => azure_revision(model).is_some(),
             _ => false,
         }
 }
@@ -368,7 +368,11 @@ fn construct(
                             api_key_header_route(model).as_deref(),
                             header_discriminator,
                         ),
-                        compaction: OpenAiResponsesCompaction::Unsupported,
+                        compaction: if native_compaction(model) {
+                            OpenAiResponsesCompaction::V1
+                        } else {
+                            OpenAiResponsesCompaction::Unsupported
+                        },
                         client: timeouts.shared_client(),
                         timeouts: timeouts.openai(),
                     },

@@ -758,57 +758,137 @@ fn managed_cache_validation_precedes_model_availability_and_resolution_skips() {
     }
 }
 
-#[test]
-fn managed_responses_compaction_setting_derives_native_capability() {
-    let mut provider = record("@ai-sdk/openai", None);
-    provider.id = ProviderId::new("openai").unwrap();
-    let model_id = provider.models.keys().next().unwrap().clone();
-    let authored: ModelsDevProvider = toml::from_str(&format!(
-        r#"[models."{model_id}"]
-adaptor_options = {{ request_endpoint = "responses" }}
-compaction = "openai-responses-compact"
-"#
-    ))
-    .unwrap();
-    let compiled = DynamicCompiler::family_registry()
+fn compiled_compaction(
+    npm: &str,
+    provider_id: &str,
+    authored: &str,
+) -> cookie_agent_models::CompactionCapability {
+    let mut provider = record(npm, Some("https://gateway.example/v1"));
+    provider.id = ProviderId::new(provider_id).unwrap();
+    let authored: ModelsDevProvider = toml::from_str(authored).unwrap();
+    DynamicCompiler::family_registry()
         .compile_managed("sha256:test", &provider, Some(&authored))
-        .unwrap();
-    assert_eq!(
-        compiled
-            .models
-            .values()
-            .next()
-            .unwrap()
-            .capabilities
-            .compaction,
-        cookie_agent_models::CompactionCapability::Native
-    );
+        .unwrap()
+        .models
+        .values()
+        .next()
+        .unwrap()
+        .capabilities
+        .compaction
 }
 
 #[test]
-fn managed_compaction_setting_rejects_wrong_recipe_and_legacy_value() {
+fn responses_models_compact_natively_unless_the_override_opts_out() {
+    use cookie_agent_models::CompactionCapability::{Native, Unsupported};
+    let responses = |extra: &str| {
+        format!(
+            "api_key = \"secret\"\n[models.\"model/1\"]\nadaptor_options = {{ request_endpoint = \"responses\" }}\n{extra}"
+        )
+    };
+    for (npm, provider_id, authored, expected) in [
+        ("@ai-sdk/openai", "openai", responses(""), Native),
+        (
+            "@ai-sdk/openai",
+            "openai",
+            responses("compaction = \"openai-responses-compact\""),
+            Native,
+        ),
+        (
+            "@ai-sdk/openai",
+            "openai",
+            responses("compaction = \"azure-responses-compact\""),
+            Native,
+        ),
+        (
+            "@ai-sdk/openai",
+            "openai",
+            responses("compaction = \"unsupported\""),
+            Unsupported,
+        ),
+        ("@ai-sdk/openai-compatible", "gateway", responses(""), Native),
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            responses("compaction = \"unsupported\""),
+            Unsupported,
+        ),
+        (
+            "@ai-sdk/openai-compatible",
+            "gateway",
+            "api_key = \"secret\"\n[models.\"model/1\"]\nadaptor_options = { request_endpoint = \"completions\" }\ncompaction = \"openai-responses-compact\"\n".to_owned(),
+            Unsupported,
+        ),
+    ] {
+        assert_eq!(
+            compiled_compaction(npm, provider_id, &authored),
+            expected,
+            "{npm} {provider_id}: {authored}"
+        );
+    }
+}
+
+#[test]
+fn custom_responses_models_compact_natively_unless_declared_unsupported() {
+    use cookie_agent_models::CompactionCapability::{Native, Unsupported};
+    for (adaptor, endpoint, compaction, expected) in [
+        ("openai-compatible", "responses", "", Native),
+        (
+            "openai-compatible",
+            "responses",
+            ", compaction = \"unsupported\"",
+            Unsupported,
+        ),
+        ("openai-compatible", "completions", "", Unsupported),
+    ] {
+        let definition: ProviderDefinition = toml::from_str(&format!(
+            r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "{adaptor}"
+auth = {{ method = "no-auth-v1", values = {{}} }}
+
+[models.test]
+display_name = "Test"
+adaptor_options = {{ request_endpoint = "{endpoint}" }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {{}}{compaction} }}
+"#
+        ))
+        .unwrap();
+        let ProviderDefinition::Custom(provider) = definition else {
+            unreachable!();
+        };
+        let compiled = DynamicCompiler::family_registry()
+            .compile_custom(&ProviderId::new("custom.test").unwrap(), &provider)
+            .unwrap();
+        assert_eq!(
+            compiled
+                .models
+                .values()
+                .next()
+                .unwrap()
+                .capabilities
+                .compaction,
+            expected,
+            "{adaptor} {endpoint} {compaction}"
+        );
+    }
+}
+
+#[test]
+fn compaction_setting_rejects_the_removed_value() {
     let legacy = toml::from_str::<ModelsDevProvider>(
         r#"[models."model/1"]
 compaction = "v1"
 "#,
     )
     .expect_err("legacy value must fail");
-    assert!(legacy.to_string().contains("adapter-specific"));
-
-    let authored: ModelsDevProvider = toml::from_str(
+    assert!(legacy.to_string().contains("removed"), "{legacy}");
+    let unknown = toml::from_str::<ModelsDevProvider>(
         r#"[models."model/1"]
-adaptor_options = { request_endpoint = "completions" }
-compaction = "openai-responses-compact"
+compaction = "native"
 "#,
     )
-    .unwrap();
-    let mut provider = record("@ai-sdk/openai", None);
-    provider.id = ProviderId::new("openai").unwrap();
-    assert!(
-        DynamicCompiler::family_registry()
-            .compile_managed("sha256:test", &provider, Some(&authored))
-            .is_err()
-    );
+    .expect_err("unknown value must fail");
+    assert!(unknown.to_string().contains("unsupported"), "{unknown}");
 }
 
 #[test]

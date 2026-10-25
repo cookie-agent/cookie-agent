@@ -13,11 +13,9 @@ pub fn with_native_compaction_instructions(
     instructions: Option<String>,
 ) -> CompactionRequest {
     match adapter_id {
-        "oven.openai.responses" => {
-            request.with_openai_responses_compaction_options(OpenAiResponsesCompactionOptions {
-                instructions,
-                ..OpenAiResponsesCompactionOptions::default()
-            })
+        "oven.openai.responses" => openai_responses(request, instructions),
+        _ if adapter_id.starts_with("oven.openai-compatible.responses.") => {
+            openai_responses(request, instructions)
         }
         "oven.azure.openai.responses" => {
             request.with_azure_openai_compaction_options(AzureOpenAiCompactionOptions {
@@ -27,6 +25,13 @@ pub fn with_native_compaction_instructions(
         }
         _ => request,
     }
+}
+
+fn openai_responses(request: CompactionRequest, instructions: Option<String>) -> CompactionRequest {
+    request.with_openai_responses_compaction_options(OpenAiResponsesCompactionOptions {
+        instructions,
+        ..OpenAiResponsesCompactionOptions::default()
+    })
 }
 
 #[cfg(test)]
@@ -61,6 +66,19 @@ mod tests {
         );
         assert_eq!(
             compaction.request.provider_options["azure_openai"]["compaction"]["instructions"],
+            serde_json::json!("focus")
+        );
+    }
+
+    #[test]
+    fn compatible_responses_carries_openai_native_instructions() {
+        let compaction = with_native_compaction_instructions(
+            request(),
+            "oven.openai-compatible.responses.gateway",
+            Some("focus".to_owned()),
+        );
+        assert_eq!(
+            compaction.request.provider_options["openai"]["compaction"]["instructions"],
             serde_json::json!("focus")
         );
     }

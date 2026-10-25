@@ -17,12 +17,24 @@ pub enum CompactionCapability {
     Native,
 }
 
+/// A model override's `compaction` setting. Native compaction is attempted
+/// on every Responses adapter unless the override says `"unsupported"`; the
+/// adapter-named values are accepted and mean the same as omitting the key.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub enum NativeCompactionConfig {
     #[default]
+    Default,
     Unsupported,
     OpenAiResponsesCompact,
     AzureResponsesCompact,
+}
+
+impl NativeCompactionConfig {
+    /// Whether the setting allows native compaction where the adapter has it.
+    #[must_use]
+    pub const fn allows_native(self) -> bool {
+        !matches!(self, Self::Unsupported)
+    }
 }
 
 impl<'de> Deserialize<'de> for NativeCompactionConfig {
@@ -35,10 +47,10 @@ impl<'de> Deserialize<'de> for NativeCompactionConfig {
             "openai-responses-compact" => Ok(Self::OpenAiResponsesCompact),
             "azure-responses-compact" => Ok(Self::AzureResponsesCompact),
             "v1" => Err(serde::de::Error::custom(
-                "compaction = \"v1\" was renamed to an adapter-specific Responses compaction value",
+                "compaction = \"v1\" was removed; omit `compaction` for native compaction or set \"unsupported\"",
             )),
             _ => Err(serde::de::Error::custom(
-                "compaction must be \"unsupported\", \"openai-responses-compact\", or \"azure-responses-compact\"",
+                "compaction must be \"unsupported\" (\"openai-responses-compact\" and \"azure-responses-compact\" are accepted and redundant)",
             )),
         }
     }

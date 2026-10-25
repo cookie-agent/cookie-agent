@@ -150,8 +150,10 @@ pub struct AuthoredCapabilities {
     pub temperature: bool,
     pub top_p: bool,
     pub seed: bool,
-    #[serde(default)]
-    pub compaction: CompactionCapability,
+    /// Omitted, a Responses adaptor gets native compaction; `"unsupported"`
+    /// turns it off, and is the only value accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionCapability>,
     pub native_replay: Option<ReplayCapability>,
     pub media: BTreeMap<MediaKind, MediaCapability>,
 }
@@ -171,7 +173,7 @@ impl AuthoredCapabilities {
             temperature: self.temperature,
             top_p: self.top_p,
             seed: self.seed,
-            compaction: self.compaction,
+            compaction: self.compaction.unwrap_or_default(),
             native_replay: self
                 .native_replay
                 .unwrap_or_else(|| adapter.automatic_replay(self.reasoning)),

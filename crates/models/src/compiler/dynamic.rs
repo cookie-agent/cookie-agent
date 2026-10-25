@@ -78,6 +78,10 @@ pub struct CompiledDynamicModel {
     pub auth: CompiledAuthShape,
     pub capabilities: ModelCapabilities,
     pub replay_declaration: Option<crate::ReplayCapability>,
+    /// Whether the model's configuration leaves native compaction on, for
+    /// the adapters that have it; a variant that switches endpoint takes
+    /// native compaction from this and its own adapter.
+    pub native_compaction_allowed: bool,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
@@ -140,6 +144,11 @@ impl CompiledDynamicModel {
             selected.adapter.protocol_recipe().into()
         };
         selected.options = options.clone();
+        selected.capabilities.compaction = native_compaction_capability(
+            selected.adapter,
+            self.native_compaction_allowed,
+            self.setup.as_ref(),
+        );
         selected.capabilities.native_replay = self.replay_declaration.unwrap_or_else(|| {
             automatic_replay(
                 selected.adapter,
@@ -533,15 +542,6 @@ impl DynamicCompiler {
                 ));
             }
         }
-        apply_compaction_config(
-            &mut capabilities,
-            adapter,
-            provider_id,
-            override_.map_or(crate::NativeCompactionConfig::Unsupported, |value| {
-                value.compaction
-            }),
-        )
-        .map_err(ModelLocalError::Provider)?;
         if !validate_capability_shape(&capabilities)
             || validate_capability_ceiling(adapter, &capabilities).is_err()
         {
@@ -566,6 +566,10 @@ impl DynamicCompiler {
             .map_err(ModelLocalError::Provider)?;
         capabilities.native_replay =
             automatic_replay(adapter, capabilities.reasoning, &wire_model_id);
+        let native_compaction_allowed =
+            override_.is_none_or(|value| value.compaction.allows_native());
+        capabilities.compaction =
+            native_compaction_capability(adapter, native_compaction_allowed, setup.as_ref());
         let required_auth_method = match adapter {
             OvenAdapterFamily::AwsBedrockConverse => Some("aws-sigv4-credentials-v1"),
             OvenAdapterFamily::OpenaiResponses if resolved.recipe.family == FamilyKind::Bedrock => {
@@ -736,6 +740,7 @@ impl DynamicCompiler {
             auth,
             capabilities,
             replay_declaration: None,
+            native_compaction_allowed,
             defaults,
             options,
             headers,
@@ -813,6 +818,11 @@ impl DynamicCompiler {
             if model.capabilities.native_replay.is_none() {
                 capabilities.native_replay =
                     automatic_replay(resolved_adapter, capabilities.reasoning, &wire_model_id);
+            }
+            let native_compaction_allowed = model.capabilities.compaction.is_none();
+            if native_compaction_allowed {
+                capabilities.compaction =
+                    native_compaction_capability(resolved_adapter, true, Some(&setup));
             }
             if !validate_capability_shape(&capabilities)
                 || validate_capability_ceiling(resolved_adapter, &capabilities).is_err()
@@ -922,6 +932,7 @@ impl DynamicCompiler {
                     auth: auth.clone(),
                     capabilities,
                     replay_declaration: model.capabilities.native_replay,
+                    native_compaction_allowed,
                     defaults,
                     options,
                     headers,
@@ -1117,25 +1128,35 @@ pub(crate) fn managed_provider_adapter(
     }
 }
 
-fn apply_compaction_config(
-    capabilities: &mut ModelCapabilities,
+/// The setup fields an Azure deployment needs for native compaction, which
+/// scopes the window to an explicit deployment revision.
+const AZURE_DEPLOYMENT_SETUP: [&str; 3] = ["model", "version", "deployment_type"];
+
+/// Native compaction for every Responses adapter the configuration allows:
+/// OpenAI Responses, official or compatible, and Azure OpenAI Responses with
+/// its deployment metadata in `setup`.
+fn native_compaction_capability(
     adapter: OvenAdapterFamily,
-    provider_id: &ProviderId,
-    config: crate::NativeCompactionConfig,
-) -> Result<(), DynamicCompileError> {
-    capabilities.compaction = match (adapter, config) {
-        (_, crate::NativeCompactionConfig::Unsupported) => crate::CompactionCapability::Unsupported,
-        (
-            OvenAdapterFamily::OpenaiResponses,
-            crate::NativeCompactionConfig::OpenAiResponsesCompact,
-        ) if provider_id.as_str() == "openai" => crate::CompactionCapability::Native,
-        (
-            OvenAdapterFamily::AzureOpenaiResponses,
-            crate::NativeCompactionConfig::AzureResponsesCompact,
-        ) if provider_id.as_str() == "azure.openai" => crate::CompactionCapability::Native,
-        _ => return Err(DynamicCompileError::CustomModel),
+    allowed: bool,
+    setup: Option<&ValidatedSetup>,
+) -> crate::CompactionCapability {
+    let supported = match adapter {
+        OvenAdapterFamily::OpenaiResponses => true,
+        OvenAdapterFamily::AzureOpenaiResponses => setup.is_some_and(|setup| {
+            AZURE_DEPLOYMENT_SETUP.iter().all(|field| {
+                setup
+                    .values
+                    .get(*field)
+                    .is_some_and(|value| !value.is_empty())
+            })
+        }),
+        _ => false,
     };
-    Ok(())
+    if allowed && supported {
+        crate::CompactionCapability::Native
+    } else {
+        crate::CompactionCapability::Unsupported
+    }
 }
 
 enum ModelLocalError {
