@@ -693,10 +693,16 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
     assert_eq!(
         fixture
             .engine
-            .read_artifact(session.session_id, manifest_id, Some("results"), 0, 1)
+            .read_artifact(
+                session.session_id,
+                manifest_id,
+                Some("results"),
+                page_window(1, 1)
+            )
             .unwrap()
-            .content,
-        full
+            .page
+            .text,
+        cut_line(1, &full)
     );
     // Streams that fit their preview are in the output, not in artifacts.
     assert!(
@@ -1123,10 +1129,16 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
         assert_eq!(
             fixture
                 .engine
-                .read_artifact(session.session_id, manifest, Some("results"), 0, 1)
+                .read_artifact(
+                    session.session_id,
+                    manifest,
+                    Some("results"),
+                    page_window(1, 1)
+                )
                 .unwrap()
-                .content,
-            "x".repeat(128 * 1024)
+                .page
+                .text,
+            cut_line(1, &"x".repeat(128 * 1024))
         );
         assert!(result.output.contains("[diagnostics]\ndiagnostic\n"));
         assert!(

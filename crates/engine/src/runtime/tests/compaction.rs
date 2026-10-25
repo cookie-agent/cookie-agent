@@ -359,12 +359,21 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 assert!(text.contains(&format!("read_artifact(artifact=\"{artifact_path}\")")));
                 let page = fixture
                     .engine
-                    .read_artifact(session.session_id, artifact_path, None, 0, 10)
+                    .read_artifact(session.session_id, artifact_path, None, page_window(1, 10))
                     .expect("public readback using only the marker hint");
                 assert_eq!(page.source, "artifact");
+                assert!(page.page.text.starts_with("1: "));
                 assert!(text.contains("serialized tool content (JSON)"));
+                // The serialized content is one line, which a page cuts
+                // after 4 KiB as `read` would: check it whole in the store.
+                let raw = fixture
+                    .engine
+                    .inner
+                    .artifacts
+                    .read_paged(session.session_id, artifact_path, 0, 10)
+                    .unwrap();
                 let oven_sdk::ToolContent::Mixed(values) =
-                    serde_json::from_str(&page.content).unwrap()
+                    serde_json::from_str(&raw.content).unwrap()
                 else {
                     panic!("retry artifact preserves serialized tool content");
                 };

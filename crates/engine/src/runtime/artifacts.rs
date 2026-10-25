@@ -5,6 +5,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use cookie_agent_runtime_api::text_tools::{LinePager, LineWindow, NumberedPage};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -255,6 +256,43 @@ fn expand_transitive_artifact_references(
     Ok(())
 }
 
+/// Streams the whole of `file` to `sink`, in chunks, while it checks the
+/// SHA-256 of its content against `digest`; fails after the last chunk when
+/// they differ. `after_first_read` runs once the first chunk is handed on.
+fn read_verified_file(
+    file: &mut File,
+    digest: &str,
+    after_first_read: impl FnOnce() -> std::io::Result<()>,
+    mut sink: impl FnMut(&[u8]),
+) -> std::io::Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut after_first_read = Some(after_first_read);
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            break;
+        }
+        let length = buffer.len();
+        hasher.update(buffer);
+        sink(buffer);
+        reader.consume(length);
+        if let Some(after_first_read) = after_first_read.take() {
+            after_first_read()?;
+        }
+    }
+    if format!("{:x}", hasher.finalize()) != digest {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "artifact content does not match its digest",
+        ));
+    }
+    Ok(())
+}
+
+/// The raw lines `offset_lines..offset_lines + limit_lines`, zero-based, of
+/// the verified `file`.
 fn read_verified_file_paged(
     file: &mut File,
     digest: &str,
@@ -268,59 +306,43 @@ fn read_verified_file_paged(
             "artifact page limit must be positive",
         ));
     }
-    file.seek(SeekFrom::Start(0))?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut after_first_read = Some(after_first_read);
     let mut line_index = 0_u64;
     let mut content = Vec::new();
     let mut read_lines = 0_u64;
     let mut has_more = false;
     let mut line_start = true;
     let mut too_large = false;
-    loop {
-        let buffer = reader.fill_buf()?;
-        if buffer.is_empty() {
-            break;
-        }
-        let length = buffer
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(buffer.len(), |index| index + 1);
-        let bytes = &buffer[..length];
-        let newline = bytes.last() == Some(&b'\n');
-        hasher.update(bytes);
-        if line_index >= offset_lines {
-            if line_index - offset_lines < limit_lines {
-                if line_start {
-                    read_lines = read_lines.saturating_add(1);
+    read_verified_file(file, digest, after_first_read, |mut chunk| {
+        while !chunk.is_empty() {
+            let length = chunk
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(chunk.len(), |index| index + 1);
+            let bytes = &chunk[..length];
+            let newline = bytes.last() == Some(&b'\n');
+            if line_index >= offset_lines {
+                if line_index - offset_lines < limit_lines {
+                    if line_start {
+                        read_lines = read_lines.saturating_add(1);
+                    }
+                    if content.len().saturating_add(bytes.len())
+                        > cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES
+                    {
+                        too_large = true;
+                    } else if !too_large {
+                        content.extend_from_slice(bytes);
+                    }
+                } else {
+                    has_more = true;
                 }
-                if content.len().saturating_add(bytes.len())
-                    > cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES
-                {
-                    too_large = true;
-                } else if !too_large {
-                    content.extend_from_slice(bytes);
-                }
-            } else {
-                has_more = true;
             }
+            if newline {
+                line_index = line_index.saturating_add(1);
+            }
+            line_start = newline;
+            chunk = &chunk[length..];
         }
-        reader.consume(length);
-        if let Some(after_first_read) = after_first_read.take() {
-            after_first_read()?;
-        }
-        if newline {
-            line_index = line_index.saturating_add(1);
-        }
-        line_start = newline;
-    }
-    if format!("{:x}", hasher.finalize()) != digest {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "artifact content does not match its digest",
-        ));
-    }
+    })?;
     if too_large {
         return Err(std::io::Error::new(
             std::io::ErrorKind::FileTooLarge,
@@ -331,6 +353,23 @@ fn read_verified_file_paged(
         content: String::from_utf8_lossy(&content).into_owned(),
         next_offset_lines: has_more.then_some(offset_lines.saturating_add(read_lines)),
     })
+}
+
+/// The page `window` of the verified `file`, numbered as `read` numbers a
+/// file's lines, in at most `budget` bytes; bytes that are not UTF-8 show
+/// as replacement characters.
+fn read_verified_file_numbered(
+    file: &mut File,
+    digest: &str,
+    window: LineWindow,
+    budget: usize,
+    after_first_read: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<NumberedPage> {
+    let mut pager = LinePager::new(window, budget).lossy();
+    read_verified_file(file, digest, after_first_read, |chunk| {
+        pager.push(chunk).expect("a lossy pager takes any bytes");
+    })?;
+    Ok(pager.finish().expect("a lossy pager takes any bytes"))
 }
 
 mod platform;
@@ -458,7 +497,9 @@ impl ArtifactStore {
         offset_lines: u64,
         limit_lines: u64,
     ) -> std::io::Result<ArtifactPage> {
-        self.read_paged_inner(digest, offset_lines, limit_lines, true, || Ok(()))
+        self.read_verified_inner(digest, true, |file| {
+            read_verified_file_paged(file, digest, offset_lines, limit_lines, || Ok(()))
+        })
     }
 
     #[cfg(test)]
@@ -469,17 +510,32 @@ impl ArtifactStore {
         limit_lines: u64,
         hook: impl FnOnce() -> std::io::Result<()>,
     ) -> std::io::Result<ArtifactPage> {
-        self.read_paged_inner(digest, offset_lines, limit_lines, false, hook)
+        self.read_verified_inner(digest, false, |file| {
+            read_verified_file_paged(file, digest, offset_lines, limit_lines, hook)
+        })
     }
 
-    fn read_paged_inner(
+    /// The page `window` of blob `digest`, numbered as `read` numbers a
+    /// file's lines, its numbered lines in at most `budget` bytes.
+    pub(crate) fn read_numbered(
         &self,
         digest: &str,
-        offset_lines: u64,
-        limit_lines: u64,
+        window: LineWindow,
+        budget: usize,
+    ) -> std::io::Result<NumberedPage> {
+        self.read_verified_inner(digest, true, |file| {
+            read_verified_file_numbered(file, digest, window, budget, || Ok(()))
+        })
+    }
+
+    /// Runs `read` on a handle of blob `digest`, which it verifies as it
+    /// reads, and keeps the handle for the next reader.
+    fn read_verified_inner<T>(
+        &self,
+        digest: &str,
         #[cfg_attr(not(test), allow(unused_variables))] run_read_hook: bool,
-        after_first_read: impl FnOnce() -> std::io::Result<()>,
-    ) -> std::io::Result<ArtifactPage> {
+        read: impl FnOnce(&mut File) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
         if !is_digest_name_common(digest) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -503,13 +559,7 @@ impl ArtifactStore {
         if run_read_hook {
             self.io_test_hook.run("read", digest)?;
         }
-        let page = read_verified_file_paged(
-            &mut file,
-            digest,
-            offset_lines,
-            limit_lines,
-            after_first_read,
-        )?;
+        let page = read(&mut file)?;
         self.verified_reads
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -956,10 +1006,9 @@ impl cookie_agent_runtime_api::ToolArtifacts for ArtifactRouter {
         self: Arc<Self>,
         session: SessionId,
         target: cookie_agent_protocol::ArtifactReadTarget,
-        offset: u64,
-        limit: u64,
+        window: LineWindow,
     ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, crate::ToolError> {
-        super::read_artifact_async(self, session, target, offset, limit).await
+        super::read_artifact_async(self, session, target, window).await
     }
 }
 
@@ -1138,6 +1187,24 @@ impl ArtifactRouter {
     ) -> std::io::Result<ArtifactPage> {
         match self.read_store(session)? {
             Some(store) => store.read_paged(digest, offset_lines, limit_lines),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "artifact missing",
+            )),
+        }
+    }
+
+    /// The page `window` of blob `digest` in `session`'s tree, numbered as
+    /// `read` numbers a file's lines.
+    pub(crate) fn read_numbered(
+        &self,
+        session: SessionId,
+        digest: &str,
+        window: LineWindow,
+        budget: usize,
+    ) -> std::io::Result<NumberedPage> {
+        match self.read_store(session)? {
+            Some(store) => store.read_numbered(digest, window, budget),
             None => Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "artifact missing",

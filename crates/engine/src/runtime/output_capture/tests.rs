@@ -89,9 +89,9 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
         result.output,
         format!(
             "[results]\nabcde\n[… 1 line omitted. Read more: \
-             read_artifact(artifact=\"{digest}\", stream=\"results\", offset=0)]\n\n\
+             read_artifact(artifact=\"{digest}\", stream=\"results\", offset=1)]\n\n\
              [diagnostics]\nbad\n[… 5 bytes omitted. Read more: \
-             read_artifact(artifact=\"{digest}\", stream=\"diagnostics\", offset=1)]\n\n\
+             read_artifact(artifact=\"{digest}\", stream=\"diagnostics\", offset=2)]\n\n\
              [empty]\n"
         )
     );
@@ -184,7 +184,7 @@ async fn streamed_completion_rejects_resupply_and_preserves_incomplete_utf8_outp
             .starts_with("a\n[… 3 bytes omitted. Read more:")
     );
     assert!(
-        result.output.ends_with("offset=0)]\nz"),
+        result.output.ends_with("offset=1)]\nz"),
         "{}",
         result.output
     );
@@ -737,7 +737,7 @@ async fn truncated_previews_show_the_first_and_last_lines() {
             result.output,
             format!(
                 "line0\nline1\n[… {} lines omitted. Read more: read_artifact(artifact=\"{digest}\", \
-                 offset=2)]\nline{}\nline{}\n",
+                 offset=3)]\nline{}\nline{}\n",
                 lines - 4,
                 lines - 2,
                 lines - 1
@@ -907,7 +907,7 @@ async fn output_past_the_retain_limit_keeps_its_head_and_last_lines() {
     assert!(
         result
             .output
-            .contains("offset=1); 720 bytes past the 64-byte capture limit were not retained]"),
+            .contains("offset=2); 720 bytes past the 64-byte capture limit were not retained]"),
         "{}",
         result.output
     );

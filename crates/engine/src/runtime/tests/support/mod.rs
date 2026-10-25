@@ -2405,3 +2405,36 @@ pub(crate) fn resume_sweep_test_request() -> cookie_agent_protocol::ApprovalRequ
     )
     .expect("approval request")
 }
+
+/// The window from 1-based line `offset`, at most `limit` lines.
+pub(crate) fn page_window(
+    offset: usize,
+    limit: usize,
+) -> cookie_agent_runtime_api::text_tools::LineWindow {
+    cookie_agent_runtime_api::text_tools::LineWindow::new(Some(offset), Some(limit))
+        .expect("a valid window")
+}
+
+/// An artifact page's lines without their numbers, each ending in a
+/// newline.
+pub(crate) fn unnumbered(page: &cookie_agent_runtime_api::ArtifactReadPage) -> String {
+    page.page
+        .text
+        .lines()
+        .map(|line| {
+            let text = line.split_once(": ").map_or(line, |(_, text)| text);
+            format!("{text}\n")
+        })
+        .collect()
+}
+
+/// How an artifact page shows line `number`, `text`, longer than the line
+/// cut.
+pub(crate) fn cut_line(number: usize, text: &str) -> String {
+    let max = cookie_agent_runtime_api::text_tools::MAX_LINE_BYTES;
+    format!(
+        "{number}: {}... [line truncated: {} more bytes]\n",
+        &text[..max],
+        text.len() - max
+    )
+}

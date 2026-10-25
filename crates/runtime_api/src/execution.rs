@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ToolError, ToolOrigin, WorkspaceContext, media::validate_attachment};
+use crate::{
+    ToolError, ToolOrigin, WorkspaceContext,
+    media::validate_attachment,
+    text_tools::{LineWindow, NumberedPage},
+};
 
 /// Immutable harness context captured for one tool preparation/execution batch:
 /// what a tool knows about the turn, the same on either side of the runtime
@@ -94,11 +98,10 @@ impl ToolExecutionContext {
     pub async fn read_artifact(
         &self,
         target: ArtifactReadTarget,
-        offset: u64,
-        limit: u64,
+        window: LineWindow,
     ) -> Result<ArtifactReadPage, ToolError> {
         Arc::clone(&self.artifacts)
-            .read_page(self.session, target, offset, limit)
+            .read_page(self.session, target, window)
             .await
     }
 
@@ -146,23 +149,22 @@ pub trait ToolArtifacts: std::fmt::Debug + Send + Sync {
         content: &[u8],
     ) -> Result<(ArtifactReference, String), ToolError>;
 
-    /// Reads up to `limit` lines from line `offset` of an artifact, or of one
-    /// stream of a named-stream manifest, in `session`'s tree.
+    /// Reads the lines of `window` of an artifact, or of one stream of a
+    /// named-stream manifest, in `session`'s tree, numbered as `read`
+    /// numbers a file's ([`crate::text_tools`]).
     async fn read_page(
         self: Arc<Self>,
         session: SessionId,
         target: ArtifactReadTarget,
-        offset: u64,
-        limit: u64,
+        window: LineWindow,
     ) -> Result<ArtifactReadPage, ToolError>;
 }
 
 /// One page of an artifact.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtifactReadPage {
-    pub content: String,
-    /// Line offset of the next page, when there is one.
-    pub next_offset_lines: Option<u64>,
+    /// The page's numbered lines.
+    pub page: NumberedPage,
     /// `artifact`, or `artifact.<stream>` for a manifest stream.
     pub source: String,
 }

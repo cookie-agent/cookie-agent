@@ -2,6 +2,12 @@
 
 Status: implemented; correctness and performance/code-quality reviews passed.
 
+Later changes: artifact reads moved from `read` to the base layer's
+`read_artifact` (`runtimes.md`), and on 2026-10-25 `read_artifact` and its
+hints took 1-based offsets and `read`'s page format, line cut, and page cap;
+the stored `next_offset` of a stream stays zero-based
+([`read_artifact`](../reference/tools.md#read_artifact)).
+
 ## Scope
 
 Make single and named multi-stream output first-class tool capabilities. The

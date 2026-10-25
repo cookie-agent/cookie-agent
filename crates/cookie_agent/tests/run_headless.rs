@@ -668,11 +668,11 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .strip_prefix("artifact://sha256/")
             .unwrap();
         let arguments = if artifact_read {
-            serde_json::json!({"artifact":manifest,"stream":"stdout","offset":1,"limit":1})
+            serde_json::json!({"artifact":manifest,"stream":"stdout","offset":2,"limit":1})
         } else {
             let path = fixture.workspace.join("page.txt");
             fs::write(&path, "zero\none\ntwo\n").unwrap();
-            serde_json::json!({"filePath":path.to_str().unwrap(),"offset":1,"limit":1})
+            serde_json::json!({"filePath":path.to_str().unwrap(),"offset":2,"limit":1})
         };
         let data_root = fixture._root.path().join("data");
         let before = artifact_blobs(&data_root);
@@ -726,7 +726,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         assert_eq!(hook["params"]["is_error"], false);
         let page = hook["params"]["result_content"].as_str().unwrap();
         if artifact_read {
-            assert_eq!(page, "one\n");
+            assert!(page.starts_with("2: one\n["), "{page}");
         } else {
             assert!(page.contains("2: one\n"));
         }
@@ -784,10 +784,10 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             "Tool cancelled; output is incomplete."
         );
         assert!(result.retained_output.is_none());
-        assert_eq!(result.metadata["offset"], 1);
+        assert_eq!(result.metadata["offset"], 2);
         assert_eq!(result.metadata["limit"], 1);
         if artifact_read {
-            assert_eq!(result.metadata["next_offset"], 2);
+            assert_eq!(result.metadata["next_offset"], 3);
             assert_eq!(result.metadata["artifact"], manifest);
             assert_eq!(result.metadata["stream"], "stdout");
         } else {

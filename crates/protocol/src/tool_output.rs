@@ -198,16 +198,18 @@ impl ArtifactReadTarget {
         })
     }
 
-    /// The `read_artifact` call that continues this target at `offset`, as
-    /// truncation hints show it to the model.
+    /// The `read_artifact` call that continues this target at the line
+    /// whose zero-based index is `next_line` (a [`RetainedToolStream`]'s
+    /// `next_offset`), as truncation hints show it to the model: its
+    /// `offset` is 1-based, as `read_artifact`'s is.
     #[must_use]
-    pub fn read_hint(&self, offset: Option<u64>) -> String {
+    pub fn read_hint(&self, next_line: Option<u64>) -> String {
         let mut hint = format!("read_artifact(artifact=\"{}\"", self.digest);
         if let Some(stream) = &self.stream {
             hint.push_str(&format!(", stream=\"{stream}\""));
         }
-        if let Some(offset) = offset {
-            hint.push_str(&format!(", offset={offset}"));
+        if let Some(next_line) = next_line {
+            hint.push_str(&format!(", offset={}", next_line.saturating_add(1)));
         }
         hint.push(')');
         hint
@@ -292,7 +294,7 @@ mod tests {
         let target = ArtifactReadTarget::parse(&digest, Some("stdout")).unwrap();
         assert_eq!(
             target.read_hint(Some(40)),
-            format!("read_artifact(artifact=\"{digest}\", stream=\"stdout\", offset=40)")
+            format!("read_artifact(artifact=\"{digest}\", stream=\"stdout\", offset=41)")
         );
         let target = ArtifactReadTarget::parse(&digest, None).unwrap();
         assert_eq!(

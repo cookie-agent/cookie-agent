@@ -1678,8 +1678,7 @@ impl ToolArtifacts for InlineArtifacts {
         self: Arc<Self>,
         _session: SessionId,
         _target: cookie_agent_protocol::ArtifactReadTarget,
-        _offset: u64,
-        _limit: u64,
+        _window: cookie_agent_runtime_api::text_tools::LineWindow,
     ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, ToolError> {
         Err(ToolError::execution(
             "artifact reads are unavailable inside a runtime; use read_artifact",

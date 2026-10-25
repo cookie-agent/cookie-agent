@@ -2,8 +2,6 @@ use std::fs;
 
 use cookie_agent_protocol::{ClientRunId, EventPayload, RunStartParams, Sha256Digest};
 
-use crate::ToolError;
-
 use super::support::*;
 
 #[test]
@@ -54,10 +52,11 @@ fn delegated_child_artifacts_are_placed_inside_the_root_tree() {
     assert_eq!(
         fixture
             .engine
-            .read_artifact(child, &digest, None, 0, 1)
+            .read_artifact(child, &digest, None, page_window(1, 1))
             .expect("read back")
-            .content,
-        "child tool output"
+            .page
+            .text,
+        "1: child tool output\n"
     );
 }
 
@@ -192,39 +191,53 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
                 .is_some_and(|retained| retained.reference.as_ref().is_some_and(|reference| reference.uri == format!("artifact://sha256/{artifact_id}")))
     )));
 
-    let lines = output.split_inclusive('\n').collect::<Vec<_>>();
+    let output_lines = output.split_inclusive('\n').collect::<Vec<_>>();
     let mut reconstructed = String::new();
-    for offset in (0..lines.len()).step_by(2_000) {
+    for index in (0..output_lines.len()).step_by(2_000) {
         let page = fixture
             .engine
-            .read_artifact(session.session_id, artifact_id, None, offset as u64, 2_000)
+            .read_artifact(
+                session.session_id,
+                artifact_id,
+                None,
+                page_window(index + 1, 2_000),
+            )
             .unwrap();
         assert_eq!(page.source, "artifact");
-        assert!(!page.content.is_empty());
-        assert!(page.content.len() < PersistedToolResult::MAX_OUTPUT_BYTES);
+        assert!(!page.page.text.is_empty());
+        assert!(page.page.text.len() < PersistedToolResult::MAX_OUTPUT_BYTES);
         assert_eq!(
-            page.content,
-            lines[offset..lines.len().min(offset + 2_000)].concat()
+            unnumbered(&page),
+            output_lines[index..output_lines.len().min(index + 2_000)].concat()
         );
+        assert!(page.page.text.starts_with(&format!("{}: ", index + 1)));
         assert_eq!(
-            page.next_offset_lines,
-            (offset + 2_000 < lines.len()).then_some((offset + 2_000) as u64)
+            page.page.next_offset,
+            (index + 2_000 < output_lines.len()).then_some(index + 2_001)
         );
-        reconstructed.push_str(&page.content);
+        reconstructed.push_str(&unnumbered(&page));
         // Readback opts out of preview truncation, so each page must fit that path.
-        let page =
-            crate::runtime::finish_page(ToolCompletion::single(result(page.content))).unwrap();
+        let page = crate::runtime::finish_page(ToolCompletion::single(result(
+            page.page.text_with_continuation(),
+        )))
+        .unwrap();
         assert!(page.retained_output.is_none());
     }
     assert_eq!(reconstructed, output);
     assert!(reconstructed.len() > preview.len());
-    for offset in [lines.len(), lines.len() + 2_000] {
-        let page = fixture
-            .engine
-            .read_artifact(session.session_id, artifact_id, None, offset as u64, 2_000)
-            .unwrap();
-        assert!(page.content.is_empty());
-        assert_eq!(page.next_offset_lines, None);
+    // A page past the last line is an error.
+    for offset in [output_lines.len() + 1, output_lines.len() + 2_001] {
+        assert!(
+            fixture
+                .engine
+                .read_artifact(
+                    session.session_id,
+                    artifact_id,
+                    None,
+                    page_window(offset, 2_000)
+                )
+                .is_err()
+        );
     }
     fixture.engine.shutdown().await;
     assert_eq!(
@@ -290,10 +303,10 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
     );
     let page = fixture
         .engine
-        .read_artifact(session.session_id, &retained_id, None, 1, 2)
+        .read_artifact(session.session_id, &retained_id, None, page_window(2, 2))
         .unwrap();
-    assert_eq!(page.content, "one\ntwo\n");
-    assert_eq!(page.next_offset_lines, Some(3));
+    assert_eq!(page.page.text, "2: one\n3: two\n");
+    assert_eq!(page.page.next_offset, Some(4));
     assert_eq!(page.source, "artifact");
 
     let (elided_preview, preview_id) = artifacts.retain(session.session_id, b"zero\n").unwrap();
@@ -312,17 +325,17 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
         .unwrap();
     let page = fixture
         .engine
-        .read_artifact(session.session_id, &retained_id, None, 2, 2)
+        .read_artifact(session.session_id, &retained_id, None, page_window(3, 2))
         .unwrap();
-    assert_eq!(page.content, "two\nthree");
+    assert_eq!(page.page.text, "3: two\n4: three\n");
     assert_eq!(page.source, "artifact");
     assert_ne!(retained.uri, elided_preview.uri);
     let page = fixture
         .engine
-        .read_artifact(session.session_id, &preview_id, None, 0, 1)
+        .read_artifact(session.session_id, &preview_id, None, page_window(1, 1))
         .unwrap();
-    assert_eq!(page.content, "zero\n");
-    assert_eq!(page.next_offset_lines, None);
+    assert_eq!(page.page.text, "1: zero\n");
+    assert_eq!(page.page.next_offset, None);
     let termination_seq = fixture
         .engine
         .inner
@@ -358,13 +371,16 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
     assert!(!events.iter().any(|event| matches!(&event.payload,
         EventPayload::ToolCallTerminated { termination } if termination.tool_call_id == truncated_call
     )));
-    for (artifact_id, expected) in [(&retained_id, full), (&preview_id, "zero\n")] {
+    for (artifact_id, expected) in [
+        (&retained_id, format!("{full}\n")),
+        (&preview_id, "zero\n".to_owned()),
+    ] {
         let page = fixture
             .engine
-            .read_artifact(session.session_id, artifact_id, None, 0, 10)
+            .read_artifact(session.session_id, artifact_id, None, page_window(1, 10))
             .unwrap();
-        assert_eq!(page.content, expected);
-        assert_eq!(page.next_offset_lines, None);
+        assert_eq!(unnumbered(&page), expected);
+        assert_eq!(page.page.next_offset, None);
     }
     fixture.engine.shutdown().await;
     assert_eq!(
@@ -392,28 +408,34 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
     // There is no session or tool event referencing this artifact.
     let page = fixture
         .engine
-        .read_artifact(writer, &artifact_id, None, 0, u64::MAX)
+        .read_artifact(writer, &artifact_id, None, page_window(1, usize::MAX))
         .unwrap();
-    assert_eq!(page.content, "line\n".repeat(2_000));
-    assert_eq!(page.next_offset_lines, Some(2_000));
+    // No limit clamps a page: all 2002 lines fit the page budget.
+    assert_eq!(unnumbered(&page), "line\n".repeat(2_002));
+    assert_eq!(page.page.next_offset, None);
     assert_eq!(page.source, "artifact");
     let page = fixture
         .engine
-        .read_artifact(writer, &artifact_id, None, 2_000, 2)
+        .read_artifact(writer, &artifact_id, None, page_window(1, 2_000))
         .unwrap();
-    assert_eq!(page.content, "line\nline\n");
-    assert_eq!(page.next_offset_lines, None);
+    assert_eq!(page.page.next_offset, Some(2_001));
+    assert_eq!(
+        page.page.continuation().as_deref(),
+        Some("[2 more lines; continue with offset=2001]")
+    );
     let page = fixture
         .engine
-        .read_artifact(writer, &artifact_id, None, u64::MAX, 1)
+        .read_artifact(writer, &artifact_id, None, page_window(2_001, 2))
         .unwrap();
-    assert!(page.content.is_empty());
-    assert_eq!(page.next_offset_lines, None);
+    assert_eq!(page.page.text, "2001: line\n2002: line\n");
+    assert_eq!(page.page.next_offset, None);
     assert!(
         fixture
             .engine
-            .read_artifact(writer, &artifact_id, None, 0, 0)
-            .is_err()
+            .read_artifact(writer, &artifact_id, None, page_window(usize::MAX, 1))
+            .unwrap_err()
+            .to_string()
+            .contains("is past the end of artifact ")
     );
 
     let (_, large_id) = fixture
@@ -425,10 +447,18 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
             &vec![b'x'; cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES + 1],
         )
         .unwrap();
-    assert!(matches!(
-        fixture.engine.read_artifact(writer, &large_id, None, 0, 1),
-        Err(ToolError::ResourceLimit(_))
-    ));
+    // A line past the line cut is cut, so any page fits.
+    let large = fixture
+        .engine
+        .read_artifact(writer, &large_id, None, page_window(1, 1))
+        .unwrap();
+    assert_eq!(
+        large.page.text,
+        cut_line(
+            1,
+            &"x".repeat(cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES + 1)
+        )
+    );
 
     let (stdout, stdout_digest) = fixture
         .engine
@@ -475,21 +505,24 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         .unwrap();
     let page = fixture
         .engine
-        .read_artifact(writer, &manifest_id, Some("stderr"), 1, 1)
+        .read_artifact(writer, &manifest_id, Some("stderr"), page_window(2, 1))
         .unwrap();
-    assert_eq!(page.content, "err-1\n");
+    assert_eq!(page.page.text, "2: err-1\n");
     assert_eq!(page.source, "artifact.stderr");
     assert!(
         fixture
             .engine
-            .read_artifact(writer, &manifest_id, Some("unknown"), 0, 1)
+            .read_artifact(writer, &manifest_id, Some("unknown"), page_window(1, 1))
             .is_err()
     );
     let raw_manifest = fixture
         .engine
-        .read_artifact(writer, &manifest_id, None, 0, 1)
+        .read_artifact(writer, &manifest_id, None, page_window(1, 1))
         .unwrap();
-    assert_eq!(raw_manifest.content.as_bytes(), manifest);
+    assert_eq!(
+        unnumbered(&raw_manifest),
+        format!("{}\n", String::from_utf8(manifest).unwrap())
+    );
     let serialized = serde_json::to_vec(&oven_sdk::ToolContent::Text(
         "ordinary non-Bash output".into(),
     ))
@@ -502,14 +535,17 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         .unwrap();
     let raw_serialized = fixture
         .engine
-        .read_artifact(writer, &serialized_id, None, 0, 1)
+        .read_artifact(writer, &serialized_id, None, page_window(1, 1))
         .unwrap();
-    assert_eq!(raw_serialized.content.as_bytes(), serialized);
+    assert_eq!(
+        unnumbered(&raw_serialized),
+        format!("{}\n", String::from_utf8(serialized).unwrap())
+    );
     for id in [&artifact_id, &serialized_id] {
         for stream in ["stdout", "stderr"] {
             let error = fixture
                 .engine
-                .read_artifact(writer, id, Some(stream), 0, 1)
+                .read_artifact(writer, id, Some(stream), page_window(1, 1))
                 .unwrap_err();
             assert!(
                 error
@@ -546,7 +582,7 @@ async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
     ] {
         let error = fixture
             .engine
-            .read_artifact(reader, &id, None, 0, 1)
+            .read_artifact(reader, &id, None, page_window(1, 1))
             .unwrap_err();
         assert!(
             error
@@ -559,7 +595,7 @@ async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
     assert!(
         fixture
             .engine
-            .read_artifact(reader, &missing, None, 0, 1)
+            .read_artifact(reader, &missing, None, page_window(1, 1))
             .unwrap_err()
             .to_string()
             .contains("artifact missing")
@@ -577,7 +613,7 @@ async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
     assert!(
         fixture
             .engine
-            .read_artifact(reader, &digest, None, 0, 1)
+            .read_artifact(reader, &digest, None, page_window(1, 1))
             .unwrap_err()
             .to_string()
             .contains("does not match its digest")
@@ -666,9 +702,9 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
 
     let reopened = reopen_engine(&fixture);
     let page = reopened
-        .read_artifact(fork, &digest, None, 1, 2)
+        .read_artifact(fork, &digest, None, page_window(2, 2))
         .expect("the fork's own copy");
-    assert_eq!(page.content, "one\ntwo\n");
+    assert_eq!(page.page.text, "2: one\n3: two\n");
     reopened.shutdown().await;
 }
 
@@ -800,7 +836,7 @@ async fn a_fork_keeps_what_a_newer_build_wrote_and_the_artifacts_it_names() {
     assert_eq!(known["session_id"], serde_json::json!(fork));
     for digest in [&part_digest, &uri_digest] {
         reopened
-            .read_artifact(fork, digest, None, 0, 1)
+            .read_artifact(fork, digest, None, page_window(1, 1))
             .expect("the fork's tree holds the artifact");
     }
     reopened.shutdown().await;

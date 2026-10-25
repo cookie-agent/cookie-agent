@@ -1,11 +1,12 @@
-use cookie_agent_protocol::{
-    ArtifactReadTarget, PersistedToolResult, SessionId, ToolOutputManifest,
-};
+use cookie_agent_protocol::{ArtifactReadTarget, SessionId, ToolOutputManifest};
 
 use std::sync::Arc;
 
 use super::{Engine, artifacts::ArtifactRouter, blocking_io};
-use cookie_agent_runtime_api::ArtifactReadPage;
+use cookie_agent_runtime_api::{
+    ArtifactReadPage,
+    text_tools::{LineWindow, MAX_PAGE_BYTES},
+};
 
 use crate::ToolError;
 
@@ -15,16 +16,18 @@ impl Engine {
     /// resolves (tree-local D1). No ownership lookup is made. This synchronous
     /// API blocks; async tool executors use
     /// [`crate::ToolExecutionContext::read_artifact`].
+    ///
+    /// The page is the lines of `window`, numbered from 1 as `read` numbers
+    /// a file's ([`cookie_agent_runtime_api::text_tools`]).
     pub fn read_artifact(
         &self,
         session: SessionId,
         artifact: &str,
         stream: Option<&str>,
-        offset: u64,
-        limit: u64,
+        window: LineWindow,
     ) -> Result<ArtifactReadPage, ToolError> {
         let target = ArtifactReadTarget::parse(artifact, stream).map_err(ToolError::execution)?;
-        read_artifact(&self.inner.artifacts, session, &target, offset, limit)
+        read_artifact(&self.inner.artifacts, session, &target, window)
     }
 }
 
@@ -32,12 +35,8 @@ pub(crate) fn read_artifact(
     store: &ArtifactRouter,
     session: SessionId,
     target: &ArtifactReadTarget,
-    offset: u64,
-    limit: u64,
+    window: LineWindow,
 ) -> Result<ArtifactReadPage, ToolError> {
-    if limit == 0 {
-        return Err(ToolError::execution("artifact page limit must be positive"));
-    }
     let (digest, source) = if let Some(name) = &target.stream {
         let page = store
             .read_paged(session, target.digest.as_str(), 0, 1)
@@ -62,28 +61,29 @@ pub(crate) fn read_artifact(
         (target.digest.clone(), "artifact".into())
     };
     let page = store
-        .read_paged(session, digest.as_str(), offset, limit.min(2_000))
+        .read_numbered(session, digest.as_str(), window, MAX_PAGE_BYTES)
         .map_err(read_error)?;
-    if page.content.len() > PersistedToolResult::MAX_OUTPUT_BYTES {
-        return Err(ToolError::resource_limit(
-            "artifact page exceeds the 2 MiB output limit; request a smaller page",
-        ));
+    page.check_in_range(&shown(target))?;
+    Ok(ArtifactReadPage { page, source })
+}
+
+/// The artifact as an out-of-range error names it: the start of its
+/// digest, and its stream.
+fn shown(target: &ArtifactReadTarget) -> String {
+    let digest = &target.digest.as_str()[..12];
+    match &target.stream {
+        Some(stream) => format!("artifact {digest}/{stream}"),
+        None => format!("artifact {digest}"),
     }
-    Ok(ArtifactReadPage {
-        content: page.content,
-        next_offset_lines: page.next_offset_lines,
-        source,
-    })
 }
 
 pub(crate) async fn read_artifact_async(
     store: Arc<ArtifactRouter>,
     session: SessionId,
     target: ArtifactReadTarget,
-    offset: u64,
-    limit: u64,
+    window: LineWindow,
 ) -> Result<ArtifactReadPage, ToolError> {
-    blocking_io::run(move || read_artifact(&store, session, &target, offset, limit)).await?
+    blocking_io::run(move || read_artifact(&store, session, &target, window)).await?
 }
 
 fn read_error(error: std::io::Error) -> ToolError {
@@ -106,6 +106,11 @@ mod tests {
         ArtifactReadTarget::parse(digest, None).unwrap()
     }
 
+    /// The first line.
+    fn line_one() -> LineWindow {
+        LineWindow::new(Some(1), Some(1)).unwrap()
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn blocked_artifact_verification_leaves_async_tasks_and_other_readers_responsive() {
         let directory = tempfile::tempdir().unwrap();
@@ -116,7 +121,7 @@ mod tests {
             blocking_io::gate(store.io_test_hook(), "read", Some(first.clone()));
         let reader = store.clone();
         let blocked = tokio::spawn(async move {
-            read_artifact_async(reader, crate::test_session_id(), target(&first), 0, 1).await
+            read_artifact_async(reader, crate::test_session_id(), target(&first), line_one()).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(10), entered)
             .await
@@ -126,18 +131,18 @@ mod tests {
         assert_eq!(tokio::spawn(async { 7 }).await.unwrap(), 7);
         let other = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            read_artifact_async(store, crate::test_session_id(), target(&second), 0, 1),
+            read_artifact_async(store, crate::test_session_id(), target(&second), line_one()),
         )
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(other.content, "second\n");
+        assert_eq!(other.page.text, "1: second\n");
         assert!(
             !blocked.is_finished(),
             "first reader must remain behind its I/O gate"
         );
         release.send(()).unwrap();
-        assert_eq!(blocked.await.unwrap().unwrap().content, "first\n");
+        assert_eq!(blocked.await.unwrap().unwrap().page.text, "1: first\n");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -148,15 +153,20 @@ mod tests {
             .retain(crate::test_session_id(), b"verified\n")
             .unwrap();
         let path = target(&digest);
-        read_artifact_async(store.clone(), crate::test_session_id(), path.clone(), 0, 1)
-            .await
-            .unwrap();
+        read_artifact_async(
+            store.clone(),
+            crate::test_session_id(),
+            path.clone(),
+            line_one(),
+        )
+        .await
+        .unwrap();
         let (entered, release) =
             blocking_io::gate(store.io_test_hook(), "read", Some(digest.clone()));
         let reader = store.clone();
         let reading_path = path.clone();
         let reading = tokio::spawn(async move {
-            read_artifact_async(reader, crate::test_session_id(), reading_path, 0, 1).await
+            read_artifact_async(reader, crate::test_session_id(), reading_path, line_one()).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(10), entered)
             .await
@@ -173,9 +183,9 @@ mod tests {
             1
         );
         release.send(()).unwrap();
-        assert_eq!(reading.await.unwrap().unwrap().content, "verified\n");
+        assert_eq!(reading.await.unwrap().unwrap().page.text, "1: verified\n");
         assert!(
-            read_artifact_async(store, crate::test_session_id(), path, 0, 1)
+            read_artifact_async(store, crate::test_session_id(), path, line_one())
                 .await
                 .unwrap_err()
                 .to_string()

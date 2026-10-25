@@ -782,9 +782,12 @@ other tools; it does not build its own retained-output manifest.
 
 Each stream receives its own configured `[tool_output]` line/byte preview limits.
 Only truncated streams receive a `read_artifact(artifact="<digest>",
-stream="<stream>", offset=...)` hint, where the digest identifies the manifest.
-Single-output hints omit `stream` and the heading. A partial-line byte cut points back to that
-line, so readback does not skip unseen text. Aggregate preview construction also
+stream="<stream>", offset=...)` hint, where the digest identifies the manifest
+and `offset` is the 1-based line of the first line the preview left out, as
+`read_artifact` takes it. (The stream's `next_offset` in `retained_output`
+stays the zero-based index of that line.) Single-output hints omit `stream`
+and the heading. A partial-line byte cut points back to that line, so readback
+does not skip unseen text. Aggregate preview construction also
 reserves 16 KiB for headings/hints inside the existing 2 MiB output bound; when
 necessary, previews are reduced with truthful read hints.
 
@@ -821,8 +824,10 @@ The self-paginating `read`, `read_artifact`, and `get_subagent_result` tools
 declare an absolute truncation opt-out. Their requested page is returned in full
 without artifact retention or truncation metadata, regardless of
 `[tool_output]`. Callers bound these results with each tool's offset/limit
-arguments. A requested page above the event schema's 2 MiB output limit fails
-with a resource-limit tool error; it is never silently truncated. The
+arguments. `read` and `read_artifact` cut each line after 4 KiB and stop a page
+before it passes the 2 MiB output limit, ending it with the `offset` to read
+next; a `get_subagent_result` page above that limit fails with a
+resource-limit tool error. No page is silently truncated. The
 `delegate_subagent` terminal result also opts out, because its teaser preview is
 bounded by `[subagent_output]` instead; the owner of the delegation flow is the
 only place it is bounded. MCP and plugin tools remain subject to normal truncation. External
@@ -857,7 +862,7 @@ read_artifact(artifact: string, limit?: integer, offset?: integer, stream?: stri
 Description sent to the model:
 
 ```text
-Read retained tool output by line, using a zero-based offset. Truncated results and elided history name the artifact (and stream) to read in a read_artifact hint; continue from the offset it gives.
+Read retained tool output by line, as `read` reads a file. A truncated result or elided history names the artifact (and stream) to read in a read_artifact hint, with the 1-based `offset` of the first line it left out: read from there. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
 ```
 
 Always, whatever the agent's permission rules: it reads only output retained by the session's own tree.
@@ -865,8 +870,8 @@ Always, whatever the agent's permission rules: it reads only output retained by 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `artifact` | `string` | yes | The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it. |
-| `limit` | `integer` | no | Maximum number of lines to return, at most 2000. Defaults to 2000. |
-| `offset` | `integer` | no | Zero-based line offset. Defaults to 0. |
+| `limit` | `integer` | no | The most lines to return. Defaults to 2000. |
+| `offset` | `integer` | no | The 1-based line to start at. Defaults to 1. |
 | `stream` | `string` | no | Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it. |
 
 ??? note "Parameters JSON Schema"
@@ -881,7 +886,7 @@ Always, whatever the agent's permission rules: it reads only output retained by 
           "type": "string"
         },
         "limit": {
-          "description": "Maximum number of lines to return, at most 2000. Defaults to 2000.",
+          "description": "The most lines to return. Defaults to 2000.",
           "format": "uint",
           "minimum": 0,
           "type": [
@@ -890,7 +895,7 @@ Always, whatever the agent's permission rules: it reads only output retained by 
           ]
         },
         "offset": {
-          "description": "Zero-based line offset. Defaults to 0.",
+          "description": "The 1-based line to start at. Defaults to 1.",
           "format": "uint",
           "minimum": 0,
           "type": [
@@ -935,13 +940,21 @@ other valid declared name, not just Bash streams. Unknown names and selection on
 non-manifests are errors. Stored `ArtifactReference` values keep the internal
 `artifact://sha256/<digest>` form, which is not a `read_artifact` argument.
 
-Returned pages include `next_offset` metadata when more lines remain. A zero
-limit fails; larger limits are capped at 2000 lines. Pages over the 2 MiB
-terminal-result limit fail and must be requested with a smaller limit. Missing
-and corrupt artifacts produce tool errors.
+A page reads as a `read` page of a file does, without the `<path>` wrapper:
+lines numbered from 1 (`N: text`), a 1-based `offset` (default 1, and 0 is
+refused), a positive `limit` (default 2000, with no maximum), each line cut
+after 4 KiB with a `... [line truncated: N more bytes]` marker, the page
+stopped before it passes the result size limit, and a continuation marker
+(`[N more lines; continue with offset=M]`, or `[page cut at the result size
+limit; continue with offset=M]`) when lines follow it, reported again as the
+1-based `next_offset` in the metadata. An `offset` past the last line is an
+error. Bytes that are not UTF-8 show as replacement characters. Because of
+the line cut, a single line longer than 4 KiB, such as serialized tool-content
+JSON, can be read only up to its first 4 KiB. Missing and corrupt artifacts
+produce tool errors.
 
 ```json
-{"artifact":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream":"results","offset":0,"limit":200}
+{"artifact":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream":"results","offset":1,"limit":200}
 ```
 
 ### Display
@@ -952,7 +965,7 @@ and corrupt artifacts produce tool errors.
 | Title | `Read artifact <12 hex>[/<stream>]` |
 | Arguments | `key_value` of `artifact`, and `stream`, `offset`, and `limit` when given |
 | Preview | – |
-| Result | the page as `text` |
+| Result | `file_excerpt` of the page: `path` the title's `<12 hex>[/<stream>]`, no `language`, `start_line` the 1-based `offset`, `total_lines` the artifact's |
 
 ### MCP tools
 
