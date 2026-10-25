@@ -613,9 +613,12 @@ pub enum TranscriptItem {
         rendered_body: String,
     },
     /// A model's memory tool saved, edited, or deleted the memory at `url`
-    /// (memory spec section 16.9.10): one line, such as `Saved
-    /// project://cookie-agent/release`, that opens the Memory view at that
-    /// memory. It is not a diagnostic, so no level filter hides it.
+    /// (memory spec section 16.9.10), as a daemon before 2026-10-24
+    /// recorded it: one line, such as `Saved project://cookie-agent/release`,
+    /// that opens the Memory view at that memory. A change that follows
+    /// the memory tool call that made it folds into that call's row
+    /// instead, so only a change the reducer cannot match has a line. It
+    /// is not a diagnostic, so no level filter hides it.
     MemoryChange {
         id: u64,
         seq: u64,
@@ -1089,6 +1092,10 @@ pub struct SessionState {
     /// The latest attempt until its first delta, commit, or abandonment.
     pub pending_attempt: Option<AttemptId>,
     pub tools: HashMap<ToolCallId, ToolCallState>,
+    /// The latest tool termination: its sequence, call, and run. A
+    /// `memory_changed` an older daemon recorded right after it folds into
+    /// that call's row.
+    pub last_tool_termination: Option<(u64, ToolCallId, Option<RunId>)>,
     /// The session's background calls, as the daemon last reported them.
     pub background_calls: Vec<cookie_agent_protocol::BackgroundCall>,
     /// Buffered tool rows awaiting their committed placeholder, keyed by

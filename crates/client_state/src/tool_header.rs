@@ -44,6 +44,38 @@ pub fn flatten_header_argument(argument: &str) -> String {
         .join(" ")
 }
 
+/// The schemes a memory URL starts with, one per memory layer.
+const MEMORY_SCHEMES: [&str; 4] = ["user://", "agent://", "machine://", "project://"];
+
+/// Whether `text` is a memory URL, such as `project://cookie-agent/release`:
+/// a layer's scheme, then a name, and no whitespace. A client opens one in
+/// its Memory view, from a call's header or from a display `link` block.
+pub fn is_memory_url(text: &str) -> bool {
+    MEMORY_SCHEMES.iter().any(|scheme| {
+        text.strip_prefix(scheme)
+            .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace))
+    })
+}
+
+/// The byte range of the first memory URL in `text`, a header as a client
+/// drew it: a word that starts with a layer's scheme, up to the next
+/// whitespace. A URL the header cut short ends at its `…`, which the range
+/// covers.
+pub fn memory_url_span(text: &str) -> Option<std::ops::Range<usize>> {
+    let mut start = 0;
+    for word in text.split_inclusive(char::is_whitespace) {
+        let trimmed = word.trim_end_matches(char::is_whitespace);
+        if MEMORY_SCHEMES
+            .iter()
+            .any(|scheme| trimmed.len() > scheme.len() && trimmed.starts_with(scheme))
+        {
+            return Some(start..start + trimmed.len());
+        }
+        start += word.len();
+    }
+    None
+}
+
 /// Characters of an argument a title must show before its `…` for the
 /// title to count as naming the argument it cut short.
 const MIN_CUT_ARGUMENT_CHARS: usize = 8;
@@ -141,6 +173,14 @@ impl ToolCallState {
         (!title_names_argument(&title, &argument)).then_some(argument)
     }
 
+    /// The memory URL the call names as its primary argument, which its
+    /// header links to the Memory view; `None` for any other call. The
+    /// decision reads the argument only, never the tool's name.
+    pub fn memory_url(&self) -> Option<&str> {
+        let argument = self.presentation.primary_argument.as_ref()?.as_str().trim();
+        is_memory_url(argument).then_some(argument)
+    }
+
     /// The header's text: the title, then the argument it does not name.
     pub fn header_text(&self) -> String {
         let title = flatten_header_argument(self.presentation.title.as_str());
@@ -158,7 +198,10 @@ mod tests {
         SafeDisplayText, ToolIdentity, ToolPresentation,
     };
 
-    use super::{flatten_header_argument, hint_icon, shown_arguments, title_names_argument};
+    use super::{
+        flatten_header_argument, hint_icon, is_memory_url, memory_url_span, shown_arguments,
+        title_names_argument,
+    };
 
     fn presentation(
         title: &str,
@@ -262,5 +305,37 @@ mod tests {
         assert_eq!(hint_icon(Some("shell")), "💻");
         assert_eq!(hint_icon(Some("bash")), "🔨");
         assert_eq!(hint_icon(None), "🔨");
+    }
+
+    #[test]
+    fn memory_urls_are_found_by_their_layer_scheme() {
+        for url in [
+            "user://preferences",
+            "agent://builder",
+            "machine://labpc/gpu",
+            "project://cookie-agent/release",
+        ] {
+            assert!(is_memory_url(url), "{url}");
+        }
+        for text in [
+            "user://",
+            "https://example.com",
+            "agent://a b",
+            "src/main.rs",
+        ] {
+            assert!(!is_memory_url(text), "{text}");
+        }
+        let header = "Edit memory agent://builder";
+        assert_eq!(
+            memory_url_span(header).map(|span| &header[span]),
+            Some("agent://builder")
+        );
+        let cut = "Edit memory project://cookie-agent/rel…";
+        assert_eq!(
+            memory_url_span(cut).map(|span| &cut[span]),
+            Some("project://cookie-agent/rel…")
+        );
+        assert_eq!(memory_url_span("Search memory build"), None);
+        assert_eq!(memory_url_span("Fetch xuser://a"), None);
     }
 }

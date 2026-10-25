@@ -808,7 +808,7 @@ fn a_memory_snapshot_is_a_debug_event() {
 }
 
 #[test]
-fn a_memory_change_is_a_row_of_its_own_that_no_level_hides() {
+fn a_memory_change_without_its_call_is_a_row_of_its_own_that_no_level_hides() {
     use cookie_agent_protocol::MemoryChangeKind;
     let session = SessionId::new_v7();
     let run = Some(RunId::new_v7());
@@ -848,6 +848,210 @@ fn a_memory_change_is_a_row_of_its_own_that_no_level_hides() {
             (3, "Deleted agent://reviewer".to_owned()),
             (4, "Changed machine://labpc/gpu".to_owned()),
         ]
+    );
+}
+
+/// A memory tool call as a daemon before 2026-10-24 recorded it: its
+/// start, its termination, and a `memory_changed` for the URL it names.
+struct OldMemoryCall {
+    session: SessionId,
+    run: Option<RunId>,
+    call: ToolCallId,
+    url: &'static str,
+}
+
+impl OldMemoryCall {
+    fn new(session: SessionId, run: Option<RunId>, url: &'static str) -> Self {
+        Self {
+            session,
+            run,
+            call: ToolCallId::new_v7(),
+            url,
+        }
+    }
+
+    fn owner(&self) -> AssistantToolCallRef {
+        AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
+            provider_item_id: None,
+        }
+    }
+
+    fn started(&self, seq: u64) -> StoredEvent {
+        stored_event(
+            self.session,
+            self.run,
+            seq,
+            EventPayload::ToolCallStarted {
+                start: cookie_agent_protocol::ToolCallStart {
+                    background: false,
+                    tool_call_id: self.call,
+                    owner: self.owner(),
+                    output: Default::default(),
+                    presentation: base_presentation(
+                        cookie_agent_protocol::PreparedPresentation::new(
+                            cookie_agent_protocol::SafeDisplayText::new(format!(
+                                "Edit memory {}",
+                                self.url
+                            ))
+                            .unwrap(),
+                            Some(cookie_agent_protocol::BoundedDisplayText::new(self.url).unwrap()),
+                        ),
+                    ),
+                    operation_fingerprint: serde_json::from_value(
+                        serde_json::json!({"digest": "1".repeat(64)}),
+                    )
+                    .unwrap(),
+                },
+            },
+        )
+    }
+
+    fn terminated(&self, seq: u64) -> StoredEvent {
+        stored_event(
+            self.session,
+            self.run,
+            seq,
+            EventPayload::ToolCallTerminated {
+                termination: cookie_agent_protocol::ToolCallTermination {
+                    tool_call_id: self.call,
+                    owner: self.owner(),
+                    outcome: ToolTerminationOutcome::Completed,
+                    result: Some(cookie_agent_protocol::PersistedToolResult {
+                        title: cookie_agent_protocol::SafeDisplayText::new("Edited memory")
+                            .unwrap(),
+                        output: format!("Edited {}.", self.url),
+                        display: vec![cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::DisplayBlock::key_value([(
+                                "url",
+                                self.url.to_owned(),
+                            )]),
+                        )],
+                        metadata: serde_json::json!({"url": self.url}),
+                        background: None,
+                        retained_output: None,
+                        attachments: vec![],
+                        additional_messages: vec![],
+                    }),
+                    error: None,
+                },
+            },
+        )
+    }
+
+    fn changed(&self, seq: u64, url: &str) -> StoredEvent {
+        stored_event(
+            self.session,
+            self.run,
+            seq,
+            EventPayload::MemoryChanged {
+                change: cookie_agent_protocol::MemoryChangeKind::Edited,
+                url: url.into(),
+            },
+        )
+    }
+}
+
+/// The memory change rows of `state`, as `<verb> <url>`.
+fn memory_change_rows(state: &SessionState) -> Vec<String> {
+    state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::MemoryChange { change, url, .. } => {
+                Some(format!("{} {url}", change.verb()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// An older daemon recorded a memory tool's change as its own event while
+/// the call ran; it folds into the call's row, so one call is one row.
+#[test]
+fn a_memory_change_folds_into_the_tool_call_it_follows() {
+    let session = SessionId::new_v7();
+    let run = Some(RunId::new_v7());
+    let edit = OldMemoryCall::new(session, run, "agent://builder");
+    // As the engine wrote it: the change while the call ran.
+    let state = reduce_session_events(
+        session,
+        0,
+        &[
+            edit.started(1),
+            edit.changed(2, edit.url),
+            edit.terminated(3),
+        ],
+    );
+    assert!(
+        memory_change_rows(&state).is_empty(),
+        "{:?}",
+        state.transcript
+    );
+    assert_eq!(state.tools[&edit.call].status, ToolStatus::Completed);
+    // Right after the call's termination, it folds as well.
+    let state = reduce_session_events(
+        session,
+        0,
+        &[
+            edit.started(1),
+            edit.terminated(2),
+            edit.changed(3, edit.url),
+        ],
+    );
+    assert!(
+        memory_change_rows(&state).is_empty(),
+        "{:?}",
+        state.transcript
+    );
+}
+
+/// A change the reducer cannot tie to the call it follows keeps its own
+/// row: another URL, another run, or something between the two.
+#[test]
+fn a_memory_change_that_follows_no_call_of_its_url_keeps_its_row() {
+    let session = SessionId::new_v7();
+    let run = Some(RunId::new_v7());
+    let edit = OldMemoryCall::new(session, run, "agent://builder");
+    let state = reduce_session_events(
+        session,
+        0,
+        &[
+            edit.started(1),
+            edit.changed(2, "user://preferences"),
+            edit.terminated(3),
+        ],
+    );
+    assert_eq!(memory_change_rows(&state), ["Edited user://preferences"]);
+    let other_run = OldMemoryCall {
+        run: Some(RunId::new_v7()),
+        ..OldMemoryCall::new(session, run, "agent://builder")
+    };
+    let state = reduce_session_events(
+        session,
+        0,
+        &[
+            other_run.started(1),
+            other_run.terminated(2),
+            edit.changed(3, edit.url),
+        ],
+    );
+    assert_eq!(memory_change_rows(&state), ["Edited agent://builder"]);
+    let state = reduce_session_events(
+        session,
+        0,
+        &[
+            edit.started(1),
+            edit.terminated(2),
+            edit.changed(3, "user://preferences"),
+            edit.changed(4, edit.url),
+        ],
+    );
+    assert_eq!(
+        memory_change_rows(&state),
+        ["Edited user://preferences", "Edited agent://builder"]
     );
 }
 

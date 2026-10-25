@@ -970,6 +970,7 @@ pub(super) fn reduce_event_from(
                 );
             }
             bump_tool_item(state, tool_call_id);
+            state.last_tool_termination = Some((sequence, tool_call_id, run_id));
         }
         EventPayload::ApprovalRequested { request } => {
             state
@@ -1286,10 +1287,16 @@ pub(super) fn reduce_event_from(
             },
             timestamp,
         ),
-        // A model's memory change, one line that opens the Memory view
-        // (memory spec section 16.9.10). The tool call that made it sits
-        // above it, and what the run does next below it, as for a skill.
+        // A model's memory change, as daemons before 2026-10-24 recorded
+        // it (memory spec section 16.9.10). The call that made it shows the
+        // change on its own row, so a change that follows its call folds
+        // into it; one the reducer cannot match keeps a line that opens the
+        // Memory view, with the call above it and what the run does next
+        // below it, as for a skill.
         EventPayload::MemoryChanged { change, url } => {
+            if memory_change_call(state, run_id, sequence, &url).is_some() {
+                return;
+            }
             state.mark_event_split_pending();
             push_item(state, timestamp, |id| TranscriptItem::MemoryChange {
                 id,
@@ -2467,6 +2474,42 @@ fn push_child(
         child_times.push(timestamp);
     }
     children.push(child);
+}
+
+/// The memory tool call a `memory_changed` of `run_id` at `sequence` for
+/// `url` directly follows: the one running call naming `url`, as the change
+/// was recorded while it ran (a session runs one run at a time, and a
+/// memory write runs alone in it; a call moved to the background does not
+/// count), or the call of the same run whose termination is the event just
+/// before it. `None` when no call matches, such as in a window of history
+/// that starts at the change.
+fn memory_change_call(
+    state: &SessionState,
+    run_id: Option<RunId>,
+    sequence: u64,
+    url: &str,
+) -> Option<ToolCallId> {
+    let names = |tool: &ToolCallState| {
+        tool.presentation
+            .primary_argument
+            .as_ref()
+            .is_some_and(|argument| argument.as_str().trim() == url)
+    };
+    let mut running = state
+        .tools
+        .values()
+        .filter(|tool| tool.status == ToolStatus::Running && !tool.backgrounded && names(tool));
+    let running = running
+        .next()
+        .map(|tool| tool.id)
+        .filter(|_| running.next().is_none());
+    running.or_else(|| {
+        let (terminated_at, call, terminated_run) = state.last_tool_termination?;
+        (terminated_run == run_id
+            && terminated_at.checked_add(1) == Some(sequence)
+            && state.tools.get(&call).is_some_and(names))
+        .then_some(call)
+    })
 }
 
 /// The plan of run `run`: its row replaced in place, or a new row for a
