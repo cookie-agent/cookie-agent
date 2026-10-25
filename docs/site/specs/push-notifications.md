@@ -786,3 +786,28 @@ User decisions after the first use:
   daemon removes it (section 6.3). A platform that keeps the browser's
   subscription after the app is removed keeps delivering to the browser;
   **Remove** in Devices stops it.
+
+### 16.5 Addendum (2026-10-25): the daemon's restarts
+
+User decision: the daemon notifies when it is restarting, unless the device
+asked for the restart, and when it restarted, to every device.
+
+- **Restarting.** When `daemon.restart` is due, the persistent daemon
+  pushes *Restarting…* before anything stops, waiting at most 5 seconds for
+  the sends, and leaves a mark, `<data_root>/push/restarting`. The device
+  that asked is left out: each connection's device is the subscription its
+  last `notifications.subscribe` registered (the web client registers on
+  every connection), and `daemon.restart` records the asking connection's.
+  A restart asked by a client with no device (the TUI, `cookie daemon
+  restart`) tells every device. `client.presence` does not apply.
+- **Restarted or started.** Once the persistent daemon listens, it pushes
+  *Restarted* when it finds the mark (taking it), else *Started*: it cannot
+  tell a service manager's restart from a boot. A daemon a TUI runs
+  in-process announces nothing.
+- **Payload.** `kind: "daemon"` with no session, `tag: "daemon"` and
+  `Topic: daemon`, so each replaces the last; every payload now carries its
+  `tag` (`session:<root>` for the others), which the service worker uses. A
+  click opens the app.
+- `ServerProtocol::subscribe_notifications` and `restart_daemon` take the
+  connection's context; no wire change.
+- `[notifications] enabled = false` sends none of them.

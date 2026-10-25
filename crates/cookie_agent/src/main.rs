@@ -2483,6 +2483,8 @@ async fn run_daemon(
     if let Some(line) = web_page_line(&url) {
         println!("{line}");
     }
+    // Phones with push notifications hear the daemon is up again.
+    runtime.server.announce_started();
     let exit = tokio::select! {
         () = signals.recv() => DaemonExit::Stopped,
         () = restart.cancelled() => DaemonExit::Restart,
@@ -2497,6 +2499,9 @@ async fn run_daemon(
         }
         DaemonExit::Restart => {
             println!("cookie daemon restarting");
+            // Before anything stops: phones with push notifications hear it,
+            // but the one whose page asked.
+            runtime.server.announce_restarting().await;
             // The engine stops first, while clients are still connected:
             // they see the interrupted turns end, then the connection close
             // saying the daemon is restarting.

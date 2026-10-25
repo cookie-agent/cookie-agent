@@ -16,6 +16,17 @@ const TITLE_CHARS: usize = 100;
 /// The most bytes a payload has, well under one push record.
 const MAX_PAYLOAD_BYTES: usize = 3 * 1024;
 
+/// What a daemon notification says.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DaemonEvent {
+    /// Going down to restart, as `daemon.restart` asked.
+    Restarting,
+    /// Back up after restarting itself.
+    Restarted,
+    /// Up after a start it did not ask for (the service manager, a boot).
+    Started,
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct Payload {
     v: u8,
@@ -24,6 +35,9 @@ pub(super) struct Payload {
     root: Option<SessionId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     session: Option<SessionId>,
+    /// The notification a newer one with the same tag replaces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<String>,
     title: String,
     body: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +83,7 @@ impl Payload {
             kind: "settled",
             root: Some(signal.root),
             session: Some(signal.root),
+            tag: Some(format!("session:{}", signal.root)),
             title: session_title(signal.title.as_deref(), signal.short_id.as_deref()),
             body,
             outcome: Some(outcome),
@@ -137,6 +152,7 @@ impl Payload {
             kind,
             root: Some(first.root),
             session: Some(first.session),
+            tag: Some(format!("session:{}", first.root)),
             title: format!(
                 "{prefix} · {}",
                 session_title(first.root_title.as_deref(), first.root_short_id.as_deref())
@@ -153,8 +169,29 @@ impl Payload {
             kind: "test",
             root: None,
             session: None,
+            tag: None,
             title: "Cookie Agent".to_owned(),
             body: "Notifications from this daemon work.".to_owned(),
+            outcome: None,
+            at: Timestamp::now(),
+        }
+    }
+
+    /// The daemon going down to restart, or back up.
+    pub(super) fn daemon(event: DaemonEvent) -> Self {
+        let version = env!("CARGO_PKG_VERSION");
+        Self {
+            v: 1,
+            kind: "daemon",
+            root: None,
+            session: None,
+            tag: Some("daemon".to_owned()),
+            title: "Cookie daemon".to_owned(),
+            body: match event {
+                DaemonEvent::Restarting => "Restarting…".to_owned(),
+                DaemonEvent::Restarted => format!("Restarted: cookie {version} is running again."),
+                DaemonEvent::Started => format!("Started: cookie {version} is running."),
+            },
             outcome: None,
             at: Timestamp::now(),
         }

@@ -855,6 +855,11 @@ even while the page is closed:
   reply, or the error.
 - **An approval or a question waits.** An approval the reviewer handed to
   you, or a question an ACP agent asks, anywhere in a session's tree.
+- **The daemon restarts.** *Restarting…* when it goes down for a restart a
+  client asked for (every device but the one whose page asked), then
+  *Restarted* once it is back, to every device. A daemon started another
+  way, by its service manager or a boot, says *Started*. A daemon a TUI
+  runs in-process says nothing.
 
 Nothing is pushed for a session a client shows you at that moment: an open,
 focused page or app that you used in the last two minutes, or a TUI whose

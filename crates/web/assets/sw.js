@@ -45,9 +45,12 @@ self.addEventListener("push", (event) => {
     badge: "icons/icon-192.png",
     data: { session: typeof payload.session === "string" ? payload.session : null },
   };
-  if (typeof payload.root === "string") {
-    // A newer notification for the same tree replaces the older one.
-    options.tag = "session:" + payload.root;
+  // A newer notification with the same tag replaces the older one: one per
+  // session tree, one for the daemon's restarts.
+  const tag =
+    typeof payload.tag === "string" ? payload.tag : typeof payload.root === "string" ? "session:" + payload.root : null;
+  if (tag) {
+    options.tag = tag;
     options.renotify = true;
   }
   if (payload.kind === "approval" || payload.kind === "question") {

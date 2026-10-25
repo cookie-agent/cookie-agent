@@ -837,13 +837,26 @@ impl ServerProtocol for Server {
     async fn subscribe_notifications(
         &self,
         params: cookie_agent_protocol::NotificationsSubscribeParams,
+        context: &ServerContext,
     ) -> Result<cookie_agent_protocol::NotificationsSubscribeResult> {
-        self.push
+        let subscription = self
+            .push
             .subscribe(params)
-            .map(
-                |subscription| cookie_agent_protocol::NotificationsSubscribeResult { subscription },
-            )
-            .map_err(|error| RpcFault::push(error).into())
+            .map_err(|error| ServerFault::from(RpcFault::push(error)))?;
+        // The connection's device: it is not told of a restart it asks for.
+        let connection = context.connection_id();
+        if self
+            .push
+            .note_registered(connection, subscription.id.clone())
+        {
+            let push = std::sync::Arc::clone(&self.push);
+            let shutdown = context.shutdown();
+            tokio::spawn(async move {
+                shutdown.cancelled().await;
+                push.forget_connection(connection);
+            });
+        }
+        Ok(cookie_agent_protocol::NotificationsSubscribeResult { subscription })
     }
 
     async fn unsubscribe_notifications(
@@ -1029,11 +1042,13 @@ impl ServerProtocol for Server {
     async fn restart_daemon(
         &self,
         params: cookie_agent_protocol::DaemonRestartParams,
+        context: &ServerContext,
     ) -> Result<cookie_agent_protocol::DaemonRestartResult> {
         let scheduled = self
             .engine
             .schedule_restart(params.when)
             .map_err(protocol_fault)?;
+        self.push.note_restart_requested(context.connection_id());
         Ok(cookie_agent_protocol::DaemonRestartResult {
             scheduled: scheduled.scheduled,
             active_runs: scheduled.active_runs,

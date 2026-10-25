@@ -730,8 +730,11 @@ write `crons.json` `cron_store_failed`.
 Since 1.30.0 the daemon sends Web Push notifications to the browsers clients
 registered ([push notifications spec](../specs/push-notifications.md)): when
 a root session settles (its run ended and nothing but a recurring cron job
-can start another) and when an approval or an ACP agent's question waits for
-the user. `[notifications]` configures them.
+can start another), when an approval or an ACP agent's question waits for
+the user, and when the persistent daemon goes down for a `daemon.restart`
+(to every device but the one whose connection asked: the one whose last
+`notifications.subscribe` came over it) and comes back up. `[notifications]`
+configures them.
 
 - **Subscribing.** A client subscribes the browser with the daemon's
   `public_key` (`applicationServerKey`), then sends the subscription's

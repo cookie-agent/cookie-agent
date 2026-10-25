@@ -62,6 +62,24 @@ impl Server {
         self.shutdown.cancel();
     }
 
+    /// Tells the devices with push notifications that the daemon goes down
+    /// to restart, but the one that asked; waits a few seconds at most.
+    pub async fn announce_restarting(&self) {
+        self.push
+            .announce_restarting(std::time::Duration::from_secs(5))
+            .await;
+    }
+
+    /// Tells the devices with push notifications that the persistent daemon
+    /// is up: restarted, or started. Sends in the background.
+    pub fn announce_started(&self) {
+        let push = Arc::clone(&self.push);
+        tokio::spawn(async move {
+            push.announce_started(std::time::Duration::from_secs(30))
+                .await;
+        });
+    }
+
     /// Shuts down to restart: as [`Self::shutdown`], but client connections
     /// close saying the daemon is restarting
     /// ([`cookie_agent_protocol::RESTART_CLOSE_CODE`]).

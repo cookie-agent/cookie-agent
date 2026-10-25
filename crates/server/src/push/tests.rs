@@ -98,6 +98,12 @@ impl Browser {
 
     /// Decrypts a message as the browser does (RFC 8291 section 3.4).
     fn decrypt(&self, body: &[u8]) -> serde_json::Value {
+        self.decrypt_maybe(body)
+            .expect("a message for this browser")
+    }
+
+    /// [`Self::decrypt`], `None` when the message is another browser's.
+    fn decrypt_maybe(&self, body: &[u8]) -> Option<serde_json::Value> {
         struct Length(usize);
         impl KeyType for Length {
             fn len(&self) -> usize {
@@ -141,9 +147,9 @@ impl Browser {
                 Aad::empty(),
                 &mut record,
             )
-            .unwrap();
+            .ok()?;
         assert_eq!(plaintext.last(), Some(&2), "the last record's delimiter");
-        serde_json::from_slice(&plaintext[..plaintext.len() - 1]).unwrap()
+        Some(serde_json::from_slice(&plaintext[..plaintext.len() - 1]).unwrap())
     }
 }
 
@@ -499,6 +505,94 @@ async fn approvals_of_one_tree_gather_into_one_push() {
     };
     fixture.service.signal(PushSignal::NeedsYou(expiring));
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(fixture.requests(), 1);
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_restart_is_announced_to_every_device_but_the_one_that_asked() {
+    let fixture = fixture().await;
+    let asker = Browser::new();
+    let other = Browser::new();
+    let asked = fixture
+        .service
+        .subscribe(asker.params(&format!("{}/push/asker", fixture.base), "Asker"))
+        .unwrap();
+    fixture
+        .service
+        .subscribe(other.params(&format!("{}/push/other", fixture.base), "Other"))
+        .unwrap();
+    assert!(fixture.service.note_registered(7, asked.id.clone()));
+    fixture.service.note_restart_requested(7);
+    fixture
+        .service
+        .announce_restarting(Duration::from_secs(10))
+        .await;
+    {
+        let recorded = fixture.recorded.lock().unwrap();
+        assert_eq!(recorded.requests.len(), 1, "only the other device");
+        let (headers, body) = &recorded.requests[0];
+        assert_eq!(headers["topic"], "daemon");
+        let payload = other.decrypt(body);
+        assert_eq!(payload["kind"], "daemon");
+        assert_eq!(payload["tag"], "daemon");
+        assert_eq!(payload["body"], "Restarting…");
+        assert!(payload.get("session").is_none(), "{payload}");
+    }
+
+    // The daemon that comes back tells every device it restarted, once.
+    let restarted = PushService::with_options(fixture.harness.engine.clone(), true);
+    restarted.announce_started(Duration::from_secs(10)).await;
+    fixture.wait_for_requests(3).await;
+    let bodies = fixture.recorded.lock().unwrap().requests[1..]
+        .iter()
+        .map(|(_, body)| {
+            let payload = other
+                .decrypt_maybe(body)
+                .or_else(|| asker.decrypt_maybe(body))
+                .expect("for one of the devices");
+            payload["body"].as_str().unwrap().to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bodies.len(), 2);
+    assert!(
+        bodies
+            .iter()
+            .all(|body| body.starts_with("Restarted: cookie ")),
+        "{bodies:?}"
+    );
+    // A start the daemon did not ask for says it started.
+    restarted.announce_started(Duration::from_secs(10)).await;
+    fixture.wait_for_requests(5).await;
+    let (_, body) = fixture.recorded.lock().unwrap().requests[4].clone();
+    let payload = other
+        .decrypt_maybe(&body)
+        .or_else(|| asker.decrypt_maybe(&body))
+        .unwrap();
+    assert!(
+        payload["body"]
+            .as_str()
+            .unwrap()
+            .starts_with("Started: cookie "),
+        "{payload}"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_restart_asked_by_a_device_without_notifications_tells_them_all() {
+    let fixture = fixture().await;
+    let browser = Browser::new();
+    fixture
+        .service
+        .subscribe(browser.params(&format!("{}/push/phone", fixture.base), "Phone"))
+        .unwrap();
+    // A TUI, say: its connection registered no device.
+    fixture.service.note_restart_requested(9);
+    fixture
+        .service
+        .announce_restarting(Duration::from_secs(10))
+        .await;
     assert_eq!(fixture.requests(), 1);
     fixture.shutdown().await;
 }

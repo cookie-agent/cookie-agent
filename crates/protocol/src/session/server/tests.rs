@@ -478,6 +478,7 @@ impl ServerProtocol for StubServer {
     async fn subscribe_notifications(
         &self,
         _: crate::NotificationsSubscribeParams,
+        _: &ServerContext,
     ) -> Result<crate::NotificationsSubscribeResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }

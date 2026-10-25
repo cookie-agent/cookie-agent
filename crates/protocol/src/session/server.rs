@@ -631,6 +631,7 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn subscribe_notifications(
         &self,
         params: crate::NotificationsSubscribeParams,
+        context: &ServerContext,
     ) -> Result<crate::NotificationsSubscribeResult, ServerFault>;
     /// Removes a push subscription.
     async fn unsubscribe_notifications(
@@ -679,6 +680,7 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn restart_daemon(
         &self,
         _params: crate::DaemonRestartParams,
+        _context: &ServerContext,
     ) -> Result<crate::DaemonRestartResult, ServerFault> {
         Err(ServerFault::from_error(
             crate::errors::RESTART_UNSUPPORTED.error().build(),
@@ -1232,9 +1234,11 @@ async fn dispatch<S: ServerProtocol>(
         crate::NOTIFICATIONS_GET_METHOD => {
             value(server.get_notifications(decode_default(params)?).await?)
         }
-        crate::NOTIFICATIONS_SUBSCRIBE_METHOD => {
-            value(server.subscribe_notifications(decode(params)?).await?)
-        }
+        crate::NOTIFICATIONS_SUBSCRIBE_METHOD => value(
+            server
+                .subscribe_notifications(decode(params)?, context)
+                .await?,
+        ),
         crate::NOTIFICATIONS_UNSUBSCRIBE_METHOD => {
             value(server.unsubscribe_notifications(decode(params)?).await?)
         }
@@ -1249,9 +1253,11 @@ async fn dispatch<S: ServerProtocol>(
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),
         crate::CONFIG_GET_METHOD => value(server.get_config(decode_default(params)?).await?),
         crate::CONFIG_APPLY_METHOD => value(server.apply_config(decode(params)?).await?),
-        crate::DAEMON_RESTART_METHOD => {
-            value(server.restart_daemon(decode_default(params)?).await?)
-        }
+        crate::DAEMON_RESTART_METHOD => value(
+            server
+                .restart_daemon(decode_default(params)?, context)
+                .await?,
+        ),
         crate::ONBOARDING_GET_METHOD => {
             value(server.get_onboarding(decode_default(params)?).await?)
         }

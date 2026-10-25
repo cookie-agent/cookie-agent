@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub(crate) const PUSH_DIR: &str = "push";
 const KEY_FILE: &str = "vapid.pk8";
 const SUBSCRIPTIONS_FILE: &str = "subscriptions.json";
+/// Left by a daemon going down to restart, for the one that comes back.
+const RESTARTING_FILE: &str = "restarting";
 
 /// A browser the daemon pushes to, with what it needs to reach it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -60,6 +62,20 @@ impl PushStore {
 
     pub(crate) fn write_key(&self, pkcs8: &[u8]) -> io::Result<()> {
         self.write(KEY_FILE, pkcs8)
+    }
+
+    /// Marks that the daemon goes down to restart.
+    pub(crate) fn mark_restarting(&self) -> io::Result<()> {
+        self.write(
+            RESTARTING_FILE,
+            jiff::Timestamp::now().to_string().as_bytes(),
+        )
+    }
+
+    /// Whether the daemon before this one went down to restart, forgetting
+    /// it.
+    pub(crate) fn take_restarting(&self) -> bool {
+        fs::remove_file(self.directory.join(RESTARTING_FILE)).is_ok()
     }
 
     /// The stored subscriptions; none when the file does not exist. A file

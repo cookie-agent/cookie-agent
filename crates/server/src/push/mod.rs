@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use self::{
     crypto::{VapidKey, decode_key},
-    payload::Payload,
+    payload::{DaemonEvent, Payload},
     store::{PushStore, StoredSubscription},
 };
 
@@ -90,6 +90,11 @@ pub(crate) struct PushService {
     changes: watch::Sender<u64>,
     /// Needs-you signals gathering per root, sent when their window ends.
     gathering: Mutex<HashMap<SessionId, Vec<NeedsYouSignal>>>,
+    /// The subscription each connection registered, by connection id.
+    registered: Mutex<HashMap<u64, String>>,
+    /// The subscription of the device that asked for the restart under
+    /// way: it is not told the daemon is restarting.
+    restart_requester: Mutex<Option<String>>,
     http: reqwest::Client,
     /// Tests send to a local `http://` push service.
     allow_http: bool,
@@ -123,6 +128,8 @@ impl PushService {
             presence: Mutex::new(HashMap::new()),
             changes: watch::Sender::new(0),
             gathering: Mutex::new(HashMap::new()),
+            registered: Mutex::new(HashMap::new()),
+            restart_requester: Mutex::new(None),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
@@ -262,6 +269,73 @@ impl PushService {
 
     pub(crate) fn clear_presence(&self, connection: u64) {
         lock(&self.presence).remove(&connection);
+    }
+
+    /// Records that connection `connection` registered subscription `id`:
+    /// its device. Returns whether the connection registered none before.
+    pub(crate) fn note_registered(&self, connection: u64, id: String) -> bool {
+        lock(&self.registered).insert(connection, id).is_none()
+    }
+
+    /// The connection ended.
+    pub(crate) fn forget_connection(&self, connection: u64) {
+        lock(&self.registered).remove(&connection);
+    }
+
+    /// Connection `connection` asked for a restart: its device, when it
+    /// registered one, is not told the daemon is restarting.
+    pub(crate) fn note_restart_requested(&self, connection: u64) {
+        let device = lock(&self.registered).get(&connection).cloned();
+        *lock(&self.restart_requester) = device;
+    }
+
+    /// The daemon goes down to restart: every device but the one that
+    /// asked is told, and the daemon that comes back finds the mark
+    /// ([`Self::announce_started`]). Waits at most `wait` for the sends.
+    pub(crate) async fn announce_restarting(&self, wait: Duration) {
+        if let Err(error) = self.store.mark_restarting() {
+            eprintln!("push notifications: could not mark the restart: {error}");
+        }
+        let requester = lock(&self.restart_requester).take();
+        if !self.config().enabled {
+            return;
+        }
+        let message = daemon_message(DaemonEvent::Restarting, 600);
+        self.send_and_wait(&message, requester.as_deref(), wait)
+            .await;
+    }
+
+    /// The persistent daemon is listening: every device is told it
+    /// restarted, or started when the daemon before it did not go down to
+    /// restart (a service manager's restart, a boot). Waits at most `wait`.
+    pub(crate) async fn announce_started(&self, wait: Duration) {
+        let restarted = self.store.take_restarting();
+        if !self.config().enabled {
+            return;
+        }
+        let event = if restarted {
+            DaemonEvent::Restarted
+        } else {
+            DaemonEvent::Started
+        };
+        let message = daemon_message(event, 3600);
+        self.send_and_wait(&message, None, wait).await;
+    }
+
+    /// Sends `message` to every subscription but `except`, together, and
+    /// waits at most `wait` for them.
+    async fn send_and_wait(&self, message: &Message, except: Option<&str>, wait: Duration) {
+        let Ok(subscriptions) = self.with_subscriptions(|list| Ok((list.clone(), false))) else {
+            return;
+        };
+        let sends = subscriptions
+            .into_iter()
+            .filter(|subscription| Some(subscription.id.as_str()) != except)
+            .map(|subscription| async move {
+                let delivery = self.deliver(&subscription, message).await;
+                self.record(&subscription.id, &delivery);
+            });
+        let _ = tokio::time::timeout(wait, futures_util::future::join_all(sends)).await;
     }
 
     pub(crate) fn subscribe_changes(&self) -> watch::Receiver<u64> {
@@ -597,6 +671,17 @@ impl PushService {
             }
             tokio::time::sleep(wait).await;
         }
+    }
+}
+
+/// A daemon notification, kept by the push service for `ttl` seconds.
+fn daemon_message(event: DaemonEvent, ttl: u64) -> Message {
+    Message {
+        payload: Payload::daemon(event).into_bytes(),
+        ttl,
+        urgency: "normal",
+        topic: Some("daemon".to_owned()),
+        deadline: None,
     }
 }
 
