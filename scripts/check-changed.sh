@@ -129,6 +129,9 @@ if ((${#packages[@]})); then
     selection="$(printf -- '-p %s ' "${packages[@]}")"
     step cargo clippy --locked "$selection"--all-targets -- -D warnings
     tests "$selection"
+    # CI builds rustdoc with warnings denied on every push, so a doc link
+    # to a private item fails there; catch it here for the changed crates.
+    step "RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps $selection"
 fi
 if ((${#extra_tests[@]})); then
     tests "$(printf -- '-p %s ' "${extra_tests[@]}")"

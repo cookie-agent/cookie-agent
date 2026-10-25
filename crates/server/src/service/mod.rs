@@ -107,7 +107,7 @@ impl RunningServer {
     }
 
     /// Waits for the listener to stop after a shutdown, then, for up to
-    /// [`CONNECTIONS_CLOSE_WAIT`], for every client connection to close:
+    /// `CONNECTIONS_CLOSE_WAIT`, for every client connection to close:
     /// each has then written its close frame, which says why it closed (the
     /// daemon restarting, say), and the client answered it or its grace ran
     /// out. Without this, a daemon exiting or re-executing right after

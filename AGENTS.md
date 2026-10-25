@@ -58,6 +58,9 @@ The local tier is:
 - Clippy with warnings denied and the tests of the changed crates and of
   every workspace crate that depends on them, the whole workspace when
   `Cargo.toml`, `Cargo.lock`, `test-support/`, or `examples/` changed;
+- rustdoc of the same crates with warnings denied
+  (`RUSTDOCFLAGS='-D warnings' cargo doc --no-deps`), as CI builds it on
+  every push: a public doc linking a private item fails there;
 - the `wasm32-unknown-unknown` Clippy command only when `crates/protocol`,
   `crates/client_state`, or `crates/web` changed;
 - `check-schema-additive.sh` and `scripts/test-wasm-client.sh` only when
