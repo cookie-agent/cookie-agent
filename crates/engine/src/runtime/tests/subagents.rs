@@ -1082,6 +1082,7 @@ async fn background_delegate_permission_approval_gates_child_admission() {
             PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("ask mode");
     fixture
         .engine
@@ -1202,6 +1203,7 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
             PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("tree ask mode");
     fixture
         .engine
@@ -1260,6 +1262,7 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
             PermissionMode::Yolo,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("child-addressed tree mode update");
     for session_id in [parent.session_id, child.session_id] {
         assert_eq!(

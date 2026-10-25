@@ -199,12 +199,6 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .retain(|(session, _), _| !deleted.contains(session));
-        self.inner
-            .approvals
-            .permission_modes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&root);
         self.inner.grant_journals.forget(root);
         self.rebuild_visible_tree_grants();
         self.inner

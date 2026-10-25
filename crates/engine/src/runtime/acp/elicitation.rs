@@ -595,12 +595,7 @@ impl Engine {
     /// `auto_approve_n`, which answers escalated approvals for an absent
     /// user too.
     fn unattended(&self, session: SessionId) -> bool {
-        let Ok(stored) = self.inner.store.get(session) else {
-            return false;
-        };
-        let root = root_id(&stored.meta.origin, session);
-        lock(&self.inner.approvals.permission_modes).get(&root)
-            == Some(&PermissionMode::AutoApproveN)
+        self.permission_mode(session) == PermissionMode::AutoApproveN
     }
 
     /// Cancels the questions of run `run` still waiting: the run's turn

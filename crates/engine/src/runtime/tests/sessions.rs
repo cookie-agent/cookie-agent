@@ -445,8 +445,8 @@ async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
     assert_eq!(rebuilt.status, expected.status);
 }
 
-#[test]
-fn empty_session_is_live_only_and_disappears_on_restart_without_artifacts() {
+#[tokio::test]
+async fn empty_session_is_live_only_and_disappears_on_restart_without_artifacts() {
     let (fixture, selection) = custom_fixture();
     let session = fixture
         .engine
@@ -469,6 +469,7 @@ fn empty_session_is_live_only_and_disappears_on_restart_without_artifacts() {
             PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("set memory-only permission mode");
     fixture
         .engine

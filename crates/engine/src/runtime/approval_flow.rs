@@ -175,8 +175,6 @@ pub(crate) struct ModelApprovalInput<'a> {
 pub(crate) struct ApprovalRuntimeState {
     pub(crate) store: ApprovalStore,
     pub(crate) pending: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
-    /// Runtime-only permission modes keyed by delegation-tree root.
-    pub(crate) permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
     pub(crate) permission_overlay_mutation: tokio::sync::Mutex<()>,
 }
 
@@ -387,15 +385,7 @@ impl Engine {
             });
         }
 
-        let permission_mode = self
-            .inner
-            .approvals
-            .permission_modes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&root)
-            .copied()
-            .unwrap_or_default();
+        let permission_mode = self.permission_mode(root);
         if permission_mode == PermissionMode::Yolo {
             self.append(
                 active.session,

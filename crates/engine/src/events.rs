@@ -3348,6 +3348,12 @@ fn validate_record_incremental(
                 return corrupt(path, "SessionProjectSet must be runless");
             }
         }
+        // A tree's permission mode changes outside its root's runs.
+        EventPayload::PermissionModeSet { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "PermissionModeSet must be runless");
+            }
+        }
         // A root records its subagents' attachments as they are created.
         EventPayload::DelegatedAttachmentsAdded { .. } => {
             if record.run_id.is_some() {

@@ -205,6 +205,9 @@ pub struct SessionProjection {
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub permission_overlay: SessionPermissionOverlay,
+    /// The tree's permission mode the newest `permission_mode_set` recorded;
+    /// only a root records one.
+    pub permission_mode: Option<cookie_agent_protocol::PermissionMode>,
     /// The fold of the session's runtime attach and detach events.
     pub runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold,
     /// Whether the visible title history still admits an automatic title.

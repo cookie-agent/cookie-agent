@@ -691,6 +691,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                 cookie_agent_protocol::PermissionMode::Yolo,
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
+            .await
             .unwrap();
         let run = fixture
             .engine

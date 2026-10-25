@@ -35,6 +35,7 @@ async fn permission_query_reports_the_current_session_mode() {
             PermissionMode::AutoApproveY,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("set permission mode");
     assert_eq!(
         fixture

@@ -2504,6 +2504,7 @@ async fn an_unattended_session_declines_a_question_at_once() {
     let session = engine.create_session(selection()).unwrap().session_id;
     engine
         .set_permission_mode(session, PermissionMode::AutoApproveN, origin())
+        .await
         .expect("mode");
     let outcome = turn(engine, session, "ask", "elicit form").await;
     assert_eq!(final_text(&outcome), "elicitation: decline null");
@@ -2523,6 +2524,7 @@ async fn an_unattended_session_declines_a_question_at_once() {
     // A headless driver declines what waits in a tree it runs.
     engine
         .set_permission_mode(session, PermissionMode::Ask, origin())
+        .await
         .expect("mode");
     let run = start(engine, session, "headless", "elicit url").await;
     question(engine, session, 1).await;

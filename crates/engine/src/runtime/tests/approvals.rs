@@ -71,6 +71,7 @@ async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
             PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("ask mode");
     let run = fixture
         .engine
@@ -197,6 +198,7 @@ async fn cancellation_during_approval_terminates_batch_without_execution() {
             PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("ask mode");
     let run = fixture
         .engine
@@ -645,6 +647,7 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
             PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("ask mode");
     fixture
         .engine
@@ -795,6 +798,7 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
             PermissionMode::Yolo,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("yolo mode");
     fixture
         .engine
@@ -890,6 +894,7 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
             PermissionMode::AutoApproveN,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("auto-n mode");
     fixture
         .engine
@@ -989,6 +994,7 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
             PermissionMode::AutoApproveY,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("auto-y mode");
     fixture
         .engine
@@ -1075,6 +1081,7 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
             PermissionMode::AutoApproveY,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("auto-y mode");
     fixture
         .engine
@@ -1184,6 +1191,7 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
                 mode,
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
+            .await
             .expect("permission mode");
         fixture
             .engine
@@ -1262,6 +1270,7 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
             PermissionMode::Yolo,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("yolo mode");
     fixture
         .engine
@@ -1337,6 +1346,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
             PermissionMode::Yolo,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("yolo mode");
     fixture
         .engine
@@ -1407,6 +1417,7 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
             PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("ask mode");
     fixture
         .engine
@@ -1432,6 +1443,7 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
             PermissionMode::Yolo,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("yolo mode");
     assert_eq!(
         fixture
@@ -2178,6 +2190,7 @@ async fn a_failed_review_escalates_under_auto_approve_y_and_is_rejected_under_n(
                 mode,
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
+            .await
             .expect("mode");
         fixture
             .engine
@@ -2278,6 +2291,83 @@ async fn a_reviewer_denial_names_the_reviewer() {
         })
     );
     assert!(!executed.is_set());
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+/// The root's log records the tree's permission mode, once per change, and
+/// a restart restores it (approval reviewer spec section 10, f).
+#[tokio::test]
+async fn the_permission_mode_survives_a_restart() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"allow"}"#).await;
+    let (mut fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    for mode in [
+        PermissionMode::AutoApproveN,
+        PermissionMode::AutoApproveN,
+        PermissionMode::Ask,
+    ] {
+        fixture
+            .engine
+            .set_permission_mode(
+                session.session_id,
+                mode,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("mode");
+    }
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("mode-restart").expect("run ID"),
+                selection,
+                content: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    approve_once(&fixture.engine, &approval, "mode-restart-approval").await;
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let modes = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events()
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::PermissionModeSet { mode } => {
+                assert_eq!(event.run_id, None);
+                Some(mode)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(modes, [PermissionMode::AutoApproveN, PermissionMode::Ask]);
+
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    assert_eq!(
+        fixture.engine.permission_mode(session.session_id),
+        PermissionMode::Ask
+    );
     captured.abort();
     fixture.engine.shutdown().await;
 }

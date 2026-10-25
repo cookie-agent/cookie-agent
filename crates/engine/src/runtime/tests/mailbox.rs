@@ -323,6 +323,7 @@ async fn cancelling_a_stream_drains_chunks_before_tool_termination() {
             PermissionMode::Yolo,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("yolo mode");
     let live = record_live_messages(&fixture.engine, session.session_id).await;
     let run = fixture

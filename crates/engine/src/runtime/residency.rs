@@ -284,7 +284,7 @@ impl Engine {
                 self.inner
                     .store
                     .notify_evicted_subscribers(session_id, last_event_seq);
-                self.clear_evicted_session_caches(session_id, &session.meta.origin);
+                self.clear_evicted_session_caches(session_id);
                 evicted.push(session_id);
             }
         }
@@ -454,7 +454,7 @@ impl Engine {
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&member);
                 } else {
-                    self.clear_evicted_session_caches(member, &session.meta.origin);
+                    self.clear_evicted_session_caches(member);
                 }
                 evicted.push(member);
             }
@@ -566,7 +566,7 @@ impl Engine {
         Ok(())
     }
 
-    fn clear_evicted_session_caches(&self, session_id: SessionId, origin: &SessionOrigin) {
+    fn clear_evicted_session_caches(&self, session_id: SessionId) {
         self.retain_registrations_on_eviction(session_id);
         self.inner
             .sessions
@@ -574,16 +574,6 @@ impl Engine {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&session_id);
-        // Permission modes are tree-root keyed. Paging out a child must retain
-        // the shared mode; an evicted root no longer owns runtime-only state.
-        if root_id(origin, session_id) == session_id {
-            self.inner
-                .approvals
-                .permission_modes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&session_id);
-        }
         self.inner
             .compaction
             .context_token_estimators

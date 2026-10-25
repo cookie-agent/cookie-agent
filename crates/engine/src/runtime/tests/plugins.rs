@@ -891,6 +891,7 @@ async fn an_agent_without_an_mcp_key_is_offered_mcp_tools_that_ask() {
             cookie_agent_protocol::PermissionMode::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .expect("ask mode");
     fixture
         .engine

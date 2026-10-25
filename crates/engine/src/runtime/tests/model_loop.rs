@@ -508,6 +508,7 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
             PermissionMode::AutoApprove,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
+        .await
         .unwrap();
     fixture
         .engine

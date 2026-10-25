@@ -478,6 +478,7 @@ async fn prepare_run(
             args.permission_mode.into(),
             headless_origin(),
         )
+        .await
         .map_err(|error| {
             PrepareError::setup(anyhow!(error).context("set headless permission mode"))
         })?;

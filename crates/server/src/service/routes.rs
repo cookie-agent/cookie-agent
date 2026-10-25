@@ -225,6 +225,7 @@ impl ServerProtocol for Server {
     ) -> Result<SessionSetPermissionModeResult> {
         self.engine
             .set_permission_mode(params.session_id, params.mode, context.client_origin())
+            .await
             .map_err(protocol_fault)?;
         Ok(SessionSetPermissionModeResult {})
     }

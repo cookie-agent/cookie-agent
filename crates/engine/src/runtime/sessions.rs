@@ -198,7 +198,12 @@ impl Engine {
         if let Some(mode) = mode {
             // A new tree has no other client to tell: its mode arrives with
             // the session through `session.permission.get`.
-            self.store_permission_mode(session_id, mode)?;
+            self.store_permission_mode(
+                session_id,
+                mode,
+                EventOrigin::new("user").expect("static event origin is valid"),
+            )
+            .await?;
         }
         Ok(meta)
     }
@@ -1091,14 +1096,17 @@ impl Engine {
     }
 
     /// Sets the tree's permission mode and tells every connection,
-    /// naming `origin` as who changed it.
-    pub fn set_permission_mode(
+    /// naming `origin` as who changed it. The root's log records it, so it
+    /// survives a restart (approval reviewer spec section 10, f).
+    pub async fn set_permission_mode(
         &self,
         session_id: SessionId,
         mode: PermissionMode,
         origin: EventOrigin,
     ) -> Result<(), EngineError> {
-        let root = self.store_permission_mode(session_id, mode)?;
+        let root = self
+            .store_permission_mode(session_id, mode, origin.clone())
+            .await?;
         self.inner.store.notify_index_change(
             cookie_agent_protocol::SessionsChangedNotification::PermissionModeChanged {
                 root_session_id: root,
@@ -1109,36 +1117,40 @@ impl Engine {
         Ok(())
     }
 
-    fn store_permission_mode(
+    /// Records `mode` in the log of `session_id`'s root, unless the root's
+    /// newest record already says so. Returns the root.
+    async fn store_permission_mode(
         &self,
         session_id: SessionId,
         mode: PermissionMode,
+        origin: EventOrigin,
     ) -> Result<SessionId, EngineError> {
         self.ensure_session_owned(session_id)?;
         let session = self.inner.store.get(session_id)?;
         let root = root_id(&session.meta.origin, session_id);
-        self.inner
-            .approvals
-            .permission_modes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(root, mode);
+        if self.inner.store.get(root)?.permission_mode != Some(mode) {
+            self.append(root, None, origin, Event::PermissionModeSet { mode })
+                .await?;
+        }
         Ok(root)
     }
+
+    /// The permission mode of `session_id`'s tree: its root's newest
+    /// record, else the default.
     pub(crate) fn permission_mode(&self, session_id: SessionId) -> PermissionMode {
-        let root = self
-            .inner
+        self.inner
             .store
             .get(session_id)
-            .map(|session| root_id(&session.meta.origin, session_id))
-            .unwrap_or(session_id);
-        self.inner
-            .approvals
-            .permission_modes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&root)
-            .copied()
+            .and_then(|session| {
+                let root = root_id(&session.meta.origin, session_id);
+                if root == session_id {
+                    Ok(session)
+                } else {
+                    self.inner.store.get(root)
+                }
+            })
+            .ok()
+            .and_then(|root| root.permission_mode)
             .unwrap_or_default()
     }
     pub async fn rename_session(
