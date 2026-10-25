@@ -496,16 +496,21 @@ async fn a_scheduled_wake_with_an_undelivered_result_keeps_the_root_resident() {
 async fn a_root_settles_for_a_push_only_after_its_waking_child_reported() {
     let job = start_child_job().await;
     let engine = job.fixture.engine.clone();
-    assert!(
-        engine
+    // The run's end is visible before the engine arms the root for it; a
+    // root that settled too early would never be armed again.
+    with_watchdog("the root's turn ended and waits to settle", async {
+        while !engine
             .inner
             .push
             .armed
             .lock()
             .unwrap()
-            .contains_key(&job.parent),
-        "the root's turn ended and waits to settle"
-    );
+            .contains_key(&job.parent)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
     let mut signals = engine.subscribe_push_signals();
     let job = finish_child_job(job).await;
     let signal = with_watchdog("the root settled", signals.recv())
