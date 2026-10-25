@@ -2733,10 +2733,13 @@
       "type": "string"
     },
     "FrozenOpenAiPromptCacheTtl": {
+      "description": "A value this build does not know reads as `30m`, the provider default.",
       "enum": [
+        "12h",
         "30m"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "GoalItem": {
       "properties": {

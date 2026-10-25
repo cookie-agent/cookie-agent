@@ -3638,3 +3638,21 @@ fn frozen_anthropic_cache_strategy_takes_a_one_hour_rolling_marker_in_order() {
     );
     assert!(out_of_order.validate().is_err());
 }
+
+#[test]
+fn frozen_openai_prompt_cache_ttl_is_open_and_reads_unknown_values_as_30m() {
+    for (wire, ttl) in [
+        ("30m", FrozenOpenAiPromptCacheTtl::ThirtyMinutes),
+        ("12h", FrozenOpenAiPromptCacheTtl::TwelveHours),
+    ] {
+        assert_eq!(serde_json::to_value(ttl).unwrap(), serde_json::json!(wire));
+        assert_eq!(
+            serde_json::from_value::<FrozenOpenAiPromptCacheTtl>(serde_json::json!(wire)).unwrap(),
+            ttl
+        );
+    }
+    assert_eq!(
+        serde_json::from_value::<FrozenOpenAiPromptCacheTtl>(serde_json::json!("7d")).unwrap(),
+        FrozenOpenAiPromptCacheTtl::ThirtyMinutes
+    );
+}

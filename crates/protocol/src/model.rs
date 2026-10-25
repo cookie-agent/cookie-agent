@@ -895,9 +895,13 @@ pub enum FrozenOpenAiCacheMode {
     Explicit,
 }
 
+/// A value this build does not know reads as `30m`, the provider default.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(extend("x-open" = true))]
 pub enum FrozenOpenAiPromptCacheTtl {
-    #[serde(rename = "30m")]
+    #[serde(rename = "12h")]
+    TwelveHours,
+    #[serde(rename = "30m", other)]
     ThirtyMinutes,
 }
 

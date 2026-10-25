@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.27.0
+
+- `FrozenOpenAiPromptCacheTtl` (the `ttl` of an `openai` frozen cache
+  strategy, in `run_started` and delegation events) gains `12h`, OpenAI's
+  12-hour lifetime for the Responses API, and is now an open enum: a value
+  a reader does not know reads as `30m`. Plugin protocol 1.15.0 carries it
+  too.
+
 ## 1.26.0
 
 - ACP agents ([ACP agents spec](../specs/acp-agents.md) section 15, input
