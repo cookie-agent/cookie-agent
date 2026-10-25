@@ -16,6 +16,7 @@ use crate::{
     connection,
     icons::{self, Glyph},
     oauth::{self, Lookup},
+    push::{self, PUSH_DAEMON_URL_KEY},
     theme::ThemePreference,
     views::{Install, InstallAction, InstallBanner, RestartBanner, RestartDialog, WorkspaceView},
     workspace::Workspace,
@@ -24,6 +25,10 @@ use crate::{
 /// How long a check of the connection after the tab became visible may take
 /// before the page redials.
 const VISIBLE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often the page checks whether the user went idle, which ends what
+/// it told the daemon it shows.
+const PRESENCE_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Where the page's connection stands.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +67,9 @@ pub(crate) struct Connection {
     workspace: Workspace,
     /// The workspace has had a connection, so a redial keeps it on screen.
     attached: RwSignal<bool>,
+    /// The session a notification asked to open, until a connection opens
+    /// it.
+    pending_session: StoredValue<Option<String>>,
 }
 
 impl Connection {
@@ -70,17 +78,29 @@ impl Connection {
             .as_deref()
             .and_then(daemon_url_for_page)
             .unwrap_or_default();
+        let address_fragment = browser::page_fragment().unwrap_or_default();
         let Launch {
-            url,
-            token,
+            mut url,
+            mut token,
             store,
             fragment,
         } = launch(
             &filled,
             browser::load(DAEMON_URL_KEY).as_deref(),
-            &browser::page_fragment().unwrap_or_default(),
+            &address_fragment,
             |url| browser::load(&token_key(url)),
         );
+        // A notification opens the page at `#session=<id>`: its session
+        // is on the daemon that pushed it (push notifications spec 9.3).
+        let pending_session = push::session_from_fragment(&address_fragment);
+        if pending_session.is_some() && store.is_none() {
+            let daemon =
+                push::notification_daemon(&url, browser::load(PUSH_DAEMON_URL_KEY).as_deref());
+            if daemon != url {
+                token = browser::load(&token_key(&daemon)).unwrap_or_default();
+                url = daemon;
+            }
+        }
         // A token in the fragment is kept for the daemon and taken out of
         // the address bar, so it never lands in history or a bookmark.
         if let Some(token) = store {
@@ -88,6 +108,11 @@ impl Connection {
         }
         if let Some(fragment) = fragment {
             browser::replace_fragment(&fragment);
+        }
+        if pending_session.is_some() {
+            browser::replace_fragment(&push::fragment_without_session(
+                &browser::page_fragment().unwrap_or_default(),
+            ));
         }
         Self {
             url: RwSignal::new(url),
@@ -98,6 +123,40 @@ impl Connection {
             generation: StoredValue::new(0),
             workspace: Workspace::new(),
             attached: RwSignal::new(false),
+            pending_session: StoredValue::new(pending_session),
+        }
+    }
+
+    /// The daemon URL the page connects to.
+    pub(crate) fn url(self) -> String {
+        self.url.get_untracked().trim().to_owned()
+    }
+
+    /// Opens `session` from a clicked notification, on the daemon this
+    /// browser's notifications come from: switching to it first when the
+    /// page is on another, or leaving it filled in on the connect screen
+    /// when the page keeps no token for it.
+    fn open_notified(self, session: String) {
+        let daemon =
+            push::notification_daemon(&self.url(), browser::load(PUSH_DAEMON_URL_KEY).as_deref());
+        if daemon == self.url() && self.client.get_value().is_some() {
+            self.workspace.open_notified_session(&session);
+            return;
+        }
+        self.pending_session.set_value(Some(session));
+        if daemon == self.url() {
+            return;
+        }
+        let token = browser::load(&token_key(&daemon)).unwrap_or_default();
+        self.url.set(daemon);
+        self.token.set(token.clone());
+        if connects_by_itself(Some(&self.url()), Some(&token)) {
+            self.connect();
+        } else {
+            self.next_generation();
+            self.drop_client();
+            self.attached.set(false);
+            self.phase.set(Phase::Idle);
         }
     }
 
@@ -148,6 +207,14 @@ impl Connection {
         let deliveries = client.subscribe_deliveries();
         self.client.set_value(Some(client.clone()));
         self.workspace.adopt(client);
+        self.workspace.resubscribe_push(url.to_owned());
+        if let Some(session) = self
+            .pending_session
+            .try_update_value(Option::take)
+            .flatten()
+        {
+            self.workspace.open_notified_session(&session);
+        }
         self.attached.set(true);
         self.phase.set(Phase::Connected {
             address: url.to_owned(),
@@ -323,6 +390,22 @@ pub fn App() -> impl IntoView {
         spawn_local(land(callback, workspace, landing));
     }
     browser::on_visible(move || connection.check());
+    // Push notifications: a click opens its session, and the daemon hears
+    // what the page shows, so it does not push that (spec section 8).
+    browser::on_open_session_message(move |session| connection.open_notified(session));
+    browser::on_attention_change(move || workspace.report_presence());
+    browser::on_user_input(move || workspace.note_input());
+    Effect::new(move |_| {
+        workspace.selected.track();
+        workspace.new_session.track();
+        workspace.report_presence();
+    });
+    spawn_local(async move {
+        loop {
+            gloo_timers::future::sleep(PRESENCE_CHECK).await;
+            workspace.report_presence();
+        }
+    });
     browser::follow_visual_viewport();
     if connects_by_itself(
         Some(&connection.url.get_untracked()),

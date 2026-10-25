@@ -41,6 +41,7 @@ mod goal;
 mod history;
 mod manage;
 mod nav;
+mod notifications;
 mod oauth;
 mod onboarding;
 mod permissions;
@@ -261,6 +262,23 @@ pub struct Workspace {
     pub has_crons: RwSignal<bool>,
     /// `crons.list`: read on connect and on every `crons.changed`.
     pub crons: RwSignal<Option<Result<cookie_agent_protocol::CronsListResult, String>>>,
+    /// The daemon has push notifications (client protocol 1.30).
+    pub has_push: RwSignal<bool>,
+    /// `notifications.get`, once read.
+    pub notifications:
+        RwSignal<Option<Result<cookie_agent_protocol::NotificationsGetResult, String>>>,
+    /// What the browser says about push, as last read.
+    pub push_context: RwSignal<crate::push::PushContext>,
+    /// Turning notifications on or off is under way.
+    pub push_busy: RwSignal<bool>,
+    pub push_error: RwSignal<Option<String>>,
+    /// What the last test push came to.
+    pub push_test: RwSignal<Option<String>>,
+    /// What the page last told the daemon it shows; `None` before it
+    /// told this connection anything.
+    presence_sent: StoredValue<Option<Option<SessionId>>>,
+    /// When the user last used the page, in milliseconds since the epoch.
+    last_input: StoredValue<f64>,
     /// The job the Scheduled prompts view shows the details of.
     pub cron_selected: RwSignal<Option<cookie_agent_protocol::CronJobId>>,
     /// The job form, while it is open.
@@ -453,6 +471,14 @@ impl Workspace {
             plugins: RwSignal::new(None),
             has_crons: RwSignal::new(false),
             crons: RwSignal::new(None),
+            has_push: RwSignal::new(false),
+            notifications: RwSignal::new(None),
+            push_context: RwSignal::new(crate::push::PushContext::default()),
+            push_busy: RwSignal::new(false),
+            push_error: RwSignal::new(None),
+            push_test: RwSignal::new(None),
+            presence_sent: StoredValue::new(None),
+            last_input: StoredValue::new(browser::now_ms()),
             cron_selected: RwSignal::new(None),
             cron_form: RwSignal::new(None),
             cron_error: RwSignal::new(None),
@@ -580,6 +606,10 @@ impl Workspace {
             .set(cookie_agent_client_state::restart::daemon_can_restart(
                 client.daemon_version(),
             ));
+        self.has_push
+            .set(crate::push::daemon_has_push(client.daemon_version()));
+        // A new connection has heard nothing of what the page shows.
+        self.presence_sent.set_value(None);
         self.restarting.set(None);
         self.restart_confirm.set(false);
         self.client.set_value(Some(client));
@@ -589,6 +619,7 @@ impl Workspace {
         self.finish_waiting_sign_in();
         let selected = self.selected.get_untracked();
         self.refresh_onboarding(!reconnected);
+        self.report_presence();
         if reconnected {
             self.reread_open();
             if self.status.with_untracked(|status| status == RECONNECTING) {
@@ -701,6 +732,12 @@ impl Workspace {
             }
             ClientDelivery::CronsChanged(_) => {
                 self.poll_crons();
+                return;
+            }
+            ClientDelivery::NotificationsChanged(_) => {
+                if self.notifications.with_untracked(Option::is_some) {
+                    self.poll_notifications();
+                }
                 return;
             }
             ClientDelivery::DaemonRestarting(restarting) => {

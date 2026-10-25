@@ -34,6 +34,7 @@ pub mod modes;
 pub mod oauth;
 pub mod panics;
 pub mod places;
+pub mod push;
 pub mod render;
 pub mod session_list;
 pub mod skills;

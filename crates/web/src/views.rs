@@ -44,6 +44,7 @@ mod install;
 mod machines;
 mod manage;
 mod memory;
+mod notifications;
 mod onboarding;
 mod projects;
 mod questions;

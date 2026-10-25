@@ -286,7 +286,8 @@ mod tests {
     }
 
     /// The service worker caches nothing, takes over at once, keeps off the
-    /// daemon's WebSocket endpoints, and carries the line the build stamps;
+    /// daemon's WebSocket endpoints, shows every push, opens a clicked
+    /// notification's session, and carries the line the build stamps;
     /// `index.html` copies it under its own name and names the manifest,
     /// iOS's tags, and the early keeper of Chromium's install prompt.
     #[test]
@@ -300,6 +301,19 @@ mod tests {
         assert!(worker.contains(r"/\/(ws|runtime)$/"));
         // No Cache Storage: it caches nothing.
         assert!(!worker.contains("caches."));
+        // Every push shows a notification, whatever its payload: Safari
+        // revokes a subscription whose pushes show none (push
+        // notifications spec section 9.2).
+        assert!(worker.contains(r#"addEventListener("push""#));
+        assert_eq!(worker.matches("showNotification(").count(), 1);
+        assert!(
+            worker.contains("event.waitUntil(self.registration.showNotification(title, options))")
+        );
+        assert!(worker.contains(r#": "Cookie Agent";"#));
+        // A click opens its session in an open window, else a new one.
+        assert!(worker.contains(r#"addEventListener("notificationclick""#));
+        assert!(worker.contains(r#"open.postMessage({ type: "open-session", session })"#));
+        assert!(worker.contains(r#"url.hash = "session=" + session"#));
         assert_eq!(worker.lines().last(), Some("// build: source"));
         let index = String::from_utf8(asset("index.html")).unwrap();
         for needle in [

@@ -1,5 +1,6 @@
 //! The few browser services the page uses: its address, storage, history,
-//! the colour scheme, visibility, and installing the page as an app. Everything here is a thin call into
+//! the colour scheme, visibility, installing the page as an app, and push
+//! notifications. Everything here is a thin call into
 //! `web_sys`; it compiles on every target but only works in a browser.
 
 use wasm_bindgen::{JsCast as _, closure::Closure};
@@ -598,4 +599,291 @@ pub fn on_history_move(arrived: impl Fn(usize) + 'static) -> Option<Listener> {
             .map_or(0, |depth| depth as usize);
         arrived(depth);
     })
+}
+
+/// `target[name]`, `None` when it is undefined or null.
+fn property(target: &wasm_bindgen::JsValue, name: &str) -> Option<wasm_bindgen::JsValue> {
+    js_sys::Reflect::get(target, &name.into())
+        .ok()
+        .filter(|value| !value.is_undefined() && !value.is_null())
+}
+
+/// Calls `target[name](...arguments)`.
+fn call_method(
+    target: &wasm_bindgen::JsValue,
+    name: &str,
+    arguments: &[wasm_bindgen::JsValue],
+) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    let function = property(target, name)
+        .ok_or_else(|| wasm_bindgen::JsValue::from_str(&format!("no {name}")))?
+        .dyn_into::<js_sys::Function>()?;
+    let list = js_sys::Array::new();
+    for argument in arguments {
+        list.push(argument);
+    }
+    function.apply(target, &list)
+}
+
+/// Awaits `value` as a promise (a plain value resolves at once).
+async fn settle(
+    value: wasm_bindgen::JsValue,
+) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&value)).await
+}
+
+/// Whether the browser can push to the page: a secure page with a service
+/// worker, `PushManager`, and `Notification`.
+pub fn push_supported() -> bool {
+    let Some(window) = window().filter(web_sys::Window::is_secure_context) else {
+        return false;
+    };
+    let navigator: wasm_bindgen::JsValue = window.navigator().into();
+    let window: wasm_bindgen::JsValue = window.into();
+    property(&navigator, "serviceWorker").is_some()
+        && property(&window, "PushManager").is_some()
+        && property(&window, "Notification").is_some()
+}
+
+/// `Notification.permission`: `default`, `granted`, or `denied`.
+pub fn notification_permission() -> String {
+    window()
+        .and_then(|window| property(&window.into(), "Notification"))
+        .and_then(|notification| property(&notification, "permission"))
+        .and_then(|permission| permission.as_string())
+        .unwrap_or_else(|| "default".to_owned())
+}
+
+/// Asks for notification permission; call it from a click. The answer is
+/// what [`notification_permission`] then says.
+pub async fn request_notification_permission() -> String {
+    if let Some(notification) = window().and_then(|window| property(&window.into(), "Notification"))
+        && let Ok(asked) = call_method(&notification, "requestPermission", &[])
+        && let Ok(answer) = settle(asked).await
+        && let Some(answer) = answer.as_string()
+    {
+        return answer;
+    }
+    notification_permission()
+}
+
+/// The page's service worker registration, once it is active.
+async fn worker_registration() -> Option<wasm_bindgen::JsValue> {
+    let window = window().filter(web_sys::Window::is_secure_context)?;
+    let container = property(&window.navigator().into(), "serviceWorker")?;
+    let ready = property(&container, "ready")?;
+    let ready = std::pin::pin!(settle(ready));
+    let timeout = std::pin::pin!(gloo_timers::future::sleep(std::time::Duration::from_secs(
+        10
+    )));
+    match futures_util::future::select(ready, timeout).await {
+        futures_util::future::Either::Left((Ok(registration), _)) => Some(registration),
+        _ => None,
+    }
+}
+
+/// This browser's push subscription for the page.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BrowserPushSubscription {
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+    /// The application server key it was made with, base64url.
+    pub key: Option<String>,
+}
+
+fn read_subscription(subscription: &wasm_bindgen::JsValue) -> Option<BrowserPushSubscription> {
+    use base64::Engine as _;
+    let json = js_sys::JSON::stringify(subscription).ok()?.as_string()?;
+    let json: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let key = property(subscription, "options")
+        .and_then(|options| property(&options, "applicationServerKey"))
+        .map(|key| js_sys::Uint8Array::new(&key).to_vec())
+        .map(|bytes| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes));
+    Some(BrowserPushSubscription {
+        endpoint: json["endpoint"].as_str()?.to_owned(),
+        p256dh: json["keys"]["p256dh"].as_str()?.to_owned(),
+        auth: json["keys"]["auth"].as_str()?.to_owned(),
+        key,
+    })
+}
+
+/// This browser's push subscription, if it has one.
+pub async fn push_subscription() -> Option<BrowserPushSubscription> {
+    let registration = worker_registration().await?;
+    let manager = property(&registration, "pushManager")?;
+    let subscription = settle(call_method(&manager, "getSubscription", &[]).ok()?)
+        .await
+        .ok()?;
+    if subscription.is_null() || subscription.is_undefined() {
+        return None;
+    }
+    read_subscription(&subscription)
+}
+
+/// Subscribes this browser with the daemon's `key` (base64url), replacing a
+/// subscription made with another key.
+pub async fn push_subscribe(key: &str) -> Result<BrowserPushSubscription, String> {
+    use base64::Engine as _;
+    let describe = |error: wasm_bindgen::JsValue| {
+        js_sys::Reflect::get(&error, &"message".into())
+            .ok()
+            .and_then(|message| message.as_string())
+            .or_else(|| error.as_string())
+            .unwrap_or_else(|| "the browser refused".to_owned())
+    };
+    let registration = worker_registration()
+        .await
+        .ok_or_else(|| "the page's service worker is not running".to_owned())?;
+    let manager = property(&registration, "pushManager")
+        .ok_or_else(|| "this browser has no push".to_owned())?;
+    let existing = settle(call_method(&manager, "getSubscription", &[]).map_err(describe)?)
+        .await
+        .map_err(describe)?;
+    if !existing.is_null() && !existing.is_undefined() {
+        let same = read_subscription(&existing)
+            .and_then(|subscription| subscription.key)
+            .is_some_and(|existing| crate::push::same_key(&existing, key));
+        if !same {
+            let _ = settle(call_method(&existing, "unsubscribe", &[]).map_err(describe)?).await;
+        }
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(key.trim_end_matches('='))
+        .map_err(|_| "the daemon's key is not base64url".to_owned())?;
+    let options = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&options, &"userVisibleOnly".into(), &true.into());
+    let _ = js_sys::Reflect::set(
+        &options,
+        &"applicationServerKey".into(),
+        &js_sys::Uint8Array::from(bytes.as_slice()).into(),
+    );
+    let subscription =
+        settle(call_method(&manager, "subscribe", &[options.into()]).map_err(describe)?)
+            .await
+            .map_err(describe)?;
+    read_subscription(&subscription)
+        .ok_or_else(|| "the browser's subscription has no keys".to_owned())
+}
+
+/// Removes this browser's push subscription; `true` when there was one.
+pub async fn push_unsubscribe() -> bool {
+    let Some(registration) = worker_registration().await else {
+        return false;
+    };
+    let Some(manager) = property(&registration, "pushManager") else {
+        return false;
+    };
+    let Ok(asked) = call_method(&manager, "getSubscription", &[]) else {
+        return false;
+    };
+    let Ok(existing) = settle(asked).await else {
+        return false;
+    };
+    if existing.is_null() || existing.is_undefined() {
+        return false;
+    }
+    match call_method(&existing, "unsubscribe", &[]) {
+        Ok(done) => settle(done).await.is_ok_and(|done| done.is_truthy()),
+        Err(_) => false,
+    }
+}
+
+/// Closes the notifications shown with `tag`.
+pub async fn close_notifications(tag: &str) {
+    let Some(registration) = worker_registration().await else {
+        return;
+    };
+    let filter = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&filter, &"tag".into(), &tag.into());
+    let Ok(shown) = call_method(&registration, "getNotifications", &[filter.into()]) else {
+        return;
+    };
+    let Ok(shown) = settle(shown).await else {
+        return;
+    };
+    for notification in js_sys::Array::from(&shown).iter() {
+        let _ = call_method(&notification, "close", &[]);
+    }
+}
+
+/// Calls `open` with the session of each `open-session` message the
+/// service worker posts (a notification was clicked).
+pub fn on_open_session_message(open: impl Fn(String) + 'static) {
+    let Some(window) = window() else {
+        return;
+    };
+    let Some(container) = property(&window.navigator().into(), "serviceWorker") else {
+        return;
+    };
+    let Ok(target) = container.dyn_into::<web_sys::EventTarget>() else {
+        return;
+    };
+    let listener = Listener::add(target, "message", move |event| {
+        let Some(event) = event.dyn_ref::<web_sys::MessageEvent>() else {
+            return;
+        };
+        let data = event.data();
+        if property(&data, "type")
+            .and_then(|kind| kind.as_string())
+            .as_deref()
+            == Some("open-session")
+            && let Some(session) =
+                property(&data, "session").and_then(|session| session.as_string())
+        {
+            open(session);
+        }
+    });
+    if let Some(listener) = listener {
+        listener.keep();
+    }
+}
+
+/// Whether the page is visible and its window has focus.
+pub fn page_attended() -> bool {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return false;
+    };
+    document.visibility_state() == web_sys::VisibilityState::Visible
+        && document.has_focus().unwrap_or(false)
+}
+
+/// Calls `changed` when the page is shown, hidden, focused, or blurred.
+pub fn on_attention_change(changed: impl Fn() + 'static) {
+    let Some(window) = window() else {
+        return;
+    };
+    let changed = std::rc::Rc::new(changed);
+    if let Some(document) = window.document() {
+        let changed = std::rc::Rc::clone(&changed);
+        if let Some(listener) =
+            Listener::add(document.into(), "visibilitychange", move |_| changed())
+        {
+            listener.keep();
+        }
+    }
+    for event in ["focus", "blur"] {
+        let changed = std::rc::Rc::clone(&changed);
+        if let Some(listener) = Listener::add(window.clone().into(), event, move |_| changed()) {
+            listener.keep();
+        }
+    }
+}
+
+/// Calls `used` on each pointer, key, touch, or wheel input in the page.
+pub fn on_user_input(used: impl Fn() + 'static) {
+    let Some(window) = window() else {
+        return;
+    };
+    let used = std::rc::Rc::new(used);
+    for event in ["pointerdown", "keydown", "touchstart", "wheel"] {
+        let used = std::rc::Rc::clone(&used);
+        if let Some(listener) = Listener::add(window.clone().into(), event, move |_| used()) {
+            listener.keep();
+        }
+    }
+}
+
+/// Milliseconds since the Unix epoch.
+pub fn now_ms() -> f64 {
+    js_sys::Date::now()
 }

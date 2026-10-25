@@ -1,5 +1,5 @@
 // The cookie agent page's service worker. It makes the page installable as
-// an app and caches nothing: every request goes to the network, so the page
+// an app, shows push notifications, and caches nothing: every request goes to the network, so the page
 // always matches its daemon's build (web client spec, section 9). A daemon
 // that is not reachable shows the browser's own error, as without it.
 //
@@ -25,6 +25,56 @@ self.addEventListener("fetch", (event) => {
   // network error the browser would show anyway, instead of a rejection
   // the console reports as uncaught.
   event.respondWith(fetch(request).catch(() => Response.error()));
+});
+
+// Push notifications (push notifications spec section 9.2). The daemon
+// sends a small JSON payload: a root session settled, or an approval or a
+// question waits. Every push shows a notification: Safari revokes a
+// subscription whose pushes show nothing, and Chrome shows its own.
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch (_) {
+    payload = {};
+  }
+  const title = typeof payload.title === "string" && payload.title ? payload.title : "Cookie Agent";
+  const options = {
+    body: typeof payload.body === "string" ? payload.body : "",
+    icon: "icons/icon-192.png",
+    badge: "icons/icon-192.png",
+    data: { session: typeof payload.session === "string" ? payload.session : null },
+  };
+  if (typeof payload.root === "string") {
+    // A newer notification for the same tree replaces the older one.
+    options.tag = "session:" + payload.root;
+    options.renotify = true;
+  }
+  if (payload.kind === "approval" || payload.kind === "question") {
+    options.requireInteraction = true;
+  }
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// A click opens the session: in a window of the app already open, else in
+// a new one at `#session=<id>`.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const session = event.notification.data && event.notification.data.session;
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const open = windows.find((client) => client.url.startsWith(self.registration.scope));
+      if (open) {
+        await open.focus();
+        if (session) open.postMessage({ type: "open-session", session });
+        return;
+      }
+      const url = new URL(self.registration.scope);
+      if (session) url.hash = "session=" + session;
+      await self.clients.openWindow(url.href);
+    })(),
+  );
 });
 
 // build: source
