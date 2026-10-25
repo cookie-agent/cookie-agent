@@ -506,7 +506,7 @@ async fn a_new_agent_takes_a_new_snapshot() {
 
 #[tokio::test]
 async fn the_memory_tools_write_read_edit_search_and_delete() {
-    let (endpoint, responses, captured) = scripted_channel_server(10).await;
+    let (endpoint, responses, captured) = scripted_channel_server(11).await;
     let (fixture, selection) =
         custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(MEMORY));
     create_project(&fixture, "web").await;
@@ -528,10 +528,16 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
             "read-1",
             "edit-1",
             "memory_edit",
-            serde_json::json!({"url": "project://web/build", "old": "cargo test", "new": "cargo nextest"}),
+            serde_json::json!({"url": "project://web/build", "oldString": "cargo test", "newString": "cargo nextest"}),
         ),
         (
             "edit-1",
+            "edit-miss",
+            "memory_edit",
+            serde_json::json!({"url": "project://web/build", "oldString": "cargo test", "newString": "x"}),
+        ),
+        (
+            "edit-miss",
             "search-1",
             "memory_search",
             serde_json::json!({"query": "build"}),
@@ -625,24 +631,74 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         );
         termination.error.as_ref().unwrap().message.to_string()
     };
-    assert_eq!(output("write-1"), "Created project://web/build.");
     let read = output("read-1");
+    let size = read
+        .lines()
+        .find_map(|line| line.strip_prefix("size: "))
+        .and_then(|size| size.strip_suffix(" bytes"))
+        .unwrap();
+    assert_eq!(
+        output("write-1"),
+        format!("Created project://web/build ({size} bytes).")
+    );
     // No URL and no revision; the session is in no project, so the memory
     // is unrelated.
     assert!(
         read.starts_with("related: no\neditable: yes\ncreated: "),
         "{read}"
     );
-    assert!(read.contains("\nmax size: 2048 bytes\ndescription: Build conventions\nkeywords: cargo\n\n- run cargo test\n"), "{read}");
+    // The body is numbered from 1, under the header.
+    assert!(read.ends_with("\nmax size: 2048 bytes\ndescription: Build conventions\nkeywords: cargo\n\n1: - run cargo test\n"), "{read}");
     assert!(!read.contains("revision"), "{read}");
-    assert_eq!(output("edit-1"), "Edited project://web/build.");
+    assert_eq!(
+        ended["read-1"].result.as_ref().unwrap().title.as_str(),
+        "Read project://web/build"
+    );
+    assert_eq!(
+        ended["read-1"].result.as_ref().unwrap().display,
+        [Open::Known(DisplayBlock::FileExcerpt {
+            path: "project://web/build".into(),
+            language: Some("markdown".into()),
+            start_line: 1,
+            lines: vec!["- run cargo test".into()],
+            total_lines: Some(1),
+            omitted_lines: None,
+            full: None,
+        })]
+    );
+    assert_eq!(
+        output("edit-1"),
+        "Edited project://web/build: 1 replacement."
+    );
+    assert_eq!(
+        ended["edit-1"].result.as_ref().unwrap().title.as_str(),
+        "Edited project://web/build"
+    );
+    // An edit that cannot apply fails as it is prepared.
+    assert_eq!(
+        failure("edit-miss"),
+        "`cargo test` occurs 0 times in the body of project://web/build; include more context so it occurs once"
+    );
     assert_eq!(
         output("search-1"),
         "project://web/build — Build conventions\n  unrelated · editable · less than a minute old\n  keywords: cargo"
     );
     // A write of its own counts as seeing the memory.
-    assert_eq!(output("replace-1"), "Replaced project://web/build.");
+    assert!(
+        output("replace-1").starts_with("Replaced project://web/build (")
+            && output("replace-1").ends_with(" bytes)."),
+        "{}",
+        output("replace-1")
+    );
+    assert_eq!(
+        ended["replace-1"].result.as_ref().unwrap().title.as_str(),
+        "Wrote project://web/build"
+    );
     assert_eq!(output("delete-1"), "Deleted project://web/build.");
+    assert_eq!(
+        ended["delete-1"].result.as_ref().unwrap().title.as_str(),
+        "Deleted project://web/build"
+    );
     assert!(
         fixture
             .engine
@@ -651,7 +707,11 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
             .is_err()
     );
     // The rules alone decide: a model adds and deletes user categories.
-    assert_eq!(output("create-user"), "Created user://hobbies.");
+    assert!(
+        output("create-user").starts_with("Created user://hobbies ("),
+        "{}",
+        output("create-user")
+    );
     assert_eq!(output("delete-user"), "Deleted user://profile.");
     assert!(
         fixture
@@ -667,6 +727,11 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         "{unseen}"
     );
     assert!(unseen.contains("- unseen"), "{unseen}");
+    // A memory changed since the session saw it is `operation_changed`.
+    assert_eq!(
+        ended["unseen"].error.as_ref().unwrap().code.as_str(),
+        "operation_changed"
+    );
     // Each call's row is the record of its change: a diff of the memory as
     // the editors show it, without the daemon's stamps.
     let diff = |id: &str| match ended[id].result.as_ref().unwrap().display.as_slice() {
@@ -728,11 +793,8 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
         changed(&deleted).last().map(String::as_str),
         Some("Remove - run cargo nextest --no-fail-fast")
     );
-    // A read shows the body, a search links to what it found.
-    assert_eq!(
-        ended["read-1"].result.as_ref().unwrap().display,
-        crate::base_tools::markdown_display("- run cargo test\n")
-    );
+    // A read shows its page of the body as an excerpt (above), a search
+    // links to what it found.
     assert_eq!(
         ended["search-1"].result.as_ref().unwrap().display,
         [Open::Known(DisplayBlock::Link {
@@ -779,6 +841,67 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
     assert_eq!(memory_changes(&fixture, session), 0);
     // Results reach the model.
     assert!(requests[2].contains("max size: 2048 bytes"));
+    fixture.engine.shutdown().await;
+}
+
+/// An edit whose `oldString` does not occur once in the body fails as it
+/// is prepared: the user is never asked to approve a change that cannot
+/// apply.
+#[tokio::test]
+async fn an_edit_that_cannot_apply_is_refused_before_approval() {
+    let (endpoint, responses, _captured) = scripted_channel_server(3).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        &agent("{ memory: allow, memory_write: ask }"),
+    );
+    user_write(&fixture, "user://feedback", "Feedback", "- same\n- same\n");
+    for (matcher, id, arguments) in [
+        (
+            "start-edits",
+            "several",
+            serde_json::json!({"url": "user://feedback", "oldString": "same", "newString": "x"}),
+        ),
+        (
+            "several",
+            "missing",
+            serde_json::json!({"url": "user://nothing", "oldString": "a", "newString": "b"}),
+        ),
+    ] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                matcher,
+                scripted_tool_body(id, "memory_edit", arguments),
+            ))
+            .unwrap();
+    }
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "\"missing\"",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    run(&fixture, session, &selection, "go", "start-edits").await;
+    let ended = terminations(&fixture, session);
+    let message = |id: &str| {
+        assert_eq!(ended[id].outcome, ToolTerminationOutcome::Failed);
+        ended[id].error.as_ref().unwrap().message.to_string()
+    };
+    assert_eq!(
+        message("several"),
+        "`same` occurs 2 times in the body of user://feedback; include more context so it occurs once"
+    );
+    assert_eq!(message("missing"), "user://nothing does not exist");
+    assert!(
+        !events(&fixture, session)
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ApprovalRequested { .. })),
+        "no approval is asked for"
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -1001,9 +1124,15 @@ async fn a_delegated_run_sees_only_its_agent_and_writes_only_its_file() {
     );
     assert_eq!(document.keywords(), ["primary", "checks"]);
     assert_eq!(document.body(), "- check twice\n");
+    let own_output = &own.result.as_ref().unwrap().output;
+    let (wrote, notice) = own_output.split_once(" bytes). ").unwrap();
+    assert!(
+        wrote.starts_with("Replaced agent://primary ("),
+        "{own_output}"
+    );
     assert_eq!(
-        own.result.as_ref().unwrap().output,
-        "Replaced agent://primary. The description of agent://primary is the daemon's and cannot be changed, so it stays \"Memory of the `primary` agent: Memory test agent\". Its keywords always include `primary`, so they were added back; other keywords are kept."
+        notice,
+        "The description of agent://primary is the daemon's and cannot be changed, so it stays \"Memory of the `primary` agent: Memory test agent\". Its keywords always include `primary`, so they were added back; other keywords are kept."
     );
     fixture.engine.shutdown().await;
 }

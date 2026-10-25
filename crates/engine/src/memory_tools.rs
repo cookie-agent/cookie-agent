@@ -3,9 +3,16 @@
 //! `memory_read` under the `memory` action, `memory_write`, `memory_edit`,
 //! and `memory_delete` under `memory_write`, each with the memory URL as
 //! resource. `memory_search` is checked per result instead (section 9.3),
-//! so it declares no permission. Writes carry no revision: an edit applies
-//! when its `old` text occurs once, and a replacing write needs the session
-//! to have seen the memory as it is (section 16.9.8). A delete deletes.
+//! so it declares no permission. An edit applies when its `oldString`
+//! occurs once in the body, which preparation checks before the call is
+//! approved; a replacing write needs the session to have seen the memory as
+//! it is (section 16.9.8), and the store refuses it otherwise. A delete
+//! deletes.
+//!
+//! `memory_read` pages a memory's body as the coding runtime's `read` pages
+//! a file, from a 1-based `offset`, and the write tools word their results
+//! and errors as `write` and `edit` do
+//! ([`cookie_agent_runtime_api::text_tools`]).
 //!
 //! The provider also contributes the `<tool_instructions
 //! provider="builtin.memory">` section (section 16.9.1): part A, what the
@@ -31,6 +38,7 @@ use cookie_agent_runtime_api::{
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
     authoring::{parse_args, prepared_operation, prepared_resource, safe_title, schema},
     display::{TextChange, fit_executed_block, text_diff},
+    text_tools::{self, LineWindow, MAX_PAGE_BYTES, NumberedPage},
 };
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -174,9 +182,9 @@ pub fn memory_tool_specs() -> Vec<ToolSpec> {
 }
 
 const SEARCH_DESCRIPTION: &str = "Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, description, and URL segments (user, agent, machine, or project, then the names after it), never its body; results are ranked by keyword hits first. Each result shows a memory's URL and description, whether it is related to this session, whether you may change it, and its age, then its keywords; a result you need approval to read shows only its first two lines. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.";
-const READ_DESCRIPTION: &str = "Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and its body.";
+const READ_DESCRIPTION: &str = "Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.";
 const WRITE_DESCRIPTION: &str = "Create or replace one memory, following the memory instructions in the system prompt. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.";
-const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old` in a memory's body with `new`, following the memory instructions in the system prompt. Fails when `old` occurs zero or several times; include more context to make it unique.";
+const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `oldString` in a memory's body with `newString`, following the memory instructions in the system prompt. `oldString` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers memory_read shows are not part of the body.";
 const DELETE_DESCRIPTION: &str = "Delete one memory. Nothing is kept: the deletion is final.";
 
 fn spec(
@@ -196,7 +204,12 @@ fn spec(
         } else {
             ToolConcurrency::Exclusive
         },
-        result_truncation: Default::default(),
+        // A read pages itself, as the coding runtime's `read` does.
+        result_truncation: if name == READ {
+            cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
+        } else {
+            Default::default()
+        },
         name: name.into(),
         permission_name: permission_name.map(str::to_owned),
         description: description.into(),
@@ -245,6 +258,12 @@ struct SearchArgs {
 struct ReadArgs {
     /// The memory URL.
     url: String,
+    /// The 1-based body line to start at. Defaults to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offset: Option<usize>,
+    /// The most body lines to return. Defaults to 2000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
@@ -277,10 +296,12 @@ struct WriteArgs {
 struct EditArgs {
     /// The memory URL.
     url: String,
-    /// Text that occurs exactly once in the body.
-    old: String,
-    /// Its replacement.
-    new: String,
+    /// The exact text to replace; it must occur exactly once in the body.
+    #[serde(rename = "oldString")]
+    old_string: String,
+    /// The text that replaces it.
+    #[serde(rename = "newString")]
+    new_string: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
@@ -299,6 +320,7 @@ enum MemoryCall {
     },
     Read {
         url: MemoryUrl,
+        window: LineWindow,
     },
     Write {
         url: MemoryUrl,
@@ -324,7 +346,7 @@ impl MemoryCall {
     fn url(&self) -> Option<&MemoryUrl> {
         match self {
             Self::Search { .. } => None,
-            Self::Read { url }
+            Self::Read { url, .. }
             | Self::Write { url, .. }
             | Self::Edit { url, .. }
             | Self::Delete { url } => Some(url),
@@ -333,7 +355,7 @@ impl MemoryCall {
 }
 
 fn parse_url(value: &str) -> Result<MemoryUrl, ToolError> {
-    MemoryUrl::parse(value).map_err(|error| ToolError::execution(error.to_string()))
+    MemoryUrl::parse(value).map_err(|error| ToolError::InvalidUrl(error.to_string()))
 }
 
 /// Checks a call's arguments: strict members, a valid URL and memory, the
@@ -364,6 +386,7 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
             let args: ReadArgs = parse_args(READ, arguments)?;
             Ok(MemoryCall::Read {
                 url: parse_url(&args.url)?,
+                window: LineWindow::new(args.offset, args.limit)?,
             })
         }
         WRITE => {
@@ -426,8 +449,8 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
             let args: EditArgs = parse_args(EDIT, arguments)?;
             Ok(MemoryCall::Edit {
                 url: parse_url(&args.url)?,
-                old: args.old,
-                new: args.new,
+                old: args.old_string,
+                new: args.new_string,
             })
         }
         DELETE => {
@@ -510,7 +533,20 @@ impl ToolProvider for MemoryTools {
         let preview = {
             let root = engine.memory_root().clone();
             let shown = preview_input(&memory_call);
-            blocking(move || shown.and_then(|shown| preview(&root, shown))).await?
+            // An edit that cannot apply fails here, before it is approved,
+            // as the coding runtime's `edit` does.
+            let edit = match &memory_call {
+                MemoryCall::Edit { url, old, .. } => Some((url.clone(), old.clone())),
+                _ => None,
+            };
+            blocking(move || {
+                if let Some((url, old)) = edit {
+                    root.check_edit(&url, &old)?;
+                }
+                Ok::<_, StoreError>(shown.and_then(|shown| preview(&root, shown)))
+            })
+            .await?
+            .map_err(store_error)?
         };
         let presentation =
             preview.map(|preview| call_presentation(&call, true).with_preview([preview]));
@@ -688,11 +724,23 @@ fn call_presentation(
                 entries,
             )
         }
-        READ => (
-            format!("Read memory {primary}"),
-            cookie_agent_protocol::ToolHint::FILE_READ,
-            Vec::new(),
-        ),
+        READ => {
+            // The title names the memory; only a window adds to it.
+            let mut entries = Vec::new();
+            for member in ["offset", "limit"] {
+                entries.extend(
+                    call.arguments
+                        .get(member)
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|value| (member, value.to_string())),
+                );
+            }
+            (
+                format!("Read memory {primary}"),
+                cookie_agent_protocol::ToolHint::FILE_READ,
+                entries,
+            )
+        }
         WRITE if previewed => (
             format!("Write memory {primary}"),
             cookie_agent_protocol::ToolHint::FILE_WRITE,
@@ -730,8 +778,8 @@ fn call_presentation(
         ),
         EDIT => {
             let mut entries = vec![("url", primary.clone())];
-            entries.extend(text("old").map(|value| ("old", value)));
-            entries.extend(text("new").map(|value| ("new", value)));
+            entries.extend(text("oldString").map(|value| ("oldString", value)));
+            entries.extend(text("newString").map(|value| ("newString", value)));
             (
                 format!("Edit memory {primary}"),
                 cookie_agent_protocol::ToolHint::FILE_EDIT,
@@ -763,8 +811,13 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| ToolError::execution(format!("memory task failed: {error}")))
 }
 
+/// A store error as the tool fails with it: a memory that changed since
+/// the session saw it is `operation_changed`, anything else a failure.
 fn store_error(error: StoreError) -> ToolError {
-    ToolError::execution(error.to_string())
+    match error {
+        error @ StoreError::Unseen { .. } => ToolError::operation_changed(error.to_string()),
+        error => ToolError::execution(error.to_string()),
+    }
 }
 
 fn result(
@@ -940,7 +993,7 @@ impl PreparedExecutor for MemoryExecutor {
                     }),
                 ))
             }
-            MemoryCall::Read { url } => {
+            MemoryCall::Read { url, window } => {
                 let read = {
                     let url = url.clone();
                     blocking(move || {
@@ -955,17 +1008,23 @@ impl PreparedExecutor for MemoryExecutor {
                     .inner
                     .memory_seen
                     .saw(session, url.clone(), read.entry.revision.clone());
-                let output = read_output(&url, &read, &caller, &limits, Timestamp::now());
-                let body = read
-                    .entry
-                    .document
-                    .as_ref()
-                    .map_or(read.text.as_str(), MemoryDocument::body);
+                let (output, page) =
+                    read_output(&url, &read, &caller, &limits, Timestamp::now(), window)?;
+                let excerpt = cookie_agent_runtime_api::display::fit_block(
+                    page.excerpt_block(url.to_string(), Some("markdown".to_owned())),
+                    None,
+                )?;
                 Ok(result(
-                    format!("Read memory {url}"),
+                    format!("Read {url}"),
                     output,
-                    crate::base_tools::markdown_display(body),
-                    serde_json::json!({ "url": url.to_string() }),
+                    vec![Open::Known(excerpt)],
+                    serde_json::json!({
+                        "url": url.to_string(),
+                        "offset": window.offset,
+                        "limit": window.limit,
+                        "total_lines": page.total_lines,
+                        "next_offset": page.next_offset,
+                    }),
                 ))
             }
             MemoryCall::Write {
@@ -1007,12 +1066,8 @@ impl PreparedExecutor for MemoryExecutor {
                     },
                     &context,
                 )?;
-                let verb = if written.created {
-                    "Created"
-                } else {
-                    "Replaced"
-                };
-                let mut output = format!("{verb} {url}.");
+                let mut output =
+                    text_tools::wrote(written.created, &url.to_string(), written.text.len());
                 // What the call left out was never the model's to keep.
                 if let Some(mut kept) = written.kept {
                     if !described {
@@ -1031,7 +1086,7 @@ impl PreparedExecutor for MemoryExecutor {
                     output.push_str(&near_output(&written.near));
                 }
                 Ok(result(
-                    format!("{verb} memory {url}"),
+                    format!("Wrote {url}"),
                     output,
                     display,
                     serde_json::json!({ "url": url.to_string() }),
@@ -1060,8 +1115,8 @@ impl PreparedExecutor for MemoryExecutor {
                     .saw(session, url.clone(), edited.revision.clone());
                 let display = edit_diff(&url, &edited, &replacement.0, &replacement.1, &context)?;
                 Ok(result(
-                    format!("Edited memory {url}"),
-                    format!("Edited {url}."),
+                    format!("Edited {url}"),
+                    text_tools::edited(&url.to_string(), 1),
                     display,
                     serde_json::json!({ "url": url.to_string() }),
                 ))
@@ -1075,7 +1130,7 @@ impl PreparedExecutor for MemoryExecutor {
                 let removed = shown_text(&removed);
                 let display = memory_diff(&url, TextChange::Deleted { text: &removed }, &context)?;
                 Ok(result(
-                    format!("Deleted memory {url}"),
+                    format!("Deleted {url}"),
                     format!("Deleted {url}."),
                     display,
                     serde_json::json!({ "url": url.to_string() }),
@@ -1102,14 +1157,17 @@ fn yes_no(value: bool) -> &'static str {
 
 /// What `memory_read` returns (section 16.9.4): whether the memory is
 /// related and editable, its stamps with their ages, its size and limit,
-/// its description and keywords, then its body. No URL and no revision.
+/// its description and keywords, then the page `window` of its body,
+/// numbered as `read` numbers a file's lines, and the page itself. No URL
+/// and no revision. Fails when the window starts past the body's last line.
 fn read_output(
     url: &MemoryUrl,
     read: &crate::memory::store::MemoryRead,
     caller: &MemoryCaller,
     limits: &crate::memory::limits::MemoryLimits,
     now: Timestamp,
-) -> String {
+    window: LineWindow,
+) -> Result<(String, NumberedPage), ToolError> {
     let entry = &read.entry;
     let max = limits.max_bytes(url) as u64;
     let mut lines = vec![
@@ -1147,7 +1205,11 @@ fn read_output(
             read.text.as_str()
         }
     };
-    format!("{}\n\n{body}", lines.join("\n"))
+    let mut output = format!("{}\n\n", lines.join("\n"));
+    let page = text_tools::page_text(body, window, MAX_PAGE_BYTES.saturating_sub(output.len()));
+    page.check_in_range(&url.to_string())?;
+    output.push_str(&page.text_with_continuation());
+    Ok((output, page))
 }
 
 /// The search results as the model reads them (section 16.9.4): one

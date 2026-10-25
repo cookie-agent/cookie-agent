@@ -8,6 +8,8 @@ use super::{
     MemoryCall, MemoryTools, PART_B, check, edit_diff, memory_diff, near_output, permission_name,
     prompt_section, read_output, search_display, search_output, shown_text,
 };
+use cookie_agent_runtime_api::text_tools::{LineWindow, MAX_LINE_BYTES};
+
 use crate::{
     memory::{limits::MemoryLimits, search::SearchHit, similar::NearMemory, url::MemoryUrl},
     runtime::memory_runs::{MemoryAccess, MemoryCaller, RelatedMemory},
@@ -95,7 +97,12 @@ fn arguments_are_strict() {
         ),
         (
             "memory_edit",
-            json!({"url": "project://web/build", "old": "a", "new": "b", "revision": "0123456789abcdef"}),
+            json!({"url": "project://web/build", "oldString": "a", "newString": "b", "revision": "0123456789abcdef"}),
+        ),
+        // The edit's arguments are `oldString` and `newString`, as `edit`'s.
+        (
+            "memory_edit",
+            json!({"url": "project://web/build", "old": "a", "new": "b"}),
         ),
         (
             "memory_delete",
@@ -122,6 +129,18 @@ fn arguments_are_strict() {
 fn urls_and_memories_are_checked_before_the_call_runs() {
     assert!(error("memory_read", json!({"url": "user://Profile"})).contains("user://Profile"));
     assert!(error("memory_read", json!({"url": "file:///etc"})).contains("not a memory URL"));
+    // A bad URL is `invalid_url`, as the tool error kinds name it.
+    assert!(matches!(
+        check("memory_read", json!({"url": "file:///etc"})),
+        Err(cookie_agent_runtime_api::ToolError::InvalidUrl(_))
+    ));
+    assert!(matches!(
+        check(
+            "memory_edit",
+            json!({"url": "user://feedback", "oldString": "a", "newString": "b"})
+        ),
+        Ok(MemoryCall::Edit { ref old, ref new, .. }) if old == "a" && new == "b"
+    ));
     assert!(
         error(
             "memory_write",
@@ -145,7 +164,10 @@ fn urls_and_memories_are_checked_before_the_call_runs() {
         );
         assert!(
             matches!(
-                check("memory_edit", json!({"url": url, "old": "a", "new": "b"})),
+                check(
+                    "memory_edit",
+                    json!({"url": url, "oldString": "a", "newString": "b"})
+                ),
                 Ok(MemoryCall::Edit { .. })
             ),
             "{url}"
@@ -321,13 +343,16 @@ fn a_read_shows_stamps_and_size_but_no_url_or_revision() {
     std::fs::write(&path, &text).unwrap();
     let url = MemoryUrl::parse("project://cookie-agent/release").unwrap();
     let read = memory.read(&url).unwrap();
-    let output = read_output(
+    let (output, page) = read_output(
         &url,
         &read,
         &caller(false),
         &MemoryLimits::all(2048),
         at("2026-10-22T12:00:00Z"),
-    );
+        window(1, 2000),
+    )
+    .unwrap();
+    assert_eq!((page.start_line, page.total_lines), (1, 1));
     assert_eq!(
         output,
         format!(
@@ -340,18 +365,20 @@ max size: 2048 bytes
 description: How releases are cut
 keywords: release
 
-- tag first
+1: - tag first
 ",
             text.len()
         )
     );
-    let small = read_output(
+    let (small, _) = read_output(
         &url,
         &read,
         &caller(true),
         &MemoryLimits::all(10),
         at("2026-10-22T12:00:00Z"),
-    );
+        window(1, 2000),
+    )
+    .unwrap();
     assert!(small.starts_with("related: no\n"), "{small}");
     assert!(
         small.contains(&format!(
@@ -360,6 +387,111 @@ keywords: release
         )),
         "{small}"
     );
+}
+
+fn window(offset: usize, limit: usize) -> LineWindow {
+    LineWindow::new(Some(offset), Some(limit)).unwrap()
+}
+
+/// `memory_read` pages a memory's body as `read` pages a file: numbered
+/// from 1 under the header, from a 1-based `offset`, with the same line
+/// cut and continuation marker.
+#[test]
+fn a_read_pages_the_body_from_a_one_based_offset() {
+    let data = tempfile::tempdir().unwrap();
+    let memory = crate::memory::MemoryRoot::new(data.path());
+    assert!(memory.create_defaults_if_absent().unwrap());
+    let long = "x".repeat(MAX_LINE_BYTES + 5);
+    let text = crate::memory::file::MemoryDocument::new(
+        "Notes",
+        Vec::new(),
+        format!("one\ntwo\nthree\n{long}\n"),
+    )
+    .unwrap()
+    .render();
+    let path = data.path().join("memory/user/notes.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, &text).unwrap();
+    let url = MemoryUrl::parse("user://notes").unwrap();
+    let read = memory.read(&url).unwrap();
+    let page = |offset, limit| {
+        read_output(
+            &url,
+            &read,
+            &caller(false),
+            &MemoryLimits::all(1 << 20),
+            at("2026-10-22T12:00:00Z"),
+            window(offset, limit),
+        )
+    };
+    let body = |output: &str| output.split_once("\n\n").unwrap().1.to_owned();
+    // The first page, and where to continue.
+    let (first, numbered) = page(1, 2).unwrap();
+    assert!(first.contains("\ndescription: Notes\n\n"), "{first}");
+    assert_eq!(
+        body(&first),
+        "1: one\n2: two\n[2 more lines; continue with offset=3]"
+    );
+    assert_eq!(numbered.next_offset, Some(3));
+    // The last page cuts its long line as `read` does, and ends there.
+    let (last, numbered) = page(3, 2).unwrap();
+    assert_eq!(
+        body(&last),
+        format!(
+            "3: three\n4: {}... [line truncated: 5 more bytes]\n",
+            "x".repeat(MAX_LINE_BYTES)
+        )
+    );
+    assert_eq!(numbered.next_offset, None);
+    assert_eq!(numbered.excerpt[0], "three");
+    assert_eq!(
+        page(5, 2).unwrap_err().message(),
+        "offset=5 is past the end of user://notes, which has 4 lines"
+    );
+    assert_eq!(
+        error("memory_read", json!({"url": "user://notes", "offset": 0})),
+        "tool failed: offset is 1-based: the first line is offset=1"
+    );
+    assert!(matches!(
+        check(
+            "memory_read",
+            json!({"url": "user://notes", "offset": 3, "limit": 2})
+        ),
+        Ok(MemoryCall::Read {
+            window: LineWindow {
+                offset: 3,
+                limit: 2
+            },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn the_write_tools_word_their_errors_as_the_file_tools_do() {
+    let url = MemoryUrl::parse("user://feedback").unwrap();
+    let unseen = super::store_error(crate::memory::store::StoreError::Unseen {
+        url: url.clone(),
+        content: String::new(),
+    });
+    assert!(matches!(
+        unseen,
+        cookie_agent_runtime_api::ToolError::OperationChanged(_)
+    ));
+    let several = super::store_error(crate::memory::store::StoreError::Occurrences {
+        url: url.clone(),
+        old: "y".repeat(300),
+        count: 2,
+    });
+    assert_eq!(
+        several.message(),
+        format!(
+            "`{}…` occurs 2 times in the body of user://feedback; include more context so it occurs once",
+            "y".repeat(200)
+        )
+    );
+    let missing = super::store_error(crate::memory::store::StoreError::NotFound { url });
+    assert_eq!(missing.message(), "user://feedback does not exist");
 }
 
 #[test]

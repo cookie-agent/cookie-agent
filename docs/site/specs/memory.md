@@ -7,7 +7,8 @@ its deviations, is in [section 16](#16-implementation-notes); later
 decisions are dated addenda there ([section 16.6](#166-addendum-2026-10-21-agents-clear-what-they-cannot-delete),
 [section 16.7](#167-addendum-2026-10-21-the-daemon-keeps-one-memory-file-per-agent),
 [section 16.8](#168-addendum-2026-10-21-the-registry-remembers-where-runtimes-ran),
-[section 16.9](#169-addendum-2026-10-22-memory-that-stays-worth-keeping)). This spec
+[section 16.9](#169-addendum-2026-10-22-memory-that-stays-worth-keeping),
+[section 16.10](#1610-addendum-2026-10-25-the-memory-tools-follow-the-file-tools)). This spec
 builds on the [runtimes spec](runtimes.md) and the
 [runtime capabilities spec](runtime-capabilities.md), and adds the term
 *machine* to their vocabulary.
@@ -2176,3 +2177,34 @@ Landed 2026-10-22 (section 16.9.11, default for root runs). No wire change.
 - **Tests** that are not about memory and size small contexts, or check
   the prompt's blocks, give their agent `memory: deny`; the tool lists the
   agent tests pin include the memory tools again.
+
+### 16.10 Addendum 2026-10-25: the memory tools follow the file tools
+
+The memory tools and the coding runtime's file tools were aligned where
+nothing argues for a difference
+([Memory tools](../reference/tools.md#memory-tools)):
+
+- **`memory_read`** takes `offset` and `limit` with `read`'s semantics: the
+  body's lines are numbered from 1 (`N: text`) under the metadata header,
+  `offset` is the 1-based body line to start at (default 1), `limit` the
+  most lines (default 2000), with `read`'s 4 KiB line cut, page cap,
+  continuation marker, and error for an `offset` past the last line. Its
+  result shows as a `file_excerpt` in `markdown`.
+- **`memory_edit`** takes `oldString` and `newString` in place of `old` and
+  `new` (section 8 and 16.9.8). Preparation checks that `oldString` occurs
+  exactly once in the body, so no approval is asked for an edit that cannot
+  apply; the edit checks again when it runs. It still matches the body only
+  and has no `replaceAll`.
+- **Wording** shared with `write` and `edit`: `Created <url> (N bytes).`,
+  `Replaced <url> (N bytes).`, `Edited <url>: 1 replacement.`, `<url> does
+  not exist`, and one error for zero and several occurrences that echoes
+  `oldString` cut to 200 characters. Results are titled `Read`, `Wrote`,
+  `Edited`, and `Deleted <url>`.
+- **Error kinds:** the refusal of a replacing write that has not seen the
+  memory as it is now is `operation_changed`, and a bad memory URL
+  `invalid_url`.
+
+Kept different on purpose: the read-before-replace rule and the
+`description`, `keywords`, `new`, and `reason` fields; deletes are final;
+the permission actions `memory` and `memory_write` by URL; the write tools
+run one at a time; and `memory_search` has no file counterpart.

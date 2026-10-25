@@ -244,6 +244,14 @@ the rubric, which says:
 - when a memory is near its size limit, merge or drop what it holds before
   adding to it.
 
+The memory tools read and change memories the way the file tools read and
+change files ([Memory tools](../reference/tools.md#memory-tools)).
+`memory_read` returns the memory's metadata, then its body as lines numbered
+from 1, a page at a time: `offset` is the 1-based body line to start at and
+`limit` the most lines (2000 by default), and a page that leaves lines out
+ends with the `offset` to read next. `memory_edit` takes `oldString` and
+`newString`, like `edit`, but matches the body only and has no `replaceAll`.
+
 The daemon backs the rubric with a few checks that need no model:
 
 - **Similar memories.** A `memory_write` that creates a memory is compared
@@ -259,8 +267,11 @@ The daemon backs the rubric with a few checks that need no model:
 - **Size limits** (above): a write over the limit is refused with the
   current content to condense.
 - **No revisions.** The tools carry no revision. `memory_edit` applies when
-  its `old` text occurs exactly once in the current body, so an edit on top of
-  someone else's change that does not touch that text still works.
+  its `oldString` occurs exactly once in the current body, so an edit on top of
+  someone else's change that does not touch that text still works. The daemon
+  checks that before it asks you to approve the edit: one whose `oldString`
+  occurs zero or several times, or whose memory does not exist, fails at once
+  and is never shown to you for approval. It checks again when the edit runs.
   `memory_write` replaces an existing memory only when the session saw its
   current content, through `memory_read`, the snapshot, or one of its own
   writes; otherwise it is refused with the current content, so a whole-memory

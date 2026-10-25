@@ -79,8 +79,7 @@ impl From<StoreError> for MemoryRequestError {
             // Edits, seen revisions, and the similar-memory check are a
             // tool's; a client replaces whole files at a revision.
             error @ (StoreError::Refused(_)
-            | StoreError::NoOccurrence { .. }
-            | StoreError::SeveralOccurrences { .. }
+            | StoreError::Occurrences { .. }
             | StoreError::Unseen { .. }
             | StoreError::Similar { .. }
             | StoreError::Identical { .. }) => Self::Store(error.to_string()),

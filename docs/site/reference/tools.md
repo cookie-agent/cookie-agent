@@ -1474,6 +1474,25 @@ the [agent messaging spec](../specs/agent-messaging.md) for the full contract.
 The memory tools search, read, and change the memories the `global` runtime
 keeps; see [Memory](../sessions/memory.md).
 
+They follow the [filesystem tools](#filesystem-tools) where they can.
+`memory_read` pages a memory's body as `read` pages a file: under the
+metadata header, the body's lines numbered from 1, a 1-based `offset`
+(default 1), a `limit` (default 2000), the same 4 KiB line cut, page cap,
+continuation marker, and error for an `offset` past the last body line.
+`memory_write` reports `Created <url> (N bytes).` or `Replaced <url> (N
+bytes).`, `memory_edit` `Edited <url>: 1 replacement.`, and a memory that is
+not there is `<url> does not exist`. `memory_edit` takes `oldString` and
+`newString`, as `edit` does, and preparation checks that `oldString` occurs
+exactly once in the body, so an edit that cannot apply fails before anyone is
+asked to approve it, with `` `<oldString>` occurs N times in the body of
+<url>; include more context so it occurs once`` (the echoed text cut to 200
+characters). What stays different on purpose: an edit matches the body only
+and has no `replaceAll`; a replacing write needs the session to have read the
+memory as it is now, and is refused otherwise with an `operation_changed`
+error; a bad memory URL is an `invalid_url` error; a delete is final; the
+permission actions are `memory` and `memory_write` by URL; and the write
+tools run one at a time.
+
 ### `memory_search`
 
 <!-- generated: tool memory_search -->
@@ -1558,19 +1577,21 @@ Only when the session has the `global` runtime attached and the agent or the ses
 <!-- generated: tool memory_read -->
 
 ```text
-memory_read(url: string)
+memory_read(limit?: integer, offset?: integer, url: string)
 ```
 
 Description sent to the model:
 
 ```text
-Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and its body.
+Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.
 ```
 
 Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `limit` | `integer` | no | The most body lines to return. Defaults to 2000. |
+| `offset` | `integer` | no | The 1-based body line to start at. Defaults to 1. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
@@ -1580,6 +1601,24 @@ Only when the session has the `global` runtime attached and the agent or the ses
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "limit": {
+          "description": "The most body lines to return. Defaults to 2000.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "The 1-based body line to start at. Defaults to 1.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "url": {
           "description": "The memory URL.",
           "type": "string"
@@ -1677,21 +1716,21 @@ Only when `memory_read` is sent too and some memory URL is both readable (an `al
 <!-- generated: tool memory_edit -->
 
 ```text
-memory_edit(new: string, old: string, url: string)
+memory_edit(newString: string, oldString: string, url: string)
 ```
 
 Description sent to the model:
 
 ```text
-Replace the one occurrence of `old` in a memory's body with `new`, following the memory instructions in the system prompt. Fails when `old` occurs zero or several times; include more context to make it unique.
+Replace the one occurrence of `oldString` in a memory's body with `newString`, following the memory instructions in the system prompt. `oldString` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers memory_read shows are not part of the body.
 ```
 
 Only when `memory_read` is sent too and some memory URL is both readable (an `allow` or `ask` `memory` rule matches it) and writable (an `allow` or `ask` `memory_write` rule matches it). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `new` | `string` | yes | Its replacement. |
-| `old` | `string` | yes | Text that occurs exactly once in the body. |
+| `newString` | `string` | yes | The text that replaces it. |
+| `oldString` | `string` | yes | The exact text to replace; it must occur exactly once in the body. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
@@ -1701,12 +1740,12 @@ Only when `memory_read` is sent too and some memory URL is both readable (an `al
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "new": {
-          "description": "Its replacement.",
+        "newString": {
+          "description": "The text that replaces it.",
           "type": "string"
         },
-        "old": {
-          "description": "Text that occurs exactly once in the body.",
+        "oldString": {
+          "description": "The exact text to replace; it must occur exactly once in the body.",
           "type": "string"
         },
         "url": {
@@ -1716,8 +1755,8 @@ Only when `memory_read` is sent too and some memory URL is both readable (an `al
       },
       "required": [
         "url",
-        "old",
-        "new"
+        "oldString",
+        "newString"
       ],
       "title": "EditArgs",
       "type": "object"
@@ -1783,9 +1822,9 @@ on every save, as the memory editors show it.
 |---|---|---|---|---|---|
 | Hint | `search` | `file_read` | `file_write` | `file_edit` | `file_write` |
 | Title | `Search memory` | `Read memory <url>` | `Write memory <url>` | `Edit memory <url>` | `Delete memory <url>` |
-| Arguments | `key_value` of `query`, `layer`, and `limit` | – | `key_value` of `reason` when given; without a preview, also `description`, `keywords`, and `body` | – ; without a preview, `key_value` of `old` and `new` | – |
-| Preview | – | – | `diff` against the memory preparation finds (`created` when there is none) | `diff` of the replacement applied to the memory preparation read, when `old` occurs once | `diff` of the memory's removed text (`deleted`), when it exists |
-| Result | a `link` per memory found, its URL with its description as the label, or `No memories match.` | the body as `markdown` | `diff` against the memory the write replaced (`created` for a new one) | `diff` built from the range the edit replaced, or a line diff of the whole file when the daemon also rewrote its frontmatter (an `agent://` file, a project's overview) | `diff` of the text the memory held (`deleted`) |
+| Arguments | `key_value` of `query`, `layer`, and `limit` | `key_value` of `offset` and `limit` when the call gives them | `key_value` of `reason` when given; without a preview, also `description`, `keywords`, and `body` | – ; without a preview, `key_value` of `oldString` and `newString` | – |
+| Preview | – | – | `diff` against the memory preparation finds (`created` when there is none) | `diff` of the replacement applied to the memory preparation read | `diff` of the memory's removed text (`deleted`), when it exists |
+| Result | a `link` per memory found, its URL with its description as the label, or `No memories match.` | `file_excerpt` of the body's page, as `read` shows a file's: `path` the URL, `language` `markdown`, `start_line` the 1-based `offset`, `total_lines` the body's | `diff` against the memory the write replaced (`created` for a new one) | `diff` built from the range the edit replaced, or a line diff of the whole file when the daemon also rewrote its frontmatter (an `agent://` file, a project's overview) | `diff` of the text the memory held (`deleted`) |
 
 A `link` block whose `url` is a memory URL (`user://`, `agent://`,
 `machine://`, or `project://`) opens that memory in the clients.

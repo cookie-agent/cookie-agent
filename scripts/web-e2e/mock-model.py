@@ -216,7 +216,7 @@ def reply(request):
     if "revise" in text:
         return tool_reply(
             "memory_edit",
-            {"url": "user://e2e-build", "old": "trunk and tailwind", "new": "trunk, tailwind, and wasm"},
+            {"url": "user://e2e-build", "oldString": "trunk and tailwind", "newString": "trunk, tailwind, and wasm"},
         )
     if "forget" in text:
         return tool_reply("memory_delete", {"url": "user://e2e-build"})

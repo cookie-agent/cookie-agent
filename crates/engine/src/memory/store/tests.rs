@@ -583,7 +583,7 @@ fn a_project_overview_keeps_the_daemons_description() {
     );
 }
 
-/// An edit applies whenever its `old` text occurs exactly once in the
+/// An edit applies whenever its `oldString` occurs exactly once in the
 /// current body, whatever else changed (section 16.9.8).
 #[test]
 fn an_edit_replaces_exactly_one_occurrence() {
@@ -591,16 +591,16 @@ fn an_edit_replaces_exactly_one_occurrence() {
     let target = url("project://web/a");
     create(&memory, "project://web/a", "alpha beta\nbeta gamma\n");
     for (old, expected) in [
-        ("delta", "does not occur"),
+        ("delta", "occurs 0 times"),
         ("beta", "occurs 2 times"),
-        ("", "does not occur"),
+        ("", "occurs 0 times"),
     ] {
         let error = edit(&memory, "project://web/a", old, "x").unwrap_err();
         assert!(error.to_string().contains(expected), "{old}: {error}");
     }
     // The frontmatter is not part of the body.
     let error = edit(&memory, "project://web/a", "description", "x").unwrap_err();
-    assert!(matches!(error, StoreError::NoOccurrence { .. }));
+    assert!(matches!(error, StoreError::Occurrences { count: 0, .. }));
 
     let second = edit(&memory, "project://web/a", "alpha", "ALPHA").unwrap();
     let read = memory.read(&target).unwrap();
@@ -613,12 +613,36 @@ fn an_edit_replaces_exactly_one_occurrence() {
     edit(&memory, "project://web/a", "gamma", "GAMMA").unwrap();
     assert!(matches!(
         edit(&memory, "project://web/a", "gamma", "\u{7}"),
-        Err(StoreError::NoOccurrence { .. })
+        Err(StoreError::Occurrences { count: 0, .. })
     ));
     assert!(matches!(
         edit(&memory, "project://web/a", "GAMMA", "\u{7}"),
         Err(StoreError::Invalid { .. })
     ));
+}
+
+/// Whether an edit would apply is checked before it is approved, with the
+/// edit's own errors and without changing the memory.
+#[test]
+fn an_edit_is_checked_without_changing_the_memory() {
+    let (_data, memory) = root();
+    let target = url("project://web/a");
+    create(&memory, "project://web/a", "alpha beta\nbeta\n");
+    let before = memory.read(&target).unwrap().text;
+    memory.check_edit(&target, "alpha").unwrap();
+    assert!(matches!(
+        memory.check_edit(&target, "beta"),
+        Err(StoreError::Occurrences { count: 2, .. })
+    ));
+    assert!(matches!(
+        memory.check_edit(&target, "description"),
+        Err(StoreError::Occurrences { count: 0, .. })
+    ));
+    assert!(matches!(
+        memory.check_edit(&url("project://web/none"), "alpha"),
+        Err(StoreError::NotFound { .. })
+    ));
+    assert_eq!(memory.read(&target).unwrap().text, before);
 }
 
 #[test]

@@ -108,12 +108,12 @@ pub(crate) enum StoreError {
     },
     #[error("{0}")]
     Refused(String),
-    #[error("`{old}` does not occur in the body of {url}")]
-    NoOccurrence { url: MemoryUrl, old: String },
+    /// An edit's text occurs `count` times in the body, other than once.
     #[error(
-        "`{old}` occurs {count} times in the body of {url}; include more context so it occurs once"
+        "{}",
+        cookie_agent_runtime_api::text_tools::occurrence_error(old, *count, &format!("the body of {url}"), false)
     )]
-    SeveralOccurrences {
+    Occurrences {
         url: MemoryUrl,
         old: String,
         count: usize,
@@ -142,6 +142,24 @@ pub(crate) enum StoreError {
     /// A new memory has the body of one that exists.
     #[error("{url} was not created: {existing} already holds exactly this body")]
     Identical { url: MemoryUrl, existing: MemoryUrl },
+}
+
+/// Fails unless `old`, not empty, occurs exactly once in `body`, the body
+/// of the memory at `url`.
+fn occurs_once(url: &MemoryUrl, body: &str, old: &str) -> Result<(), StoreError> {
+    let count = if old.is_empty() {
+        0
+    } else {
+        body.matches(old).count()
+    };
+    if count == 1 {
+        return Ok(());
+    }
+    Err(StoreError::Occurrences {
+        url: url.clone(),
+        old: old.to_owned(),
+        count,
+    })
 }
 
 fn too_large_message(url: &MemoryUrl, size: usize, max: usize, current: Option<&str>) -> String {
@@ -793,27 +811,7 @@ impl MemoryRoot {
             reason,
         };
         let document = MemoryDocument::parse(&bytes).map_err(invalid)?;
-        let count = if old.is_empty() {
-            0
-        } else {
-            document.body().matches(old).count()
-        };
-        match count {
-            0 => {
-                return Err(StoreError::NoOccurrence {
-                    url: url.clone(),
-                    old: old.to_owned(),
-                });
-            }
-            1 => {}
-            count => {
-                return Err(StoreError::SeveralOccurrences {
-                    url: url.clone(),
-                    old: old.to_owned(),
-                    count,
-                });
-            }
-        }
+        occurs_once(url, document.body(), old)?;
         let mut edited = document
             .with_body(document.body().replacen(old, new, 1))
             .map_err(invalid)?;
@@ -841,6 +839,20 @@ impl MemoryRoot {
             before,
             after: text,
         })
+    }
+
+    /// Whether an edit of the memory at `url` replacing `old` would apply
+    /// now: the memory exists, is valid, and `old` occurs once in its body.
+    /// Changes nothing; the edit checks again when it runs
+    /// ([`MemoryRoot::edit`]).
+    pub(crate) fn check_edit(&self, url: &MemoryUrl, old: &str) -> Result<(), StoreError> {
+        let read = self.read(url)?;
+        let document =
+            MemoryDocument::parse(read.text.as_bytes()).map_err(|reason| StoreError::Invalid {
+                url: url.clone(),
+                reason,
+            })?;
+        occurs_once(url, document.body(), old)
     }
 
     /// Deletes a memory, at revision `expected` when one is given (a
