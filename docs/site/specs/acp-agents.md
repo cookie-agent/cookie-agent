@@ -417,8 +417,8 @@ Where the spec left a detail open, or where the code differs:
   cannot be read is rejected; an agent that offers no allow-once or
   reject-once option is answered `cancelled`. Approvals name the cookie
   tool call the agent's call is shown as. The approval reviewer of the auto
-  modes runs on the run's model, which an ACP run lacks, so its requests
-  escalate to the user.
+  modes runs on `${small_model}`; an ACP run has no model of its own to fall
+  back to, so without `small_model` its requests escalate to the user.
 - **Usage.** The prompt answer's `usage` when the agent sends one, else the
   last `usage_update`'s `used` as input tokens; a cost only from a
   `usage_update` cost in USD. Recorded once per round, on its last turn,
