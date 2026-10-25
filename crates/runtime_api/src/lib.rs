@@ -30,6 +30,7 @@ mod provider;
 pub mod reconnect;
 pub mod rpc;
 mod runtime;
+pub mod text_tools;
 
 pub use error::ToolError;
 pub use execution::{
