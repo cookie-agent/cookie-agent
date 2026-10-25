@@ -82,6 +82,12 @@ small_model   = "deepseek/deepseek-flash"
 standard_retries = 1
 ```
 
+In the starter kit `small_model` serves the internal `approval` and `title`
+agents, and the variant chosen for it, during onboarding or here, is the
+approval reviewer's effort. Reasoning output dominates what each review
+costs, and the reviewer's prompt cache reduces only the input side, so a low
+variant keeps reviews cheap ([the reviewer's cache](approval.md#the-reviewers-cache)).
+
 Only the key's grammar is checked when the file loads. Whether the model is
 available is a runtime matter: a model whose provider is disconnected loads
 fine, and the agent entries naming it are skipped until it is available

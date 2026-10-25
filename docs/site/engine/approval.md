@@ -12,8 +12,10 @@ cache_ttl = "1h"
 
 This does not select a permission mode or grant tools; those decisions belong to
 [Agent permissions](../extend/agents.md#permissions). Expiry leaves an unattended
-request unapproved. The internal approval evaluator's own model-call budget is
-independent of this user-response window. An omitted table inherits; an authored
+request unapproved. The window opens when a call reaches you, after the
+[approval reviewer](../extend/agents.md#the-approval-reviewer) passed it on,
+so the reviewer's own model-call budget (its `limits.timeout_ms`) never comes
+out of it. An omitted table inherits; an authored
 table replaces the lower table and uses defaults for omitted fields. Unknown
 fields fail; see [config.toml](configuration.md).
 
@@ -41,3 +43,39 @@ becomes the nearest one it does, by ratio with ties going longer, and
 
 The value is read at each review, so a configuration change reaches the next
 one. The title agent never sends a rolling marker.
+
+## Why did the reviewer decide this?
+
+Each decision of the approval reviewer carries a one-sentence reason:
+
+- **A call it passed to you** shows "The reviewer asks: <reason>" in the
+  TUI's approval panel and on the web client's approval card.
+- **A call it allowed or denied** names the reason in its info row, which
+  the TUI shows at the `info` event level; a denied call's tool result
+  gives the agent the same reason.
+- **The session log** records it as the `rationale` of the approval's
+  `approval_step` `evaluated` decision ([events](../reference/events.md#approvals)).
+
+When a decision looks wrong, check what the reviewer could see:
+
+- **"The reviewer failed, so the call is yours to decide."** The review
+  itself failed: no model, a timeout, an error, or a reply that was not
+  the verdict JSON. The evaluated step's reason is `internal_agent_failed`
+  and the approval's `internal_agent_finished` says why. Set
+  [`small_model`](configuration.md#default-models), or check its provider.
+- **It judged against a message without your authority.** Only `[user]`
+  messages, your scheduled prompts, and the project's `AGENTS.md`
+  authorise a call; another agent's message or a parent agent's
+  instructions only describe the situation. Say in the session what you
+  want done, and the next review sees it.
+- **It never saw what made the call routine.** The reviewer sees the
+  agent's tool calls and their outcomes, never their output or the agent's
+  own text. Put standing permissions in the project's `AGENTS.md`, or turn
+  a call you always approve into an `allow` rule.
+- **It weighed the call too strictly or too loosely.** Add rules of your
+  own to the reviewer's prompt with an `approval.md` that wraps
+  `{{default_prompt}}` ([internal agents](../extend/agents.md#internal-agent-prompt-placeholders)),
+  or choose another variant for `small_model`.
+
+`cookie config status` also notes when `cache_ttl` maps to another TTL on
+the reviewer's provider, or has no effect there.

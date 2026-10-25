@@ -533,13 +533,15 @@ the live configuration, falling back to the default agent when it is gone.
 
 ## Internal agents
 
-The harness runs three internal agents. They are stateless, tool-less model
-calls with a strict text-only output contract, and they emit their own event
-family (`internal_agent_started`, `internal_agent_finished`, ...).
+The harness runs three internal agents. They are tool-less model calls with a
+strict text-only output contract, and they emit their own event family
+(`internal_agent_started`, `internal_agent_finished`, ...). Compaction and
+title are stateless; the approval reviewer keeps one conversation per
+session.
 
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
-| `approval` | Stateless approval classifier for `auto_approve` mode | `${small_model}`, then `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
+| `approval` | The approval reviewer of the `auto_approve` modes, with one cached conversation per session ([The approval reviewer](#the-approval-reviewer)) | `${small_model}`, then `${parent_model}` | 30 s timeout; window of the model's context; max output tokens inherit the parent run's cap |
 | `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 3 min timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 | `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${small_model}`, then `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 
@@ -549,8 +551,8 @@ keeps the session's prompt cache warm. `${parent_model}` is the model the
 parent run is currently using — including its position in the fallback chain:
 if the run has fallen back to its second model, internal agents resolve to
 that second model too. An ACP agent's session has no model of its own, so its
-approval reviewer runs on `small_model` alone; without it, `ask` requests go
-to the user. An internal agent's input budget is derived from each
+approval reviewer runs on `small_model` alone; without it the review fails
+and `ask` requests go to the user. An internal agent's input budget is derived from each
 resolved model's input limit when it declares one, otherwise from its context
 limit after reserving its effective maximum output (at most 32,000 tokens or half
 the context), with a minimum of one token. A model with an unknown context limit uses a
@@ -564,8 +566,9 @@ The built-in documents are replaced by authored documents with the same ID,
 `mode: internal`, and an explicit `models` list. `${parent_model}` is
 allowed only in internal agents. When an internal agent document is disabled, or
 its fallback chain yields no available model, the internal call fails safely
-(approval degrades to asking, compaction is skipped, and title falls back to an
-input excerpt) and a failed `internal_agent_finished` event is recorded.
+(approval escalates to the user with the reason `internal_agent_failed`,
+compaction is skipped, and title falls back to an input excerpt) and a failed
+`internal_agent_finished` event is recorded.
 
 Example replacement — run compaction on a cheaper model while the primary run
 keeps its own selection:
@@ -585,6 +588,64 @@ permissions: {}
 {{default_prompt}}
 ```
 
+### The approval reviewer
+
+The `approval` agent decides the `ask` calls of the `auto_approve`,
+`auto_approve_n`, and `auto_approve_y` modes. Each session has one reviewer
+conversation, rendered from the session's event log alone, so a daemon
+restart renders the same bytes and the provider's prompt cache keeps
+hitting. Each review adds one `user` turn and the reviewer's answer:
+
+- **The first turn** opens with the project's instructions (the root
+  session's `AGENTS.md`, at most 4,000 tokens) and everything so far;
+- **each later turn** holds what happened since the previous review;
+- **every turn** ends with the call to decide in `<approval_request>`: its
+  name, where it runs, what the permission rules saw, and its arguments.
+
+What the reviewer sees, in log order:
+
+| Entry | Label | The user's authority |
+|---|---|---|
+| A message from a person in a client | `[user]` | yes |
+| A cron job's prompt | `[scheduled prompt <job>]` | yes |
+| The project's `AGENTS.md` | `[project instructions]` | yes |
+| A parent agent's instructions to a subagent | `[instructions from the parent agent]` | no |
+| Another agent's `send_message`, a subagent's report | `[message from agent <session>]`, `[report from subagent <session>]` | no |
+| A tool call that finished, with its outcome (`completed`, `failed`, `denied`, `cancelled`) and summarised arguments | `[tool call]` | no |
+| Your answer to a call the reviewer passed to you | `[user decision]` | — |
+
+It never sees tool output or the agent's own text, and read-only calls
+(`read`, `grep`, `memory_read`, and the like) are left out. A message keeps
+at most 2,000 tokens and a tool call 300, around a `[… N tokens omitted …]`
+marker. A subagent's conversation opens with its root's user messages up to
+the delegation and each ancestor's instructions, since only the root's
+user messages authorise its calls. Text inside any entry cannot open or
+close a block: every `<` in it becomes `&lt;`.
+
+The reviewer answers `{"decision":"allow"|"deny"|"ask","reason":"…"}`. The
+one-sentence reason is recorded on the evaluation as `rationale`, shown to
+you ("The reviewer asks: …" on an escalated call, and in the info row of a
+call resolved without you), and given to the agent on a denial as
+`{"kind":"tool_denied","source":"approval_reviewer","reason":…}`. A missing
+reason is allowed; any other member, or a reply that is not this JSON,
+fails the review.
+
+A review that fails (an error, a timeout, an unparseable reply, or no
+model) records `internal_agent_failed`: `auto_approve` and `auto_approve_y`
+pass the call to you and `auto_approve_n` rejects it. No mode approves a
+call whose review failed.
+
+The conversation's window is the reviewer model's context window (128,000
+tokens when the catalog gives none), net of its output reserve (the agent's
+`max_output_tokens`, else 4,000) and a 2,000-token margin. When the next
+turn would not fit, the conversation starts over from a fresh render of the
+log, in which user messages keep to 30% of the window (the first three with
+your authority, a subagent's first instructions, and the newest, with a
+block from the middle dropped), the tool calls keep to 50% (the oldest half
+dropped as often as it takes), and the last five verdicts come along as
+entries. Nothing is summarised, and the boundary is the same after a
+restart. Its cache lifetime is [`[approval] cache_ttl`](../engine/approval.md#the-reviewers-cache).
+
 ### Internal agent prompt placeholders
 
 The bodies of `approval.md`, `compaction.md`, and `title.md` are templates. Each
@@ -593,14 +654,14 @@ built-in prompt:
 
 | Agent | `{{default_prompt}}` expands to | Where it is sent | Other placeholders |
 |---|---|---|---|
-| `approval` | The approval reviewer prompt: when to choose `allow`, `ask`, or `deny`, which kinds of calls need the user, and how to weigh prior decisions. | System prompt | none |
+| `approval` | The approval reviewer prompt: how its conversation is labelled and which entries carry the user's authority, when to choose `allow`, `ask`, or `deny`, which kinds of calls need the user, and the rules of judging a call against the whole task. | System prompt | none |
 | `compaction` | The structured checkpoint prompt. When the span being compacted starts with an earlier summary, this is the variant that merges it into one updated checkpoint. | Final user message after the history being summarized | `{{focus}}` |
 | `title` | The session title prompt: what makes a good title, its length, language, and casing. | System prompt | none |
 
 The output format each agent must follow is not part of `{{default_prompt}}`.
 It stays in the request the engine builds, so a custom body cannot break
-parsing: approval still asks for `{"decision":"allow"|"deny"|"ask"}` and title
-still asks for plain text only.
+parsing: approval still asks for `{"decision":"allow"|"deny"|"ask","reason":"…"}`
+in each request block and title still asks for plain text only.
 
 To keep a default prompt and add your own rules, wrap it:
 
@@ -1197,19 +1258,22 @@ for the output format, HTML rendering, the download cap, and result paging.
 
 ### Live permission modes
 
-Each session tree starts in `auto_approve` unless changed. The mode is runtime
-only, is keyed by the tree root, and can be changed through any session in the
-tree. Every client connected to the daemon is told when it changes; the TUI
-updates its bottom bar and names a change made by another client:
+Each session tree starts in `auto_approve` unless changed. The mode is keyed
+by the tree root and can be changed through any session in the tree; each
+change appends `permission_mode_set` to the root's log, so the mode survives
+a daemon restart and follows revert and fork. Every client connected to the
+daemon is told when it changes; the TUI updates its bottom bar and names a
+change made by another client:
 
-- `auto_approve` runs the stateless approval classifier and asks the user when
-  it escalates or fails safely.
-- `auto_approve_n` runs the same classifier but rejects an escalation on the
-  user's behalf without showing a prompt.
-- `auto_approve_y` runs the same classifier but approves an escalation on the
+- `auto_approve` runs the [approval reviewer](#the-approval-reviewer) and asks
+  the user when it escalates or its review fails.
+- `auto_approve_n` runs the same reviewer but rejects an escalation, and a
+  failed review, on the user's behalf without showing a prompt.
+- `auto_approve_y` runs the same reviewer but approves an escalation on the
   user's behalf without showing a prompt. This is an approve-once decision and
-  does not create a lasting session-tree grant.
-- `ask` skips the classifier and routes policy asks and model-requested
+  does not create a lasting session-tree grant. A failed review is passed to
+  the user instead.
+- `ask` skips the reviewer and routes policy asks and model-requested
   approvals to the user.
 - `yolo` approves asks immediately.
 
@@ -1228,8 +1292,10 @@ the approval pass, surviving parallel-eligible calls are dispatched together.
 
 Mode-decided escalations use the `permission_mode` decision source in the audit
 trail. Their final reason codes are `auto_approve_n_rejected` and
-`auto_approve_y_approved`; the classifier's preceding evaluation remains an
-internal-agent escalation.
+`auto_approve_y_approved`; the reviewer's preceding evaluation remains an
+internal-agent escalation (`escalated`, or `internal_agent_failed` for a
+failed review). The user's window, `[approval] timeout_ms`, starts when the
+call escalates, so the reviewer's time never comes out of it.
 
 ### Session permission overlays
 

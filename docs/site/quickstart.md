@@ -90,8 +90,9 @@ Esc twice, or `/cancel`, stops the run.
 
 The built-in `default` agent reads freely but asks before it writes a file,
 runs a command, or delegates, and never reads files such as `.env` or SSH
-keys. A session starts in the `auto-approve` permission mode: an approval
-classifier answers these asks and passes to you the ones it will not decide.
+keys. A session starts in the `auto-approve` permission mode: the approval
+reviewer answers these asks against your task and passes to you, with its
+reason, the ones it will not decide.
 Click the mode in the bottom bar to cycle it; in `ask` every ask comes to
 you.
 

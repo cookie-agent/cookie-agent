@@ -609,9 +609,12 @@ judge it: its icon and title, its argument blocks (such as a command), and its
 preview (such as an edit's or write's diff as of preparing the call), drawn as
 the transcript draws them; a call that describes neither shows the request's
 resources. Below that, `why` says what asked (your permission
-rule and its source, or the model's own reason), and a second row says what the
-focused decision does. A countdown appears in the top border when the request
-expires, and `d` (or clicking `details`) expands the full prepared-operation
+rule and its source, or the model's own reason), `reviewer` gives the approval
+reviewer's reason for passing the call to you ("The reviewer asks: …", or that
+its review failed), and a last row says what the focused decision does. A
+call the reviewer allowed or denied without you names its reason in its info
+row. A countdown appears in the top border when the request
+expires (the window opens when the call reaches you), and `d` (or clicking `details`) expands the full prepared-operation
 identity: ids, fingerprints, and the policy trace.
 
 The decisions follow the request's constraints: allow once, allow for the

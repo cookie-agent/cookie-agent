@@ -118,7 +118,7 @@ Each run session:
 
 - runs an agent that can run as a root (`primary` or `all` mode);
 - starts in the permission mode **`auto-approve-n`** unless you chose
-  another: the approval classifier decides each `ask`, and what it would pass
+  another: the approval reviewer decides each `ask`, and what it would pass
   to you is rejected, so an unattended run never waits on you. Only you can
   set a job's mode, from a client; agents cannot, and the tools have no mode
   parameter;

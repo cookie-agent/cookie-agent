@@ -507,7 +507,9 @@ closes the sheet in the others. On a phone the sheet fills the screen.
     session with); **All agent options** there lists every option the
     agent offers (model, mode, effort) with its values, the current one
     pressed;
-  - the approvals waiting, when there are any (click to answer them);
+  - the approvals waiting, when there are any (click to answer them); each
+    card shows the call and, when the approval reviewer passed it to you,
+    its reason ("The reviewer asks: …", or that its review failed);
   - **working…** while the session runs;
   - the last status message;
   - where the session works, its workspaces under

@@ -585,8 +585,12 @@ and readers trust as written.
 An approval's lifecycle after its `approval_requested` is a series of
 `approval_step { approval_id, step }` records and one
 `approval_finalized { approval_id, outcome }`. `step` is
-`evaluated { decision }` (the internal decision pipeline decided),
-`escalated { reason_code }` (it waits for the user),
+`evaluated { decision }` (the internal decision pipeline decided; a decision
+of the approval reviewer carries its one-sentence `rationale` when it gave
+one, and a failed review the reason `internal_agent_failed`),
+`escalated { reason_code, expires_at? }` (it waits for the user until
+`expires_at`, the window opening at this step; an earlier writer's request
+carries the window instead),
 `user_decision { client_response_id, decision, feedback? }` (a client answered;
 `feedback` only with `reject`), or `doom_loop { operation_fingerprint,
 repetitions }` (the same operation was requested at least four times in a row);
@@ -597,6 +601,14 @@ the user, or `cancelled { reason_code }`, the engine withdrawing the approval
 `prepared_capability_lost`), which reads as a system decision that expired or
 cancelled the request. An outcome this build does not know reads as cancelled,
 so the operation is not approved.
+
+The approval reviewer's conversation is rendered from these records and the
+session's messages and tool calls, never stored separately
+([The approval reviewer](../extend/agents.md#the-approval-reviewer)).
+
+`permission_mode_set { mode }` is a runless state event of a root session:
+its tree's permission mode changed to `mode`. Loading the tree restores the
+newest one; a session without one is in `auto_approve`.
 
 ### Runtime attachments
 

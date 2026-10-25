@@ -317,15 +317,21 @@ session and drive the run loop:
   when its action has an `allow` or `ask` rule in it. The
   permission pipeline is stateless; approvals and tree grants live in an
   in-memory `ApprovalStore` rebuilt from durable events.
-- **Approvals.** A stateless approval evaluator (the `approval` internal agent)
-  classifies asks in the three `auto_approve` modes; classifier escalations go
-  to the user, reject automatically, or approve once automatically according to
-  the mode. Each evaluation is one fresh model call that sees the latest user
-  request, up to five recent user, tree-grant, or classifier decisions for the
-  same permission action from the tree's resident sessions, the runtime the
-  call runs on with its workspace, and the tool call's normalized parameters.
-  `ask` skips the classifier, and `yolo` approves immediately. A doom-loop
-  guard rejects repeated identical approvals.
+- **Approvals.** The approval reviewer (the `approval` internal agent)
+  decides asks in the three `auto_approve` modes; its escalations go to the
+  user, reject automatically, or approve once automatically according to the
+  mode, and a failed review (`internal_agent_failed`) is never approved for
+  the user. Each session has one append-only reviewer conversation
+  (`crates/engine/src/runtime/approval_context.rs`), rendered from the event
+  log alone: the session's labelled user messages, the agent's tool calls
+  with their outcomes, users' decisions, the root's `AGENTS.md`, the
+  reviewer's earlier verdicts, and a request block per call, bounded by
+  budgets and restarted as a new epoch when it outgrows the reviewer's
+  window. Each request ends with a rolling cache marker whose lifetime is
+  `[approval] cache_ttl`. `ask` skips the reviewer, and `yolo` approves
+  immediately. A doom-loop guard rejects repeated identical approvals. The
+  tree's permission mode is recorded in the root's log
+  (`permission_mode_set`).
 - **Tool layers and runtimes.** The engine composes each session's tool list
   from the base layer and the session's runtime attachments
   (`crates/engine/src/runtimes`; see the

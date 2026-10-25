@@ -139,11 +139,22 @@ shown in the TUI's bottom bar and shared by every client:
 
 | Mode | An ask is |
 |---|---|
-| `auto-approve` (the default) | decided by the `approval` classifier agent, which passes to you what it will not approve |
-| `auto-approve-n` | decided by the classifier; what it would pass to you is rejected |
-| `auto-approve-y` | decided by the classifier; what it would pass to you is approved once |
+| `auto-approve` (the default) | decided by the `approval` reviewer agent, which passes to you what it will not approve |
+| `auto-approve-n` | decided by the reviewer; what it would pass to you is rejected |
+| `auto-approve-y` | decided by the reviewer; what it would pass to you is approved once, unless its review failed |
 | `ask` | always yours |
 | `yolo` | approved at once |
+
+The reviewer judges each call against the whole session: your messages, in
+order, with what the agent has done so far (its tool calls and their
+outcomes, never their output) and the project's `AGENTS.md`. Only your own
+messages, your scheduled prompts, and `AGENTS.md` authorise a call; a later
+aside adds to the task rather than replacing it. Each decision comes with a
+one-sentence reason, shown to you and, on a denial, to the agent. A review
+that fails is passed to you in `auto-approve` and `auto-approve-y` and
+rejected in `auto-approve-n`. The mode is kept in the tree's log, so it
+survives a daemon restart. See
+[The approval reviewer](../extend/agents.md#the-approval-reviewer).
 
 A `deny` rule and the doom-loop guard hold in every mode. An approval shows the call as it will run, such as the command or
 the diff of an edit, and you allow it once, allow it for the whole session
