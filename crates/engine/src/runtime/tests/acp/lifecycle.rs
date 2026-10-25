@@ -515,6 +515,9 @@ async fn deleting_a_session_deletes_its_agents_sessions_but_not_its_sources() {
     let live = engine.create_session(selection()).unwrap().session_id;
     turn(engine, live, "one", "say one").await;
     let live_id = session_starts(engine, live)[0].acp_session_id.clone();
+    // The fork point probe after the first reply records an event, which
+    // would make the delete's tip stale.
+    probed(engine, live).await;
     delete(engine, live).await;
     let methods = acp.received_methods();
     let close_at = methods.iter().position(|method| method == "session/close");
