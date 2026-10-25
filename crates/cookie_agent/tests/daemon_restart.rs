@@ -4,6 +4,10 @@
 //! the same token, and a client reconnects. On Unix the process ID stays the
 //! same; on Windows the daemon is a new process, which the test stops by the
 //! ID its listening line names.
+//!
+//! The daemon delays every close frame (`COOKIE_AGENT_TEST_CLOSE_DELAY_MS`),
+//! so a daemon that relaunched before its close frames left would cut the
+//! connection every time instead of now and then.
 
 use std::{
     io::{BufRead as _, BufReader},
@@ -86,6 +90,8 @@ impl Daemon {
             .env("HOME", home)
             .env("USERPROFILE", home)
             .env("COOKIE_AGENT_TEST_BUNDLED_CATALOG", "1")
+            // Well within the second a closing connection gets to finish.
+            .env("COOKIE_AGENT_TEST_CLOSE_DELAY_MS", "300")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());

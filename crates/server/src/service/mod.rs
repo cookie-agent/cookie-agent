@@ -12,6 +12,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use cookie_agent_engine::Engine;
@@ -30,6 +31,10 @@ pub struct Server {
     /// Set when the daemon shuts down to restart: client connections then
     /// close with code 1012 and the reason `restarting`.
     pub(crate) restarting: Arc<AtomicBool>,
+    /// Every WebSocket client connection holds a receiver of this channel
+    /// until it has closed, so a shutdown can wait for each to send its
+    /// close frame ([`RunningServer::wait`]).
+    pub(crate) connections: Arc<tokio::sync::watch::Sender<()>>,
 }
 
 impl Server {
@@ -39,6 +44,7 @@ impl Server {
             engine,
             shutdown: CancellationToken::new(),
             restarting: Arc::new(AtomicBool::new(false)),
+            connections: Arc::new(tokio::sync::watch::Sender::new(())),
         }
     }
 
@@ -82,9 +88,16 @@ impl Server {
     }
 }
 
+/// How long [`RunningServer::wait`] waits for client connections to close
+/// once the listener stopped. Each gets the protocol's shutdown grace (one
+/// second) to send what it queued and its close frame; a client slower than
+/// this loses its close frame rather than holding up a stop or a restart.
+const CONNECTIONS_CLOSE_WAIT: Duration = Duration::from_secs(2);
+
 pub struct RunningServer {
     pub(super) address: SocketAddr,
     pub(super) task: JoinHandle<()>,
+    pub(super) connections: Arc<tokio::sync::watch::Sender<()>>,
 }
 
 impl RunningServer {
@@ -93,8 +106,15 @@ impl RunningServer {
         self.address
     }
 
+    /// Waits for the listener to stop after a shutdown, then, for up to
+    /// [`CONNECTIONS_CLOSE_WAIT`], for every client connection to close:
+    /// each has then written its close frame, which says why it closed (the
+    /// daemon restarting, say), and the client answered it or its grace ran
+    /// out. Without this, a daemon exiting or re-executing right after
+    /// would cut connections before their close frames left.
     pub async fn wait(self) {
         let _ = self.task.await;
+        let _ = tokio::time::timeout(CONNECTIONS_CLOSE_WAIT, self.connections.closed()).await;
     }
 }
 

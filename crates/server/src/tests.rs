@@ -2503,6 +2503,14 @@ async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
 
     harness.engine.shutdown().await;
     harness.server.shutdown_for_restart();
+    // Stopping waits for the connection to close, so a daemon that exits or
+    // re-executes next has already sent the close frame saying why.
+    running.wait().await;
+    assert_eq!(
+        harness.server.connections.receiver_count(),
+        0,
+        "a connection still open after the server stopped"
+    );
     let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             match deliveries.recv().await {
@@ -2516,5 +2524,4 @@ async fn daemon_restart_needs_a_hook_and_tells_every_connection() {
     .expect("closed in time");
     let closed = closed.expect("the connection ends saying why");
     assert!(closed.ends_with("the daemon is restarting"), "{closed}");
-    running.wait().await;
 }

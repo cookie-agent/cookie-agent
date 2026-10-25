@@ -395,7 +395,10 @@ above:
   turns end; then it closes every client connection with WebSocket close
   code 1012 (Service Restart) and the reason `restarting`, which both
   clients read as "the daemon is restarting". Any server shutdown now sends
-  the frames a connection has queued and a close frame before it closes.
+  the frames a connection has queued and a close frame before it closes,
+  and the daemon waits up to 2 seconds for every client connection to
+  finish closing before it exits or relaunches, so the close frame is not
+  cut off.
 - **Relaunch.** The daemon captures its executable (`current_exe` at start,
   so an upgrade replacing the file runs the new build), arguments,
   environment, and directory before it changes any of them. On Unix it

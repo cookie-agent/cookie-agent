@@ -2503,6 +2503,8 @@ async fn run_daemon(
             runtime.stop_catalog_refresh().await;
             runtime.engine.shutdown().await;
             runtime.server.shutdown_for_restart();
+            // Returns once every client connection sent that close frame
+            // (bounded), so the relaunch does not cut it off.
             listener.wait().await;
         }
     }

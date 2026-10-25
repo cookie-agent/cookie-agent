@@ -126,12 +126,31 @@ impl MessageStream for WebSocketStream {
     /// socket queued.
     async fn close(&mut self) {
         let frame = self.close_frame().await;
+        #[cfg(debug_assertions)]
+        if let Some(delay) = test_close_delay() {
+            tokio::time::sleep(delay).await;
+        }
         let _ = self
             .socket
             .send(axum::extract::ws::Message::Close(Some(frame)))
             .await;
         while let Some(Ok(_)) = self.socket.next().await {}
     }
+}
+
+/// A delay before every close frame, from `COOKIE_AGENT_TEST_CLOSE_DELAY_MS`
+/// in debug builds: a test makes closing slow to prove the daemon waits for
+/// its close frames before it exits or restarts.
+#[cfg(debug_assertions)]
+fn test_close_delay() -> Option<Duration> {
+    static DELAY: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *DELAY.get_or_init(|| {
+        std::env::var("COOKIE_AGENT_TEST_CLOSE_DELAY_MS")
+            .ok()?
+            .parse()
+            .ok()
+            .map(Duration::from_millis)
+    })
 }
 
 /// What a close frame the other end sent means: a normal closure (1000),
@@ -243,7 +262,11 @@ impl Server {
                 })
             }
         };
-        Ok(RunningServer { address, task })
+        Ok(RunningServer {
+            address,
+            task,
+            connections: Arc::clone(&self.connections),
+        })
     }
 }
 
@@ -378,12 +401,16 @@ async fn websocket_upgrade(
         Err(refused) => return refused.into_response(),
     };
     let server = state.server;
+    // Held until the connection has closed, from before the upgrade so a
+    // shutdown also waits for a connection still upgrading.
+    let open = server.connections.subscribe();
     upgrade
         .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let stream = WebSocketStream::client(socket, Arc::clone(&server.restarting));
             let _ = server.serve_stream(stream, authentication).await;
+            drop(open);
         })
 }
 
