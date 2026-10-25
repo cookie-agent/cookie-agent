@@ -9,9 +9,9 @@ pub use model::{
 };
 
 pub use cache::{
-    AnthropicCacheConfig, BedrockCacheConfig, CacheTtl, OpenAiCacheConfig, OpenAiCacheMode,
-    OpenAiCompatibleCacheConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
-    ProviderCacheConfig, RollingCacheTtl,
+    AnthropicCacheConfig, BedrockCacheConfig, CacheLayer, CacheTtl, CacheTtls, OpenAiCacheConfig,
+    OpenAiCacheMode, OpenAiCompatibleCacheConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
+    ProviderCacheConfig, StructuralCacheConfig,
 };
 
 use std::{

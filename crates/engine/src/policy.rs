@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use cookie_agent_config::{CacheLayer, CacheTtls};
 use cookie_agent_models::adapters::{
     BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
     CacheStrategyConfig, GoogleCacheMode, OpenAiCacheMode, OpenAiCacheStrategyConfig,
@@ -33,8 +34,9 @@ impl ResultLimits {
 pub(crate) struct FreezeOptions {
     pub result_limits: ResultLimits,
     pub model_retry: cookie_agent_config::ModelRetryConfig,
-    pub inherited_cache_strategies:
-        Option<Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>>,
+    /// The authored cache entries a delegated child that inherits its
+    /// parent's models inherits with them, one per inherited binding.
+    pub inherited_authored_caches: Option<Vec<Option<cookie_agent_config::CacheConfig>>>,
 }
 
 #[derive(Clone)]
@@ -50,6 +52,11 @@ pub(crate) struct FrozenRunPolicy {
     pub result_limits: ResultLimits,
     pub model_retry: cookie_agent_config::ModelRetryConfig,
     pub cache_strategies: Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>,
+    /// The agent-level cache entry each binding of the suffix resolved
+    /// with, kept for the delegated children that inherit the models.
+    pub authored_caches: Vec<Option<cookie_agent_config::CacheConfig>>,
+    /// The session layer whose cache defaults the run uses.
+    pub cache_layer: CacheLayer,
 }
 
 impl std::fmt::Debug for FrozenRunPolicy {
@@ -108,6 +115,18 @@ impl FrozenRunPolicy {
             .iter()
             .position(|candidate| candidate == binding)?;
         self.cache_strategies.get(index)?.clone()
+    }
+
+    /// The agent-level cache entry `binding` resolved with, if any.
+    pub(crate) fn authored_cache(
+        &self,
+        binding: &protocol::FrozenModelBinding,
+    ) -> Option<cookie_agent_config::CacheConfig> {
+        let index = self
+            .selected_suffix
+            .iter()
+            .position(|candidate| candidate == binding)?;
+        self.authored_caches.get(index)?.clone()
     }
 
     pub(crate) fn delegation_target_available(&self, target: &protocol::AgentId) -> bool {
@@ -362,7 +381,7 @@ pub(crate) fn freeze_root_agent_policy(
         FreezeOptions {
             result_limits,
             model_retry,
-            inherited_cache_strategies: None,
+            inherited_authored_caches: None,
         },
         memory,
     )
@@ -468,7 +487,8 @@ fn freeze_planned_policy(
 
 /// Whether a policy is frozen for a delegated run, whose session's origin
 /// is `SessionOrigin::Delegated`: such a run gets the delegated memory
-/// default (`docs/site/specs/memory.md` section 16.9.11).
+/// default (`docs/site/specs/memory.md` section 16.9.11) and the cache
+/// defaults of [`CacheLayer::Delegated`].
 #[derive(Clone, Copy)]
 struct Delegated(bool);
 
@@ -518,25 +538,30 @@ fn freeze_with_bindings(
     snapshot
         .validate_selection(&run_selection)
         .map_err(|_| EngineError::NoRunnableModel)?;
-    let cache_strategies = if agent.resolved_fallback.is_empty() {
-        if let Some(strategies) = options
-            .inherited_cache_strategies
+    let cache_layer = if delegated {
+        CacheLayer::Delegated
+    } else {
+        CacheLayer::Root
+    };
+    let authored_caches = if agent.resolved_fallback.is_empty() {
+        options
+            .inherited_authored_caches
             .clone()
-            .filter(|strategies| strategies.len() == bindings.len())
-        {
-            strategies
-        } else {
-            bindings
-                .iter()
-                .map(|binding| resolve_cache_strategy(None, binding, &runtime))
-                .collect::<Result<Vec<_>, _>>()?
-        }
+            .filter(|caches| caches.len() == bindings.len())
+            .unwrap_or_else(|| vec![None; bindings.len()])
     } else {
         bindings
             .iter()
-            .map(|binding| resolve_cache_strategy(Some(agent), binding, &runtime))
-            .collect::<Result<Vec<_>, _>>()?
+            .map(|binding| authored_cache(Some(agent), binding).cloned())
+            .collect()
     };
+    let cache_strategies = bindings
+        .iter()
+        .zip(&authored_caches)
+        .map(|(binding, authored)| {
+            resolve_authored_cache_strategy(authored.as_ref(), binding, &runtime, cache_layer)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let preset = registry.preset().map(str::to_owned);
     Ok(FrozenRunPolicy {
         agent: snapshot,
@@ -550,6 +575,8 @@ fn freeze_with_bindings(
         result_limits: options.result_limits,
         model_retry: options.model_retry,
         cache_strategies,
+        authored_caches,
+        cache_layer,
     })
 }
 
@@ -561,14 +588,22 @@ pub(crate) fn policy_from_snapshot(
     runtime: Arc<PublishedRuntime>,
     result_limits: ResultLimits,
     model_retry: cookie_agent_config::ModelRetryConfig,
+    cache_layer: CacheLayer,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selected_suffix.is_empty() {
         return Err(EngineError::NoRunnableModel);
     }
     let preset = registry.preset().map(str::to_owned);
+    let authored_caches = selected_suffix
+        .iter()
+        .map(|binding| authored_cache(registry.get(&agent.agent), binding).cloned())
+        .collect::<Vec<_>>();
     let cache_strategies = selected_suffix
         .iter()
-        .map(|binding| resolve_cache_strategy(registry.get(&agent.agent), binding, &runtime))
+        .zip(&authored_caches)
+        .map(|(binding, authored)| {
+            resolve_authored_cache_strategy(authored.as_ref(), binding, &runtime, cache_layer)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(FrozenRunPolicy {
         agent,
@@ -582,6 +617,8 @@ pub(crate) fn policy_from_snapshot(
         result_limits,
         model_retry,
         cache_strategies,
+        authored_caches,
+        cache_layer,
     })
 }
 
@@ -648,12 +685,25 @@ pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol:
     }
 }
 
+/// The cache strategy of `binding` for a run of `layer`, from the agent's
+/// cache entry for it, the provider's `cache` table, or the family defaults
+/// of `layer`.
 pub(crate) fn resolve_cache_strategy(
     agent: Option<&ResolvedAgent>,
     binding: &protocol::FrozenModelBinding,
     runtime: &PublishedRuntime,
+    layer: CacheLayer,
 ) -> Result<Option<CacheStrategyConfig>, EngineError> {
-    let authored = agent.and_then(|agent| {
+    resolve_authored_cache_strategy(authored_cache(agent, binding), binding, runtime, layer)
+}
+
+/// The agent-level cache entry that applies to `binding`: the entry of the
+/// exact selection, else of the same model, else of the parent-model entry.
+fn authored_cache<'a>(
+    agent: Option<&'a ResolvedAgent>,
+    binding: &protocol::FrozenModelBinding,
+) -> Option<&'a cookie_agent_config::CacheConfig> {
+    agent.and_then(|agent| {
         let exact = agent
             .resolved_fallback
             .iter()
@@ -693,7 +743,15 @@ pub(crate) fn resolve_cache_strategy(
             .or_else(same_model)
             .or_else(parent)
             .and_then(Option::as_ref)
-    });
+    })
+}
+
+fn resolve_authored_cache_strategy(
+    authored: Option<&cookie_agent_config::CacheConfig>,
+    binding: &protocol::FrozenModelBinding,
+    runtime: &PublishedRuntime,
+    layer: CacheLayer,
+) -> Result<Option<CacheStrategyConfig>, EngineError> {
     if let Some(config) = authored {
         let configured_sections = usize::from(config.anthropic.is_some())
             + usize::from(config.bedrock.is_some())
@@ -759,28 +817,14 @@ pub(crate) fn resolve_cache_strategy(
             } else {
                 cookie_agent_config::AnthropicCacheConfig::default()
             };
-            if config.explicitly_requests_one_hour()
-                && !matches!(
-                    &binding.options,
-                    protocol::ProviderOptions::Anthropic { beta, .. }
-                        if beta.iter().any(|value| value == "extended-cache-ttl-2025-04-11")
-                )
-            {
-                return Err(EngineError::CacheStrategy(
-                    "explicit Anthropic 1h caching requires beta extended-cache-ttl-2025-04-11"
-                        .into(),
-                ));
-            }
+            // The one-hour TTL is generally available on the Anthropic API
+            // and takes no beta header (release notes, 2025-08-13).
+            let ttls = resolved_ttls(&config, CacheTtls::defaults(layer, true))?;
             Some(CacheStrategyConfig::Anthropic(
                 cookie_agent_models::adapters::AnthropicCacheStrategyConfig {
-                    system: cache_ttl(config.system),
-                    tools: cache_ttl(config.tools),
-                    rolling: match config.rolling {
-                        cookie_agent_config::RollingCacheTtl::FiveMinutes => Some(
-                            cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes,
-                        ),
-                        cookie_agent_config::RollingCacheTtl::Off => None,
-                    },
+                    system: cache_ttl(ttls.system),
+                    tools: cache_ttl(ttls.tools),
+                    rolling: cache_ttl(ttls.rolling),
                 },
             ))
         }
@@ -795,7 +839,11 @@ pub(crate) fn resolve_cache_strategy(
             } else {
                 cookie_agent_config::BedrockCacheConfig::default()
             };
-            Some(CacheStrategyConfig::Bedrock(bedrock_strategy(&config)))
+            let one_hour = cookie_agent_models::adapters::bedrock_supports_one_hour_cache(
+                wire_model_id(binding),
+            );
+            let ttls = resolved_ttls(&config, CacheTtls::defaults(layer, one_hour))?;
+            Some(CacheStrategyConfig::Bedrock(bedrock_strategy(ttls)))
         }
         OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => None,
         OvenAdapterFamily::OpenaiChat
@@ -876,6 +924,33 @@ pub(crate) fn resolve_cache_strategy(
     Ok(strategy)
 }
 
+/// The TTLs `config` selects over `defaults`, refused when an authored
+/// one-hour marker follows a five-minute default (a Bedrock model without
+/// one-hour support).
+fn resolved_ttls(
+    config: &cookie_agent_config::StructuralCacheConfig,
+    defaults: CacheTtls,
+) -> Result<CacheTtls, EngineError> {
+    let ttls = config.resolve(defaults);
+    ttls.validate().map_err(|error| {
+        EngineError::CacheStrategy(format!(
+            "{error}; this model's default cache markers are five minutes, so author the \
+             earlier markers too"
+        ))
+    })?;
+    Ok(ttls)
+}
+
+/// The model ID `binding` sends on the wire.
+fn wire_model_id(binding: &protocol::FrozenModelBinding) -> &str {
+    binding
+        .descriptor
+        .provider_metadata
+        .get("cookie_agent.wire_model_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(binding.descriptor.identity.model_id.as_str())
+}
+
 fn cache_strategy_error(error: String) -> EngineError {
     EngineError::CacheStrategy(error)
 }
@@ -904,20 +979,17 @@ fn bedrock_cache_point(ttl: cookie_agent_config::CacheTtl) -> Option<BedrockCach
     })
 }
 
-fn bedrock_strategy(config: &cookie_agent_config::BedrockCacheConfig) -> BedrockCacheStrategy {
-    let messages = match config.rolling {
-        cookie_agent_config::RollingCacheTtl::FiveMinutes => vec![BedrockMessageCachePoint {
-            history_index: usize::MAX,
-            cache_point: BedrockCachePoint {
-                ttl: Some(BedrockCacheTtl::FiveMinutes),
-            },
-        }],
-        cookie_agent_config::RollingCacheTtl::Off => Vec::new(),
-    };
+fn bedrock_strategy(ttls: CacheTtls) -> BedrockCacheStrategy {
     BedrockCacheStrategy {
-        system: bedrock_cache_point(config.system),
-        tools: bedrock_cache_point(config.tools),
-        messages,
+        system: bedrock_cache_point(ttls.system),
+        tools: bedrock_cache_point(ttls.tools),
+        messages: bedrock_cache_point(ttls.rolling)
+            .map(|cache_point| BedrockMessageCachePoint {
+                history_index: usize::MAX,
+                cache_point,
+            })
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -1272,6 +1344,12 @@ pub(crate) fn freeze_acp_agent_policy(
             // One per entry of the snapshot's suffix, as history records
             // them: the synthetic binding has none.
             cache_strategies: vec![None],
+            authored_caches: vec![None],
+            cache_layer: if delegated {
+                CacheLayer::Delegated
+            } else {
+                CacheLayer::Root
+            },
         },
         selection,
     ))
@@ -1315,9 +1393,52 @@ mod cache_strategy_tests {
             serde_json::json!({"system":"off","tools":"off","rolling":"off"}),
         )
         .unwrap();
-        let strategy = bedrock_strategy(&config);
+        let ttls = resolved_ttls(&config, CacheTtls::defaults(CacheLayer::Root, true)).unwrap();
+        let strategy = bedrock_strategy(ttls);
         assert!(strategy.system.is_none());
         assert!(strategy.tools.is_none());
         assert!(strategy.messages.is_empty());
+    }
+
+    #[test]
+    fn bedrock_rolling_point_carries_its_resolved_ttl() {
+        let config = cookie_agent_config::BedrockCacheConfig::default();
+        for (layer, expected) in [
+            (CacheLayer::Root, BedrockCacheTtl::OneHour),
+            (CacheLayer::Delegated, BedrockCacheTtl::FiveMinutes),
+        ] {
+            let strategy =
+                bedrock_strategy(resolved_ttls(&config, CacheTtls::defaults(layer, true)).unwrap());
+            assert_eq!(strategy.messages.len(), 1);
+            assert_eq!(strategy.messages[0].history_index, usize::MAX);
+            assert_eq!(strategy.messages[0].cache_point.ttl, Some(expected));
+        }
+    }
+
+    #[test]
+    fn bedrock_without_one_hour_support_sends_no_one_hour_default() {
+        let config = cookie_agent_config::BedrockCacheConfig::default();
+        for layer in [CacheLayer::Root, CacheLayer::Delegated] {
+            let strategy = bedrock_strategy(
+                resolved_ttls(&config, CacheTtls::defaults(layer, false)).unwrap(),
+            );
+            let ttls = [
+                strategy.system.and_then(|point| point.ttl),
+                strategy.tools.and_then(|point| point.ttl),
+                strategy.messages[0].cache_point.ttl,
+            ];
+            assert!(!ttls.contains(&Some(BedrockCacheTtl::OneHour)), "{ttls:?}");
+        }
+    }
+
+    #[test]
+    fn authored_one_hour_after_five_minute_defaults_fails_to_resolve() {
+        let config: cookie_agent_config::BedrockCacheConfig =
+            serde_json::from_value(serde_json::json!({"rolling":"1h"})).unwrap();
+        assert!(matches!(
+            resolved_ttls(&config, CacheTtls::defaults(CacheLayer::Root, false)),
+            Err(EngineError::CacheStrategy(_))
+        ));
+        assert!(resolved_ttls(&config, CacheTtls::defaults(CacheLayer::Delegated, true)).is_ok());
     }
 }

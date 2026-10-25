@@ -226,7 +226,7 @@ impl Engine {
             policy::FreezeOptions {
                 result_limits,
                 model_retry: self.inner.config.load().runtime.model_retry,
-                inherited_cache_strategies: None,
+                inherited_authored_caches: None,
             },
             memory,
         )?;

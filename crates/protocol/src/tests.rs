@@ -3609,3 +3609,32 @@ fn an_acp_agents_synthetic_model_names_it() {
         "acp/claude"
     );
 }
+
+#[test]
+fn frozen_anthropic_cache_strategy_takes_a_one_hour_rolling_marker_in_order() {
+    let strategy = |system, tools, rolling| FrozenCacheStrategy::Anthropic {
+        system,
+        tools,
+        rolling,
+    };
+    for valid in [
+        strategy(
+            FrozenCacheTtl::OneHour,
+            FrozenCacheTtl::OneHour,
+            FrozenCacheTtl::OneHour,
+        ),
+        strategy(
+            FrozenCacheTtl::Off,
+            FrozenCacheTtl::Off,
+            FrozenCacheTtl::OneHour,
+        ),
+    ] {
+        assert!(valid.validate().is_ok(), "{valid:?}");
+    }
+    let out_of_order = strategy(
+        FrozenCacheTtl::FiveMinutes,
+        FrozenCacheTtl::OneHour,
+        FrozenCacheTtl::OneHour,
+    );
+    assert!(out_of_order.validate().is_err());
+}

@@ -10,7 +10,7 @@ pub use cache::{
     AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, BedrockCachePoint, BedrockCacheStrategy,
     BedrockCacheTtl, BedrockMessageCachePoint, CacheStrategyConfig, GoogleCacheMode,
     GoogleCacheStrategyConfig, OpenAiCacheMode, OpenAiCacheStrategyConfig,
-    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
+    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, bedrock_supports_one_hour_cache,
 };
 pub use capabilities::{AdapterCapabilityError, validate_capability_ceiling};
 pub use compaction::with_native_compaction_instructions;

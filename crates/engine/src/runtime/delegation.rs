@@ -3823,10 +3823,10 @@ pub(crate) fn freeze_delegated_child_policy(
         policy::FreezeOptions {
             result_limits,
             model_retry: parent_policy.model_retry,
-            inherited_cache_strategies: Some(
+            inherited_authored_caches: Some(
                 inherited_suffix
                     .iter()
-                    .map(|binding| parent_policy.raw_cache_strategy(binding))
+                    .map(|binding| parent_policy.authored_cache(binding))
                     .collect(),
             ),
         },

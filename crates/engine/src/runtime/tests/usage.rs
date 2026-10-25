@@ -72,7 +72,8 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
                 .unwrap()
                 .last()
                 .unwrap()["cache_control"]["ttl"],
-            "5m"
+            // A root run's rolling marker.
+            "1h"
         );
     }
 
@@ -389,7 +390,8 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
             .unwrap()
             .last()
             .unwrap()["cache_control"]["ttl"],
-        "5m"
+        // A root run's rolling marker.
+        "1h"
     );
     reopened.shutdown().await;
 }

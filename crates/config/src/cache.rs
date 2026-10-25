@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 pub use cookie_agent_models::{
-    AnthropicCacheConfig, BedrockCacheConfig, CacheTtl, OpenAiCacheConfig, OpenAiCacheMode,
-    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl,
+    AnthropicCacheConfig, BedrockCacheConfig, CacheLayer, CacheTtl, CacheTtls, OpenAiCacheConfig,
+    OpenAiCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, StructuralCacheConfig,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]

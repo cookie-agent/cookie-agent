@@ -10,108 +10,102 @@ pub enum CacheTtl {
     Off,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum RollingCacheTtl {
-    #[serde(rename = "5m")]
-    FiveMinutes,
-    #[serde(rename = "off")]
-    Off,
+/// The layer of the session tree a run belongs to. Structural cache defaults
+/// differ by layer; authored values apply to both.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheLayer {
+    /// A session with no delegation parent.
+    Root,
+    /// A delegated child session (a subagent).
+    Delegated,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AnthropicCacheConfig {
-    pub system: CacheTtl,
+/// The TTLs of the three structural cache markers, in marker order: tools,
+/// system, then the rolling marker on the last non-system message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CacheTtls {
     pub tools: CacheTtl,
-    pub rolling: RollingCacheTtl,
-    #[serde(skip)]
-    explicitly_requests_one_hour: bool,
+    pub system: CacheTtl,
+    pub rolling: CacheTtl,
 }
 
-impl Default for AnthropicCacheConfig {
-    fn default() -> Self {
-        Self {
-            system: CacheTtl::OneHour,
-            tools: CacheTtl::OneHour,
-            rolling: RollingCacheTtl::FiveMinutes,
-            explicitly_requests_one_hour: false,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for AnthropicCacheConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Raw {
-            system: Option<CacheTtl>,
-            tools: Option<CacheTtl>,
-            rolling: Option<RollingCacheTtl>,
-        }
-
-        let raw = Raw::deserialize(deserializer)?;
-        Ok(Self {
-            explicitly_requests_one_hour: raw.system == Some(CacheTtl::OneHour)
-                || raw.tools == Some(CacheTtl::OneHour),
-            system: raw.system.unwrap_or(CacheTtl::OneHour),
-            tools: raw.tools.unwrap_or(CacheTtl::OneHour),
-            rolling: raw.rolling.unwrap_or(RollingCacheTtl::FiveMinutes),
-        })
-    }
-}
-
-impl AnthropicCacheConfig {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        validate_ttl_order([
-            ttl(self.tools),
-            ttl(self.system),
-            match self.rolling {
-                RollingCacheTtl::FiveMinutes => Some(CacheTtl::FiveMinutes),
-                RollingCacheTtl::Off => None,
-            },
-        ])
-    }
-
+impl CacheTtls {
+    /// The defaults of `layer`: one-hour system and tools markers, and a
+    /// one-hour rolling marker for root sessions but a five-minute one for
+    /// delegated sessions. Without `one_hour` (a model that cannot take a
+    /// one-hour TTL) every marker defaults to five minutes.
     #[must_use]
-    pub const fn explicitly_requests_one_hour(&self) -> bool {
-        self.explicitly_requests_one_hour
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BedrockCacheConfig {
-    #[serde(default = "five_minutes")]
-    pub system: CacheTtl,
-    #[serde(default = "five_minutes")]
-    pub tools: CacheTtl,
-    #[serde(default = "rolling_five_minutes")]
-    pub rolling: RollingCacheTtl,
-}
-
-impl Default for BedrockCacheConfig {
-    fn default() -> Self {
+    pub const fn defaults(layer: CacheLayer, one_hour: bool) -> Self {
+        let long = if one_hour {
+            CacheTtl::OneHour
+        } else {
+            CacheTtl::FiveMinutes
+        };
         Self {
-            system: five_minutes(),
-            tools: five_minutes(),
-            rolling: rolling_five_minutes(),
+            tools: long,
+            system: long,
+            rolling: match layer {
+                CacheLayer::Root => long,
+                CacheLayer::Delegated => CacheTtl::FiveMinutes,
+            },
         }
     }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_ttl_order([self.tools, self.system, self.rolling].map(ttl))
+    }
 }
 
-impl BedrockCacheConfig {
+/// The structural cache table of Anthropic and Bedrock providers: one TTL
+/// per marker. An unset field takes the default of the run's
+/// [`CacheLayer`] ([`Self::resolve`]).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StructuralCacheConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<CacheTtl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<CacheTtl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rolling: Option<CacheTtl>,
+}
+
+pub type AnthropicCacheConfig = StructuralCacheConfig;
+pub type BedrockCacheConfig = StructuralCacheConfig;
+
+impl StructuralCacheConfig {
+    /// Checks the marker order of the authored values: a one-hour marker
+    /// cannot follow a five-minute one. A default never puts a longer
+    /// marker after a shorter one ([`Self::resolve`]); an authored one-hour
+    /// marker after five-minute defaults (a Bedrock model without one-hour
+    /// support) only shows once resolved ([`CacheTtls::validate`]).
     pub fn validate(&self) -> Result<(), &'static str> {
-        validate_ttl_order([
-            ttl(self.tools),
-            ttl(self.system),
-            match self.rolling {
-                RollingCacheTtl::FiveMinutes => Some(CacheTtl::FiveMinutes),
-                RollingCacheTtl::Off => None,
-            },
-        ])
+        validate_ttl_order([self.tools, self.system, self.rolling].map(|value| value.and_then(ttl)))
+    }
+
+    /// The TTLs this table selects over `defaults`. An authored value wins;
+    /// a default one-hour TTL that would follow a five-minute marker drops
+    /// to five minutes, so a default never breaks the marker order.
+    #[must_use]
+    pub fn resolve(&self, defaults: CacheTtls) -> CacheTtls {
+        let mut saw_five_minutes = false;
+        let mut pick = |authored: Option<CacheTtl>, default: CacheTtl| {
+            let value = match authored {
+                Some(value) => value,
+                None if saw_five_minutes && default == CacheTtl::OneHour => CacheTtl::FiveMinutes,
+                None => default,
+            };
+            saw_five_minutes |= value == CacheTtl::FiveMinutes;
+            value
+        };
+        let tools = pick(self.tools, defaults.tools);
+        let system = pick(self.system, defaults.system);
+        let rolling = pick(self.rolling, defaults.rolling);
+        CacheTtls {
+            tools,
+            system,
+            rolling,
+        }
     }
 }
 
@@ -239,17 +233,18 @@ impl ProviderCacheConfig {
     }
 
     pub fn anthropic(&self) -> Result<AnthropicCacheConfig, String> {
-        self.validate_field::<CacheTtl>("system")?;
-        self.validate_field::<CacheTtl>("tools")?;
-        self.validate_field::<RollingCacheTtl>("rolling")?;
-        decode_and_validate(&self.0, AnthropicCacheConfig::validate)
+        self.structural()
     }
 
     pub fn bedrock(&self) -> Result<BedrockCacheConfig, String> {
+        self.structural()
+    }
+
+    fn structural(&self) -> Result<StructuralCacheConfig, String> {
         self.validate_field::<CacheTtl>("system")?;
         self.validate_field::<CacheTtl>("tools")?;
-        self.validate_field::<RollingCacheTtl>("rolling")?;
-        decode_and_validate(&self.0, BedrockCacheConfig::validate)
+        self.validate_field::<CacheTtl>("rolling")?;
+        decode_and_validate(&self.0, StructuralCacheConfig::validate)
     }
 
     pub fn openai(&self) -> Result<OpenAiCacheConfig, String> {
@@ -325,10 +320,95 @@ fn validate_ttl_order(
     Ok(())
 }
 
-const fn five_minutes() -> CacheTtl {
-    CacheTtl::FiveMinutes
-}
+#[cfg(test)]
+mod tests {
+    use super::{CacheLayer, CacheTtl, CacheTtls, StructuralCacheConfig};
 
-const fn rolling_five_minutes() -> RollingCacheTtl {
-    RollingCacheTtl::FiveMinutes
+    const HOUR: CacheTtl = CacheTtl::OneHour;
+    const FIVE: CacheTtl = CacheTtl::FiveMinutes;
+    const OFF: CacheTtl = CacheTtl::Off;
+
+    fn ttls(tools: CacheTtl, system: CacheTtl, rolling: CacheTtl) -> CacheTtls {
+        CacheTtls {
+            tools,
+            system,
+            rolling,
+        }
+    }
+
+    #[test]
+    fn layer_defaults_differ_only_in_the_rolling_marker() {
+        let root = CacheTtls::defaults(CacheLayer::Root, true);
+        let delegated = CacheTtls::defaults(CacheLayer::Delegated, true);
+        assert_eq!(root.rolling, HOUR);
+        assert_eq!(delegated.rolling, FIVE);
+        assert_eq!(
+            (root.tools, root.system),
+            (delegated.tools, delegated.system)
+        );
+        for layer in [CacheLayer::Root, CacheLayer::Delegated] {
+            assert_eq!(CacheTtls::defaults(layer, false), ttls(FIVE, FIVE, FIVE));
+        }
+    }
+
+    #[test]
+    fn authored_values_win_over_the_defaults_of_either_layer() {
+        let config = StructuralCacheConfig {
+            system: None,
+            tools: Some(OFF),
+            rolling: Some(HOUR),
+        };
+        for defaults in [ttls(HOUR, HOUR, HOUR), ttls(HOUR, HOUR, FIVE)] {
+            assert_eq!(config.resolve(defaults), ttls(OFF, HOUR, HOUR));
+        }
+    }
+
+    #[test]
+    fn a_default_never_follows_a_shorter_marker_with_a_longer_one() {
+        let config = StructuralCacheConfig {
+            system: Some(FIVE),
+            tools: None,
+            rolling: None,
+        };
+        let resolved = config.resolve(ttls(HOUR, HOUR, HOUR));
+        assert_eq!(resolved, ttls(HOUR, FIVE, FIVE));
+        assert!(resolved.validate().is_ok());
+
+        let off_between = StructuralCacheConfig {
+            system: Some(OFF),
+            tools: Some(FIVE),
+            rolling: None,
+        };
+        assert_eq!(
+            off_between.resolve(ttls(HOUR, HOUR, HOUR)),
+            ttls(FIVE, OFF, FIVE)
+        );
+    }
+
+    #[test]
+    fn an_authored_one_hour_marker_after_five_minute_defaults_is_out_of_order() {
+        let config = StructuralCacheConfig {
+            system: None,
+            tools: None,
+            rolling: Some(HOUR),
+        };
+        assert!(config.validate().is_ok());
+        assert!(config.resolve(ttls(FIVE, FIVE, FIVE)).validate().is_err());
+    }
+
+    #[test]
+    fn authored_marker_order_ignores_off_markers() {
+        let valid = StructuralCacheConfig {
+            system: Some(OFF),
+            tools: Some(HOUR),
+            rolling: Some(FIVE),
+        };
+        assert!(valid.validate().is_ok());
+        let invalid = StructuralCacheConfig {
+            system: Some(OFF),
+            tools: Some(FIVE),
+            rolling: Some(HOUR),
+        };
+        assert!(invalid.validate().is_err());
+    }
 }

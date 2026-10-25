@@ -819,7 +819,8 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
                     .unwrap()
                     .last()
                     .unwrap()["cache_control"]["ttl"],
-                "5m"
+                // A root run's rolling marker.
+                "1h"
             );
         } else {
             let tool_result = &follow_up["messages"][2]["content"][0];

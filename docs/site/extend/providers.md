@@ -578,9 +578,10 @@ Move top-level pricing to the model's [pricing table](#model-pricing).
 
 ## Prompt caching
 
-Prompt-cache policy belongs to the provider definition. Omit `cache` to use the
-family defaults. A cache table is validated against the provider's resolved
-adaptor; wrong-family fields and unknown keys are load errors.
+Prompt-cache policy belongs to the provider definition. Omit `cache`, or a
+field of it, to use the family defaults. A cache table is validated against
+the provider's resolved adaptor; wrong-family fields and unknown keys are load
+errors.
 
 The following are fragments for already-defined providers, not a complete file:
 
@@ -588,7 +589,7 @@ The following are fragments for already-defined providers, not a complete file:
 [providers.anthropic.cache]
 system = "1h"
 tools = "1h"
-rolling = "5m"
+rolling = "1h"
 
 [providers."custom.bedrock".cache]
 system = "5m"
@@ -612,20 +613,50 @@ not apply a Converse-only cache policy to a mixed Bedrock catalog provider that
 also routes models through Responses. Use a custom provider for explicit
 family-specific policy when the managed definition cannot share it.
 
-Anthropic defaults to `system = "1h"`, `tools = "1h"`, and `rolling = "5m"`.
-`system` and `tools` accept `"1h"`, `"5m"`, or `"off"`; `rolling` accepts
-`"5m"` or `"off"`. Marker order is tools, system, then rolling history, and a
-one-hour marker cannot follow a five-minute marker. Explicit `"1h"` placement
-requires the model's authored Anthropic `beta` options to contain
-`extended-cache-ttl-2025-04-11`; Cookie agent never inserts an
-`anthropic-beta` value on the user's behalf.
+Anthropic and Bedrock share three fields, `system`, `tools`, and `rolling`,
+each `"1h"`, `"5m"`, or `"off"`. Their defaults depend on the layer of the
+session the run belongs to:
 
-Bedrock has the same three fields and ordering rule. All three default to
-`"5m"`; setting all three to `"off"` emits no cache points. Rolling always marks
-the last non-system message. There is no `enabled` switch and no indexed
-`messages` list. System and tool points are omitted from requests without
-eligible system text or tools. The three structural placements stay below
-Bedrock's four-point request limit.
+| Session | `system` | `tools` | `rolling` |
+|---|---|---|---|
+| Root (no delegation parent) | `"1h"` | `"1h"` | `"1h"` |
+| Subagent (a delegated child) | `"1h"` | `"1h"` | `"5m"` |
+
+An authored
+value applies to both layers: only the defaults differ. An agent's
+[entry-level `cache`](agents.md#models) fills its unset fields from the same
+layer defaults, and a subagent that inherits its parent's models inherits the
+parent's entry-level `cache` with them. Internal agents (compaction, titles,
+the approval reviewer) use the defaults of the layer of the run they serve;
+compaction reuses that run's markers so it reads the cached prefix.
+
+Marker order is tools, system, then rolling history, and a one-hour marker
+cannot follow a five-minute marker. Authored values that break the order are a
+load error. A default never does: an unset field after a five-minute marker
+defaults to five minutes, so `tools = "5m"` alone gives five-minute system and
+rolling markers too.
+
+The one-hour TTL is generally available on the Anthropic API and needs no
+`anthropic-beta` header, so `"1h"` placement, authored or default, sends only
+the marker's `ttl`. Cookie agent never inserts an `anthropic-beta` value on the
+user's behalf.
+
+On Bedrock, only some models take a one-hour TTL: Claude Sonnet 4.5, Haiku
+4.5, Opus 4.5, and later Claude models; older Claude models and other families
+take five minutes only and may reject a `ttl`. Bedrock publishes no capability
+for it, so Cookie agent reads it from the model ID: an
+`anthropic.claude-<family>-<major>-<minor>` ID of version 4.5 or later, in any
+region or profile prefix. On any other model, an application inference profile
+ARN included, every default is `"5m"`. An authored `"1h"` is sent as written,
+and an authored `"1h"` that would follow those five-minute defaults fails the
+run's policy freeze with a cache-strategy error; author the earlier markers
+too, or leave the field unset.
+
+Setting all three Bedrock fields to `"off"` emits no cache points. Rolling
+always marks the last non-system message. There is no `enabled` switch and no
+indexed `messages` list. System and tool points are omitted from requests
+without eligible system text or tools. The three structural placements stay
+below Bedrock's four-point request limit.
 
 Anthropic and Bedrock use structural markers. The selected policy is frozen for
 the run, prior markers are cleared, and ordinary and compaction requests resolve

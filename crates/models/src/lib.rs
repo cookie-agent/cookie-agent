@@ -24,10 +24,10 @@ mod test_support;
 
 pub use authoring::{
     AdaptorOptions, AnthropicCacheConfig, AuthDefinition, AuthoredCapabilities, BedrockCacheConfig,
-    CacheTtl, HeaderName, ModelPricing, ModelsDevProvider, OpenAiCacheConfig, OpenAiCacheMode,
-    OpenAiCompatibleCacheConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
-    ProviderCacheConfig, ProviderDefinition, RequestEndpoint, RollingCacheTtl, SecretString,
-    VariantDefinition,
+    CacheLayer, CacheTtl, CacheTtls, HeaderName, ModelPricing, ModelsDevProvider,
+    OpenAiCacheConfig, OpenAiCacheMode, OpenAiCompatibleCacheConfig, OpenAiPromptCacheRetention,
+    OpenAiPromptCacheTtl, ProviderCacheConfig, ProviderDefinition, RequestEndpoint, SecretString,
+    StructuralCacheConfig, VariantDefinition,
 };
 pub use authoring::{
     AuthOverride, BoundedSetupString, ConfigSetupValue, CustomModelDefinition, CustomProvider,

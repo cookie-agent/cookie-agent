@@ -161,7 +161,11 @@ for that binding. This is resolved independently for every fallback, including
 mixed-provider chains. OpenAI-compatible cache keys are provider-only.
 
 The entry-level table contains one `anthropic`, `bedrock`, or `openai` shape
-matching the binding. It replaces the provider policy rather than merging it.
+matching the binding. It replaces the provider policy rather than merging it;
+its unset Anthropic or Bedrock fields take the family defaults of the run's
+session layer, root or subagent ([prompt caching](providers.md#prompt-caching)).
+A subagent with no `models` of its own runs its parent's models with the
+parent's entry-level `cache`.
 `cache: {}` explicitly selects no structural strategy; first-party OpenAI and
 Azure still send the unconditional session-ID cache key.
 

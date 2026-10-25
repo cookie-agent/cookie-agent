@@ -50,6 +50,8 @@ impl Engine {
             runtime,
             crate::policy::ResultLimits::from_config(&self.inner.config.load().runtime),
             self.inner.config.load().runtime.model_retry,
+            // Titles are generated for root sessions only.
+            cookie_agent_config::CacheLayer::Root,
         )?;
         policy.preset = preset;
         policy.internal_agents = internal_agents;

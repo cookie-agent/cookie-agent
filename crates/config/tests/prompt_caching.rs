@@ -2,7 +2,7 @@ use std::fs;
 
 use cookie_agent_config::{
     AgentFrontmatter, CacheTtl, ConfigError, OpenAiCacheMode, OpenAiPromptCacheRetention,
-    OpenAiPromptCacheTtl, RollingCacheTtl, load_from_user_root,
+    OpenAiPromptCacheTtl, load_from_user_root,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
@@ -50,12 +50,12 @@ media = {{}}
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Ttls {
     system: CacheTtl,
-    rolling: RollingCacheTtl,
+    rolling: CacheTtl,
 }
 
 #[test]
 fn cache_ttl_literals_round_trip_exactly() {
-    for (system, rolling) in [("1h", "5m"), ("5m", "off"), ("off", "5m")] {
+    for (system, rolling) in [("1h", "5m"), ("1h", "1h"), ("5m", "off"), ("off", "5m")] {
         let value: Ttls =
             toml::from_str(&format!("system = \"{system}\"\nrolling = \"{rolling}\"\n")).unwrap();
         let encoded = toml::to_string(&value).unwrap();
@@ -129,6 +129,44 @@ fn per_provider_cache_tables_parse_for_their_adaptor_family() {
         let loaded = load(&custom_provider(adaptor, auth, setup, cache))
             .unwrap_or_else(|error| panic!("{adaptor} provider cache failed: {error}"));
         assert_eq!(loaded.runtime.providers.len(), 1);
+    }
+}
+
+#[test]
+fn structural_cache_tables_accept_one_hour_rolling_and_enforce_marker_order() {
+    let anthropic = (
+        "anthropic-compatible",
+        r#"{ method = "anthropic-api-key-v1", values = { api_key = "key" } }"#,
+        "{}",
+    );
+    let bedrock = (
+        "aws-bedrock-converse",
+        r#"{ method = "aws-sigv4-credentials-v1", values = { access_key_id = "id", secret_access_key = "secret" } }"#,
+        r#"{ region = "us-east-1" }"#,
+    );
+    for (adaptor, auth, setup) in [anthropic, bedrock] {
+        for accepted in [
+            "rolling = \"1h\"",
+            "system = \"1h\"\ntools = \"1h\"\nrolling = \"1h\"",
+            "tools = \"off\"\nsystem = \"5m\"\nrolling = \"off\"",
+            // Unset markers after a five-minute one never break the order.
+            "tools = \"5m\"",
+        ] {
+            load(&custom_provider(adaptor, auth, setup, accepted)).unwrap_or_else(|error| {
+                panic!("{adaptor} rejected cache table {accepted:?}: {error}")
+            });
+        }
+        for rejected in [
+            "system = \"5m\"\nrolling = \"1h\"",
+            "tools = \"5m\"\nrolling = \"1h\"",
+            "tools = \"5m\"\nsystem = \"1h\"",
+            "rolling = \"30m\"",
+        ] {
+            assert!(
+                load(&custom_provider(adaptor, auth, setup, rejected)).is_err(),
+                "{adaptor} accepted cache table {rejected:?}"
+            );
+        }
     }
 }
 
@@ -211,8 +249,8 @@ permissions: {}
         .anthropic
         .as_ref()
         .unwrap();
-    assert_eq!(anthropic.system, CacheTtl::OneHour);
-    assert_eq!(anthropic.rolling, RollingCacheTtl::FiveMinutes);
+    assert_eq!(anthropic.system, Some(CacheTtl::OneHour));
+    assert_eq!(anthropic.rolling, Some(CacheTtl::FiveMinutes));
     let openai = frontmatter.models[1]
         .cache
         .as_ref()
@@ -250,6 +288,19 @@ fn removed_binding_cache_surfaces_are_hard_errors() {
 
 #[test]
 fn bedrock_uses_anthropic_ordering_rules() {
-    let yaml = "description: Cached agent\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/model\n    cache:\n      bedrock: { tools: 5m, system: 1h, rolling: 5m }\npermissions: {}\n";
-    assert!(serde_yaml::from_str::<AgentFrontmatter>(yaml).is_err());
+    for cache in [
+        "bedrock: { tools: 5m, system: 1h, rolling: 5m }",
+        "bedrock: { system: 5m, rolling: 1h }",
+        "anthropic: { tools: 5m, rolling: 1h }",
+    ] {
+        let yaml = format!(
+            "description: Cached agent\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/model\n    cache:\n      {cache}\npermissions: {{}}\n"
+        );
+        assert!(
+            serde_yaml::from_str::<AgentFrontmatter>(&yaml).is_err(),
+            "accepted out-of-order markers: {cache}"
+        );
+    }
+    let yaml = "description: Cached agent\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/model\n    cache:\n      anthropic: { rolling: 1h }\npermissions: {}\n";
+    assert!(serde_yaml::from_str::<AgentFrontmatter>(yaml).is_ok());
 }

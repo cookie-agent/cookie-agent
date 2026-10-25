@@ -24,8 +24,9 @@ pub use agents::{
     PermissionKey, PermissionRule, PermissionValue, SMALL_MODEL_EXPRESSION,
 };
 pub use cache::{
-    AnthropicCacheConfig, BedrockCacheConfig, CacheConfig, CacheTtl, OpenAiCacheConfig,
-    OpenAiCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl,
+    AnthropicCacheConfig, BedrockCacheConfig, CacheConfig, CacheLayer, CacheTtl, CacheTtls,
+    OpenAiCacheConfig, OpenAiCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
+    StructuralCacheConfig,
 };
 pub use error::ConfigError;
 pub use loader::{

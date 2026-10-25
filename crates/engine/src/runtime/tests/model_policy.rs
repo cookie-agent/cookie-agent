@@ -58,6 +58,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         Arc::clone(&owner.runtime),
         owner.result_limits,
         owner.model_retry,
+        owner.cache_layer,
     )
     .expect("replayed owner policy");
     let replayed = fixture
@@ -89,6 +90,12 @@ async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
         );
     let owner = frozen_root_policy(&fixture, &selection);
     let parent = owner.selected_suffix.first().unwrap();
+    // Compaction shares the owner's cached prefix, rolling marker included.
+    let owner_rolling = match anthropic_ttls(&owner, parent).2 {
+        Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::OneHour) => "one_hour",
+        Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes) => "five_minutes",
+        None => panic!("owner rolling marker"),
+    };
     let marker = |options: &oven_sdk::ProviderOptions| {
         options
             .get("anthropic")
@@ -141,7 +148,7 @@ async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
         );
         assert_eq!(
             marker(&user.provider_options).as_deref(),
-            (kind == InternalAgentKind::ContextCompaction).then_some("five_minutes")
+            (kind == InternalAgentKind::ContextCompaction).then_some(owner_rolling)
         );
     }
     fixture.engine.shutdown().await;
@@ -232,10 +239,137 @@ fn compatible_openai_cache_key_defaults_disables_and_expands() {
     }
 }
 
+type AnthropicTtls = (
+    Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig>,
+    Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig>,
+    Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig>,
+);
+
+/// The (system, tools, rolling) TTLs `policy` frozen for `binding`.
+fn anthropic_ttls(
+    policy: &crate::policy::FrozenRunPolicy,
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+) -> AnthropicTtls {
+    let Some(cookie_agent_models::adapters::CacheStrategyConfig::Anthropic(strategy)) =
+        policy.raw_cache_strategy(binding)
+    else {
+        panic!("Anthropic cache strategy");
+    };
+    (strategy.system, strategy.tools, strategy.rolling)
+}
+
+/// The root policy of `selection` and the policy of a model-less `worker`
+/// child delegated from it, which inherits the root's models.
+fn root_and_delegated_policies(
+    fixture: &Fixture,
+    selection: &RunSelection,
+) -> (
+    crate::policy::FrozenRunPolicy,
+    crate::policy::FrozenRunPolicy,
+) {
+    let root = frozen_root_policy(fixture, selection);
+    let worker = root
+        .registry
+        .get(&cookie_agent_protocol::AgentId::new("worker").unwrap())
+        .expect("worker agent")
+        .clone();
+    let child = crate::runtime::delegation::freeze_delegated_child_policy(
+        &worker,
+        &root,
+        &selection.model,
+        &root.selected_suffix,
+        1,
+        root.result_limits,
+        &crate::permissions::MemoryVariables::default(),
+    )
+    .expect("delegated policy");
+    (root, child)
+}
+
+fn anthropic_layer_fixture(primary: &str, provider_cache: Option<&str>) -> (Fixture, RunSelection) {
+    let worker = "---\ndescription: Inheriting worker\nmode: subagent\nenabled: true\nmodels: []\npermissions: {}\n---\nWorker prompt.\n";
+    custom_fixture_with_capabilities_and_worker_name(
+        "http://127.0.0.1:9/v1",
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        Some(worker),
+        "anthropic-compatible",
+        None,
+        None,
+        provider_cache,
+        "worker",
+    )
+}
+
+const LAYER_PRIMARY: &str = "---\ndescription: Layered cache owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n    \"*\": deny\n---\nStable owner prompt.\n";
+
 #[test]
-fn explicit_anthropic_one_hour_requires_authored_beta() {
-    let primary = "---\ndescription: Anthropic cache owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      anthropic: { system: 1h, tools: off, rolling: off }\npermissions: {}\n---\nStable owner prompt.\n";
-    let (without_beta, selection) =
+fn rolling_cache_default_follows_the_session_layer() {
+    use cookie_agent_models::adapters::AnthropicCacheTtlConfig::{FiveMinutes, OneHour};
+    let (fixture, selection) = anthropic_layer_fixture(LAYER_PRIMARY, None);
+    let (root, child) = root_and_delegated_policies(&fixture, &selection);
+    assert_eq!(root.cache_layer, cookie_agent_config::CacheLayer::Root);
+    assert_eq!(
+        child.cache_layer,
+        cookie_agent_config::CacheLayer::Delegated
+    );
+    let binding = root.selected_suffix.first().unwrap();
+    let (root_system, root_tools, root_rolling) = anthropic_ttls(&root, binding);
+    let (child_system, child_tools, child_rolling) = anthropic_ttls(&child, binding);
+    assert_eq!(root_rolling, Some(OneHour));
+    assert_eq!(child_rolling, Some(FiveMinutes));
+    assert_eq!((root_system, root_tools), (child_system, child_tools));
+}
+
+#[test]
+fn authored_cache_values_apply_to_both_layers() {
+    use cookie_agent_models::adapters::AnthropicCacheTtlConfig::{FiveMinutes, OneHour};
+    for (provider_cache, expected) in [
+        (
+            "rolling = \"5m\"",
+            (Some(OneHour), Some(OneHour), Some(FiveMinutes)),
+        ),
+        (
+            "rolling = \"1h\"",
+            (Some(OneHour), Some(OneHour), Some(OneHour)),
+        ),
+        (
+            "system = \"5m\"\nrolling = \"off\"",
+            (Some(FiveMinutes), Some(OneHour), None),
+        ),
+    ] {
+        let (fixture, selection) = anthropic_layer_fixture(LAYER_PRIMARY, Some(provider_cache));
+        let (root, child) = root_and_delegated_policies(&fixture, &selection);
+        let binding = root.selected_suffix.first().unwrap();
+        assert_eq!(anthropic_ttls(&root, binding), expected, "{provider_cache}");
+        assert_eq!(
+            anthropic_ttls(&child, binding),
+            expected,
+            "{provider_cache}"
+        );
+    }
+
+    // An agent's own entry travels with the models a model-less child
+    // inherits.
+    let primary = "---\ndescription: Layered cache owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      anthropic: { system: 5m, rolling: 5m }\npermissions:\n  delegate:\n    worker: allow\n    \"*\": deny\n---\nStable owner prompt.\n";
+    let (fixture, selection) = anthropic_layer_fixture(primary, Some("rolling = \"1h\""));
+    let (root, child) = root_and_delegated_policies(&fixture, &selection);
+    let binding = root.selected_suffix.first().unwrap();
+    let expected = (Some(FiveMinutes), Some(OneHour), Some(FiveMinutes));
+    assert_eq!(anthropic_ttls(&root, binding), expected);
+    assert_eq!(anthropic_ttls(&child, binding), expected);
+}
+
+#[test]
+fn anthropic_one_hour_markers_need_no_beta_option() {
+    use cookie_agent_models::adapters::AnthropicCacheTtlConfig::OneHour;
+    let primary = "---\ndescription: Anthropic cache owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      anthropic: { system: 1h, tools: off, rolling: 1h }\npermissions: {}\n---\nStable owner prompt.\n";
+    let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             "http://127.0.0.1:9/v1",
             primary,
@@ -248,26 +382,16 @@ fn explicit_anthropic_one_hour_requires_authored_beta() {
             None,
             "anthropic-compatible",
         );
-    assert!(matches!(
-        try_frozen_root_policy(&without_beta, &selection),
-        Err(EngineError::CacheStrategy(_))
+    let policy = try_frozen_root_policy(&fixture, &selection).expect("policy without beta");
+    let binding = policy.selected_suffix.first().unwrap();
+    assert!(!matches!(
+        &binding.options,
+        cookie_agent_protocol::ProviderOptions::Anthropic { beta, .. } if !beta.is_empty()
     ));
-
-    let (with_beta, selection) = custom_fixture_with_capabilities_and_variants(
-        "http://127.0.0.1:9/v1",
-        primary,
-        None,
-        None,
-        false,
-        None,
-        None,
-        4_096,
-        None,
-        "anthropic-compatible",
-        None,
-        Some("adaptor_options = { beta = [\"extended-cache-ttl-2025-04-11\"] }"),
+    assert_eq!(
+        anthropic_ttls(&policy, binding),
+        (Some(OneHour), None, Some(OneHour))
     );
-    assert!(try_frozen_root_policy(&with_beta, &selection).is_ok());
 }
 
 #[tokio::test]
@@ -697,7 +821,8 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         .unwrap()
         .clone();
     assert_eq!(last_content["text"], "Replacement user");
-    assert_eq!(last_content["cache_control"]["ttl"], "5m");
+    // A root run's rolling marker.
+    assert_eq!(last_content["cache_control"]["ttl"], "1h");
     assert_eq!(cache_marker_count(&body), 3);
 
     await_projection(

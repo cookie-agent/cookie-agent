@@ -953,9 +953,7 @@ impl FrozenCacheStrategy {
                 tools,
                 rolling,
             } => {
-                if *rolling == FrozenCacheTtl::OneHour
-                    || !valid_cache_ttl_order([*tools, *system, *rolling])
-                {
+                if !valid_cache_ttl_order([*tools, *system, *rolling]) {
                     return Err("invalid Anthropic frozen cache strategy");
                 }
             }
