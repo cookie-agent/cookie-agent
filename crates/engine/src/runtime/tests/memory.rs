@@ -89,6 +89,23 @@ fn terminations(fixture: &Fixture, session: SessionId) -> HashMap<String, ToolCa
         .collect()
 }
 
+/// Each call's presentation as its start recorded it, by model call ID.
+fn presentations(
+    fixture: &Fixture,
+    session: SessionId,
+) -> HashMap<String, cookie_agent_protocol::ToolPresentation> {
+    events(fixture, session)
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } => Some((
+                start.owner.model_call_id.to_string(),
+                start.presentation.clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The text of each message of a request, in order.
 fn message_texts(request: &str) -> Vec<String> {
     request_body(request)["messages"]
@@ -723,6 +740,41 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
             label: Some("Build conventions".into()),
         })]
     );
+    // Before approval, a write, an edit, and a delete preview their diff
+    // in place of the arguments it shows, as the coding runtime's edit
+    // does; a write's reason, which no diff shows, stays.
+    let presented = presentations(&fixture, session);
+    let preview = |id: &str| match presented[id].preview.as_slice() {
+        [Open::Known(DisplayBlock::Diff(diff))] => {
+            assert_eq!(diff.as_of, DiffAsOf::Prepare, "{id}");
+            assert!(
+                presented[id].arguments.is_empty(),
+                "{id}: {:?}",
+                presented[id]
+            );
+            (diff.change, changed(diff))
+        }
+        other => panic!("{id}: {other:?}"),
+    };
+    assert_eq!(preview("write-1").0, DiffChange::Created);
+    assert_eq!(
+        preview("edit-1"),
+        (
+            DiffChange::Modified,
+            vec![
+                "Remove - run cargo test".to_owned(),
+                "Add - run cargo nextest".to_owned()
+            ]
+        )
+    );
+    assert_eq!(preview("replace-1").0, DiffChange::Modified);
+    assert_eq!(preview("delete-1").0, DiffChange::Deleted);
+    assert_eq!(
+        presented["edit-1"].title.as_str(),
+        "Edit memory project://web/build"
+    );
+    assert!(presented["read-1"].preview.is_empty());
+    assert_eq!(preview("delete-user").0, DiffChange::Deleted);
     // No separate change lines: the rows are the record.
     assert_eq!(memory_changes(&fixture, session), 0);
     // Results reach the model.

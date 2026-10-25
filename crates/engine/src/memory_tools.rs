@@ -497,77 +497,7 @@ impl ToolProvider for MemoryTools {
     }
 
     fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
-        let Some(primary) = display_argument(&call.name, &call.arguments) else {
-            return cookie_agent_runtime_api::tool_title_only(&call.name);
-        };
-        let text = |member: &str| {
-            call.arguments
-                .get(member)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        };
-        let (title, hint, entries) = match call.name.as_str() {
-            SEARCH => {
-                let mut entries = vec![("query", primary.clone())];
-                entries.extend(text("layer").map(|layer| ("layer", layer)));
-                entries.extend(
-                    call.arguments
-                        .get("limit")
-                        .and_then(serde_json::Value::as_u64)
-                        .map(|limit| ("limit", limit.to_string())),
-                );
-                (
-                    "Search memory".to_owned(),
-                    cookie_agent_protocol::ToolHint::SEARCH,
-                    entries,
-                )
-            }
-            READ => (
-                format!("Read memory {primary}"),
-                cookie_agent_protocol::ToolHint::FILE_READ,
-                Vec::new(),
-            ),
-            WRITE => {
-                let mut entries = vec![("url", primary.clone())];
-                entries.extend(text("description").map(|value| ("description", value)));
-                entries.extend(
-                    call.arguments
-                        .get("keywords")
-                        .and_then(serde_json::Value::as_array)
-                        .map(|keywords| {
-                            let keywords = keywords
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .collect::<Vec<_>>();
-                            ("keywords", keywords.join(", "))
-                        }),
-                );
-                entries.extend(text("body").map(|value| ("body", value)));
-                entries.extend(text("reason").map(|value| ("reason", value)));
-                (
-                    format!("Write memory {primary}"),
-                    cookie_agent_protocol::ToolHint::FILE_WRITE,
-                    entries,
-                )
-            }
-            EDIT => {
-                let mut entries = vec![("url", primary.clone())];
-                entries.extend(text("old").map(|value| ("old", value)));
-                entries.extend(text("new").map(|value| ("new", value)));
-                (
-                    format!("Edit memory {primary}"),
-                    cookie_agent_protocol::ToolHint::FILE_EDIT,
-                    entries,
-                )
-            }
-            DELETE => (
-                format!("Delete memory {primary}"),
-                cookie_agent_protocol::ToolHint::FILE_WRITE,
-                Vec::new(),
-            ),
-            _ => return cookie_agent_runtime_api::tool_title_only(&call.name),
-        };
-        crate::base_tools::base_presentation(&title, hint, &primary, entries)
+        call_presentation(call, false)
     }
 
     async fn prepare(
@@ -577,6 +507,13 @@ impl ToolProvider for MemoryTools {
     ) -> Result<PreparedTool, ToolError> {
         let engine = self.engine()?;
         let memory_call = check(&call.name, call.arguments.clone())?;
+        let preview = {
+            let root = engine.memory_root().clone();
+            let shown = preview_input(&memory_call);
+            blocking(move || shown.and_then(|shown| preview(&root, shown))).await?
+        };
+        let presentation =
+            preview.map(|preview| call_presentation(&call, true).with_preview([preview]));
         let (action, operation_name) = match &memory_call {
             MemoryCall::Search { .. } => (PermissionAction::MEMORY, "search"),
             MemoryCall::Read { .. } => (PermissionAction::MEMORY, "read"),
@@ -602,7 +539,7 @@ impl ToolProvider for MemoryTools {
             vec![resource],
             &ctx.context_bytes(),
         )?;
-        let prepared = PreparedTool::new(
+        let mut prepared = PreparedTool::new(
             operation,
             call.arguments,
             None,
@@ -611,8 +548,204 @@ impl ToolProvider for MemoryTools {
                 call: memory_call,
             }),
         )?;
+        if let Some(presentation) = presentation {
+            prepared = prepared.with_presentation(presentation);
+        }
         prepared.with_policy_labels(vec![label])
     }
+}
+
+/// What a write, edit, or delete previews, read before the call is
+/// approved: the URL, and the new memory a write gives or the replacement
+/// an edit makes.
+enum PreviewInput {
+    Write {
+        url: MemoryUrl,
+        text: String,
+    },
+    Edit {
+        url: MemoryUrl,
+        old: String,
+        new: String,
+    },
+    Delete {
+        url: MemoryUrl,
+    },
+}
+
+fn preview_input(call: &MemoryCall) -> Option<PreviewInput> {
+    match call {
+        MemoryCall::Search { .. } | MemoryCall::Read { .. } => None,
+        MemoryCall::Write { url, document, .. } => Some(PreviewInput::Write {
+            url: url.clone(),
+            text: shown_text(&document.render()),
+        }),
+        MemoryCall::Edit { url, old, new } => Some(PreviewInput::Edit {
+            url: url.clone(),
+            old: old.clone(),
+            new: new.clone(),
+        }),
+        MemoryCall::Delete { url } => Some(PreviewInput::Delete { url: url.clone() }),
+    }
+}
+
+/// The diff a write, edit, or delete would make to the memory as it is
+/// now, as the coding runtime's tools preview theirs. `None` when the call
+/// will fail anyway (an edit's `old` not found once, a memory that is not
+/// there to edit or delete) or the memory cannot be read.
+fn preview(root: &crate::memory::MemoryRoot, input: PreviewInput) -> Option<DisplayBlock> {
+    let current = |url: &MemoryUrl| match root.read(url) {
+        Ok(read) => Some(Some(read.text)),
+        Err(StoreError::NotFound { .. }) => Some(None),
+        Err(_) => None,
+    };
+    let block = match input {
+        PreviewInput::Write { url, text } => match current(&url)? {
+            Some(old) => preview_diff(
+                &url,
+                TextChange::Modified {
+                    old: &shown_text(&old),
+                    new: &text,
+                },
+            ),
+            None => preview_diff(&url, TextChange::Created { text: &text }),
+        },
+        PreviewInput::Edit { url, old, new } => {
+            let text = current(&url)??;
+            let shown = shown_text(&text);
+            let at = replacement_at(&text, &shown, &old)?;
+            preview_diff(
+                &url,
+                TextChange::Replaced {
+                    text: &shown,
+                    ranges: &[(at, at + old.len())],
+                    new: &new,
+                },
+            )
+        }
+        PreviewInput::Delete { url } => preview_diff(
+            &url,
+            TextChange::Deleted {
+                text: &shown_text(&current(&url)??),
+            },
+        ),
+    };
+    cookie_agent_runtime_api::display::fit_block(block, None).ok()
+}
+
+fn preview_diff(url: &MemoryUrl, change: TextChange<'_>) -> DisplayBlock {
+    text_diff(
+        &url.to_string(),
+        Some("markdown".to_owned()),
+        change,
+        DiffAsOf::Prepare,
+    )
+}
+
+/// Where in `shown`, the memory file `text` without its stamps, an edit
+/// replaces `old`: its one occurrence in the body. `None` when `old` is
+/// empty or occurs in the body other than once.
+fn replacement_at(text: &str, shown: &str, old: &str) -> Option<usize> {
+    let document = MemoryDocument::parse(text.as_bytes()).ok()?;
+    let body = document.body();
+    let start = shown.len().checked_sub(body.len())?;
+    if old.is_empty() || shown[start..] != *body || body.matches(old).count() != 1 {
+        return None;
+    }
+    Some(start + body.find(old)?)
+}
+
+/// How clients show a call: the title names its URL or query, and the
+/// arguments add what the title does not show. A previewed call's diff shows
+/// a write's frontmatter and body and an edit's replacement in place, so
+/// they leave the arguments, as the coding runtime's `edit` and `write` do.
+fn call_presentation(
+    call: &ToolCall,
+    previewed: bool,
+) -> cookie_agent_protocol::PreparedPresentation {
+    let Some(primary) = display_argument(&call.name, &call.arguments) else {
+        return cookie_agent_runtime_api::tool_title_only(&call.name);
+    };
+    let text = |member: &str| {
+        call.arguments
+            .get(member)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let (title, hint, entries) = match call.name.as_str() {
+        SEARCH => {
+            let mut entries = vec![("query", primary.clone())];
+            entries.extend(text("layer").map(|layer| ("layer", layer)));
+            entries.extend(
+                call.arguments
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|limit| ("limit", limit.to_string())),
+            );
+            (
+                "Search memory".to_owned(),
+                cookie_agent_protocol::ToolHint::SEARCH,
+                entries,
+            )
+        }
+        READ => (
+            format!("Read memory {primary}"),
+            cookie_agent_protocol::ToolHint::FILE_READ,
+            Vec::new(),
+        ),
+        WRITE if previewed => (
+            format!("Write memory {primary}"),
+            cookie_agent_protocol::ToolHint::FILE_WRITE,
+            text("reason")
+                .map(|value| vec![("reason", value)])
+                .unwrap_or_default(),
+        ),
+        WRITE => {
+            let mut entries = vec![("url", primary.clone())];
+            entries.extend(text("description").map(|value| ("description", value)));
+            entries.extend(
+                call.arguments
+                    .get("keywords")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|keywords| {
+                        let keywords = keywords
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .collect::<Vec<_>>();
+                        ("keywords", keywords.join(", "))
+                    }),
+            );
+            entries.extend(text("body").map(|value| ("body", value)));
+            entries.extend(text("reason").map(|value| ("reason", value)));
+            (
+                format!("Write memory {primary}"),
+                cookie_agent_protocol::ToolHint::FILE_WRITE,
+                entries,
+            )
+        }
+        EDIT if previewed => (
+            format!("Edit memory {primary}"),
+            cookie_agent_protocol::ToolHint::FILE_EDIT,
+            Vec::new(),
+        ),
+        EDIT => {
+            let mut entries = vec![("url", primary.clone())];
+            entries.extend(text("old").map(|value| ("old", value)));
+            entries.extend(text("new").map(|value| ("new", value)));
+            (
+                format!("Edit memory {primary}"),
+                cookie_agent_protocol::ToolHint::FILE_EDIT,
+                entries,
+            )
+        }
+        DELETE => (
+            format!("Delete memory {primary}"),
+            cookie_agent_protocol::ToolHint::FILE_WRITE,
+            Vec::new(),
+        ),
+        _ => return cookie_agent_runtime_api::tool_title_only(&call.name),
+    };
+    crate::base_tools::base_presentation(&title, hint, &primary, entries)
 }
 
 struct MemoryExecutor {
@@ -723,15 +856,7 @@ fn edit_diff(
 ) -> Result<Vec<Open<DisplayBlock>>, ToolError> {
     let before = shown_text(&edited.before);
     let after = shown_text(&edited.after);
-    let body = MemoryDocument::parse(edited.before.as_bytes())
-        .ok()
-        .map(|document| document.body().to_owned());
-    let at = body.as_deref().and_then(|body| {
-        let start = before.len().checked_sub(body.len())?;
-        (before[start..] == *body).then_some(start + body.find(old)?)
-    });
-    if let Some(at) = at
-        && !old.is_empty()
+    if let Some(at) = replacement_at(&edited.before, &before, old)
         && format!("{}{new}{}", &before[..at], &before[at + old.len()..]) == after
     {
         return memory_diff(
