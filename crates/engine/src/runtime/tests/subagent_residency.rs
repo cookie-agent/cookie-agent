@@ -36,7 +36,20 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
     ] {
         responses.send(response).expect("scripted response");
     }
-    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    // Room for the child's tool definitions beside its summary, so the
+    // compaction commits whatever their descriptions weigh.
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nTest prompt.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            16_384,
+            None,
+        );
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Base,
         Arc::new(TestDelegateProvider {
